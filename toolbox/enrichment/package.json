@@ -1,0 +1,32 @@
+{
+  "name": "kcenrich",
+  "version": "0.1.0",
+  "description": "Google Knowledge Catalog metadata enrichment agent",
+  "main": "index.js",
+  "bin": {
+    "kcmd": "./dist/kcenrich"
+  },
+  "scripts": {
+    "build:bin": "npx bun build --compile --outfile dist/kcenrich src/main.ts",
+    "build:lib": "npx tsc -p tsconfig.json",
+    "build": "npm run build:lib && npm run build:bin",
+    "compile": "npx tsc --noEmit",
+    "debug": "npx adk web src/agent.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@google/adk": "^1.1.0",
+    "cac": "^7.0.0",
+    "kcmd": "file:../mdcode"
+  },
+  "devDependencies": {
+    "@google/adk-devtools": "^1.1.0",
+    "@types/node": "^25.6.0",
+    "bun": "^1.3.13",
+    "bun-types": "^1.3.13",
+    "typescript": "^6.0.3"
+  }
+}
