@@ -213,10 +213,9 @@ export class CatalogSnapshot {
   // This is only meant to be used within the syncing process (as part of pull operations).
   async _storeEntry(name: string, entry: dataplex.Entry): Promise<void> {
     let entryPath = this._index.get(name);
-    if (entryPath && fs.existsSync(entryPath)) {
-       throw new Error(`Entry '${name}' already exists`);
+    if (!entryPath) {
+      entryPath = path.resolve(this.basePath, 'catalog', name + '.yaml');
     }
-    entryPath = path.resolve(this.basePath, 'catalog', name + '.yaml');
 
     await fs.promises.mkdir(path.dirname(entryPath), { recursive: true });
     await fs.promises.writeFile(entryPath, yaml.stringify(toLocalEntry(entry)));
