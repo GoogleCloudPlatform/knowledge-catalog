@@ -30,7 +30,7 @@ export class BigQueryDatasetSource {
     }
 
     // Fetch the dataset entry
-    const location = dsResource.result.location;
+    const location = dsResource.result.location.toLowerCase();
     const dsEntryId = `bigquery.googleapis.com/projects/${this._name[0]}/datasets/${this._name[1]}`
     const dsEntryName = `${gcp.catalogContainer(this._name[0], location, '@bigquery')}/entries/${dsEntryId}`
     const dsEntryResult = await catalog.lookupEntry(this._name[0], location, dsEntryName);
