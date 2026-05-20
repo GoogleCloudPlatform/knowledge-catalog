@@ -56,23 +56,24 @@ export class BigQueryDatasetSource {
 
   localName(entry: gcp.Entry): string {
     // The local catalog uses simplified path scheme:
-    // dataset -> <dataset id>
-    // table -> <dataset id>/tables/<table id
-    // model -> <dataset id>/models/<model id>
-    // routine -> <dataset id>/routines/<routine id>
+    // dataset -> <project id>.<dataset id>
+    // table -> <project id>.<dataset id>/<table id>
+    // model -> <type>/<project id>.<dataset id>/<model id>
+    // routine -> <type>/<project id>.<dataset id>/<routine id>
 
-    let match = entry.name.match(/\/datasets\/([^/]+)\/(tables|models|routines)\/(.+)$/);
+    let match = entry.name.match(/\/projects\/([^/]+)\/datasets\/([^/]+)\/(tables|models|routines)\/(.+)$/);
     if (match) {
-      const [, dataset, type, id] = match;
+      const [, project, dataset, type, id] = match;
       if (type === 'tables') {
-        return `${dataset}/${id}`;
+        return `${project}.${dataset}/${id}`;
       }
-      return `${type}/${dataset}/${id}`;
+      return `${type}/${project}.${dataset}/${id}`;
     }
 
-    match = entry.name.match(/\/datasets\/([^/]+)$/);
+    match = entry.name.match(/\/projects\/([^/]+)\/datasets\/([^/]+)$/);
     if (match) {
-      return match[1];
+      const [, project, dataset] = match;
+      return `${project}.${dataset}`;
     }
 
     throw new Error(`Invalid BigQuery entry: ${entry.name}`);
