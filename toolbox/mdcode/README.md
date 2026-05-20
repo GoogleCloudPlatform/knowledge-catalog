@@ -138,6 +138,9 @@ The package provides the `kcmd` CLI tool. This is distributed as a standalone bi
 # Initialize a new catalog snapshot for a bigquery dataset
 kcmd init --bigquery-dataset <projectId>.<datasetId>
 
+# Initialize a new catalog snapshot for multiple bigquery datasets (up to 10 supported)
+kcmd init --bigquery-dataset <projectId>.<datasetId1> --bigquery-dataset <projectId>.<datasetId2>
+
 # Initialize a new catalog snapshot for a bigquery dataset with specific types
 kcmd init --bigquery-dataset <projectId>.<datasetId> \
   --entry bigquery-table --entry bigquery-view \
