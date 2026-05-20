@@ -36,7 +36,7 @@ actions:
   - action: pull
   - action: updateEntry
     entry:
-      name: d
+      name: p.d
       aspects:
         dataplex-types.global.overview:
           content: New aspect description

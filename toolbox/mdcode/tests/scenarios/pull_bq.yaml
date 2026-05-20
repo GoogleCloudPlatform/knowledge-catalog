@@ -33,7 +33,7 @@ actions:
 
 assert:
   fileSystem:
-    catalog/d.yaml:
+    catalog/p.d.yaml:
       contains: "type: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset"
-    catalog/d/t1.yaml:
+    catalog/p.d/t1.yaml:
       contains: "type: projects/dataplex-types/locations/global/entryTypes/bigquery-table"

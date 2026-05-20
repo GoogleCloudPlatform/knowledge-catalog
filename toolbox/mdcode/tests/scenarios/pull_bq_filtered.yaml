@@ -43,6 +43,6 @@ actions:
 
 assert:
   fileSystem:
-    catalog/d.yaml: null
-    catalog/d/t1.yaml:
+    catalog/p.d.yaml: null
+    catalog/p.d/t1.yaml:
       contains: "type: projects/dataplex-types/locations/global/entryTypes/bigquery-table"

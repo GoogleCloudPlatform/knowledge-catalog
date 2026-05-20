@@ -10,7 +10,7 @@ import * as context from '../libts/gcp/context';
 
 export interface InitOptions {
   entryGroup?: string;
-  bigqueryDataset?: string;
+  bigqueryDataset?: string | string[];
   pull?: boolean;
 }
 
@@ -29,7 +29,14 @@ export async function init(options: InitOptions): Promise<number> {
     manifest = await kcmd.CatalogManifest.initWithEntryGroup(options.entryGroup, ctx);
   }
   else {
-    manifest = await kcmd.CatalogManifest.initWithBigQuery(options.bigqueryDataset!, ctx);
+    let datasets = '';
+    if (Array.isArray(options.bigqueryDataset)) {
+      datasets = options.bigqueryDataset.join(',');
+    }
+    else {
+      datasets = options.bigqueryDataset!;
+    }
+    manifest = await kcmd.CatalogManifest.initWithBigQuery(datasets, ctx);
   }
 
   manifest.save('catalog.yaml');

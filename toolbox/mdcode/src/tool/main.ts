@@ -9,7 +9,7 @@ import * as mcp from './mcp';
 const cli = cac.cac('kcmd').version('1.0.0').help();
 cli.command('init', 'Initialize a new catalog snapshot')
    .option('--entry-group <id>', 'Identifier of the EntryGroup (project.location.id)')
-   .option('--bigquery-dataset <id>', 'Identifier of the BigQuery dataset (project.datasetId)')
+   .option('--bigquery-dataset <id...>', 'Identifier of the BigQuery dataset(s) (project.datasetId)')
    .option('--pull', 'Optionally pull catalog entries during initialization')
    .action(async (options) => {
       if (!options.entryGroup && !options.bigqueryDataset) {
