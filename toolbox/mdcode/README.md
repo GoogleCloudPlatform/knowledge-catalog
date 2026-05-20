@@ -58,7 +58,7 @@ publishing:
 ```
 
 ## Entry YAML File
-**catalog/ecommerce/products.yaml**
+**catalog/prod-data.ecommerce/products.yaml**
 ```yaml
 id: products
 type: bigquery-table
@@ -80,7 +80,7 @@ contacts:
 ```
 
 ## Entry Sidecar Markdown File
-**catalog/ecommerce/products.overview.md**
+**catalog/prod-data.ecommerce/products.overview.md**
 
 ```markdown
 ---
