@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in contributing to the Google Cloud Dataflow Templates
+Thanks for your interest in contributing to the Google Cloud Knowledge Catalog
 repo!
 
 To get started contributing:
@@ -9,7 +9,7 @@ To get started contributing:
 1. Fork the repo, develop and test your code changes.
 1. Ensure that your code adheres to the existing style.
 1. Ensure that your code has an appropriate set of unit tests which all pass.
-1. Run `mvn verify` to verify all tests and checks pass.
+1. Ensure that all tests pass (e.g., by running `npm run test` in the TypeScript package directories).
 1. Submit a pull request.
 
 ## Contributor License Agreement

@@ -196,8 +196,8 @@ NOTE: The server uses `gcloud` to obtain authentication tokens, so ensure you ar
 ### Setup
 
 ```bash
-git clone https://github.com/googlecloudplatform/knowlege-catalog
-cd toolbox/mac
+git clone https://github.com/googlecloudplatform/knowledge-catalog
+cd toolbox/mdcode
 npm install
 ```
 

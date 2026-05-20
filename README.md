@@ -2,7 +2,7 @@
 
 [Knowledge Catalog](https://cloud.google.com/products/knowledge-catalog) (formerly Dataplex), is an AI-powered data catalog and metadata management platform. It provides a dynamic knowledge graph of all your data, structured and unstructured, to provide semantics and business context to AI agents
 
-This repository features tools, agents, and samples that demostrate Knowledge Catalog features, and building context management, enrichment and retrieval solutions.
+This repository features tools, agents, and samples that demonstrate Knowledge Catalog features, and building context management, enrichment and retrieval solutions.
 
 
 ## Getting Started

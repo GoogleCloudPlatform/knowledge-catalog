@@ -19,9 +19,6 @@ The package provides the `kcenrich` CLI tool. This is distributed as a standalon
 # Initialize a new catalog snapshot for a bigquery dataset
 kcmd init --bigquery-dataset <projectId>.<datasetId>
 
-# Initialize a new catalog snapshot for a bigquery dataset with specific types
-kcmd init --bigquery-dataset <projectId>.<datasetId>
-
 # Pull the latest catalog snapshot from the Knowledge Catalog service
 kcmd pull
 
@@ -33,8 +30,8 @@ kcenrich catalog --path . --config-path ../demo
 ### Setup
 
 ```bash
-git clone https://github.com/googlecloudplatform/knowlege-catalog
-cd toolbox/mac
+git clone https://github.com/googlecloudplatform/knowledge-catalog
+cd toolbox/enrichment
 npm install
 ```
 

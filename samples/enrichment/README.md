@@ -12,7 +12,7 @@ documentation, and uses Knowledge Catalog APIs to publish the documentation
 as enriched metadata.
 
 Users can customize this enrichment agent with custom instructions, tools to
-acccess sourcses of information within their organization, and skills to
+access sources of information within their organization, and skills to
 describe the use of these tools.
 
 ## Running the Sample
