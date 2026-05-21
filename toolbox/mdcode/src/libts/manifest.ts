@@ -5,7 +5,7 @@ import * as fs from 'node:fs';
 import * as yaml from 'yaml';
 import * as z from 'zod';
 import * as gcp from './gcp';
-import { CatalogSource, createSource, Sources, MAX_DATASETS } from './source';
+import { CatalogSource, createSource, Sources } from './source';
 
 
 const manifestSchema = z.object({
@@ -76,9 +76,7 @@ export class CatalogManifest {
       if (scope.length === 0) {
         throw new Error('Manifest error: scope array cannot be empty.');
       }
-      if (scope.length > MAX_DATASETS) {
-        throw new Error(`Manifest error: scope array exceeds maximum of ${MAX_DATASETS} datasets.`);
-      }
+
 
       const datasets: string[] = [];
       for (const s of scope) {

@@ -210,7 +210,7 @@ The manifest file captures all configuration related information. This includes:
 scope: <type>.<name>              # The resources in the snapshot. Examples:
                                   # scope: entryGroup.<projectId>.<locationId>.<entryGroupId>
                                   # scope: bq-dataset.<projectId>.<datasetId>
-                                  # Or multiple BigQuery datasets in array list format (up to 10 supported):
+                                  # Or multiple BigQuery datasets in array list format:
                                   # scope:
                                   #   - bq-dataset.<projectId>.<datasetId1>
                                   #   - bq-dataset.<projectId>.<datasetId2>

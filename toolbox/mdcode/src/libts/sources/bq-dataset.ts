@@ -3,7 +3,6 @@
 
 import * as gcp from '../gcp';
 import * as bq from '../gcp/bigquery';
-import { MAX_DATASETS } from '../source';
 
 
 export class BigQueryDatasetSource {
@@ -18,9 +17,6 @@ export class BigQueryDatasetSource {
     this.name = name;
     
     const names = name.split(',');
-    if (names.length > MAX_DATASETS) {
-      throw new Error(`Only up to ${MAX_DATASETS} BigQuery datasets can be specified.`);
-    }
     this._datasets = names.map(n => {
       const parts = n.split('.');
       if (parts.length !== 2) {
@@ -73,8 +69,8 @@ export class BigQueryDatasetSource {
     // The local catalog uses simplified path scheme:
     // dataset -> <project id>.<dataset id>
     // table -> <project id>.<dataset id>/<table id>
-    // model -> <type>/<project id>.<dataset id>/<model id>
-    // routine -> <type>/<project id>.<dataset id>/<routine id>
+    // model -> <project id>.<dataset id>/models/<model id>
+    // routine -> <project id>.<dataset id>/routines/<routine id>
 
     let match = entry.name.match(/\/projects\/([^/]+)\/datasets\/([^/]+)\/(tables|models|routines)\/(.+)$/);
     if (match) {

@@ -6,8 +6,6 @@ import * as bq from './gcp/bigquery';
 import { EntryGroupSource } from './sources/entrygroup';
 import { BigQueryDatasetSource } from './sources/bq-dataset';
 
-export const MAX_DATASETS = 10;
-
 
 export interface CatalogSource {
   readonly type: string;
@@ -40,9 +38,6 @@ async function validateEntryGroup(name: string, ctx: gcp.ApiContext): Promise<vo
 
 async function validateBigQueryDataset(name: string, ctx: gcp.ApiContext): Promise<void> {
   const names = name.split(',');
-  if (names.length > MAX_DATASETS) {
-    throw new Error(`Only up to ${MAX_DATASETS} BigQuery datasets can be specified.`);
-  }
 
   const bigQuery = new bq.BigQueryClient(ctx);
   for (const n of names) {
