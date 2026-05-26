@@ -23,8 +23,8 @@ Establish the local file structure and enable basic bi-directional metadata sync
         *   Implement test cases for snapshot creation and directory layout for BigQuery datasets and EntryGroups.
         *   Implement test cases for basic push operations and publishing configuration filtering.
 
-## Phase 2: Enhanced Representation
-Optimize the file format for human and agent editing. Implement layout and aliases support, multi-dataset scope, entry links, overlay push target creation, and lakehouse assets.
+## Phase 2: Enhanced Representation & Basic Sync
+Optimize the file format for human and agent editing. Implement layout support, multi-dataset scope, entry links, and lakehouse assets. Establish basic sync and state management.
 
 *   **Key Features & Work:**
     *   **Library (TS)**:
@@ -32,40 +32,51 @@ Optimize the file format for human and agent editing. Implement layout and alias
         *   Support multi-dataset configuration for BigQuery, enabling sync of multiple datasets.
         *   Support `lakehouse` `entryGroup` in `catalog.yaml` to enable Dataplex Lakehouse asset sync.
         *   Support `EntryLinks` for catalog entries.
-        *   Support Dataplex Entry Group creation if they do not exist on the remote catalog.
-        *   Support pushing BigQuery metadata to a different overlay Entry Group in Dataplex rather than the source dataset directly.
-        *   Support type aliases in `catalog.yaml`.
+        *   **Basic Sync and State Management**:
+            *   Store checksums of local state in a separate metadata file (e.g., `.catalog.state`).
+            *   Use checksums to detect local modifications and remote drift.
+            *   Treat missing local files as intent to delete corresponding remote catalog entries.
+            *   Fail fast on remote modifications to prevent overwriting newer changes.
     *   **CLI (TS-based)**:
-        *   Update `pull` and `push` operations to support sidecars, aliases, multi-dataset BQ, overlay entry groups, entry links, and lakehouse assets.
-    *   **Testing**:
-        *   Implement test cases for Standard layout (YAML + sidecars) and Documents layout (Markdown + frontmatter) format mapping.
-        *   Implement test cases for multi-dataset BigQuery pulling and pushing.
-        *   Implement test cases for Dataplex Lakehouse asset syncing.
-        *   Implement test cases for entry links.
-        *   Implement test cases for creating Entry Groups and pushing to overlay Entry Groups.
-        *   Implement test cases for type aliases.
-
-## Phase 3: Robust Sync and State Management
-Ensure data integrity, validation, and efficient sync updates.
-
-*   **Key Features & Work:**
-    *   **Validation**:
-        *   Fetch type definitions dynamically for client-side schema validation.
-    *   **Sync and State Management**:
-        *   Store checksums of local state in a separate metadata file.
-        *   Use checksums to detect local modifications and remote drift.
-        *   Treat missing local files as intent to delete corresponding remote catalog entries.
-        *   Fail fast on remote modifications to prevent overwriting newer changes.
-    *   **CLI (TS-based)**:
+        *   Update `pull` and `push` operations to support sidecars, multi-dataset BQ, entry links, and lakehouse assets.
         *   Add `kcmd status` to check for local modifications and remote drift.
         *   Update `kcmd push` to use checksums and report sync conflicts.
         *   Support a force override (`--force`) flag to bypass drift checks.
         *   Implement a dry-run (`--dry-run`) option for `pull` and `push` commands.
     *   **Testing**:
-        *   Implement test cases for dynamic schema fetching and client-side validation.
-        *   Implement test cases for checksum calculation and drift detection.
-        *   Implement test cases for intent to delete behavior.
-        *   Implement test cases for sync conflict resolution, force override, and `--dry-run` behavior.
+        *   Implement test cases for Standard layout (YAML + sidecars) and Documents layout (Markdown + frontmatter) format mapping.
+        *   Implement test cases for multi-dataset BigQuery pulling and pushing.
+        *   Implement test cases for Dataplex Lakehouse asset syncing.
+        *   Implement test cases for entry links.
+        *   **Basic Sync Testing**:
+            *   Implement test cases for checksum calculation and drift detection.
+            *   Implement test cases for intent to delete behavior.
+            *   Implement test cases for sync conflict resolution, `--force` override, and `--dry-run` behavior.
+
+## Phase 3: Validation & Advanced Sync
+Ensure data integrity, dynamic validation, type aliases, creation of remote resources, overlay sync, and enterprise-grade advanced synchronization.
+
+*   **Key Features & Work:**
+    *   **Validation & Aliases**:
+        *   Support type aliases in `catalog.yaml`.
+        *   Fetch type definitions dynamically from Catalog service for client-side schema validation.
+        *   Perform client-side schema validation against dynamic schemas prior to push operations.
+    *   **Overlay & Target Management**:
+        *   Support Dataplex Entry Group creation if they do not exist on the remote catalog.
+        *   Support pushing BigQuery metadata to a different overlay Entry Group in Dataplex rather than the source dataset directly.
+    *   **Advanced Sync and State Management**:
+        *   **State File Resiliency & Atomic Writes**: Implement atomic file updates using temporary files and OS-level renames, combined with automatic backups (`.catalog_state.json.bak`) to prevent state file corruption.
+        *   **State Scalability & Parallelization**: Evaluate transitioning state storage to a transactional database (e.g., embedded SQLite) to support row-level concurrency and high-scale parallel operations.
+        *   **Fine-Grained Change Isolation & Automatic Merging**: Isolate unpushed changes via publish-scoped dirty checks, and implement three-way aspect merging to automatically resolve non-overlapping conflicts.
+    *   **CLI (TS-based)**:
+        *   Update `push` and `pull` to support atomic transactions, batched scale operations, aspect-level updates, aliases, and overlay entry groups.
+    *   **Testing**:
+        *   Implement test cases for type aliases.
+        *   Implement test cases for dynamic schema fetching and schema validation.
+        *   Implement test cases for creating Entry Groups and pushing to overlay Entry Groups.
+        *   Implement test cases for atomic writes, OS-level renames, and backup recovery.
+        *   Test scale scalability, bulk parallel operations, and transactional state concurrency.
+        *   Implement test cases for publish-scoped dirty checks and three-way aspect merging.
 
 ## Phase 4: MCP Tools & Ecosystem Integrations
 Expose Metadata as Code via MCP, integrate with workflow engines, and support Python and other language ecosystems.
@@ -76,4 +87,5 @@ Expose Metadata as Code via MCP, integrate with workflow engines, and support Py
     *   **Python Library**:
         *   Implement equivalent Python-based library to support Python-based workflows and agents.
         *   Maintain parity with TypeScript library for YAML structures, layouts, and checksum state management to ensure cross-language compatibility.
-    *   **Dataform and other products Integration**
+    *   **Dataform and other products Integration**:
+        *   Develop native adapters or plugins to sync metadata directly from Dataform, DBT, or other data orchestration systems.
