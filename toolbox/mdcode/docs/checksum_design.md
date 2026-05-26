@@ -1,6 +1,6 @@
 # Change Detection & Conflict Resolution Design Spec
 
-This document outlines the design for local change detection and remote conflict resolution in the **Metadata as Code** tool.
+This document outlines the design for local change detection and remote conflict resolution in the **Metadata as Code** library.
 
 ---
 
@@ -17,6 +17,13 @@ To enable offline capabilities, minimal network updates, and robust conflict det
 
 ## Comprehensive Conflict Resolution Matrix
 
+A **conflict** occurs when the local filesystem is not in sync with the Catalog's state of the resource.
+
+In the event of a conflict, the user has three choices:
+* **Manual Merge (via Force Pull)**: Back up local modifications, run a force pull (`kcmd pull --force`) to fetch remote changes, and manually merge the desired local changes.
+* **Abandon Local Changes (via Force Pull)**: Run a force pull (`kcmd pull --force`) to discard local modifications and align completely with the remote Catalog state.
+* **Force Update (via Force Push)**: Run a force push (`kcmd push --force`) to overwrite the remote Catalog state with the local workspace state.
+
 The conflict resolution matrix covers aspect modifications, creations, and deletions:
 
 | Local Aspect State | Remote Aspect State | Outcome / Action | Description |
@@ -27,12 +34,41 @@ The conflict resolution matrix covers aspect modifications, creations, and delet
 | **Does Not Exist** | **Exists Remotely** | **Safe to Pull** | Safe to pull/create locally. Local aspect files are written and base checksums are recorded. |
 | **Modified** | **Unchanged** | **Safe to Push** | Push local modifications. Base checksum is updated. |
 | **Modified** | **Modified** | **Conflict** | Conflict! Abort push. User must pull to resolve or use force push. |
-| **Modified** | **Deleted** | **Conflict** | Conflict! Remote was deleted while local was modified. |
+| **Modified** | **Deleted (Entry Deleted)** | **Conflict** | Conflict! Remote entry itself was deleted. Options: (1) Abandon local changes via force pull to delete local files, or (2) Force push to recreate the entry and aspects. |
+| **Modified** | **Deleted (Aspect Deleted)** | **Conflict** | Conflict! Only the aspect was deleted remotely. Options: (1) Abandon local changes via force pull to delete local aspect, or (2) Force push to recreate/push the aspect remotely. |
 | **Deleted** | **Unchanged** | **Safe to Delete Remotely** | Push aspect deletion to remote catalog. Clean up local state entry. |
 | **Deleted** | **Modified** | **Conflict** | Conflict! Remote was modified while local was deleted. |
 | **Deleted** | **Deleted** | **Skip** | Aspect was deleted on both sides. Clean up local state. |
 | **Created (New)** | **Exists Remotely** | **Conflict** | Conflict! Local aspect created but already exists on remote. |
 | **Created (New)** | **Does Not Exist** | **Safe to Create** | Safe to push/create on remote. Base checksum is recorded. |
+
+---
+
+## Design Rationale: Why a State Database is Required
+
+To perform three-way change detection and detect conflicts safely, the sync engine must distinguish between changes made by the local user and changes made on the remote Catalog. 
+
+If the tool only compared the **Local Workspace State** directly to the **Remote Catalog State**, it would be impossible to determine the direction of change:
+* Does a mismatch mean the user modified the local file, or that someone modified the remote entry?
+* Did a missing aspect locally mean the user intentionally deleted it, or that the aspect was created remotely and is missing locally?
+
+To resolve these ambiguities without polluting the user's authorable YAML and Markdown files with system metadata (e.g., sync timestamps, revision IDs, or base checksums), the design introduces a system-managed **State Database**. 
+
+This database acts as a local ledger storing the **Base State (Last Synchronized State)**. By comparing the base checksum of an aspect at the last sync against its current local and remote checksums, the tool can uniquely determine the source of any modifications and execute the correct action:
+
+```mermaid
+graph TD
+    subgraph "Comparison States"
+        Local["Local Workspace State<br/>(On User's Disk)"]
+        Base["Base State<br/>(Stored in State DB)"]
+        Remote["Remote Catalog State<br/>(On GCP Dataplex)"]
+    end
+
+    Local ===|1. Detect Local Edits| Base
+    Base ===|2. Detect Remote Edits| Remote
+    
+    style Base fill:#2d3748,stroke:#3182ce,stroke-width:2px,color:#fff
+```
 
 ---
 
@@ -47,7 +83,8 @@ Before discussing database layout options, we define the scope and constraints o
 * **Aspect `checksum`**: These checksums are calculated for the key-value properties inside each individual aspect type (e.g., `dataplex-types.global.overview`, `dataplex-types.global.descriptions`).
 * **Static Modifiability Enforcement**: The `catalog.yaml` validation layer statically ensures that only modifiable aspects (e.g., non-required aspects for ingested entries, or any aspect for custom/user-managed entries) are configured to be synchronized and published.
 
-#### Option A: Flat State File (`.catalog_state.json` - Recommended)
+### Proposed Design: Flat State File (`.catalog_state.json`)
+
 A single JSON file at the root of the workspace containing a map of all tracked files, their base aspects, and their checksums.
 
 > [!NOTE]
@@ -77,7 +114,19 @@ A single JSON file at the root of the workspace containing a map of all tracked 
 }
 ```
 
-#### Option B: Mirror State Directory (`.catalog_state/`)
+* **Pros:**
+  * **High Performance:** Native V8 JSON parsing (`JSON.parse`/`JSON.stringify`) is extremely fast and incurs zero external parsing dependency overhead.
+  * **Zero Clutter:** Keeps the user's active catalog folders completely clean of system-managed state files.
+  * **Easy Git Ignoring:** The single `.catalog_state.json` file is easily ignored globally via `.gitignore`.
+* **Cons:**
+  * **Parallelization Bottleneck (Lock Contention):** Operating on a single centralized file requires strict concurrent process locking to prevent state corruption. During large/bulk export or import operations, this single-file lock becomes a contention point that limits parallel execution capabilities across processes.
+
+---
+
+### Alternatives Considered
+
+#### Mirror State Directory (`.catalog_state/`)
+
 A hidden directory mirroring the structure of the `catalog/` folder, containing individual aspect state files.
 
 ```
@@ -93,7 +142,14 @@ path/to/root/
         └── orders.overview.md.state
 ```
 
-#### Option C: Co-located Checksum Files (In-place)
+* **Pros:**
+  * Keeps the developer's source directories clean of state metadata.
+  * Matches the structure of the user catalog directory exactly, making mapping straightforward.
+* **Cons:**
+  * **High IO Overhead:** Incurs significant directory traversal and file manipulation overhead, since Node.js must manage and keep two identical directory hierarchies in sync as the catalog scales.
+
+#### Co-located Checksum Files (In-place)
+
 Checksum state files are stored directly inside the catalog directories, placed immediately next to their corresponding authorable source files using a `.checksum` suffix.
 
 ```
@@ -107,19 +163,11 @@ path/to/root/
         └── orders.overview.md.checksum
 ```
 
-### Comparison and Recommendation
+* **Pros:**
+  * **Self-Contained:** Highly localized. If a directory or file is renamed/deleted by the user, the corresponding checksum file can be moved or deleted concurrently by standard OS tools.
+* **Cons:**
+  * **High Clutter:** Doubles the number of files in the user's workspace folders, drastically reducing manual curation readability and cluttering the Git tracking space.
 
-* **Option A (Flat State Database - Recommended):**
-  * *Pros:* Fast Native JSON parsing in Node.js/V8, zero folder clutter, easily gitignored.
-  * *Cons:* Renames and deletions require cleaning up individual keys in a single file rather than standard OS filesystem updates.
-* **Option B (Mirror State Directory):**
-  * *Pros:* Keeps the developer's source directories completely clean of state metadata.
-  * *Cons:* Increases file manipulation overhead as the tool must recursively manage two identical directory hierarchies.
-* **Option C (Co-located Checksum Files):**
-  * *Pros:* Highly localized and self-contained. If a directory or file is renamed/deleted by the user, clean-up is intuitive and localized.
-  * *Cons:* Clutters the user workspace by doubling the number of files in the catalog folders, hindering human legibility.
-
-**Recommendation:** We proceed with **Option A (Flat JSON State File)** to optimize read/write speeds in Node.js and prioritize a clean workspace.
 
 
 ### Concurrent Process Locking
@@ -287,4 +335,15 @@ During a dry run, the exact same calculation, lookup, and validation logic is ex
 To prevent state file corruption when writing updates to `.catalog_state.json` (e.g., if the CLI process is interrupted, crashes, or the disk runs out of space):
 * **Atomic Write Mechanism**: Future versions of the CLI should implement atomic file updates. Instead of writing directly to the target `.catalog_state.json` file, the tool will write the updated state to a temporary file (e.g., `.catalog_state.json.tmp`) in the same directory, and then use an atomic rename operation (`fs.rename` or equivalent OS-level rename) to replace the original file.
 * **Automatic Backup**: Maintain a `.catalog_state.json.bak` copy before executing any state transitions to facilitate self-healing and recovery options for corrupted states.
+
+### 2. State Scalability & Parallelization
+To resolve the lock contention bottleneck of a single centralized state file during large-scale or bulk import/export operations:
+* **Transactional State Indexer**: Explore transitioning the state storage to a transactional database. Utilizing a lightweight embedded engine like SQLite is one potential option to enable row-level concurrency control rather than file-level locking; however, the final choice of approach or storage engine should be thoroughly evaluated and decided based on performance and architectural requirements at the time of implementation.
+
+### 3. Fine-Grained Change Isolation & Automatic Merging
+To optimize synchronization workflows and prevent unnecessary blocks when editing non-overlapping metadata:
+* **Publish-Scoped Dirty Checks**: If the snapshot configuration pulls aspects A, B, and C, but the publishing configuration only pushes aspects A and B, local modifications on aspect C should be isolated. The push operation for aspects A and B should proceed successfully without being blocked by the unpushed changes in aspect C.
+* **Three-Way Merging of Aspects**: Implement intelligent, non-overlapping aspect-level merging during pull/push conflicts so that independent updates to distinct aspects in the same entry can merge automatically without requiring human intervention.
+
+
 
