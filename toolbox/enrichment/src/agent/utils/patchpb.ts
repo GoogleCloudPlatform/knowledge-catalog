@@ -6,6 +6,7 @@
 // and registers `long` globally so that protobufjs successfully resolves 64-bit integers
 // at runtime. Protobuf is a dependency of the Google ADK.
 //
+// https://github.com/protobufjs/protobuf.js/issues/2285
 
 import Long from 'long';
 import * as protobufMinimal from 'protobufjs/minimal.js';

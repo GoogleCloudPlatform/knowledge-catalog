@@ -23,8 +23,9 @@ kcmd init --bigquery-dataset <projectId>.<datasetId>
 kcmd pull
 
 # Run the enrichment tool
-kcenrich catalog --path . --config-path ../demo
+kcagent enrich --catalog-path . --tools-path tools --prompt-path prompt.md
 ```
+
 ## Developer Workflow
 
 ### Setup
@@ -65,22 +66,95 @@ gcloud config set compute/region us
 
 **Setup demo resources**
 ```bash
-# Create a BigQuery dataset and table
-bq mk ${DEMO_CLOUD_PROJECT}:demo-dataset
-bq mk -t ${DEMO_CLOUD_PROJECT}:demo-dataset.demo-table name:string,value:string
+bq query --use_legacy_sql=false <<EOF
+CREATE SCHEMA IF NOT EXISTS \`${DEMO_CLOUD_PROJECT}.demo_ecommerce\`
+OPTIONS (
+  location = 'US',
+  labels = [('usage', 'demo')]
+);
+
+CREATE TABLE IF NOT EXISTS \`${DEMO_CLOUD_PROJECT}.demo_ecommerce.events\`
+PARTITION BY event_date_dt
+AS
+SELECT
+  *,
+  PARSE_DATE('%Y%m%d', event_date) AS event_date_dt
+FROM
+  \`bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*\`;
+EOF
 ```
 
 **Create and populate a catalog snapshot**
 ```bash
-mkdir -p catalog
-cd catalog
-kcmd init --bigquery-dataset ${DEMO_CLOUD_PROJECT}.demo-dataset
-kcmd pull
+mkdir -p demo
+cd demo
+cat <<EOF > catalog.yaml
+scope: bq-dataset.${DEMO_CLOUD_PROJECT}.demo_ecommerce
+
+snapshot:
+  entries:
+    - dataplex-types.global.bigquery-dataset
+    - dataplex-types.global.bigquery-table
+  aspect:
+    - dataplex-types.global.overview
+EOF
+
+../../mdcode/dist/kcmd pull
 ```
+
+**Create and populate the tools**
+```bash
+cat <<EOF > prompt.md
+Enrich the documentation of the assets using the internal organizational information.
+Use the following sources:
+
+* Fileset source
+EOF
+
+mkdir tools
+cat <<EOF > tools/mcp.json
+{
+  "mcpServers": {
+    "md-fileset": {
+      "command": "../dist/md-fileset",
+      "args": [ "--dir", "fileset" ]
+    }
+  }
+}
+EOF
+
+mkdir -p skills/fileset-source
+cat <<EOF > skills/fileset-source/SKILL.md
+---
+name: fileset-source
+description: >
+  Use the fileset source to find relevant markdown documents and extract information
+  about assets.
+---
+
+The `md-fileset` mcp server provides the following tools to extract relevant
+information from a directory hierarchy of markdown files:
+
+* **list_fileset_contents** - browse and navigate the directory tree to list the
+  contents of the specified path. The items may be files or sub-directories.
+
+* **read_fileset_file** - read the contents of a file in the knowledge base. The entire
+  contents are provided. Extract and summarise the relevant information based on
+  the documentation being generated..
+
+* **search_fileset_content** - searches the knowledge base and returns the matching files,
+  along with matching line numbers and line snippets. This can be used to quickly
+  find matches without having to list and read all files.
+
+To work with a fileset effectively create search queries (similar to grep) to find
+relevant files, and then read the files to find relevant information.
+EOF
+```
+
 
 **Enrich the metadata**
 ```bash
-kcenrich catalog --path . --config-path ../config
+../dist/kcagent enrich catalog--path . --tools-path tools --prompt-path prompt.md
 ```
 
 **Clean up**
