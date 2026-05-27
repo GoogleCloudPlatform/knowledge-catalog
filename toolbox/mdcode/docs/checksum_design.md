@@ -15,32 +15,51 @@ To enable offline capabilities, minimal network updates, and robust conflict det
 
 ---
 
-## Comprehensive Conflict Resolution Matrix
+## Conflict Resolution
 
-A **conflict** occurs when the local filesystem is not in sync with the Catalog's state of the resource.
+A **conflict** occurs when there are changes made to both the local and catalog copies of the same resource metadata since the last sync.
 
-In the event of a conflict, the user has three choices:
-* **Manual Merge (via Force Pull)**: Back up local modifications, run a force pull (`kcmd pull --force`) to fetch remote changes, and manually merge the desired local changes.
-* **Abandon Local Changes (via Force Pull)**: Run a force pull (`kcmd pull --force`) to discard local modifications and align completely with the remote Catalog state.
-* **Force Update (via Force Push)**: Run a force push (`kcmd push --force`) to overwrite the remote Catalog state with the local workspace state.
+In the event of a conflict, the resolution options depend on the direction of synchronization:
 
-The conflict resolution matrix covers aspect modifications, creations, and deletions:
+### Pull Operation Choices
+* **Manual Merge**: Back up local modifications, run a force pull (`kcmd pull --force`) to fetch remote changes, and manually merge the desired local changes.
+* **Abandon Local Changes**: Run a force pull (`kcmd pull --force`) to discard local modifications and align completely with the remote Catalog state.
 
-| Local Aspect State | Remote Aspect State | Outcome / Action | Description |
-| :--- | :--- | :--- | :--- |
-| **Unchanged** | **Unchanged** | **Skip** | No actions needed. |
-| **Unchanged** | **Modified** | **Safe to Pull** | Safe to pull. Remote changes can overwrite local file on next pull. |
-| **Unchanged** | **Deleted** | **Safe to Delete Locally** | Safe to delete locally on next pull. |
-| **Does Not Exist** | **Exists Remotely** | **Safe to Pull** | Safe to pull/create locally. Local aspect files are written and base checksums are recorded. |
-| **Modified** | **Unchanged** | **Safe to Push** | Push local modifications. Base checksum is updated. |
-| **Modified** | **Modified** | **Conflict** | Conflict! Abort push. User must pull to resolve or use force push. |
-| **Modified** | **Deleted (Entry Deleted)** | **Conflict** | Conflict! Remote entry itself was deleted. Options: (1) Abandon local changes via force pull to delete local files, or (2) Force push to recreate the entry and aspects. |
-| **Modified** | **Deleted (Aspect Deleted)** | **Conflict** | Conflict! Only the aspect was deleted remotely. Options: (1) Abandon local changes via force pull to delete local aspect, or (2) Force push to recreate/push the aspect remotely. |
-| **Deleted** | **Unchanged** | **Safe to Delete Remotely** | Push aspect deletion to remote catalog. Clean up local state entry. |
-| **Deleted** | **Modified** | **Conflict** | Conflict! Remote was modified while local was deleted. |
-| **Deleted** | **Deleted** | **Skip** | Aspect was deleted on both sides. Clean up local state. |
-| **Created (New)** | **Exists Remotely** | **Conflict** | Conflict! Local aspect created but already exists on remote. |
-| **Created (New)** | **Does Not Exist** | **Safe to Create** | Safe to push/create on remote. Base checksum is recorded. |
+### Push Operation Choices
+* **Manual Resolution**: Back up local modifications, run a force pull (`kcmd pull --force`) to retrieve remote updates, manually merge and apply local changes, and push again.
+* **Force Update**: Run a force push (`kcmd push --force`) to overwrite the remote Catalog state with the local workspace state.
+
+The synchronization behaviors and conflict resolutions are split below into operations impacting pull and push workflows.
+
+### 1. Pull Conflict Resolution Matrix
+
+During a `pull` operation, the main objective is to bring remote changes into the local workspace. To protect unpushed work, the standard `pull` command implements a strict "dirty guard" check on the entire workspace first.
+
+| Local Aspect State | Remote Aspect State | Standard Pull (`kcmd pull`) | Force Pull (`kcmd pull --force`) | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| **Unchanged** | **Unchanged** | **Skip** | **Skip** | No changes on either side. |
+| **Unchanged** | **Modified** | **Safe to Pull** | **Safe to Pull** | Remote modifications are safely written to the local workspace. |
+| **Unchanged** | **Deleted** | **Safe to Delete Locally** | **Safe to Delete Locally** | Remote deletion is propagated locally; the local aspect file is deleted. |
+| **Does Not Exist** | **Exists Remotely** | **Safe to Pull** | **Safe to Pull** | The remote aspect is pulled down and created in the local workspace. |
+| **Modified** / **Created** / **Deleted** | **Any State** | **Abort (Dirty Workspace)** | **Overwritten by Remote** | Local changes exist in the workspace. Standard pull aborts immediately to prevent overwriting unpushed local work. Force pull discards local changes and overwrites them with the remote state. |
+
+### 2. Push Conflict Resolution Matrix
+
+During a `push` operation, local modifications are sent to the remote catalog. A standard `push` will abort if any conflict is detected (i.e., if the remote state has changed since the last synchronization).
+
+| Local Aspect State | Remote Aspect State | Standard Push (`kcmd push`) | Force Push (`kcmd push --force`) | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| **Unchanged** | **Unchanged** | **Skip** | **Skip** | No changes on either side. |
+| **Unchanged** | **Modified** | **Skip** | **Skip** | No local changes to push. Remote changes remain until the next pull. |
+| **Modified** | **Unchanged** | **Safe to Push** | **Safe to Push** | Pushes local modifications to the remote catalog. Base checksum is updated. |
+| **Modified** | **Modified** | **Conflict (Abort)** | **Force Overwrite** | Both copies were modified. Standard push aborts. Force push overwrites the remote aspect. |
+| **Modified** | **Deleted (Entry Deleted)** | **Conflict (Abort)** | **Force Create/Overwrite** | The remote entry itself was deleted. Force push recreates the entry and aspect on the remote. |
+| **Modified** | **Deleted (Aspect Deleted)** | **Conflict (Abort)** | **Force Create/Overwrite** | The remote aspect was deleted. Force push recreates/updates the aspect on the remote. |
+| **Deleted** | **Unchanged** | **Safe to Delete Remotely** | **Safe to Delete Remotely** | Pushes the aspect deletion to the remote catalog. Base state is cleaned up. |
+| **Deleted** | **Modified** | **Conflict (Abort)** | **Force Delete Remotely** | The aspect was modified remotely while being deleted locally. Force push deletes the aspect remotely. |
+| **Deleted** | **Deleted** | **Skip** | **Skip** | The aspect was deleted on both sides. Local state base checksum is cleaned up. |
+| **Created (New)** | **Exists Remotely** | **Conflict (Abort)** | **Force Overwrite** | Local aspect created but already exists on the remote. Force push overwrites remote aspect. |
+| **Created (New)** | **Does Not Exist** | **Safe to Create** | **Safe to Create** | Pushes the new aspect to the remote catalog. Base checksum is recorded. |
 
 ---
 
@@ -72,42 +91,35 @@ graph TD
 
 ---
 
-## The State Database (`.catalog_state.json`)
+## The State Database (`catalog-state.json`)
 
 A flat JSON database maps each tracked entry and its corresponding aspects to their last synchronized state.
 
 ### Checksum Scope & Modifiability Constraints
 
 Before discussing database layout options, we define the scope and constraints of the tracked metadata:
-* **Aspect-Level Only**: This tool does not support entry-level metadata modifications (e.g., `displayName`, `description` defined directly on the Entry resource). Therefore, no entry-level checksums are calculated or tracked.
+* **Entry-Level & Aspect-Level Checksums**: The tool tracks both a unified **Entry-Level Checksum** and individual **Aspect-Level Checksums**. This is critical for user-managed or custom entries where the entry itself can be created or deleted, and for uningested entry groups where entry-level metadata (such as `entrySource`, `displayName`, or `description`) is modifiable.
 * **Aspect `checksum`**: These checksums are calculated for the key-value properties inside each individual aspect type (e.g., `dataplex-types.global.overview`, `dataplex-types.global.descriptions`).
-* **Static Modifiability Enforcement**: The `catalog.yaml` validation layer statically ensures that only modifiable aspects (e.g., non-required aspects for ingested entries, or any aspect for custom/user-managed entries) are configured to be synchronized and published.
+* **Static Modifiability Enforcement**: The `catalog.yaml` validation layer statically ensures that only modifiable aspects and entry properties are configured to be synchronized and published.
 
-### Proposed Design: Flat State File (`.catalog_state.json`)
+### Proposed Design: Flat State File (`catalog-state.json`)
 
-A single JSON file at the root of the workspace containing a map of all tracked files, their base aspects, and their checksums.
+A single JSON file at the root of the workspace containing a map of all tracked entries, their unified entry-level base checksum, their last sync timestamps, and individual base aspect checksums.
 
 > [!NOTE]
 > **Why JSON over YAML for system state?**
-> Since `.catalog_state.json` is entirely system-managed and gitignored, human readability is secondary to execution performance and parsing reliability. Node.js has native, highly-optimized C++ support for parsing and serializing JSON (`JSON.parse` / `JSON.stringify`). Utilizing YAML would require external JavaScript-based parser libraries, which introduce significant CPU and execution latency during CLI startup as the catalog scales.
+> Since `catalog-state.json` is entirely system-managed and gitignored, human readability is secondary to execution performance and parsing reliability. Node.js has native, highly-optimized C++ support for parsing and serializing JSON (`JSON.parse` / `JSON.stringify`). Utilizing YAML would require external JavaScript-based parser libraries, which introduce significant CPU and execution latency during CLI startup as the catalog scales.
 
 ```json
 {
   "version": "1",
   "entries": {
     "ecommerce-prod.ecommerce-dataset/orders": {
+      "entryChecksum": "e93fa854cd329fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b857",
       "lastSyncTime": "2026-05-26T06:18:49Z",
       "aspects": {
-        "dataplex-types.global.overview": {
-          "checksum": "a8f5c1e39834c2219efbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-          "format": "MARKDOWN",
-          "file": "orders.overview.md"
-        },
-        "dataplex-types.global.descriptions": {
-          "checksum": "5b30c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b856",
-          "format": "YAML",
-          "file": "orders.yaml"
-        }
+        "dataplex-types.global.overview": "a8f5c1e39834c2219efbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "dataplex-types.global.descriptions": "5b30c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b856"
       }
     }
   }
@@ -116,10 +128,12 @@ A single JSON file at the root of the workspace containing a map of all tracked 
 
 * **Pros:**
   * **High Performance:** Native V8 JSON parsing (`JSON.parse`/`JSON.stringify`) is extremely fast and incurs zero external parsing dependency overhead.
+  * **Startup Optimization / Mapping:** The state file maps entry IDs directly to their base hashes and structures. This acts as an in-memory catalog index, allowing the startup phase to construct a map of the local catalog's content without recursively enumerating, scanning, and parsing every file in the workspace directory.
+  * **Derivable File Paths:** File locations and formats are derived from entry names based on the `CatalogSource` and `CatalogLayout` implementations, allowing the state file to omit `format` and `file` fields for a highly compact representation.
   * **Zero Clutter:** Keeps the user's active catalog folders completely clean of system-managed state files.
-  * **Easy Git Ignoring:** The single `.catalog_state.json` file is easily ignored globally via `.gitignore`.
 * **Cons:**
-  * **Parallelization Bottleneck (Lock Contention):** Operating on a single centralized file requires strict concurrent process locking to prevent state corruption. During large/bulk export or import operations, this single-file lock becomes a contention point that limits parallel execution capabilities across processes.
+  * **State Desynchronization & Atomicity Risk:** Storing authorable metadata in the `catalog/` directory and its base sync state in `catalog-state.json` separates the data from its tracking ledger. Because writing to two separate files cannot be executed as a single atomic OS transaction, any process interruption (such as a crash, manual cancel, or disk-full error) in between operations can leave the workspace in an inconsistent state. This requires the CLI tool to implement strict write-ordering sequences or write-ahead journaling to detect and self-heal inconsistencies.
+  * **Global Write Amplification:** Every single metadata modification, creation, or deletion—even to a single aspect or description—requires the CLI to read, deserialize, modify, reserialize, and rewrite the *entire* centralized `catalog-state.json` database. At a large catalog scale, this introduces massive I/O overhead for minor incremental changes and creates a global execution bottleneck if multiple automated runs attempt concurrent updates.
 
 ---
 
@@ -172,7 +186,7 @@ path/to/root/
 
 ### Concurrent Process Locking
 
-To prevent state database corruption when multiple instances of the `kcmd` CLI or automated runners (such as CI/CD pipelines or local agent tools) run concurrently, the tool implements a lightweight, cross-platform file lock on `.catalog_state.json` during read/write sequences. If the state file is locked, concurrent operations will fail-fast with a concurrency conflict error.
+To prevent state database corruption when multiple instances of the `kcmd` CLI or automated runners (such as CI/CD pipelines or local agent tools) run concurrently, the tool implements a lightweight, cross-platform file lock on `catalog-state.json` during read/write sequences. If the state file is locked, concurrent operations will fail-fast with a concurrency conflict error.
 
 > [!IMPORTANT]
 > **Aspect Creations & Type Registration Constraints**
@@ -191,14 +205,21 @@ sequenceDiagram
     autonumber
     participant Tool as CLI Sync Tool
     participant Disk as Local Workspace
-    participant State as State File (.catalog_state.json)
+    participant State as State File (catalog-state.json)
     participant Remote as Knowledge Catalog
 
     Note over Tool: User executes "pull"
     Tool->>Disk: Read Local Workspace Files
     Tool->>State: Load Base Checksums
-    Tool->>Tool: Calculate Current Local Checksums
-    Tool->>Tool: Compare with Base Checksums
+    Tool->>Tool: Calculate Current Local Entry Checksums
+    
+    rect rgb(45, 55, 72)
+    Note over Tool: Optimization Layer: Check Entry Checksum First
+    Tool->>Tool: Compare Entry Checksum with Base
+    alt Entry Checksum Changed
+        Tool->>Tool: Calculate and Compare Granular Aspect Checksums
+    end
+    end
     
     alt Local Modifications Detected & No --force Flag
         Note over Tool: DIRTY WORKSPACE! Abort pull.
@@ -209,16 +230,17 @@ sequenceDiagram
 
         loop For Each Entry
             Tool->>Tool: Normalize (Semantic & whitespace normalization)
-            Tool->>Tool: Calculate Aspect Checksums
-            Tool->>Disk: Write Sidecar Aspect Files (YAML/Markdown)
-            Tool->>State: Write Aspect Base Checksums
+            Tool->>Tool: Calculate Entry & Aspect Checksums
+            Tool->>Disk: Write Sidecar Aspect/Core Files (YAML/Markdown)
+            Tool->>State: Write Entry & Aspect Base Checksums
         end
     end
 ```
 
 1. **Workspace Dirty Check (Pull-Safety Guard - Strict All-or-Nothing):**
-   - Scan all local aspect files and compute their current local checksums.
-   - Compare with the `Base Checksum` in the state file.
+   - Compute current local entry-level checksums for all catalog entries.
+   - Compare each computed checksum against the `entryChecksum` in the state file.
+   - For any entry where the entry-level checksum differs, perform granular checks on its individual local aspects and core fields to confirm actual modifications.
    - If *any* local change is detected anywhere in the workspace and the `--force` flag is absent, the entire pull operation aborts immediately. This strict all-or-nothing constraint protects unpushed work across the entire workspace.
    
    > [!NOTE]
@@ -238,7 +260,7 @@ sequenceDiagram
 
 4. **Save State:**
    - Save the normalized aspect content to disk (either in aspect YAML or sidecar `.md` files).
-   - Update the computed aspect checksums as the new **Base Checksums** in `.catalog_state.json`.
+   - Update the computed entry-level and aspect checksums as the new **Base Checksums** in `catalog-state.json`.
 
 ---
 
@@ -249,13 +271,21 @@ sequenceDiagram
     autonumber
     participant Tool as CLI Sync Tool
     participant Disk as Local Workspace
-    participant State as State File (.catalog_state.json)
+    participant State as State File (catalog-state.json)
     participant Remote as Knowledge Catalog
 
     Note over Tool: User executes "push"
     Tool->>Disk: Read Local Workspace Files
     Tool->>State: Load Base Checksums
-    Tool->>Tool: Identify Locally Modified/Created/Deleted Aspects
+    
+    rect rgb(45, 55, 72)
+    Note over Tool: Optimization Layer: Check Entry Checksum First
+    Tool->>Tool: Calculate Current Local Entry Checksums
+    Tool->>Tool: Compare with Base Entry Checksums
+    alt Entry Checksum Changed
+        Tool->>Tool: Identify Granular Locally Modified/Created/Deleted Aspects & Core Fields
+    end
+    end
     
     Note over Tool: Fetch Remote State: Individual Lookup
     loop For Each Entry with Modifications
@@ -264,28 +294,33 @@ sequenceDiagram
     end
 
     loop For Each Modified Entry
-        loop For Each Modified/Created/Deleted Aspect
-            Tool->>Tool: Calculate Remote Checksum
-            alt Remote Checksum != Base Checksum
+        rect rgb(45, 55, 72)
+        Note over Tool: Remote Checksum Comparison
+        Tool->>Tool: Calculate Remote Entry Checksum
+        alt Remote Entry Checksum != Base Entry Checksum
+            Tool->>Tool: Perform granular aspect comparison
+            alt Granular Remote Checksum != Base Checksum
                 Note over Tool: CONFLICT! Remote aspect has changed.
                 Tool->>Tool: Fail-fast and abort push
             end
         end
+        end
 
         alt No Conflicts Detected
-            Tool->>Remote: Push updates (ModifyEntry)
+            Tool->>Remote: Push updates (ModifyEntry/CreateEntry/DeleteEntry)
             Remote-->>Tool: Acknowledge Success
-            Tool->>State: Update Base Checksums in .catalog_state.json
+            Tool->>State: Update Base Entry & Aspect Checksums in catalog-state.json
         end
     end
 ```
 
 1. **Detect Local Changes:**
-   - Load local files, apply **Semantic Normalization**, and calculate the `Current Local Checksum`.
-   - Identify:
-     - **Modified Aspects**: Checksum differs from base checksum.
-     - **Created Aspects**: Aspect exists locally but has no base checksum record.
-     - **Deleted Aspects**: Base checksum record exists but local aspect file has been deleted.
+   - Load local files, apply **Semantic Normalization**, and calculate the current local entry-level checksums.
+   - Compare each entry-level checksum against its base in the state file.
+   - For entries with different entry-level checksums, drill down to identify:
+     - **Modified Aspects / Core Metadata**: Checksum differs from base checksum.
+     - **Created Aspects / Core Metadata**: Exists locally but has no base checksum record.
+     - **Deleted Aspects / Core Metadata**: Base checksum record exists but local representation has been deleted.
 
 2. **Lookup-Based Fetching Strategy with `CUSTOM` View:**
    - To verify remote checksums, the tool fetches remote entry states individually using `lookupEntry`.
@@ -293,11 +328,11 @@ sequenceDiagram
    - **Concurrency Control:** Calls are executed using a throttled concurrent request pool to prevent socket exhaustion and service-side rate limiting (HTTP 429).
 
 3. **Verify & Push (Strict All-or-Nothing):**
-   - The push operation implements a strict **all-or-nothing** integrity guard. If *any* aspect on *any* entry fails the conflict verification (`Remote Checksum != Base Checksum`), the entire push operation is aborted immediately. No partial updates are committed.
+   - The push operation implements a strict **all-or-nothing** integrity guard. If *any* modifiable property or aspect on *any* entry fails the conflict verification (where the Remote Checksum has changed since the last sync and differs from the Base Checksum), the entire push operation is aborted immediately. No partial updates are committed.
    - If a push is aborted due to a conflict, the developer has two options:
      1. **Force Overwrite**: Push with the `--force` flag to explicitly overwrite the remote catalog with the local state.
      2. **Manual Resolution**: The developer can backup their local modified files, pull the remote changes using `kcmd pull --force` to align the local state with the remote catalog, and then manually merge their backed-up changes before pushing again.
-   - If no conflicts are found, the tool pushes the configured and modifiable aspects using `modifyEntry` and updates the base checksums in `.catalog_state.json` to match.
+   - If no conflicts are found, the tool pushes the configured and modifiable aspects/metadata using `modifyEntry` (or `createEntry`/`deleteEntry`) and updates the base entry and aspect checksums in `catalog-state.json` to match.
 
 
 
@@ -309,41 +344,42 @@ During a dry run, the exact same calculation, lookup, and validation logic is ex
 
 ### 1. `kcmd pull --dry-run` Workflow
 1. **Workspace Validation**: Runs the pull-safety "dirty guard" check. If the workspace contains local modifications, the dry run immediately aborts and reports a dirty workspace error.
-2. **Fetch and Normalize**: Connects to the GCP Dataplex service and fetches the remote entry aspects matching the configured scope.
-3. **Calculate and Compare**: Performs semantic normalization on the fetched aspects and compares their computed checksums to the base checksums in `.catalog_state.json` and the current local files.
+2. **Fetch and Normalize**: Connects to the GCP Dataplex service and fetches the remote entry state and aspects matching the configured scope.
+3. **Calculate and Compare**: Performs semantic normalization on the fetched metadata and compares computed entry-level and aspect checksums to the base checksums in `catalog-state.json` and the current local files.
 4. **Preview Execution**: Prints a structured report of all pending changes to be synced locally:
-   * **Added Aspects**: Aspects present remotely but not locally.
-   * **Modified Aspects**: Aspects whose remote content differs from the local copy.
-   * **Deleted Aspects**: Aspects deleted remotely but still present locally.
-5. **Execution Safeguard**: **No write operations** are performed on the local workspace files or the `.catalog_state.json` file.
+   * **Added Aspects/Entries**: Aspects or entries present remotely but not locally.
+   * **Modified Aspects/Entries**: Aspects or entry metadata whose remote content differs from the local copy.
+   * **Deleted Aspects/Entries**: Aspects or entries deleted remotely but still present locally.
+5. **Execution Safeguard**: **No write operations** are performed on the local workspace files or the `catalog-state.json` file.
 
 ### 2. `kcmd push --dry-run` Workflow
-1. **Local Change Detection**: Scans local files, applies semantic normalization, and isolates locally modified, created, or deleted aspects.
-2. **Conflict Check**: Fetches the remote state of modified entries and checks if `Remote Checksum != Base Checksum` for any modified aspects. 
+1. **Local Change Detection**: Scans local files, applies semantic normalization, compares entry-level checksums, and isolates locally modified, created, or deleted entries and aspects.
+2. **Conflict Check**: Fetches the remote state of modified entries and checks if `Remote Checksum != Base Checksum` for any modified aspects or core metadata. 
 3. **Conflict and Integrity Report**: If conflicts are detected, they are printed clearly and the preview reports that the push *would fail* due to concurrency conflicts. If no conflicts are found, the engine reports that the push is safe to execute.
 4. **Preview Mutations**: Logs a detailed sequence of the planned API modifications:
+   * **Entry Mutations**: Entry creations, deletions, or metadata modifications.
    * **Aspect Modifications**: Aspects to be updated.
    * **Aspect Creations**: New aspects to be added.
    * **Aspect Deletions**: Aspects to be removed.
-5. **Execution Safeguard**: **No write operations** are performed on the remote Dataplex service (`modifyEntry` is not called) and `.catalog_state.json` remains unchanged.
+5. **Execution Safeguard**: **No write operations** are performed on the remote Dataplex service (`modifyEntry`/`createEntry`/`deleteEntry` is not called) and `catalog-state.json` remains unchanged.
 
 ---
 
 ## Future Scope
 
-### 1. State File Resiliency & Atomic Writes
-To prevent state file corruption when writing updates to `.catalog_state.json` (e.g., if the CLI process is interrupted, crashes, or the disk runs out of space):
-* **Atomic Write Mechanism**: Future versions of the CLI should implement atomic file updates. Instead of writing directly to the target `.catalog_state.json` file, the tool will write the updated state to a temporary file (e.g., `.catalog_state.json.tmp`) in the same directory, and then use an atomic rename operation (`fs.rename` or equivalent OS-level rename) to replace the original file.
-* **Automatic Backup**: Maintain a `.catalog_state.json.bak` copy before executing any state transitions to facilitate self-healing and recovery options for corrupted states.
-
-### 2. State Scalability & Parallelization
-To resolve the lock contention bottleneck of a single centralized state file during large-scale or bulk import/export operations:
-* **Transactional State Indexer**: Explore transitioning the state storage to a transactional database. Utilizing a lightweight embedded engine like SQLite is one potential option to enable row-level concurrency control rather than file-level locking; however, the final choice of approach or storage engine should be thoroughly evaluated and decided based on performance and architectural requirements at the time of implementation.
-
-### 3. Fine-Grained Change Isolation & Automatic Merging
+### 1. Fine-Grained Change Isolation & Automatic Merging
 To optimize synchronization workflows and prevent unnecessary blocks when editing non-overlapping metadata:
 * **Publish-Scoped Dirty Checks**: If the snapshot configuration pulls aspects A, B, and C, but the publishing configuration only pushes aspects A and B, local modifications on aspect C should be isolated. The push operation for aspects A and B should proceed successfully without being blocked by the unpushed changes in aspect C.
 * **Three-Way Merging of Aspects**: Implement intelligent, non-overlapping aspect-level merging during pull/push conflicts so that independent updates to distinct aspects in the same entry can merge automatically without requiring human intervention.
 
+
+### 2. State File Resiliency & Atomic Writes
+To prevent state file corruption when writing updates to `catalog-state.json` (e.g., if the CLI process is interrupted, crashes, or the disk runs out of space):
+* **Atomic Write Mechanism**: Future versions of the CLI should implement atomic file updates. Instead of writing directly to the target `catalog-state.json` file, the tool will write the updated state to a temporary file (e.g., `catalog-state.json.tmp`) in the same directory, and then use an atomic rename operation (`fs.rename` or equivalent OS-level rename) to replace the original file.
+* **Automatic Backup**: Maintain a `catalog-state.json.bak` copy before executing any state transitions to facilitate self-healing and recovery options for corrupted states.
+
+### 3. State Scalability & Parallelization
+To resolve the lock contention bottleneck of a single centralized state file during large-scale or bulk import/export operations:
+* **Transactional State Indexer**: Explore transitioning the state storage to a transactional database. Utilizing a lightweight embedded engine like SQLite is one potential option to enable row-level concurrency control rather than file-level locking; however, the final choice of approach or storage engine should be thoroughly evaluated and decided based on performance and architectural requirements at the time of implementation.
 
 
