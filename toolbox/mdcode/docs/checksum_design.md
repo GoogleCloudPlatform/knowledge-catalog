@@ -378,8 +378,6 @@ To prevent state file corruption when writing updates to `catalog-state.json` (e
 * **Atomic Write Mechanism**: Future versions of the CLI should implement atomic file updates. Instead of writing directly to the target `catalog-state.json` file, the tool will write the updated state to a temporary file (e.g., `catalog-state.json.tmp`) in the same directory, and then use an atomic rename operation (`fs.rename` or equivalent OS-level rename) to replace the original file.
 * **Automatic Backup**: Maintain a `catalog-state.json.bak` copy before executing any state transitions to facilitate self-healing and recovery options for corrupted states.
 
-### 3. State Scalability & Parallelization
-To resolve the lock contention bottleneck of a single centralized state file during large-scale or bulk import/export operations:
-* **Transactional State Indexer**: Explore transitioning the state storage to a transactional database. Utilizing a lightweight embedded engine like SQLite is one potential option to enable row-level concurrency control rather than file-level locking; however, the final choice of approach or storage engine should be thoroughly evaluated and decided based on performance and architectural requirements at the time of implementation.
+
 
 
