@@ -213,12 +213,10 @@ sequenceDiagram
     Tool->>State: Load Base Checksums
     Tool->>Tool: Calculate Current Local Entry Checksums
     
-    rect rgb(45, 55, 72)
     Note over Tool: Optimization Layer: Check Entry Checksum First
     Tool->>Tool: Compare Entry Checksum with Base
     alt Entry Checksum Changed
         Tool->>Tool: Calculate and Compare Granular Aspect Checksums
-    end
     end
     
     alt Local Modifications Detected & No --force Flag
@@ -278,13 +276,11 @@ sequenceDiagram
     Tool->>Disk: Read Local Workspace Files
     Tool->>State: Load Base Checksums
     
-    rect rgb(45, 55, 72)
     Note over Tool: Optimization Layer: Check Entry Checksum First
     Tool->>Tool: Calculate Current Local Entry Checksums
     Tool->>Tool: Compare with Base Entry Checksums
     alt Entry Checksum Changed
         Tool->>Tool: Identify Granular Locally Modified/Created/Deleted Aspects & Core Fields
-    end
     end
     
     Note over Tool: Fetch Remote State: Individual Lookup
@@ -294,7 +290,6 @@ sequenceDiagram
     end
 
     loop For Each Modified Entry
-        rect rgb(45, 55, 72)
         Note over Tool: Remote Checksum Comparison
         Tool->>Tool: Calculate Remote Entry Checksum
         alt Remote Entry Checksum != Base Entry Checksum
@@ -303,7 +298,6 @@ sequenceDiagram
                 Note over Tool: CONFLICT! Remote aspect has changed.
                 Tool->>Tool: Fail-fast and abort push
             end
-        end
         end
 
         alt No Conflicts Detected
