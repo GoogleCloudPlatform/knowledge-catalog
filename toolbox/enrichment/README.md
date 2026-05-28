@@ -110,7 +110,8 @@ Use the following sources:
 
 * Fileset source
 EOF
-
+```
+```bash
 mkdir tools
 cat <<EOF > tools/mcp.json
 {
@@ -122,9 +123,11 @@ cat <<EOF > tools/mcp.json
   }
 }
 EOF
+```
 
-mkdir -p skills/fileset-source
-cat <<EOF > skills/fileset-source/SKILL.md
+```bash
+mkdir -p tools/skills/fileset-source
+cat <<EOF > tools/skills/fileset-source/SKILL.md
 ---
 name: fileset-source
 description: >
@@ -151,10 +154,12 @@ with individual tokens) to find relevant files, and then read the files to find 
 EOF
 ```
 
+**Add Docs**  
+Copy over the individual markdown files from [here](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/1e97103cdbf7e6425113a73304029ddb4f1f3a6b/samples/enrichment/sample/docs) into the `fileset/` directory
 
 **Enrich the metadata**
 ```bash
-../dist/kcagent enrich catalog--path . --tools-path tools --prompt-path prompt.md
+../dist/kcagent enrich --catalog-path . --tools-path tools --prompt-path prompt.md
 ```
 
 **Clean up**
