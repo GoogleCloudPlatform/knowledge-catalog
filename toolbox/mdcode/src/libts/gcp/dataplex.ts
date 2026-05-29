@@ -49,6 +49,24 @@ export interface Entry {
   aspects?: Record<string, Aspect>;
 }
 
+export interface EntryReference {
+  name: string;
+  type: string;
+  path?: string;
+}
+
+export interface EntryLink {
+  name: string;
+  entryLinkType: string;
+  entryReferences: EntryReference[];
+  aspects?: Record<string, Aspect>;
+}
+
+export interface LookupEntryLinksResponse {
+  entryLinks: EntryLink[];
+  nextPageToken?: string;
+}
+
 interface EntryList {
   entries: Entry[];
   nextPageToken?: string;
@@ -171,6 +189,80 @@ export class CatalogClient extends api.ApiClient {
       for (const entry of entries) {
         await _fixEntry(entry, this.context);
         yield entry;
+      }
+
+      pageToken = res.result?.nextPageToken;
+    } while (pageToken);
+  }
+
+  async lookupEntryLinks(
+    project: string,
+    location: string,
+    entryName: string,
+    entryLinkTypes?: string[]
+  ): Promise<api.ApiResult<LookupEntryLinksResponse>> {
+    const container = `${catalogContainer(project, location)}:lookupEntryLinks`;
+    const params: Record<string, any> = {
+      entry: entryName,
+    };
+    if (entryLinkTypes && entryLinkTypes.length) {
+      params.entryLinkTypes = entryLinkTypes.join(',');
+    }
+    return await this._get<LookupEntryLinksResponse>(container, params);
+  }
+
+  async createEntryLink(
+    project: string,
+    location: string,
+    entryGroup: string,
+    entryLink: EntryLink
+  ): Promise<api.ApiResult<EntryLink>> {
+    const parent = catalogContainer(project, location, entryGroup);
+    const container = `${parent}/entryLinks`;
+    return await this._post<EntryLink>(container, entryLink);
+  }
+
+  async deleteEntryLink(
+    project: string,
+    location: string,
+    entryGroup: string,
+    entryLinkName: string
+  ): Promise<api.ApiResult<any>> {
+    const parent = catalogContainer(project, location, entryGroup);
+    const name = `${parent}/entryLinks/${entryLinkName}`;
+    return await this._delete<any>(name);
+  }
+
+  async *listEntryLinks(
+    project: string,
+    location: string,
+    entryGroup: string,
+    filter?: string
+  ): AsyncGenerator<EntryLink, void, unknown> {
+    const parent = catalogContainer(project, location, entryGroup);
+    const resourceName = `${parent}/entryLinks`;
+
+    let pageToken: string | undefined = undefined;
+    do {
+      const params: Record<string, string | number> = { pageSize: 1000 };
+      if (filter) {
+        params.filter = filter;
+      }
+      if (pageToken) {
+        params.pageToken = pageToken;
+      }
+
+      const res = await this._get<{ entryLinks: EntryLink[]; nextPageToken?: string }>(
+        resourceName,
+        params
+      );
+      if (res.status !== 200) {
+        throw new Error(`Failed to list entry links: ${res.message || res.status}`);
+      }
+
+      const links = res.result?.entryLinks || [];
+      for (const link of links) {
+        yield link;
       }
 
       pageToken = res.result?.nextPageToken;

@@ -227,6 +227,43 @@ function main() {
     }
   );
 
+  spyOn(gcp.CatalogClient.prototype, 'lookupEntryLinks').mockImplementation(
+    async function(project: string, location: string, entryName: string, entryLinkTypes?: string[]) {
+      if (currentCatalogMock) {
+        return await currentCatalogMock.lookupEntryLinks(project, location, entryName, entryLinkTypes);
+      }
+      return { status: 200, result: { entryLinks: [] } };
+    }
+  );
+
+  spyOn(gcp.CatalogClient.prototype, 'createEntryLink').mockImplementation(
+    async function(project: string, location: string, entryGroup: string, entryLink: gcp.EntryLink) {
+      if (currentCatalogMock) {
+        return await currentCatalogMock.createEntryLink(project, location, entryGroup, entryLink);
+      }
+      return { status: 404, message: 'Not found' };
+    }
+  );
+
+  spyOn(gcp.CatalogClient.prototype, 'deleteEntryLink').mockImplementation(
+    async function(project: string, location: string, entryGroup: string, entryLinkName: string) {
+      if (currentCatalogMock) {
+        return await currentCatalogMock.deleteEntryLink(project, location, entryGroup, entryLinkName);
+      }
+      return { status: 404, message: 'Not found' };
+    }
+  );
+
+  spyOn(gcp.CatalogClient.prototype, 'listEntryLinks').mockImplementation(
+    async function* (project: string, location: string, entryGroup: string, filter?: string) {
+      if (currentCatalogMock) {
+        for await (const link of currentCatalogMock.listEntryLinks(project, location, entryGroup, filter)) {
+          yield link;
+        }
+      }
+    }
+  );
+
   spyOn(gcp.CatalogClient.prototype, 'updateEntry').mockImplementation(
     async function(entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[]) {
       if (currentCatalogMock) {
