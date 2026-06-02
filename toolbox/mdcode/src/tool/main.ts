@@ -24,10 +24,11 @@ cli.command('init', 'Initialize a new catalog snapshot')
 
 
 cli.command('pull', 'Pull catalog entries')
-   .action(async () => {
+   .option('--dry-run', 'Review changes without writing to the local layout')
+   .action(async (options) => {
       let exitCode = 1;
       try {
-        exitCode = await commands.pull();
+        exitCode = await commands.pull(options);
       }
       catch (err: any) {
         console.error('Error:', err.message || err);
@@ -40,6 +41,7 @@ cli.command('pull', 'Pull catalog entries')
 cli.command('push', 'Push catalog entries')
    .option('--force', 'Force push changes')
    .option('--validate-only', 'Only validate changes without applying')
+   .option('--dry-run', 'Review changes without writing to the cloud')
    .action(async (options) => {
       let exitCode = 1;
       try {

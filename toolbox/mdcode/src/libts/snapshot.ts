@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import * as gcp from './gcp/context';
 import * as dataplex from './gcp/dataplex';
 import * as md from './metadata';
-import { CatalogManifest } from './manifest';
+import { CatalogManifest, resolveEntryLinkType, findAliasForType } from './manifest';
 import { CatalogLayout, createLayout } from './layout';
 
 
@@ -175,9 +175,12 @@ export class CatalogSnapshot {
   // Stores a Dataplex entry into the locally managed catalog snapshot. This will internally map
   // The service representation into the local metadata representation.
   // This is only meant to be used within the syncing process (as part of pull operations).
-  async _storeEntry(entry: dataplex.Entry): Promise<void> {
+  async _storeEntry(
+    entry: dataplex.Entry,
+    entryLinks?: dataplex.EntryLink[]
+  ): Promise<void> {
     const localName = this.manifest.source.localName(entry);
-    await this._layout.saveEntry(localName, toLocalEntry(entry, localName));
+    await this._layout.saveEntry(localName, toLocalEntry(entry, localName, entryLinks, this.manifest));
   }
 
   // Fetches a Dataplex entry from its local metadata representation.
@@ -199,14 +202,93 @@ export class CatalogSnapshot {
       this._aspectTypes
     );
   }
+
+  async _fetchEntryLinks(name: string): Promise<dataplex.EntryLink[]> {
+    const entry = await this._layout.loadEntry(name);
+    const serviceName = this.manifest.source.serviceName(name);
+    return toServiceEntryLinks(entry, serviceName, this.manifest);
+  }
 }
 
 // Converts a Dataplex entry into the local metadata representation.
-function toLocalEntry(entry: dataplex.Entry, localName: string): md.Entry {
+function toLocalEntry(
+  entry: dataplex.Entry,
+  localName: string,
+  entryLinks?: dataplex.EntryLink[],
+  manifest?: CatalogManifest
+): md.Entry {
   const aspects: Record<string, md.Aspect> = {};
   if (entry.aspects) {
     for (const key in entry.aspects) {
       aspects[key] = entry.aspects[key].data ?? {};
+    }
+  }
+
+  const links: Record<string, md.EntryLink[]> = {};
+  if (entryLinks) {
+    for (const link of entryLinks) {
+      const sourceRef = link.entryReferences.find(
+        ref =>
+          ref.type === 'SOURCE' ||
+          !ref.type ||
+          ref.type === 'UNSPECIFIED' ||
+          ref.name === entry.name
+      ) || link.entryReferences[0];
+      
+      const targetRef = link.entryReferences.find(
+        ref =>
+          (ref !== sourceRef) &&
+          (ref.type === 'TARGET' ||
+           !ref.type ||
+           ref.type === 'UNSPECIFIED' ||
+           ref.name !== entry.name)
+      ) || link.entryReferences[1];
+
+      if (sourceRef && targetRef) {
+        let targetLocalName = targetRef.name;
+        if (manifest) {
+          const prefix = manifest.source.serviceName('');
+          if (targetLocalName.startsWith(prefix)) {
+            targetLocalName = targetLocalName.substring(prefix.length);
+          }
+        }
+
+        const linkTypeRef = findAliasForType(dataplex._nameToTypeRef(link.entryLinkType), manifest);
+
+        const localLink: md.EntryLink = {
+          target: targetLocalName,
+          aspects: link.aspects
+            ? Object.fromEntries(
+                Object.entries(link.aspects).map(([k, v]) => [k, v.data])
+              )
+            : undefined,
+        };
+
+        if (sourceRef.path) {
+          const pathParts = sourceRef.path.split('.');
+          if (pathParts[0] === 'schema' && pathParts[1]) {
+            const schemaAspect = aspects['dataplex-types.global.schema'];
+            if (schemaAspect && Array.isArray(schemaAspect.fields)) {
+              const field = schemaAspect.fields.find((f: any) => f.name === pathParts[1]);
+              if (field) {
+                if (!field.links) {
+                  field.links = {};
+                }
+                if (!field.links[linkTypeRef]) {
+                  field.links[linkTypeRef] = [];
+                }
+                field.links[linkTypeRef].push(localLink);
+                continue;
+              }
+            }
+          }
+        }
+
+        if (!links[linkTypeRef]) {
+          links[linkTypeRef] = [];
+        }
+        links[linkTypeRef].push(localLink);
+      }
     }
   }
 
@@ -225,7 +307,8 @@ function toLocalEntry(entry: dataplex.Entry, localName: string): md.Entry {
         createTime: entrySource.createTime ?? undefined,
         updateTime: entrySource.updateTime ?? undefined
       },
-      aspects: aspects ?? undefined
+      aspects: aspects ?? undefined,
+      links: Object.keys(links).length ? links : undefined
   };
 }
 
@@ -286,4 +369,103 @@ function toServiceEntry(entry: md.Entry,
     },
     aspects: aspects
   };
+}
+
+function toServiceEntryLinks(
+  entry: md.Entry,
+  serviceName: string,
+  manifest: CatalogManifest
+): dataplex.EntryLink[] {
+  const links: dataplex.EntryLink[] = [];
+
+  if (entry.links) {
+    for (const [linkTypeRef, entryLinks] of Object.entries(entry.links)) {
+      const resolvedLinkType = resolveEntryLinkType(linkTypeRef, manifest);
+      if (manifest.publishingConfig) {
+        const resolvedPublishingLinks = manifest.publishingConfig.entryLinks?.map(l => resolveEntryLinkType(l, manifest)) ?? [];
+        if (!resolvedPublishingLinks.includes(resolvedLinkType)) {
+          continue;
+        }
+      }
+
+      let fullLinkTypeRef = resolvedLinkType;
+      if (fullLinkTypeRef.split('.').length === 1) {
+        fullLinkTypeRef = `dataplex-types.global.${fullLinkTypeRef}`;
+      }
+      fullLinkTypeRef = fullLinkTypeRef.replace(/^dataplex-types\./, '655216118709.');
+
+      const entryLinkType = dataplex._typeRefToName(fullLinkTypeRef, 'entryLink');
+      for (const link of entryLinks) {
+        const targetName = link.target.startsWith('projects/')
+          ? link.target
+          : manifest.source.serviceName(link.target);
+
+        links.push({
+          name: '',
+          entryLinkType,
+          entryReferences: [
+            { name: serviceName, type: 'SOURCE' },
+            { name: targetName, type: 'TARGET' },
+          ],
+          aspects: link.aspects
+            ? Object.fromEntries(
+                Object.entries(link.aspects).map(([k, v]) => [
+                  dataplex._typeRefToName(k, 'aspect'),
+                  { aspectType: dataplex._typeRefToName(k, 'aspect'), data: v },
+                ])
+              )
+            : undefined,
+        });
+      }
+    }
+  }
+
+  const schemaAspect = entry.aspects?.['dataplex-types.global.schema'];
+  if (schemaAspect && Array.isArray(schemaAspect.fields)) {
+    for (const field of schemaAspect.fields) {
+      if (field.links) {
+        for (const [linkTypeRef, entryLinks] of Object.entries(field.links as Record<string, md.EntryLink[]>)) {
+          const resolvedLinkType = resolveEntryLinkType(linkTypeRef, manifest);
+          if (manifest.publishingConfig) {
+            const resolvedPublishingLinks = manifest.publishingConfig.entryLinks?.map(l => resolveEntryLinkType(l, manifest)) ?? [];
+            if (!resolvedPublishingLinks.includes(resolvedLinkType)) {
+              continue;
+            }
+          }
+
+          let fullLinkTypeRef = resolvedLinkType;
+          if (fullLinkTypeRef.split('.').length === 1) {
+            fullLinkTypeRef = `dataplex-types.global.${fullLinkTypeRef}`;
+          }
+          fullLinkTypeRef = fullLinkTypeRef.replace(/^dataplex-types\./, '655216118709.');
+
+          const entryLinkType = dataplex._typeRefToName(fullLinkTypeRef, 'entryLink');
+          for (const link of entryLinks) {
+            const targetName = link.target.startsWith('projects/')
+              ? link.target
+              : manifest.source.serviceName(link.target);
+
+            links.push({
+              name: '',
+              entryLinkType,
+              entryReferences: [
+                { name: serviceName, type: 'SOURCE', path: `schema.${field.name}` },
+                { name: targetName, type: 'TARGET' },
+              ],
+              aspects: link.aspects
+                ? Object.fromEntries(
+                    Object.entries(link.aspects).map(([k, v]) => [
+                      dataplex._typeRefToName(k, 'aspect'),
+                      { aspectType: dataplex._typeRefToName(k, 'aspect'), data: v },
+                    ])
+                  )
+                : undefined,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  return links;
 }

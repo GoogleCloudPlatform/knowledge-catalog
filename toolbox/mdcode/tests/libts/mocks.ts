@@ -1,4 +1,5 @@
 import * as gcp from '../../src/libts/gcp';
+import { _fixEntry, _fixEntryLink } from '../../src/libts/gcp/dataplex';
 import * as bigquery from '../../src/libts/gcp/bigquery';
 
 // Bypass actual gcloud CLI calls by using the explicit constructor
@@ -143,7 +144,11 @@ export class CatalogClientMock extends gcp.CatalogClient {
       l.entryReferences.some(r => r.name === entryName) &&
       (!entryLinkTypes || entryLinkTypes.includes(l.entryLinkType))
     );
-    return { status: 200, result: { entryLinks: links } };
+    const clonedLinks = JSON.parse(JSON.stringify(links));
+    for (const link of clonedLinks) {
+      await _fixEntryLink(link, this.context);
+    }
+    return { status: 200, result: { entryLinks: clonedLinks } };
   }
 
   async createEntryLink(
@@ -181,7 +186,9 @@ export class CatalogClientMock extends gcp.CatalogClient {
     const parent = gcp.catalogContainer(project, location, entryGroup);
     for (const link of this.mockEntryLinks) {
       if (link.name.startsWith(parent)) {
-        yield link;
+        const clonedLink = JSON.parse(JSON.stringify(link));
+        await _fixEntryLink(clonedLink, this.context);
+        yield clonedLink;
       }
     }
   }

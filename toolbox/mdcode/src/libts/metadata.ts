@@ -5,6 +5,11 @@ export interface Aspect {
   [key: string]: any;
 }
 
+export interface EntryLink {
+  target: string;
+  aspects?: Record<string, any>;
+}
+
 export interface Entry {
   name: string;
   type: string;
@@ -23,4 +28,5 @@ export interface Entry {
     updateTime?: string;
   };
   aspects?: Record<string, Aspect>;
+  links?: Record<string, EntryLink[]>;
 }

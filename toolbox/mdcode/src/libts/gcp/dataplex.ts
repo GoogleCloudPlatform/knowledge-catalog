@@ -208,7 +208,13 @@ export class CatalogClient extends api.ApiClient {
     if (entryLinkTypes && entryLinkTypes.length) {
       params.entryLinkTypes = entryLinkTypes.join(',');
     }
-    return await this._get<LookupEntryLinksResponse>(container, params);
+    const res = await this._get<LookupEntryLinksResponse>(container, params);
+    if (res.status === 200 && res.result?.entryLinks) {
+      for (const link of res.result.entryLinks) {
+        await _fixEntryLink(link, this.context);
+      }
+    }
+    return res;
   }
 
   async createEntryLink(
@@ -262,6 +268,7 @@ export class CatalogClient extends api.ApiClient {
 
       const links = res.result?.entryLinks || [];
       for (const link of links) {
+        await _fixEntryLink(link, this.context);
         yield link;
       }
 
@@ -271,10 +278,35 @@ export class CatalogClient extends api.ApiClient {
 
 }
 
+export async function _fixEntryLink(link: EntryLink, ctx: context.ApiContext): Promise<void> {
+  console.log('_fixEntryLink called for link.name:', link.name, 'entryLinkType:', link.entryLinkType, 'ctx:', !!ctx);
+  link.name = await crm.fixProject(link.name, ctx);
+  const before = link.entryLinkType;
+  link.entryLinkType = await crm.fixProject(link.entryLinkType, ctx);
+  console.log('_fixEntryLink finish. entryLinkType before:', before, 'after:', link.entryLinkType);
+  if (link.entryReferences) {
+    for (const ref of link.entryReferences) {
+      ref.name = await crm.fixProject(ref.name, ctx);
+    }
+  }
+  if (link.aspects) {
+    const fixedAspects: Record<string, Aspect> = {};
+    for (const [aspectKey, aspectValue] of Object.entries(link.aspects)) {
+      let aspectType = aspectValue.aspectType || _typeRefToName(aspectKey, 'aspect');
+      aspectType = await crm.fixProject(aspectType, ctx);
+      fixedAspects[_nameToTypeRef(aspectType)] = {
+        aspectType,
+        data: aspectValue.data ?? {}
+      };
+    }
+    link.aspects = fixedAspects;
+  }
+}
+
 
 // Fix all entries and aspects to consistently use project id. Its currently a mess with an
 // inconsistent mix of project ids and unusable project numbers.
-async function _fixEntry(entry: Entry, ctx: context.ApiContext): Promise<void> {
+export async function _fixEntry(entry: Entry, ctx: context.ApiContext): Promise<void> {
   entry.name = await crm.fixProject(entry.name, ctx);
   entry.entryType = await crm.fixProject(entry.entryType, ctx);
   if (entry.entrySource?.resource) {
