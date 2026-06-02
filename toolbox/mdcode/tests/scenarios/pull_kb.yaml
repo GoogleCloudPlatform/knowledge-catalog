@@ -9,6 +9,12 @@ setup:
     entries:
       - name: projects/t/locations/u/entryGroups/g/entries/e0
         entryType: projects/dataplex-types/locations/global/entryTypes/generic
+        entrySource:
+          displayName: Sample entry
+          description: Sample entry description
+          labels:
+            aaa: bbb
+            xyz: 'true'
       - name: projects/t/locations/u/entryGroups/g/entries/e1
         entryType: projects/dataplex-types/locations/global/entryTypes/generic
       - name: projects/t/locations/u/entryGroups/g/entries/e2
@@ -30,7 +36,10 @@ actions:
 assert:
   fileSystem:
     catalog/e0.md:
-      contains: "name: e0"
+      - contains: "name: e0"
+      - contains: "title: Sample entry"
+      - contains: "description: Sample entry description"
+      - contains: "- xyz"
     catalog/e1.md:
       contains: "name: e1"
     catalog/e2.md:

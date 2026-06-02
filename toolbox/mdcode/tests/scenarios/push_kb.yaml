@@ -38,12 +38,15 @@ actions:
     entry:
       name: kb-entry
       type: p.global.kb-type
+      resource:
+        description: updated basic description
       aspects:  
         dataplex-types.global.overview:
           content: New custom description
           contentType: MARKDOWN
     fields:
       - dataplex-types.global.overview
+      - resource
   - action: push
 
 assert:
@@ -51,10 +54,13 @@ assert:
     catalog/kb-entry.yaml:
       - contains: "name: kb-entry"
       - contains: "New custom description"
+      - contains: "description: updated basic description"
   catalog:
     entries:
       - name: projects/p/locations/us/entryGroups/kb/entries/kb-entry
         entryType: projects/p/locations/global/entryTypes/kb-type
+        entrySource:
+          description: updated basic description
         aspects:
           dataplex-types.global.overview:
             aspectType: projects/dataplex-types/locations/global/aspectTypes/overview
