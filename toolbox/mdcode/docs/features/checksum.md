@@ -17,14 +17,14 @@ To enable offline capabilities, minimal network updates, and robust conflict det
 
 ## Logical Entry Composition & Sidecar Mapping
 
-To provide a clean, readable layout for unstructured text (such as rich-text documentation or Markdown profiles), the synchronization engine operates on a logical **Entry** boundary rather than treating filesystem files in isolation.
+To provide a clean, readable layout for unstructured text (such as rich-text documentation or Markdown profiles), the synchronization operates on a logical **Entry** boundary rather than treating filesystem files in isolation.
 
 ### 1. Logical Entry Assembly
-At runtime, the sync engine scans the local workspace directories and reconstructs each entry by composing its constituent physical files:
+At runtime, the synchronization scans the local workspace directories and reconstructs each entry by composing its constituent physical files:
 *   **Core Entry File (mandatory):** A single YAML file (e.g., `orders.yaml`) containing the entry's identity, core attributes (e.g., `displayName`, `description`), and any structured/inline aspects.
 *   **Sidecar Aspect Files (optional):** Dedicated Markdown files (e.g., `orders.overview.md`) that contain specific, unstructured rich-text metadata aspects mapped to the entry.
 
-Before any change detection, validation, or API operation is performed, the engine merges these files in memory into a single unified Entry representation:
+Before any change detection, validation, or API operation is performed, the synchronization merges these files in memory into a single unified Entry representation:
 
 ```mermaid
 graph TD
@@ -45,20 +45,24 @@ graph TD
 
 ## Conflict Resolution
 
-A **conflict** occurs when both the local workspace copy and the remote catalog copy of the same aspect or core metadata have been modified since the last synchronization. 
+A **conflict** occurs when both the local workspace copy and the remote catalog copy of the same aspect or core metadata have been modified since the last synchronization.
 
-To handle these scenarios safely and flexibly, the sync engine provides fine-grained CLI configurations and distinct workflow strategies.
+Synchronization keeps the local developer workspace and the remote Knowledge Catalog consistent, depending on the direction of transfer:
+*   **Pull**: Synchronizes the local workspace with the remote catalog.
+*   **Push**: Synchronizes the remote catalog with the local workspace.
+
+To handle these scenarios safely and flexibly, the library provides fine-grained CLI configurations and distinct workflow strategies.
 
 ### 1. CLI Synchronization Configurations
-The synchronization engine supports three core flags to customize conflict handling in both interactive (local developer) and automated (CI/CD) environments:
+The library supports three core flags to customize conflict handling in both interactive (local developer) and automated (CI/CD) environments:
 
-*   **`--allow-partial` (Boolean, default: `false`):** 
+*   **`--allow-partial` (Boolean, default: `false`):** Applies to both `push` and `pull` operations.
     *   When `false` (strict mode): Any unresolved conflict aborts the entire operation immediately (non-zero exit code).
-    *   When `true` (partial mode): The engine pushes/pulls all non-conflicting aspects, but skips and warns about the conflicting aspects. The CLI exits with code `0` (success) but logs a warning summary.
+    *   When `true` (partial mode): The library pushes or pulls all non-conflicting aspects, but skips and warns about the conflicting aspects. The CLI exits with code `0` (success) but logs a warning summary.
 *   **`--conflict-resolution=<strategy>` (Enum, default: `manual`):** Specifies the programmatic resolution policy:
-    *   `manual`: Conflicts are flagged for human intervention (skipped when `--allow-partial` is active; otherwise aborts).
-    *   `accept-remote` (Remote Wins): Automatically resolves conflicts by overwriting the local workspace with the remote catalog state.
-    *   `accept-local` (Local Wins): Automatically resolves conflicts by overwriting the remote catalog with the local workspace state.
+    *   `manual`: Conflicts are flagged for human intervention.
+    *   `accept-remote` (Remote Wins - applies to `pull` operations): Automatically resolves conflicts by overwriting the local workspace with the remote catalog state.
+    *   `accept-local` (Local Wins - applies to `push` operations): Automatically resolves conflicts by overwriting the remote catalog with the local workspace state.
 *   **`--force` / `-f` (Shorthand Alias):** A standard alias providing convenient developer ergonomics for global overrides:
     *   `kcmd push --force` $\equiv$ `kcmd push --conflict-resolution=accept-local`
     *   `kcmd pull --force` $\equiv$ `kcmd pull --conflict-resolution=accept-remote`
@@ -69,14 +73,13 @@ The synchronization engine supports three core flags to customize conflict handl
 
 Depending on the synchronization direction, developers can apply these CLI flags to execute the following workflow choices:
 
-#### Pull Conflict Strategies
-*   **Manual Resolution (Default):** Back up your local edits, run `kcmd pull --force` (which accepts the remote state), and then manually merge your backed-up edits back into the workspace.
-*   **Abandon Local Changes:** Run `kcmd pull --force` to cleanly discard all local modifications and completely align the workspace with the remote catalog.
+#### Pull Conflict Resolution Strategies
+*   **Abandon Local Changes (`kcmd pull --force`):** Discards all local modifications and completely overwrites the local workspace with the remote catalog state.
+*   **Partial Pull (`kcmd pull --allow-partial`):** Pulls all non-conflicting remote changes, while skipping aspects that have local modifications to protect unpushed local work.
 
-#### Push Conflict Strategies
-*   **Manual Resolution (Default):** Abort the push, pull the remote catalog changes, resolve the conflict locally in your editor, and push again.
-*   **Force Overwrite:** Run `kcmd push --force` to explicitly overwrite the remote catalog with the local state, ignoring the remote changes.
-*   **Partial Publish:** Run `kcmd push --allow-partial` to push all safe, non-conflicting aspect edits while leaving conflicting aspects unpushed (dirty) for subsequent manual resolution.
+#### Push Conflict Resolution Strategies
+*   **Force Overwrite (`kcmd push --force`):** Explicitly overwrites the remote catalog with the local workspace state, ignoring any remote changes.
+*   **Partial Push (`kcmd push --allow-partial`):** Pushes all safe, non-conflicting aspect edits while leaving conflicting aspects unpushed (dirty) for subsequent manual resolution.
 
 The synchronization behaviors and conflict resolutions are split below into operations impacting pull and push workflows.
 
@@ -92,7 +95,8 @@ During a `pull` operation, the main objective is to bring remote changes into th
 | :--- | :--- | :--- | :--- | :--- |
 | **Unchanged** | **Unchanged** | **Skip** | **Skip** | No changes on either side. |
 | **Unchanged** | **Modified** | **Safe to Pull** | **Safe to Pull** | Remote modifications are safely written to the local workspace. |
-| **Unchanged** | **Deleted** | **Safe to Delete Locally** | **Safe to Delete Locally** | Remote deletion is propagated locally; the local aspect file is deleted. |
+| **Unchanged** | **Deleted (Aspect Deleted)** | **Safe to Delete Locally** | **Safe to Delete Locally** | Remote aspect deletion is propagated locally; the local aspect (file - if applicable) is deleted. |
+| **Unchanged** | **Deleted (Entry Deleted)** | **Safe to Delete Locally** | **Safe to Delete Locally** | Remote entry deletion is propagated locally; all local entry and aspect files are deleted. |
 | **Does Not Exist** | **Exists Remotely** | **Safe to Pull** | **Safe to Pull** | The remote aspect is pulled down and created in the local workspace. |
 | **Modified** / **Created** / **Deleted** | **Any State** | **Abort (Dirty Workspace)** | **Overwritten by Remote** | Local changes exist in the workspace. Standard pull aborts immediately to prevent overwriting unpushed local work. Force pull discards local changes and overwrites them with the remote state. |
 
@@ -104,13 +108,17 @@ During a `push` operation, local modifications are sent to the remote catalog. A
 > **Partial Push Behavior (`--allow-partial`):**
 > If `--allow-partial` is set during a standard push, any aspect triggering a **Conflict (Abort)** will be skipped and logged as a warning, allowing the rest of the non-conflicting aspects to be successfully published.
 
+> [!WARNING]
+> **Lack of Remote Etag Support (Overwrite Risk):**
+> Since the remote Knowledge Catalog does not support Entity/Aspect Etag concurrency controls yet, there is a race-condition window where even a deemed "safe" change (e.g., a change evaluated as non-conflicting during the lookup phase) could overwrite concurrent updates made directly to the latest remote catalog state during the write phase.
+
 | Local Aspect State | Remote Aspect State | Standard Push (`kcmd push`) | Force Push (`kcmd push --force`) | Description |
 | :--- | :--- | :--- | :--- | :--- |
 | **Unchanged** | **Unchanged** | **Skip** | **Skip** | No changes on either side. |
 | **Unchanged** | **Modified** | **Skip** | **Skip** | No local changes to push. Remote changes remain until the next pull. |
 | **Modified** | **Unchanged** | **Safe to Push** | **Safe to Push** | Pushes local modifications to the remote catalog. Base checksum is updated. |
 | **Modified** | **Modified** | **Conflict (Abort)** | **Force Overwrite** | Both copies were modified. Standard push aborts. Force push overwrites the remote aspect. |
-| **Modified** | **Deleted (Entry Deleted)** | **Conflict (Abort)** | **Force Create/Overwrite** | The remote entry itself was deleted. Force push recreates the entry and aspect on the remote. |
+| **Modified** | **Deleted (Entry Deleted)** | **Conflict (Abort)** | **Force Create/Overwrite** | The remote entry itself was deleted. Force push recreates the entry and aspect on the remote (entry-level creation/recreation is only supported for custom/user-managed entries, not GCP-managed entries). |
 | **Modified** | **Deleted (Aspect Deleted)** | **Conflict (Abort)** | **Force Create/Overwrite** | The remote aspect was deleted. Force push recreates/updates the aspect on the remote. |
 | **Deleted** | **Unchanged** | **Safe to Delete Remotely** | **Safe to Delete Remotely** | Pushes the aspect deletion to the remote catalog. Base state is cleaned up. |
 | **Deleted** | **Modified** | **Conflict (Abort)** | **Force Delete Remotely** | The aspect was modified remotely while being deleted locally. Force push deletes the aspect remotely. |
@@ -122,28 +130,34 @@ During a `push` operation, local modifications are sent to the remote catalog. A
 
 ## Deletion Mechanics & Lifecycle
 
-Deletion represents a critical state transition in metadata synchronization. The engine enforces strict rules to distinguish between deleting a specific aspect and deleting an entire catalog entry.
+Deletion represents a critical state transition in metadata synchronization. The synchronization enforces strict rules to distinguish between deleting a specific aspect and deleting an entire catalog entry.
 
 ### 1. Entry-Level Deletion
 The presence of the **Core Entry File** (e.g., `orders.yaml`) represents the existence of the Entry.
-*   **Local Entry Deletion:** If a developer deletes `orders.yaml` from their workspace, the sync engine interprets this as an intentional request to delete the entire entry and all its aspects. During `push`, the entry is removed from the remote catalog.
-*   **Remote Entry Deletion:** If an entry is deleted remotely, a `pull` operation will remove `orders.yaml` and all its sidecars from the local workspace.
+*   **Local Entry Deletion:** If a developer deletes `orders.yaml` from their workspace, the synchronization interprets this as an intentional request to delete the entire entry and all its aspects. During `push`, the entry is removed from the remote catalog if there is no conflict. In case of conflict, please check the [Push Conflict Resolution Matrix](#2-push-conflict-resolution-matrix) above.
+*   **Remote Entry Deletion:** If an entry is deleted remotely, a `pull` operation will remove `orders.yaml` and all its sidecars from the local workspace if there is no conflict. In case of conflict, please check the [Pull Conflict Resolution Matrix](#1-pull-conflict-resolution-matrix) above.
 
-### 2. Aspect-Level Deletion (Sidecar Removal)
-Sidecars represent individual aspects. Removing a sidecar file while leaving the core entry file intact represents the deletion of only that specific aspect.
-*   **Local Aspect Deletion:** If a developer deletes `orders.overview.md` but retains `orders.yaml`, the sync engine registers a local deletion for `dataplex-types.global.overview`. The remote aspect is deleted during a push, but the entry remains intact.
-*   **Remote Aspect Deletion:** If a remote aspect is deleted, a `pull` operation deletes the corresponding local sidecar file (`orders.overview.md`) from disk.
+### 2. Aspect-Level Deletion
+
+Aspects can be stored either in dedicated sidecar files (e.g., `orders.overview.md`) or inline within the main entry file (e.g., `orders.yaml`). Removing an aspect while leaving the rest of the entry intact represents the deletion of only that specific aspect.
+
+*   **Local Aspect Deletion:** 
+    *   *For sidecar aspects:* Deleting the sidecar file (e.g., `orders.overview.md`) from disk registers a local aspect deletion.
+    *   *For inline aspects:* Removing the aspect's key and data block from the main entry YAML file (e.g., `orders.yaml`) registers a local aspect deletion.
+    *   During `push`, the remote aspect is deleted from the catalog while the core entry remains intact.
+*   **Remote Aspect Deletion:** 
+    *   If an aspect is deleted remotely, a `pull` operation propagates this deletion locally by either deleting the corresponding sidecar file from disk, or removing the aspect's key/data block from the main entry YAML file.
 
 ### 3. Safety & Validation Rules
-*   **Orphaned Sidecars Check:** If a sidecar aspect file (e.g., `orders.overview.md`) is present in the directory but the core entry file (`orders.yaml`) is missing, the sync engine aborts and fails-fast with a **Validation Error**. This prevents orphaned aspect data from lingering or causing dirty state conflicts.
+*   **Orphaned Sidecars Check:** If a sidecar aspect file (e.g., `orders.overview.md`) is present in the directory but the core entry file (`orders.yaml`) is missing, the synchronization aborts and fails-fast with a **Validation Error**. This prevents orphaned aspect data from lingering or causing dirty state conflicts.
 *   **Empty Sidecars:** Empty sidecar files (containing 0 bytes or only whitespace) are interpreted as a **local aspect deletion request**. The aspect is removed on the remote catalog during push.
-*   **Managed Entries Safeguard:** The sync engine bypasses physical entry deletion APIs for cloud-managed catalog entries (e.g., BigQuery tables/datasets) which are owned and managed by GCP. However, the tool continues to support aspect creations, updates, and deletions on these entries.
+*   **Managed Entries Safeguard:** The synchronization bypasses physical entry deletion APIs for cloud-managed catalog entries (e.g., BigQuery tables/datasets) which are owned and managed by GCP. However, the library continues to support aspect creations, updates, and deletions on these entries.
 
 ---
 
 ## Design Rationale: Why a State Database is Required
 
-To perform three-way change detection and detect conflicts safely, the sync engine must distinguish between changes made by the local user and changes made on the remote Catalog. 
+To perform three-way change detection and detect conflicts safely, the synchronization must distinguish between changes made by the local user and changes made on the remote Catalog. 
 
 If the tool only compared the **Local Workspace State** directly to the **Remote Catalog State**, it would be impossible to determine the direction of change:
 * Does a mismatch mean the user modified the local file, or that someone modified the remote entry?
@@ -176,7 +190,7 @@ A flat JSON database maps each tracked entry and its corresponding aspects to th
 Before discussing database layout options, we define the scope and constraints of the tracked metadata:
 * **Entry-Level & Aspect-Level Checksums**: The tool tracks both a unified **Entry-Level Checksum** and individual **Aspect-Level Checksums**. This is critical for user-managed or custom entries where the entry itself can be created or deleted, and for uningested entry groups where entry-level metadata (such as `entrySource`, `displayName`, or `description`) is modifiable.
 * **Aspect `checksum`**: These checksums are calculated for the key-value properties inside each individual aspect type (e.g., `dataplex-types.global.overview`, `dataplex-types.global.descriptions`).
-* **Static Modifiability Enforcement**: The `catalog.yaml` validation layer statically ensures that only modifiable aspects and entry properties are configured to be synchronized and published.
+* **Static Modifiability Enforcement**: The `catalog.yaml` validation layer statically ensures that only modifiable aspects and entry properties are configured under the `publishing` section to be written back to the remote service. Users are explicitly permitted to configure non-modifiable/read-only aspects and properties in the `snapshot` section to retrieve them locally as reference context.
 
 ### Proposed Design: Flat State File (`catalog-state.json`)
 
@@ -324,7 +338,7 @@ sequenceDiagram
      - If `--force` (or `--conflict-resolution=accept-remote`) is present, local changes are safely overwritten by incoming remote changes.
      - If `--force` is absent, the operation depends on `--allow-partial`:
        - If `--allow-partial` is `false` (default): The entire pull operation aborts immediately to protect unpushed local work (strict all-or-nothing).
-       - If `--allow-partial` is `true`: The engine skips and logs the dirty aspects as warnings, but successfully pulls updates for clean/unmodified aspects.
+       - If `--allow-partial` is `true`: The synchronization skips and logs the dirty aspects as warnings, but successfully pulls updates for clean/unmodified aspects.
    
    > [!NOTE]
    > **Why a Dirty Guard is necessary:**
@@ -334,7 +348,7 @@ sequenceDiagram
    - Fetch entries (including aspects) from the remote catalog.
 
 3. **Semantic Normalization (Semantic-Aware Checksumming):**
-   A standard byte-level string hash (SHA-256) changes completely if an auto-formatter (like Prettier) re-orders object keys or toggles quotes, even if the underlying metadata remains exactly the same. To shield the sync engine from harmless formatting diffs, semantic-aware normalization ensures that the checksum strictly reflects the *semantic content* of the data.
+   A standard byte-level string hash (SHA-256) changes completely if an auto-formatter (like Prettier) re-orders object keys or toggles quotes, even if the underlying metadata remains exactly the same. To shield the synchronization from harmless formatting diffs, semantic-aware normalization ensures that the checksum strictly reflects the *semantic content* of the data.
    
    Before calculating checksums or comparing changes, the following normalization rules are applied:
    - **YAML/JSON Aspects**: Semantic data files are parsed into objects, their keys are recursively sorted alphabetically, and spacing is standardized to a single canonical format.
@@ -414,8 +428,8 @@ sequenceDiagram
    - The conflict resolution behavior is fully customized by the CLI configuration:
      1. **Force Overwrite:** If `--force` (or `--conflict-resolution=accept-local`) is specified, all conflict checks are bypassed. Local states overwrite the remote catalog.
      2. **Default Strict (allow-partial = false):** If any aspect or core metadata fails conflict verification (i.e., both local and remote have modified it since the base sync), the entire push operation is aborted immediately. No mutations are committed, and the CLI exits with code `1`.
-     3. **Partial Publish (allow-partial = true):** The engine relaxes the strict check. Conflicting aspects are skipped, leaving their local files dirty and their base state unchanged in `catalog-state.json`. All non-conflicting edits are committed, and the CLI exits with code `0` with warning logs listing the skipped aspects.
-   - For successfully pushed/resolved aspects, the tool commits the metadata using `modifyEntry` (or `createEntry`/`deleteEntry`) and updates their computed checksums as the new base checksums in `catalog-state.json`.
+     3. **Partial Publish (allow-partial = true):** The synchronization relaxes the strict check. Conflicting aspects are skipped, leaving their local files dirty, but their base state checksums in `catalog-state.json` are updated to match the final remote state. This registers the latest remote state as the new base, allowing a future push to detect the local edits as pending modifications and publish them safely without conflict. All non-conflicting edits are committed, and the CLI exits with code `0` with warning logs listing the skipped aspects.
+   - For successfully pushed/resolved aspects, the tool commits the metadata using `modifyEntry` (or `createEntry`/`deleteEntry`) and updates their base checksums in `catalog-state.json` to match the new local state. For aspects skipped due to conflicts under `--allow-partial`, their base checksums are updated to match the retrieved remote state to enable subsequent push/pull tracking.
 
 
 
@@ -444,7 +458,7 @@ During a dry run, the exact same calculation, lookup, and validation logic is ex
    - If conflicts are detected:
      - If `--allow-partial` is `false` (default), the preview reports that the push *would fail* due to conflicts.
      - If `--allow-partial` is `true`, the preview reports which non-conflicting aspects would succeed and which conflicting aspects would be skipped.
-   - If no conflicts are found, the engine reports that the push is safe to execute.
+   - If no conflicts are found, the synchronization reports that the push is safe to execute.
 4. **Preview Mutations**: Logs a detailed sequence of the planned API modifications:
    * **Entry Mutations**: Entry creations, deletions, or metadata modifications.
    * **Aspect Modifications**: Aspects to be updated.
