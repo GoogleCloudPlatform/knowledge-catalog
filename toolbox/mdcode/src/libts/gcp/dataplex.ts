@@ -177,6 +177,34 @@ export class CatalogClient extends api.ApiClient {
     } while (pageToken);
   }
 
+  async createEntry(project: string, location: string, entryGroup: string, 
+                    entryId: string, entry?: Entry): Promise<api.ApiResult<Entry>> {
+    const parent = catalogContainer(project, location, entryGroup);
+    const resourceName = `${parent}/entries`;
+
+    const params: Record<string, any> = { entryId };
+
+    const res = await this._post<Entry>(resourceName, entry, params);
+    
+    if (res.status == 200 && res.result) {
+      await _fixEntry(res.result, this.context);
+    }
+
+    return res;
+  }
+
+  async createEntryGroup(project: string, location: string, 
+                         entryGroupId: string, entryGroup?: EntryGroup): Promise<api.ApiResult<EntryGroup>> {
+    const parent = catalogContainer(project, location);
+    const resourceName = `${parent}/entryGroups`;
+
+    const params: Record<string, any> = { entryGroupId };
+
+    const res = await this._post<EntryGroup>(resourceName, entryGroup, params);
+
+    return res;
+  }
+
 }
 
 

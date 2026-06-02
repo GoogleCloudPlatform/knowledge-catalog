@@ -236,6 +236,15 @@ function main() {
     }
   );
 
+  spyOn(gcp.CatalogClient.prototype, 'createEntry').mockImplementation(
+    async function(project: string, location: string, entryGroup: string, entryId: string, entry?: gcp.Entry) {
+      if (currentCatalogMock) {
+        return await currentCatalogMock.createEntry(project, location, entryGroup, entryId, entry);
+      }
+      return { status: 404, message: 'Not found' };
+    }
+  );
+
   spyOn(bq.BigQueryClient.prototype, 'getDataset').mockImplementation(
     async function(project: string, dataset: string) {
       if (currentBigQueryMock) {
