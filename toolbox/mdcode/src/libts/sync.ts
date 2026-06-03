@@ -35,7 +35,7 @@ export class CatalogSync {
       const entries = this._snapshot.manifest.source.entries(this._catalog.context);
       
       const snapshotLinks = this._snapshot.manifest.snapshotConfig?.entryLinks;
-      const hasSnapshotLinks = snapshotLinks && snapshotLinks.length > 0;
+      const hasSnapshotLinks = snapshotLinks !== undefined && snapshotLinks.length > 0;
 
       let linksMap = new Map<string, dataplex.EntryLink[]>();
       const isEntryGroupScope =
@@ -46,7 +46,7 @@ export class CatalogSync {
         linkTypeRef => dataplex._typeRefToName(resolveEntryLinkType(linkTypeRef, this._snapshot.manifest), 'entryLink')
       );
 
-      if (hasSnapshotLinks && isEntryGroupScope) {
+      if (isEntryGroupScope) {
         const nameParts = this._snapshot.manifest.source.name.split('.');
         const project = nameParts[0];
         const location = nameParts[1];
@@ -90,19 +90,17 @@ export class CatalogSync {
         }
 
         let entryLinks: dataplex.EntryLink[] = [];
-        if (hasSnapshotLinks) {
-          if (isEntryGroupScope) {
-            entryLinks = linksMap.get(entry.name) || [];
-          } else {
-            const linksRes = await this._catalog.lookupEntryLinks(
-              nameParts[1],
-              nameParts[3],
-              entry.name,
-              entryLinkTypes
-            );
-            if (linksRes.status === 200 && linksRes.result?.entryLinks) {
-              entryLinks = linksRes.result.entryLinks;
-            }
+        if (isEntryGroupScope) {
+          entryLinks = linksMap.get(entry.name) || [];
+        } else {
+          const linksRes = await this._catalog.lookupEntryLinks(
+            nameParts[1],
+            nameParts[3],
+            entry.name,
+            entryLinkTypes
+          );
+          if (linksRes.status === 200 && linksRes.result?.entryLinks) {
+            entryLinks = linksRes.result.entryLinks;
           }
         }
 

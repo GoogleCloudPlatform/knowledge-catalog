@@ -7,7 +7,8 @@ export interface Aspect {
 
 export interface EntryLink {
   target: string;
-  aspects?: Record<string, any>;
+  id?: string;
+  [aspectKey: string]: any;
 }
 
 export interface Entry {

@@ -70,6 +70,42 @@ export function findAliasForType(
   return cleanRef;
 }
 
+export function findAspectAliasForType(
+  typeRef: string,
+  manifest?: CatalogManifest
+): string {
+  if (manifest?.aliases) {
+    for (const [alias, config] of Object.entries(manifest.aliases)) {
+      if (config.aspect === typeRef) {
+        return alias;
+      }
+    }
+  }
+  
+  let cleanRef = typeRef.replace(/^655216118709\./, 'dataplex-types.');
+  if (cleanRef.startsWith('dataplex-types.global.')) {
+    return cleanRef.substring('dataplex-types.global.'.length);
+  }
+  if (cleanRef.startsWith('dataplex-types.')) {
+    return cleanRef.substring('dataplex-types.'.length);
+  }
+  return cleanRef;
+}
+
+export function resolveAspectAlias(
+  alias: string,
+  manifest?: CatalogManifest
+): string {
+  if (manifest?.aliases?.[alias]?.aspect) {
+    return manifest.aliases[alias].aspect!;
+  }
+  let fullAspect = alias;
+  if (fullAspect.split('.').length === 1) {
+    fullAspect = `dataplex-types.global.${fullAspect}`;
+  }
+  return fullAspect;
+}
+
 const manifestSchema = z.object({
   scope: z.union([z.string(), z.array(z.string())]),
   aliases: z.record(z.string(), z.object({
