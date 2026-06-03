@@ -97,6 +97,16 @@ export class CatalogClient extends api.ApiClient {
     return await this._get(name);
   }
 
+  async getGlossary(project: string, location: string, glossaryId: string): Promise<api.ApiResult<any>> {
+    const name = `projects/${project}/locations/${location}/glossaries/${glossaryId}`;
+    return await this._get(name);
+  }
+
+  async getGlossaryTerm(project: string, location: string, glossaryId: string, termId: string): Promise<api.ApiResult<any>> {
+    const name = `projects/${project}/locations/${location}/glossaries/${glossaryId}/terms/${termId}`;
+    return await this._get(name);
+  }
+
   async getEntry(project: string, location: string, entryGroup: string, entry: string,
                  aspects?: string[]): Promise<api.ApiResult<Entry>> {
     const name = `${catalogContainer(project, location, entryGroup)}/entries/${entry}`;

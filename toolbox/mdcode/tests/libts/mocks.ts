@@ -58,6 +58,23 @@ export class CatalogClientMock extends gcp.CatalogClient {
     }
     return { status: 404, message: 'Not found' };
   }
+  async getGlossary(project: string, location: string, glossaryId: string): Promise<gcp.ApiResult<any>> {
+    const nameSuffix = `/glossaries/${glossaryId}`;
+    const entry = this.mockEntries.find(e => e.name.endsWith(nameSuffix));
+    if (entry) {
+      return { status: 200, result: { displayName: entry.entrySource?.displayName || glossaryId } };
+    }
+    return { status: 404, message: 'Not found' };
+  }
+
+  async getGlossaryTerm(project: string, location: string, glossaryId: string, termId: string): Promise<gcp.ApiResult<any>> {
+    const nameSuffix = `/glossaries/${glossaryId}/terms/${termId}`;
+    const entry = this.mockEntries.find(e => e.name.endsWith(nameSuffix));
+    if (entry) {
+      return { status: 200, result: { displayName: entry.entrySource?.displayName || termId } };
+    }
+    return { status: 404, message: 'Not found' };
+  }
 
   async getEntry(project: string, location: string, entryGroup: string, id: string,
                  aspects?: string[]): Promise<gcp.ApiResult<gcp.Entry>> {

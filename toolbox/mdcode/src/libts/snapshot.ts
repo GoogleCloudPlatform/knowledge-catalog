@@ -213,6 +213,64 @@ export class CatalogSnapshot {
   }
 }
 
+const GLOSSARY_DISPLAY_NAME_CACHE = new Map<string, string>();
+const GLOSSARY_TERM_DISPLAY_NAME_CACHE = new Map<string, string>();
+
+async function getGlossaryDisplayName(
+  project: string,
+  location: string,
+  glossaryId: string,
+  ctx: gcp.ApiContext
+): Promise<string> {
+  const cacheKey = `${project}/${location}/glossaries/${glossaryId}`;
+  if (GLOSSARY_DISPLAY_NAME_CACHE.has(cacheKey)) {
+    return GLOSSARY_DISPLAY_NAME_CACHE.get(cacheKey)!;
+  }
+
+  const catalog = new dataplex.CatalogClient(ctx);
+  try {
+    const res = await catalog.getGlossary(project, location, glossaryId);
+    if (res.status === 200 && res.result?.displayName) {
+      const displayName = res.result.displayName;
+      GLOSSARY_DISPLAY_NAME_CACHE.set(cacheKey, displayName);
+      return displayName;
+    }
+  } catch (err) {
+    // Fallback to ID if lookup fails
+  }
+
+  GLOSSARY_DISPLAY_NAME_CACHE.set(cacheKey, glossaryId);
+  return glossaryId;
+}
+
+async function getGlossaryTermDisplayName(
+  project: string,
+  location: string,
+  glossaryId: string,
+  termId: string,
+  ctx: gcp.ApiContext
+): Promise<string> {
+  const cacheKey = `${project}/${location}/glossaries/${glossaryId}/terms/${termId}`;
+  if (GLOSSARY_TERM_DISPLAY_NAME_CACHE.has(cacheKey)) {
+    return GLOSSARY_TERM_DISPLAY_NAME_CACHE.get(cacheKey)!;
+  }
+
+  const catalog = new dataplex.CatalogClient(ctx);
+  try {
+    const res = await catalog.getGlossaryTerm(project, location, glossaryId, termId);
+    if (res.status === 200 && res.result?.displayName) {
+      const displayName = res.result.displayName;
+      GLOSSARY_TERM_DISPLAY_NAME_CACHE.set(cacheKey, displayName);
+      return displayName;
+    }
+  } catch (err) {
+    // Fallback to ID if lookup fails
+  }
+
+  GLOSSARY_TERM_DISPLAY_NAME_CACHE.set(cacheKey, termId);
+  return termId;
+}
+
 export async function toLocalTarget(
   serviceName: string,
   manifest: CatalogManifest | undefined,
@@ -227,7 +285,26 @@ export async function toLocalTarget(
   if (glossaryMatch) {
     const normalizedSub = await crm.fixProject(glossaryMatch[3], ctx);
     const parts = normalizedSub.split('/');
-    return `${parts[1]}.${parts[3]}.${parts[5]}.${parts[7]}`;
+    const targetProject = parts[1];
+    const targetLocation = parts[3];
+    const glossaryId = parts[5];
+    const termId = parts[7];
+
+    const glossaryDisplayName = await getGlossaryDisplayName(
+      targetProject,
+      targetLocation,
+      glossaryId,
+      ctx
+    );
+    const termDisplayName = await getGlossaryTermDisplayName(
+      targetProject,
+      targetLocation,
+      glossaryId,
+      termId,
+      ctx
+    );
+
+    return `${targetProject}.${targetLocation}.${glossaryDisplayName}.${termDisplayName}`;
   }
 
   // 2. BigQuery Dataset/Table
@@ -515,7 +592,19 @@ function toServiceEntryLinks(
 
       const entryLinkType = dataplex._typeRefToName(fullLinkTypeRef, 'entryLink');
       for (const link of entryLinks) {
-        const targetName = fromLocalTarget(link.target, entryLinkType, serviceName, manifest);
+        let targetName = '';
+        const isGlossaryLink = entryLinkType.endsWith('/entryLinkTypes/definition') ||
+                               entryLinkType.endsWith('/entryLinkTypes/synonym') ||
+                               entryLinkType.endsWith('/entryLinkTypes/related');
+        if (isGlossaryLink && link.id && link.id.includes('/')) {
+          const match = serviceName.match(/^(projects\/[^/]+\/locations\/[^/]+)/);
+          if (match) {
+            targetName = `${match[1]}/entryGroups/@dataplex/entries/${link.id}`;
+          }
+        }
+        if (!targetName) {
+          targetName = fromLocalTarget(link.target, entryLinkType, serviceName, manifest);
+        }
 
         let linkName = '';
         if (link.id && !link.id.includes('/')) {
@@ -575,7 +664,19 @@ function toServiceEntryLinks(
 
           const entryLinkType = dataplex._typeRefToName(fullLinkTypeRef, 'entryLink');
           for (const link of entryLinks) {
-            const targetName = fromLocalTarget(link.target, entryLinkType, serviceName, manifest);
+            let targetName = '';
+            const isGlossaryLink = entryLinkType.endsWith('/entryLinkTypes/definition') ||
+                                   entryLinkType.endsWith('/entryLinkTypes/synonym') ||
+                                   entryLinkType.endsWith('/entryLinkTypes/related');
+            if (isGlossaryLink && link.id && link.id.includes('/')) {
+              const match = serviceName.match(/^(projects\/[^/]+\/locations\/[^/]+)/);
+              if (match) {
+                targetName = `${match[1]}/entryGroups/@dataplex/entries/${link.id}`;
+              }
+            }
+            if (!targetName) {
+              targetName = fromLocalTarget(link.target, entryLinkType, serviceName, manifest);
+            }
 
             let linkName = '';
             if (link.id && !link.id.includes('/')) {

@@ -194,6 +194,24 @@ function main() {
     }
   );
 
+  spyOn(gcp.CatalogClient.prototype, 'getGlossary').mockImplementation(
+    async function(project: string, location: string, glossaryId: string) {
+      if (currentCatalogMock) {
+        return await currentCatalogMock.getGlossary(project, location, glossaryId);
+      }
+      return { status: 404, message: 'Not found' };
+    }
+  );
+
+  spyOn(gcp.CatalogClient.prototype, 'getGlossaryTerm').mockImplementation(
+    async function(project: string, location: string, glossaryId: string, termId: string) {
+      if (currentCatalogMock) {
+        return await currentCatalogMock.getGlossaryTerm(project, location, glossaryId, termId);
+      }
+      return { status: 404, message: 'Not found' };
+    }
+  );
+
   spyOn(gcp.CatalogClient.prototype, 'getEntry').mockImplementation(
     async function(this: gcp.CatalogClient, project: string, location: string, entryGroup: string, entry: string) {
       if (currentCatalogMock) {
