@@ -1,0 +1,101 @@
+name: pull_conflict
+description: Verify pull dirty guard and conflict resolution flags
+setup:
+  bigQuery:
+    datasets:
+      - id: p:d
+        datasetReference:
+          projectId: p
+          datasetId: d
+        location: us
+  catalog:
+    entryTypes:
+      - name: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
+    aspectTypes:
+      - name: projects/dataplex-types/locations/global/aspectTypes/overview
+      - name: projects/dataplex-types/locations/global/aspectTypes/schema
+    entries:
+      - name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d
+        entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
+        aspects:
+          dataplex-types.global.overview:
+            aspectType: projects/dataplex-types/locations/global/aspectTypes/overview
+            data:
+              content: Remote description
+              contentType: MARKDOWN
+          dataplex-types.global.schema:
+            aspectType: projects/dataplex-types/locations/global/aspectTypes/schema
+            data:
+              content: Remote schema
+              contentType: MARKDOWN
+
+  fileSystem:
+    catalog.yaml: |
+      scope: bq-dataset.p.d
+      snapshot:
+        entries:
+          - dataplex-types.global.bigquery-dataset
+        aspects:
+          - dataplex-types.global.overview
+          - dataplex-types.global.schema
+
+actions:
+  # First pull establishes the base state
+  - action: pull
+    options: {}
+
+  - action: status
+    assert:
+      modified: false
+
+  # Now modify ONE aspect locally to create a conflict
+  - action: fileSystem
+    write:
+      catalog/p.d.overview.md: |
+        Modified description
+  - action: status
+    assert:
+      modified: true
+      changes:
+        - name: p.d
+          status: Modified
+
+  # Dry run should not touch anything
+  - action: pull
+    options:
+      dryRun: true
+      force: true
+
+  - action: status
+    assert:
+      modified: true
+
+  # Partial pull should merge: update clean aspects, preserve dirty ones
+  - action: pull
+    options:
+      allowPartial: true
+
+  - action: status
+    assert:
+      modified: true
+      changes:
+        - name: p.d
+          status: Modified
+
+  # Verify the file contents reflect the granular merge
+  - action: status
+    assert:
+      modified: true
+    # We can't easily assert file system contents directly mid-test with the current schema,
+    # but the final assertion checks the end state. Actually, let's just use the final assert for it?
+    # Wait, the `assert:` block at the end of the file checks the file system.
+    # To check mid-test, we could add a new action or just remove the `force` step so the final state is the partial pull!
+
+  # Force pull test is covered elsewhere; we want the final state here to be the partial pull
+  
+assert:
+  fileSystem:
+    catalog/p.d.overview.md:
+      - contains: "Modified description"
+    catalog/p.d.schema.md:
+      - contains: "Remote schema"

@@ -24,10 +24,13 @@ cli.command('init', 'Initialize a new catalog snapshot')
 
 
 cli.command('pull', 'Pull catalog entries')
-   .action(async () => {
+   .option('--force', 'Force pull to overwrite local modifications')
+   .option('--allow-partial', 'Skip pulling conflicting entries')
+   .option('--dry-run', 'Dry run without modifying local files')
+   .action(async (options) => {
       let exitCode = 1;
       try {
-        exitCode = await commands.pull();
+        exitCode = await commands.pull(options);
       }
       catch (err: any) {
         console.error('Error:', err.message || err);

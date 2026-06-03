@@ -58,7 +58,13 @@ export async function init(options: InitOptions): Promise<number> {
 }
 
 
-export async function pull(): Promise<number> {
+export interface PullOptions {
+  force?: boolean;
+  allowPartial?: boolean;
+  dryRun?: boolean;
+}
+
+export async function pull(options: PullOptions = {}): Promise<number> {
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
 
@@ -66,10 +72,12 @@ export async function pull(): Promise<number> {
   const sync = new kcmd.CatalogSync(catalog, snapshot);
 
   console.log('Pulling catalog entries...');
-  const result = await sync.pull();
+  const result = await sync.pull(options);
 
   if (result.success) {
-    console.log('Successfully updated local snapshot.');
+    if (!options.dryRun) {
+        console.log('Successfully updated local snapshot.');
+    }
     return 0;
   }
   else {

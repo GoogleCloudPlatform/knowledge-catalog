@@ -98,7 +98,7 @@ function runScenario(scenario: any) {
         const { action, ...params } = actionStep;
         switch (action) {
           case 'pull':
-            const pullRes = await sync.pull();
+            const pullRes = await sync.pull(params.options);
             if (!pullRes.success) {
                 throw new Error(`Pull failed: ${pullRes.details}`);
             }
@@ -111,6 +111,15 @@ function runScenario(scenario: any) {
             break;
           case 'createEntry':
             await snapshot.createEntry(params.name, params.entry);
+            break;
+          case 'fileSystem':
+            if (params.write) {
+               for (const [filePath, content] of Object.entries(params.write)) {
+                  const absolutePath = path.join('/', filePath);
+                  await fs.promises.mkdir(path.dirname(absolutePath), { recursive: true });
+                  await fs.promises.writeFile(absolutePath, content as string, 'utf8');
+               }
+            }
             break;
           case 'updateEntry':
             await snapshot.updateEntry(params.entry, params.fields);
