@@ -141,6 +141,16 @@ export class CatalogSnapshot {
       const parts = entryType.split('.');
       const res = await catalog.getEntryType(parts[0], parts[1], parts[2]);
       if (!res.result) {
+        if (res.status === 403) {
+          console.warn(`Warning: Permission denied loading type information for entry type ${entryType}. Proceeding...`);
+          const placeholderType: dataplex.EntryType = {
+            name: `projects/${parts[0]}/locations/${parts[1]}/entryTypes/${parts[2]}`,
+            requiredAspects: []
+          };
+          this._entryTypes.set(placeholderType.name, placeholderType);
+          this._entryTypes.set(entryType, placeholderType);
+          continue;
+        }
         throw new Error(`Unable to load type information for entry type ${entryType}`);
       }
 
@@ -152,6 +162,15 @@ export class CatalogSnapshot {
           const parts = requiredAspect.type.split('/');
           const res = await catalog.getAspectType(parts[1], parts[3], parts[5]);
           if (!res.result) {
+            if (res.status === 403) {
+              console.warn(`Warning: Permission denied loading type information for required aspect type ${requiredAspect.type}. Proceeding...`);
+              const placeholderAspect: dataplex.AspectType = {
+                name: requiredAspect.type
+              };
+              this._aspectTypes.set(placeholderAspect.name, placeholderAspect);
+              this._aspectTypes.set(`${parts[0]}.${parts[3]}.${parts[5]}`, placeholderAspect);
+              continue;
+            }
             throw new Error(`Unable to load type information for aspect type ${requiredAspect.type}`);
           }
           this._aspectTypes.set(res.result.name, res.result);
@@ -168,6 +187,14 @@ export class CatalogSnapshot {
       const parts = aspectType.split('.');
       const res = await catalog.getAspectType(parts[0], parts[1], parts[2]);
       if (!res.result) {
+        if (res.status === 403) {
+          const placeholderAspect: dataplex.AspectType = {
+            name: `projects/${parts[0]}/locations/${parts[1]}/aspectTypes/${parts[2]}`
+          };
+          this._aspectTypes.set(placeholderAspect.name, placeholderAspect);
+          this._aspectTypes.set(aspectType, placeholderAspect);
+          continue;
+        }
         throw new Error(`Unable to load type information for aspect type ${aspectType}`);
       }
       this._aspectTypes.set(res.result.name, res.result);

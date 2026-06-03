@@ -1,0 +1,18 @@
+name: init_biglake
+description: Validate CatalogManifest dynamic initialization with a BigLake namespace source.
+setup:
+  bigQuery:
+    datasets:
+      - id: "test-proj:test-catalog.test-ns"
+        datasetReference:
+          projectId: test-proj
+          datasetId: test-catalog.test-ns
+        location: us-central1
+
+init:
+  biglakeNamespace: test-proj.test-catalog.test-ns
+
+assert:
+  fileSystem:
+    catalog.yaml:
+      contains: "scope: biglake-iceberg-namespace.test-proj.test-catalog.test-ns"

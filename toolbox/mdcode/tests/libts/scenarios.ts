@@ -11,10 +11,11 @@ import * as kcmac from '../../src/libts';
 import * as gcp from '../../src/libts/gcp';
 import * as bq from '../../src/libts/gcp/bigquery';
 
-import { CatalogClientMock, BigQueryClientMock, TEST_API_CONTEXT } from './mocks';
+import { CatalogClientMock, BigQueryClientMock, BigLakeClientMock, TEST_API_CONTEXT } from './mocks';
 
 let currentCatalogMock: CatalogClientMock | null = null;
 let currentBigQueryMock: BigQueryClientMock | null = null;
+let currentBigLakeMock: BigLakeClientMock | null = null;
 
 
 function runScenario(scenario: any) {
@@ -27,6 +28,7 @@ function runScenario(scenario: any) {
       vol.reset();
       currentCatalogMock = catalog;
       currentBigQueryMock = bigquery;
+      currentBigLakeMock = null;
 
       // Setup state - Catalog Service
       if (scenario.setup?.catalog?.entries) {
@@ -60,6 +62,15 @@ function runScenario(scenario: any) {
         }
       }
 
+      // Setup state - BigLake Service
+      const biglake = new BigLakeClientMock();
+      currentBigLakeMock = biglake;
+      if (scenario.setup?.bigLake?.tables) {
+        for (const table of scenario.setup.bigLake.tables) {
+          biglake.addMockTable(table);
+        }
+      }
+
       // Setup state - Filesystem
       if (scenario.setup?.fileSystem) {
         vol.fromJSON(scenario.setup.fileSystem, '/');
@@ -82,6 +93,11 @@ function runScenario(scenario: any) {
       if (scenario.init?.kb) {
         const mf = await kcmac.CatalogManifest.initWithKnowledgeBase(
           scenario.init.kb, TEST_API_CONTEXT);
+        mf.save('/catalog.yaml');
+      }
+      if (scenario.init?.biglakeNamespace) {
+        const mf = await kcmac.CatalogManifest.initWithBigLakeNamespace(
+          scenario.init.biglakeNamespace, 'iceberg', TEST_API_CONTEXT);
         mf.save('/catalog.yaml');
       }
 
@@ -264,12 +280,34 @@ function main() {
     }
   );
 
+  spyOn(gcp.BigLakeClient.prototype, 'listTables').mockImplementation(
+    async function* (project: string, location: string, catalog: string, database: string) {
+      if (currentBigLakeMock) {
+        for await (const table of currentBigLakeMock.listTables(project, location, catalog, database)) {
+          yield table;
+        }
+      }
+    }
+  );
+
   // Globally mock node:fs to direct file system calls to virtual volume
   mock.module('node:fs', () => memfs);
 
   for (const scenario of scenarios) {
     runScenario(scenario);
   }
+
+  describe('BigLake Namespace Init Failure', () => {
+    test('should throw error on malformed coordinate', () => {
+      expect(
+        kcmac.CatalogManifest.initWithBigLakeNamespace('invalid-format', 'iceberg', TEST_API_CONTEXT)
+      ).rejects.toThrow('BigLake namespace must be in format <projectId>.<catalogId>.<namespaceId>');
+      
+      expect(
+        kcmac.CatalogManifest.initWithBigLakeNamespace('proj.cat', 'iceberg', TEST_API_CONTEXT)
+      ).rejects.toThrow('BigLake namespace must be in format <projectId>.<catalogId>.<namespaceId>');
+    });
+  });
 }
 
 main();
