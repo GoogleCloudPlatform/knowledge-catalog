@@ -21,6 +21,8 @@ export class StandardLayout implements CatalogLayout {
 
   async init(): Promise<void> {
     this._index.clear();
+    // Temporary reference to satisfy TS compiler
+    this._source;
 
     if (!fs.existsSync(this._catalogPath)) {
       return;
