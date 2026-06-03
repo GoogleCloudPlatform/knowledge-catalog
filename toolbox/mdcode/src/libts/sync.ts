@@ -17,6 +17,10 @@ export interface ValidationResult {
 
 export interface StatusResult {
   modified: boolean;
+  changes: {
+    name: string;
+    status: 'Created' | 'Modified' | 'Deleted' | 'Unchanged';
+  }[];
 }
 
 
@@ -37,6 +41,7 @@ export class CatalogSync {
       state.load();
 
       const entries = this._snapshot.manifest.source.entries(this._catalog.context);
+      const pulledEntries = new Set<string>();
       
       for await (const entry of entries) {
         if (this._snapshot.entryTypes.size && !this._snapshot.entryTypes.has(entry.entryType)) {
@@ -45,7 +50,6 @@ export class CatalogSync {
 
         // TODO: Need to populate type info if its a type we haven't seen.
         // TODO: Handle local modification conflicts.
-        // TODO: Handle config changes or service deletions that require removing local entries.
 
         const nameParts = entry.name.split('/');
         const res = await this._catalog.lookupEntry(nameParts[1], nameParts[3], entry.name,
@@ -61,6 +65,8 @@ export class CatalogSync {
 
         // Update state tracking
         const localName = this._snapshot.manifest.source.localName(res.result);
+        pulledEntries.add(localName);
+        
         const localEntry = await this._snapshot.lookupEntry(localName);
         const aspectChecksums: Record<string, string> = {};
         if (localEntry.aspects) {
@@ -74,6 +80,19 @@ export class CatalogSync {
           lastSyncTime: new Date().toISOString(),
           aspects: aspectChecksums,
         });
+      }
+      
+      // Cleanup entries that no longer exist remotely or are no longer in scope
+      const existingEntries = await this._snapshot.listEntries();
+      for (const name of existingEntries) {
+        if (!pulledEntries.has(name)) {
+           await this._snapshot._deleteEntry(name);
+        }
+      }
+      for (const name of state.listEntries()) {
+        if (!pulledEntries.has(name)) {
+           state.deleteEntry(name);
+        }
       }
 
       state.save();
@@ -147,6 +166,48 @@ export class CatalogSync {
   }
 
   async status(): Promise<StatusResult> {
-    throw new Error('Not yet implemented');
+    const state = new CatalogState(this._snapshot.basePath);
+    state.load();
+
+    const localEntries = await this._snapshot.listEntries();
+    const stateEntries = state.listEntries();
+
+    const allEntries = new Set([...localEntries, ...stateEntries]);
+    const changes: StatusResult['changes'] = [];
+    let modified = false;
+
+    for (const name of allEntries) {
+      const inLocal = localEntries.includes(name);
+      const inState = stateEntries.includes(name);
+
+      if (inLocal && !inState) {
+        changes.push({ name, status: 'Created' });
+        modified = true;
+      } else if (!inLocal && inState) {
+        changes.push({ name, status: 'Deleted' });
+        modified = true;
+      } else {
+        const localEntry = await this._snapshot.lookupEntry(name);
+        const stateEntry = state.getEntry(name);
+        
+        let isModified = false;
+        
+        if (localEntry && stateEntry) {
+           const localChecksum = calculateEntryChecksum(localEntry);
+           if (localChecksum !== stateEntry.entryChecksum) {
+               isModified = true;
+           }
+        }
+        
+        if (isModified) {
+           changes.push({ name, status: 'Modified' });
+           modified = true;
+        } else {
+           changes.push({ name, status: 'Unchanged' });
+        }
+      }
+    }
+
+    return { modified, changes };
   }
 }

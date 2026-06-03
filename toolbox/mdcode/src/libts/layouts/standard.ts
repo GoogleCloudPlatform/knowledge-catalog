@@ -10,6 +10,23 @@ import { CatalogSource } from '../source';
 import { CatalogManifest } from '../manifest';
 import * as md from '../metadata';
 
+async function findFiles(dir: string, ext: string): Promise<string[]> {
+  const results: string[] = [];
+  try {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        results.push(...await findFiles(fullPath, ext));
+      } else if (entry.isFile() && entry.name.endsWith(ext)) {
+        results.push(fullPath);
+      }
+    }
+  } catch (e) {
+    // Ignore errors
+  }
+  return results;
+}
 
 export class StandardLayout implements CatalogLayout {
 
@@ -50,11 +67,7 @@ export class StandardLayout implements CatalogLayout {
       return;
     }
 
-    const matches = await glob.glob('**/*.yaml', {
-      cwd: this._catalogPath,
-      absolute: true,
-      nodir: true,
-    });
+    const matches = await findFiles(this._catalogPath, '.yaml');
 
     for (const localPath of matches) {
       try {
@@ -69,11 +82,7 @@ export class StandardLayout implements CatalogLayout {
       }
     }
 
-    const mdMatches = await glob.glob('**/*.md', {
-      cwd: this._catalogPath,
-      absolute: true,
-      nodir: true,
-    });
+    const mdMatches = await findFiles(this._catalogPath, '.md');
 
     for (const mdPath of mdMatches) {
       const relPath = path.relative(this._catalogPath, mdPath);

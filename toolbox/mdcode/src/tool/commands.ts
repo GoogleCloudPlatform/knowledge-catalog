@@ -98,3 +98,24 @@ export async function push(options: PushOptions): Promise<number> {
     return 1;
   }
 }
+
+export async function status(): Promise<number> {
+  const ctx = context.ApiContext.default();
+  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+
+  const catalog = new dataplex.CatalogClient(ctx);
+  const sync = new kcmd.CatalogSync(catalog, snapshot);
+
+  const result = await sync.status();
+
+  if (result.changes.length === 0) {
+    console.log('No entries in the local snapshot.');
+    return 0;
+  }
+
+  for (const change of result.changes) {
+    console.log(`${change.status.padEnd(10)} ${change.name}`);
+  }
+
+  return 0;
+}
