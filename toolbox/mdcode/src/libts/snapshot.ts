@@ -6,6 +6,7 @@ import * as path from 'node:path';
 
 import * as gcp from './gcp/context';
 import * as dataplex from './gcp/dataplex';
+import * as crm from './gcp/crm';
 import * as md from './metadata';
 import { CatalogManifest, resolveEntryLinkType, findAliasForType, findAspectAliasForType, resolveAspectAlias } from './manifest';
 import { CatalogLayout, createLayout } from './layout';
@@ -20,10 +21,12 @@ export class CatalogSnapshot {
   private readonly _aspectTypes: Map<string, dataplex.AspectType> = new Map();
 
   private readonly _layout: CatalogLayout;
+  private readonly _ctx: gcp.ApiContext;
 
-  private constructor(basePath: string, manifest: CatalogManifest) {
+  private constructor(basePath: string, manifest: CatalogManifest, ctx: gcp.ApiContext) {
     this.basePath = basePath;
     this.manifest = manifest;
+    this._ctx = ctx;
 
     const catalogPath = path.join(this.basePath, 'catalog');
     this._layout = createLayout(manifest.source.layout, catalogPath, manifest.source);
@@ -36,7 +39,7 @@ export class CatalogSnapshot {
     }
 
     const manifest = await CatalogManifest.load(manifestPath, ctx);
-    const snapshot = new CatalogSnapshot(basePath, manifest);
+    const snapshot = new CatalogSnapshot(basePath, manifest, ctx);
 
     await snapshot._buildTypes(manifest, ctx);
     await snapshot._layout.init();
@@ -180,7 +183,7 @@ export class CatalogSnapshot {
     entryLinks?: dataplex.EntryLink[]
   ): Promise<void> {
     const localName = this.manifest.source.localName(entry);
-    await this._layout.saveEntry(localName, toLocalEntry(entry, localName, entryLinks, this.manifest));
+    await this._layout.saveEntry(localName, await toLocalEntry(entry, localName, entryLinks, this.manifest, this._ctx));
   }
 
   // Fetches a Dataplex entry from its local metadata representation.
@@ -210,13 +213,119 @@ export class CatalogSnapshot {
   }
 }
 
+export async function toLocalTarget(
+  serviceName: string,
+  manifest: CatalogManifest | undefined,
+  ctx: gcp.ApiContext | undefined
+): Promise<string> {
+  if (!ctx) {
+    return serviceName;
+  }
+
+  // 1. Glossary Term
+  const glossaryMatch = serviceName.match(/^projects\/([^/]+)\/locations\/([^/]+)\/entryGroups\/@dataplex\/entries\/(projects\/[^/]+\/locations\/[^/]+\/glossaries\/[^/]+\/terms\/[^/]+)$/);
+  if (glossaryMatch) {
+    const normalizedSub = await crm.fixProject(glossaryMatch[3], ctx);
+    const parts = normalizedSub.split('/');
+    return `${parts[1]}.${parts[3]}.${parts[5]}.${parts[7]}`;
+  }
+
+  // 2. BigQuery Dataset/Table
+  const bqMatch = serviceName.match(/^projects\/[^/]+\/locations\/([^/]+)\/entryGroups\/@bigquery\/entries\/bigquery.googleapis.com\/projects\/([^/]+)\/datasets\/([^/]+)(\/tables\/([^/]+))?$/);
+  if (bqMatch) {
+    const [, , project, dataset, , table] = bqMatch;
+    const normalizedProject = await crm.fixProject(`projects/${project}`, ctx);
+    const projectId = normalizedProject.split('/')[1];
+    if (table) {
+      return `${projectId}.${dataset}.${table}`;
+    }
+    return `${projectId}.${dataset}`;
+  }
+
+  // 3. General EntryGroup Entry
+  const generalMatch = serviceName.match(/^projects\/([^/]+)\/locations\/([^/]+)\/entryGroups\/([^/]+)\/entries\/(.+)$/);
+  if (generalMatch) {
+    const [, project, location, entryGroup, entryId] = generalMatch;
+    const normalizedProject = await crm.fixProject(`projects/${project}`, ctx);
+    const projectId = normalizedProject.split('/')[1];
+    return `${projectId}.${location}.${entryGroup}.${entryId}`;
+  }
+
+  // Fallback to manifest tryGetLocalName if available
+  if (manifest) {
+    const resolved = manifest.source.tryGetLocalName(serviceName);
+    if (resolved !== undefined) {
+      return resolved.replace(/\//g, '.');
+    }
+  }
+
+  return serviceName;
+}
+
+export function fromLocalTarget(
+  localTarget: string,
+  entryLinkType: string,
+  serviceNameContext: string,
+  manifest?: CatalogManifest
+): string {
+  if (localTarget.startsWith('projects/')) {
+    return localTarget;
+  }
+
+  const parts = localTarget.split('.');
+
+  // 1. Glossary Term (definition, synonym, related link types)
+  const isGlossaryLink = entryLinkType.endsWith('/entryLinkTypes/definition') ||
+                         entryLinkType.endsWith('/entryLinkTypes/synonym') ||
+                         entryLinkType.endsWith('/entryLinkTypes/related');
+
+  if (isGlossaryLink && parts.length === 4) {
+    const [project, location, glossary, term] = parts;
+    const match = serviceNameContext.match(/^projects\/([^/]+)\/locations\/([^/]+)\/entryGroups\//);
+    if (match) {
+      const catalogProject = match[1];
+      const catalogLocation = match[2];
+      return `projects/${catalogProject}/locations/${catalogLocation}/entryGroups/@dataplex/entries/projects/${project}/locations/${location}/glossaries/${glossary}/terms/${term}`;
+    }
+  }
+
+  // 2. BigQuery Dataset/Table (3 parts: project.dataset.table, or 2 parts: project.dataset)
+  if (parts.length === 3 || parts.length === 2) {
+    const [project, dataset, table] = parts;
+    const match = serviceNameContext.match(/^projects\/([^/]+)\/locations\/([^/]+)\/entryGroups\//);
+    if (match) {
+      const catalogProject = match[1];
+      const catalogLocation = match[2];
+      const entryGroup = `projects/${catalogProject}/locations/${catalogLocation}/entryGroups/@bigquery`;
+      const entryName = `${entryGroup}/entries/bigquery.googleapis.com/projects/${project}/datasets/${dataset}`;
+      if (table) {
+        return `${entryName}/tables/${table}`;
+      }
+      return entryName;
+    }
+  }
+
+  // 3. General EntryGroup Entry (4 parts: project.location.entryGroup.entryId)
+  if (parts.length === 4) {
+    const [project, location, entryGroup, entryId] = parts;
+    return `projects/${project}/locations/${location}/entryGroups/${entryGroup}/entries/${entryId}`;
+  }
+
+  if (manifest) {
+    return manifest.source.serviceName(localTarget);
+  }
+
+  return localTarget;
+}
+
 // Converts a Dataplex entry into the local metadata representation.
-function toLocalEntry(
+async function toLocalEntry(
   entry: dataplex.Entry,
   localName: string,
   entryLinks?: dataplex.EntryLink[],
-  manifest?: CatalogManifest
-): md.Entry {
+  manifest?: CatalogManifest,
+  ctx?: gcp.ApiContext
+): Promise<md.Entry> {
   const aspects: Record<string, md.Aspect> = {};
   if (entry.aspects) {
     for (const key in entry.aspects) {
@@ -245,20 +354,19 @@ function toLocalEntry(
       ) || link.entryReferences[1];
 
       if (sourceRef && targetRef) {
-        let targetLocalName = targetRef.name;
-        if (manifest) {
-          const prefix = manifest.source.serviceName('');
-          if (targetLocalName.startsWith(prefix)) {
-            targetLocalName = targetLocalName.substring(prefix.length);
-          }
-        }
+        const targetLocalName = await toLocalTarget(targetRef.name, manifest, ctx);
 
         const linkTypeRef = findAliasForType(dataplex._nameToTypeRef(link.entryLinkType), manifest);
 
         let linkId: string | undefined;
-        if (link.name) {
-          const pathParts = link.name.split('/');
-          linkId = pathParts[pathParts.length - 1];
+        if (targetRef.name) {
+          const match = targetRef.name.match(/\/entries\/(.+)$/);
+          if (match) {
+            linkId = match[1];
+            if (ctx && linkId.startsWith('projects/')) {
+              linkId = await crm.fixProject(linkId, ctx);
+            }
+          }
         }
 
         const localLink: md.EntryLink = {
@@ -407,12 +515,10 @@ function toServiceEntryLinks(
 
       const entryLinkType = dataplex._typeRefToName(fullLinkTypeRef, 'entryLink');
       for (const link of entryLinks) {
-        const targetName = link.target.startsWith('projects/')
-          ? link.target
-          : manifest.source.serviceName(link.target);
+        const targetName = fromLocalTarget(link.target, entryLinkType, serviceName, manifest);
 
         let linkName = '';
-        if (link.id) {
+        if (link.id && !link.id.includes('/')) {
           const match = serviceName.match(/^(projects\/[^/]+\/locations\/[^/]+\/entryGroups\/[^/]+)/);
           if (match) {
             linkName = `${match[1]}/entryLinks/${link.id}`;
@@ -469,12 +575,10 @@ function toServiceEntryLinks(
 
           const entryLinkType = dataplex._typeRefToName(fullLinkTypeRef, 'entryLink');
           for (const link of entryLinks) {
-            const targetName = link.target.startsWith('projects/')
-              ? link.target
-              : manifest.source.serviceName(link.target);
+            const targetName = fromLocalTarget(link.target, entryLinkType, serviceName, manifest);
 
             let linkName = '';
-            if (link.id) {
+            if (link.id && !link.id.includes('/')) {
               const match = serviceName.match(/^(projects\/[^/]+\/locations\/[^/]+\/entryGroups\/[^/]+)/);
               if (match) {
                 linkName = `${match[1]}/entryLinks/${link.id}`;

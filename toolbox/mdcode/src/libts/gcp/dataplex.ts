@@ -206,7 +206,7 @@ export class CatalogClient extends api.ApiClient {
       entry: entryName,
     };
     if (entryLinkTypes && entryLinkTypes.length) {
-      params.entryLinkTypes = entryLinkTypes.join(',');
+      params.entryLinkTypes = entryLinkTypes;
     }
     const res = await this._get<LookupEntryLinksResponse>(container, params);
     if (res.status === 200 && res.result?.entryLinks) {
@@ -279,11 +279,8 @@ export class CatalogClient extends api.ApiClient {
 }
 
 export async function _fixEntryLink(link: EntryLink, ctx: context.ApiContext): Promise<void> {
-  console.log('_fixEntryLink called for link.name:', link.name, 'entryLinkType:', link.entryLinkType, 'ctx:', !!ctx);
   link.name = await crm.fixProject(link.name, ctx);
-  const before = link.entryLinkType;
   link.entryLinkType = await crm.fixProject(link.entryLinkType, ctx);
-  console.log('_fixEntryLink finish. entryLinkType before:', before, 'after:', link.entryLinkType);
   if (link.entryReferences) {
     for (const ref of link.entryReferences) {
       ref.name = await crm.fixProject(ref.name, ctx);

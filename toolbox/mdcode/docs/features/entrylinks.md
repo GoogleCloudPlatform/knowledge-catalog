@@ -170,6 +170,7 @@ Update `pull()` to align with standard aspect conventions and perform optimized,
 1. **Scope Check:**
    * If `snapshot.entryLinks` is omitted or empty in `catalog.yaml`, **always pull all entry links** by default (do not filter them). Call the lookup/list entry links API without type filters.
    * If `snapshot.entryLinks` is specified, retrieve **only the configured entry link types** (compiled and resolved via `resolveEntryLinkType`).
+
 2. **Differentiated Pull Strategy:**
    * **EntryGroup Scopes:**
      * For snapshots bound to an `entryGroup` scope (which maps to a single managed EntryGroup), avoid calling individual `lookupEntryLinks` for every entry.
