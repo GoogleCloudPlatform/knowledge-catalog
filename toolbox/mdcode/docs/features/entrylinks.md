@@ -189,7 +189,7 @@ Update `pull()` to align with standard aspect conventions and perform optimized,
          allGroupLinks.push(link);
        }
        ```
-     * Build a fast-lookup `Map<string, dataplex.EntryLink[]>` grouping links by their source entry name.
+     * Build a fast-lookup `Map<string, dataplex.EntryLink[]>` by iterating through all references in each link's `entryReferences` and registering the link under every referenced entry's name. This ensures that relationships (such as undirected `schema-join` links) are correctly populated and visible in the local files of both tables.
      * During the entry processing loop, retrieve the pre-cached links list matching the entry from this map. This reduces network API call overhead from $O(N)$ to $O(1)$!
    * **BigQuery Dataset Scopes:**
      * Since system `@bigquery` entry groups cannot be listed globally, perform **individual `lookupEntryLinks`** per dataset and table in scope. If `snapshot.entryLinks` is specified, query only the configured link types; otherwise, fetch all.
@@ -206,9 +206,14 @@ Modify the `push()` method to prevent accidental data loss:
 2. **Filter Management:**
    * Compile the resolved type filter from `publishing.entryLinks`.
    * Query remote links **only for those specified types**.
-   * Compare only matching types:
-     * **Delete:** If a remote link exists for a configured type, but is missing in the local `md.Entry`, trigger `deleteEntryLink`.
-     * **Create/Update:** If a local link is missing or its aspects differ compared to the cloud state, execute `createEntryLink` or `delete-and-recreate`.
+   * Compare only matching types using **Symmetrical Reference Matching**:
+      * Instead of relying on rigid `SOURCE` vs `TARGET` order matching (which can swap arbitrarily for undirected connections like `schema-join`), locate the reference matching the current entry (`currentRef`) and the other reference (`otherRef`) in both local and remote links.
+      * Treat them as a match if:
+        1. The `entryLinkType` is identical.
+        2. The other reference's entry name matches.
+        3. The column-level paths (if any) match on both current and other references.
+      * **Delete:** If a remote link exists for a configured type but no matching local link is found under this symmetrical matching logic, trigger `deleteEntryLink`.
+      * **Create/Update:** If a local link has no matching remote link, execute `createEntryLink`. If a matching remote link is found but its aspect data (e.g. join keys or conditions) differs, delete and recreate it.
 3. **Dry-Run Support:** If `options.dryRun` is active, log all modifications to `stdout` instead of executing mutations.
 
 ```mermaid

@@ -413,24 +413,10 @@ async function toLocalEntry(
   const links: Record<string, md.EntryLink[]> = {};
   if (entryLinks) {
     for (const link of entryLinks) {
-      const sourceRef = link.entryReferences.find(
-        ref =>
-          ref.type === 'SOURCE' ||
-          !ref.type ||
-          ref.type === 'UNSPECIFIED' ||
-          ref.name === entry.name
-      ) || link.entryReferences[0];
-      
-      const targetRef = link.entryReferences.find(
-        ref =>
-          (ref !== sourceRef) &&
-          (ref.type === 'TARGET' ||
-           !ref.type ||
-           ref.type === 'UNSPECIFIED' ||
-           ref.name !== entry.name)
-      ) || link.entryReferences[1];
+      const currentRef = link.entryReferences.find(ref => ref.name === entry.name) || link.entryReferences[0];
+      const targetRef = link.entryReferences.find(ref => ref !== currentRef) || link.entryReferences[1];
 
-      if (sourceRef && targetRef) {
+      if (currentRef && targetRef) {
         const targetLocalName = await toLocalTarget(targetRef.name, manifest, ctx);
 
         const linkTypeRef = findAliasForType(dataplex._nameToTypeRef(link.entryLinkType), manifest);
@@ -460,8 +446,8 @@ async function toLocalEntry(
           }
         }
 
-        if (sourceRef.path) {
-          const pathParts = sourceRef.path.split('.');
+        if (currentRef.path) {
+          const pathParts = currentRef.path.split('.');
           if (pathParts[0] === 'schema' && pathParts[1]) {
             const schemaAspect = aspects['dataplex-types.global.schema'];
             if (schemaAspect && Array.isArray(schemaAspect.fields)) {

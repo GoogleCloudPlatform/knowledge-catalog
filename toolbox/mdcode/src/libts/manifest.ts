@@ -12,6 +12,7 @@ export const SYSTEM_LINK_ALIASES: Record<string, string> = {
   'definition': 'dataplex-types.global.definition',
   'synonym': 'dataplex-types.global.synonym',
   'related': 'dataplex-types.global.related',
+  'schema-join': 'dataplex-types.global.schema-join',
 };
 
 export function resolveEntryLinkType(

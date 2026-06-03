@@ -56,17 +56,11 @@ export class CatalogSync {
           if (entryLinkTypes && !entryLinkTypes.includes(link.entryLinkType)) {
             continue;
           }
-          const sourceRef = link.entryReferences.find(
-            ref =>
-              ref.type === 'SOURCE' ||
-              !ref.type ||
-              ref.type === 'UNSPECIFIED'
-          );
-          if (sourceRef) {
-            let list = linksMap.get(sourceRef.name);
+          for (const ref of link.entryReferences) {
+            let list = linksMap.get(ref.name);
             if (!list) {
               list = [];
-              linksMap.set(sourceRef.name, list);
+              linksMap.set(ref.name, list);
             }
             list.push(link);
           }
@@ -186,25 +180,18 @@ export class CatalogSync {
           const entryGroup = entryGroupMatch[3];
 
           for (const remoteLink of remoteLinks) {
-            const sourceRef = remoteLink.entryReferences.find(
-              ref =>
-                ref.type === 'SOURCE' ||
-                (ref.type === 'UNSPECIFIED' && ref.name === entry.name)
-            );
-            const targetRef = remoteLink.entryReferences.find(
-              ref =>
-                ref.type === 'TARGET' ||
-                (ref.type === 'UNSPECIFIED' && ref.name !== entry.name)
-            );
+            const remCurrent = remoteLink.entryReferences.find(r => r.name === entry.name) || remoteLink.entryReferences[0];
+            const remOther = remoteLink.entryReferences.find(r => r !== remCurrent) || remoteLink.entryReferences[1];
 
-            if (sourceRef && targetRef) {
+            if (remCurrent && remOther) {
               const foundLocal = localLinks.find(loc => {
-                const locSource = loc.entryReferences.find(r => r.type === 'SOURCE');
-                const locTarget = loc.entryReferences.find(r => r.type === 'TARGET');
+                const locCurrent = loc.entryReferences.find(r => r.name === entry.name) || loc.entryReferences[0];
+                const locOther = loc.entryReferences.find(r => r !== locCurrent) || loc.entryReferences[1];
                 return (
                   loc.entryLinkType === remoteLink.entryLinkType &&
-                  locTarget?.name === targetRef.name &&
-                  locSource?.path === sourceRef.path
+                  locOther?.name === remOther.name &&
+                  locCurrent?.path === remCurrent.path &&
+                  locOther?.path === remOther.path
                 );
               });
 
@@ -226,34 +213,23 @@ export class CatalogSync {
           }
 
           for (const localLink of localLinks) {
-            const locSource = localLink.entryReferences.find(
-              r => r.type === 'SOURCE'
-            );
-            const locTarget = localLink.entryReferences.find(
-              r => r.type === 'TARGET'
-            );
+            const locCurrent = localLink.entryReferences.find(r => r.name === entry.name) || localLink.entryReferences[0];
+            const locOther = localLink.entryReferences.find(r => r !== locCurrent) || localLink.entryReferences[1];
 
             const foundRemote = remoteLinks.find(rem => {
-              const remSource = rem.entryReferences.find(
-                r =>
-                  r.type === 'SOURCE' ||
-                  (r.type === 'UNSPECIFIED' && r.name === entry.name)
-              );
-              const remTarget = rem.entryReferences.find(
-                r =>
-                  r.type === 'TARGET' ||
-                  (r.type === 'UNSPECIFIED' && r.name !== entry.name)
-              );
+              const remCurrent = rem.entryReferences.find(r => r.name === entry.name) || rem.entryReferences[0];
+              const remOther = rem.entryReferences.find(r => r !== remCurrent) || rem.entryReferences[1];
               return (
                 rem.entryLinkType === localLink.entryLinkType &&
-                remTarget?.name === locTarget?.name &&
-                remSource?.path === locSource?.path
+                remOther?.name === locOther?.name &&
+                remCurrent?.path === locCurrent?.path &&
+                remOther?.path === locOther?.path
               );
             });
 
             if (!foundRemote) {
               if (options?.dryRun) {
-                console.log(`[DRY-RUN] Create EntryLink: ${localLink.entryLinkType} from ${locSource?.name} to ${locTarget?.name}`);
+                console.log(`[DRY-RUN] Create EntryLink: ${localLink.entryLinkType} from ${locCurrent?.name} to ${locOther?.name}`);
               } else {
                 await this._catalog.createEntryLink(
                   project,
