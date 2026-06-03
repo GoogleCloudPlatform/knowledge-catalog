@@ -18,6 +18,8 @@ export interface InitOptions {
 
 export interface PushOptions {
   force?: boolean;
+  allowPartial?: boolean;
+  dryRun?: boolean;
   validateOnly?: boolean;
 }
 

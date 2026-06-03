@@ -42,6 +42,8 @@ cli.command('pull', 'Pull catalog entries')
 
 cli.command('push', 'Push catalog entries')
    .option('--force', 'Force push changes')
+   .option('--allow-partial', 'Skip conflicting aspects and push clean ones')
+   .option('--dry-run', 'Preview changes without modifying GCP')
    .option('--validate-only', 'Only validate changes without applying')
    .action(async (options) => {
       let exitCode = 1;
