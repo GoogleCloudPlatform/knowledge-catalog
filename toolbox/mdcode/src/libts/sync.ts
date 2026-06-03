@@ -2,7 +2,7 @@
 //
 
 import * as gcp from './gcp';
-import { CatalogSnapshot } from './snapshot';
+import { CatalogSnapshot, toLocalEntry } from './snapshot';
 import { CatalogState } from './state';
 import { calculateEntryChecksum, calculateAspectChecksum } from './checksum';
 
@@ -33,23 +33,81 @@ export class CatalogSync {
     this._snapshot = snapshot;
   }
 
-  // Lists metadata in the Catalog service to create or update the local snapshot.
-  async pull(): Promise<SyncResult> {
+  async pull(options: { force?: boolean, allowPartial?: boolean, dryRun?: boolean } = {}): Promise<SyncResult> {
+    const statusRes = await this.status();
+    const locallyModified = new Set(statusRes.changes.filter(c => c.status !== 'Unchanged').map(c => c.name));
+
+    if (locallyModified.size > 0 && !options.force && !options.allowPartial && !options.dryRun) {
+        return { success: false, details: `Cannot pull: you have unpushed local modifications. Use --force to overwrite or --allow-partial to skip conflicting entries.` };
+    }
+
     const state = new CatalogState(this._snapshot.basePath);
     try {
-      await state.lock();
+      if (!options.dryRun) {
+          await state.lock();
+      }
       state.load();
 
       const entries = this._snapshot.manifest.source.entries(this._catalog.context);
       const pulledEntries = new Set<string>();
+      const skippedEntries = new Set<string>();
       
       for await (const entry of entries) {
         if (this._snapshot.entryTypes.size && !this._snapshot.entryTypes.has(entry.entryType)) {
           continue;
         }
 
-        // TODO: Need to populate type info if its a type we haven't seen.
-        // TODO: Handle local modification conflicts.
+        const localName = this._snapshot.manifest.source.localName(entry);
+        
+        let conflictDetected = false;
+        let coreModified = false;
+        const modifiedAspects = new Set<string>();
+
+        if (locallyModified.has(localName)) {
+            const localEntry = await this._snapshot.lookupEntry(localName);
+            const stateEntry = state.getEntry(localName);
+            
+            if (!stateEntry || calculateEntryChecksum(localEntry) !== stateEntry.entryChecksum) {
+                coreModified = true;
+            }
+            
+            if (localEntry.aspects) {
+                for (const [aspectKey, aspectData] of Object.entries(localEntry.aspects)) {
+                    if (!stateEntry || stateEntry.aspects?.[aspectKey] !== calculateAspectChecksum(aspectData)) {
+                        modifiedAspects.add(aspectKey);
+                    }
+                }
+            }
+            if (stateEntry?.aspects) {
+                for (const aspectKey of Object.keys(stateEntry.aspects)) {
+                    if (!localEntry.aspects || !localEntry.aspects[aspectKey]) {
+                        modifiedAspects.add(aspectKey);
+                    }
+                }
+            }
+            
+            if (coreModified || modifiedAspects.size > 0) {
+                conflictDetected = true;
+            }
+            
+            if (conflictDetected) {
+                if (options.dryRun && !options.force && !options.allowPartial) {
+                    console.log(`[Dry Run] Conflict: ${localName} has local modifications (would abort pull)`);
+                    skippedEntries.add(localName);
+                    continue;
+                }
+                
+                if (!options.force && !options.allowPartial) {
+                    return { success: false, details: `Cannot pull: you have unpushed local modifications on ${localName}. Use --force to overwrite or --allow-partial to skip conflicting entries/aspects.` };
+                }
+
+                if (!options.force && options.allowPartial) {
+                    if (options.dryRun) {
+                       console.log(`[Dry Run] Partial Pull: preserving local modifications for ${localName}`);
+                    }
+                }
+            }
+        }
 
         const nameParts = entry.name.split('/');
         const res = await this._catalog.lookupEntry(nameParts[1], nameParts[3], entry.name,
@@ -61,22 +119,33 @@ export class CatalogSync {
           continue;
         }
 
-        await this._snapshot._storeEntry(res.result);
-
-        // Update state tracking
-        const localName = this._snapshot.manifest.source.localName(res.result);
         pulledEntries.add(localName);
-        
-        const localEntry = await this._snapshot.lookupEntry(localName);
+
+        if (options.dryRun) {
+            console.log(`[Dry Run] Would pull and update ${localName}`);
+            continue;
+        }
+
+        if (conflictDetected && !options.force && options.allowPartial) {
+             await this._snapshot._storeEntry(res.result, {
+                 core: coreModified,
+                 aspects: Array.from(modifiedAspects)
+             });
+        } else {
+             await this._snapshot._storeEntry(res.result);
+        }
+
+        // Update state tracking with the fetched remote entry, so base state matches remote
+        const remoteAsLocal = toLocalEntry(res.result, localName);
         const aspectChecksums: Record<string, string> = {};
-        if (localEntry.aspects) {
-          for (const [aspectKey, aspectData] of Object.entries(localEntry.aspects)) {
+        if (remoteAsLocal.aspects) {
+          for (const [aspectKey, aspectData] of Object.entries(remoteAsLocal.aspects)) {
             aspectChecksums[aspectKey] = calculateAspectChecksum(aspectData);
           }
         }
 
         state.updateEntry(localName, {
-          entryChecksum: calculateEntryChecksum(localEntry),
+          entryChecksum: calculateEntryChecksum(remoteAsLocal),
           lastSyncTime: new Date().toISOString(),
           aspects: aspectChecksums,
         });
@@ -85,24 +154,34 @@ export class CatalogSync {
       // Cleanup entries that no longer exist remotely or are no longer in scope
       const existingEntries = await this._snapshot.listEntries();
       for (const name of existingEntries) {
-        if (!pulledEntries.has(name)) {
-           await this._snapshot._deleteEntry(name);
+        if (!pulledEntries.has(name) && !skippedEntries.has(name) && (!locallyModified.has(name) || options.force)) {
+           if (options.dryRun) {
+               console.log(`[Dry Run] Would delete orphaned entry ${name}`);
+           } else {
+               await this._snapshot._deleteEntry(name);
+           }
         }
       }
       for (const name of state.listEntries()) {
-        if (!pulledEntries.has(name)) {
-           state.deleteEntry(name);
+        if (!pulledEntries.has(name) && !skippedEntries.has(name)) {
+           if (!options.dryRun) {
+               state.deleteEntry(name);
+           }
         }
       }
 
-      state.save();
+      if (!options.dryRun) {
+          state.save();
+      }
       return { success: true };
     }
     catch (e: any) {
       return { success: false, details: e.message };
     }
     finally {
-      await state.unlock();
+      if (!options.dryRun) {
+          await state.unlock();
+      }
     }
   }
 
