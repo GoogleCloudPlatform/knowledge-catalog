@@ -104,7 +104,14 @@ function runScenario(scenario: any) {
             }
             break;
           case 'push':
-            await sync.push(params.options);
+            const pushRes = await sync.push(params.options);
+            if (params.assert) {
+                if (params.assert.success !== undefined) {
+                    expect(pushRes.success).toBe(params.assert.success);
+                }
+            } else if (!pushRes.success) {
+                throw new Error(`Push failed: ${pushRes.details}`);
+            }
             break;
           case 'listEntries':
             console.log(await snapshot.listEntries());
@@ -119,6 +126,17 @@ function runScenario(scenario: any) {
                   await fs.promises.mkdir(path.dirname(absolutePath), { recursive: true });
                   await fs.promises.writeFile(absolutePath, content as string, 'utf8');
                }
+            }
+            break;
+          case 'updateRemoteEntry':
+            const remoteEntry = (catalog as any).mockEntries.find((e: any) => e.name === params.name);
+            if (remoteEntry) {
+                // deeply merge aspects
+                if (params.fields.aspects) {
+                    remoteEntry.aspects = { ...remoteEntry.aspects, ...params.fields.aspects };
+                }
+                // deeply merge other fields as needed, or just Object.assign for now
+                Object.assign(remoteEntry, params.fields);
             }
             break;
           case 'updateEntry':
