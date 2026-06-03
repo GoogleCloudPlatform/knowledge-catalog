@@ -6,19 +6,17 @@ import * as path from 'node:path';
 import * as glob from 'glob';
 import * as yaml from 'yaml';
 import { CatalogLayout } from '../layout';
-import { CatalogSource } from '../source';
 import * as md from '../metadata';
+
 
 export class StandardLayout implements CatalogLayout {
 
   private readonly _catalogPath: string;
-  private readonly _source: CatalogSource;
 
   private readonly _index = new Map<string, string>();
 
-  constructor(catalogPath: string, source: CatalogSource) {
+  constructor(catalogPath: string) {
     this._catalogPath = catalogPath;
-    this._source = source;
   }
 
   async init(): Promise<void> {

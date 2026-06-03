@@ -26,7 +26,7 @@ export class BigQueryDatasetSource implements CatalogSource {
     const bigQuery = new bq.BigQueryClient(ctx);
     const catalog = new gcp.CatalogClient(ctx);
 
-    for (const [datasetName, dsResource] of this._datasets.entries()) {
+    for (const [_, dsResource] of this._datasets.entries()) {
       const project = dsResource.datasetReference.projectId;
       const dataset = dsResource.datasetReference.datasetId;
 

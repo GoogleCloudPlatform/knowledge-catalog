@@ -2,7 +2,6 @@
 //
 
 import * as md from './metadata';
-import * as src from './source';
 import { StandardLayout } from './layouts/standard';
 import { DocumentsLayout } from './layouts/documents';
 
@@ -24,13 +23,12 @@ export interface CatalogLayout {
 
 
 export function createLayout(layout: Layouts,
-                             catalogPath: string,
-                             source: src.CatalogSource): CatalogLayout {
+                             catalogPath: string): CatalogLayout {
   switch (layout) {
     case Layouts.STANDARD:
-      return new StandardLayout(catalogPath, source);
+      return new StandardLayout(catalogPath);
     case Layouts.DOCUMENTS:
-      return new DocumentsLayout(catalogPath, source);
+      return new DocumentsLayout(catalogPath);
     default:
       throw new Error(`Unknown layout type: ${layout}`);
   }

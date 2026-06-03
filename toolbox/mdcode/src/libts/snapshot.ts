@@ -29,7 +29,7 @@ export class CatalogSnapshot {
     this._ctx = ctx;
 
     const catalogPath = path.join(this.basePath, 'catalog');
-    this._layout = createLayout(manifest.source.layout, catalogPath, manifest.source);
+    this._layout = createLayout(manifest.source.layout, catalogPath);
   }
 
   static async fromPath(basePath: string, ctx: gcp.ApiContext): Promise<CatalogSnapshot> {
@@ -75,6 +75,9 @@ export class CatalogSnapshot {
       if (f == 'resource') {
         if (!existingEntry.resource) {
           existingEntry.resource = {};
+        }
+        if (!entry.resource) {
+          entry.resource = {};
         }
         existingEntry.resource.description = entry.resource.description;
       }
