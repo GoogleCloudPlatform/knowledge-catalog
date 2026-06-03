@@ -7,6 +7,8 @@ import * as path from 'node:path';
 import * as yaml from 'yaml';
 import * as md from '../metadata';
 import { CatalogLayout } from '../layout';
+import { CatalogSource } from '../source';
+import { CatalogManifest } from '../manifest';
 
 const OVERVIEW_ASPECT_KEY = 'dataplex-types.global.overview';
 const DEFAULT_ENTRY_TYPE = 'dataplex-types.global.generic';
@@ -14,18 +16,23 @@ const DEFAULT_ENTRY_TYPE = 'dataplex-types.global.generic';
 
 export class DocumentsLayout implements CatalogLayout {
 
-  private _catalogPath: string = '';
+  private readonly _catalogPath: string;
+  private readonly _source: CatalogSource;
+  private readonly _manifest: CatalogManifest;
 
   private readonly _index = new Map<string, string>();
 
-  constructor(catalogPath: string) {
+  constructor(catalogPath: string, source: CatalogSource, manifest: CatalogManifest) {
     this._catalogPath = catalogPath;
+    this._source = source;
+    this._manifest = manifest;
   }
 
   async init(): Promise<void> {
     this._index.clear();
     // Temporary reference to satisfy TS compiler
     this._source;
+    this._manifest;
 
     if (!fs.existsSync(this._catalogPath)) {
       return;
@@ -120,7 +127,7 @@ function deriveEntryNameFromPath(absolutePath: string, catalogPath: string): str
   return rel.replace(/\.md$/, '');
 }
 
-export function parseMarkdown(content: string): { entry: md.Entry|null; body: string } {
+export function parseMarkdown(content: string): { entry: md.Entry | null; body: string } {
   const lines = content.split(/\r?\n/);
   if (lines[0] !== '---') {
     return { entry: null, body: content };

@@ -50,6 +50,7 @@ assert:
   fileSystem:
     catalog/p.d.yaml:
       - contains: "name: p.d"
+    catalog/p.d.overview.md:
       - contains: "New aspect description"
   catalog:
     entries:
