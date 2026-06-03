@@ -137,21 +137,29 @@ Update `CatalogClient` to call `_fixEntryLink` before returning responses:
 
 Integrate target translation, type-alias mappings, and file writing configurations.
 
-### 3.1. Mapping and Alias Serialization ([src/libts/snapshot.ts](file:///Users/eeshadutta/knowledge-catalog/toolbox/mdcode/src/libts/snapshot.ts))
+### 3.1. Mapping and Alias Serialization ([src/libts/snapshot.ts](file:///usr/local/google/home/eeshadutta/knowledge-catalog/toolbox/mdcode/src/libts/snapshot.ts))
 
-1. **Update `toLocalEntry`:**
+1. **Update `toLocalEntry` & Target Resolution (`toLocalTarget`):**
    * Extract and parse the `id` from the relative EntryLink resource name (the last segment of `link.name`).
    * Translate incoming fully-qualified `entryLinkType` names into human-readable system or custom aliases (e.g., rewrite `dataplex-types.global.definition` to `definition`).
    * Resolve project identifiers securely using the matched project IDs.
    * **Inlined Aspects:** Iterate over `link.aspects`. For each aspect, resolve its key to a human-readable alias (e.g., `dataplex-types.global.schema-join` becomes `schema-join`). Place the aspect data directly on the `EntryLink` object under this alias key, rather than wrapping it in an `aspects:` object.
    * Correctly associate schema-inlined links: when `sourceRef.path` is present, split the path and inline the linkage directly inside `schema.fields` of the corresponding column aspect.
+   * **Handling Specific EntryLink Types:**
+     * **`definition` (and synonym/related) links:** The remote target is a glossary term UID path (`projects/{project}/locations/{location}/glossaries/{glossaryId}/terms/{termId}`). During pull, `toLocalTarget` parses this path, calls the specific `getGlossary` and `getGlossaryTerm` endpoints on `CatalogClient` (using the target project and location), and retrieves their human-readable display names (caching them). The target is formatted as `targetProject.targetLocation.GlossaryDisplayName.TermDisplayName`. If lookup fails, it safely falls back to the original UIDs. The original UID path is preserved in the local `id` field (e.g. `projects/project/locations/location/glossaries/uid/terms/uid`) to support mapping back.
+     * **`schema-join` links:** The target represents a BigQuery dataset or table. During pull, `toLocalTarget` parses the target path, resolves project numbers to project IDs via CRM context, and formats it as `projectId.dataset` or `projectId.dataset.table`. The join conditions and attributes are represented as inlined aspects (e.g., `schema-join: { ... }`) directly on the link object.
+     * **Generic Fallback links:** If the link target is a general EntryGroup entry (4 parts: `projects/{project}/locations/{location}/entryGroups/{entryGroup}/entries/{entryId}`), `toLocalTarget` normalizes the project number to project ID and formats it as `projectId.location.entryGroup.entryId`. For any other formats, it attempts mapping using the manifest's `tryGetLocalName` (replacing slashes with dots) or falls back to the raw service name.
 
-2. **Update `toServiceEntryLinks`:**
+2. **Update `toServiceEntryLinks` & Mapping Back (`fromLocalTarget`):**
    * Extract top-level `.links` and column-level `.links`.
-   * Reconstruct the API `EntryLink` name: if `id` is present locally, append it to the EntryGroup's links path.
    * Translate short aliases back to fully-qualified type references (`resolveEntryLinkType`).
    * **Extract Inlined Aspects:** Scan for any keys on the local `EntryLink` object that are not `target` or `id`. Treat these keys as aspect aliases, resolve them to their fully-qualified aspect type names, and reconstruct the `aspects` record for the API payload.
    * Build outbound `EntryLink` objects with proper directional flags (`SOURCE` and `TARGET`) and schema path configurations.
+   * **Mapping Targets Back to Service Names:**
+     * **`definition` (and synonym/related) links:** When serializing a glossary link type, if `link.id` contains a fully qualified glossary path (retaining slashes `/`), the serializer uses it to reconstruct the target service name exactly: `projects/{catalogProject}/locations/{catalogLocation}/entryGroups/@dataplex/entries/${link.id}`. This ensures display names never leak into target names on push.
+     * **`schema-join` links:** For 2-part (`project.dataset`) or 3-part (`project.dataset.table`) targets, `fromLocalTarget` maps them back to the system `@bigquery` entries path: `projects/{catalogProject}/locations/{catalogLocation}/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/{project}/datasets/{dataset}[/tables/{table}]`.
+     * **Generic Fallback links:** For 4-part targets (`project.location.entryGroup.entryId`), it maps them back directly to the corresponding user-managed entry path: `projects/{project}/locations/{location}/entryGroups/{entryGroup}/entries/{entryId}`. If `manifest` is present, it uses `manifest.source.serviceName(localTarget)`; otherwise, it returns the raw `localTarget`.
+   * Reconstruct the API `EntryLink` name: if `id` is present locally and does not contain a slash `/` (meaning it represents a link resource ID, not a target glossary path), append it to the EntryGroup's links path: `projects/{project}/locations/{location}/entryGroups/{entryGroupId}/entryLinks/{linkId}`.
 
 ### 3.2. Layout Parsers
 * **Standard Layout ([src/libts/layouts/standard.ts](file:///Users/eeshadutta/knowledge-catalog/toolbox/mdcode/src/libts/layouts/standard.ts)):** Modify YAML reader/writer to preserve `.links` structure on load/save actions.
