@@ -205,6 +205,13 @@ export class CatalogSnapshot {
       this._aspectTypes
     );
   }
+
+  // Deletes an entry from the locally managed catalog snapshot without validation.
+  // This is only meant to be used within the syncing process (as part of pull operations)
+  // to clean up orphaned entries.
+  async _deleteEntry(name: string): Promise<void> {
+    await this._layout.deleteEntry(name);
+  }
 }
 
 // Converts a Dataplex entry into the local metadata representation.

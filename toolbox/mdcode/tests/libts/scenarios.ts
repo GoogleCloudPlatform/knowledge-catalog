@@ -98,7 +98,10 @@ function runScenario(scenario: any) {
         const { action, ...params } = actionStep;
         switch (action) {
           case 'pull':
-            await sync.pull();
+            const pullRes = await sync.pull();
+            if (!pullRes.success) {
+                throw new Error(`Pull failed: ${pullRes.details}`);
+            }
             break;
           case 'push':
             await sync.push(params.options);
@@ -114,6 +117,19 @@ function runScenario(scenario: any) {
             break;
           case 'deleteEntry':
             await snapshot.deleteEntry(params.name);
+            break;
+          case 'status':
+            const statusRes = await sync.status();
+            if (params.assert) {
+                expect(statusRes.modified).toBe(params.assert.modified);
+                if (params.assert.changes) {
+                    for (const expectedChange of params.assert.changes) {
+                        const actual = statusRes.changes.find((c: any) => c.name === expectedChange.name);
+                        expect(actual).toBeDefined();
+                        expect(actual?.status).toBe(expectedChange.status);
+                    }
+                }
+            }
             break;
           default:
             throw new Error(`Unknown action: ${action}`);

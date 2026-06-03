@@ -53,6 +53,20 @@ cli.command('push', 'Push catalog entries')
       process.exit(exitCode);
    });
 
+cli.command('status', 'Show local status of catalog entries')
+   .action(async () => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.status();
+      }
+      catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+      
+      process.exit(exitCode);
+   });
+
 
 cli.command('mcp', 'Run the Model Context Protocol (MCP) server')
    .option('--path <path>', 'Path to the catalog snapshot root directory')
