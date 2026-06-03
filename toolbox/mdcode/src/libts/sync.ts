@@ -30,12 +30,11 @@ export class CatalogSync {
   }
 
   // Lists metadata in the Catalog service to create or update the local snapshot.
-  async pull(options?: { dryRun?: boolean; }): Promise<SyncResult> {
+  async pull(): Promise<SyncResult> {
     try {
       const entries = this._snapshot.manifest.source.entries(this._catalog.context);
       
       const snapshotLinks = this._snapshot.manifest.snapshotConfig?.entryLinks;
-      const hasSnapshotLinks = snapshotLinks !== undefined && snapshotLinks.length > 0;
 
       let linksMap = new Map<string, dataplex.EntryLink[]>();
       const isEntryGroupScope =
@@ -98,11 +97,7 @@ export class CatalogSync {
           }
         }
 
-        if (options?.dryRun) {
-          console.log(`[DRY-RUN] Pull Entry: ${entry.name}`);
-        } else {
-          await this._snapshot._storeEntry(res.result, entryLinks.length ? entryLinks : undefined);
-        }
+        await this._snapshot._storeEntry(res.result, entryLinks.length ? entryLinks : undefined);
       }
       return { success: true };
     }
@@ -112,7 +107,7 @@ export class CatalogSync {
   }
 
   // Pushes local metadata to the Catalog service to publish/deploy it.
-  async push(options?: { force?: boolean, validateOnly?: boolean; dryRun?: boolean; }): Promise<SyncResult> {
+  async push(options?: { force?: boolean, validateOnly?: boolean; }): Promise<SyncResult> {
     const entries = await this._snapshot.listEntries();
 
     for (const name of entries) {
@@ -143,13 +138,9 @@ export class CatalogSync {
       }
 
       if (updateMask.length) {
-        if (options?.dryRun) {
-          console.log(`[DRY-RUN] Modify Entry ${entry.name} (updateMask: ${updateMask.join(',')}, aspects: ${aspectKeys.join(',')})`);
-        } else {
-          const res = await this._catalog.modifyEntry(project, location, entry, updateMask, aspectKeys);
-          if (res.status !== 200 || !res.result) {
-            return { success: false, details: `Failed to update entry ${name}: ${res.message || res.status}` };
-          }
+        const res = await this._catalog.modifyEntry(project, location, entry, updateMask, aspectKeys);
+        if (res.status !== 200 || !res.result) {
+          return { success: false, details: `Failed to update entry ${name}: ${res.message || res.status}` };
         }
       }
 
@@ -198,16 +189,12 @@ export class CatalogSync {
               if (!foundLocal) {
                 const parts = remoteLink.name.split('/');
                 const linkName = parts[parts.length - 1];
-                if (options?.dryRun) {
-                  console.log(`[DRY-RUN] Delete EntryLink: ${remoteLink.name}`);
-                } else {
-                  await this._catalog.deleteEntryLink(
-                    project,
-                    location,
-                    entryGroup,
-                    linkName
-                  );
-                }
+                await this._catalog.deleteEntryLink(
+                  project,
+                  location,
+                  entryGroup,
+                  linkName
+                );
               }
             }
           }
@@ -228,16 +215,12 @@ export class CatalogSync {
             });
 
             if (!foundRemote) {
-              if (options?.dryRun) {
-                console.log(`[DRY-RUN] Create EntryLink: ${localLink.entryLinkType} from ${locCurrent?.name} to ${locOther?.name}`);
-              } else {
-                await this._catalog.createEntryLink(
-                  project,
-                  location,
-                  entryGroup,
-                  localLink
-                );
-              }
+              await this._catalog.createEntryLink(
+                project,
+                location,
+                entryGroup,
+                localLink
+              );
             } else {
               const localAspectsJson = JSON.stringify(localLink.aspects || {});
               const remoteAspectsJson = JSON.stringify(
@@ -254,22 +237,18 @@ export class CatalogSync {
               if (localAspectsJson !== remoteAspectsJson) {
                 const parts = foundRemote.name.split('/');
                 const linkName = parts[parts.length - 1];
-                if (options?.dryRun) {
-                  console.log(`[DRY-RUN] Update EntryLink aspects for ${foundRemote.name}`);
-                } else {
-                  await this._catalog.deleteEntryLink(
-                    project,
-                    location,
-                    entryGroup,
-                    linkName
-                  );
-                  await this._catalog.createEntryLink(
-                    project,
-                    location,
-                    entryGroup,
-                    localLink
-                  );
-                }
+                await this._catalog.deleteEntryLink(
+                  project,
+                  location,
+                  entryGroup,
+                  linkName
+                );
+                await this._catalog.createEntryLink(
+                  project,
+                  location,
+                  entryGroup,
+                  localLink
+                );
               }
             }
           }
