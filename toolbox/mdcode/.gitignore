@@ -2,5 +2,6 @@ build/
 dist/
 demo/
 node_modules/
-*_plan.md
-
+catalog.yaml
+catalog/
+tests/scenarios/
