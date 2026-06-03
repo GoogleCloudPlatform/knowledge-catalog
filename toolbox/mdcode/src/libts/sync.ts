@@ -3,6 +3,8 @@
 
 import * as gcp from './gcp';
 import { CatalogSnapshot } from './snapshot';
+import { CatalogState } from './state';
+import { calculateEntryChecksum, calculateAspectChecksum } from './checksum';
 
 export interface SyncResult {
   success: boolean;
@@ -29,7 +31,11 @@ export class CatalogSync {
 
   // Lists metadata in the Catalog service to create or update the local snapshot.
   async pull(): Promise<SyncResult> {
+    const state = new CatalogState(this._snapshot.basePath);
     try {
+      await state.lock();
+      state.load();
+
       const entries = this._snapshot.manifest.source.entries(this._catalog.context);
       
       for await (const entry of entries) {
@@ -52,11 +58,32 @@ export class CatalogSync {
         }
 
         await this._snapshot._storeEntry(res.result);
+
+        // Update state tracking
+        const localName = this._snapshot.manifest.source.localName(res.result);
+        const localEntry = await this._snapshot.lookupEntry(localName);
+        const aspectChecksums: Record<string, string> = {};
+        if (localEntry.aspects) {
+          for (const [aspectKey, aspectData] of Object.entries(localEntry.aspects)) {
+            aspectChecksums[aspectKey] = calculateAspectChecksum(aspectData);
+          }
+        }
+
+        state.updateEntry(localName, {
+          entryChecksum: calculateEntryChecksum(localEntry),
+          lastSyncTime: new Date().toISOString(),
+          aspects: aspectChecksums,
+        });
       }
+
+      state.save();
       return { success: true };
     }
     catch (e: any) {
       return { success: false, details: e.message };
+    }
+    finally {
+      await state.unlock();
     }
   }
 

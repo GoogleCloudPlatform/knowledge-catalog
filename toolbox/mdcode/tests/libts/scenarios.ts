@@ -131,13 +131,23 @@ function runScenario(scenario: any) {
           }
           else {
             expect(fs.existsSync(absolutePath)).toBe(true);
-            if (typeof condition === 'string') {
-              const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
-              expect(actualContent.trim()).toBe(condition.trim());
-            }
-            else if (condition && typeof condition === 'object' && 'contains' in condition) {
-              const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
-              expect(actualContent).toContain(condition.contains);
+            const runAssertion = (cond: any) => {
+              if (typeof cond === 'string') {
+                const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
+                expect(actualContent.trim()).toBe(cond.trim());
+              }
+              else if (cond && typeof cond === 'object' && 'contains' in cond) {
+                const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
+                expect(actualContent).toContain(cond.contains);
+              }
+            };
+
+            if (Array.isArray(condition)) {
+              for (const cond of condition) {
+                runAssertion(cond);
+              }
+            } else {
+              runAssertion(condition);
             }
           }
         }
