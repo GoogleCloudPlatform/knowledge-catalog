@@ -34,7 +34,11 @@ export class CatalogSync {
     this._snapshot = snapshot;
   }
 
-  async pull(options: { force?: boolean, allowPartial?: boolean, dryRun?: boolean } = {}): Promise<SyncResult> {
+  async pull(options: { force?: boolean, allowPartial?: boolean, dryRun?: boolean, conflictResolution?: 'accept-local' | 'accept-remote' | 'strict' } = {}): Promise<SyncResult> {
+    if (options.conflictResolution === 'accept-remote') {
+        options.force = true;
+    }
+
     const statusRes = await this.status();
     const locallyModified = new Set(statusRes.changes.filter(c => c.status !== 'Unchanged').map(c => c.name));
 
@@ -186,7 +190,11 @@ export class CatalogSync {
     }
   }
 
-  async push(options: { force?: boolean, allowPartial?: boolean, dryRun?: boolean, validateOnly?: boolean; } = {}): Promise<SyncResult> {
+  async push(options: { force?: boolean, allowPartial?: boolean, dryRun?: boolean, validateOnly?: boolean, conflictResolution?: 'accept-local' | 'accept-remote' | 'strict' } = {}): Promise<SyncResult> {
+    if (options.conflictResolution === 'accept-local') {
+        options.force = true;
+    }
+
     const statusRes = await this.status();
     const changesToPush = statusRes.changes.filter(c => c.status !== 'Unchanged');
 
