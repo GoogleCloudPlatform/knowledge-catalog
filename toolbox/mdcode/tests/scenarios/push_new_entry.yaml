@@ -10,7 +10,7 @@ setup:
     - name: projects/p/locations/us/entryGroups/custom-group/entries/custom-entry
       entryType: projects/p/locations/global/entryTypes/custom-type
       entrySource:
-        description: Hellp world
+        description: Hello world
 
   fileSystem:
     catalog.yaml: |
@@ -21,7 +21,7 @@ setup:
 
 actions:
   - action: pull
-  - action: updateEntry
+  - action: createEntry
     entry:
       name: custom-entry
       type: p.global.custom-type
@@ -41,4 +41,4 @@ assert:
       - name: projects/p/locations/us/entryGroups/custom-group/entries/custom-entry
         entryType: projects/p/locations/global/entryTypes/custom-type
         entrySource:
-          description: Hello world
+          description: "Hello world"

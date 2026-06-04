@@ -44,6 +44,9 @@ export class CatalogSync {
         const nameParts = entry.name.split('/');
         const res = await this._catalog.lookupEntry(nameParts[1], nameParts[3], entry.name,
                                                     [...this._snapshot.aspectTypes.keys()]);
+        // The server will respond with 403 permission denied for both resource not exist or 
+        // insufficient permission. We cannot tell if a resource not exist or user does not 
+        // have the access. Thus using 200 for an ensured result.
         if (res.status != 200 || !res.result) {
           continue;
         }
@@ -110,7 +113,6 @@ export class CatalogSync {
       if (res.status !== 200 || !res.result) {
         return { success: false, details: `Failed to update entry ${name}: ${res.message || res.status}` };
       }
-      console.log(`Successfully pushed entry ${entry.name}`);
     }
 
     return { success: true };
