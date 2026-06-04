@@ -145,7 +145,7 @@ function runScenario(scenario: any) {
 
       // Assert expectations - Catalog Service
       if (scenario.assert?.catalog?.entries) {
-        expect(catalog.mockEntries).toEqual(scenario.assert.catalog.entries);
+        expect(JSON.parse(JSON.stringify(catalog.mockEntries))).toEqual(JSON.parse(JSON.stringify(scenario.assert.catalog.entries)));
       }
     });
   });

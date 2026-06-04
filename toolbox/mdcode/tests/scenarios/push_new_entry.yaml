@@ -1,4 +1,4 @@
-name: push_custom
+name: push_new_entry
 description: Push Custom entry modifications
 setup:
   catalog:
@@ -7,10 +7,10 @@ setup:
     entryTypes:
       - name: projects/p/locations/global/entryTypes/custom-type
     entries:
-    - name: projects/p/locations/us/entryGroups/custom-group/entries/custom-entry
-      entryType: projects/p/locations/global/entryTypes/custom-type
-      entrySource:
-        description: Hello world
+      - name: projects/p/locations/us/entryGroups/custom-group/entries/existing-entry
+        entryType: projects/p/locations/global/entryTypes/custom-type
+        entrySource:
+          description: Old custom description
 
   fileSystem:
     catalog.yaml: |
@@ -19,16 +19,16 @@ setup:
         entries:
           - p.global.custom-type
 
+
 actions:
   - action: pull
   - action: createEntry
+    name: custom-entry
     entry:
       name: custom-entry
       type: p.global.custom-type
       resource:
         description: Hello world
-    fields:
-      - resource
   - action: push
 
 assert:
@@ -38,7 +38,12 @@ assert:
       - contains: "description: Hello world"
   catalog:
     entries:
+      - name: projects/p/locations/us/entryGroups/custom-group/entries/existing-entry
+        entryType: projects/p/locations/global/entryTypes/custom-type
+        entrySource:
+          description: Old custom description
       - name: projects/p/locations/us/entryGroups/custom-group/entries/custom-entry
         entryType: projects/p/locations/global/entryTypes/custom-type
         entrySource:
           description: "Hello world"
+        aspects: {}
