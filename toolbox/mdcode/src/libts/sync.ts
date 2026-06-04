@@ -214,6 +214,7 @@ export class CatalogSync {
         if (!entry) continue;
         
         const mdEntry = toLocalEntry(entry, localName);
+        const rawLocalEntry = await this._snapshot.lookupEntry(localName);
 
         const stateEntry = state.getEntry(localName);
         const nameParts = entry.name.split('/');
@@ -310,6 +311,53 @@ export class CatalogSync {
            }
         }
 
+        if (stateEntry?.aspects) {
+           for (const [aspectKey, baseChecksum] of Object.entries(stateEntry.aspects)) {
+              if (!mdEntry.aspects || !(aspectKey in mdEntry.aspects)) {
+                 if (rawLocalEntry.aspects && (aspectKey in rawLocalEntry.aspects)) {
+                     // Filtered out by publishing configuration, not actually deleted
+                     continue;
+                 }
+                 
+                 let aspectConflict = false;
+                 
+                 if (remoteEntry && remoteEntry.aspects?.[aspectKey]) {
+                     const remoteAspectData = remoteEntry.aspects[aspectKey];
+                     const remoteAspectChecksum = calculateAspectChecksum(remoteAspectData);
+                     if (remoteAspectChecksum !== baseChecksum) {
+                         aspectConflict = true;
+                         conflictDetected = true;
+                     }
+                 }
+                 
+                 if (aspectConflict) {
+                     if (options.dryRun && !options.force && !options.allowPartial) {
+                         console.log(`[Dry Run] Conflict: ${localName} aspect ${aspectKey} was modified remotely (would abort push)`);
+                         continue;
+                     }
+                     if (!options.force && !options.allowPartial) {
+                         return { success: false, details: `Cannot push: conflict on ${localName} aspect ${aspectKey}. Use --force to overwrite or --allow-partial to skip.` };
+                     }
+                     if (!options.force && options.allowPartial) {
+                         if (options.dryRun) {
+                             console.log(`[Dry Run] Partial Push: skipping conflicting aspect ${aspectKey} on ${localName}`);
+                         } else {
+                             const remoteAspectData = remoteEntry!.aspects?.[aspectKey];
+                             if (remoteAspectData) {
+                                 newBaseAspectChecksums[aspectKey] = calculateAspectChecksum(remoteAspectData);
+                             } else {
+                                 delete newBaseAspectChecksums[aspectKey];
+                             }
+                         }
+                         continue;
+                     }
+                 }
+                 
+                 aspectsToPush.push(aspectKey);
+              }
+           }
+        }
+
         if (aspectsToPush.length > 0 || change.status === 'Created' || change.status === 'Modified') {
            if (options.dryRun) {
                console.log(`[Dry Run] Would push ${localName} with aspects: ${aspectsToPush.join(', ')}`);
@@ -323,7 +371,7 @@ export class CatalogSync {
                const tempAspects = entry.aspects;
                const filteredAspects: Record<string, any> = {};
                for (const k of aspectsToPush) {
-                  if (tempAspects) filteredAspects[k] = tempAspects[k];
+                  if (tempAspects && tempAspects[k]) filteredAspects[k] = tempAspects[k];
                }
                entry.aspects = filteredAspects;
                
@@ -335,7 +383,11 @@ export class CatalogSync {
                }
                
                for (const k of aspectsToPush) {
-                   newBaseAspectChecksums[k] = localAspectChecksums[k];
+                   if (localAspectChecksums[k] !== undefined) {
+                       newBaseAspectChecksums[k] = localAspectChecksums[k];
+                   } else {
+                       delete newBaseAspectChecksums[k];
+                   }
                }
            }
         }
