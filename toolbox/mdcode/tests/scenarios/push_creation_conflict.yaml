@@ -54,10 +54,10 @@ actions:
     options:
       dryRun: true
 
-  # Force push should succeed
+  # Force push (conflictResolution: accept-local) should succeed
   - action: push
     options:
-      force: true
+      conflictResolution: accept-local
     assert:
       success: true
 

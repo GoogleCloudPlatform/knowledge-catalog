@@ -21,6 +21,7 @@ export interface PushOptions {
   allowPartial?: boolean;
   dryRun?: boolean;
   validateOnly?: boolean;
+  conflictResolution?: 'accept-local' | 'accept-remote' | 'strict';
 }
 
 
@@ -64,6 +65,7 @@ export interface PullOptions {
   force?: boolean;
   allowPartial?: boolean;
   dryRun?: boolean;
+  conflictResolution?: 'accept-local' | 'accept-remote' | 'strict';
 }
 
 export async function pull(options: PullOptions = {}): Promise<number> {
