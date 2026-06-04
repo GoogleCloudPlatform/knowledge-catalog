@@ -139,6 +139,9 @@ function runScenario(scenario: any) {
                 Object.assign(remoteEntry, params.fields);
             }
             break;
+          case 'createRemoteEntry':
+            (catalog as any).mockEntries.push(params.entry);
+            break;
           case 'updateEntry':
             await snapshot.updateEntry(params.entry, params.fields);
             break;
