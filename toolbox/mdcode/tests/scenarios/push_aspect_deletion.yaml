@@ -67,3 +67,13 @@ assert:
     catalog/p.d.schema.md:
       - contains: "Remote schema base"
     catalog/p.d.overview.md: null
+  catalog:
+    entries:
+      - name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d
+        entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
+        aspects:
+          dataplex-types.global.schema:
+            aspectType: projects/dataplex-types/locations/global/aspectTypes/schema
+            data:
+              content: Remote schema base
+              contentType: MARKDOWN
