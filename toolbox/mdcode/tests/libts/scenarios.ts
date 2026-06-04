@@ -99,7 +99,14 @@ function runScenario(scenario: any) {
         switch (action) {
           case 'pull':
             const pullRes = await sync.pull(params.options);
-            if (!pullRes.success) {
+            if (params.assert) {
+                if (params.assert.success !== undefined) {
+                    expect(pullRes.success).toBe(params.assert.success);
+                }
+                if (params.assert.details !== undefined) {
+                    expect(pullRes.details).toBe(params.assert.details);
+                }
+            } else if (!pullRes.success) {
                 throw new Error(`Pull failed: ${pullRes.details}`);
             }
             break;
@@ -108,6 +115,9 @@ function runScenario(scenario: any) {
             if (params.assert) {
                 if (params.assert.success !== undefined) {
                     expect(pushRes.success).toBe(params.assert.success);
+                }
+                if (params.assert.details !== undefined) {
+                    expect(pushRes.details).toBe(params.assert.details);
                 }
             } else if (!pushRes.success) {
                 throw new Error(`Push failed: ${pushRes.details}`);
