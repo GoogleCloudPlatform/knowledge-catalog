@@ -27,7 +27,7 @@ cli.command('pull', 'Pull catalog entries')
    .option('--force', 'Force pull to overwrite local modifications')
    .option('--allow-partial', 'Skip pulling conflicting entries')
    .option('--dry-run', 'Dry run without modifying local files')
-   .option('--conflict-resolution <strategy>', 'Conflict resolution strategy (accept-local, accept-remote, strict)')
+   .option('--conflict-resolution <strategy>', 'Conflict resolution strategy (accept-remote, strict)')
    .action(async (options) => {
       let exitCode = 1;
       try {
@@ -46,7 +46,7 @@ cli.command('push', 'Push catalog entries')
    .option('--allow-partial', 'Skip conflicting aspects and push clean ones')
    .option('--dry-run', 'Preview changes without modifying GCP')
    .option('--validate-only', 'Only validate changes without applying')
-   .option('--conflict-resolution <strategy>', 'Conflict resolution strategy (accept-local, accept-remote, strict)')
+   .option('--conflict-resolution <strategy>', 'Conflict resolution strategy (accept-local, strict)')
    .action(async (options) => {
       let exitCode = 1;
       try {
