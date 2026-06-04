@@ -270,6 +270,15 @@ function main() {
     }
   );
 
+  spyOn(gcp.CatalogClient.prototype, 'deleteEntry').mockImplementation(
+    async function(project: string, location: string, entryGroup: string, entry: string) {
+      if (currentCatalogMock) {
+        return await currentCatalogMock.deleteEntry(project, location, entryGroup, entry);
+      }
+      return { status: 404, message: 'Not found' };
+    }
+  );
+
   spyOn(gcp.CatalogClient.prototype, 'listEntries').mockImplementation(
     async function* (project: string, location: string, entryGroup: string) {
       if (currentCatalogMock) {

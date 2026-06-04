@@ -205,8 +205,27 @@ export class CatalogSync {
         const localName = change.name;
         
         if (change.status === 'Deleted') {
-           if (options.dryRun) console.log(`[Dry Run] Would delete entry ${localName}`);
-           // Delete not implemented for Catalog service yet, skipping
+           if (this._snapshot.manifest.source.ingestedEntries) {
+              if (options.dryRun) console.log(`[Dry Run] Cannot delete ingested entry ${localName}`);
+              continue;
+           }
+
+           if (options.dryRun) {
+              console.log(`[Dry Run] Would delete entry ${localName}`);
+           } else {
+              const serviceName = this._snapshot.manifest.source.serviceName(localName);
+              const nameParts = serviceName.split('/');
+              const project = nameParts[1];
+              const location = nameParts[3];
+              const entryGroup = nameParts[5];
+              const entry = nameParts[7];
+              
+              const res = await this._catalog.deleteEntry(project, location, entryGroup, entry);
+              if (res.status !== 200) {
+                 return { success: false, details: `Failed to delete entry ${localName}: ${res.message || res.status}` };
+              }
+              state.deleteEntry(localName);
+           }
            continue;
         }
 

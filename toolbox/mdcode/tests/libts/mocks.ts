@@ -100,6 +100,16 @@ export class CatalogClientMock extends gcp.CatalogClient {
     return { status: 404, message: 'Not found' };
   }
 
+  async deleteEntry(project: string, location: string, entryGroup: string, id: string): Promise<gcp.ApiResult<void>> {
+    const name = `projects/${project}/locations/${location}/entryGroups/${entryGroup}/entries/${id}`;
+    const existingIndex = this.mockEntries.findIndex(e => e.name == name);
+    if (existingIndex >= 0) {
+      this.mockEntries.splice(existingIndex, 1);
+      return { status: 200 };
+    }
+    return { status: 404, message: 'Not found' };
+  }
+
   async *listEntries(project: string, location: string,
                      entryGroup: string): AsyncGenerator<gcp.Entry, void, unknown> {
     for (const entry of this.mockEntries) {
