@@ -37,6 +37,8 @@ export class CatalogSync {
   async pull(options: { force?: boolean, allowPartial?: boolean, dryRun?: boolean, conflictResolution?: 'accept-local' | 'accept-remote' | 'strict' } = {}): Promise<SyncResult> {
     if (options.conflictResolution === 'accept-remote') {
         options.force = true;
+    } else if (options.conflictResolution === 'accept-local') {
+        return { success: false, details: 'Invalid conflict-resolution strategy for pull. Allowed values: accept-remote, strict' };
     }
 
     const statusRes = await this.status();
@@ -193,6 +195,8 @@ export class CatalogSync {
   async push(options: { force?: boolean, allowPartial?: boolean, dryRun?: boolean, validateOnly?: boolean, conflictResolution?: 'accept-local' | 'accept-remote' | 'strict' } = {}): Promise<SyncResult> {
     if (options.conflictResolution === 'accept-local') {
         options.force = true;
+    } else if (options.conflictResolution === 'accept-remote') {
+        return { success: false, details: 'Invalid conflict-resolution strategy for push. Allowed values: accept-local, strict' };
     }
 
     const statusRes = await this.status();
