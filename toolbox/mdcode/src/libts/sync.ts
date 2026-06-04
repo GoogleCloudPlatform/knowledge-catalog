@@ -81,15 +81,12 @@ export class CatalogSync {
 
       const exist = await this._catalog.lookupEntry(project, location, entry.name);
       if (exist.status != 200 || !exist.result) {
-        console.log(`entry ${name} does not exist, will try to create the entry.`);
-        
         const entryGroup = nameParts[5];
-        const entryId = nameParts[7];
+        const entryId = nameParts.slice(7).join('/');
         const createEntryRes = await this._catalog.createEntry(project, location, entryGroup, entryId, entry);
         if (createEntryRes.status != 200 || !createEntryRes.result) {
-          console.log(`Failed to push entry ${entry.name}: Failed to create new entry.`);
+          return { success: false, details: `Failed to create entry ${entry.name}: ${createEntryRes.message || createEntryRes.status}` };
         }
-        console.log(`Successfully created and pushed entry ${entry.name}`);
         continue;
       }
 
