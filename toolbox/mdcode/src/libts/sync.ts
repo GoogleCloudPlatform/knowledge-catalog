@@ -422,7 +422,7 @@ export class CatalogSync {
                }
                entry.aspects = filteredAspects;
                
-               const res = await this._catalog.modifyEntry(project, location, entry, updateMask, aspectsToPush);
+               const res = await this._catalog.updateEntry(entry, updateMask, aspectsToPush, true);
                entry.aspects = tempAspects;
                
                if (res.status !== 200 || !res.result) {

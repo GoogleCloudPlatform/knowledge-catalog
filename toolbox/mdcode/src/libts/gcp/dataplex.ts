@@ -133,13 +133,17 @@ export class CatalogClient extends api.ApiClient {
 
   async updateEntry(entry: Entry,
                     updateMask?: string[],
-                    aspectKeys?: string[]): Promise<api.ApiResult<Entry>> {
+                    aspectKeys?: string[],
+                    deleteMissingAspects?: boolean): Promise<api.ApiResult<Entry>> {
     const params: Record<string, any> = {};
     if (updateMask && updateMask.length) {
       params.updateMask = updateMask.join(',');
     }
     if (aspectKeys && aspectKeys.length) {
       params.aspectKeys = aspectKeys;
+    }
+    if (deleteMissingAspects !== undefined) {
+      params.deleteMissingAspects = deleteMissingAspects;
     }
 
     const res = await this._patch<Entry>(entry.name, entry, params);
@@ -226,7 +230,7 @@ async function _fixEntry(entry: Entry, ctx: context.ApiContext): Promise<void> {
     const fixedAspects: Record<string, Aspect> = {};
     for (const [aspectKey, aspectValue] of Object.entries(entry.aspects)) {
       let aspectType = '';
-      if (!aspectValue || Object.keys(aspectValue).length) {
+      if (!aspectValue || Object.keys(aspectValue).length === 0) {
         aspectType = _typeRefToName(aspectKey, 'aspect');
       }
       else {
