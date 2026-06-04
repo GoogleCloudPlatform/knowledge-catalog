@@ -272,17 +272,36 @@ export class CatalogSync {
         }
 
         let remoteEntry: md.Entry | null = null;
-        if (stateEntry) {
-            const res = await this._catalog.lookupEntry(project, location, entry.name, [...this._snapshot.aspectTypes.keys()]);
-            if (res.status === 200 && res.result) {
-               remoteEntry = toLocalEntry(res.result, localName);
-            }
+        const res = await this._catalog.lookupEntry(project, location, entry.name, [...this._snapshot.aspectTypes.keys()]);
+        if (res.status === 200 && res.result) {
+           remoteEntry = toLocalEntry(res.result, localName);
         }
 
         const aspectsToPush: string[] = [];
         const localAspectChecksums: Record<string, string> = {};
         const newBaseAspectChecksums: Record<string, string> = { ...stateEntry?.aspects };
         let conflictDetected = false;
+
+        let skipEntry = false;
+        if (!stateEntry && remoteEntry) {
+            if (!options.force) {
+                conflictDetected = true;
+                if (options.dryRun && !options.allowPartial) {
+                    console.log(`[Dry Run] Conflict: ${localName} already exists remotely (would abort push)`);
+                    continue;
+                }
+                if (!options.allowPartial) {
+                    return { success: false, details: `Cannot push: conflict on ${localName}. It already exists remotely. Use --force to overwrite.` };
+                }
+                if (options.dryRun) {
+                    console.log(`[Dry Run] Partial Push: skipping conflicting entry ${localName}`);
+                }
+                skipEntry = true;
+            }
+        }
+        
+        if (skipEntry) continue;
+
 
         if (mdEntry.aspects) {
            for (const [aspectKey, aspectData] of Object.entries(mdEntry.aspects)) {
@@ -293,10 +312,11 @@ export class CatalogSync {
                  // Locally modified aspect
                  let aspectConflict = false;
                  
-                 if (remoteEntry && stateEntry && stateEntry.aspects?.[aspectKey]) {
-                     const remoteAspectData = remoteEntry.aspects?.[aspectKey];
-                     const remoteAspectChecksum = remoteAspectData ? calculateAspectChecksum(remoteAspectData) : undefined;
-                     if (remoteAspectChecksum !== stateEntry.aspects[aspectKey]) {
+                 if (remoteEntry && remoteEntry.aspects?.[aspectKey]) {
+                     const remoteAspectData = remoteEntry.aspects[aspectKey];
+                     const remoteAspectChecksum = calculateAspectChecksum(remoteAspectData);
+                     const baseChecksum = stateEntry?.aspects?.[aspectKey];
+                     if (remoteAspectChecksum !== baseChecksum) {
                          aspectConflict = true;
                          conflictDetected = true;
                      }

@@ -1,0 +1,70 @@
+name: push_creation_conflict
+description: Verify push detects when a new entry locally already exists remotely
+setup:
+  catalog:
+    entryGroups:
+      - name: projects/p/locations/us/entryGroups/custom-group
+    entryTypes:
+      - name: projects/p/locations/global/entryTypes/custom-type
+    entries: []
+
+  fileSystem:
+    catalog.yaml: |
+      scope: entryGroup.p.us.custom-group
+      snapshot:
+        entries:
+          - p.global.custom-type
+
+actions:
+  # Pull establishes empty base state
+  - action: pull
+    options: {}
+
+  # Create an entry locally
+  - action: createEntry
+    name: custom-entry
+    entry:
+      name: custom-entry
+      type: p.global.custom-type
+      resource:
+        description: Created locally
+
+  - action: status
+    assert:
+      modified: true
+      changes:
+        - name: custom-entry
+          status: Created
+
+  # Simulate remote creation by someone else
+  - action: createRemoteEntry
+    entry:
+      name: projects/p/locations/us/entryGroups/custom-group/entries/custom-entry
+      entryType: projects/p/locations/global/entryTypes/custom-type
+      entrySource:
+        description: Created remotely
+
+  # Push should fail because of creation conflict
+  - action: push
+    assert:
+      success: false
+
+  # Dry run should succeed and print conflicts
+  - action: push
+    options:
+      dryRun: true
+
+  # Force push should succeed
+  - action: push
+    options:
+      force: true
+    assert:
+      success: true
+
+assert:
+  catalog:
+    entries:
+      - name: projects/p/locations/us/entryGroups/custom-group/entries/custom-entry
+        entryType: projects/p/locations/global/entryTypes/custom-type
+        entrySource:
+          description: Created locally
