@@ -133,7 +133,9 @@ export function parseMarkdown(content: string): { entry: md.Entry|null; body: st
   const body = lines.slice(endIndex + 1).join('\n');
 
   const entry = (metadata.catalogEntry ?? {}) as md.Entry;
-  entry.type = metadata.type;
+  entry.type = (typeof metadata.type === 'string' && metadata.type.split('.').length === 3)
+    ? metadata.type
+    : DEFAULT_ENTRY_TYPE;
   entry.resource = entry.resource ?? {}
   entry.resource.displayName = metadata.title;
   entry.resource.description = metadata.description;
