@@ -100,6 +100,9 @@ export class CatalogSync {
         if (entry.entrySource) {
           updateMask.push('entry_source');
         }
+        if (entry.parentEntry) {
+          updateMask.push('parent_entry');
+        }
       }
 
       if (!updateMask.length) {

@@ -10,6 +10,7 @@ import { CatalogLayout } from '../layout';
 
 const OVERVIEW_ASPECT_KEY = 'dataplex-types.global.overview';
 const DEFAULT_ENTRY_TYPE = 'dataplex-types.global.generic';
+const INDEX_ENTRY_LEAF = 'index';
 
 
 export class DocumentsLayout implements CatalogLayout {
@@ -60,6 +61,14 @@ export class DocumentsLayout implements CatalogLayout {
 
     const entry: md.Entry = parsed ?? ({ type: DEFAULT_ENTRY_TYPE, resource: {} } as md.Entry);
     entry.name = name;
+
+    entry.resource = entry.resource ?? {};
+    const parentName = deriveParentLocalName(name, this._index);
+    if (parentName !== undefined) {
+      entry.resource.parent = parentName;
+    } else {
+      delete entry.resource.parent;
+    }
 
     // Ensure the entry's type aspect is present — Dataplex create requires it.
     entry.aspects = entry.aspects ?? {};
@@ -116,6 +125,27 @@ export class DocumentsLayout implements CatalogLayout {
 function deriveEntryNameFromPath(absolutePath: string, catalogPath: string): string {
   const rel = path.relative(catalogPath, absolutePath);
   return rel.replace(/\.md$/, '');
+}
+
+function deriveParentLocalName(name: string, index: Map<string, string>): string | undefined {
+  const segments = name.split('/');
+  const leaf = segments[segments.length - 1];
+
+  let parentDir: string[];
+  if (leaf === INDEX_ENTRY_LEAF) {
+    if (segments.length === 1) {
+      return undefined;
+    }
+    parentDir = segments.slice(0, -2);
+  } else {
+    parentDir = segments.slice(0, -1);
+  }
+
+  const parentName = [...parentDir, INDEX_ENTRY_LEAF].join('/');
+  if (parentName === name || !index.has(parentName)) {
+    return undefined;
+  }
+  return parentName;
 }
 
 export function parseMarkdown(content: string): { entry: md.Entry|null; body: string } {
@@ -182,6 +212,7 @@ export function toMarkdown(entry: md.Entry, body: string): string {
   delete entryClone.resource.description;
   delete entryClone.resource.updateTime;
   delete entryClone.resource.createTime;
+  delete entryClone.resource.parent;
   delete entryClone.type;
   for (const tag of tags) {
     delete entryClone.resource.labels[tag];

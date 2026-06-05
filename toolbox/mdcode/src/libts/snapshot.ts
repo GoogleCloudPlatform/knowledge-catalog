@@ -194,6 +194,9 @@ export class CatalogSnapshot {
     }
 
     const serviceName = this.manifest.source.serviceName(name);
+    if (entry.resource?.parent && !entry.resource.parent.startsWith('projects/')) {
+      entry.resource.parent = this.manifest.source.serviceName(entry.resource.parent);
+    }
     return toServiceEntry(
       entry,
       serviceName,
