@@ -124,7 +124,7 @@ This demo demonstrates publishing an [Open Knowledge Format](https://github.com/
 wiki bundle (a directory of markdown files with YAML frontmatter) into a
 Knowledge Catalog EntryGroup via the Documents Layout. The bundle in
 `okf/catalog/` is a GA4 sample with indexes, references, a dataset, and a
-table — 17 markdown files in total. The Documents Layout maps each `.md`
+table, 17 markdown files in total. The Documents Layout maps each `.md`
 file to an entry whose name is derived from the file path, with the
 markdown body stored on the `dataplex-types.global.overview` aspect.
 
@@ -154,9 +154,9 @@ ls -R catalog
 
 **Modify Metadata Snapshot**
 
-* Edit any markdown file under `catalog/` directly &mdash; both frontmatter
-  fields (`title`, `description`, `tags`) and the markdown body &mdash; then
-  push again.
+* Edit any markdown file under `catalog/` directly. Both frontmatter
+  fields (`title`, `description`, `tags`) and the markdown body can be
+  changed, then push again.
 
 ```bash
 ../../dist/kcmd push
