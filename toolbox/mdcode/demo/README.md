@@ -117,3 +117,55 @@ cat catalog/index.md
 ```bash
 bun cleanup.ts
 ```
+
+## OKF Wiki
+
+This demo demonstrates publishing an [Open Knowledge Format](https://github.com/google/okf)
+wiki bundle (a directory of markdown files with YAML frontmatter) into a
+Knowledge Catalog EntryGroup via the Documents Layout. The bundle in
+`okf/catalog/` is a GA4 sample with indexes, references, a dataset, and a
+table — 17 markdown files in total. The Documents Layout maps each `.md`
+file to an entry whose name is derived from the file path, with the
+markdown body stored on the `dataplex-types.global.overview` aspect.
+
+**Setup**
+
+* Creates an empty Dataplex EntryGroup (`okf_ga4`).
+* Creates a `catalog.yaml` manifest pointing at the EntryGroup.
+* The `catalog/` directory is already populated with the GA4 markdown bundle.
+
+```bash
+bun setup.ts
+cat catalog.yaml
+ls -R catalog
+```
+
+**Publish Metadata Snapshot**
+
+* Push the bundled markdown to Knowledge Catalog. Entry names mirror the
+  file path (e.g. `references/metrics/event_count.md` &rarr; entry
+  `references/metrics/event_count`). Custom `type:` values in frontmatter
+  that aren't valid Dataplex type refs fall back to
+  `dataplex-types.global.generic`.
+
+```bash
+../../dist/kcmd push
+```
+
+**Modify Metadata Snapshot**
+
+* Edit any markdown file under `catalog/` directly &mdash; both frontmatter
+  fields (`title`, `description`, `tags`) and the markdown body &mdash; then
+  push again.
+
+```bash
+../../dist/kcmd push
+```
+
+**Cleanup**
+
+* Deletes the Dataplex EntryGroup
+
+```bash
+bun cleanup.ts
+```
