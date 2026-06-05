@@ -60,6 +60,31 @@ export class CatalogSync {
     }
   }
 
+  async reference(): Promise<SyncResult> {
+    try {
+      const entries = this._snapshot.manifest!.referenceManifest!.source.entries(this._catalog.context);
+      
+      for await (const entry of entries) {
+        if (this._snapshot.referenceEntryTypes.size && !this._snapshot.referenceEntryTypes.has(entry.entryType)) {
+          continue;
+        }
+
+        const nameParts = entry.name.split('/');
+        const res = await this._catalog.lookupEntry(nameParts[1], nameParts[3], entry.name,
+                                                    [...this._snapshot.referenceAspectTypes.keys()]);
+        if (res.status != 200 || !res.result) {
+          continue;
+        }
+
+        await this._snapshot._storeEntry(res.result, true);
+      }
+      return { success: true };
+    }
+    catch (e: any) {
+      return { success: false, details: e.message };
+    }
+  }
+
   // Pushes local metadata to the Catalog service to publish/deploy it.
   async push(options?: { force?: boolean, validateOnly?: boolean; }): Promise<SyncResult> {
     const entries = await this._snapshot.listEntries();
@@ -81,12 +106,15 @@ export class CatalogSync {
 
       const exist = await this._catalog.lookupEntry(project, location, entry.name);
       if (exist.status != 200 || !exist.result) {
+        console.log(`entry ${name} does not exist, will try to create the entry.`);
+        
         const entryGroup = nameParts[5];
-        const entryId = nameParts.slice(7).join('/');
+        const entryId = nameParts[7];
         const createEntryRes = await this._catalog.createEntry(project, location, entryGroup, entryId, entry);
         if (createEntryRes.status != 200 || !createEntryRes.result) {
-          return { success: false, details: `Failed to create entry ${entry.name}: ${createEntryRes.message || createEntryRes.status}` };
+          console.log(`Failed to push entry ${entry.name}: Failed to create new entry.`);
         }
+        console.log(`Successfully created and pushed entry ${entry.name}`);
         continue;
       }
 
@@ -101,6 +129,7 @@ export class CatalogSync {
           updateMask.push('entry_source');
         }
       }
+
 
       if (!updateMask.length) {
         continue;

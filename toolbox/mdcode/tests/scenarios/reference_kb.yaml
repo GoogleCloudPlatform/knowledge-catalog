@@ -1,8 +1,9 @@
-name: pull_kb
-description: Knowledge Base with multiple entries
+name: reference_kb
+description: Reference Knowledge Base with multiple entries
 setup:
   catalog:
     entryGroups:
+      - name: projects/test/locations/us/entryGroups/g1
       - name: projects/t/locations/u/entryGroups/g
     entryTypes:
       - name: projects/dataplex-types/locations/global/entryTypes/generic
@@ -28,25 +29,27 @@ setup:
 
   fileSystem:
     catalog.yaml: |
-      scope: kb.t.u.g
+      scope: entryGroup.test.us.g1
+      reference:
+        scope: kb.t.u.g
 
 actions:
-  - action: pull
+  - action: reference
 
 assert:
   fileSystem:
-    catalog/e0.md:
+    reference/e0.md:
       - contains: "name: e0"
       - contains: "title: Sample entry"
       - contains: "description: Sample entry description"
       - contains: "- xyz"
-    catalog/e1.md:
+    reference/e1.md:
       contains: "name: e1"
-    catalog/e2.md:
+    reference/e2.md:
       contains: "name: e2"
-    catalog/e3.md:
+    reference/e3.md:
       contains: "name: e3"
-    catalog/dir/sub.md:
+    reference/dir/sub.md:
       contains: "name: dir/sub"
-    catalog/dir/sub.xyz.md:
+    reference/dir/sub.xyz.md:
       contains: "name: dir/sub.xyz"
