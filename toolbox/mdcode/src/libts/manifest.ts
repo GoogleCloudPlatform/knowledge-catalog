@@ -10,6 +10,7 @@ import { CatalogSource, createSource, Sources } from './source';
 
 const manifestSchema = z.object({
   scope: z.union([z.string(), z.array(z.string())]),
+  directoryIndex: z.string().optional(),
   snapshot: z.object({
     entries: z.array(z.string()).optional(),
     aspects: z.array(z.string()).optional()
@@ -40,15 +41,18 @@ export class CatalogManifest {
   readonly source: CatalogSource;
   readonly snapshotConfig?: SnapshotConfig;
   readonly publishingConfig?: PublishingConfig;
+  readonly directoryIndex?: string;
 
   private constructor(
     source: CatalogSource,
     snapshotConfig?: SnapshotConfig,
-    publishingConfig?: PublishingConfig
+    publishingConfig?: PublishingConfig,
+    directoryIndex?: string
   ) {
     this.source = source;
     this.snapshotConfig = snapshotConfig;
     this.publishingConfig = publishingConfig;
+    this.directoryIndex = directoryIndex;
   }
 
   static async initWithEntryGroup(name: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
@@ -162,7 +166,7 @@ export class CatalogManifest {
       }
     }
 
-    return new CatalogManifest(source, snapshot, publishing);
+    return new CatalogManifest(source, snapshot, publishing, result.data.directoryIndex);
   }
 
   save(path: string): void {
@@ -177,6 +181,7 @@ export class CatalogManifest {
 
     const data: any = {
       scope: scope,
+      directoryIndex: this.directoryIndex ?? undefined,
       snapshot: this.snapshotConfig ?? undefined,
       publishing: this.publishingConfig ?? undefined
     };

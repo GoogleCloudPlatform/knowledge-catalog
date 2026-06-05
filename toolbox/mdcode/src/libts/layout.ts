@@ -22,13 +22,18 @@ export interface CatalogLayout {
 }
 
 
+export interface LayoutOptions {
+  directoryIndex?: string;
+}
+
 export function createLayout(layout: Layouts,
-                             catalogPath: string): CatalogLayout {
+                             catalogPath: string,
+                             options: LayoutOptions = {}): CatalogLayout {
   switch (layout) {
     case Layouts.STANDARD:
       return new StandardLayout(catalogPath);
     case Layouts.DOCUMENTS:
-      return new DocumentsLayout(catalogPath);
+      return new DocumentsLayout(catalogPath, options.directoryIndex);
     default:
       throw new Error(`Unknown layout type: ${layout}`);
   }

@@ -26,7 +26,9 @@ export class CatalogSnapshot {
     this.manifest = manifest;
 
     const catalogPath = path.join(this.basePath, 'catalog');
-    this._layout = createLayout(manifest.source.layout, catalogPath);
+    this._layout = createLayout(manifest.source.layout, catalogPath, {
+      directoryIndex: manifest.directoryIndex
+    });
   }
 
   static async fromPath(basePath: string, ctx: gcp.ApiContext): Promise<CatalogSnapshot> {

@@ -24,6 +24,7 @@ catch {
 
 await Bun.file(path.join(process.cwd(), 'catalog.yaml')).write(YAML.stringify({
   scope: `kb.${project}.${location}.${entryGroup}`,
+  directoryIndex: 'index',
   snapshot: {
     entries: [
       'dataplex-types.global.generic'

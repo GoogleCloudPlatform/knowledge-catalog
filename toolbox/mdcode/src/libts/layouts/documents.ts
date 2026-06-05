@@ -10,17 +10,18 @@ import { CatalogLayout } from '../layout';
 
 const OVERVIEW_ASPECT_KEY = 'dataplex-types.global.overview';
 const DEFAULT_ENTRY_TYPE = 'dataplex-types.global.generic';
-const INDEX_ENTRY_LEAF = 'index';
 
 
 export class DocumentsLayout implements CatalogLayout {
 
   private _catalogPath: string = '';
+  private readonly _directoryIndex?: string;
 
   private readonly _index = new Map<string, string>();
 
-  constructor(catalogPath: string) {
+  constructor(catalogPath: string, directoryIndex?: string) {
     this._catalogPath = catalogPath;
+    this._directoryIndex = directoryIndex;
   }
 
   async init(): Promise<void> {
@@ -63,11 +64,13 @@ export class DocumentsLayout implements CatalogLayout {
     entry.name = name;
 
     entry.resource = entry.resource ?? {};
-    const parentName = deriveParentLocalName(name, this._index);
-    if (parentName !== undefined) {
-      entry.resource.parent = parentName;
-    } else {
-      delete entry.resource.parent;
+    if (this._directoryIndex) {
+      const parentName = deriveParentLocalName(name, this._directoryIndex, this._index);
+      if (parentName !== undefined) {
+        entry.resource.parent = parentName;
+      } else {
+        delete entry.resource.parent;
+      }
     }
 
     // Ensure the entry's type aspect is present — Dataplex create requires it.
@@ -127,12 +130,13 @@ function deriveEntryNameFromPath(absolutePath: string, catalogPath: string): str
   return rel.replace(/\.md$/, '');
 }
 
-function deriveParentLocalName(name: string, index: Map<string, string>): string | undefined {
+function deriveParentLocalName(name: string, directoryIndex: string,
+                               index: Map<string, string>): string | undefined {
   const segments = name.split('/');
   const leaf = segments[segments.length - 1];
 
   let parentDir: string[];
-  if (leaf === INDEX_ENTRY_LEAF) {
+  if (leaf === directoryIndex) {
     if (segments.length === 1) {
       return undefined;
     }
@@ -141,11 +145,16 @@ function deriveParentLocalName(name: string, index: Map<string, string>): string
     parentDir = segments.slice(0, -1);
   }
 
-  const parentName = [...parentDir, INDEX_ENTRY_LEAF].join('/');
-  if (parentName === name || !index.has(parentName)) {
-    return undefined;
+  while (true) {
+    const parentName = [...parentDir, directoryIndex].join('/');
+    if (parentName !== name && index.has(parentName)) {
+      return parentName;
+    }
+    if (parentDir.length === 0) {
+      return undefined;
+    }
+    parentDir = parentDir.slice(0, -1);
   }
-  return parentName;
 }
 
 export function parseMarkdown(content: string): { entry: md.Entry|null; body: string } {
