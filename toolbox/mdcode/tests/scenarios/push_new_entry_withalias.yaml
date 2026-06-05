@@ -1,0 +1,65 @@
+name: push_new_entry_withalias
+description: Push new entry from local workspace with alias
+setup:
+  catalog:
+    entryGroups:
+      - name: projects/p/locations/us/entryGroups/custom-group
+    entryTypes:
+      - name: projects/p/locations/global/entryTypes/custom-type
+    aspectTypes:
+      - name: projects/p/locations/global/aspectTypes/at1
+    entries:
+      - name: projects/p/locations/us/entryGroups/custom-group/entries/existing-entry
+        entryType: projects/p/locations/global/entryTypes/custom-type
+        entrySource:
+          description: Old custom description
+
+  fileSystem:
+    catalog.yaml: |
+      scope: entryGroup.p.us.custom-group
+      resourceAlias:
+        alias1:
+          aspect: p.global.at1
+      snapshot:
+        entries:
+          - p.global.custom-type
+        aspects:
+          - alias1
+      
+
+
+actions:
+  - action: pull
+  - action: createEntry
+    name: custom-entry
+    entry:
+      name: custom-entry
+      type: p.global.custom-type
+      resource:
+        description: Hello world
+      aspects:
+        alias1:
+          content: Chicken
+  - action: push
+
+assert:
+  fileSystem:
+    catalog/custom-entry.yaml:
+      - contains: "name: custom-entry"
+      - contains: "description: Hello world"
+      - contains: "content: Chicken"
+  catalog:
+    entries:
+      - name: projects/p/locations/us/entryGroups/custom-group/entries/existing-entry
+        entryType: projects/p/locations/global/entryTypes/custom-type
+        entrySource:
+          description: Old custom description
+      - name: projects/p/locations/us/entryGroups/custom-group/entries/custom-entry
+        entryType: projects/p/locations/global/entryTypes/custom-type
+        entrySource:
+          description: "Hello world"
+        aspects:
+          p.global.at1:
+            aspectType: projects/p/locations/global/aspectTypes/at1
+            data:
+              content: Chicken
