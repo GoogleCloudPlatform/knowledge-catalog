@@ -36,17 +36,11 @@ actions:
 assert:
   fileSystem:
     catalog/e0.md:
-      - contains: "name: e0"
       - contains: "title: Sample entry"
       - contains: "description: Sample entry description"
       - contains: "- xyz"
-    catalog/e1.md:
-      contains: "name: e1"
-    catalog/e2.md:
-      contains: "name: e2"
-    catalog/e3.md:
-      contains: "name: e3"
-    catalog/dir/sub.md:
-      contains: "name: dir/sub"
-    catalog/dir/sub.xyz.md:
-      contains: "name: dir/sub.xyz"
+    catalog/e1.md: {}
+    catalog/e2.md: {}
+    catalog/e3.md: {}
+    catalog/dir/sub.md: {}
+    catalog/dir/sub.xyz.md: {}

@@ -36,15 +36,8 @@ export class DocumentsLayout implements CatalogLayout {
     });
 
     for (const localPath of matches) {
-      try {
-        const content = await fs.promises.readFile(localPath, 'utf8');
-        const { entry } = parseMarkdown(content);
-        const name = entry?.name ?? deriveEntryNameFromPath(localPath, this._catalogPath);
-        this._index.set(name, localPath);
-      }
-      catch (err) {
-        // Skip unreadable/invalid files during indexing
-      }
+      const name = deriveEntryNameFromPath(localPath, this._catalogPath);
+      this._index.set(name, localPath);
     }
   }
 
@@ -66,9 +59,7 @@ export class DocumentsLayout implements CatalogLayout {
     const { entry: parsed, body } = parseMarkdown(content);
 
     const entry: md.Entry = parsed ?? ({ type: DEFAULT_ENTRY_TYPE, resource: {} } as md.Entry);
-    if (!entry.name) {
-      entry.name = name;
-    }
+    entry.name = name;
 
     // Ensure the entry's type aspect is present — Dataplex create requires it.
     entry.aspects = entry.aspects ?? {};
@@ -184,6 +175,7 @@ export function toMarkdown(entry: md.Entry, body: string): string {
     catalogEntry: entryClone
   };
 
+  delete entryClone.name;
   delete entryClone.resource.displayName;
   delete entryClone.resource.description;
   delete entryClone.resource.updateTime;
