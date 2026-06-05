@@ -1,20 +1,34 @@
-// Library test runner
-//
-
-import * as fs from 'node:fs';
-import * as glob from 'glob';
+import * as realFs from 'node:fs';
+import * as realGlob from 'glob';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
+
+// Load the scenario files NOW, using the real fs!
+const scenariosPath = path.join(__dirname, '..', 'scenarios');
+let globPattern = '**/*.yaml';
+if (process.env.TEST_GLOB) {
+  globPattern = process.env.TEST_GLOB;
+}
+const scenarioFiles = realGlob.globSync(globPattern, { cwd: scenariosPath, absolute: true });
+const scenarios = scenarioFiles.map((file: string) => yaml.parse(realFs.readFileSync(file, 'utf-8') as string));
+
 import { describe, test, expect, mock, spyOn } from 'bun:test';
 import { fs as memfs, vol } from 'memfs';
-import * as kcmac from '../../src/libts';
+import type * as mocksType from './mocks';
+
+mock.module('fs', () => memfs);
+mock.module('node:fs', () => memfs);
+
 import * as gcp from '../../src/libts/gcp';
 import * as bq from '../../src/libts/gcp/bigquery';
 
-import { CatalogClientMock, BigQueryClientMock, TEST_API_CONTEXT } from './mocks';
+const fs = memfs;
+const kcmac = require('../../src/libts');
+const { CatalogClientMock, BigQueryClientMock, BigLakeClientMock, TEST_API_CONTEXT } = require('./mocks');
 
-let currentCatalogMock: CatalogClientMock | null = null;
-let currentBigQueryMock: BigQueryClientMock | null = null;
+let currentCatalogMock: mocksType.CatalogClientMock | null = null;
+let currentBigQueryMock: mocksType.BigQueryClientMock | null = null;
+let currentBigLakeMock: mocksType.BigLakeClientMock | null = null;
 
 
 function runScenario(scenario: any) {
@@ -27,6 +41,7 @@ function runScenario(scenario: any) {
       vol.reset();
       currentCatalogMock = catalog;
       currentBigQueryMock = bigquery;
+      currentBigLakeMock = null;
 
       // Setup state - Catalog Service
       if (scenario.setup?.catalog?.entries) {
@@ -60,6 +75,15 @@ function runScenario(scenario: any) {
         }
       }
 
+      // Setup state - BigLake Service
+      const biglake = new BigLakeClientMock();
+      currentBigLakeMock = biglake;
+      if (scenario.setup?.bigLake?.tables) {
+        for (const table of scenario.setup.bigLake.tables) {
+          biglake.addMockTable(table);
+        }
+      }
+
       // Setup state - Filesystem
       if (scenario.setup?.fileSystem) {
         vol.fromJSON(scenario.setup.fileSystem, '/');
@@ -84,8 +108,11 @@ function runScenario(scenario: any) {
           scenario.init.kb, TEST_API_CONTEXT);
         mf.save('/catalog.yaml');
       }
-
-      // Execute - Snapshot creation
+      if (scenario.init?.biglakeNamespace) {
+        const mf = await kcmac.CatalogManifest.initWithBigLakeNamespace(
+          scenario.init.biglakeNamespace, 'iceberg', TEST_API_CONTEXT);
+        mf.save('/catalog.yaml');
+      }
       if (!fs.existsSync('/catalog.yaml')) {
         throw new Error('Scenario did not include or initialize a manifest');
       }
@@ -115,6 +142,12 @@ function runScenario(scenario: any) {
           case 'deleteEntry':
             await snapshot.deleteEntry(params.name);
             break;
+          case 'reference':
+            const referenceSnapshot = await kcmac.CatalogSnapshot.fromPath('/', TEST_API_CONTEXT, true);
+            const refereneSync = new kcmac.CatalogSync(catalog, referenceSnapshot); 
+            await refereneSync.reference();
+            
+            break;
           default:
             throw new Error(`Unknown action: ${action}`);
         }
@@ -135,6 +168,14 @@ function runScenario(scenario: any) {
               const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
               expect(actualContent.trim()).toBe(condition.trim());
             }
+            else if (Array.isArray(condition)) {
+              const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
+              for (const cond of condition) {
+                if (cond && typeof cond === 'object' && 'contains' in cond) {
+                  expect(actualContent).toContain(cond.contains);
+                }
+              }
+            }
             else if (condition && typeof condition === 'object' && 'contains' in condition) {
               const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
               expect(actualContent).toContain(condition.contains);
@@ -152,14 +193,6 @@ function runScenario(scenario: any) {
 }
 
 function main() {
-  let globPattern = '**/*.yaml';
-  if (process.env.TEST_GLOB) {
-    globPattern = process.env.TEST_GLOB;
-  }
-
-  const scenariosPath = path.join(__dirname, '..', 'scenarios');
-  const files = glob.globSync(globPattern, { cwd: scenariosPath, absolute: true });
-  const scenarios = files.map(file => yaml.parse(fs.readFileSync(file, 'utf-8')));
 
   // Establish dynamic prototype spies to automatically connect inner-constructed 
   // API clients directly to the scenario mock data registries.
@@ -264,12 +297,35 @@ function main() {
     }
   );
 
-  // Globally mock node:fs to direct file system calls to virtual volume
+  spyOn(gcp.BigLakeClient.prototype, 'listTables').mockImplementation(
+    async function* (project: string, location: string, catalog: string, database: string) {
+      if (currentBigLakeMock) {
+        for await (const table of currentBigLakeMock.listTables(project, location, catalog, database)) {
+          yield table;
+        }
+      }
+    }
+  );
+
+  // Globally mock fs and node:fs to direct file system calls to virtual volume
+  mock.module('fs', () => memfs);
   mock.module('node:fs', () => memfs);
 
   for (const scenario of scenarios) {
     runScenario(scenario);
   }
+
+  describe('BigLake Namespace Init Failure', () => {
+    test('should throw error on malformed coordinate', () => {
+      expect(
+        kcmac.CatalogManifest.initWithBigLakeNamespace('invalid-format', 'iceberg', TEST_API_CONTEXT)
+      ).rejects.toThrow('BigLake namespace must be in format <projectId>.<catalogId>.<namespaceId>');
+      
+      expect(
+        kcmac.CatalogManifest.initWithBigLakeNamespace('proj.cat', 'iceberg', TEST_API_CONTEXT)
+      ).rejects.toThrow('BigLake namespace must be in format <projectId>.<catalogId>.<namespaceId>');
+    });
+  });
 }
 
 main();

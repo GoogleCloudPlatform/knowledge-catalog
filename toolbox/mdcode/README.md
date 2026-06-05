@@ -9,9 +9,20 @@ More details are in the [docs/concept.md](docs/concept.md).
 ## Key Features
 
 * Intuitive human and agent-friendly representation of metadata as source code in YAML and markdown files. Artifacts are organized in a hierarchical manner mirroring the resource hierarchy of data and metadata assets.
-* Bi-directional sync between local workspace and catalog service.
+* Bi-directional sync between local workspace and catalog service (`pull` / `push`).
+* **Context overlay via `reference`** — pull read-only first-party (1P) entries (schema, descriptions) into a separate `reference/` directory so agents/users can ground enrichment on authoritative metadata without permission to edit those 1P entries.
+* **Resource aliases** — short, friendly aspect keys (`schema`, `bigquery-table`, `storage`, …) instead of fully-qualified type names, with sensible predefined aliases for GCP-managed (1P) aspects.
+* **Markdown sidecars** — keep large unstructured aspect content (e.g. an `overview`) in a `<entry>.<aspect>.md` file next to the entry YAML.
+* **Source types** — BigQuery datasets, Dataplex EntryGroups, Knowledge Base EntryGroups, and BigLake/Iceberg namespaces.
 * Support for both 1st party and 3rd party metadata constructs.
-* Distributed as a TypeScript and Python libraries, a CLI tool (kcmd), and an MCP server for use in a variety of applications, agents and workflows.
+* Distributed as a TypeScript and Python library, a CLI tool (`kcmd`), and an MCP server for use in a variety of applications, agents and workflows.
+
+## What's New
+
+* **`kcmd reference`** — an `init`+`pull` for a *read-only* reference resource, driven by a `reference:` block in `catalog.yaml`. Pulls the referenced entries/aspects into `reference/` (never pushed). Ideal for agent enrichment: ground the editable context entries on the live 1P schema/description. Re-run any time to refresh (acts like a `pull --force` for the reference layer).
+* **Resource aliases** — entries pulled from the catalog now use short alias aspect keys by default (e.g. `schema:` rather than `dataplex-types.global.schema:`). Define your own under `aliases:` in the manifest; predefined GCP-managed aliases (`bigquery-dataset`, `bigquery-table`, `schema`, `storage`) cannot be re-used. Both short alias keys and fully-qualified type names are accepted on `push`.
+* **Markdown sidecars in the standard layout** — `<entry>.<aspect>.md` files are merged into the entry's aspect on `push` and emitted on `pull`.
+* **BigLake / Iceberg** — `kcmd init --biglake-namespace <project>.<catalog>.<namespace> --iceberg`.
 
 ## Metadata Artifacts
 
@@ -21,12 +32,15 @@ Metadata is organized within a directory representing a resource such as a BigQu
 ```
 path/to/root/
 ├── catalog.yaml                       # Manifest and config directives
-└── catalog/                           # Contains the metadata snapshot
-    └── <dir1>/
-        └── <entry-id1>.yaml           # Entry
-        └── <dir2>/
-            ├── <entry-id2>.yaml       # Entry with sidecar markdown
-            └── <entry-id2>.aspect.md  # files
+├── catalog/                           # The editable metadata snapshot (pushable)
+│   └── <dir1>/
+│       └── <entry-id1>.yaml           # Entry
+│       └── <dir2>/
+│           ├── <entry-id2>.yaml       # Entry with sidecar markdown
+│           └── <entry-id2>.overview.md  #   (an <entry>.<aspect>.md sidecar)
+└── reference/                         # Read-only 1P reference entries (pulled by
+    └── <proj>.<dataset>/              #   `kcmd reference`; NEVER pushed)
+        └── <table>.yaml
 ```
 
 ## Catalog Snapshot Files
@@ -55,7 +69,22 @@ publishing:
   aspects:
     - overview
     - descriptions
+
+# Optional: pull read-only 1P entries into reference/ for grounding (no publishing).
+reference:
+  scope: bq-dataset.prod-data.ecommerce
+  snapshot:
+    entries:
+      - bigquery-table
+    aspects:
+      - schema
 ```
+
+* **`scope`** — the resource this workspace manages (`bq-dataset.<proj>.<dataset>`, `entry-group.<proj>.<loc>.<id>`, `kb.<proj>.<loc>.<id>`, or a BigLake namespace).
+* **`aliases`** — your own short names mapping `alias -> { aspect: <fully-qualified type> }`. Predefined GCP-managed aliases (`bigquery-dataset`, `bigquery-table`, `schema`, `storage`) are reserved.
+* **`snapshot`** — the entry + aspect types present locally.
+* **`publishing`** — the subset of aspects `kcmd push` writes back to the catalog.
+* **`reference`** (optional) — a *read-only* resource to pull into `reference/` (its own `scope` + `snapshot`; **no** `publishing`). Populated by `kcmd reference`.
 
 ## Entry YAML File
 **catalog/prod-data.ecommerce/products.yaml**
@@ -149,11 +178,22 @@ kcmd init --bigquery-dataset <projectId>.<datasetId> \
 # Initialize a new catalog snapshot for a custom EntryGroup
 kcmd init --entry-group <projectId>.<locationId>.<entryGroupId>
 
+# Initialize a new catalog snapshot for a Knowledge Base EntryGroup
+kcmd init --kb <projectId>.<locationId>.<entryGroupId>
+
+# Initialize a new catalog snapshot for a BigLake (Iceberg) namespace
+kcmd init --biglake-namespace <projectId>.<catalogId>.<namespaceId> --iceberg
+
 # Pull the latest catalog snapshot from the Knowledge Catalog service
 # Reports any conflicts if there are pending changes that have not been
 # pushed to the catalog.
 # Supports dry run with the --dry-run flag.
 kcmd pull
+
+# Pull read-only reference entries (the `reference:` block in catalog.yaml) into
+# reference/. These ground enrichment on the live 1P metadata and are never
+# pushed. Re-run any time to refresh.
+kcmd reference
 
 # Check for local modifications
 kcmd status

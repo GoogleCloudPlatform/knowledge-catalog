@@ -8,11 +8,14 @@ import { Layouts } from './layout';
 import { EntryGroupSource } from './sources/entrygroup';
 import { BigQueryDatasetSource } from './sources/bq-dataset';
 import { KnowledgeBaseSource } from './sources/kb';
+import { BigLakeNamespaceSource } from './sources/biglake-namespace';
 
 export enum Sources {
   ENTRYGROUP = 'entryGroup',
   BIGQUERY_DATASET = 'bq-dataset',
-  KB = 'kb'
+  KB = 'kb',
+  BIGLAKE_NAMESPACE = 'biglake-namespace',
+  BIGLAKE_ICEBERG_NAMESPACE = 'biglake-iceberg-namespace'
 }
 
 
@@ -67,6 +70,22 @@ async function getBigQueryDatasets(name: string, ctx: gcp.ApiContext): Promise<M
 }
 
 
+async function getBigLakeNamespace(name: string, ctx: gcp.ApiContext): Promise<{ location: string }> {
+  const [project, catalog, namespace] = name.split('.');
+  if (!project || !catalog || !namespace) {
+    throw new Error(`BigLake namespace must be in format <projectId>.<catalogId>.<namespaceId>: ${name}`);
+  }
+
+  const bigQuery = new bq.BigQueryClient(ctx);
+  const res = await bigQuery.getDataset(project, `${catalog}.${namespace}`);
+  if (!res.result) {
+    throw new Error(`Failed to locate BigLake namespace '${name}'. Ensure it physically exists.`);
+  }
+
+  return { location: res.result.location || ctx.location };
+}
+
+
 export async function createSource(type: string, name: string,
                                    ctx: gcp.ApiContext): Promise<CatalogSource> {
   switch (type) {
@@ -79,6 +98,12 @@ export async function createSource(type: string, name: string,
     case Sources.KB:
       const knowledgeBase = await getEntryGroup(name, ctx);
       return new KnowledgeBaseSource(Sources.KB, name, knowledgeBase);
+    case Sources.BIGLAKE_NAMESPACE:
+      const nsInfo = await getBigLakeNamespace(name, ctx);
+      return new BigLakeNamespaceSource(Sources.BIGLAKE_NAMESPACE, name, nsInfo.location, 'iceberg');
+    case Sources.BIGLAKE_ICEBERG_NAMESPACE:
+      const icebergNsInfo = await getBigLakeNamespace(name, ctx);
+      return new BigLakeNamespaceSource(Sources.BIGLAKE_ICEBERG_NAMESPACE, name, icebergNsInfo.location, 'iceberg');
     default:
       throw new Error(`Unknown source type: ${type}`);
   }

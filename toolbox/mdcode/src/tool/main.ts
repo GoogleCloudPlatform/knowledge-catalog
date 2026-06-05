@@ -10,6 +10,8 @@ const cli = cac.cac('kcmd').version('1.0.0').help();
 cli.command('init', 'Initialize a new catalog snapshot')
    .option('--entry-group <id>', 'Identifier of the EntryGroup (project.location.id)')
    .option('--bigquery-dataset <id...>', 'Identifier of the BigQuery dataset(s) (project.datasetId)')
+   .option('--biglake-namespace <id>', 'Identifier of the BigLake namespace (project.catalog.namespace)')
+   .option('--iceberg', 'Specify that the BigLake namespace is an Iceberg catalog')
    .option('--kb <id>', 'Identifier of the Knowledge Base EntryGroup (project.location.id)')
    .option('--pull', 'Optionally pull catalog entries during initialization')
    .action(async (options) => {
@@ -62,6 +64,18 @@ cli.command('mcp', 'Run the Model Context Protocol (MCP) server')
       }
       catch (err: any) {
         console.error('Error starting MCP server:', err.message || err);
+        process.exit(1);
+      }
+   });
+
+
+cli.command('reference', 'Pull reference resource entries')
+   .action(async () => {
+      try {
+        await commands.reference();
+      }
+      catch (err: any) {
+        console.error('Error:', err.message || err);
         process.exit(1);
       }
    });

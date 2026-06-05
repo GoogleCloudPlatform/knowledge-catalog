@@ -11,6 +11,8 @@ import * as context from '../libts/gcp/context';
 export interface InitOptions {
   entryGroup?: string;
   bigqueryDataset?: string | string[];
+  biglakeNamespace?: string;
+  iceberg?: boolean;
   kb?: string;
   pull?: boolean;
 }
@@ -42,8 +44,15 @@ export async function init(options: InitOptions): Promise<number> {
     }
     manifest = await kcmd.CatalogManifest.initWithBigQuery(datasets, ctx);
   }
+  else if (options.biglakeNamespace) {
+    if (!options.iceberg) {
+      console.error('Error: Must specify --iceberg when initializing a BigLake namespace (other metastores are not supported yet)');
+      return 1;
+    }
+    manifest = await kcmd.CatalogManifest.initWithBigLakeNamespace(options.biglakeNamespace, 'iceberg', ctx);
+  }
   else {
-    console.error('Error: Must provide either --entry-group or --bigquery-dataset or --kb');
+    console.error('Error: Must provide either --entry-group, --bigquery-dataset, --biglake-namespace, or --kb');
     return 1;
   }
 
@@ -95,6 +104,28 @@ export async function push(options: PushOptions): Promise<number> {
   }
   else {
     console.error('Error pushing catalog entries:', result.details);
+    return 1;
+  }
+}
+
+
+export async function reference(): Promise<number> {
+  const ctx = context.ApiContext.default();
+
+  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx, true);
+
+  const catalog = new dataplex.CatalogClient(ctx);
+  const sync = new kcmd.CatalogSync(catalog, snapshot);
+
+  console.log('Pulling reference entries...');
+  const result = await sync.reference();
+
+  if (result.success) {
+    console.log('Successfully updated local reference entries snapshot.');
+    return 0;
+  }
+  else {
+    console.error('Error pulling reference entries:', result.details);
     return 1;
   }
 }
