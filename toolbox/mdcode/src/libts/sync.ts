@@ -105,6 +105,7 @@ export class CatalogSync {
         }
       }
 
+
       if (!updateMask.length) {
         continue;
       }

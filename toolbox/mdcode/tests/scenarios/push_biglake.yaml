@@ -53,6 +53,7 @@ assert:
   fileSystem:
     catalog/test-proj.test-catalog.test-ns/table-1.yaml:
       - contains: "name: test-proj.test-catalog.test-ns/table-1"
+    catalog/test-proj.test-catalog.test-ns/table-1.dataplex-types.global.overview.md:
       - contains: "New aspect description"
   catalog:
     entries:

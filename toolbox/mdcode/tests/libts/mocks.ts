@@ -183,7 +183,7 @@ export class BigLakeClientMock extends gcp.BigLakeClient {
   public mockTables: Map<string, any> = new Map();
 
   constructor() {
-    super(TEST_API_CONTEXT);
+    super(TEST_API_CONTEXT, 'iceberg');
   }
 
   addMockTable(resource: gcp.BigLakeTable) {

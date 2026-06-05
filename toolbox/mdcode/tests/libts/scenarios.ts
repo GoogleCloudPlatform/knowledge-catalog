@@ -1,21 +1,34 @@
-// Library test runner
-//
-
-import * as fs from 'node:fs';
-import * as glob from 'glob';
+import * as realFs from 'node:fs';
+import * as realGlob from 'glob';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
+
+// Load the scenario files NOW, using the real fs!
+const scenariosPath = path.join(__dirname, '..', 'scenarios');
+let globPattern = '**/*.yaml';
+if (process.env.TEST_GLOB) {
+  globPattern = process.env.TEST_GLOB;
+}
+const scenarioFiles = realGlob.globSync(globPattern, { cwd: scenariosPath, absolute: true });
+const scenarios = scenarioFiles.map((file: string) => yaml.parse(realFs.readFileSync(file, 'utf-8') as string));
+
 import { describe, test, expect, mock, spyOn } from 'bun:test';
 import { fs as memfs, vol } from 'memfs';
-import * as kcmac from '../../src/libts';
+import type * as mocksType from './mocks';
+
+mock.module('fs', () => memfs);
+mock.module('node:fs', () => memfs);
+
 import * as gcp from '../../src/libts/gcp';
 import * as bq from '../../src/libts/gcp/bigquery';
 
-import { CatalogClientMock, BigQueryClientMock, BigLakeClientMock, TEST_API_CONTEXT } from './mocks';
+const fs = memfs;
+const kcmac = require('../../src/libts');
+const { CatalogClientMock, BigQueryClientMock, BigLakeClientMock, TEST_API_CONTEXT } = require('./mocks');
 
-let currentCatalogMock: CatalogClientMock | null = null;
-let currentBigQueryMock: BigQueryClientMock | null = null;
-let currentBigLakeMock: BigLakeClientMock | null = null;
+let currentCatalogMock: mocksType.CatalogClientMock | null = null;
+let currentBigQueryMock: mocksType.BigQueryClientMock | null = null;
+let currentBigLakeMock: mocksType.BigLakeClientMock | null = null;
 
 
 function runScenario(scenario: any) {
@@ -100,8 +113,6 @@ function runScenario(scenario: any) {
           scenario.init.biglakeNamespace, 'iceberg', TEST_API_CONTEXT);
         mf.save('/catalog.yaml');
       }
-
-      // Execute - Snapshot creation
       if (!fs.existsSync('/catalog.yaml')) {
         throw new Error('Scenario did not include or initialize a manifest');
       }
@@ -151,6 +162,14 @@ function runScenario(scenario: any) {
               const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
               expect(actualContent.trim()).toBe(condition.trim());
             }
+            else if (Array.isArray(condition)) {
+              const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
+              for (const cond of condition) {
+                if (cond && typeof cond === 'object' && 'contains' in cond) {
+                  expect(actualContent).toContain(cond.contains);
+                }
+              }
+            }
             else if (condition && typeof condition === 'object' && 'contains' in condition) {
               const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
               expect(actualContent).toContain(condition.contains);
@@ -168,14 +187,6 @@ function runScenario(scenario: any) {
 }
 
 function main() {
-  let globPattern = '**/*.yaml';
-  if (process.env.TEST_GLOB) {
-    globPattern = process.env.TEST_GLOB;
-  }
-
-  const scenariosPath = path.join(__dirname, '..', 'scenarios');
-  const files = glob.globSync(globPattern, { cwd: scenariosPath, absolute: true });
-  const scenarios = files.map(file => yaml.parse(fs.readFileSync(file, 'utf-8')));
 
   // Establish dynamic prototype spies to automatically connect inner-constructed 
   // API clients directly to the scenario mock data registries.
@@ -290,7 +301,8 @@ function main() {
     }
   );
 
-  // Globally mock node:fs to direct file system calls to virtual volume
+  // Globally mock fs and node:fs to direct file system calls to virtual volume
+  mock.module('fs', () => memfs);
   mock.module('node:fs', () => memfs);
 
   for (const scenario of scenarios) {
