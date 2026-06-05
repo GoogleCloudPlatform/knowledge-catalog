@@ -142,10 +142,7 @@ export function parseMarkdown(content: string): { entry: md.Entry|null; body: st
   const body = lines.slice(endIndex + 1).join('\n');
 
   const entry = (metadata.catalogEntry ?? {}) as md.Entry;
-  const declaredType = metadata.type;
-  entry.type = (typeof declaredType === 'string' && declaredType.startsWith('dataplex-types.'))
-    ? declaredType
-    : DEFAULT_ENTRY_TYPE;
+  entry.type = metadata.type;
   entry.resource = entry.resource ?? {}
   entry.resource.displayName = metadata.title;
   entry.resource.description = metadata.description;
