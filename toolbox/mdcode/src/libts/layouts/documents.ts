@@ -10,18 +10,19 @@ import { CatalogLayout } from '../layout';
 
 const OVERVIEW_ASPECT_KEY = 'dataplex-types.global.overview';
 const DEFAULT_ENTRY_TYPE = 'dataplex-types.global.generic';
+const INDEX_NAME = 'index';
 
 
 export class DocumentsLayout implements CatalogLayout {
 
   private _catalogPath: string = '';
-  private readonly _directoryIndex?: string;
 
-  private readonly _index = new Map<string, string>();
+  // Maps entry name -> local file path, or null for synthetic directory-index
+  // entries that don't have a backing file on disk.
+  private readonly _index = new Map<string, string | null>();
 
-  constructor(catalogPath: string, directoryIndex?: string) {
+  constructor(catalogPath: string) {
     this._catalogPath = catalogPath;
-    this._directoryIndex = directoryIndex;
   }
 
   async init(): Promise<void> {
@@ -41,11 +42,12 @@ export class DocumentsLayout implements CatalogLayout {
       const name = deriveEntryNameFromPath(localPath, this._catalogPath);
       this._index.set(name, localPath);
     }
+
+    this._synthesizeIndexEntries();
   }
 
   entryExists(name: string): boolean {
-    const entryPath = this._index.get(name);
-    return !!entryPath && fs.existsSync(entryPath);
+    return this._index.has(name);
   }
 
   listEntries(): string[] {
@@ -53,24 +55,29 @@ export class DocumentsLayout implements CatalogLayout {
   }
 
   async loadEntry(name: string): Promise<md.Entry> {
-    const entryPath = this._index.get(name);
-    if (!entryPath || !fs.existsSync(entryPath)) {
+    if (!this._index.has(name)) {
       throw new Error(`Entry not found: ${name}`);
     }
-    const content = await fs.promises.readFile(entryPath, 'utf8');
-    const { entry: parsed, body } = parseMarkdown(content);
+    const entryPath = this._index.get(name) ?? null;
+
+    let parsed: md.Entry | null = null;
+    let body = '';
+    if (entryPath) {
+      const content = await fs.promises.readFile(entryPath, 'utf8');
+      const result = parseMarkdown(content);
+      parsed = result.entry;
+      body = result.body;
+    }
 
     const entry: md.Entry = parsed ?? ({ type: DEFAULT_ENTRY_TYPE, resource: {} } as md.Entry);
     entry.name = name;
 
     entry.resource = entry.resource ?? {};
-    if (this._directoryIndex) {
-      const parentName = deriveParentLocalName(name, this._directoryIndex, this._index);
-      if (parentName !== undefined) {
-        entry.resource.parent = parentName;
-      } else {
-        delete entry.resource.parent;
-      }
+    const parentName = deriveParentLocalName(name);
+    if (parentName !== undefined) {
+      entry.resource.parent = parentName;
+    } else {
+      delete entry.resource.parent;
     }
 
     // Ensure the entry's type aspect is present — Dataplex create requires it.
@@ -79,9 +86,6 @@ export class DocumentsLayout implements CatalogLayout {
 
     const bodyTrimmed = body.trim();
     if (bodyTrimmed) {
-      if (!entry.aspects) {
-        entry.aspects = {};
-      }
       if (!entry.aspects[OVERVIEW_ASPECT_KEY]) {
         entry.aspects[OVERVIEW_ASPECT_KEY] = {};
       }
@@ -112,16 +116,48 @@ export class DocumentsLayout implements CatalogLayout {
 
     await fs.promises.writeFile(entryPath, fileContent, 'utf8');
     this._index.set(name, entryPath);
+    this._synthesizeIndexEntries();
   }
 
   async deleteEntry(name: string): Promise<void> {
     const entryPath = this._index.get(name);
-    if (!entryPath || !fs.existsSync(entryPath)) {
+    if (!entryPath) {
+      throw new Error(`Entry not found: ${name}`);
+    }
+    if (!fs.existsSync(entryPath)) {
       throw new Error(`Entry not found: ${name}`);
     }
 
     await fs.promises.unlink(entryPath);
     this._index.delete(name);
+    this._synthesizeIndexEntries();
+  }
+
+  // Ensure every directory that contains entries has an index entry. Directories
+  // whose own index file is absent get a synthetic entry (no backing file).
+  // Synthetic entries left behind by a previous synthesis pass are dropped if
+  // their directory no longer has any other entries.
+  private _synthesizeIndexEntries(): void {
+    for (const [name, entryPath] of this._index) {
+      if (entryPath === null) {
+        this._index.delete(name);
+      }
+    }
+
+    const dirs = new Set<string>();
+    for (const name of this._index.keys()) {
+      const segments = name.split('/');
+      for (let i = 0; i < segments.length; i++) {
+        dirs.add(segments.slice(0, i).join('/'));
+      }
+    }
+
+    for (const dir of dirs) {
+      const indexName = dir ? `${dir}/${INDEX_NAME}` : INDEX_NAME;
+      if (!this._index.has(indexName)) {
+        this._index.set(indexName, null);
+      }
+    }
   }
 }
 
@@ -130,31 +166,20 @@ function deriveEntryNameFromPath(absolutePath: string, catalogPath: string): str
   return rel.replace(/\.md$/, '');
 }
 
-function deriveParentLocalName(name: string, directoryIndex: string,
-                               index: Map<string, string>): string | undefined {
+function deriveParentLocalName(name: string): string | undefined {
   const segments = name.split('/');
   const leaf = segments[segments.length - 1];
 
-  let parentDir: string[];
-  if (leaf === directoryIndex) {
-    if (segments.length === 1) {
-      return undefined;
-    }
-    parentDir = segments.slice(0, -2);
-  } else {
-    parentDir = segments.slice(0, -1);
+  // The root index entry has no parent.
+  if (leaf === INDEX_NAME && segments.length === 1) {
+    return undefined;
   }
 
-  while (true) {
-    const parentName = [...parentDir, directoryIndex].join('/');
-    if (parentName !== name && index.has(parentName)) {
-      return parentName;
-    }
-    if (parentDir.length === 0) {
-      return undefined;
-    }
-    parentDir = parentDir.slice(0, -1);
-  }
+  const parentDir = leaf === INDEX_NAME
+    ? segments.slice(0, -2)
+    : segments.slice(0, -1);
+
+  return [...parentDir, INDEX_NAME].join('/');
 }
 
 export function parseMarkdown(content: string): { entry: md.Entry|null; body: string } {
