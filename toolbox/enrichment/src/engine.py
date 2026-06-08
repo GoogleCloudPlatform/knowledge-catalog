@@ -95,6 +95,26 @@ def create_mdcode_runner(model: str, entry_type: str, resource_name_prefix: str)
     return InMemoryRunner(agent=agent)
 
 
+def create_scope_discovery_runner(model: str) -> InMemoryRunner:
+    """Clusters folder documents into distinct top-level projects, so folder-only
+    doc mode gets a real MULTI-project Master Scope instead of one flat bucket.
+    Feed it the per-doc descriptors from `create_doc_summarizer_runner` (shared
+    with table mode)."""
+    agent = llm_agent.LlmAgent(
+        name="ScopeDiscoveryAgent",
+        description="Clusters folder documents into distinct top-level projects.",
+        model=VertexGemini(model=model),
+        instruction="""You are given a TOPIC and a numbered list of document descriptors (each: title, summary, key entities). Identify the distinct overarching PROJECTS these documents collectively describe.
+
+Group related documents under the same project. Aim for a small number of coherent top-level projects — neither one project per file nor everything forced into a single project. Merge near-duplicates.
+
+Output ONLY a JSON array (no prose, no code fences). Each element:
+{"project": "<short name>", "description": "<one-sentence scope of this project>", "docs": [<document numbers>]}
+Assign every document number to exactly one project.""",
+    )
+    return InMemoryRunner(agent=agent)
+
+
 # =========================== Table mode ===========================
 
 def create_doc_summarizer_runner(model: str) -> InMemoryRunner:

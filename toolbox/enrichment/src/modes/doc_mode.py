@@ -4,6 +4,7 @@ LLM-emitted knowledge-base mdcode. Ported from the former doc_agent_runner.
 
 import asyncio
 import glob
+import json
 import os
 import re
 import uuid
@@ -12,7 +13,12 @@ import yaml
 from google.genai import types
 
 import common
-from engine import create_summarizer_runner, create_mdcode_runner
+from engine import (
+    create_summarizer_runner,
+    create_mdcode_runner,
+    create_doc_summarizer_runner,
+    create_scope_discovery_runner,
+)
 from tools import kcmd_tools
 from tools.drive_tools import (
     fetch_doc_text,
@@ -24,6 +30,13 @@ from tools.drive_tools import (
 MAX_BATCH_SIZE = 10
 MAX_DEPTH = 3
 CONCURRENCY_LIMIT = 4
+
+# Scope discovery (folder-only) clusters docs by TOPIC, which needs only a
+# topic-level signal — not the whole document. We feed the clustering descriptor
+# just this many leading chars (+ the filename), so the discovery pass costs a
+# fraction of the full map pass. The full content is still read once in the map
+# phase for high-fidelity entries.
+SCOPE_DESCRIPTOR_CHARS = 4000
 
 # The 1P "generic" entry type that all knowledge-base entries are created as
 # (cloud/dataplex/catalog/types/entry-types/generic.textproto -> the global
@@ -89,6 +102,124 @@ def _build_synthetic_scope(topic: str, folder_files: list[dict]) -> str:
     for f in folder_files:
         lines.append(f"- {f.get('name', 'Untitled')} ({f.get('mimeType', '')})")
     return "\n".join(lines)
+
+
+def _parse_projects(text: str, n_docs: int) -> list[dict]:
+    """Parse the ScopeDiscoveryAgent's JSON array into a project list.
+
+    Each project: {"project": str, "description": str, "docs": [int]} with doc
+    indices clamped to the valid [0, n_docs) range. Returns [] on any parse
+    failure so the caller can fall back to a single synthetic scope.
+    """
+    t = (text or "").strip()
+    m = re.search(r"```(?:json)?\s*(.*?)```", t, re.S)
+    if m:
+        t = m.group(1).strip()
+    if not t.startswith("["):
+        m = re.search(r"\[.*\]", t, re.S)
+        t = m.group(0) if m else "[]"
+    try:
+        arr = json.loads(t)
+    except (ValueError, json.JSONDecodeError):
+        return []
+    projects = []
+    for o in arr if isinstance(arr, list) else []:
+        if not isinstance(o, dict):
+            continue
+        name = str(o.get("project", "")).strip()
+        if not name:
+            continue
+        docs = []
+        for di in o.get("docs", []) or []:
+            try:
+                di = int(di)
+            except (ValueError, TypeError):
+                continue
+            if 0 <= di < n_docs and di not in docs:
+                docs.append(di)
+        projects.append({"project": name,
+                         "description": str(o.get("description", "")).strip(),
+                         "docs": docs})
+    return projects
+
+
+async def _discover_scopes(topic: str, folder_docs: list[dict], model: str,
+                           usage_acc: dict) -> list[dict]:
+    """Summarize each folder doc into a compact descriptor, then cluster them into
+    distinct top-level projects. Returns the parsed project list (possibly empty).
+
+    `folder_docs` is a list of {id, name, content} built from already-fetched
+    folder files (no re-fetch). Token usage accumulates into `usage_acc`.
+    """
+    if not folder_docs:
+        return []
+    sem = asyncio.Semaphore(CONCURRENCY_LIMIT)
+
+    async def _descr(i, d):
+        async with sem:
+            prompt = (f"DOCUMENT TITLE: {d['name']}\n\n"
+                      f"DOCUMENT CONTENT (leading excerpt):\n"
+                      f"{d['content'][:SCOPE_DESCRIPTOR_CHARS]}")
+            text = await common.run_text(
+                create_doc_summarizer_runner(model), prompt, usage_acc)
+        return f"[{i}] {text.strip()}"
+
+    descriptors = await asyncio.gather(
+        *[_descr(i, d) for i, d in enumerate(folder_docs)])
+    catalog = "\n\n".join(descriptors)
+    raw = await common.run_text(
+        create_scope_discovery_runner(model),
+        f"TOPIC: {topic}\n\nDOCUMENTS (numbered):\n{catalog}", usage_acc)
+    return _parse_projects(raw, len(folder_docs))
+
+
+def _build_multi_scope(topic: str, projects: list[dict],
+                       folder_docs: list[dict]) -> str:
+    """Render the discovered projects into a multi-project Master Scope doc.
+
+    Each project becomes a `## Project:` block the summarizers map findings onto,
+    giving the map phase a real top-level structure (vs. one flat synthetic
+    project) so distinct themes get their own entries instead of being blended.
+    """
+    lines = [
+        f"# Master Scope (synthetic, discovered): {topic}",
+        "",
+        "The following top-level projects were discovered among the Google Drive"
+        f' folder documents for "{topic}". Treat EACH as a distinct overarching'
+        " project. Group every extracted finding under the project it belongs to;"
+        " do not merge distinct projects, and do not treat each source file as its"
+        " own top-level project.",
+        "",
+    ]
+    for p in projects:
+        lines.append(f"## Project: {p['project']}")
+        if p.get("description"):
+            lines.append(p["description"])
+        lines.append("Source documents:")
+        for di in p["docs"]:
+            if 0 <= di < len(folder_docs):
+                lines.append(f"- {folder_docs[di]['name']}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _reorder_by_project(all_fetched_docs: list, folder_docs: list[dict],
+                        projects: list[dict]) -> list:
+    """Stable-sort fetched docs so same-project folder docs are adjacent, making
+    each map-phase batch topic-coherent. Unclustered docs (crawled children) and
+    any unassigned folder docs sort to the end. Secondary key: crawl depth."""
+    proj_of = {}
+    for pi, p in enumerate(projects):
+        for di in p["docs"]:
+            if 0 <= di < len(folder_docs):
+                proj_of[folder_docs[di]["id"]] = pi
+    n = len(projects)
+
+    def key(doc):
+        url, depth, _content = doc
+        return (proj_of.get(extract_gdoc_id(url), n), depth)
+
+    return sorted(all_fetched_docs, key=key)
 
 
 def _normalize_entries(output_dir: str) -> list[str]:
@@ -177,11 +308,12 @@ async def run(topic: str, docs: list[str], folder: str | None, output_dir: str |
             folder_seed_urls.append(fid)
 
     # When seeding purely from a folder there is no authoritative document to be
-    # the Master Scope, so synthesize one and treat the folder files as its
-    # depth-1 children. If explicit --docs were given, those remain the spine.
+    # the Master Scope. We discover it AFTER the crawl (once the folder files'
+    # content is fetched) by clustering the folder docs into multiple top-level
+    # projects. If explicit --docs were given, those remain the spine and no
+    # synthetic scope is needed.
+    folder_only = bool(folder_seed_urls) and not start_docs
     synthetic_scope_text = ""
-    if folder_seed_urls and not start_docs:
-        synthetic_scope_text = _build_synthetic_scope(topic, folder_files)
 
     print("=" * 60)
     print(f"=== ADK DOC AGENT: Parallel Depth-Weighted Knowledge Base Enrichment ===")
@@ -230,6 +362,31 @@ async def run(topic: str, docs: list[str], folder: str | None, output_dir: str |
 
     print(f"\n[Crawler] 🏁 Finished fetching {len(all_fetched_docs)} documents total.\n")
 
+    # Accumulate enrichment-agent token usage across all phases (scope discovery,
+    # summarizers, reduce).
+    usage_acc = {"input": 0, "output": 0}
+
+    # Folder-only: discover a MULTI-project Master Scope from the fetched folder
+    # docs (cluster them into coherent top-level projects), and reorder the docs
+    # so each map-phase batch is topic-coherent. Falls back to a single synthetic
+    # project if discovery yields nothing parseable.
+    if folder_only:
+        content_by_id = {extract_gdoc_id(u): c for (u, _d, c) in all_fetched_docs}
+        folder_docs = [{"id": f["id"], "name": f.get("name", "Untitled"),
+                        "content": content_by_id.get(f["id"], "")}
+                       for f in folder_files if f.get("id")]
+        projects = await _discover_scopes(topic, folder_docs, model, usage_acc)
+        if projects:
+            synthetic_scope_text = _build_multi_scope(topic, projects, folder_docs)
+            all_fetched_docs = _reorder_by_project(
+                all_fetched_docs, folder_docs, projects)
+            print(f"[Scope] 🧭 Discovered {len(projects)} project(s): "
+                  f"{', '.join(p['project'] for p in projects)}", flush=True)
+        else:
+            synthetic_scope_text = _build_synthetic_scope(topic, folder_files)
+            print("[Scope] ⚠️  Scope discovery returned nothing; "
+                  "using a single synthetic scope.", flush=True)
+
     # Extract Depth 0 documents as Master Scope. When seeding from a folder
     # there are no depth-0 docs, so the synthetic scope stands in as the spine.
     master_scope_docs = [doc for doc in all_fetched_docs if doc[1] == 0]
@@ -243,8 +400,6 @@ async def run(topic: str, docs: list[str], folder: str | None, output_dir: str |
     print(f"[Agent] 🧠 Launching Parallel Summarizers (Batches of {MAX_BATCH_SIZE})...", flush=True)
     sem = asyncio.Semaphore(CONCURRENCY_LIMIT)
     summarize_tasks = []
-    # Accumulate enrichment-agent token usage across summarizer + reduce phases.
-    usage_acc = {"input": 0, "output": 0}
 
     for i in range(0, len(all_fetched_docs), MAX_BATCH_SIZE):
         batch = all_fetched_docs[i:i + MAX_BATCH_SIZE]
