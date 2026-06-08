@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "enrichment-agent"
+version = "0.1.0"
+description = "Reference enrichment agent that produces Open Knowledge Format bundles"
+requires-python = ">=3.11"
+dependencies = [
+    "google-adk>=2.0",
+    "google-cloud-bigquery>=3.20",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+    "markdownify>=0.11",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+enrichment-agent = "enrichment_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+enrichment_agent = ["prompts/*.md", "viewer/templates/*.html", "viewer/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

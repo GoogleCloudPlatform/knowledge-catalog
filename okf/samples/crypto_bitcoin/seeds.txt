@@ -1,0 +1,19 @@
+# Seed URLs for the Bitcoin public BigQuery dataset
+# (bigquery-public-data.crypto_bitcoin).
+#
+# The BQ dataset is produced by the open-source bitcoin-etl pipeline and
+# mirrors its schema (blocks, transactions, inputs, outputs).
+#
+# Each non-comment line is one URL. The web-ingestion agent crawls outward
+# from these by following links it judges relevant; same-domain by default.
+
+# Canonical schema source — the bitcoin-etl repo's README documents the
+# blocks / transactions / transaction_input / transaction_output schemas
+# that map directly onto the crypto_bitcoin tables.
+https://github.com/blockchain-etl/bitcoin-etl
+
+# Foundational Google Cloud blog post on blockchain analytics in BigQuery.
+# Note: it predates the crypto_bitcoin dataset name and references the
+# older bitcoin_blockchain dataset, but provides authoritative context
+# and links to newer material.
+https://cloud.google.com/blog/products/gcp/bitcoin-in-bigquery-blockchain-analytics-on-public-data
