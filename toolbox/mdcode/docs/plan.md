@@ -24,13 +24,12 @@ Establish the local file structure and enable basic bi-directional metadata sync
         *   Implement test cases for basic push operations and publishing configuration filtering.
 
 ## Phase 2: Enhanced Representation & State Management
-Optimize the file format for human and agent editing. Implement layout support, multi-dataset scope, entry links, and lakehouse assets. Establish basic sync and state management.
+Optimize the file format for human and agent editing. Implement layout support, multi-dataset scope, and entry links. Establish sync and state management.
 
 *   **Key Features & Work:**
     *   **Library (TS)**:
         *   Support `standard` and `wiki` layouts.
         *   Support multi-dataset configuration for BigQuery, enabling sync of multiple datasets.
-        *   Support `lakehouse` `entryGroup` in `catalog.yaml` to enable Dataplex Lakehouse asset sync.
         *   Support `EntryLinks` for catalog entries.
         *   **Sync and State Management**:
             *   Store checksums of local state in a separate metadata file (e.g., `.catalog.state`).
@@ -38,7 +37,7 @@ Optimize the file format for human and agent editing. Implement layout support, 
             *   Treat missing local files as intent to delete corresponding remote catalog entries.
             *   Fail fast on remote modifications to prevent overwriting newer changes.
     *   **CLI (TS-based)**:
-        *   Update `pull` and `push` operations to support sidecars, multi-dataset BQ, entry links, and lakehouse assets.
+        *   Update `pull` and `push` operations to support sidecars, multi-dataset BQ and entry links.
         *   Add `kcmd status` to check for local modifications and remote drift.
         *   Update `kcmd push` to use checksums and report sync conflicts.
         *   Support a force override (`--force`) flag to bypass drift checks.
@@ -46,7 +45,6 @@ Optimize the file format for human and agent editing. Implement layout support, 
     *   **Testing**:
         *   Implement test cases for Standard layout (YAML + sidecars) and Documents layout (Markdown + frontmatter) format mapping.
         *   Implement test cases for multi-dataset BigQuery pulling and pushing.
-        *   Implement test cases for Dataplex Lakehouse asset syncing.
         *   Implement test cases for entry links.
         *   **Sync and State Management Testing**:
             *   Implement test cases for checksum calculation and drift detection.
@@ -64,6 +62,7 @@ Ensure data integrity, dynamic validation, type aliases, creation of remote reso
     *   **Overlay & Target Management**:
         *   Support Dataplex Entry Group creation if they do not exist on the remote catalog.
         *   Support pushing BigQuery metadata to a different overlay Entry Group in Dataplex rather than the source dataset directly.
+    *   Support `lakehouse` `entryGroup` in `catalog.yaml` to enable Dataplex Lakehouse asset sync.
     *   **CLI (TS-based)**:
         *   Update `push` and `pull` to support aliases, and overlay entry groups.
     *   **Testing**:
