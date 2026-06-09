@@ -1,0 +1,38 @@
+name: push_entry_deletion
+description: Push deletion of a custom entry
+setup:
+  catalog:
+    entryGroups:
+      - name: projects/p/locations/us/entryGroups/custom-group
+    entryTypes:
+      - name: projects/p/locations/global/entryTypes/custom-type
+    entries:
+      - name: projects/p/locations/us/entryGroups/custom-group/entries/custom-entry
+        entryType: projects/p/locations/global/entryTypes/custom-type
+        entrySource:
+          description: Old custom description
+
+  fileSystem:
+    catalog.yaml: |
+      scope: entryGroup.p.us.custom-group
+      snapshot:
+        entries:
+          - p.global.custom-type
+
+actions:
+  - action: pull
+  - action: deleteEntry
+    name: custom-entry
+  - action: status
+    assert:
+      modified: true
+      changes:
+        - name: custom-entry
+          status: Deleted
+  - action: push
+
+assert:
+  fileSystem:
+    catalog/custom-entry.yaml: null
+  catalog:
+    entries: []

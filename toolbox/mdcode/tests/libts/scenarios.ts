@@ -98,10 +98,30 @@ function runScenario(scenario: any) {
         const { action, ...params } = actionStep;
         switch (action) {
           case 'pull':
-            await sync.pull();
+            const pullRes = await sync.pull(params.options);
+            if (params.assert) {
+                if (params.assert.success !== undefined) {
+                    expect(pullRes.success).toBe(params.assert.success);
+                }
+                if (params.assert.details !== undefined) {
+                    expect(pullRes.details).toBe(params.assert.details);
+                }
+            } else if (!pullRes.success) {
+                throw new Error(`Pull failed: ${pullRes.details}`);
+            }
             break;
           case 'push':
-            await sync.push(params.options);
+            const pushRes = await sync.push(params.options);
+            if (params.assert) {
+                if (params.assert.success !== undefined) {
+                    expect(pushRes.success).toBe(params.assert.success);
+                }
+                if (params.assert.details !== undefined) {
+                    expect(pushRes.details).toBe(params.assert.details);
+                }
+            } else if (!pushRes.success) {
+                throw new Error(`Push failed: ${pushRes.details}`);
+            }
             break;
           case 'listEntries':
             console.log(await snapshot.listEntries());
@@ -109,11 +129,47 @@ function runScenario(scenario: any) {
           case 'createEntry':
             await snapshot.createEntry(params.name, params.entry);
             break;
+          case 'fileSystem':
+            if (params.write) {
+               for (const [filePath, content] of Object.entries(params.write)) {
+                  const absolutePath = path.join('/', filePath);
+                  await fs.promises.mkdir(path.dirname(absolutePath), { recursive: true });
+                  await fs.promises.writeFile(absolutePath, content as string, 'utf8');
+               }
+            }
+            break;
+          case 'updateRemoteEntry':
+            const remoteEntry = (catalog as any).mockEntries.find((e: any) => e.name === params.name);
+            if (remoteEntry) {
+                // deeply merge aspects
+                if (params.fields.aspects) {
+                    remoteEntry.aspects = { ...remoteEntry.aspects, ...params.fields.aspects };
+                }
+                // deeply merge other fields as needed, or just Object.assign for now
+                Object.assign(remoteEntry, params.fields);
+            }
+            break;
+          case 'createRemoteEntry':
+            (catalog as any).mockEntries.push(params.entry);
+            break;
           case 'updateEntry':
             await snapshot.updateEntry(params.entry, params.fields);
             break;
           case 'deleteEntry':
             await snapshot.deleteEntry(params.name);
+            break;
+          case 'status':
+            const statusRes = await sync.status();
+            if (params.assert) {
+                expect(statusRes.modified).toBe(params.assert.modified);
+                if (params.assert.changes) {
+                    for (const expectedChange of params.assert.changes) {
+                        const actual = statusRes.changes.find((c: any) => c.name === expectedChange.name);
+                        expect(actual).toBeDefined();
+                        expect(actual?.status).toBe(expectedChange.status);
+                    }
+                }
+            }
             break;
           default:
             throw new Error(`Unknown action: ${action}`);
@@ -131,13 +187,23 @@ function runScenario(scenario: any) {
           }
           else {
             expect(fs.existsSync(absolutePath)).toBe(true);
-            if (typeof condition === 'string') {
-              const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
-              expect(actualContent.trim()).toBe(condition.trim());
-            }
-            else if (condition && typeof condition === 'object' && 'contains' in condition) {
-              const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
-              expect(actualContent).toContain(condition.contains);
+            const runAssertion = (cond: any) => {
+              if (typeof cond === 'string') {
+                const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
+                expect(actualContent.trim()).toBe(cond.trim());
+              }
+              else if (cond && typeof cond === 'object' && 'contains' in cond) {
+                const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
+                expect(actualContent).toContain(cond.contains);
+              }
+            };
+
+            if (Array.isArray(condition)) {
+              for (const cond of condition) {
+                runAssertion(cond);
+              }
+            } else {
+              runAssertion(condition);
             }
           }
         }
@@ -212,6 +278,15 @@ function main() {
     async function(project: string, location: string, entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[]) {
       if (currentCatalogMock) {
         return await currentCatalogMock.modifyEntry(project, location, entry, updateMask, aspectKeys);
+      }
+      return { status: 404, message: 'Not found' };
+    }
+  );
+
+  spyOn(gcp.CatalogClient.prototype, 'deleteEntry').mockImplementation(
+    async function(project: string, location: string, entryGroup: string, entry: string) {
+      if (currentCatalogMock) {
+        return await currentCatalogMock.deleteEntry(project, location, entryGroup, entry);
       }
       return { status: 404, message: 'Not found' };
     }

@@ -1,0 +1,50 @@
+name: test_invalid_conflict_flags
+description: Verify that pull rejects accept-local and push rejects accept-remote
+setup:
+  bigQuery:
+    datasets:
+      - id: p:d
+        datasetReference:
+          projectId: p
+          datasetId: d
+        location: us
+  catalog:
+    entryTypes:
+      - name: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
+    aspectTypes:
+      - name: projects/dataplex-types/locations/global/aspectTypes/overview
+    entries:
+      - name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d
+        entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
+        aspects:
+          dataplex-types.global.overview:
+            aspectType: projects/dataplex-types/locations/global/aspectTypes/overview
+            data:
+              content: Remote description base
+              contentType: MARKDOWN
+
+  fileSystem:
+    catalog.yaml: |
+      scope: bq-dataset.p.d
+      snapshot:
+        entries:
+          - dataplex-types.global.bigquery-dataset
+        aspects:
+          - dataplex-types.global.overview
+
+actions:
+  # Verify pull rejects accept-local
+  - action: pull
+    options:
+      conflictResolution: "accept-local"
+    assert:
+      success: false
+      details: "Invalid conflict-resolution strategy for pull. Allowed values: accept-remote, strict"
+
+  # Verify push rejects accept-remote
+  - action: push
+    options:
+      conflictResolution: "accept-remote"
+    assert:
+      success: false
+      details: "Invalid conflict-resolution strategy for push. Allowed values: accept-local, strict"

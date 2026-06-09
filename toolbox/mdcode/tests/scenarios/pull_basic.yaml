@@ -22,3 +22,8 @@ assert:
     catalog/e1.yaml:
       - contains: "name: e1"
       - contains: "type: test.global.et1"
+    catalog-state.json:
+      - contains: "version"
+      - contains: "entries"
+      - contains: "e1"
+      - contains: "entryChecksum"

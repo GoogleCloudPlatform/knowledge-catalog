@@ -26,7 +26,7 @@ export class CatalogSnapshot {
     this.manifest = manifest;
 
     const catalogPath = path.join(this.basePath, 'catalog');
-    this._layout = createLayout(manifest.source.layout, catalogPath);
+    this._layout = createLayout(manifest.source.layout, catalogPath, manifest.source, manifest);
   }
 
   static async fromPath(basePath: string, ctx: gcp.ApiContext): Promise<CatalogSnapshot> {
@@ -178,9 +178,35 @@ export class CatalogSnapshot {
   // Stores a Dataplex entry into the locally managed catalog snapshot. This will internally map
   // The service representation into the local metadata representation.
   // This is only meant to be used within the syncing process (as part of pull operations).
-  async _storeEntry(entry: dataplex.Entry): Promise<void> {
+  async _storeEntry(entry: dataplex.Entry, preserveModifications?: { core?: boolean, aspects?: string[] }): Promise<void> {
     const localName = this.manifest.source.localName(entry);
-    await this._layout.saveEntry(localName, toLocalEntry(entry, localName));
+    const remoteAsLocal = toLocalEntry(entry, localName);
+
+    if (preserveModifications) {
+       const currentLocal = await this._layout.loadEntry(localName).catch(() => null);
+       if (currentLocal) {
+          if (preserveModifications.core) {
+             if (!remoteAsLocal.resource) remoteAsLocal.resource = {};
+             if (currentLocal.resource) {
+                 remoteAsLocal.resource.displayName = currentLocal.resource.displayName;
+                 remoteAsLocal.resource.description = currentLocal.resource.description;
+                 remoteAsLocal.resource.labels = currentLocal.resource.labels;
+             }
+          }
+          if (preserveModifications.aspects && preserveModifications.aspects.length > 0) {
+             if (!remoteAsLocal.aspects) remoteAsLocal.aspects = {};
+             for (const aspectType of preserveModifications.aspects) {
+                 if (currentLocal.aspects && currentLocal.aspects[aspectType]) {
+                     remoteAsLocal.aspects[aspectType] = currentLocal.aspects[aspectType];
+                 } else {
+                     delete remoteAsLocal.aspects[aspectType];
+                 }
+             }
+          }
+       }
+    }
+
+    await this._layout.saveEntry(localName, remoteAsLocal);
   }
 
   // Fetches a Dataplex entry from its local metadata representation.
@@ -202,10 +228,17 @@ export class CatalogSnapshot {
       this._aspectTypes
     );
   }
+
+  // Deletes an entry from the locally managed catalog snapshot without validation.
+  // This is only meant to be used within the syncing process (as part of pull operations)
+  // to clean up orphaned entries.
+  async _deleteEntry(name: string): Promise<void> {
+    await this._layout.deleteEntry(name);
+  }
 }
 
 // Converts a Dataplex entry into the local metadata representation.
-function toLocalEntry(entry: dataplex.Entry, localName: string): md.Entry {
+export function toLocalEntry(entry: dataplex.Entry, localName: string): md.Entry {
   const aspects: Record<string, md.Aspect> = {};
   if (entry.aspects) {
     for (const key in entry.aspects) {
