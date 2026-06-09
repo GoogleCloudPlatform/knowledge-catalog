@@ -1,66 +1,42 @@
-import * as crypto from 'node:crypto';
+import { hash } from 'ohash';
 import { Entry } from './metadata';
 
-/**
- * Normalizes aspect data recursively by sorting object keys alphabetically.
- * Preserves the order of array elements, but normalizes objects within arrays.
- */
-export function normalizeAspectData(data: any): any {
-  if (data === null || typeof data !== 'object') {
-    return data;
-  }
-
-  if (Array.isArray(data)) {
-    return data.map(item => normalizeAspectData(item));
-  }
-
-  const sortedKeys = Object.keys(data).sort();
-  const normalizedObj: Record<string, any> = {};
-  for (const key of sortedKeys) {
-    normalizedObj[key] = normalizeAspectData(data[key]);
-  }
-  return normalizedObj;
+function stripUndefined(obj: any): any {
+  if (obj === undefined) return undefined;
+  return JSON.parse(JSON.stringify(obj));
 }
 
 /**
- * Computes a SHA-256 hash of a string.
- */
-export function sha256(content: string): string {
-  return crypto.createHash('sha256').update(content).digest('hex');
-}
-
-/**
- * Calculates the checksum of an individual aspect by serializing its normalized form.
+ * Calculates the checksum of an individual aspect using ohash for stable serialization.
  */
 export function calculateAspectChecksum(aspectData: any): string {
-  const normalized = normalizeAspectData(aspectData);
-  return sha256(JSON.stringify(normalized));
+  return hash(stripUndefined(aspectData));
 }
 
 /**
  * Calculates the unified entry-level checksum of an Entry by combining the hashes
- * of its normalized core fields and individual aspect checksums.
+ * of its core fields and individual aspect checksums.
  */
 export function calculateEntryChecksum(entry: Entry): string {
-  const coreData = {
+  const coreData: Record<string, any> = {
     name: entry.name,
     type: entry.type,
-    resource: entry.resource ? normalizeAspectData(entry.resource) : undefined,
   };
-  const coreJson = JSON.stringify(coreData);
+  if (entry.resource !== undefined) {
+    coreData.resource = entry.resource;
+  }
 
   const aspectChecksums: Record<string, string> = {};
   if (entry.aspects) {
-    const sortedAspectKeys = Object.keys(entry.aspects).sort();
-    for (const key of sortedAspectKeys) {
-      aspectChecksums[key] = calculateAspectChecksum(entry.aspects[key]);
+    for (const [key, value] of Object.entries(entry.aspects)) {
+      aspectChecksums[key] = calculateAspectChecksum(value);
     }
   }
 
   const unifiedData = {
-    core: coreJson,
+    core: hash(stripUndefined(coreData)),
     aspects: aspectChecksums,
   };
 
-  return sha256(JSON.stringify(unifiedData));
+  return hash(unifiedData);
 }
