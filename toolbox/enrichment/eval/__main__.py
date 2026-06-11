@@ -23,7 +23,7 @@ import json
 import os
 import sys
 
-from .dynamic_eval import run_dynamic_eval
+from .dynamic_eval import run_dynamic_eval, fmt_score
 from .golden_eval import run_golden_eval
 
 
@@ -48,14 +48,14 @@ def _fmt(results: dict) -> str:
             f"  {'-'*w} {'-'*7}   {'-'*40}"]
   for m in metrics:
     sc = m["score"]
-    sc_s = " n/a" if sc is None else f"{sc:5.3f}"
+    sc_s = fmt_score(sc)
     rat = (m.get("rationale") or "").replace("\n", " ")
     if len(rat) > 90:
       rat = rat[:90] + "…"
     lines.append(f"  {m['name']:{w}} {sc_s:>7}   {rat}")
   avg = results.get("average_score")
   lines.append(f"  {'-'*w} {'-'*7}")
-  lines.append(f"  {'AVERAGE':{w}} {('n/a' if avg is None else f'{avg:5.3f}'):>7}")
+  lines.append(f"  {'AVERAGE':{w}} {fmt_score(avg):>7}")
   t = results.get("telemetry", {})
   lat = t.get("latency_s")
   lines.append("")

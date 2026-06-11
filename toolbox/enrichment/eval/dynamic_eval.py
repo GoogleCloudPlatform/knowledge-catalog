@@ -32,6 +32,16 @@ def _log(msg: str) -> None:
   print(f"[eval] {msg}", file=sys.stderr, flush=True)
 
 
+def fmt_score(score) -> str:
+  """Render a metric score (stored 0..1) on the 0-100 scale shown to users.
+
+  Scores are kept normalized (0..1) internally — thresholds, gating and the JSON
+  output — and only scaled to 0-100 for display in the scorecard, report, and
+  progress logs. None -> "n/a".
+  """
+  return "n/a" if score is None else f"{float(score) * 100:.1f}"
+
+
 def write_report(results: dict, output_dir: str,
                  filename: str = "eval_report.md") -> str:
   """Write a full, untruncated eval report (Markdown) next to trajectory.json.
@@ -49,7 +59,7 @@ def write_report(results: dict, output_dir: str,
   lines.append(f"- mode: {results.get('mode')} "
                f"(agent_type={results.get('agent_type')})")
   lines.append(f"- generated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-  lines.append(f"- average score: {'n/a' if avg is None else f'{avg:.3f}'}")
+  lines.append(f"- average score: {fmt_score(avg)}/100")
   lat = t.get("latency_s")
   lines.append(f"- telemetry: {t.get('tokens_total', 0):,} tokens "
                f"(in {t.get('tokens_in', 0):,} / out {t.get('tokens_out', 0):,}) · "
@@ -58,7 +68,7 @@ def write_report(results: dict, output_dir: str,
   lines.append("")
   for m in results.get("metrics", []):
     sc = m.get("score")
-    lines.append(f"## {m['name']} — {'n/a' if sc is None else f'{sc:.3f}'}")
+    lines.append(f"## {m['name']} — {fmt_score(sc)}/100")
     if m.get("description"):
       lines.append(f"_{m['description']}_")
     lines.append("")
@@ -128,10 +138,10 @@ def run_dynamic_eval(output_dir: str, model: str = "gemini-2.5-pro",
   mres = []
   _log("· structural_validity (deterministic) …")
   mres.append(metrics.check_structural(arts, mode))
-  _log(f"  = {mres[-1].score}")
+  _log(f"  = {fmt_score(mres[-1].score)}")
   _log("· perf (deterministic) …")
   mres.append(metrics.check_perf(latency, arts, perf_budget or {}, tokens))
-  _log(f"  = {mres[-1].score}")
+  _log(f"  = {fmt_score(mres[-1].score)}")
 
   # Table mode: also ground against the pulled 1P schema / reference + produced yaml.
   extra = ""
@@ -145,15 +155,24 @@ def run_dynamic_eval(output_dir: str, model: str = "gemini-2.5-pro",
         + list((arts.get("yaml") or {}).values()))
   _log("· hallucination_free (judge: extract claims → verify across chunks) …")
   _t = time.time()
-  mres.append(metrics.check_hallucination(arts, source_context, judge,
-                                          extra_grounding=extra))
-  _log(f"  = {mres[-1].score}  ({time.time() - _t:.0f}s)")
+  try:
+    mres.append(metrics.check_hallucination(arts, source_context, judge,
+                                            extra_grounding=extra))
+    _log(f"  = {fmt_score(mres[-1].score)}  ({time.time() - _t:.0f}s)")
+  except Exception as e:  # pylint: disable=broad-except
+    # e.g. Vertex auth/ADC missing despite GOOGLE_CLOUD_PROJECT being set. Degrade
+    # to n/a (excluded from the gate) instead of crashing the whole eval.
+    _log(f"  (hallucination skipped: {str(e)[:120]})")
+    mres.append(metrics.MetricResult(
+        "hallucination_free", None, True,
+        "groundedness not scored — judge unavailable (check Vertex AI auth: "
+        "GOOGLE_CLOUD_PROJECT + `gcloud auth application-default login`)"))
   _log("· rubric: redundancy / disambiguation / contradictions (judge) …")
   _t = time.time()
   try:
     rub = metrics.score_rubric(arts, judge, None)
     mres.extend(rub)
-    _log(f"  = {', '.join(str(r.score) for r in rub)}  ({time.time() - _t:.0f}s)")
+    _log(f"  = {', '.join(fmt_score(r.score) for r in rub)}  ({time.time() - _t:.0f}s)")
   except Exception:  # pylint: disable=broad-except
     _log("  (rubric skipped)")
   _log("done — scorecard below")

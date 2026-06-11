@@ -275,18 +275,19 @@ def check_trajectory(stdout: str, golden: dict) -> MetricResult:
 def check_perf(latency_s: float, artifacts: dict, budget: dict,
                tokens: dict | None = None) -> MetricResult:
   """REPORT-ONLY (does NOT gate). Surfaces latency, token usage, and output size
-  so the compare view can show the %diff between the two agent versions. We do not
-  enforce a pass/fail threshold here -- efficiency is judged by comparing A vs B,
-  not against an absolute budget."""
+  for visibility. No pass/fail threshold is enforced here -- this metric is
+  reported, not gated."""
   tok = tokens or {}
   tin, tout = tok.get("input", 0) or 0, tok.get("output", 0) or 0
   ttot = tok.get("total", (tin + tout))
   overviews = artifacts.get("overview_md", {})
   longest = max((len(t) for t in overviews.values()), default=0)
   tok_txt = (f" Used {ttot:,} tokens ({tin:,} in / {tout:,} out)." if ttot else "")
-  detail = (f"Completed in {latency_s:.0f}s." + tok_txt +
+  lat_txt = (f"Completed in {latency_s:.0f}s." if latency_s and latency_s > 0
+             else "Latency not recorded (re-run the agent to capture it).")
+  detail = (lat_txt + tok_txt +
             (f" Longest overview {longest:,} chars." if longest else "") +
-            " (Report-only — efficiency is compared A-vs-B, not gated.)")
+            " (Report-only — not gated.)")
   # Always passes: report-only so it never fails the case gate.
   return MetricResult("perf", 1.0, True, detail,
                       extra={"tokens": {"input": tin, "output": tout, "total": ttot}})
@@ -340,7 +341,7 @@ def check_context_preservation(artifacts: dict, prebaked_facts: list[str],
   available, case-insensitive substring fallback otherwise. Today the agent always
   scaffolds a CLEAN output dir (doc_mode.py) and regenerates from scratch -- there
   is no merge-into-existing path -- so this is EXPECTED to fail until that
-  capability lands (listed in eval_config.expected_fail_metrics)."""
+  capability lands (a known gap)."""
   if not prebaked_facts:
     return MetricResult("context_preservation", 1.0, True,
                         "No pre-baked context to preserve for this case.")
@@ -563,9 +564,8 @@ _RUBRIC = {
 # Dedicated business-term Metadata-as-Code files (.md/.yaml per term) are NOT
 # emitted by the agent yet, so check_business_terms_validity is EXPECTED to fail
 # today (terms may still appear inline in the overview -> check_business_terms).
-# Listed under eval_config.expected_fail_metrics so it's reported but doesn't
-# break the regression gate. When the agent gains per-term file output, it passes
-# with no code change.
+# Reported but not gated, so it doesn't break a regression suite. When the agent
+# gains per-term file output, it passes with no code change.
 _TERM_FILE_HINTS = ("glossary", "business-term", "business_term", "/terms/", ".term.")
 
 
@@ -575,8 +575,8 @@ def check_business_terms_validity(artifacts: dict, expected_terms: list[str],
   accurately define the term.
 
   File *existence* is deterministic; *content* validity is LLM-judged. Today the
-  agent emits no per-term files, so this fails at the existence gate (expected
-  gap -- listed in eval_config.expected_fail_metrics). Once per-term files are
+  agent emits no per-term files, so this fails at the existence gate (a known
+  gap). Once per-term files are
   emitted, the judge validates that every expected term is present and correctly
   defined.
   """
@@ -666,8 +666,8 @@ def score_rubric(artifacts: dict, judge: Judge,
       break
   out = []
   for name in _RUBRIC:
-    v = res.get(name)
-    if not isinstance(v, dict) or "score" not in v:
+    score, rationale, insights = _rubric_dimension(res.get(name))
+    if score is None:
       # Couldn't get a score for this dimension -- do NOT pretend it's a real 0.
       # Flag it clearly and exclude it from the gate so a judge flake doesn't
       # tank the run; score None so it's skipped in aggregation.
@@ -678,10 +678,29 @@ def score_rubric(artifacts: dict, judge: Judge,
           "problem). Re-run to get a score for this dimension.",
           extra={"judge_error": True}))
       continue
-    score = float(v.get("score", 0) or 0)
-    out.append(MetricResult(name, score, score >= 0.7,
-                            v.get("rationale", ""), v.get("insights", "")))
+    out.append(MetricResult(name, score, score >= 0.7, rationale, insights))
   return out
+
+
+def _rubric_dimension(v):
+  """Pull (score, rationale, insights) from one rubric dimension's JSON value.
+
+  Normally the judge returns a flat object {"score","rationale","insights"}. It
+  sometimes instead nests one object PER overview file
+  ({"foo.overview.md": {"score": ...}, ...}); in that case average the per-file
+  scores and join their rationales so the dimension still gets a score instead of
+  showing n/a. Returns (None, "", "") when no score can be recovered."""
+  if not isinstance(v, dict):
+    return None, "", ""
+  if "score" in v:
+    return float(v.get("score", 0) or 0), v.get("rationale", ""), v.get("insights", "")
+  subs = [s for s in v.values() if isinstance(s, dict) and "score" in s]
+  if subs:
+    avg = sum(float(s.get("score", 0) or 0) for s in subs) / len(subs)
+    rationale = " ".join(s.get("rationale", "") for s in subs if s.get("rationale"))
+    insights = " ".join(s.get("insights", "") for s in subs if s.get("insights"))
+    return round(avg, 3), rationale, insights
+  return None, "", ""
 
 
 def consistency_judge(run_entries: list[dict], judge: Judge) -> list | None:
@@ -731,7 +750,7 @@ def check_hallucination(artifacts: dict, source_context: str, judge: Judge,
                         extra_grounding: str = "") -> MetricResult:
   """Groundedness via per-claim, chunked, PARALLEL verification.
 
-  Why this shape (see eval_findings §7C): the old single-shot judge capped the
+  Why this shape: the old single-shot judge capped the
   source at 50K chars and grounded only against prose. On large corpora that cut
   dropped real content (codenames flagged as fabricated); in table mode it
   ignored the schema/dataset facts the overview legitimately states. Now:
@@ -967,7 +986,7 @@ def explain_metrics(metric_list: list[dict], mode: str,
               # Per-run signal so the explainer can detect flakiness/variance.
               "per_run_scores": m.get("run_scores"),
               "runs_passed": m.get("runs_passed"),
-              # The OTHER agent version's mean for the same metric (for A-vs-B).
+              # Optional baseline mean for the same metric (e.g. a prior run).
               "comparison_baseline_other_version": baselines.get(m.get("name")),
               "evidence": (m.get("detail") or "").strip()}
              for m in metric_list]
@@ -977,7 +996,7 @@ def explain_metrics(metric_list: list[dict], mode: str,
       f"in '{mode}' mode; each metric includes 'score' (mean across runs), "
       "'per_run_scores' (each run's score, IN RUN ORDER: the first element is Run 1, "
       "the second is Run 2, etc.), 'runs_passed', 'comparison_baseline_other_version' "
-      "(the OTHER agent version's mean for the same metric), and 'evidence' (the "
+      "(an optional baseline mean for the same metric, e.g. from a prior run), and 'evidence' (the "
       "concrete findings). Using ONLY the evidence (do not invent facts), write for "
       "EVERY metric:\n"
       "  - rationale (1-3 sentences): WHY it got this score. Be SPECIFIC and "
@@ -989,8 +1008,8 @@ def explain_metrics(metric_list: list[dict], mode: str,
       "NUMBER: when per_run_scores differ, state the scores AND name the specific "
       "run(s) that were lower so the developer can open them (e.g. 'averaged 0.9 -- "
       "Run 1 was 1.0 but Run 2 dropped to 0.8'); call it flaky/transient if it "
-      "varies, stable/systematic if consistent. Reference the other version's "
-      "baseline when it differs (e.g. 'vs the other version's 0.875').\n"
+      "varies, stable/systematic if consistent. Reference the baseline when it "
+      "differs (e.g. 'vs the baseline 0.875').\n"
       "  - insights (1-2 sentences, REQUIRED, never empty): the concrete next "
       "improvement, tied to the specific gap named in the rationale (e.g. 'drop the "
       "spurious UPC/GTIN entry by tightening the topic filter', or 'add the missing "
