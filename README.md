@@ -44,7 +44,7 @@ toolbox/
         └── tools/
             ├── kcmd_tools.py  # kcmd init/pull discovery + entry reading
             └── drive_tools.py # Google Drive/Docs fetch helpers
-    └── eval/                 # dynamic (golden-free) evaluation CLI
+    └── eval/                 # evaluation CLI (dynamic, golden-free)
         ├── __main__.py        # `python -m eval --output-dir ...`
         ├── dynamic_eval.py    # golden-free scoring of a single run
         ├── metrics.py         # metric library (deterministic + LLM-judge)
@@ -183,14 +183,28 @@ python -m eval --output-dir /tmp/enrich_out
 python -m eval --output-dir /tmp/enrich_out --model gemini-2.5-pro
 ```
 
+Each run also writes a full **`eval_report.md`** next to `trajectory.json` in the
+output dir — the same metrics with **untruncated** rationales (the terminal
+scorecard abbreviates them to stay readable).
+
+### Flags
+
+Flags (see `python -m eval --help`):
+
+| Flag | Required | Meaning |
+|------|----------|---------|
+| `--output-dir` | yes | The enrichment run's output dir (contains `catalog/` + `trajectory.json`). |
+| `--model` | no | Judge model id — any Gemini model your auth can reach. Defaults to `gemini-2.5-pro`. |
+| `--json` | no | Emit raw JSON instead of the formatted scorecard (for piping/automation). |
+
 It reports the following, each on a 0–1 scale (higher is better):
 
 - **structural_validity** *(deterministic)* — the generated mdcode is well-formed:
   entry YAML parses, required fields are present, the entry type matches the mode,
   and overviews are clean Markdown (headers present, no stray YAML frontmatter, no
   unclosed code fences).
-- **perf** *(deterministic)* — token usage and latency, scored against an optional
-  `--max-latency-s` / `--max-total-tokens` budget (report-only if no budget given).
+- **perf** *(report-only)* — token usage and latency for the run, reported for
+  visibility (not gated against a budget; does not affect pass/fail).
 - **hallucination_free** *(judge)* — is every factual claim in the overviews
   supported by what the agent actually retrieved? The score is the fraction of
   extracted claims that are grounded; **1.0 = nothing fabricated**. Claims are
