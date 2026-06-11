@@ -44,11 +44,13 @@ toolbox/
         └── tools/
             ├── kcmd_tools.py  # kcmd init/pull discovery + entry reading
             └── drive_tools.py # Google Drive/Docs fetch helpers
-    └── eval/                 # evaluation CLI (dynamic, golden-free)
-        ├── __main__.py        # `python -m eval --output-dir ...`
+    └── eval/                 # evaluation CLI (dynamic + golden-based)
+        ├── __main__.py        # `python -m eval --output-dir ... [--golden ...]`
         ├── dynamic_eval.py    # golden-free scoring of a single run
+        ├── golden_eval.py     # golden-based scoring (concepts, facts, coverage)
         ├── metrics.py         # metric library (deterministic + LLM-judge)
-        └── loaders.py         # read catalog/ + trajectory.json
+        ├── loaders.py         # read catalog/ + trajectory.json
+        └── goldens/           # golden schema (TEMPLATE.json), GOLDENS.md, example
 ```
 
 ## Prerequisites
@@ -194,6 +196,8 @@ Flags (see `python -m eval --help`):
 | Flag | Required | Meaning |
 |------|----------|---------|
 | `--output-dir` | yes | The enrichment run's output dir (contains `catalog/` + `trajectory.json`). |
+| `--golden` | no | Golden file → golden-based eval (adds concept_recall/precision, fact_recall, coverage). Omit for dynamic (golden-free) eval. See `eval/goldens/GOLDENS.md`. |
+| `--persona` | no | Persona id from the golden's `personas` (golden mode only). |
 | `--model` | no | Judge model id — any Gemini model your auth can reach. Defaults to `gemini-2.5-pro`. |
 | `--json` | no | Emit raw JSON instead of the formatted scorecard (for piping/automation). |
 
@@ -233,6 +237,24 @@ gcloud auth application-default login
 
 Without auth they are simply skipped and shown as `n/a`; the deterministic metrics
 still run. Choose the judge model with `--model` (default `gemini-2.5-pro`).
+
+### Golden-based eval (optional)
+
+Dynamic eval needs no answer key. For deeper checks — *did we capture the expected
+concepts and facts, without spurious entries?* — score against a **golden** that
+declares what the output should contain:
+
+```bash
+python -m eval --output-dir /tmp/enrich_out --golden eval/goldens/example_ga_events.json
+```
+
+On top of the dynamic metrics this adds **concept_recall**, **concept_precision**,
+**fact_recall**, and section/term coverage. Golden runs write a full
+`golden_report_<run>.md` (untruncated rationales) into a tmp folder
+(`$TMPDIR/kc_golden_eval_reports/`) — the path is printed on the `[eval]` log.
+See `eval/goldens/GOLDENS.md` for the schema and three ways to build goldens —
+author them, work backward from already-documented data, or harvest them from
+human review.
 
 ## Publishing to the catalog
 
