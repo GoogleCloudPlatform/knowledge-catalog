@@ -26,15 +26,15 @@ matching to a specific piece of metadata:
 
 ## How to use Knowledge Catalog Search
 
-*   **Tool Function:** `knowledge_catalog_search(query: str)`
-*   **CRITICAL ARGUMENT RULE:** If the user specifies a project (or
-    if you extract `projectid` predicates), you MUST do the following:
-    1.  **INCLUDE THEM in the `query` string argument.** (e.g., your
-        `query` string must physically contain `projectid=some-project`).
+*   **Tool Function:** `knowledge_catalog_multi_search(queries: list[str])`
+*   **`queries` Argument:** This is a list of strings, where each string is a search query variation.
+*   **CRITICAL ARGUMENT RULE:** If the user specifies a project (or if you extract `projectid` predicates), you MUST **ALSO INCLUDE THEM in EACH string within the `queries` list.** (e.g., each query string must physically contain `projectid=some-project`).
 
 --------------------------------------------------------------------------------
 > [!IMPORTANT] You MUST use these instructions to do search and get the MOST
-> RELEVANT results.
+> RELEVANT results. You SHOULD NOT CALL multi-search tool again and again. You
+> are ALLOWED to CALL multi-search maximum **3** times. After that just say
+> there are no relevant results.
 --------------------------------------------------------------------------------
 
 # Instructions
@@ -55,40 +55,25 @@ matching to a specific piece of metadata:
     *   *Variation 2 (Data Source Translation):* Translate the business concept into database terminology based on your decomposition.
     *   *Variation 3 (Broader System/Category):* Think about the broader business category or related metrics.
 -   **Extract Predicates:** From the user's raw text, extract constraints into valid Knowledge Catalog predicates (e.g., "dataset foo in project your-project-id" becomes `parent=foo projectid=your-project-id`). See the "Predicate Extraction" section. If the user provides `projectid`, you MUST keep them.
+-   **Include Baseline Search:** Ensure one of the queries in the list is the user's original, word-for-word request.
+-   **Combine Predicates:** Append the extracted predicates (and any user-provided ones) to EACH generated query variation.
 -   **REMINDER** Knowledge Catalog Search DOES NOT UNDERSTAND double quotes in the free text, so avoid introducing any double quotes
 
-## Step 3: Call Knowledge Catalog Search Tools (Batching)
+## Step 3: Call Knowledge Catalog Multi-Search Tool
 
--   Always batch as many search queries as possible in parallel to minimize round trips.
--   You MUST include the **Baseline Search** alongside your generated variations.
+-   Prepare the list of query strings, including the baseline search and all generated variations, each combined with the necessary predicates.
     -   **Critical Definition - Baseline Search:** A search using the entire user request (word for word) directly.
--   **REMINDER:** If your predicates include `projectid=X`, those MUST be present inside the `query` string argument.
+-   Call the `knowledge_catalog_multi_search` tool once with the list of queries.
+-   **REMINDER:** If your predicates include `projectid=X`, those MUST be present inside EACH string in the `queries` list.
 -   **REMINDER:** The `name` and `description` predicates MUST ONLY BE USED WHEN THE QUERY EXPLICITLY USES TERMS LIKE "name" or "description".
 
-## Step 3: Call Knowledge Catalog Search
+## Step 4: Identify the best Results
 
--   Once you have the free text variations and predicates (generated and user
-    provided). Call Knowledge Catalog Search in parallel.
-    -   One search call will be the exact user query
-    -   One search call for each variations along with predicates.
--   **REMINDER:** If your predicates include `projectid=X`,
-    those MUST be present inside the `query` string argument.
--  **REMINDER:** The `name` and `description` predicates MUST ONLY BE USED
-    WHEN THE QUERY EXPLICITLY USES TERMS LIKE "name" or "description".
-
-## Step 4: Merge Search Results
-
--   Deduplicate the results across all the search responses. You can tell two
-    results are same when the entry name is same
-
-## Step 5: Identify the best Results
-
--   For each result, check the name (display_name) and other details to gauge
-    how close a given results is based on the user query intent.
+-   The `knowledge_catalog_multi_search` tool returns a single, deduplicated list of results.
+-   For each result, check the name and description (or other metadata) to gauge how close a given result is based on the user query intent.
 -   ONLY RETURN the most relevant results. FILTER OUT irrelevant ones.
--   MAKE SURE TO SORT THE RESULTS SO THAT MOST RELEVANT results stay at TOP.
--   RETURN THE FULL **entry name** for each result. NO EXPLANATION required why
-    you selected individual results.
+-   **REMINDER:** Do NOT call `knowledge_catalog_multi_search` more than **THRICE** for a single user query. After the third attempt, present the best results found, even if imperfect.
+-   RETURN THE FULL **entry name** for each result. NO EXPLANATION required why you selected individual results.
 
 --------------------------------------------------------------------------------
 

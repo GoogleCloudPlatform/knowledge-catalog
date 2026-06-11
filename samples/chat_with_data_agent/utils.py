@@ -1,4 +1,4 @@
-"""Utility functions for the Knowledge Catalog Discovery Agent."""
+"""Utility functions for the Chat with Data Agent."""
 
 import os
 
