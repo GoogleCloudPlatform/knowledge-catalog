@@ -20,9 +20,16 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import time
 
 from . import loaders
 from . import metrics
+
+
+def _log(msg: str) -> None:
+  """Progress line to stderr (keeps stdout/--json clean)."""
+  print(f"[eval] {msg}", file=sys.stderr, flush=True)
 
 
 def run_dynamic_eval(output_dir: str, model: str = "gemini-2.5-pro",
@@ -38,9 +45,12 @@ def run_dynamic_eval(output_dir: str, model: str = "gemini-2.5-pro",
   agent_type = traj.get("agent_type", "doc")
   mode = "table" if agent_type == "table" else "doc"
 
+  _log(f"scoring {output_dir}  (mode={mode})")
   arts = loaders.load_mdcode(os.path.join(output_dir, "catalog"))
   if not arts.get("overview_md") and not arts.get("yaml"):
     return {"error": f"No generated mdcode found under {output_dir}/catalog."}
+  _log(f"loaded {len(arts.get('overview_md', {}))} overview(s), "
+       f"{len(arts.get('yaml', {}))} entry yaml(s)")
 
   # Ground hallucination against what the agent actually retrieved at runtime.
   src_parts = []
@@ -58,11 +68,24 @@ def run_dynamic_eval(output_dir: str, model: str = "gemini-2.5-pro",
   tokens["total"] = (tokens.get("input", 0) or 0) + (tokens.get("output", 0) or 0)
   latency = float(traj.get("latency") or 0.0)
 
-  judge = metrics.default_judge(model)
-  mres = [
-      metrics.check_structural(arts, mode),
-      metrics.check_perf(latency, arts, perf_budget or {}, tokens),
-  ]
+  # Only build a real judge when auth is present; otherwise pass a no-op so the
+  # judge-based metrics self-skip (deterministic metrics still run) instead of
+  # hanging on retries / erroring with no credentials.
+  has_auth = bool(os.environ.get("GOOGLE_CLOUD_PROJECT")
+                  or os.environ.get("GOOGLE_GENAI_USE_VERTEXAI"))
+  # Only build a real judge when auth is present; otherwise a no-op so judge-based
+  # metrics self-skip (deterministic metrics still run) instead of hanging/erroring.
+  judge = metrics.default_judge(model) if has_auth else (lambda _p: "")
+  _log(f"judge: {model + ' (on)' if has_auth else 'OFF — no auth, judge metrics will be n/a'}")
+
+  mres = []
+  _log("· structural_validity (deterministic) …")
+  mres.append(metrics.check_structural(arts, mode))
+  _log(f"  = {mres[-1].score}")
+  _log("· perf (deterministic) …")
+  mres.append(metrics.check_perf(latency, arts, perf_budget or {}, tokens))
+  _log(f"  = {mres[-1].score}")
+
   # Table mode: also ground against the pulled 1P schema / reference + produced yaml.
   extra = ""
   if mode == "table":
@@ -73,12 +96,20 @@ def run_dynamic_eval(output_dir: str, model: str = "gemini-2.5-pro",
         + list((arts.get("reference_yaml") or {}).values())
         + list((arts.get("reference_overview_md") or {}).values())
         + list((arts.get("yaml") or {}).values()))
+  _log("· hallucination_free (judge: extract claims → verify across chunks) …")
+  _t = time.time()
   mres.append(metrics.check_hallucination(arts, source_context, judge,
                                           extra_grounding=extra))
+  _log(f"  = {mres[-1].score}  ({time.time() - _t:.0f}s)")
+  _log("· rubric: redundancy / disambiguation / contradictions (judge) …")
+  _t = time.time()
   try:
-    mres.extend(metrics.score_rubric(arts, judge, None))
+    rub = metrics.score_rubric(arts, judge, None)
+    mres.extend(rub)
+    _log(f"  = {', '.join(str(r.score) for r in rub)}  ({time.time() - _t:.0f}s)")
   except Exception:  # pylint: disable=broad-except
-    pass
+    _log("  (rubric skipped)")
+  _log("done — scorecard below")
 
   label = getattr(metrics, "_METRIC_LABEL", {})
   out_metrics, numeric = [], []
