@@ -183,18 +183,42 @@ python -m eval --output-dir /tmp/enrich_out
 python -m eval --output-dir /tmp/enrich_out --model gemini-2.5-pro --json
 ```
 
-It reports, on a 0–1 scale:
+It reports the following, each on a 0–1 scale (higher is better):
 
-- **structural_validity** — the generated mdcode is well-formed (deterministic).
-- **perf** — token usage and latency, against an optional `--max-latency-s` /
-  `--max-total-tokens` budget.
-- **hallucination_free** — every factual claim in the overviews is supported by
-  what the agent actually retrieved (chunked, parallel, judged).
-- **redundancy_index / disambiguation_efficacy / absence_of_contradictions** —
-  rubric quality checks (judged).
+- **structural_validity** *(deterministic)* — the generated mdcode is well-formed:
+  entry YAML parses, required fields are present, the entry type matches the mode,
+  and overviews are clean Markdown (headers present, no stray YAML frontmatter, no
+  unclosed code fences).
+- **perf** *(deterministic)* — token usage and latency, scored against an optional
+  `--max-latency-s` / `--max-total-tokens` budget (report-only if no budget given).
+- **hallucination_free** *(judge)* — is every factual claim in the overviews
+  supported by what the agent actually retrieved? The score is the fraction of
+  extracted claims that are grounded; **1.0 = nothing fabricated**. Claims are
+  checked in parallel across chunks of the retrieved source.
+- **redundancy_index** *(judge)* — does the overview add **novel** context beyond
+  echoing column names/schema? **1 = rich synthesis, 0 = tautological restatement.**
+- **disambiguation_efficacy** *(judge)* — is the enrichment enough to tell this
+  entry apart from similar/overlapping ones (its grain and purpose made explicit)?
+  **1 = clearly distinct.**
+- **absence_of_contradictions** *(judge)* — are there contradictions within or
+  across the generated entries (join keys, enums, metric definitions, freshness)?
+  **1 = none, 0 = an explicit conflict.**
 
-Deterministic metrics always run; the judge-based metrics run when judge auth is
-set (otherwise they're skipped and reported as `n/a`).
+### Enabling the judge-based metrics
+
+The **deterministic** metrics (`structural_validity`, `perf`) always run. The
+**judge-based** metrics (`hallucination_free`, `redundancy_index`,
+`disambiguation_efficacy`, `absence_of_contradictions`) run **automatically as
+soon as judge auth is available** — there is no on/off flag. To turn them on, set
+up Vertex AI auth (the same auth the enrichment agent uses):
+
+```bash
+export GOOGLE_CLOUD_PROJECT=<your-project>
+gcloud auth application-default login
+```
+
+Without auth they are simply skipped and shown as `n/a`; the deterministic metrics
+still run. Choose the judge model with `--model` (default `gemini-2.5-pro`).
 
 ## Publishing to the catalog
 
