@@ -84,7 +84,8 @@ def run_dynamic_eval(output_dir: str, model: str = "gemini-2.5-pro",
 
   Args:
     output_dir: the agent's output dir (contains `catalog/` and `trajectory.json`).
-    model: judge model (any Gemini model id available to your auth).
+    model: judge model — any Vertex AI model id you have access to
+      (default gemini-2.5-pro).
     perf_budget: optional {"max_latency_s":..., "max_total_tokens":...}.
   """
   traj = loaders.load_trajectory(output_dir)

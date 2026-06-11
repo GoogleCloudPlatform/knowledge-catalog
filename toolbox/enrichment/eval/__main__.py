@@ -86,7 +86,8 @@ def main(argv=None) -> int:
   ap.add_argument("--persona", default=None,
                   help="Persona id from the golden's `personas` (golden mode only).")
   ap.add_argument("--model", default="gemini-2.5-pro",
-                  help="Judge model id (default: gemini-2.5-pro).")
+                  help="Judge model: any Vertex AI model id you have access to "
+                       "(default: gemini-2.5-pro).")
   ap.add_argument("--json", action="store_true",
                   help="Emit raw JSON instead of a formatted scorecard.")
   args = ap.parse_args(argv)

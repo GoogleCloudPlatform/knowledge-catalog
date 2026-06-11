@@ -198,7 +198,7 @@ Flags (see `python -m eval --help`):
 | `--output-dir` | yes | The enrichment run's output dir (contains `catalog/` + `trajectory.json`). |
 | `--golden` | no | Golden file → golden-based eval (adds concept_recall/precision, fact_recall, coverage). Omit for dynamic (golden-free) eval. See `eval/goldens/GOLDENS.md`. |
 | `--persona` | no | Persona id from the golden's `personas` (golden mode only). |
-| `--model` | no | Judge model id — any Gemini model your auth can reach. Defaults to `gemini-2.5-pro`. |
+| `--model` | no | Judge model — any Vertex AI model id you have access to. Defaults to `gemini-2.5-pro`. |
 | `--json` | no | Emit raw JSON instead of the formatted scorecard (for piping/automation). |
 
 It reports the following, each on a 0–1 scale (higher is better):
