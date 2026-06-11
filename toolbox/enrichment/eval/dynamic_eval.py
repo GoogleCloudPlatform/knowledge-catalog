@@ -32,6 +32,52 @@ def _log(msg: str) -> None:
   print(f"[eval] {msg}", file=sys.stderr, flush=True)
 
 
+def write_report(results: dict, output_dir: str,
+                 filename: str = "eval_report.md") -> str:
+  """Write a full, untruncated eval report (Markdown) next to trajectory.json.
+
+  The terminal scorecard truncates rationales to stay readable; this file keeps
+  the full rationale + insights for every metric. Returns the path written ("" on
+  failure). Reused by both the dynamic and golden evaluators.
+  """
+  t = results.get("telemetry", {})
+  avg = results.get("average_score")
+  lines = ["# Enrichment eval report", ""]
+  lines.append(f"- output: `{results.get('output_dir')}`")
+  if results.get("golden"):
+    lines.append(f"- golden: `{results.get('golden')}`")
+  lines.append(f"- mode: {results.get('mode')} "
+               f"(agent_type={results.get('agent_type')})")
+  lines.append(f"- generated: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+  lines.append(f"- average score: {'n/a' if avg is None else f'{avg:.3f}'}")
+  lat = t.get("latency_s")
+  lines.append(f"- telemetry: {t.get('tokens_total', 0):,} tokens "
+               f"(in {t.get('tokens_in', 0):,} / out {t.get('tokens_out', 0):,}) · "
+               f"{t.get('num_tool_calls', 0)} tool calls · "
+               f"latency {('n/a' if not lat else f'{lat:.1f}s')}")
+  lines.append("")
+  for m in results.get("metrics", []):
+    sc = m.get("score")
+    lines.append(f"## {m['name']} — {'n/a' if sc is None else f'{sc:.3f}'}")
+    if m.get("description"):
+      lines.append(f"_{m['description']}_")
+    lines.append("")
+    lines.append(f"**Rationale:** {m.get('rationale', '') or '(none)'}")
+    if m.get("insights"):
+      lines.append("")
+      lines.append(f"**Insights:** {m['insights']}")
+    lines.append("")
+  path = os.path.join(output_dir, filename)
+  try:
+    with open(path, "w", encoding="utf-8") as f:
+      f.write("\n".join(lines) + "\n")
+    _log(f"full report → {path}")
+    return path
+  except OSError as e:
+    _log(f"could not write report: {e}")
+    return ""
+
+
 def run_dynamic_eval(output_dir: str, model: str = "gemini-2.5-pro",
                      perf_budget: dict | None = None) -> dict:
   """Evaluate one enrichment run directory. Returns a results dict.
@@ -125,7 +171,7 @@ def run_dynamic_eval(output_dir: str, model: str = "gemini-2.5-pro",
         "insights": getattr(r, "insights", "") or "",
     })
 
-  return {
+  results = {
       "output_dir": output_dir,
       "agent_type": agent_type,
       "mode": mode,
@@ -139,3 +185,5 @@ def run_dynamic_eval(output_dir: str, model: str = "gemini-2.5-pro",
           "latency_s": latency or None,
       },
   }
+  write_report(results, output_dir)
+  return results
