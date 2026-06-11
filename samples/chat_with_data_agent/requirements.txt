@@ -1,0 +1,10 @@
+google-adk
+google-cloud-dataplex
+mcp
+google-api-core
+google-cloud-aiplatform[agent_engines]
+python-dotenv
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-exporter-gcp-trace
+google-cloud-logging
