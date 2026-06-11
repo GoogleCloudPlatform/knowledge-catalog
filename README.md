@@ -34,7 +34,7 @@ This repo mirrors the `GoogleCloudPlatform/knowledge-catalog` `toolbox/` layout:
 toolbox/
 ├── mdcode/                  # the kcmd (Metadata as Code) CLI + library
 └── enrichment/
-    └── src/
+    ├── src/
         ├── agent_runner.py  # CLI entrypoint: flags + dispatch to a mode
         ├── engine.py        # LLM agents (Vertex Gemini) for both modes
         ├── common.py        # shared helpers (run_text, mdcode parsing, trajectory)
@@ -44,6 +44,11 @@ toolbox/
         └── tools/
             ├── kcmd_tools.py  # kcmd init/pull discovery + entry reading
             └── drive_tools.py # Google Drive/Docs fetch helpers
+    └── eval/                 # dynamic (golden-free) evaluation CLI
+        ├── __main__.py        # `python -m eval --output-dir ...`
+        ├── dynamic_eval.py    # golden-free scoring of a single run
+        ├── metrics.py         # metric library (deterministic + LLM-judge)
+        └── loaders.py         # read catalog/ + trajectory.json
 ```
 
 ## Prerequisites
@@ -157,6 +162,39 @@ what the agent read and produced. Inspect it with:
 ```bash
 find /tmp/enrich_out -type f
 ```
+
+## Evaluating the output
+
+Before you publish, you can score an enrichment run with the **dynamic
+(golden-free) evaluator** under `toolbox/enrichment/eval/`. It needs no
+reference answers — it grounds its checks in the agent's own `trajectory.json`
+(what it actually retrieved), so it works on your own data out of the box.
+
+```bash
+cd toolbox/enrichment
+pip install -r eval/requirements.txt
+
+# Judge auth — Vertex AI, the same auth the agent uses:
+export GOOGLE_CLOUD_PROJECT=<project>
+gcloud auth application-default login
+
+# Score a run (the same --output_dir you gave the agent):
+python -m eval --output-dir /tmp/enrich_out
+python -m eval --output-dir /tmp/enrich_out --model gemini-2.5-pro --json
+```
+
+It reports, on a 0–1 scale:
+
+- **structural_validity** — the generated mdcode is well-formed (deterministic).
+- **perf** — token usage and latency, against an optional `--max-latency-s` /
+  `--max-total-tokens` budget.
+- **hallucination_free** — every factual claim in the overviews is supported by
+  what the agent actually retrieved (chunked, parallel, judged).
+- **redundancy_index / disambiguation_efficacy / absence_of_contradictions** —
+  rubric quality checks (judged).
+
+Deterministic metrics always run; the judge-based metrics run when judge auth is
+set (otherwise they're skipped and reported as `n/a`).
 
 ## Publishing to the catalog
 

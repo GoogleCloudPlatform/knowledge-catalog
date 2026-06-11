@@ -1,0 +1,4 @@
+# Enrichment eval (dynamic, golden-free) — judge + parsing deps.
+google-genai>=1.0.0
+google-auth>=2.0.0
+pyyaml>=6.0
