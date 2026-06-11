@@ -180,7 +180,7 @@ gcloud auth application-default login
 
 # Score a run (the same --output_dir you gave the agent):
 python -m eval --output-dir /tmp/enrich_out
-python -m eval --output-dir /tmp/enrich_out --model gemini-2.5-pro --json
+python -m eval --output-dir /tmp/enrich_out --model gemini-2.5-pro
 ```
 
 It reports the following, each on a 0–1 scale (higher is better):
