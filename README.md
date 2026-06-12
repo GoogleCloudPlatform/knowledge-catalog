@@ -296,9 +296,32 @@ still run. Choose the judge model with `--model` (default `gemini-2.5-pro`).
 ### Golden-based eval (optional)
 
 A **golden** is an answer key you declare for a case — the expected facts, terms,
-and sections. Scoring against it adds **concept_recall**, **concept_precision**,
-**fact_recall**, and section/term coverage on top of the dynamic metrics, so you
-can tell whether the agent captured what it should and didn't invent extras.
+and sections. Scoring against it adds these metrics on top of the dynamic ones
+(`structural_validity`, `perf`, `hallucination_free` still run), each on a 0–1
+scale (higher is better):
+
+- **concept_recall** *(judge, doc mode)* — of the concepts the golden expects as
+  knowledge-base entries, what fraction did the agent produce (matched by meaning,
+  not exact name)? **1.0 = every expected concept covered.**
+- **concept_precision** *(judge, doc mode)* — of the entries the agent produced,
+  what fraction map to an expected concept? Spurious entries lower it; concepts
+  you list under `acceptable_extra_concepts` are exempt. **1.0 = no off-target
+  entries.**
+- **fact_recall** *(judge)* — of the `golden_facts` (per table in table mode),
+  what fraction are conveyed by the matched output? **1.0 = all expected facts
+  present.**
+- **business_terms_presence** *(judge)* — are the golden's `business_terms`
+  defined or used in the output (matched semantically)? **1.0 = all covered.**
+- **enrichment_diversity** *(deterministic)* — does the output contain the
+  sections the golden declares in `expected_headings`? A "Sample Queries" heading
+  is satisfied by a populated `<table>.queries.md` sidecar. **1.0 = all expected
+  sections present.**
+- **entry_grounding** *(deterministic, table mode)* — do all generated entries
+  correspond to real dataset tables, with none invented? **1.0 = nothing
+  fabricated.**
+- **persona_alignment** *(judge, with `--persona`)* — on the same source, does the
+  output emphasize this persona's focus areas while still retaining the shared
+  concepts? **1.0 = strong persona conditioning without dropping shared content.**
 
 The simplest way is to let the eval **run the case end-to-end** — it does the
 setup (e.g. copying a public dataset into your project), runs the agent, and
