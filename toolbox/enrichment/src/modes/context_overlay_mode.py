@@ -40,8 +40,8 @@ from tools import bq_usage_tools
 from tools import feedback_tools
 from tools import github_tools
 from tools import kcmd_tools
-from tools.drive_tools import extract_folder_id, extract_gdoc_id, fetch_doc_text
-from tools.drive_tools import get_cache_stats
+from tools.drive_tools import extract_gdoc_id, fetch_doc_text
+from tools.drive_tools import get_cache_stats, is_local_path, list_local_md, read_local_md
 import yaml
 
 # Overlay entries are generic-typed in the editable entry group; the enriched
@@ -75,15 +75,35 @@ async def _prepare_explicit_docs(
   """
   if not doc_urls:
     return []
+  # Expand each entry: a local .md file -> itself; a local directory -> its .md
+  # files; anything else -> a Google Doc URL/ID fetched from Drive. So the
+  # combined "doc URLs OR folder" field accepts local markdown too.
+  sources = []  # (is_local, identifier)
+  for u in doc_urls:
+    u = (u or "").strip()
+    if not u:
+      continue
+    if is_local_path(u):
+      paths = list_local_md(u)
+      sources.extend((True, p) for p in paths)
+      print(f"[Route] --docs {u!r} -> local markdown ({len(paths)} file(s)).",
+            flush=True)
+    else:
+      sources.append((False, u))
+      print(f"[Route] --docs {u!r} -> Drive doc.", flush=True)
   sem = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
-  async def _prep(idx, url):
-    content = await asyncio.to_thread(
-        fetch_doc_text, extract_gdoc_id(url) or url, ""
-    )
+  async def _prep(idx, is_local, ident):
+    if is_local:
+      content = await asyncio.to_thread(read_local_md, ident)
+    else:
+      content = await asyncio.to_thread(
+          fetch_doc_text, extract_gdoc_id(ident) or ident, ""
+      )
+    name = os.path.basename(ident) if is_local else ident
     async with sem:
       prompt = (
-          f"DOCUMENT TITLE: {url}\nSOURCE URL: {url}\n\nDOCUMENT"
+          f"DOCUMENT TITLE: {name}\nSOURCE URL: {ident}\n\nDOCUMENT"
           f" CONTENT:\n{content[:50000]}"
       )
       descriptor = await common.run_text(
@@ -91,20 +111,23 @@ async def _prepare_explicit_docs(
       )
     return {
         "id": idx,
-        "name": url,
-        "url": url,
+        "name": name,
+        "url": ident,
         "content": content,
         "descriptor": descriptor.strip(),
+        "_kind": "local_md" if is_local else "gdoc",
     }
 
   return list(
-      await asyncio.gather(*[_prep(i, u) for i, u in enumerate(doc_urls)])
+      await asyncio.gather(
+          *[_prep(i, isl, idt) for i, (isl, idt) in enumerate(sources)]
+      )
   )
 
 
 async def _prepare_all_docs(
     topic: str,
-    folder: str | None,
+    folders: list[str] | None,
     doc_urls: list[str] | None,
     usage_acc: dict,
     model: str,
@@ -113,32 +136,35 @@ async def _prepare_all_docs(
     repo_subdir: str = "",
     mcp_config: str = "",
 ) -> list[dict]:
-  """Build the router-descriptor doc list from a folder, explicit URLs, and/or a
+  """Build the router-descriptor doc list from folders, explicit docs, and/or a
 
   GitHub repo.
 
-  The router indexes docs by their `id` == list position, so ids are reassigned
-  sequentially after merging the sources. Code component cards (when --repo is
-  set) join the pool in the same shape and are routed to tables like any other
-  candidate document.
+  `folders` and `doc_urls` are mixed lists routed per entry (Drive vs local
+  markdown). The router indexes docs by their `id` == list position, so ids are
+  reassigned sequentially after merging the sources. Code component cards (when
+  --repo is set) join the pool in the same shape and are routed to tables like
+  any other candidate document.
   """
   docs = []
-  if folder:
-    docs.extend(await table_mode._prepare_docs(topic, folder, usage_acc, model))
+  if folders:
+    docs.extend(
+        await table_mode._prepare_docs(topic, folders, usage_acc, model))
   if doc_urls:
     docs.extend(await _prepare_explicit_docs(doc_urls, usage_acc, model))
   if repo:
-    docs.extend(
-        await github_tools.gather_repo_context(
-            repo,
-            repo_ref,
-            repo_subdir,
-            topic,
-            model,
-            usage_acc,
-            mcp_config_path=mcp_config or None,
-        )
+    code_docs = await github_tools.gather_repo_context(
+        repo,
+        repo_ref,
+        repo_subdir,
+        topic,
+        model,
+        usage_acc,
+        mcp_config_path=mcp_config or None,
     )
+    for d in code_docs:
+      d["_kind"] = "code"
+    docs.extend(code_docs)
   for i, d in enumerate(docs):
     d["id"] = i
   return docs
@@ -213,7 +239,7 @@ def _write_overlay_files(
 
 async def run(
     dataset: str,
-    folder: str | None,
+    folders: list[str] | None,
     topic: str,
     output_dir: str | None,
     model: str,
@@ -234,7 +260,9 @@ async def run(
   _t0 = time.monotonic()
   project, dataset_id = table_mode._parse_dataset(dataset)
   eg_project, eg_location, eg_id = _parse_eg(entry_group)
-  folder = extract_folder_id(folder) if folder else folder
+  # --folder is a mixed list (Drive folders and/or local md dirs); each entry is
+  # routed and id-extracted per entry inside _prepare_all_docs.
+  folders = list(folders or [])
   # Same up-front feedback load as table_mode — proposals route per-table
   # to the overlay's own _write_one below.
   all_feedback = feedback_tools.load_feedback(feedback_dir, feedback_files)
@@ -243,7 +271,7 @@ async def run(
   print("=== CONTEXT-OVERLAY AGENT: tables + documents ===")
   print(f"Topic: {topic}")
   print(
-      f"Dataset: {project}.{dataset_id}  |  Folder: {folder or '(none)'}  | "
+      f"Dataset: {project}.{dataset_id}  |  Folders: {folders or '(none)'}  | "
       f" Entry group: {entry_group}"
   )
   if all_feedback:
@@ -348,7 +376,7 @@ async def run(
   doc_descriptors, usage_by_table = await asyncio.gather(
       _prepare_all_docs(
           topic,
-          folder,
+          folders,
           docs,
           usage_acc,
           model,
@@ -590,11 +618,15 @@ async def run(
 
   results = await asyncio.gather(*[_write_one(m) for m in tables])
 
-  # 6. Persist trajectory (mirrors table mode): tables, routed docs, enumeration.
-  tool_uses = [
+  # 6. Persist trajectory (mirrors table mode): per-source fetches first
+  # (fetch_gdoc/read_local_md/explore_repo) so eval counts tool calls
+  # consistently and grounds hallucination on clean per-doc content; route_docs
+  # keeps only the routing (name/url), not content, to avoid duplicating it.
+  tool_uses, tool_responses = common.doc_tool_calls(doc_descriptors)
+  tool_uses.extend(
       {"name": "reference_table", "args": {"table": m["table"]}} for m in tables
-  ]
-  tool_responses = [
+  )
+  tool_responses.extend(
       {
           "name": "reference_table",
           "response": {
@@ -603,7 +635,7 @@ async def run(
           },
       }
       for m in tables
-  ]
+  )
   for meta, sel_docs, _text, _es in results:
     tool_uses.append({"name": "route_docs", "args": {"table": meta["table"]}})
     tool_responses.append({
@@ -611,12 +643,7 @@ async def run(
         "response": {
             "table": meta["table"],
             "relevant_docs": [
-                {
-                    "name": d["name"],
-                    "url": d["url"],
-                    "content": d["content"][:50000],
-                }
-                for d in sel_docs
+                {"name": d["name"], "url": d["url"]} for d in sel_docs
             ],
         },
     })
