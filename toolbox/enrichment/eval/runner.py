@@ -72,6 +72,11 @@ def resolve_inputs(golden: dict, project: str) -> dict:
   Runs any `setup.copy_public_dataset` and, for it, sets `dataset` to the copy in
   the user's project. Returns a dict of agent flags (mode/topic/dataset/folders/
   docs/entry_group/glossaries).
+
+  Any `{project}` placeholder in a run-block string value is replaced with the
+  user's `--project`, so a doc-mode golden can declare a generalizable
+  `entry_group` like `{project}.global.kc-eval-foo` and still target whoever runs
+  it.
   """
   run = dict(golden.get("run") or {})
   setup = run.pop("setup", None) or {}
@@ -80,7 +85,8 @@ def resolve_inputs(golden: dict, project: str) -> dict:
     ds = ensure_dataset_copy(cp["source"], project, cp["dataset"],
                              location=cp.get("location", "US"))
     run.setdefault("dataset", ds)
-  return run
+  return {k: (v.replace("{project}", project) if isinstance(v, str) else v)
+          for k, v in run.items()}
 
 
 def _argv(inputs: dict, project: str, model: str, output_dir: str) -> list[str]:

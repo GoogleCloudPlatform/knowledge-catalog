@@ -6,10 +6,13 @@ only in what the agent retrieved; a golden adds **concept recall/precision**,
 **fact recall**, **section coverage**, **term coverage**, and (optionally)
 **persona alignment**.
 
-Run it:
+Run it (every bundled golden has a `run` block, so `--run` does the agent run +
+scoring for you):
 
 ```bash
 cd toolbox/enrichment
+python -m eval --run --goldens eval/goldens/supply_chain.json --project <your_gcp_project>
+# or score an output you already produced:
 python -m eval --output-dir <run output> --golden eval/goldens/supply_chain.json
 ```
 
@@ -115,6 +118,32 @@ python -m eval --run --goldens eval/goldens/a.json,eval/goldens/b.json --project
   `<golden>/run<i>.md` plus a `manifest.json`.
 - Prereqs for `--run`: ADC (`gcloud auth application-default login`) and, for
   table/context_overlay, a built `kcmd` (`cd toolbox/mdcode && npm run build`).
+
+## Bundled runnable goldens
+
+All four shipped goldens have a `run` block, so each is one-command:
+
+| Golden | Mode | Setup |
+|--------|------|-------|
+| `thelook_ecommerce.json` | table | copies `bigquery-public-data.thelook_ecommerce` into your project |
+| `financial_services.json` | doc | grounds on `eval/corpora/financial_services` |
+| `phone_services.json` | doc | grounds on `eval/corpora/phone_services` |
+| `supply_chain.json` | doc | grounds on `eval/corpora/supply_chain` |
+
+The doc goldens declare a generalizable `entry_group` of the form
+`{project}.global.kc-eval-<name>` — the `{project}` placeholder is replaced with
+your `--project` at run time, so nothing in the golden is hardwired to one
+project. Run them like any other case:
+
+```bash
+# one doc case
+python -m eval --run --goldens eval/goldens/financial_services.json --project <p>
+# all four at once
+python -m eval --run --project <p> --goldens \
+  eval/goldens/thelook_ecommerce.json,eval/goldens/financial_services.json,eval/goldens/phone_services.json,eval/goldens/supply_chain.json
+```
+
+(doc cases need no `kcmd` build; only the table case does.)
 
 ## Notes
 
