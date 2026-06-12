@@ -1,9 +1,9 @@
 """Google Drive input helpers: folder discovery + multi-format content reads.
 
-Google Docs are read via the internal gdocs CLI (no OAuth scope needed). Folder
-listing and non-Doc formats (Sheets, Slides, PDF) go through the Drive v3 API,
-which requires an ADC token with the drive.readonly scope. If you see 403
-insufficientPermissions on content reads, re-run:
+All content (Google Docs, Sheets, Slides, PDF) and folder listing go through the
+Drive v3 API, which requires an ADC token with the drive.readonly scope. Google
+Docs are exported as Markdown. If you see 403 insufficientPermissions on content
+reads, re-run:
 
     gcloud auth application-default login --scopes='openid,\\
     https://www.googleapis.com/auth/userinfo.email,\\
@@ -15,8 +15,6 @@ import glob
 import io
 import os
 import re
-import subprocess
-import tempfile
 import threading
 
 _DOC_MIME = "application/vnd.google-apps.document"
@@ -26,7 +24,6 @@ _PDF_MIME = "application/pdf"
 
 _DEFAULT_MAX_CHARS = 60000
 
-_GDOCS_BIN = "/google/bin/releases/gemini-agents-gdocs/gdocs"
 _DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 
 # Per-thread Drive service cache. googleapiclient is built on httplib2, whose
@@ -41,8 +38,8 @@ def get_service():
     """Returns a thread-local, authenticated Drive v3 service via ADC.
 
     The underlying ADC token must include the drive.readonly scope (see module
-    docstring). The googleapiclient import is local so callers that only use the
-    gdocs CLI path (fetch_gdoc) don't pull in the Drive API dependency.
+    docstring). The googleapiclient import is local so importers that never read
+    Drive content don't pull in the Drive API dependency.
 
     A fresh service is built per thread because the underlying httplib2 transport
     is not thread-safe; reusing one across threads corrupts the SSL connection.
@@ -119,44 +116,6 @@ def read_local_md(path: str, max_chars: int = _DEFAULT_MAX_CHARS) -> str:
         return ""
 
 
-def fetch_gdoc(url: str) -> str:
-    """Fetches the raw text content of a single Google Doc using the internal gdocs CLI."""
-    if not url:
-        return ""
-
-    if not os.path.exists(_GDOCS_BIN):
-        return f"Error: gdocs CLI binary not found at {_GDOCS_BIN}."
-
-    doc_id = extract_gdoc_id(url)
-    temp_file = tempfile.NamedTemporaryFile(suffix=".md", delete=False)
-    temp_file.close()
-    output_path = temp_file.name
-
-    try:
-        subprocess.run(
-            [
-                _GDOCS_BIN,
-                "readonly",
-                "export",
-                doc_id,
-                "--format",
-                "md",
-                "--output",
-                output_path,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        with open(output_path, "r", encoding="utf-8") as f:
-            return f.read()
-    except subprocess.CalledProcessError as e:
-        return f"Failed to export Google Doc {doc_id}: {e.stderr or e.stdout}"
-    finally:
-        if os.path.exists(output_path):
-            os.unlink(output_path)
-
-
 def list_folder_files(folder_id: str, page_size: int = 100) -> list[dict]:
     """List supported files in a Drive folder as structured dicts.
 
@@ -198,22 +157,12 @@ def list_folder_files(folder_id: str, page_size: int = 100) -> list[dict]:
 
 
 def fetch_doc_text(file_id: str, mime_type: str = "", max_chars: int = _DEFAULT_MAX_CHARS) -> str:
-    """Unified fetch: gdocs CLI for Google Docs, Drive API export otherwise.
+    """Fetch a Drive file's text via the Drive API, truncated at max_chars.
 
-    For Google Docs (or unknown mime), tries the gdocs CLI first (no OAuth scope
-    needed) and falls back to the Drive API exporter. For all other types, uses
-    get_doc_content. Returns text, truncated at max_chars.
+    Google Docs are exported as Markdown; other types are dispatched by mimeType
+    in get_doc_content. mime_type is accepted for call-site compatibility but the
+    dispatch is handled inside get_doc_content.
     """
-    is_doc = (mime_type == _DOC_MIME) or (not mime_type)
-    if is_doc:
-        text = fetch_gdoc(file_id)
-        # fetch_gdoc returns an "Error:"/"Failed..." string on failure; only
-        # accept a genuine export, otherwise fall through to the Drive API.
-        if text and not text.startswith(("Error:", "Failed to export")):
-            if len(text) > max_chars:
-                return text[:max_chars] + f"\n\n[truncated, original {len(text)} chars]"
-            return text
-        # fall through to Drive API exporter
     return get_doc_content(file_id, max_chars=max_chars)
 
 

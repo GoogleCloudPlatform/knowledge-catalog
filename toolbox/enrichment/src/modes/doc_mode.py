@@ -19,6 +19,7 @@ from tools.drive_tools import (
     fetch_doc_text,
     extract_gdoc_id,
     extract_folder_id,
+    is_local_path,
     list_folder_files,
     list_local_md,
     read_local_md,
@@ -349,12 +350,16 @@ async def run(topic: str, docs: list[str], folder: str | None, output_dir: str |
     # document fetches; each fetched source doc is recorded as a tool call +
     # response so downstream evaluation can ground scoring in the actual source
     # material the agent read.
+    # Local markdown inputs are read off disk (read_local_md), not fetched from
+    # Drive (fetch_gdoc); label each tool use by its actual source so eval counts
+    # them correctly instead of attributing local files to fetch_gdoc.
     tool_uses = [
-        {"name": "fetch_gdoc", "args": {"url": url, "depth": depth}}
+        {"name": "read_local_md" if is_local_path(url) else "fetch_gdoc",
+         "args": {"url": url, "depth": depth}}
         for (url, depth, _content) in all_fetched_docs
     ]
     tool_responses = [
-        {"name": "fetch_gdoc",
+        {"name": "read_local_md" if is_local_path(url) else "fetch_gdoc",
          "response": {"url": url, "depth": depth, "content": content[:50000]}}
         for (url, depth, content) in all_fetched_docs
     ]
