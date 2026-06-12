@@ -103,7 +103,7 @@ export PYTHONPATH=toolbox/enrichment/src
 python3 toolbox/enrichment/src/agent_runner.py \
   --mode=table \
   --dataset=<project>.<dataset> \
-  --folder=<drive_folder_id_or_url> \
+  --folders=<drive_folder_id_or_url> \
   --topic="<your use case / instruction>" \
   --project=<your_gcp_project> \
   --location=<vertex_location> \
@@ -114,7 +114,7 @@ python3 toolbox/enrichment/src/agent_runner.py \
 python3 toolbox/enrichment/src/agent_runner.py \
   --mode=doc \
   --docs="https://docs.google.com/document/d/<id>,<id2>" \
-  --folder=<drive_folder_id_or_url> \
+  --folders=<drive_folder_id_or_url> \
   --topic="<your use case / instruction>" \
   --entry_group=<project>.<location>.<entryGroupId> \
   --project=<your_gcp_project> \
@@ -149,9 +149,64 @@ Flags (see `agent_runner.py --help`):
 | `--mode` | both | no | `doc` or `table`. Empty → inferred (`--dataset` set ⇒ table, else doc). |
 | `--dataset` | table | yes (table) | BigQuery dataset as `project.dataset`. |
 | `--entry_group` | doc | **yes (doc)** | Target entry group as `project.location.entryGroupId`. **It must already exist** in that project (create it first — see note below). Entries are created with the 1P generic entry type. |
-| `--docs` | doc | no | Comma-separated Google Doc URLs or IDs. |
-| `--folder` | both | no | Google Drive folder ID/URL to seed from. |
+| `--docs` | doc / overlay | no | Comma-separated **mixed list**, routed per entry: Google Doc URLs/IDs **and/or local `.md`/`.markdown` files**. A local file is a doc-mode depth-0 "spine" doc. |
+| `--folders` | all | no | Comma-separated **mixed list**, routed per entry: Google Drive folder URLs/IDs **and/or local directories of `.md` files** (read recursively). Seeds depth-1 children (doc) or grounding docs (table/overlay). (`--folder` is accepted as a deprecated alias.) |
 | `--topic` | both | no | Free-text use case / instruction guiding enrichment (anything, e.g. `"Customer 360 data"`). |
+
+## Local Markdown inputs
+
+You don't have to put your source material in Google Drive. `--docs` and
+`--folders` both accept **local Markdown** (`.md` / `.markdown`) alongside Google
+Docs / Drive folders — every entry in either flag is routed independently, so a
+single run can mix all four kinds of source.
+
+**How each entry is classified (format-first, so it never depends on your shell's
+working directory):**
+
+1. Starts with `http://` / `https://` → **Google Drive** (Doc or folder URL).
+2. Ends in `.md` / `.markdown` → **local Markdown file**.
+3. Path-shaped (`/abs/path`, `./rel`, `../rel`, `~/path`, or contains a `/`) →
+   **local** (a directory is read recursively; a file is read directly).
+4. A bare relative name that exists on disk → **local**.
+5. Otherwise (a bare opaque token) → **Google Drive ID**.
+
+Because Drive IDs are long opaque tokens and local paths/`.md` files trip rules
+1–3 first, there is no collision between the two. The agent logs how it routed
+each entry (`[Route] --docs '…' -> local md spine file`, etc.). Absolute paths
+are recommended; relative paths resolve from the agent's working directory.
+
+**What local Markdown maps to per mode:**
+
+- **doc mode** — a local `.md` file in `--docs` is a depth-0 *spine* doc (like an
+  authoritative Google Doc); a local directory in `--docs`/`--folders` contributes
+  its `.md` files as depth-1 children (like a Drive folder).
+- **table / context_overlay modes** — local `.md` files/folders join the
+  candidate pool that the relevance router grounds each table's overview in,
+  exactly like Drive documents.
+
+```bash
+# Doc mode mixing Google Docs + local Markdown (files and a folder):
+python3 toolbox/enrichment/src/agent_runner.py \
+  --mode=doc \
+  --docs="https://docs.google.com/document/d/<id>,./notes/data_model.md" \
+  --folders="<drive_folder_id_or_url>,./local_md_corpus" \
+  --topic="<your use case>" \
+  --entry_group=<project>.<location>.<entryGroupId> \
+  --project=<your_gcp_project> --model=<vertex_model> \
+  --output_dir=<local_output_dir>
+
+# Table mode grounded purely in a local Markdown folder (no Drive needed):
+python3 toolbox/enrichment/src/agent_runner.py \
+  --mode=table \
+  --dataset=<project>.<dataset> \
+  --folders=./local_md_corpus \
+  --project=<your_gcp_project> --model=<vertex_model> \
+  --output_dir=<local_output_dir>
+```
+
+Each source the agent reads is recorded in `trajectory.json` as its own tool call
+(`read_local_md` for local files, `fetch_gdoc` for Google Docs), so downstream
+evaluation counts and grounds on exactly what was read.
 
 ## Output
 

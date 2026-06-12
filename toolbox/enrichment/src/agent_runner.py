@@ -45,11 +45,15 @@ _DOCS = flags.DEFINE_list(
     "local .md files. A local .md file is a doc-mode depth-0 spine; for "
     "table/context_overlay it grounds table overviews."
 )
-_FOLDER = flags.DEFINE_list(
-    "folder", [],
+_FOLDERS = flags.DEFINE_list(
+    "folders", [],
     "Comma-separated mixed list, routed per entry: Google Drive folder "
     "URLs/IDs and/or local directories of .md files. Drive/local dirs seed "
     "depth-1 children (doc mode) or grounding docs (table/context_overlay)."
+)
+# Backward-compatible alias for the former singular flag; merged with --folders.
+_FOLDER = flags.DEFINE_list(
+    "folder", [], "Deprecated alias for --folders (merged with it)."
 )
 
 # --- Source code input (all modes): agentic GitHub repo understanding -------
@@ -219,6 +223,10 @@ def main(argv):
 
   mode = _MODE.value or ("table" if _DATASET.value else "doc")
 
+  # --folders is canonical; --folder is a deprecated alias. Merge both so old
+  # invocations keep working.
+  folder_inputs = list(_FOLDERS.value or []) + list(_FOLDER.value or [])
+
   if mode == "context_overlay":
     if not _DATASET.value:
       raise app.UsageError(
@@ -232,7 +240,7 @@ def main(argv):
     session = asyncio.run(
         context_overlay_mode.run(
             _DATASET.value,
-            _FOLDER.value,
+            folder_inputs,
             _TOPIC.value,
             _OUTPUT_DIR.value,
             _MODEL.value,
@@ -255,7 +263,7 @@ def main(argv):
     session = asyncio.run(
         table_mode.run(
             _DATASET.value,
-            _FOLDER.value,
+            folder_inputs,
             _TOPIC.value,
             _OUTPUT_DIR.value,
             _MODEL.value,
@@ -282,7 +290,7 @@ def main(argv):
         doc_mode.run(
             _TOPIC.value,
             _DOCS.value,
-            _FOLDER.value,
+            folder_inputs,
             _OUTPUT_DIR.value,
             _MODEL.value,
             _ENTRY_GROUP.value,
