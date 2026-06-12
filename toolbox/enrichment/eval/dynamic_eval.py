@@ -50,6 +50,44 @@ def fmt_score(score) -> str:
   return "n/a" if score is None else f"{float(score) * 100:.1f}"
 
 
+def build_results(output_dir, agent_type, mode, metric_results, traj, tokens,
+                  latency, **extra):
+  """Shared result-dict builder for both the dynamic and golden eval paths.
+
+  Normalizes a list of MetricResult into the on-disk/JSON shape (scores kept
+  0..1; fmt_score scales to 0-100 for display) + the average + telemetry. `extra`
+  merges extra top-level keys (e.g. golden=<path> for the golden path).
+  """
+  label = getattr(metrics, "_METRIC_LABEL", {})
+  out_metrics, numeric = [], []
+  for r in metric_results:
+    sc = None if r.score is None else round(float(r.score), 4)
+    if sc is not None:
+      numeric.append(sc)
+    out_metrics.append({
+        "name": r.name,
+        "score": sc,
+        "description": label.get(r.name, r.name),
+        "rationale": r.detail,
+        "insights": getattr(r, "insights", "") or "",
+    })
+  return {
+      "output_dir": output_dir,
+      "agent_type": agent_type,
+      "mode": mode,
+      "metrics": out_metrics,
+      "average_score": round(sum(numeric) / len(numeric), 4) if numeric else None,
+      "telemetry": {
+          "tokens_in": tokens.get("input", 0),
+          "tokens_out": tokens.get("output", 0),
+          "tokens_total": tokens.get("total", 0),
+          "num_tool_calls": len(traj.get("tool_uses") or []),
+          "latency_s": latency or None,
+      },
+      **extra,
+  }
+
+
 def write_report(results: dict, output_dir: str,
                  filename: str = "eval_report.md") -> str:
   """Write a full, untruncated eval report (Markdown) next to trajectory.json.
@@ -191,33 +229,6 @@ def run_dynamic_eval(output_dir: str, model: str = "gemini-2.5-pro",
     _log("  (rubric skipped)")
   _log("done — scorecard below")
 
-  label = getattr(metrics, "_METRIC_LABEL", {})
-  out_metrics, numeric = [], []
-  for r in mres:
-    sc = None if r.score is None else round(float(r.score), 4)
-    if sc is not None:
-      numeric.append(sc)
-    out_metrics.append({
-        "name": r.name,
-        "score": sc,
-        "description": label.get(r.name, r.name),
-        "rationale": r.detail,
-        "insights": getattr(r, "insights", "") or "",
-    })
-
-  results = {
-      "output_dir": output_dir,
-      "agent_type": agent_type,
-      "mode": mode,
-      "metrics": out_metrics,
-      "average_score": round(sum(numeric) / len(numeric), 4) if numeric else None,
-      "telemetry": {
-          "tokens_in": tokens.get("input", 0),
-          "tokens_out": tokens.get("output", 0),
-          "tokens_total": tokens.get("total", 0),
-          "num_tool_calls": len(traj.get("tool_uses") or []),
-          "latency_s": latency or None,
-      },
-  }
+  results = build_results(output_dir, agent_type, mode, mres, traj, tokens, latency)
   write_report(results, output_dir)
   return results

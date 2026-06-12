@@ -168,28 +168,9 @@ def run_golden_eval(output_dir: str, golden_path: str,
         + list((arts.get("yaml") or {}).values()))
   res.append(metrics.check_hallucination(arts, src, judge, extra_grounding=extra_g))
 
-  label = getattr(metrics, "_METRIC_LABEL", {})
-  out_metrics, numeric = [], []
-  for r in res:
-    sc = None if r.score is None else round(float(r.score), 4)
-    if sc is not None:
-      numeric.append(sc)
-    out_metrics.append({"name": r.name, "score": sc,
-                        "description": label.get(r.name, r.name),
-                        "rationale": r.detail,
-                        "insights": getattr(r, "insights", "") or ""})
-  results = {
-      "output_dir": output_dir, "golden": golden_path,
-      "agent_type": agent_type, "mode": mode,
-      "metrics": out_metrics,
-      "average_score": round(sum(numeric) / len(numeric), 4) if numeric else None,
-      "telemetry": {
-          "tokens_in": tokens.get("input", 0), "tokens_out": tokens.get("output", 0),
-          "tokens_total": tokens.get("total", 0),
-          "num_tool_calls": len(traj.get("tool_uses") or []),
-          "latency_s": latency or None,
-      },
-  }
+  # Shared result builder (same shape + 0-100 scaling as the dynamic path).
+  results = dynamic_eval.build_results(output_dir, agent_type, mode, res, traj,
+                                       tokens, latency, golden=golden_path)
   # Golden reports go to a dedicated tmp folder (not next to trajectory.json).
   # Named by golden + run so several goldens scoring the same output dir (or
   # parallel runs) don't clobber each other; a batch caller can override both.
