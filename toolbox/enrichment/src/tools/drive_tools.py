@@ -96,9 +96,12 @@ def is_local_path(s: str) -> bool:
   s = (s or "").strip()
   if not s:
     return False
-  if s.startswith(("http://", "https://")):  # Google Doc / Drive folder URL
+  low = s.lower()
+  if low.startswith(("http://", "https://")):  # Google Doc / Drive folder URL
     return False
-  if s.lower().endswith(_MD_EXTS):  # explicit markdown file
+  if "docs.google.com" in low or "drive.google.com" in low:  # scheme-less URL
+    return False
+  if low.endswith(_MD_EXTS):  # explicit markdown file
     return True
   if s.startswith(("/", "./", "../", "~")) or os.sep in s:  # path-shaped
     return True
@@ -180,7 +183,18 @@ def list_folder_files(folder_id: str, page_size: int = 100) -> list[dict]:
       page_token = resp.get("nextPageToken")
       if not page_token:
         break
-  except HttpError:
+  except HttpError as e:
+    # Don't fail silently: a 403 here (missing drive.readonly scope) otherwise
+    # looks like an empty folder and the Drive source is quietly skipped.
+    print(
+        f"[Folder] ⚠️  Drive list failed for folder {folder_id!r}: {e}\n"
+        "          If this is 403 insufficientPermissions, your ADC token is\n"
+        "          missing the drive.readonly scope — re-run: gcloud auth\n"
+        "          application-default login --scopes='openid,https://www."
+        "googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/"
+        "drive.readonly'",
+        flush=True,
+    )
     return out
   return out
 
