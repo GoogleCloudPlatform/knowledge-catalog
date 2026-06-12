@@ -127,6 +127,13 @@ All values above are yours to choose, e.g. `--topic="Customer 360 data"`,
 `--location=us-central1` (or `global`), `--model=gemini-2.5-pro`,
 `--output_dir=/tmp/enrich_out`.
 
+> **Optional — `KC_LIGHT_MODEL` (env).** `--model` is used everywhere by default.
+> The high-volume steps (per-doc summaries, relevance routing, per-table/entry
+> writers) make many small LLM calls, so you can point just those at a
+> cheaper/faster model to cut cost or avoid rate limits, without changing
+> `--model`: `export KC_LIGHT_MODEL=<a flash model you have access to>`. Unset, it
+> falls back to `--model`.
+
 > **Doc mode — `--entry_group` is required and must already exist.** The target
 > entry group (`project.location.entryGroupId`) must be **created beforehand** in
 > the specified project; the agent does not create it (it runs read-only `kcmd
