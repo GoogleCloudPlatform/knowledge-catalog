@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OKF Bundle Viewer</title>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  color: #0f172a;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: #fff;
+  border-bottom: 1px solid #e2e8f0;
+  flex-shrink: 0;
+}
+.title strong { font-size: 16px; margin-right: 8px; }
+.muted { color: #64748b; font-size: 12px; }
+.controls { display: flex; gap: 8px; }
+.controls input, .controls select, .controls button {
+  font-size: 13px;
+  padding: 5px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: #fff;
+}
+.controls input { width: 220px; }
+.controls button { cursor: pointer; background: #f1f5f9; }
+.controls button:hover { background: #e2e8f0; }
+
+main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+#graph {
+  flex: 1 1 60%;
+  background: #fff;
+  border-right: 1px solid #e2e8f0;
+  min-width: 0;
+  position: relative;
+}
+#detail {
+  flex: 0 0 40%;
+  overflow-y: auto;
+  padding: 18px 22px;
+  background: #fff;
+}
+#detail-empty {
+  text-align: center;
+  margin-top: 40px;
+}
+
+.detail-header { margin-bottom: 12px; }
+.detail-header h1 {
+  font-size: 18px;
+  margin: 4px 0 2px;
+  font-weight: 600;
+}
+.type-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+dl.frontmatter {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  row-gap: 4px;
+  column-gap: 12px;
+  margin: 8px 0 12px;
+  font-size: 13px;
+}
+dl.frontmatter dt {
+  color: #64748b;
+  font-weight: 500;
+}
+dl.frontmatter dd { margin: 0; }
+dl.frontmatter a { color: #2563eb; word-break: break-all; }
+
+.tag {
+  display: inline-block;
+  padding: 1px 6px;
+  margin: 0 4px 2px 0;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 11px;
+}
+
+hr { border: none; border-top: 1px solid #e2e8f0; margin: 14px 0; }
+
+#detail-body { font-size: 13px; line-height: 1.55; }
+#detail-body h1 {
+  font-size: 16px; margin: 18px 0 6px;
+  padding-bottom: 4px; border-bottom: 1px solid #e2e8f0;
+}
+#detail-body h2 { font-size: 14px; margin: 14px 0 4px; }
+#detail-body h3 { font-size: 13px; margin: 12px 0 4px; }
+#detail-body p { margin: 6px 0; }
+#detail-body code {
+  background: #f1f5f9;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+}
+#detail-body pre {
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 12px;
+}
+#detail-body pre code { background: transparent; color: inherit; padding: 0; }
+#detail-body ul, #detail-body ol { padding-left: 22px; margin: 6px 0; }
+#detail-body li { margin: 2px 0; }
+#detail-body table { border-collapse: collapse; margin: 8px 0; }
+#detail-body th, #detail-body td {
+  border: 1px solid #e2e8f0; padding: 4px 8px; font-size: 12px;
+}
+#detail-body a.internal { color: #2563eb; cursor: pointer; }
+#detail-body a.external { color: #2563eb; }
+
+#detail-backlinks { margin-top: 18px; }
+#detail-backlinks h2 { font-size: 13px; color: #64748b; margin-bottom: 6px; }
+#detail-backlinks ul { padding-left: 18px; }
+#detail-backlinks a { color: #2563eb; cursor: pointer; }
+
+</style>
+</head>
+<body>
+<header>
+  <div class="title">
+    <strong id="bundle-name"></strong>
+    <span class="muted">OKF bundle</span>
+  </div>
+  <div class="controls">
+    <input id="search" type="search" placeholder="Search title / id / tag">
+    <select id="filter-type">
+      <option value="">All types</option>
+    </select>
+    <select id="layout">
+      <option value="cose">cose (force)</option>
+      <option value="concentric">concentric</option>
+      <option value="breadthfirst">breadth-first</option>
+      <option value="circle">circle</option>
+      <option value="grid">grid</option>
+    </select>
+    <button id="reset">Reset view</button>
+  </div>
+</header>
+
+<main>
+  <section id="graph"></section>
+  <section id="detail">
+    <div id="detail-empty" class="muted">Click a node to see its details.</div>
+    <article id="detail-content" hidden>
+      <header class="detail-header">
+        <span class="type-chip" id="detail-type"></span>
+        <h1 id="detail-title"></h1>
+        <div class="muted" id="detail-id"></div>
+      </header>
+      <dl class="frontmatter">
+        <dt>Description</dt><dd id="detail-description"></dd>
+        <dt>Resource</dt><dd id="detail-resource"></dd>
+        <dt>Tags</dt><dd id="detail-tags"></dd>
+      </dl>
+      <hr>
+      <div id="detail-body"></div>
+      <section id="detail-backlinks" hidden>
+        <h2>Cited by</h2>
+        <ul id="backlinks-list"></ul>
+      </section>
+    </article>
+  </section>
+</main>
+
+<script>
+window.BUNDLE_NAME = "crypto_bitcoin";
+window.BUNDLE = {"nodes": [{"data": {"id": "datasets/crypto_bitcoin", "label": "Cryptocurrency Bitcoin", "type": "BigQuery Dataset", "description": "This BigQuery public dataset contains a complete history of the Bitcoin blockchain and updates every 10 minutes.", "resource": "https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/crypto_bitcoin", "tags": ["cryptocurrency", "bitcoin", "blockchain", "public data", "gcp", "data-analytics"], "color": "#8b5cf6", "size": 38}}, {"data": {"id": "tables/blocks", "label": "Bitcoin Blocks Table", "type": "BigQuery Table", "description": "Details about the Bitcoin Blocks BigQuery table, including its schema.", "resource": "https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/crypto_bitcoin/tables/blocks", "tags": ["bitcoin", "bigquery", "blocks", "blockchain"], "color": "#3b82f6", "size": 31}}, {"data": {"id": "tables/inputs", "label": "Bitcoin Transaction Inputs", "type": "BigQuery Table", "description": "Details about transaction inputs on the Bitcoin blockchain.", "resource": "https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/crypto_bitcoin/tables/inputs", "tags": ["bitcoin", "blockchain", "cryptocurrency", "transactions", "inputs", "etl"], "color": "#3b82f6", "size": 39}}, {"data": {"id": "tables/outputs", "label": "Outputs", "type": "BigQuery Table", "description": "Outputs from all transactions in the Bitcoin blockchain.", "resource": "https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/crypto_bitcoin/tables/outputs", "tags": ["bitcoin", "blockchain", "transactions", "outputs", "etl"], "color": "#3b82f6", "size": 39}}, {"data": {"id": "tables/transactions", "label": "Bitcoin Transactions", "type": "BigQuery Table", "description": "A comprehensive table detailing all transactions on the Bitcoin blockchain.", "resource": "https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/crypto_bitcoin/tables/transactions", "tags": ["bitcoin", "blockchain", "transactions", "crypto", "public data", "etl"], "color": "#3b82f6", "size": 56}}], "edges": [{"data": {"id": "datasets/crypto_bitcoin__tables/blocks", "source": "datasets/crypto_bitcoin", "target": "tables/blocks"}}, {"data": {"id": "datasets/crypto_bitcoin__tables/transactions", "source": "datasets/crypto_bitcoin", "target": "tables/transactions"}}, {"data": {"id": "datasets/crypto_bitcoin__tables/inputs", "source": "datasets/crypto_bitcoin", "target": "tables/inputs"}}, {"data": {"id": "datasets/crypto_bitcoin__tables/outputs", "source": "datasets/crypto_bitcoin", "target": "tables/outputs"}}, {"data": {"id": "tables/inputs__datasets/crypto_bitcoin", "source": "tables/inputs", "target": "datasets/crypto_bitcoin"}}, {"data": {"id": "tables/inputs__tables/transactions", "source": "tables/inputs", "target": "tables/transactions"}}, {"data": {"id": "tables/inputs__tables/outputs", "source": "tables/inputs", "target": "tables/outputs"}}, {"data": {"id": "tables/outputs__tables/transactions", "source": "tables/outputs", "target": "tables/transactions"}}, {"data": {"id": "tables/outputs__tables/inputs", "source": "tables/outputs", "target": "tables/inputs"}}, {"data": {"id": "tables/transactions__datasets/crypto_bitcoin", "source": "tables/transactions", "target": "datasets/crypto_bitcoin"}}, {"data": {"id": "tables/transactions__tables/blocks", "source": "tables/transactions", "target": "tables/blocks"}}, {"data": {"id": "tables/transactions__tables/inputs", "source": "tables/transactions", "target": "tables/inputs"}}, {"data": {"id": "tables/transactions__tables/outputs", "source": "tables/transactions", "target": "tables/outputs"}}], "bodies": {"datasets/crypto_bitcoin": "The `crypto_bitcoin` dataset provides a comprehensive and up-to-date record of the entire Bitcoin blockchain. It includes detailed information about [blocks](/tables/blocks.md), [transactions](/tables/transactions.md), transaction [inputs](/tables/inputs.md), and [outputs](/tables/outputs.md). This dataset is part of the BigQuery Public Datasets program, making it freely accessible for analysis and research into Bitcoin's operations, economics, and historical trends. Researchers, developers, and enthusiasts can use this data to understand transaction patterns, network activity, and the overall state of the Bitcoin network.\n\n# Schema\n\nThis dataset contains the following tables, providing a complete history of the Bitcoin blockchain:\n\n*   [blocks](/tables/blocks.md)\n*   [inputs](/tables/inputs.md)\n*   [outputs](/tables/outputs.md)\n*   [transactions](/tables/transactions.md)\n\n# Common query patterns\n\n```sql\n-- Count the total number of blocks in the Bitcoin blockchain\nSELECT\n    COUNT(*)\nFROM\n    `bigquery-public-data.crypto_bitcoin.blocks`;\n```\n\n```sql\n-- Get the total number of transactions over time\nSELECT\n    DATE(block_timestamp) AS transaction_date,\n    COUNT(transaction_id) AS total_transactions\nFROM\n    `bigquery-public-data.crypto_bitcoin.transactions`\nGROUP BY\n    transaction_date\nORDER BY\n    transaction_date DESC\nLIMIT 100;\n```\n\n# Citations\n\n[1] [BigQuery Public Dataset: crypto_bitcoin](https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/crypto_bitcoin)\n[2] [Bitcoin in BigQuery: blockchain analytics on public data](https://cloud.google.com/blog/products/gcp/bitcoin-in-bigquery-blockchain-analytics-on-public-data)", "tables/blocks": "# Schema\n\n| Field | Type |\n| --- | --- |\n| hash | hex_string |\n| size | bigint |\n| stripped_size | bigint |\n| weight | bigint |\n| number | bigint |\n| version | bigint |\n| merkle_root | hex_string |\n| timestamp | bigint |\n| nonce | hex_string |\n| bits | hex_string |\n| coinbase_param | hex_string |\n| transaction_count | bigint |\n\n# Citations\n- https://github.com/blockchain-etl/bitcoin-etl", "tables/inputs": "This table, part of the public [crypto_bitcoin](/datasets/crypto_bitcoin.md) dataset, contains detailed information about every input used in Bitcoin transactions. Each row represents a single transaction input, which typically references an unspent output from a previous transaction. This table is crucial for tracing the flow of Bitcoin and understanding the history of transactions. It records where the coins originated (`spent_transaction_hash` and `spent_output_index`) and the associated `value` transferred. This table can be joined with the [transactions](/tables/transactions.md) table on `transaction_hash` and [outputs](/tables/outputs.md) to reconstruct the full transaction graph.\n\n# Schema\n\n*   `transaction_hash`: STRING\n*   `block_hash`: STRING\n*   `block_number`: INTEGER\n*   `block_timestamp`: TIMESTAMP\n*   `index`: INTEGER\n*   `spent_transaction_hash`: STRING\n*   `spent_output_index`: INTEGER\n*   `script_asm`: STRING\n*   `script_hex`: STRING\n*   `sequence`: INTEGER\n*   `required_signatures`: INTEGER\n*   `type`: STRING\n*   `addresses`: REPEATED STRING\n*   `value`: NUMERIC\n\n# Common query patterns\n\n```sql\nSELECT *\nFROM `bigquery-public-data.crypto_bitcoin.inputs`\nWHERE transaction_hash = 'YOUR_TRANSACTION_HASH_HERE'\nLIMIT 10\n```\n\n```sql\nSELECT\n    block_number,\n    SUM(value) AS total_input_value\nFROM `bigquery-public-data.crypto_bitcoin.inputs`\nWHERE block_number = 600000 -- Example block number\nGROUP BY block_number\n```\n\n```sql\nSELECT DISTINCT\n    address\nFROM `bigquery-public-data.crypto_bitcoin.inputs`,\n    UNNEST(addresses) AS address\nWHERE block_timestamp >= '2023-01-01'\nLIMIT 10\n```\n\n# Citations\n\n[1] [BigQuery Table: inputs](https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/crypto_bitcoin/tables/inputs)\n[2] [blockchain-etl/bitcoin-etl](https://github.com/blockchain-etl/bitcoin-etl)", "tables/outputs": "The `outputs` table contains records of all transaction outputs within the Bitcoin blockchain. Each row in this table represents a single output from a Bitcoin transaction, detailing the amount transferred, the destination addresses, and other script-related information. This table is crucial for understanding the flow of Bitcoin and analyzing transaction patterns, especially when linked with the `[transactions](/tables/transactions.md)` and `[inputs](/tables/inputs.md)` tables.\n\n# Schema\n\n- `transaction_hash`: The hash of the transaction this output belongs to.\n- `block_hash`: The hash of the block containing this transaction.\n- `block_number`: The number of the block containing this transaction.\n- `block_timestamp`: The timestamp of the block containing this transaction.\n- `index`: The zero-based index of this output within its transaction.\n- `script_asm`: The script in assembly format.\n- `script_hex`: The script in hexadecimal format.\n- `required_signatures`: The number of signatures required to spend this output.\n- `type`: The type of the output script.\n- `addresses`: (REPEATED) Array of destination addresses for this output.\n- `value`: The value of the output in satoshis.\n\n# Common query patterns\n\n```sql\nSELECT\n  t.*\nFROM\n  `bigquery-public-data.crypto_bitcoin.outputs` AS t\nWHERE\n  t.transaction_hash = 'some_transaction_hash'\n```\n\n```sql\nSELECT\n  SUM(t.value) AS total_output_value\nFROM\n  `bigquery-public-data.crypto_bitcoin.outputs` AS t\nWHERE\n  t.block_number = 123456\n```\n\n```sql\nSELECT\n  t.type,\n  COUNT(*) AS output_count\nFROM\n  `bigquery-public-data.crypto_bitcoin.outputs` AS t\nWHERE\n  t.block_timestamp BETWEEN TIMESTAMP('2023-01-01') AND TIMESTAMP('2023-01-31')\nGROUP BY\n  t.type\nORDER BY\n  output_count DESC\n```\n\n# Citations\n\n[1] [Outputs Table](https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/crypto_bitcoin/tables/outputs)\n[2] [Bitcoin ETL on GitHub](https://github.com/blockchain-etl/bitcoin-etl)", "tables/transactions": "The `transactions` table in the [crypto_bitcoin](/datasets/crypto_bitcoin.md) dataset provides a complete record of every transaction ever processed on the Bitcoin blockchain. Each row represents a single transaction, offering granular details such as its hash, size, associated [block](/tables/blocks.md) information (hash, number, timestamp), and the total input and output values. Importantly, it includes detailed arrays for both [inputs](/tables/inputs.md) and [outputs](/tables/outputs.md), each specifying spent transaction details, script information, involved addresses, and values. This table is essential for in-depth analysis of transaction flows, tracing funds, and understanding the economic activity within the Bitcoin network. The grain is one row per transaction, with data spanning the entire history of the Bitcoin blockchain, partitioned by `block_timestamp_month`.\n\n# Schema\n- `hash` STRING REQUIRED: The hash of this transaction\n- `size` INTEGER: The size of this transaction in bytes\n- `virtual_size` INTEGER: The virtual transaction size (differs from size for witness transactions)\n- `version` INTEGER: Protocol version specified in block which contained this transaction\n- `lock_time` INTEGER: Earliest time that miners can include the transaction in their hashing of the Merkle root to attach it in the latest block of the blockchain\n- `block_hash` STRING REQUIRED: Hash of the block which contains this transaction\n- `block_number` INTEGER REQUIRED: Number of the block which contains this transaction\n- `block_timestamp` TIMESTAMP REQUIRED: Timestamp of the block which contains this transaction\n- `block_timestamp_month` DATE REQUIRED: Month of the block which contains this transaction\n- `input_count` INTEGER: The number of inputs in the transaction\n- `output_count` INTEGER: The number of outputs in the transaction\n- `input_value` NUMERIC: Total value of inputs in the transaction\n- `output_value` NUMERIC: Total value of outputs in the transaction\n- `is_coinbase` BOOLEAN: True if this transaction is a coinbase transaction\n- `fee` NUMERIC: The fee paid by this transaction\n- `inputs` RECORD REPEATED: Transaction inputs\n  - `index` INTEGER REQUIRED: 0-indexed number of an input within a transaction\n  - `spent_transaction_hash` STRING: The hash of the transaction which contains the output that this input spends\n  - `spent_output_index` INTEGER: The index of the output this input spends\n  - `script_asm` STRING: Symbolic representation of the bitcoin's script language op-codes\n  - `script_hex` STRING: Hexadecimal representation of the bitcoin's script language op-codes\n  - `sequence` INTEGER: A number intended to allow unconfirmed time-locked transactions to be updated before being finalized\n  - `required_signatures` INTEGER: The number of signatures required to authorize the spent output\n  - `type` STRING: The address type of the spent output\n  - `addresses` STRING REPEATED: Addresses which own the spent output\n  - `value` NUMERIC: The value in base currency attached to the spent output\n- `outputs` RECORD REPEATED: Transaction outputs\n  - `index` INTEGER REQUIRED: 0-indexed number of an output within a transaction\n  - `script_asm` STRING: Symbolic representation of the bitcoin's script language op-codes\n  - `script_hex` STRING: Hexadecimal representation of the bitcoin's script language op-codes\n  - `required_signatures` INTEGER: The number of signatures required to authorize spending of this output\n  - `type` STRING: The address type of the output\n  - `addresses` STRING REPEATED: Addresses which own this output\n  - `value` NUMERIC: The value in base currency attached to this output\n\n# Common query patterns\n```sql\n-- Get the total number of transactions per day\nSELECT\n    DATE(block_timestamp) AS transaction_date,\n    COUNT(hash) AS transaction_count\nFROM\n    `bigquery-public-data.crypto_bitcoin.transactions`\nWHERE\n    block_timestamp BETWEEN '2023-01-01' AND '2023-01-31'\nGROUP BY\n    transaction_date\nORDER BY\n    transaction_date DESC;\n```\n```sql\n-- Find transactions involving a specific address as an output\nSELECT\n    t.hash AS transaction_hash,\n    t.block_timestamp\nFROM\n    `bigquery-public-data.crypto_bitcoin.transactions` AS t,\n    UNNEST(t.outputs) AS output\nWHERE\n    '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa' IN UNNEST(output.addresses)\nLIMIT 10;\n```\n```sql\n-- Calculate the total fees collected in a given month\nSELECT\n    FORMAT_TIMESTAMP('%Y-%m', block_timestamp) AS transaction_month,\n    SUM(fee) AS total_fee\nFROM\n    `bigquery-public-data.crypto_bitcoin.transactions`\nWHERE\n    block_timestamp BETWEEN '2023-01-01' AND '2023-01-31'\nGROUP BY\n    transaction_month;\n```\n```sql\n-- Find duplicate transactions (anomaly detection)\nSELECT\n\u00a0\u00a0\u00a0*\nFROM (\n\u00a0SELECT\n\u00a0\u00a0\u00a0hash,\n\u00a0\u00a0\u00a0COUNT(hash) AS dup_transaction_count\n\u00a0FROM\n\u00a0\u00a0\u00a0`bigquery-public-data.crypto_bitcoin.transactions`\n\u00a0GROUP BY\n\u00a0\u00a0\u00a0hash)\nWHERE\n\u00a0dup_transaction_count > 1\n```\n\n# Citations\n[1] [Bitcoin Transactions](https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/crypto_bitcoin/tables/transactions)\n[2] [Bitcoin ETL](https://github.com/blockchain-etl/bitcoin-etl)\n[3] [Bitcoin in BigQuery: blockchain analytics on public data](https://cloud.google.com/blog/products/gcp/bitcoin-in-bigquery-blockchain-analytics-on-public-data)"}, "types": ["BigQuery Dataset", "BigQuery Table"], "palette": {"BigQuery Dataset": "#8b5cf6", "BigQuery Table": "#3b82f6", "Reference": "#10b981"}};
+</script>
+<script>
+(function () {
+  const bundle = window.BUNDLE;
+  const bundleName = window.BUNDLE_NAME;
+  document.title = `${bundleName} — OKF Viewer`;
+  document.getElementById("bundle-name").textContent = bundleName;
+
+  // Populate type filter
+  const typeSelect = document.getElementById("filter-type");
+  for (const t of bundle.types) {
+    const opt = document.createElement("option");
+    opt.value = t;
+    opt.textContent = t;
+    typeSelect.appendChild(opt);
+  }
+
+  // Build reverse-link index for backlinks
+  const backlinks = {};
+  for (const edge of bundle.edges) {
+    const { source, target } = edge.data;
+    (backlinks[target] ||= []).push(source);
+  }
+
+  // Look up node label/type by id
+  const nodeIndex = {};
+  for (const n of bundle.nodes) nodeIndex[n.data.id] = n.data;
+
+  const cy = cytoscape({
+    container: document.getElementById("graph"),
+    elements: [...bundle.nodes, ...bundle.edges],
+    style: [
+      {
+        selector: "node",
+        style: {
+          "background-color": "data(color)",
+          "label": "data(label)",
+          "color": "#0f172a",
+          "font-size": 11,
+          "text-valign": "bottom",
+          "text-margin-y": 4,
+          "text-wrap": "wrap",
+          "text-max-width": 120,
+          "width": "data(size)",
+          "height": "data(size)",
+          "border-width": 1,
+          "border-color": "#0f172a",
+        },
+      },
+      {
+        selector: "node:selected",
+        style: {
+          "border-width": 3,
+          "border-color": "#f59e0b",
+        },
+      },
+      {
+        selector: "edge",
+        style: {
+          "width": 1.5,
+          "line-color": "#cbd5e1",
+          "target-arrow-color": "#cbd5e1",
+          "target-arrow-shape": "triangle",
+          "curve-style": "bezier",
+          "arrow-scale": 0.9,
+        },
+      },
+      {
+        selector: "edge:selected",
+        style: {
+          "line-color": "#f59e0b",
+          "target-arrow-color": "#f59e0b",
+          "width": 2.5,
+        },
+      },
+      {
+        selector: ".dim",
+        style: { "opacity": 0.15 },
+      },
+    ],
+    layout: { name: "cose", animate: false, padding: 30 },
+    wheelSensitivity: 0.2,
+  });
+
+  cy.on("tap", "node", (evt) => showDetail(evt.target.id()));
+  cy.on("tap", (evt) => {
+    if (evt.target === cy) clearSelection();
+  });
+
+  document.getElementById("layout").addEventListener("change", (e) => {
+    cy.layout({ name: e.target.value, animate: false, padding: 30 }).run();
+  });
+
+  document.getElementById("reset").addEventListener("click", () => {
+    cy.fit(null, 30);
+    clearSelection();
+  });
+
+  document.getElementById("search").addEventListener("input", (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    if (!q) {
+      cy.elements().removeClass("dim");
+      return;
+    }
+    cy.nodes().forEach((n) => {
+      const d = n.data();
+      const hay =
+        (d.label || "").toLowerCase() + " " +
+        d.id.toLowerCase() + " " +
+        (d.tags || []).join(" ").toLowerCase();
+      n.toggleClass("dim", !hay.includes(q));
+    });
+    cy.edges().forEach((edge) => {
+      const src = edge.source();
+      const tgt = edge.target();
+      edge.toggleClass("dim", src.hasClass("dim") || tgt.hasClass("dim"));
+    });
+  });
+
+  document.getElementById("filter-type").addEventListener("change", (e) => {
+    const t = e.target.value;
+    if (!t) {
+      cy.elements().removeClass("dim");
+      return;
+    }
+    cy.nodes().forEach((n) => {
+      n.toggleClass("dim", n.data("type") !== t);
+    });
+    cy.edges().forEach((edge) => {
+      edge.toggleClass("dim", edge.source().hasClass("dim") || edge.target().hasClass("dim"));
+    });
+  });
+
+  function clearSelection() {
+    cy.elements().unselect();
+    document.getElementById("detail-empty").hidden = false;
+    document.getElementById("detail-content").hidden = true;
+  }
+
+  function showDetail(conceptId) {
+    const data = nodeIndex[conceptId];
+    if (!data) return;
+    cy.elements().unselect();
+    const node = cy.getElementById(conceptId);
+    if (node) node.select();
+
+    document.getElementById("detail-empty").hidden = true;
+    const content = document.getElementById("detail-content");
+    content.hidden = false;
+
+    const chip = document.getElementById("detail-type");
+    chip.textContent = data.type;
+    chip.style.background = data.color;
+
+    document.getElementById("detail-title").textContent = data.label;
+    document.getElementById("detail-id").textContent = conceptId;
+    document.getElementById("detail-description").textContent = data.description || "—";
+
+    const resourceEl = document.getElementById("detail-resource");
+    resourceEl.innerHTML = "";
+    if (data.resource) {
+      const a = document.createElement("a");
+      a.href = data.resource;
+      a.textContent = data.resource;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.className = "external";
+      resourceEl.appendChild(a);
+    } else {
+      resourceEl.textContent = "—";
+    }
+
+    const tagsEl = document.getElementById("detail-tags");
+    tagsEl.innerHTML = "";
+    if (data.tags && data.tags.length) {
+      for (const t of data.tags) {
+        const span = document.createElement("span");
+        span.className = "tag";
+        span.textContent = t;
+        tagsEl.appendChild(span);
+      }
+    } else {
+      tagsEl.textContent = "—";
+    }
+
+    const body = bundle.bodies[conceptId] || "";
+    const html = marked.parse(body, { breaks: false, gfm: true });
+    const bodyEl = document.getElementById("detail-body");
+    bodyEl.innerHTML = html;
+    rewriteInternalLinks(bodyEl);
+
+    const bl = backlinks[conceptId] || [];
+    const blSection = document.getElementById("detail-backlinks");
+    const blList = document.getElementById("backlinks-list");
+    blList.innerHTML = "";
+    if (bl.length) {
+      blSection.hidden = false;
+      for (const src of bl) {
+        const li = document.createElement("li");
+        const a = document.createElement("a");
+        a.textContent = nodeIndex[src]?.label || src;
+        a.dataset.target = src;
+        a.addEventListener("click", () => showDetail(src));
+        li.appendChild(a);
+        const muted = document.createElement("span");
+        muted.className = "muted";
+        muted.textContent = ` (${src})`;
+        li.appendChild(muted);
+        blList.appendChild(li);
+      }
+    } else {
+      blSection.hidden = true;
+    }
+
+    cy.animate({ center: { eles: node }, zoom: Math.max(cy.zoom(), 1.0) }, { duration: 200 });
+  }
+
+  function rewriteInternalLinks(root) {
+    root.querySelectorAll("a[href]").forEach((a) => {
+      const href = a.getAttribute("href");
+      if (!href) return;
+      if (href.startsWith("/") && href.endsWith(".md")) {
+        const target = href.slice(1, -3);
+        if (nodeIndex[target]) {
+          a.className = "internal";
+          a.setAttribute("href", "javascript:void(0)");
+          a.addEventListener("click", (e) => {
+            e.preventDefault();
+            showDetail(target);
+          });
+          return;
+        }
+      }
+      a.className = "external";
+      a.setAttribute("target", "_blank");
+      a.setAttribute("rel", "noopener");
+    });
+  }
+
+  // Auto-show the first node (a dataset if available, else first concept)
+  const initial =
+    bundle.nodes.find((n) => n.data.type === "BigQuery Dataset") ||
+    bundle.nodes[0];
+  if (initial) showDetail(initial.data.id);
+})();
+
+</script>
+</body>
+</html>

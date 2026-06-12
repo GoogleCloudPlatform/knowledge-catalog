@@ -209,6 +209,15 @@ export class CatalogClientMock extends gcp.CatalogClient {
       }
     }
   }
+
+  async createEntry(project: string, location: string, entryGroup: string, entryId: string, entry?: gcp.Entry): Promise<gcp.ApiResult<gcp.Entry>> {
+    const fakeEntry = entry;
+    if (fakeEntry) {
+      this.mockEntries.push(fakeEntry);
+      return { status: 200, result: entry };
+    }
+    return {status: 404, message: 'Not found' };
+  }
 }
 
 

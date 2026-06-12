@@ -9,13 +9,17 @@ import * as md from '../metadata';
 import { CatalogLayout } from '../layout';
 
 const OVERVIEW_ASPECT_KEY = 'dataplex-types.global.overview';
+const DEFAULT_ENTRY_TYPE = 'dataplex-types.global.generic';
+const INDEX_NAME = 'index';
 
 
 export class DocumentsLayout implements CatalogLayout {
 
   private _catalogPath: string = '';
 
-  private readonly _index = new Map<string, string>();
+  // Maps entry name -> local file path, or null for synthetic directory-index
+  // entries that don't have a backing file on disk.
+  private readonly _index = new Map<string, string | null>();
 
   constructor(catalogPath: string) {
     this._catalogPath = catalogPath;
@@ -35,22 +39,15 @@ export class DocumentsLayout implements CatalogLayout {
     });
 
     for (const localPath of matches) {
-      try {
-        const content = await fs.promises.readFile(localPath, 'utf8');
-        const { entry } = parseMarkdown(content);
-        if (entry && entry.name) {
-          this._index.set(entry.name, localPath);
-        }
-      }
-      catch (err) {
-        // Skip unreadable/invalid files during indexing
-      }
+      const name = deriveEntryNameFromPath(localPath, this._catalogPath);
+      this._index.set(name, localPath);
     }
+
+    this._synthesizeIndexEntries();
   }
 
   entryExists(name: string): boolean {
-    const entryPath = this._index.get(name);
-    return !!entryPath && fs.existsSync(entryPath);
+    return this._index.has(name);
   }
 
   listEntries(): string[] {
@@ -58,22 +55,37 @@ export class DocumentsLayout implements CatalogLayout {
   }
 
   async loadEntry(name: string): Promise<md.Entry> {
-    const entryPath = this._index.get(name);
-    if (!entryPath || !fs.existsSync(entryPath)) {
+    if (!this._index.has(name)) {
       throw new Error(`Entry not found: ${name}`);
     }
-    const content = await fs.promises.readFile(entryPath, 'utf8');
-    const { entry, body } = parseMarkdown(content);
+    const entryPath = this._index.get(name) ?? null;
 
-    if (!entry) {
-      throw new Error(`Missing YAML frontmatter in Markdown file: ${entryPath}`);
+    let parsed: md.Entry | null = null;
+    let body = '';
+    if (entryPath) {
+      const content = await fs.promises.readFile(entryPath, 'utf8');
+      const result = parseMarkdown(content);
+      parsed = result.entry;
+      body = result.body;
     }
-    
+
+    const entry: md.Entry = parsed ?? ({ type: DEFAULT_ENTRY_TYPE, resource: {} } as md.Entry);
+    entry.name = name;
+
+    entry.resource = entry.resource ?? {};
+    const parentName = deriveParentLocalName(name);
+    if (parentName !== undefined) {
+      entry.resource.parent = parentName;
+    } else {
+      delete entry.resource.parent;
+    }
+
+    // Ensure the entry's type aspect is present — Dataplex create requires it.
+    entry.aspects = entry.aspects ?? {};
+    entry.aspects[entry.type] = entry.aspects[entry.type] ?? {};
+
     const bodyTrimmed = body.trim();
     if (bodyTrimmed) {
-      if (!entry.aspects) {
-        entry.aspects = {};
-      }
       if (!entry.aspects[OVERVIEW_ASPECT_KEY]) {
         entry.aspects[OVERVIEW_ASPECT_KEY] = {};
       }
@@ -104,17 +116,70 @@ export class DocumentsLayout implements CatalogLayout {
 
     await fs.promises.writeFile(entryPath, fileContent, 'utf8');
     this._index.set(name, entryPath);
+    this._synthesizeIndexEntries();
   }
 
   async deleteEntry(name: string): Promise<void> {
     const entryPath = this._index.get(name);
-    if (!entryPath || !fs.existsSync(entryPath)) {
+    if (!entryPath) {
+      throw new Error(`Entry not found: ${name}`);
+    }
+    if (!fs.existsSync(entryPath)) {
       throw new Error(`Entry not found: ${name}`);
     }
 
     await fs.promises.unlink(entryPath);
     this._index.delete(name);
+    this._synthesizeIndexEntries();
   }
+
+  // Ensure every directory that contains entries has an index entry. Directories
+  // whose own index file is absent get a synthetic entry (no backing file).
+  // Synthetic entries left behind by a previous synthesis pass are dropped if
+  // their directory no longer has any other entries.
+  private _synthesizeIndexEntries(): void {
+    for (const [name, entryPath] of this._index) {
+      if (entryPath === null) {
+        this._index.delete(name);
+      }
+    }
+
+    const dirs = new Set<string>();
+    for (const name of this._index.keys()) {
+      const segments = name.split('/');
+      for (let i = 0; i < segments.length; i++) {
+        dirs.add(segments.slice(0, i).join('/'));
+      }
+    }
+
+    for (const dir of dirs) {
+      const indexName = dir ? `${dir}/${INDEX_NAME}` : INDEX_NAME;
+      if (!this._index.has(indexName)) {
+        this._index.set(indexName, null);
+      }
+    }
+  }
+}
+
+function deriveEntryNameFromPath(absolutePath: string, catalogPath: string): string {
+  const rel = path.relative(catalogPath, absolutePath);
+  return rel.replace(/\.md$/, '');
+}
+
+function deriveParentLocalName(name: string): string | undefined {
+  const segments = name.split('/');
+  const leaf = segments[segments.length - 1];
+
+  // The root index entry has no parent.
+  if (leaf === INDEX_NAME && segments.length === 1) {
+    return undefined;
+  }
+
+  const parentDir = leaf === INDEX_NAME
+    ? segments.slice(0, -2)
+    : segments.slice(0, -1);
+
+  return [...parentDir, INDEX_NAME].join('/');
 }
 
 export function parseMarkdown(content: string): { entry: md.Entry|null; body: string } {
@@ -132,7 +197,9 @@ export function parseMarkdown(content: string): { entry: md.Entry|null; body: st
   const body = lines.slice(endIndex + 1).join('\n');
 
   const entry = (metadata.catalogEntry ?? {}) as md.Entry;
-  entry.type = metadata.type;
+  entry.type = (typeof metadata.type === 'string' && metadata.type.split('.').length === 3)
+    ? metadata.type
+    : DEFAULT_ENTRY_TYPE;
   entry.resource = entry.resource ?? {}
   entry.resource.displayName = metadata.title;
   entry.resource.description = metadata.description;
@@ -174,10 +241,12 @@ export function toMarkdown(entry: md.Entry, body: string): string {
     catalogEntry: entryClone
   };
 
+  delete entryClone.name;
   delete entryClone.resource.displayName;
   delete entryClone.resource.description;
   delete entryClone.resource.updateTime;
   delete entryClone.resource.createTime;
+  delete entryClone.resource.parent;
   delete entryClone.type;
   for (const tag of tags) {
     delete entryClone.resource.labels[tag];

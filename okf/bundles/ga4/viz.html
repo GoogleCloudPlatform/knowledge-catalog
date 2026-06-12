@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OKF Bundle Viewer</title>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  color: #0f172a;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: #fff;
+  border-bottom: 1px solid #e2e8f0;
+  flex-shrink: 0;
+}
+.title strong { font-size: 16px; margin-right: 8px; }
+.muted { color: #64748b; font-size: 12px; }
+.controls { display: flex; gap: 8px; }
+.controls input, .controls select, .controls button {
+  font-size: 13px;
+  padding: 5px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: #fff;
+}
+.controls input { width: 220px; }
+.controls button { cursor: pointer; background: #f1f5f9; }
+.controls button:hover { background: #e2e8f0; }
+
+main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+#graph {
+  flex: 1 1 60%;
+  background: #fff;
+  border-right: 1px solid #e2e8f0;
+  min-width: 0;
+  position: relative;
+}
+#detail {
+  flex: 0 0 40%;
+  overflow-y: auto;
+  padding: 18px 22px;
+  background: #fff;
+}
+#detail-empty {
+  text-align: center;
+  margin-top: 40px;
+}
+
+.detail-header { margin-bottom: 12px; }
+.detail-header h1 {
+  font-size: 18px;
+  margin: 4px 0 2px;
+  font-weight: 600;
+}
+.type-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+dl.frontmatter {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  row-gap: 4px;
+  column-gap: 12px;
+  margin: 8px 0 12px;
+  font-size: 13px;
+}
+dl.frontmatter dt {
+  color: #64748b;
+  font-weight: 500;
+}
+dl.frontmatter dd { margin: 0; }
+dl.frontmatter a { color: #2563eb; word-break: break-all; }
+
+.tag {
+  display: inline-block;
+  padding: 1px 6px;
+  margin: 0 4px 2px 0;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 11px;
+}
+
+hr { border: none; border-top: 1px solid #e2e8f0; margin: 14px 0; }
+
+#detail-body { font-size: 13px; line-height: 1.55; }
+#detail-body h1 {
+  font-size: 16px; margin: 18px 0 6px;
+  padding-bottom: 4px; border-bottom: 1px solid #e2e8f0;
+}
+#detail-body h2 { font-size: 14px; margin: 14px 0 4px; }
+#detail-body h3 { font-size: 13px; margin: 12px 0 4px; }
+#detail-body p { margin: 6px 0; }
+#detail-body code {
+  background: #f1f5f9;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+}
+#detail-body pre {
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 12px;
+}
+#detail-body pre code { background: transparent; color: inherit; padding: 0; }
+#detail-body ul, #detail-body ol { padding-left: 22px; margin: 6px 0; }
+#detail-body li { margin: 2px 0; }
+#detail-body table { border-collapse: collapse; margin: 8px 0; }
+#detail-body th, #detail-body td {
+  border: 1px solid #e2e8f0; padding: 4px 8px; font-size: 12px;
+}
+#detail-body a.internal { color: #2563eb; cursor: pointer; }
+#detail-body a.external { color: #2563eb; }
+
+#detail-backlinks { margin-top: 18px; }
+#detail-backlinks h2 { font-size: 13px; color: #64748b; margin-bottom: 6px; }
+#detail-backlinks ul { padding-left: 18px; }
+#detail-backlinks a { color: #2563eb; cursor: pointer; }
+
+</style>
+</head>
+<body>
+<header>
+  <div class="title">
+    <strong id="bundle-name"></strong>
+    <span class="muted">OKF bundle</span>
+  </div>
+  <div class="controls">
+    <input id="search" type="search" placeholder="Search title / id / tag">
+    <select id="filter-type">
+      <option value="">All types</option>
+    </select>
+    <select id="layout">
+      <option value="cose">cose (force)</option>
+      <option value="concentric">concentric</option>
+      <option value="breadthfirst">breadth-first</option>
+      <option value="circle">circle</option>
+      <option value="grid">grid</option>
+    </select>
+    <button id="reset">Reset view</button>
+  </div>
+</header>
+
+<main>
+  <section id="graph"></section>
+  <section id="detail">
+    <div id="detail-empty" class="muted">Click a node to see its details.</div>
+    <article id="detail-content" hidden>
+      <header class="detail-header">
+        <span class="type-chip" id="detail-type"></span>
+        <h1 id="detail-title"></h1>
+        <div class="muted" id="detail-id"></div>
+      </header>
+      <dl class="frontmatter">
+        <dt>Description</dt><dd id="detail-description"></dd>
+        <dt>Resource</dt><dd id="detail-resource"></dd>
+        <dt>Tags</dt><dd id="detail-tags"></dd>
+      </dl>
+      <hr>
+      <div id="detail-body"></div>
+      <section id="detail-backlinks" hidden>
+        <h2>Cited by</h2>
+        <ul id="backlinks-list"></ul>
+      </section>
+    </article>
+  </section>
+</main>
+
+<script>
+window.BUNDLE_NAME = "ga4";
+window.BUNDLE = {"nodes": [{"data": {"id": "datasets/ga4_obfuscated_sample_ecommerce", "label": "BigQuery sample dataset for Google Analytics ecommerce web implementation", "type": "BigQuery Dataset", "description": "A sample of obfuscated Google Analytics BigQuery event export data for three months from the Google Merchandise Store is available as a public dataset in BigQuery.", "resource": "https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/ga4_obfuscated_sample_ecommerce", "tags": ["ecommerce", "web analytics", "Google Analytics", "BigQuery", "public dataset"], "color": "#8b5cf6", "size": 36}}, {"data": {"id": "references/joins/events___ads_clickstats", "label": "Join Google Analytics Events to Google Ads Clicks", "type": "Reference", "description": "Join Google Analytics event data with Google Ads click data.", "resource": "https://developers.google.com/analytics/bigquery/basic-queries", "tags": ["join", "Google Ads"], "color": "#10b981", "size": 31}}, {"data": {"id": "references/metrics/avg_pageviews", "label": "Average Pageviews", "type": "Reference", "description": "The average number of pageviews per user.", "resource": "https://developers.google.com/analytics/bigquery/basic-queries", "tags": ["metric"], "color": "#10b981", "size": 31}}, {"data": {"id": "references/metrics/avg_spend_per_purchase_session_by_user", "label": "Average Spend Per Purchase Session By User", "type": "Reference", "description": "The average amount of money spent per purchase session for each individual user.", "resource": "https://developers.google.com/analytics/bigquery/advanced-queries", "tags": ["metric", "ecommerce"], "color": "#10b981", "size": 31}}, {"data": {"id": "references/metrics/avg_transactions_per_purchaser", "label": "Average Transactions Per Purchaser", "type": "Reference", "description": "The average number of transactions made by purchasers.", "resource": "https://developers.google.com/analytics/bigquery/basic-queries", "tags": ["metric", "ecommerce"], "color": "#10b981", "size": 31}}, {"data": {"id": "references/metrics/day_count", "label": "Day Count", "type": "Reference", "description": "Total number of unique days.", "resource": "https://developers.google.com/analytics/bigquery/web-ecommerce-demo-dataset", "tags": ["metric"], "color": "#10b981", "size": 30}}, {"data": {"id": "references/metrics/event_count", "label": "Event Count", "type": "Reference", "description": "Total number of events.", "resource": "https://developers.google.com/analytics/bigquery/web-ecommerce-demo-dataset", "tags": ["metric"], "color": "#10b981", "size": 30}}, {"data": {"id": "references/metrics/new_user_count", "label": "New User Count", "type": "Reference", "description": "The number of unique users who triggered a first_visit or first_open event.", "resource": "https://developers.google.com/analytics/bigquery/basic-queries", "tags": ["metric"], "color": "#10b981", "size": 31}}, {"data": {"id": "references/metrics/overall_avg_spend_per_purchase_session", "label": "Overall Average Spend Per Purchase Session", "type": "Reference", "description": "The overall average amount spent across all unique purchase sessions.", "resource": "https://developers.google.com/analytics/bigquery/advanced-queries", "tags": ["metric", "ecommerce"], "color": "#10b981", "size": 31}}, {"data": {"id": "references/metrics/user_count", "label": "User Count", "type": "Reference", "description": "Total number of unique users.", "resource": "https://developers.google.com/analytics/bigquery/web-ecommerce-demo-dataset", "tags": ["metric"], "color": "#10b981", "size": 30}}, {"data": {"id": "tables/events_", "label": "Events table (Google Analytics BigQuery Export)", "type": "BigQuery Table", "description": "Contains Google Analytics event export data from the `ga4_obfuscated_sample_ecommerce` dataset.", "resource": "https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/ga4_obfuscated_sample_ecommerce/tables/events_*", "tags": ["events", "Google Analytics", "BigQuery", "ecommerce", "schema", "basic queries", "advanced queries"], "color": "#3b82f6", "size": 90}}], "edges": [{"data": {"id": "tables/events___references/metrics/event_count", "source": "tables/events_", "target": "references/metrics/event_count"}}, {"data": {"id": "tables/events___references/metrics/user_count", "source": "tables/events_", "target": "references/metrics/user_count"}}, {"data": {"id": "tables/events___references/metrics/day_count", "source": "tables/events_", "target": "references/metrics/day_count"}}, {"data": {"id": "tables/events___references/metrics/new_user_count", "source": "tables/events_", "target": "references/metrics/new_user_count"}}, {"data": {"id": "tables/events___references/metrics/avg_transactions_per_purchaser", "source": "tables/events_", "target": "references/metrics/avg_transactions_per_purchaser"}}, {"data": {"id": "tables/events___references/metrics/avg_pageviews", "source": "tables/events_", "target": "references/metrics/avg_pageviews"}}, {"data": {"id": "tables/events___references/metrics/avg_spend_per_purchase_session_by_user", "source": "tables/events_", "target": "references/metrics/avg_spend_per_purchase_session_by_user"}}, {"data": {"id": "tables/events___references/metrics/overall_avg_spend_per_purchase_session", "source": "tables/events_", "target": "references/metrics/overall_avg_spend_per_purchase_session"}}, {"data": {"id": "tables/events___references/joins/events___ads_clickstats", "source": "tables/events_", "target": "references/joins/events___ads_clickstats"}}], "bodies": {"datasets/ga4_obfuscated_sample_ecommerce": "# Overview\nThe `ga4_obfuscated_sample_ecommerce` dataset contains obfuscated Google Analytics BigQuery event export data for three months (November 2020 to January 2021) from the Google Merchandise Store. This public dataset is available in BigQuery and emulates a real-world dataset.\n\n# Pre-requisites\nTo work with this dataset, you need access to a Google Cloud project with the BigQuery API enabled. You can use BigQuery Sandbox mode or the Free usage tier for exploration and sample queries.\n\n# Limitations\nThe dataset contains obfuscated data with placeholder values like `<Other>`, `NULL`, and `''`. Due to obfuscation, the internal consistency of the dataset might be somewhat limited. It cannot be compared to the Google Analytics Demo Account.\n\n# Using the dataset\nYou can access the `ga4_obfuscated_sample_ecommerce` dataset via the BigQuery UI in the Cloud Console.\n\n## Sample Query\nThe following query shows the number of unique events, users, and days in the dataset:\n\n```sql\nSELECT\n  COUNT(*) AS event_count,\n  COUNT(DISTINCT user_pseudo_id) AS user_count,\n  COUNT(DISTINCT event_date) AS day_count\nFROM `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*`\n```\n\n# Citations\n- https://developers.google.com/analytics/bigquery/web-ecommerce-demo-dataset", "references/joins/events___ads_clickstats": "Join Google Analytics event data with Google Ads click data.\n\n```sql\nGA_EVENTS.collected_traffic_source.gclid = ADS_CLICKS.gclid\n```\n\n# Citations\n- https://developers.google.com/analytics/bigquery/basic-queries", "references/metrics/avg_pageviews": "The average number of pageviews per user.\n\n```sql\nSUM(page_view_count) / COUNT(*)\n-- where page_view_count is COUNTIF(event_name = 'page_view') per user\n```\n\n# Citations\n- https://developers.google.com/analytics/bigquery/basic-queries", "references/metrics/avg_spend_per_purchase_session_by_user": "The average amount of money spent per purchase session for each individual user.\n\n```sql\nAVG(total_session_spend)\n-- where total_session_spend is SUM(COALESCE(...)) for event_name = 'purchase' events within a session, grouped by user_pseudo_id and ga_session_id\n```\n\n# Citations\n- https://developers.google.com/analytics/bigquery/advanced-queries", "references/metrics/avg_transactions_per_purchaser": "The average number of transactions made by purchasers.\n\n```sql\nCOUNT(*) / COUNT(DISTINCT user_pseudo_id)\n-- for events where event_name IN ('in_app_purchase', 'purchase')\n```\n\n# Citations\n- https://developers.google.com/analytics/bigquery/basic-queries", "references/metrics/day_count": "Total number of unique days.\n\n```sql\nCOUNT(DISTINCT event_date)\n```\n\n# Citations\n- https://developers.google.com/analytics/bigquery/web-ecommerce-demo-dataset", "references/metrics/event_count": "Total number of events.\n\n```sql\nCOUNT(*)\n```\n\n# Citations\n- https://developers.google.com/analytics/bigquery/web-ecommerce-demo-dataset", "references/metrics/new_user_count": "The number of unique users who triggered a `first_visit` or `first_open` event.\n\n```sql\nSUM(is_new_user)\n-- where is_new_user is MAX(IF(event_name IN ('first_visit', 'first_open'), 1, 0)) grouped by user_pseudo_id\n```\n\n# Citations\n- https://developers.google.com/analytics/bigquery/basic-queries", "references/metrics/overall_avg_spend_per_purchase_session": "The overall average amount spent across all unique purchase sessions.\n\n```sql\nAVG(total_session_spend)\n-- where total_session_spend is SUM(COALESCE(...)) for event_name = 'purchase' events within a session, grouped by user_pseudo_id and ga_session_id\n```\n\n# Citations\n- https://developers.google.com/analytics/bigquery/advanced-queries", "references/metrics/user_count": "Total number of unique users.\n\n```sql\nCOUNT(DISTINCT user_pseudo_id)\n```\n\n# Citations\n- https://developers.google.com/analytics/bigquery/web-ecommerce-demo-dataset", "tables/events_": "# Overview\nThe `events_` table is a sharded BigQuery table containing Google Analytics event export data from the `ga4_obfuscated_sample_ecommerce` dataset.\n\n# Metrics\n- [Event Count](/references/metrics/event_count.md) \u2014 Total number of events.\n- [User Count](/references/metrics/user_count.md) \u2014 Total number of unique users.\n- [Day Count](/references/metrics/day_count.md) \u2014 Total number of unique days.\n- [New User Count](/references/metrics/new_user_count.md) \u2014 The number of unique users who triggered a first_visit or first_open event.\n- [Average Transactions Per Purchaser](/references/metrics/avg_transactions_per_purchaser.md) \u2014 The average number of transactions made by purchasers.\n- [Average Pageviews](/references/metrics/avg_pageviews.md) \u2014 The average number of pageviews per user.\n- [Average Spend Per Purchase Session By User](/references/metrics/avg_spend_per_purchase_session_by_user.md) \u2014 The average amount of money spent per purchase session for each individual user.\n- [Overall Average Spend Per Purchase Session](/references/metrics/overall_avg_spend_per_purchase_session.md) \u2014 The overall average amount spent across all unique purchase sessions.\n\n# Schema\nThe `events_YYYYMMDD` table, created daily, and `events_intraday_YYYYMMDD` (for streaming export) contain the following fields:\n\n## event\nThe event fields contain information that uniquely identifies an event.\n\n- `batch_event_index` (INTEGER): A number indicating the sequential order of each event within a batch based on their order of occurrence on the device.\n- `batch_ordering_id` (INTEGER): A monotonically increasing number that is incremented each time a network request is sent from a given page.\n- `batch_page_id` (INTEGER): A sequential number assigned to a page that increases for each subsequent page within an engagement.\n- `event_date` (STRING): The date when the event was logged (YYYYMMDD format in the registered timezone of your app).\n- `event_timestamp` (INTEGER): The time (in microseconds, UTC) when the event was received by Google Analytics. Multiple events can share the same timestamp if sent in the same request.\n- `event_previous_timestamp` (INTEGER): The time (in microseconds, UTC) when the previous event happened.\n- `event_name` (STRING): The name of the event.\n- `event_value_in_usd` (FLOAT): The currency-converted value (in USD) of the event's \"value\" parameter.\n- `event_bundle_sequence_id` (INTEGER): The sequential ID of the bundle in which these events were uploaded.\n- `event_server_timestamp_offset` (INTEGER): Timestamp offset between collection time and upload time in micros.\n\n### event_params RECORD\nThe `event_params` RECORD can store campaign-level and contextual event parameters as well as any user-defined event parameters. The `event_params` RECORD is repeated for each key that is associated with an event.\n\n- `event_params.key` (STRING): The name of the event parameter.\n- `event_params.value` (RECORD): A record containing the event parameter's value.\n    - `event_params.value.string_value` (STRING): If the event parameter is represented by a string, such as a URL or campaign name, it is populated in this field.\n    - `event_params.value.int_value` (INTEGER): If the event parameter is represented by an integer, it is populated in this field.\n    - `event_params.value.double_value` (FLOAT): If the event parameter is represented by a double value, it is populated in this field.\n    - `event_params.value.float_value` (FLOAT): If the event parameter is represented by a floating point value, it is populated in this field. This field is not currently in use.\n- `event_params.key = 'page_location'` (STRING): The URL of the page viewed.\n- `event_params.key = 'page_title'` (STRING): The title of the page viewed.\n- `event_params.key = 'ga_session_id'` (INTEGER): The ID of the Google Analytics session.\n- `event_params.key = 'ga_session_number'` (INTEGER): The sequential number of the session for a user.\n\n### item_params RECORD\nThe `item_params` RECORD can store item parameters as well as any user-defined item parameters.\n\n- `item_params.key` (STRING): The name of the item parameter.\n- `item_params.value` (RECORD): A record containing the item parameter\u2019s value.\n    - `item_params.value.string_value` (STRING): If the item parameter is represented by a string, it is populated in this field.\n    - `item_params.value.int_value` (INTEGER): If the item parameter is represented by an integer, it is populated in this field.\n    - `item_params.value.double_value` (FLOAT): If the item parameter is represented by a double value, it is populated in this field.\n    - `item_params.value.float_value` (FLOAT): If the item parameter is represented by a floating point value, it is populated in this field.\n\n## user\nThe user fields contain information that uniquely identifies the user associated with the event.\n\n- `is_active_user` (BOOLEAN): Whether the user was active (True) or inactive (False) at any point in the calendar day. This field is only populated in the daily tables (`events_YYYYMMDD`).\n- `user_id` (STRING): The unique ID assigned to a user.\n- `user_pseudo_id` (STRING): The pseudonymous id (e.g., app instance ID) for the user. A unique identifier that is assigned to a user when they first open the app or visit the site.\n- `user_first_touch_timestamp` (INTEGER): The time (in microseconds) at which the user first opened the app or visited the site.\n\n### privacy_info fields\nThe `privacy_info` fields contain information based on the consent status of a user when consent mode is enabled.\n\n- `privacy_info.ads_storage` (STRING): Whether ad targeting is enabled for a user. Possible values: Yes, No, Unset\n- `privacy_info.analytics_storage` (STRING): Whether Analytics storage is enabled for the user. Possible values: Yes, No, Unset\n- `privacy_info.uses_transient_token` (STRING): Whether a web user has denied Analytics storage and the developer has enabled measurement without cookies based on transient tokens in server data. Possible values: Yes, No, Unset\n\n### user_properties RECORD\nThe `user_properties` RECORD contains any user properties that you have set. It is repeated for each key that is associated with a user.\n\n- `user_properties.key` (STRING): The name of the user property.\n- `user_properties.value` (RECORD): A record for the user property value.\n    - `user_properties.value.string_value` (STRING): The string value of the user property.\n    - `user_properties.value.int_value` (INTEGER): The integer value of the user property.\n    - `user_properties.value.double_value` (FLOAT): The double value of the user property.\n    - `user_properties.value.float_value` (FLOAT): This field is currently unused.\n    - `user_properties.value.set_timestamp_micros` (INTEGER): The time (in microseconds) at which the user property was last set.\n\n### user_ltv RECORD\nThe `user_ltv` RECORD contains Lifetime Value information about the user. This RECORD is not populated in intraday tables.\n\n- `user_ltv.revenue` (FLOAT): The Lifetime Value (revenue) of the user. This field is not populated in intraday tables.\n- `user_ltv.currency` (STRING): The Lifetime Value (currency) of the user. This field is not populated in intraday tables.\n\n## device\nThe device RECORD contains information about the device from which the event originated.\n\n- `device.category` (STRING): The device category (mobile, tablet, desktop).\n- `device.mobile_brand_name` (STRING): The device brand name.\n- `device.mobile_model_name` (STRING): The device model name.\n- `device.mobile_marketing_name` (STRING): The device marketing name.\n- `device.mobile_os_hardware_model` (STRING): The device model information retrieved directly from the operating system.\n- `device.operating_system` (STRING): The operating system of the device.\n- `device.operating_system_version` (STRING): The OS version.\n- `device.vendor_id` (STRING): IDFV (present only if IDFA is not collected).\n- `device.advertising_id` (STRING): Advertising ID/IDFA.\n- `device.language` (STRING): The OS language.\n- `device.time_zone_offset_seconds` (INTEGER): The offset from GMT in seconds.\n- `device.is_limited_ad_tracking` (BOOLEAN): The device's Limit Ad Tracking setting. On iOS14+, returns false if the IDFA is non-zero.\n- `device.web_info.browser` (STRING): The browser in which the user viewed content.\n- `device.web_info.browser_version` (STRING): The version of the browser in which the user viewed content.\n- `device.web_info.hostname` (STRING): The hostname associated with the logged event.\n\n## geo\nThe geo RECORD contains information about the geographic location where the event was initiated.\n\n- `geo.continent` (STRING): The continent from which events were reported, based on IP address.\n- `geo.sub_continent` (STRING): The subcontinent from which events were reported, based on IP address.\n- `geo.country` (STRING): The country from which events were reported, based on IP address.\n- `geo.region` (STRING): The region from which events were reported, based on IP address.\n- `geo.metro` (STRING): The metro from which events were reported, based on IP address.\n- `geo.city` (STRING): The city from which events were reported, based on IP address.\n\n## app_info\nThe `app_info` RECORD contains information about the app in which the event was initiated.\n\n- `app_info.id` (STRING): The package name or bundle ID of the app.\n- `app_info.firebase_app_id` (STRING): The Firebase App ID associated with the app.\n- `app_info.install_source` (STRING): The store that installed the app.\n- `app_info.version` (STRING): The app's versionName (Android) or short bundle version.\n\n## collected_traffic_source\nThe `collected_traffic_source` RECORD contains the traffic source data that was present within the events that were collected.\n\n- `manual_campaign_id` (STRING): The manual campaign id (utm_id) that was collected with the event.\n- `manual_campaign_name` (STRING): The manual campaign name (utm_campaign) that was collected with the event.\n- `manual_source` (STRING): The manual campaign source (utm_source) that was collected with the event. Also includes parsed parameters from referral params, not just UTM values.\n- `manual_medium` (STRING): The manual campaign medium (utm_medium) that was collected with the event. Also includes parsed parameters from referral params, not just UTM values.\n- `manual_term` (STRING): The manual campaign keyword/term (utm_term) that was collected with the event.\n- `manual_content` (STRING): The additional manual campaign metadata (utm_content) that was collected with the event.\n- `manual_creative_format` (STRING): The manual campaign creative format (utm_creative_format) that was collected with the event.\n- `manual_marketing_tactic` (STRING): The manual campaign marketing tactic (utm_marketing_tactic) that was collected with the event.\n- `manual_source_platform` (STRING): The manual campaign source platform (utm_source_platform) that was collected with the event.\n- `gclid` (STRING): The Google click identifier that was collected with the event.\n- `dclid` (STRING): The DoubleClick Click Identifier for Display and Video 360 and Campaign Manager 360 that was collected with the event.\n- `srsltid` (STRING): The Google Merchant Center identifier that was collected with the event.\n\n## session_traffic_source_last_click\nThe `session_traffic_source_last_click` RECORD contains the last-click attributed session traffic source data across Google ads and manual contexts, where available.\n\n- `session_traffic_source_last_click.manual_campaign.campaign_id` (STRING): The ID of the last clicked manual campaign.\n- `session_traffic_source_last_click.manual_campaign.campaign_name` (STRING): The name of the last clicked manual campaign.\n- `session_traffic_source_last_click.manual_campaign.medium` (STRING): The medium of the last clicked manual campaign (e.g., paid search, organic search, email).\n- `session_traffic_source_last_click.manual_campaign.term` (STRING): The keyword/search term of the last clicked manual campaign.\n- `session_traffic_source_last_click.manual_campaign.content` (STRING): Additional metadata of the last clicked manual campaign.\n- `session_traffic_source_last_click.manual_campaign.source_platform` (STRING): The platform of the last clicked manual campaign (e.g., search engine, social media).\n- `session_traffic_source_last_click.manual_campaign.source` (STRING): The specific source within the platform of the last clicked manual campaign.\n- `session_traffic_source_last_click.manual_campaign.creative_format` (STRING): The format of the creative of the last clicked manual campaign.\n- `session_traffic_source_last_click.manual_campaign.marketing_tactic` (STRING): The marketing tactic of the last clicked manual campaign.\n- `session_traffic_source_last_click.google_ads_campaign.customer_id` (STRING): The customer ID associated with the Google Ads account.\n- `session_traffic_source_last_click.google_ads_campaign.account_name` (STRING): The name of the Google Ads account.\n- `session_traffic_source_last_click.google_ads_campaign.campaign_id` (STRING): The ID of the Google Ads campaign.\n- `session_traffic_source_last_click.google_ads_campaign.campaign_name` (STRING): The name of the Google Ads campaign.\n- `session_traffic_source_last_click.google_ads_campaign.ad_group_id` (STRING): The ID of the ad group within the Google Ads campaign.\n- `session_traffic_source_last_click.google_ads_campaign.ad_group_name` (STRING): The name of the ad group within the Google Ads campaign.\n- `session_traffic_source_last_click.cross_channel_campaign.campaign_name` (STRING): The name of the last clicked cross-channel campaign.\n- `session_traffic_source_last_click.cross_channel_campaign.campaign_id` (STRING): The ID of the last clicked cross-channel campaign.\n- `session_traffic_source_last_click.cross_channel_campaign.source_platform` (STRING): The platform of the last clicked cross-channel campaign.\n- `session_traffic_source_last_click.cross_channel_campaign.source` (STRING): The specific source within the platform of the last clicked cross-channel campaign.\n- `session_traffic_source_last_click.cross_channel_campaign.medium` (STRING): The medium of the last clicked cross-channel campaign.\n- `session_traffic_source_last_click.sa360_campaign.campaign_name` (STRING): The name of the last clicked SA360 campaign.\n- `session_traffic_source_last_click.sa360_campaign.source` (STRING): The specific source within the platform of the last clicked SA360 campaign.\n- `session_traffic_source_last_click.sa360_campaign.medium` (STRING): The medium of the last clicked SA360 campaign.\n- `session_traffic_source_last_click.sa360_campaign.ad_group_id` (STRING): The ID of the ad group within the SA360 campaign.\n- `session_traffic_source_last_click.sa360_campaign.ad_group_name` (STRING): The name of the ad group within the SA360 campaign.\n- `session_traffic_source_last_click.sa360_campaign.campaign_id` (STRING): The ID of the last clicked SA360 campaign.\n- `session_traffic_source_last_click.sa360_campaign.creative_format` (STRING): The format of the creative of the last clicked SA360 campaign.\n- `session_traffic_source_last_click.sa360_campaign.engine_account_name` (STRING): The name of the SA360 engine account.\n- `session_traffic_source_last_click.sa360_campaign.engine_account_type` (STRING): The type of engine account containing the SA360 campaign.\n- `session_traffic_source_last_click.sa360_campaign.manager_account_name` (STRING): The name of the SA360 manager account.\n- `session_traffic_source_last_click.dv360_campaign.advertiser_id` (STRING): The ID of the DV360 advertiser.\n- `session_traffic_source_last_click.dv360_campaign.advertiser_name` (STRING): The name of the DV360 advertiser.\n- `session_traffic_source_last_click.dv360_campaign.campaign_id` (STRING): The ID of the last clicked DV360 campaign.\n- `session_traffic_source_last_click.dv360_campaign.campaign_name` (STRING): The name of the last clicked DV360 campaign.\n- `session_traffic_source_last_click.dv360_campaign.creative_id` (STRING): The ID of the creative of the last clicked DV360 campaign.\n- `session_traffic_source_last_click.dv360_campaign.creative_format` (STRING): The format of the creative of the last clicked DV360 campaign.\n- `session_traffic_source_last_click.dv360_campaign.creative_name` (STRING): The name of the creative of the last clicked DV360 campaign.\n- `session_traffic_source_last_click.dv360_campaign.marketing_tactic` (STRING): The marketing tactic of the last clicked DV360 campaign.\n- `session_traffic_source_last_click.dv360_campaign.exchange_id` (STRING): The exchange ID of the last clicked DV360 campaign.\n- `session_traffic_source_last_click.dv360_campaign.exchange_name` (STRING): The exchange name of the last clicked DV360 campaign.\n- `session_traffic_source_last_click.dv360_campaign.insertion_order_id` (STRING): The ID of the insertion order in the last clicked DV360 campaign.\n- `session_traffic_source_last_click.dv360_campaign.insertion_order_name` (STRING): The name of the insertion order in the last clicked DV360 campaign.\n- `session_traffic_source_last_click.dv360_campaign.line_item_id` (STRING): The ID of the line item in the last clicked DV360 campaign.\n- `session_traffic_source_last_click.dv360_campaign.line_item_name` (STRING): The name of the line item in the last clicked DV360 campaign.\n- `session_traffic_source_last_click.dv360_campaign.partner_id` (STRING): The ID of the DV360 partner.\n- `session_traffic_source_last_click.dv360_campaign.partner_name` (STRING): The name of the DV360 partner.\n- `session_traffic_source_last_click.dv360_campaign.source` (STRING): The specific source within the platform of the last clicked DV360 campaign.\n- `session_traffic_source_last_click.dv360_campaign.medium` (STRING): The medium of the last clicked DV360 campaign.\n- `session_traffic_source_last_click.cm360_campaign.account_id` (STRING): The ID of the CM360 account.\n- `session_traffic_source_last_click.cm360_campaign.account_name` (STRING): The name of the CM360 account.\n- `session_traffic_source_last_click.cm360_campaign.advertiser_id` (STRING): The ID of the CM360 advertiser.\n- `session_traffic_source_last_click.cm360_campaign.advertiser_name` (STRING): The name of the CM360 advertiser.\n- `session_traffic_source_last_click.cm360_campaign.campaign_id` (STRING): The ID of the last clicked CM360 campaign.\n- `session_traffic_source_last_click.cm360_campaign.campaign_name` (STRING): The name of the last clicked CM360 campaign.\n- `session_traffic_source_last_click.cm360_campaign.creative_id` (STRING): The ID of the creative of the last clicked CM360 campaign.\n- `session_traffic_source_last_click.cm360_campaign.creative_format` (STRING): The format of the creative of the last clicked CM360 campaign.\n- `session_traffic_source_last_click.cm360_campaign.creative_name` (STRING): The name of the creative of the last clicked CM360 campaign.\n- `session_traffic_source_last_click.cm360_campaign.creative_type` (STRING): The creative type of the last clicked CM360 campaign.\n- `session_traffic_source_last_click.cm360_campaign.creative_type_id` (STRING): The creative type ID of the last clicked CM360 campaign.\n- `session_traffic_source_last_click.cm360_campaign.creative_version` (STRING): The creative version of the last clicked CM360 campaign.\n- `session_traffic_source_last_click.cm360_campaign.placement_id` (STRING): The ID of the placement of the last clicked CM360 campaign.\n- `session_traffic_source_last_click.cm360_campaign.placement_cost_structure` (STRING): The placement cost structure of the last clicked CM360 campaign.\n- `session_traffic_source_last_click.cm360_campaign.placement_name` (STRING): The name of the placement of the last clicked CM360 campaign.\n- `session_traffic_source_last_click.cm360_campaign.rendering_id` (STRING): The rendering ID of the last clicked CM360 campaign.\n- `session_traffic_source_last_click.cm360_campaign.site_id` (STRING): The site ID of the last clicked CM360 campaign.\n- `session_traffic_source_last_click.cm360_campaign.site_name` (STRING): The site name of the last clicked CM360 campaign.\n- `session_traffic_source_last_click.cm360_campaign.source` (STRING): The specific source of the last clicked CM360 campaign.\n- `session_traffic_source_last_click.cm360_campaign.medium` (STRING): The medium of the last clicked CM360 campaign.\n\n## traffic_source\nThe `traffic_source` RECORD contains information about the traffic source that first acquired the user. This record is not populated in intraday tables.\n\n- `traffic_source.name` (STRING): Name of the marketing campaign that first acquired the user. This field is not populated in intraday tables.\n- `traffic_source.medium` (STRING): Name of the medium (paid search, organic search, email, etc.) that first acquired the user. This field is not populated in intraday tables.\n- `traffic_source.source` (STRING): Name of the network that first acquired the user. This field is not populated in intraday tables.\n\n## stream and platform\nThe stream and platform fields contain information about the stream and the app platform.\n\n- `stream_id` (STRING): The numeric ID of the data stream from which the event originated.\n- `platform` (STRING): The data stream platform (Web, IOS or Android) from which the event originated.\n\n## ecommerce\nThis ecommerce RECORD contains information about any ecommerce events that have been setup on a website or app.\n\n- `ecommerce.total_item_quantity` (INTEGER): Total number of items in this event, which is the sum of items.quantity.\n- `ecommerce.purchase_revenue_in_usd` (FLOAT): Purchase revenue of this event, represented in USD with standard unit. Populated for purchase event only.\n- `ecommerce.purchase_revenue` (FLOAT): Purchase revenue of this event, represented in local currency with standard unit. Populated for purchase event only.\n- `ecommerce.refund_value_in_usd` (FLOAT): The amount of refund in this event, represented in USD with standard unit. Populated for refund event only.\n- `ecommerce.refund_value` (FLOAT): The amount of refund in this event, represented in local currency with standard unit. Populated for refund event only.\n- `ecommerce.shipping_value_in_usd` (FLOAT): The shipping cost in this event, represented in USD with standard unit.\n- `ecommerce.shipping_value` (FLOAT): The shipping cost in this event, represented in local currency.\n- `ecommerce.tax_value_in_usd` (FLOAT): The tax value in this event, represented in USD with standard unit.\n- `ecommerce.tax_value` (FLOAT): The tax value in this event, represented in local currency with standard unit.\n- `ecommerce.transaction_id` (STRING): The transaction ID of the ecommerce transaction.\n- `ecommerce.unique_items` (INTEGER): The number of unique items in this event, based on item_id, item_name, and item_brand.\n\n## items\nThe `items` RECORD contains information about items included in an event. It is repeated for each item.\n\n- `items.item_id` (STRING): The ID of the item.\n- `items.item_name` (STRING): The name of the item.\n- `items.item_brand` (STRING): The brand of the item.\n- `items.item_variant` (STRING): The variant of the item.\n- `items.item_category` (STRING): The category of the item.\n- `items.item_category2` (STRING): The sub category of the item.\n- `items.item_category3` (STRING): The sub category of the item.\n- `items.item_category4` (STRING): The sub category of the item.\n- `items.item_category5` (STRING): The sub category of the item.\n- `items.price_in_usd` (FLOAT): The price of the item, in USD with standard unit.\n- `items.price` (FLOAT): The price of the item in local currency.\n- `items.quantity` (INTEGER): The quantity of the item. Quantity set to 1 if not specified.\n- `items.item_revenue_in_usd` (FLOAT): The revenue of this item, calculated as price_in_usd * quantity. It is populated for purchase events only, in USD with standard unit.\n- `items.item_revenue` (FLOAT): The revenue of this item, calculated as price * quantity. It is populated for purchase events only, in local currency with standard unit.\n- `items.item_refund_in_usd` (FLOAT): The refund value of this item, calculated as price_in_usd * quantity. It is populated for refund events only, in USD with standard unit.\n- `items.item_refund` (FLOAT): The refund value of this item, calculated as price * quantity. It is populated for refund events only, in local currency with standard unit.\n- `items.coupon` (STRING): Coupon code applied to this item.\n- `items.affiliation` (STRING): A product affiliation to designate a supplying company or brick and mortar store location.\n- `items.location_id` (STRING): The location associated with the item.\n- `items.item_list_id` (STRING): The ID of the list in which the item was presented to the user.\n- `items.item_list_name` (STRING): The name of the list in which the item was presented to the user.\n- `items.item_list_index` (STRING): The position of the item in a list.\n- `items.promotion_id` (STRING): The ID of a product promotion.\n- `items.promotion_name` (STRING): The name of a product promotion.\n- `items.creative_name` (STRING): The name of a creative used in a promotional spot.\n- `items.creative_slot` (STRING): The name of a creative slot.\n\n### item_params RECORD (nested under items)\nThe `item_params` RECORD stores the custom item parameters that you defined.\n\n- `items.item_params.key` (STRING): The name of the item parameter.\n- `items.item_params.value` (RECORD): A record containing the item parameter\u2019s value.\n    - `items.item_params.value.string_value` (STRING): If the item parameter is represented by a string, it is populated in this field.\n    - `items.item_params.value.int_value` (INTEGER): If the item parameter is represented by an integer, it is populated in this field.\n    - `items.item_params.value.double_value` (FLOAT): If the item parameter is represented by a double value, it is populated in this field.\n    - `items.item_params.value.float_value` (FLOAT): If the item parameter is represented by a floating point value, it is populated in this field.\n\n## publisher (Early access only)\nThe publisher RECORD contains information about events sourced from a publisher integration related to the display of ads, that is, AdMob.\n\n- `publisher` (RECORD): A record of publisher data coming from AdMob. This field is not populated in intraday tables and Fresh Daily BigQuery export.\n- `publisher.ad_revenue_in_usd` (FLOAT): Estimated ad revenue resulting from this event, represented in USD. Populated for ad impression events only. This field is not populated in intraday tables and Fresh Daily BigQuery export.\n- `publisher.ad_format` (STRING): Describes the way ads appeared and where they were located. Typical formats include \u2018Interstitial\u2019, \u2018Banner\u2019, \u2018Rewarded\u2019, and \u2018Native advanced\u2019. This field is not populated in intraday tables and Fresh Daily BigQuery export.\n- `publisher.ad_source_name` (STRING): The source network that served an ad. Typical sources include, \u2018AdMob Network\u2019, \u2018Meta audience Network\u2019, and \u2018Mediated house ads\u2019. This field is not populated in intraday tables and Fresh Daily BigQuery export.\n- `publisher.ad_unit_id` (STRING): The name you chose to describe this Ad unit. Ad units are containers that you place in your apps to show ads to users. This field is not populated in intraday tables and Fresh Daily BigQuery export.\n\n# Joins\n- [Google Analytics Events to Google Ads Clicks](/references/joins/events___ads_clickstats.md) \u2014 join on `collected_traffic_source.gclid` to attach Google Ads data to events.\n\n# Citations\n- https://developers.google.com/analytics/bigquery/web-ecommerce-demo-dataset\n- https://support.google.com/analytics/answer/7029846\n- https://developers.google.com/analytics/bigquery/basic-queries\n- https://developers.google.com/analytics/bigquery/advanced-queries"}, "types": ["BigQuery Dataset", "BigQuery Table", "Reference"], "palette": {"BigQuery Dataset": "#8b5cf6", "BigQuery Table": "#3b82f6", "Reference": "#10b981"}};
+</script>
+<script>
+(function () {
+  const bundle = window.BUNDLE;
+  const bundleName = window.BUNDLE_NAME;
+  document.title = `${bundleName} — OKF Viewer`;
+  document.getElementById("bundle-name").textContent = bundleName;
+
+  // Populate type filter
+  const typeSelect = document.getElementById("filter-type");
+  for (const t of bundle.types) {
+    const opt = document.createElement("option");
+    opt.value = t;
+    opt.textContent = t;
+    typeSelect.appendChild(opt);
+  }
+
+  // Build reverse-link index for backlinks
+  const backlinks = {};
+  for (const edge of bundle.edges) {
+    const { source, target } = edge.data;
+    (backlinks[target] ||= []).push(source);
+  }
+
+  // Look up node label/type by id
+  const nodeIndex = {};
+  for (const n of bundle.nodes) nodeIndex[n.data.id] = n.data;
+
+  const cy = cytoscape({
+    container: document.getElementById("graph"),
+    elements: [...bundle.nodes, ...bundle.edges],
+    style: [
+      {
+        selector: "node",
+        style: {
+          "background-color": "data(color)",
+          "label": "data(label)",
+          "color": "#0f172a",
+          "font-size": 11,
+          "text-valign": "bottom",
+          "text-margin-y": 4,
+          "text-wrap": "wrap",
+          "text-max-width": 120,
+          "width": "data(size)",
+          "height": "data(size)",
+          "border-width": 1,
+          "border-color": "#0f172a",
+        },
+      },
+      {
+        selector: "node:selected",
+        style: {
+          "border-width": 3,
+          "border-color": "#f59e0b",
+        },
+      },
+      {
+        selector: "edge",
+        style: {
+          "width": 1.5,
+          "line-color": "#cbd5e1",
+          "target-arrow-color": "#cbd5e1",
+          "target-arrow-shape": "triangle",
+          "curve-style": "bezier",
+          "arrow-scale": 0.9,
+        },
+      },
+      {
+        selector: "edge:selected",
+        style: {
+          "line-color": "#f59e0b",
+          "target-arrow-color": "#f59e0b",
+          "width": 2.5,
+        },
+      },
+      {
+        selector: ".dim",
+        style: { "opacity": 0.15 },
+      },
+    ],
+    layout: { name: "cose", animate: false, padding: 30 },
+    wheelSensitivity: 0.2,
+  });
+
+  cy.on("tap", "node", (evt) => showDetail(evt.target.id()));
+  cy.on("tap", (evt) => {
+    if (evt.target === cy) clearSelection();
+  });
+
+  document.getElementById("layout").addEventListener("change", (e) => {
+    cy.layout({ name: e.target.value, animate: false, padding: 30 }).run();
+  });
+
+  document.getElementById("reset").addEventListener("click", () => {
+    cy.fit(null, 30);
+    clearSelection();
+  });
+
+  document.getElementById("search").addEventListener("input", (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    if (!q) {
+      cy.elements().removeClass("dim");
+      return;
+    }
+    cy.nodes().forEach((n) => {
+      const d = n.data();
+      const hay =
+        (d.label || "").toLowerCase() + " " +
+        d.id.toLowerCase() + " " +
+        (d.tags || []).join(" ").toLowerCase();
+      n.toggleClass("dim", !hay.includes(q));
+    });
+    cy.edges().forEach((edge) => {
+      const src = edge.source();
+      const tgt = edge.target();
+      edge.toggleClass("dim", src.hasClass("dim") || tgt.hasClass("dim"));
+    });
+  });
+
+  document.getElementById("filter-type").addEventListener("change", (e) => {
+    const t = e.target.value;
+    if (!t) {
+      cy.elements().removeClass("dim");
+      return;
+    }
+    cy.nodes().forEach((n) => {
+      n.toggleClass("dim", n.data("type") !== t);
+    });
+    cy.edges().forEach((edge) => {
+      edge.toggleClass("dim", edge.source().hasClass("dim") || edge.target().hasClass("dim"));
+    });
+  });
+
+  function clearSelection() {
+    cy.elements().unselect();
+    document.getElementById("detail-empty").hidden = false;
+    document.getElementById("detail-content").hidden = true;
+  }
+
+  function showDetail(conceptId) {
+    const data = nodeIndex[conceptId];
+    if (!data) return;
+    cy.elements().unselect();
+    const node = cy.getElementById(conceptId);
+    if (node) node.select();
+
+    document.getElementById("detail-empty").hidden = true;
+    const content = document.getElementById("detail-content");
+    content.hidden = false;
+
+    const chip = document.getElementById("detail-type");
+    chip.textContent = data.type;
+    chip.style.background = data.color;
+
+    document.getElementById("detail-title").textContent = data.label;
+    document.getElementById("detail-id").textContent = conceptId;
+    document.getElementById("detail-description").textContent = data.description || "—";
+
+    const resourceEl = document.getElementById("detail-resource");
+    resourceEl.innerHTML = "";
+    if (data.resource) {
+      const a = document.createElement("a");
+      a.href = data.resource;
+      a.textContent = data.resource;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.className = "external";
+      resourceEl.appendChild(a);
+    } else {
+      resourceEl.textContent = "—";
+    }
+
+    const tagsEl = document.getElementById("detail-tags");
+    tagsEl.innerHTML = "";
+    if (data.tags && data.tags.length) {
+      for (const t of data.tags) {
+        const span = document.createElement("span");
+        span.className = "tag";
+        span.textContent = t;
+        tagsEl.appendChild(span);
+      }
+    } else {
+      tagsEl.textContent = "—";
+    }
+
+    const body = bundle.bodies[conceptId] || "";
+    const html = marked.parse(body, { breaks: false, gfm: true });
+    const bodyEl = document.getElementById("detail-body");
+    bodyEl.innerHTML = html;
+    rewriteInternalLinks(bodyEl);
+
+    const bl = backlinks[conceptId] || [];
+    const blSection = document.getElementById("detail-backlinks");
+    const blList = document.getElementById("backlinks-list");
+    blList.innerHTML = "";
+    if (bl.length) {
+      blSection.hidden = false;
+      for (const src of bl) {
+        const li = document.createElement("li");
+        const a = document.createElement("a");
+        a.textContent = nodeIndex[src]?.label || src;
+        a.dataset.target = src;
+        a.addEventListener("click", () => showDetail(src));
+        li.appendChild(a);
+        const muted = document.createElement("span");
+        muted.className = "muted";
+        muted.textContent = ` (${src})`;
+        li.appendChild(muted);
+        blList.appendChild(li);
+      }
+    } else {
+      blSection.hidden = true;
+    }
+
+    cy.animate({ center: { eles: node }, zoom: Math.max(cy.zoom(), 1.0) }, { duration: 200 });
+  }
+
+  function rewriteInternalLinks(root) {
+    root.querySelectorAll("a[href]").forEach((a) => {
+      const href = a.getAttribute("href");
+      if (!href) return;
+      if (href.startsWith("/") && href.endsWith(".md")) {
+        const target = href.slice(1, -3);
+        if (nodeIndex[target]) {
+          a.className = "internal";
+          a.setAttribute("href", "javascript:void(0)");
+          a.addEventListener("click", (e) => {
+            e.preventDefault();
+            showDetail(target);
+          });
+          return;
+        }
+      }
+      a.className = "external";
+      a.setAttribute("target", "_blank");
+      a.setAttribute("rel", "noopener");
+    });
+  }
+
+  // Auto-show the first node (a dataset if available, else first concept)
+  const initial =
+    bundle.nodes.find((n) => n.data.type === "BigQuery Dataset") ||
+    bundle.nodes[0];
+  if (initial) showDetail(initial.data.id);
+})();
+
+</script>
+</body>
+</html>

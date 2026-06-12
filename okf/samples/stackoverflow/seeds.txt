@@ -1,0 +1,20 @@
+# Seed URLs for the Stack Overflow public BigQuery dataset
+# (bigquery-public-data.stackoverflow).
+#
+# The BQ dataset mirrors the Stack Exchange Data Dump schema (Posts, Users,
+# Votes, Comments, Badges, Tags, PostHistory, PostLinks, ...). These seeds
+# point at the canonical schema references the community maintains.
+#
+# Each non-comment line is one URL. The web-ingestion agent crawls outward
+# from these by following links it judges relevant; same-domain by default.
+
+# Canonical schema documentation for the Stack Exchange Data Dump / SEDE
+# (covers Posts, Users, Votes, Comments, Badges, Tags, etc.)
+https://meta.stackexchange.com/questions/2677/database-schema-documentation-for-the-public-data-dump-and-sede
+
+# Stack Exchange Data Explorer help — table descriptions and example queries
+https://data.stackexchange.com/help
+
+# Internet Archive page for the Stack Exchange data dump (upstream source
+# of the BigQuery export; includes README with field semantics)
+https://archive.org/details/stackexchange
