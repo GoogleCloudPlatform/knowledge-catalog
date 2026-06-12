@@ -1,18 +1,16 @@
 // Implements the documents layout (markdown files in directory)
 //
 
-import * as fs from 'node:fs';
 import * as glob from 'glob';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
+import {CatalogLayout} from '../layout';
 import * as md from '../metadata';
-import { CatalogLayout } from '../layout';
 
 const OVERVIEW_ASPECT_KEY = 'dataplex-types.global.overview';
 
-
 export class DocumentsLayout implements CatalogLayout {
-
   private _catalogPath: string = '';
 
   private readonly _index = new Map<string, string>();
@@ -37,12 +35,11 @@ export class DocumentsLayout implements CatalogLayout {
     for (const localPath of matches) {
       try {
         const content = await fs.promises.readFile(localPath, 'utf8');
-        const { entry } = parseMarkdown(content);
+        const {entry} = parseMarkdown(content);
         if (entry && entry.name) {
           this._index.set(entry.name, localPath);
         }
-      }
-      catch (err) {
+      } catch (err) {
         // Skip unreadable/invalid files during indexing
       }
     }
@@ -63,12 +60,14 @@ export class DocumentsLayout implements CatalogLayout {
       throw new Error(`Entry not found: ${name}`);
     }
     const content = await fs.promises.readFile(entryPath, 'utf8');
-    const { entry, body } = parseMarkdown(content);
+    const {entry, body} = parseMarkdown(content);
 
     if (!entry) {
-      throw new Error(`Missing YAML frontmatter in Markdown file: ${entryPath}`);
+      throw new Error(
+        `Missing YAML frontmatter in Markdown file: ${entryPath}`,
+      );
     }
-    
+
     const bodyTrimmed = body.trim();
     if (bodyTrimmed) {
       if (!entry.aspects) {
@@ -85,7 +84,7 @@ export class DocumentsLayout implements CatalogLayout {
 
   async saveEntry(name: string, entry: md.Entry): Promise<void> {
     const entryPath = path.join(this._catalogPath, `${name}.md`);
-    await fs.promises.mkdir(path.dirname(entryPath), { recursive: true });
+    await fs.promises.mkdir(path.dirname(entryPath), {recursive: true});
 
     // Clone to avoid mutating original entry aspects
     const clonedEntry = JSON.parse(JSON.stringify(entry)) as md.Entry;
@@ -115,16 +114,24 @@ export class DocumentsLayout implements CatalogLayout {
     await fs.promises.unlink(entryPath);
     this._index.delete(name);
   }
+
+  getEntryPaths(name: string): {local?: string; ref?: string} | undefined {
+    const entryPath = this._index.get(name);
+    return entryPath ? {local: entryPath} : undefined;
+  }
 }
 
-export function parseMarkdown(content: string): { entry: md.Entry|null; body: string } {
+export function parseMarkdown(content: string): {
+  entry: md.Entry | null;
+  body: string;
+} {
   const lines = content.split(/\r?\n/);
   if (lines[0] !== '---') {
-    return { entry: null, body: content };
+    return {entry: null, body: content};
   }
   const endIndex = lines.indexOf('---', 1);
   if (endIndex === -1) {
-    return { entry: null, body: content };
+    return {entry: null, body: content};
   }
 
   const frontmatter = lines.slice(1, endIndex).join('\n');
@@ -133,7 +140,7 @@ export function parseMarkdown(content: string): { entry: md.Entry|null; body: st
 
   const entry = (metadata.catalogEntry ?? {}) as md.Entry;
   entry.type = metadata.type;
-  entry.resource = entry.resource ?? {}
+  entry.resource = entry.resource ?? {};
   entry.resource.displayName = metadata.title;
   entry.resource.description = metadata.description;
   if (metadata.tags) {
@@ -149,7 +156,7 @@ export function parseMarkdown(content: string): { entry: md.Entry|null; body: st
     }
   }
 
-  return { entry, body };
+  return {entry, body};
 }
 
 export function toMarkdown(entry: md.Entry, body: string): string {
@@ -170,8 +177,9 @@ export function toMarkdown(entry: md.Entry, body: string): string {
     title: entry.resource.displayName ?? entry.resource.name,
     description: entry.resource.description ?? undefined,
     tags: tags.length ? tags : undefined,
-    timeStamp: entry.resource.updateTime ?? entry.resource.createTime ?? undefined,
-    catalogEntry: entryClone
+    timeStamp:
+      entry.resource.updateTime ?? entry.resource.createTime ?? undefined,
+    catalogEntry: entryClone,
   };
 
   delete entryClone.resource.displayName;

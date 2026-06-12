@@ -4,9 +4,8 @@
 import * as fs from 'node:fs';
 
 import * as kcmd from '../libts';
-import * as dataplex from '../libts/gcp/dataplex';
 import * as context from '../libts/gcp/context';
-
+import * as dataplex from '../libts/gcp/dataplex';
 
 export interface InitOptions {
   entryGroup?: string;
@@ -14,45 +13,63 @@ export interface InitOptions {
   biglakeNamespace?: string;
   iceberg?: boolean;
   kb?: string;
+  glossary?: string;
   pull?: boolean;
 }
 
+export interface PullOptions {
+  dryRun?: boolean;
+}
 
 export interface PushOptions {
   force?: boolean;
   validateOnly?: boolean;
+  dryRun?: boolean;
 }
-
 
 export async function init(options: InitOptions): Promise<number> {
   const ctx = context.ApiContext.default();
 
   let manifest: kcmd.CatalogManifest;
   if (options.entryGroup) {
-    manifest = await kcmd.CatalogManifest.initWithEntryGroup(options.entryGroup, ctx);
-  }
-  else if (options.kb) {
-    manifest = await kcmd.CatalogManifest.initWithKnowledgeBase(options.kb, ctx);
-  }
-  else if (options.bigqueryDataset) {
+    manifest = await kcmd.CatalogManifest.initWithEntryGroup(
+      options.entryGroup,
+      ctx,
+    );
+  } else if (options.kb) {
+    manifest = await kcmd.CatalogManifest.initWithKnowledgeBase(
+      options.kb,
+      ctx,
+    );
+  } else if (options.glossary) {
+    manifest = await kcmd.CatalogManifest.initWithGlossary(
+      options.glossary,
+      ctx,
+    );
+  } else if (options.bigqueryDataset) {
     let datasets = '';
     if (Array.isArray(options.bigqueryDataset)) {
       datasets = options.bigqueryDataset.join(',');
-    }
-    else {
+    } else {
       datasets = options.bigqueryDataset!;
     }
     manifest = await kcmd.CatalogManifest.initWithBigQuery(datasets, ctx);
-  }
-  else if (options.biglakeNamespace) {
+  } else if (options.biglakeNamespace) {
     if (!options.iceberg) {
-      console.error('Error: Must specify --iceberg when initializing a BigLake namespace (other metastores are not supported yet)');
+      console.error(
+        'Error: Must specify --iceberg when initializing a BigLake namespace (other metastores are not supported yet)',
+      );
       return 1;
     }
-    manifest = await kcmd.CatalogManifest.initWithBigLakeNamespace(options.biglakeNamespace, 'iceberg', ctx);
-  }
-  else {
-    console.error('Error: Must provide either --entry-group, --bigquery-dataset, --biglake-namespace, or --kb');
+    manifest = await kcmd.CatalogManifest.initWithBigLakeNamespace(
+      options.biglakeNamespace,
+      'iceberg',
+      ctx,
+    );
+  } else {
+    console.error(
+      'Error: Must provide either --entry-group, --bigquery-dataset, --biglake-namespace, --kb, or --glossary',
+    );
     return 1;
   }
 
@@ -66,8 +83,7 @@ export async function init(options: InitOptions): Promise<number> {
   return 0;
 }
 
-
-export async function pull(): Promise<number> {
+export async function pull(options?: PullOptions): Promise<number> {
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
 
@@ -75,18 +91,16 @@ export async function pull(): Promise<number> {
   const sync = new kcmd.CatalogSync(catalog, snapshot);
 
   console.log('Pulling catalog entries...');
-  const result = await sync.pull();
+  const result = await sync.pull(options);
 
   if (result.success) {
     console.log('Successfully updated local snapshot.');
     return 0;
-  }
-  else {
+  } else {
     console.error('Error pulling catalog entries:', result.details);
     return 1;
   }
 }
-
 
 export async function push(options: PushOptions): Promise<number> {
   const ctx = context.ApiContext.default();
@@ -101,13 +115,11 @@ export async function push(options: PushOptions): Promise<number> {
   if (result.success) {
     console.log('Successfully pushed catalog entries.');
     return 0;
-  }
-  else {
+  } else {
     console.error('Error pushing catalog entries:', result.details);
     return 1;
   }
 }
-
 
 export async function reference(): Promise<number> {
   const ctx = context.ApiContext.default();
@@ -123,8 +135,7 @@ export async function reference(): Promise<number> {
   if (result.success) {
     console.log('Successfully updated local reference entries snapshot.');
     return 0;
-  }
-  else {
+  } else {
     console.error('Error pulling reference entries:', result.details);
     return 1;
   }

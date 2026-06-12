@@ -1,5 +1,5 @@
-import * as realFs from 'node:fs';
 import * as realGlob from 'glob';
+import * as realFs from 'node:fs';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
 
@@ -9,11 +9,16 @@ let globPattern = '**/*.yaml';
 if (process.env.TEST_GLOB) {
   globPattern = process.env.TEST_GLOB;
 }
-const scenarioFiles = realGlob.globSync(globPattern, { cwd: scenariosPath, absolute: true });
-const scenarios = scenarioFiles.map((file: string) => yaml.parse(realFs.readFileSync(file, 'utf-8') as string));
+const scenarioFiles = realGlob.globSync(globPattern, {
+  cwd: scenariosPath,
+  absolute: true,
+});
+const scenarios = scenarioFiles.map((file: string) =>
+  yaml.parse(realFs.readFileSync(file, 'utf-8') as string),
+);
 
-import { describe, test, expect, mock, spyOn } from 'bun:test';
-import { fs as memfs, vol } from 'memfs';
+import {describe, expect, mock, spyOn, test} from 'bun:test';
+import {fs as memfs, vol} from 'memfs';
 import type * as mocksType from './mocks';
 
 mock.module('fs', () => memfs);
@@ -24,12 +29,16 @@ import * as bq from '../../src/libts/gcp/bigquery';
 
 const fs = memfs;
 const kcmac = require('../../src/libts');
-const { CatalogClientMock, BigQueryClientMock, BigLakeClientMock, TEST_API_CONTEXT } = require('./mocks');
+const {
+  CatalogClientMock,
+  BigQueryClientMock,
+  BigLakeClientMock,
+  TEST_API_CONTEXT,
+} = require('./mocks');
 
 let currentCatalogMock: mocksType.CatalogClientMock | null = null;
 let currentBigQueryMock: mocksType.BigQueryClientMock | null = null;
 let currentBigLakeMock: mocksType.BigLakeClientMock | null = null;
-
 
 function runScenario(scenario: any) {
   describe(scenario.name, () => {
@@ -87,42 +96,53 @@ function runScenario(scenario: any) {
       // Setup state - Filesystem
       if (scenario.setup?.fileSystem) {
         vol.fromJSON(scenario.setup.fileSystem, '/');
-      }
-      else {
+      } else {
         vol.fromJSON({}, '/');
       }
 
       // Execute - Manifest setup
       if (scenario.init?.entryGroup) {
         const mf = await kcmac.CatalogManifest.initWithEntryGroup(
-          scenario.init.entryGroup, TEST_API_CONTEXT);
+          scenario.init.entryGroup,
+          TEST_API_CONTEXT,
+        );
         mf.save('/catalog.yaml');
       }
       if (scenario.init?.dataset) {
         const mf = await kcmac.CatalogManifest.initWithBigQuery(
-          scenario.init.dataset, TEST_API_CONTEXT);
+          scenario.init.dataset,
+          TEST_API_CONTEXT,
+        );
         mf.save('/catalog.yaml');
       }
       if (scenario.init?.kb) {
         const mf = await kcmac.CatalogManifest.initWithKnowledgeBase(
-          scenario.init.kb, TEST_API_CONTEXT);
+          scenario.init.kb,
+          TEST_API_CONTEXT,
+        );
         mf.save('/catalog.yaml');
       }
       if (scenario.init?.biglakeNamespace) {
         const mf = await kcmac.CatalogManifest.initWithBigLakeNamespace(
-          scenario.init.biglakeNamespace, 'iceberg', TEST_API_CONTEXT);
+          scenario.init.biglakeNamespace,
+          'iceberg',
+          TEST_API_CONTEXT,
+        );
         mf.save('/catalog.yaml');
       }
       if (!fs.existsSync('/catalog.yaml')) {
         throw new Error('Scenario did not include or initialize a manifest');
       }
-      const snapshot = await kcmac.CatalogSnapshot.fromPath('/', TEST_API_CONTEXT);
+      const snapshot = await kcmac.CatalogSnapshot.fromPath(
+        '/',
+        TEST_API_CONTEXT,
+      );
       const sync = new kcmac.CatalogSync(catalog, snapshot);
 
       // Execute - Snapshot actions
       const actions = scenario.actions ?? [];
       for (const actionStep of actions) {
-        const { action, ...params } = actionStep;
+        const {action, ...params} = actionStep;
         switch (action) {
           case 'pull':
             await sync.pull();
@@ -143,10 +163,17 @@ function runScenario(scenario: any) {
             await snapshot.deleteEntry(params.name);
             break;
           case 'reference':
-            const referenceSnapshot = await kcmac.CatalogSnapshot.fromPath('/', TEST_API_CONTEXT, true);
-            const refereneSync = new kcmac.CatalogSync(catalog, referenceSnapshot); 
+            const referenceSnapshot = await kcmac.CatalogSnapshot.fromPath(
+              '/',
+              TEST_API_CONTEXT,
+              true,
+            );
+            const refereneSync = new kcmac.CatalogSync(
+              catalog,
+              referenceSnapshot,
+            );
             await refereneSync.reference();
-            
+
             break;
           default:
             throw new Error(`Unknown action: ${action}`);
@@ -155,29 +182,41 @@ function runScenario(scenario: any) {
 
       // Assert expectations - Filesystem
       if (scenario.assert?.fileSystem) {
-        for (const [fpath, rawCondition] of Object.entries(scenario.assert.fileSystem)) {
+        for (const [fpath, rawCondition] of Object.entries(
+          scenario.assert.fileSystem,
+        )) {
           const condition = rawCondition as any;
           const absolutePath = path.resolve('/', fpath);
 
           if (condition === null) {
             expect(fs.existsSync(absolutePath)).toBe(false);
-          }
-          else {
+          } else {
             expect(fs.existsSync(absolutePath)).toBe(true);
             if (typeof condition === 'string') {
-              const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
+              const actualContent = fs.readFileSync(
+                absolutePath,
+                'utf8',
+              ) as string;
               expect(actualContent.trim()).toBe(condition.trim());
-            }
-            else if (Array.isArray(condition)) {
-              const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
+            } else if (Array.isArray(condition)) {
+              const actualContent = fs.readFileSync(
+                absolutePath,
+                'utf8',
+              ) as string;
               for (const cond of condition) {
                 if (cond && typeof cond === 'object' && 'contains' in cond) {
                   expect(actualContent).toContain(cond.contains);
                 }
               }
-            }
-            else if (condition && typeof condition === 'object' && 'contains' in condition) {
-              const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
+            } else if (
+              condition &&
+              typeof condition === 'object' &&
+              'contains' in condition
+            ) {
+              const actualContent = fs.readFileSync(
+                absolutePath,
+                'utf8',
+              ) as string;
               expect(actualContent).toContain(condition.contains);
             }
           }
@@ -186,125 +225,185 @@ function runScenario(scenario: any) {
 
       // Assert expectations - Catalog Service
       if (scenario.assert?.catalog?.entries) {
-        expect(JSON.parse(JSON.stringify(catalog.mockEntries))).toEqual(JSON.parse(JSON.stringify(scenario.assert.catalog.entries)));
+        expect(JSON.parse(JSON.stringify(catalog.mockEntries))).toEqual(
+          JSON.parse(JSON.stringify(scenario.assert.catalog.entries)),
+        );
       }
     });
   });
 }
 
 function main() {
-
-  // Establish dynamic prototype spies to automatically connect inner-constructed 
+  // Establish dynamic prototype spies to automatically connect inner-constructed
   // API clients directly to the scenario mock data registries.
   spyOn(gcp.CatalogClient.prototype, 'getEntryGroup').mockImplementation(
-    async function(project: string, location: string, id: string) {
+    async function (project: string, location: string, id: string) {
       if (currentCatalogMock) {
         return await currentCatalogMock.getEntryGroup(project, location, id);
       }
-      return { status: 404, message: 'Not found' };
-    }
+      return {status: 404, message: 'Not found'};
+    },
   );
 
   spyOn(gcp.CatalogClient.prototype, 'getEntryType').mockImplementation(
-    async function(project: string, location: string, type: string) {
+    async function (project: string, location: string, type: string) {
       if (currentCatalogMock) {
         return await currentCatalogMock.getEntryType(project, location, type);
       }
-      return { status: 404, message: 'Not found' };
-    }
+      return {status: 404, message: 'Not found'};
+    },
   );
 
   spyOn(gcp.CatalogClient.prototype, 'getAspectType').mockImplementation(
-    async function(project: string, location: string, type: string) {
+    async function (project: string, location: string, type: string) {
       if (currentCatalogMock) {
         return await currentCatalogMock.getAspectType(project, location, type);
       }
-      return { status: 404, message: 'Not found' };
-    }
+      return {status: 404, message: 'Not found'};
+    },
   );
 
   spyOn(gcp.CatalogClient.prototype, 'getEntry').mockImplementation(
-    async function(project: string, location: string, entryGroup: string, entry: string) {
+    async function (
+      project: string,
+      location: string,
+      entryGroup: string,
+      entry: string,
+    ) {
       if (currentCatalogMock) {
-        return await currentCatalogMock.getEntry(project, location, entryGroup, entry);
+        return await currentCatalogMock.getEntry(
+          project,
+          location,
+          entryGroup,
+          entry,
+        );
       }
-      return { status: 404, message: 'Not found' };
-    }
+      return {status: 404, message: 'Not found'};
+    },
   );
 
   spyOn(gcp.CatalogClient.prototype, 'lookupEntry').mockImplementation(
-    async function(project: string, location: string, entry: string) {
+    async function (project: string, location: string, entry: string) {
       if (currentCatalogMock) {
         return await currentCatalogMock.lookupEntry(project, location, entry);
       }
-      return { status: 404, message: 'Not found' };
-    }
+      return {status: 404, message: 'Not found'};
+    },
   );
 
   spyOn(gcp.CatalogClient.prototype, 'modifyEntry').mockImplementation(
-    async function(project: string, location: string, entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[]) {
+    async function (
+      project: string,
+      location: string,
+      entry: gcp.Entry,
+      updateMask?: string[],
+      aspectKeys?: string[],
+    ) {
       if (currentCatalogMock) {
-        return await currentCatalogMock.modifyEntry(project, location, entry, updateMask, aspectKeys);
+        return await currentCatalogMock.modifyEntry(
+          project,
+          location,
+          entry,
+          updateMask,
+          aspectKeys,
+        );
       }
-      return { status: 404, message: 'Not found' };
-    }
+      return {status: 404, message: 'Not found'};
+    },
   );
 
   spyOn(gcp.CatalogClient.prototype, 'listEntries').mockImplementation(
     async function* (project: string, location: string, entryGroup: string) {
       if (currentCatalogMock) {
-        for await (const entry of currentCatalogMock.listEntries(project, location, entryGroup)) {
+        for await (const entry of currentCatalogMock.listEntries(
+          project,
+          location,
+          entryGroup,
+        )) {
           yield entry;
         }
       }
-    }
+    },
   );
 
   spyOn(gcp.CatalogClient.prototype, 'updateEntry').mockImplementation(
-    async function(entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[]) {
+    async function (
+      entry: gcp.Entry,
+      updateMask?: string[],
+      aspectKeys?: string[],
+    ) {
       if (currentCatalogMock) {
-        return await currentCatalogMock.updateEntry(entry, updateMask, aspectKeys);
+        return await currentCatalogMock.updateEntry(
+          entry,
+          updateMask,
+          aspectKeys,
+        );
       }
-      return { status: 404, message: 'Not found' };
-    }
+      return {status: 404, message: 'Not found'};
+    },
   );
 
   spyOn(gcp.CatalogClient.prototype, 'createEntry').mockImplementation(
-    async function(project: string, location: string, entryGroup: string, entryId: string, entry?: gcp.Entry) {
+    async function (
+      project: string,
+      location: string,
+      entryGroup: string,
+      entryId: string,
+      entry?: gcp.Entry,
+    ) {
       if (currentCatalogMock) {
-        return await currentCatalogMock.createEntry(project, location, entryGroup, entryId, entry);
+        return await currentCatalogMock.createEntry(
+          project,
+          location,
+          entryGroup,
+          entryId,
+          entry,
+        );
       }
-      return { status: 404, message: 'Not found' };
-    }
+      return {status: 404, message: 'Not found'};
+    },
   );
 
   spyOn(bq.BigQueryClient.prototype, 'getDataset').mockImplementation(
-    async function(project: string, dataset: string) {
+    async function (project: string, dataset: string) {
       if (currentBigQueryMock) {
         return await currentBigQueryMock.getDataset(project, dataset);
       }
-      return { status: 404, message: 'Not found' };
-    }
+      return {status: 404, message: 'Not found'};
+    },
   );
 
   spyOn(bq.BigQueryClient.prototype, 'listTables').mockImplementation(
     async function* (project: string, dataset: string) {
       if (currentBigQueryMock) {
-        for await (const table of currentBigQueryMock.listTables(project, dataset)) {
+        for await (const table of currentBigQueryMock.listTables(
+          project,
+          dataset,
+        )) {
           yield table;
         }
       }
-    }
+    },
   );
 
   spyOn(gcp.BigLakeClient.prototype, 'listTables').mockImplementation(
-    async function* (project: string, location: string, catalog: string, database: string) {
+    async function* (
+      project: string,
+      location: string,
+      catalog: string,
+      database: string,
+    ) {
       if (currentBigLakeMock) {
-        for await (const table of currentBigLakeMock.listTables(project, location, catalog, database)) {
+        for await (const table of currentBigLakeMock.listTables(
+          project,
+          location,
+          catalog,
+          database,
+        )) {
           yield table;
         }
       }
-    }
+    },
   );
 
   // Globally mock fs and node:fs to direct file system calls to virtual volume
@@ -318,12 +417,24 @@ function main() {
   describe('BigLake Namespace Init Failure', () => {
     test('should throw error on malformed coordinate', () => {
       expect(
-        kcmac.CatalogManifest.initWithBigLakeNamespace('invalid-format', 'iceberg', TEST_API_CONTEXT)
-      ).rejects.toThrow('BigLake namespace must be in format <projectId>.<catalogId>.<namespaceId>');
-      
+        kcmac.CatalogManifest.initWithBigLakeNamespace(
+          'invalid-format',
+          'iceberg',
+          TEST_API_CONTEXT,
+        ),
+      ).rejects.toThrow(
+        'BigLake namespace must be in format <projectId>.<catalogId>.<namespaceId>',
+      );
+
       expect(
-        kcmac.CatalogManifest.initWithBigLakeNamespace('proj.cat', 'iceberg', TEST_API_CONTEXT)
-      ).rejects.toThrow('BigLake namespace must be in format <projectId>.<catalogId>.<namespaceId>');
+        kcmac.CatalogManifest.initWithBigLakeNamespace(
+          'proj.cat',
+          'iceberg',
+          TEST_API_CONTEXT,
+        ),
+      ).rejects.toThrow(
+        'BigLake namespace must be in format <projectId>.<catalogId>.<namespaceId>',
+      );
     });
   });
 }

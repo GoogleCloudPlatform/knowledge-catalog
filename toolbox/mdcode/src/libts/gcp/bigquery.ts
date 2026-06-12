@@ -4,7 +4,6 @@
 import * as api from './api';
 import * as context from './context';
 
-
 export interface Dataset {
   id: string;
   datasetReference: {
@@ -30,16 +29,17 @@ interface TableList {
   nextPageToken?: string;
 }
 
-
 export class BigQueryClient extends api.ApiClient {
-
   constructor(ctx: context.ApiContext) {
     super('https://bigquery.googleapis.com', 'bigquery/v2', ctx);
   }
 
-  async getDataset(project: string, dataset: string): Promise<api.ApiResult<Dataset>> {
+  async getDataset(
+    project: string,
+    dataset: string,
+  ): Promise<api.ApiResult<Dataset>> {
     const name = `projects/${project}/datasets/${dataset}`;
-    const params: Record<string, any> = { datasetView: 'METADATA' };
+    const params: Record<string, any> = {datasetView: 'METADATA'};
 
     return await this._get(name, params);
   }
@@ -49,7 +49,7 @@ export class BigQueryClient extends api.ApiClient {
 
     let pageToken: string | undefined = undefined;
     do {
-      const params: Record<string, any> = { maxResults: 500 };
+      const params: Record<string, any> = {maxResults: 500};
       if (pageToken) {
         params.pageToken = pageToken;
       }
