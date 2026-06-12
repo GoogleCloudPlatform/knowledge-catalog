@@ -309,6 +309,29 @@ async def run_structured(
     return None
 
 
+def _delink_local_sources(text: str) -> str:
+  """Render local-file source citations as plain text instead of links.
+
+  The writer cites sources as `[Title](URL)`. For a local markdown input the
+  "URL" is a filesystem path (e.g. `/tmp/corpus/orders.md`), which is a broken
+  link when the overview is viewed in a browser and meaningless once the entry
+  is published to the catalog. Keep the title text but drop the local target;
+  real web links (http/https/mailto, incl. Google Docs/Drive) are left intact.
+  """
+  def _repl(m):
+    label, target = m.group(1), m.group(2).strip()
+    low = target.lower()
+    if low.startswith(("http://", "https://", "mailto:")):
+      return m.group(0)  # keep real web links
+    if target.startswith(("/", "./", "../", "~")) or low.endswith(
+        (".md", ".markdown")
+    ):
+      return label  # local path: keep the text, drop the broken link
+    return m.group(0)
+
+  return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", _repl, text)
+
+
 def clean_overview_body(text: str) -> str:
   """Strip stray code fences / YAML frontmatter the model may have added, so the
 
@@ -327,6 +350,8 @@ def clean_overview_body(text: str) -> str:
     m = re.match(r"^---\s*\n(?:.*?\n)?---\s*\n(.*)$", t, re.S)
     if m:
       t = m.group(1).strip()
+  # Local-file source citations -> plain text (broken/meaningless as links).
+  t = _delink_local_sources(t)
   return t
 
 
