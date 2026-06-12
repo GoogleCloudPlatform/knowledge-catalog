@@ -64,19 +64,18 @@ class VertexGemini(Gemini):
     return self._cached_client
 
 
-# Pinned for structured-extraction steps with SMALL inputs (per-doc descriptors,
-# JSON routing). Flash is ~3-4x faster. The caller's --model is used for: (a)
-# the heavy write steps where quality matters, and (b) the doc-mode batch
-# summarizer — see comment on create_summarizer_runner below.
-_LIGHT_MODEL = "gemini-3.5-flash"
+# High-volume / small-input steps (per-doc descriptors, JSON routing, per-doc
+# summaries). These default to the caller's --model so nothing is pinned to a
+# model the user may not have access to; set KC_LIGHT_MODEL to point them at a
+# cheaper/faster model (e.g. a Flash variant) without changing --model.
+def _light_model(main_model: str) -> str:
+  """Model for high-volume calls: KC_LIGHT_MODEL if set, else the main --model."""
+  return os.environ.get("KC_LIGHT_MODEL") or main_model
 
-# Per-doc summarizer model. Each call is ONE doc in (≤60K chars), one neutral
-# card out (~2K chars) — small enough to stay well under Flash's per-call
-# context limits regardless of routing, and lighter on latency / cost than
-# Pro. Result is cached at ~/.kc_enrich_cache/summaries/ keyed on
-# (doc_id, modifiedTime), so any drift introduced by using a smaller model
-# only shows up on the FIRST run against a doc.
-PER_DOC_SUMMARIZER_MODEL = _LIGHT_MODEL
+# Per-doc summarizer: doc_mode resolves the model via _light_model(model) at run
+# time (KC_LIGHT_MODEL override, else --model). Each call is ONE doc in
+# (≤60K chars) -> one neutral card out (~2K chars), cached at
+# ~/.kc_enrich_cache/summaries/ keyed on (doc_id, modifiedTime).
 
 
 # ============================ Doc mode ============================
@@ -209,7 +208,7 @@ def create_doc_query_extractor_runner(model: str) -> InMemoryRunner:
       description=(
           "Extracts SQL examples for ONE table from its routed documentation."
       ),
-      model=VertexGemini(model=_LIGHT_MODEL),
+      model=VertexGemini(model=_light_model(model)),
       instruction=DOC_QUERY_EXTRACTOR_INSTRUCTION,
   )
   return InMemoryRunner(agent=agent)
@@ -311,7 +310,7 @@ def create_doc_summarizer_runner(model: str) -> InMemoryRunner:
       description=(
           "Summarizes a single Drive document into a compact descriptor."
       ),
-      model=VertexGemini(model=_LIGHT_MODEL),
+      model=VertexGemini(model=_light_model(model)),
       instruction="""You are summarizing ONE document so a router can decide which BigQuery tables it is relevant to.
 
 Output EXACTLY this Markdown shape and nothing else:
@@ -330,7 +329,7 @@ def create_router_runner(model: str) -> InMemoryRunner:
   agent = llm_agent.LlmAgent(
       name="RelevanceRouterAgent",
       description="Scores folder-document relevance to one BigQuery table.",
-      model=VertexGemini(model=_LIGHT_MODEL),
+      model=VertexGemini(model=_light_model(model)),
       instruction="""You are a precise relevance router. You are given ONE BigQuery table (its name and columns) and a numbered list of candidate documents (each with a title, summary, and key entities).
 
 Decide which documents genuinely provide domain knowledge that would help DOCUMENT THIS SPECIFIC TABLE — e.g. they define this table, its columns/metrics, its source system, or the business process it records. A document that merely shares a broad theme but does not concern this table's data is NOT relevant.

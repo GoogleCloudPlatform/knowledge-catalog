@@ -21,6 +21,7 @@ import time
 import typing as t
 import common
 from engine import (
+    _light_model,
     create_doc_query_extractor_runner,
     create_doc_summarizer_runner,
     create_router_runner,
@@ -734,7 +735,7 @@ async def run(
           + feedback_block
       )
       body = await common.generate_text_direct(
-          ENTRY_WRITER_INSTRUCTION, prompt, _WRITER_MODEL, usage_acc
+          ENTRY_WRITER_INSTRUCTION, prompt, _light_model(model), usage_acc
       )
       written = _write_table_files(output_dir, project, dataset_id, meta, body)
       # Merge INFORMATION_SCHEMA-derived patterns + SQL examples extracted
@@ -789,7 +790,7 @@ async def run(
           description=meta.get("description", "") or "",
           category_id=cat_id,
           grounding_prompt=prompt,
-          writer_model=_WRITER_MODEL,
+          writer_model=_light_model(model),
           overview_body=body,
           overview_path=os.path.join(
               kcmd_tools._dataset_dir(output_dir, project, dataset_id),
@@ -939,8 +940,3 @@ def _inject_category(
   except (OSError, yaml.YAMLError):
     pass
 
-
-# Flash for the per-table writer: small inputs (one table + a few docs) stay
-# well under the ADK 32K Flash routing cap. Pro is still the user-supplied
-# --model and is used by the enumerator (which needs reasoning across all tables).
-_WRITER_MODEL = "gemini-3.5-flash"

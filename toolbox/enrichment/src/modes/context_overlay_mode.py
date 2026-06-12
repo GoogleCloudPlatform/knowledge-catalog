@@ -32,6 +32,7 @@ import time
 import common
 from engine import (
     OVERLAY_WRITER_INSTRUCTION,
+    _light_model,
     create_doc_summarizer_runner,
 )
 from modes import table_mode
@@ -47,8 +48,6 @@ import yaml
 # Overlay entries are generic-typed in the editable entry group; the enriched
 # content lands in the `overview` aspect (same convention as doc mode).
 _OVERLAY_ENTRY_TYPE = "dataplex-types.global.generic"
-# Flash for the per-table writers (small inputs) — matches table mode.
-_WRITER_MODEL = "gemini-3.5-flash"
 CONCURRENCY_LIMIT = 12
 MAX_DOC_CHARS = 30000
 
@@ -528,7 +527,7 @@ async def run(
           + feedback_block
       )
       overlay_overview = await common.generate_text_direct(
-          OVERLAY_WRITER_INSTRUCTION, overlay_prompt, _WRITER_MODEL, usage_acc
+          OVERLAY_WRITER_INSTRUCTION, overlay_prompt, _light_model(model), usage_acc
       )
 
       # The read-only `<table>.ref.*` mirror is written by `kcmd reference`
@@ -602,7 +601,7 @@ async def run(
           description=meta.get("description", "") or "",
           category_id=cat_id,
           grounding_prompt=overlay_prompt,
-          writer_model=_WRITER_MODEL,
+          writer_model=_light_model(model),
           overview_body=overlay_overview,
           overview_path=os.path.join(
               output_dir,

@@ -15,8 +15,8 @@ from engine import (
     ENTRY_WRITER_INSTRUCTION,  # legacy ADK path, kept for compat
     EnumerationResult,
     PER_DOC_SUMMARIZER_INSTRUCTION,
-    PER_DOC_SUMMARIZER_MODEL,
     TOPIC_REDUCER_INSTRUCTION,
+    _light_model,
     create_entry_writer_runner,  # legacy fallback, no longer wired in
     create_enumeration_runner,
     create_mdcode_runner,
@@ -44,7 +44,7 @@ import yaml
 MAX_BATCH_SIZE = 10  # Reverted from v2.6's 3 (back to v2.5). v2.6 tried Flash via direct API to allow bigger throughput but Vertex routes Flash to a 32K-capped backend variant regardless of API path for this project, forcing batch=3, which then over-saturated Flash quota on back-to-back runs and bloated the EnumerationAgent's input.
 MAX_DEPTH = 2  # Was 3 — depth-3 mostly surfaced tangential links; dropping it cuts crawl + summarize ~30% (v2.5 optimization #1).
 CONCURRENCY_LIMIT = 6  # Reverted from v2.6's 12 (back to v2.5). Summarizer is on Pro again; 12 trips Vertex 429s on big-input Pro calls.
-# Stage 1 (per-doc summary) runs on PER_DOC_SUMMARIZER_MODEL (Flash) — small
+# Stage 1 (per-doc summary) runs on _light_model(model) (Flash) — small
 # per-call payloads, well within Flash routing limits, tolerates 20-way
 # concurrency without 429s. Stage 1 is the cold-run hot path; cache hits
 # bypass it entirely so warm-cache runs ignore this limit.
@@ -551,7 +551,7 @@ async def run(
     )
 
   # 2a. Stage-1 Map (cache-aware): topic-NEUTRAL per-doc summary card.
-  # Runs on PER_DOC_SUMMARIZER_MODEL (Flash) at higher concurrency since each
+  # Runs on _light_model(model) (Flash) at higher concurrency since each
   # call is one small doc in / one short card out — no batch context, well
   # under Flash routing limits. Cache key = (doc_id, modified_time) under
   # ~/.kc_enrich_cache/summaries/ when KC_ENRICH_CACHE_MODE=summary (default);
@@ -559,7 +559,7 @@ async def run(
   cache_mode = get_cache_mode()
   print(
       "[Agent] 🧠 Stage 1: per-doc summary (cache mode:"
-      f" {cache_mode}, model: {PER_DOC_SUMMARIZER_MODEL}, concurrency:"
+      f" {cache_mode}, model: {_light_model(model)}, concurrency:"
       f" {PER_DOC_CONCURRENCY})...",
       flush=True,
   )
@@ -580,7 +580,7 @@ async def run(
             content,
             mtime_by_id.get(doc_id, mtime_by_id.get(url)),
             per_doc_sem,
-            PER_DOC_SUMMARIZER_MODEL,
+            _light_model(model),
             usage_acc,
         )
     )
@@ -889,7 +889,7 @@ async def _write_one_kb_entry(
     body = await common.generate_text_direct(
         ENTRY_WRITER_INSTRUCTION,
         user_prompt,
-        _LIGHT_MODEL_FOR_WRITER,
+        _light_model(model),
         usage_acc,
     )
 
@@ -937,7 +937,7 @@ async def _write_one_kb_entry(
       description=entry.description,
       category_id=category.id,
       grounding_prompt=user_prompt,
-      writer_model=_LIGHT_MODEL_FOR_WRITER,
+      writer_model=_light_model(model),
       overview_body=body,
       overview_path=overview_path,
       kind="kb",
@@ -1074,8 +1074,3 @@ async def apply_reenumeration(session, new_enum, removed_ids) -> None:
             f"[refine] ➕ added entry: {es.category_id}/{es.entry_id}",
             flush=True,
         )
-
-
-# Flash for the writer step: per-entry inputs are small (one entry's slice of
-# context, typically <20K tokens) so the ADK 32K Flash routing trap doesn't bite.
-_LIGHT_MODEL_FOR_WRITER = "gemini-3.5-flash"
