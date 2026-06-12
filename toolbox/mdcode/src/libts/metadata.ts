@@ -23,4 +23,11 @@ export interface Entry {
     updateTime?: string;
   };
   aspects?: Record<string, Aspect>;
+  links?: Record<string, EntryLink[]>;
+}
+
+export interface EntryLink {
+  target: string;
+  id?: string;
+  aspects?: Record<string, Aspect>;
 }

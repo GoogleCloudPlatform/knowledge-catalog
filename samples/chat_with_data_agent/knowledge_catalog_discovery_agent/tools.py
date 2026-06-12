@@ -3,15 +3,17 @@
 import concurrent.futures
 import logging
 import os
+import re
 
 import google.auth
 from google.api_core import retry
 from google.api_core.exceptions import PermissionDenied
 from google.cloud import dataplex_v1
 
-from .utils import get_consumer_project
+from .utils import get_consumer_project, get_knowledge_base_entry_group
 
 MAX_WORKERS = 5
+OVERVIEW_ASPECT_TYPE = "dataplex-types.global.overview"
 
 
 def _get_catalog_client() -> dataplex_v1.CatalogServiceClient:
@@ -70,7 +72,7 @@ def _lookup_context(region: str, batch_entries: list[str]) -> str:
 
 def _knowledge_catalog_search(
     query: str,
-) -> dict[str, list[str] | str]:
+) -> dict[str, list[dict[str, str]] | str]:
   """Searches Knowledge Catalog using Semantic Search capabilities.
 
   Args:
@@ -254,4 +256,67 @@ def _deduplicate_and_fetch_context(
       "results": final_results,
       "combined_context": combined_context,
   }
+
+
+def knowledge_catalog_knowledge_base_search(
+    queries: list[str],
+) -> dict[str, list[dict[str, str]] | str]:
+  """Searches the knowledge base entry group using parallel queries.
+
+  Args:
+      queries: A list of natural language search queries.
+
+  Returns:
+      A dictionary containing the search results and combined context,
+      or an error message.
+  """
+  kb_entry_group = get_knowledge_base_entry_group()
+  if not kb_entry_group:
+    return {"error": "Knowledge base entry group is not configured."}
+
+  # Scope queries to the KB entry group
+  if not re.fullmatch(
+      r"projects/[^/]+/locations/[^/]+/entryGroups/[^/]+", kb_entry_group
+  ):
+    return {"error": f"Invalid knowledge base entry group name: {kb_entry_group}"}
+
+  scoped_queries = []
+  for q in queries:
+    scoped_queries.append(f"({q}) AND name:{kb_entry_group}/entries AND has:{OVERVIEW_ASPECT_TYPE}")
+
+  query_results_list: list[list[dict[str, str]]] = []
+  errors: list[str] = []
+
+  with concurrent.futures.ThreadPoolExecutor(
+      max_workers=MAX_WORKERS
+  ) as executor:
+    future_to_query = [
+        executor.submit(_knowledge_catalog_search, q)
+        for q in scoped_queries
+    ]
+
+    for i, future in enumerate(future_to_query):
+      query = scoped_queries[i]
+      try:
+        result = future.result()
+        if "results" in result and isinstance(result["results"], list):
+          query_results_list.append(result["results"])
+        elif "error" in result:
+          logging.warning("Error for query '%s': %s", query, result["error"])
+          errors.append(str(result["error"]))
+          query_results_list.append([])
+        else:
+          error_msg = next(iter(result.values())) if result else "Unknown error"
+          logging.warning("Error for query '%s': %s", query, error_msg)
+          errors.append(str(error_msg))
+          query_results_list.append([])
+      except Exception as exc:  # pylint: disable=broad-except
+        logging.exception("Exception for query '%s': %s", query, exc)
+        errors.append(f"Exception: {exc}")
+        query_results_list.append([])
+
+  if errors and len(errors) == len(queries):
+    return {"error": "All search queries failed.", "details": errors}
+
+  return _deduplicate_and_fetch_context(query_results_list, 100)
 

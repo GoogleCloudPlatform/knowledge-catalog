@@ -33,12 +33,16 @@ cd samples/chat_with_data_agent/knowledge_catalog_discovery_agent
 pip3 install -r requirements.txt  
 ```
 
-Set the required environment variables:  
+Set the environment variables:  
 ```shell
 
-# Replace <PROJECT_ID> with your consumer project ID.
+# Replace <PROJECT_ID> with your consumer project ID. (Required)
 export GOOGLE_CLOUD_PROJECT=<PROJECT_ID>
 export GOOGLE_GENAI_USE_VERTEXAI=True
+
+# (Optional) The resource name of the Knowledge Base entry group.
+# Format: projects/<project_id>/locations/<location>/entryGroups/<entry_group_id>
+export KNOWLEDGE_BASE_ENTRY_GROUP=<KB_ENTRY_GROUP_RESOURCE_NAME>
 
 ```
 

@@ -18,3 +18,12 @@ def get_consumer_project() -> str:
     raise ValueError("GOOGLE_CLOUD_PROJECT environment variable is required.")
 
   return consumer_project
+
+
+def get_knowledge_base_entry_group() -> str:
+  """Extracts the knowledge base entry group from the environment variable.
+
+  Returns:
+      The knowledge base entry group resource name or an empty string if not set.
+  """
+  return os.environ.get("KNOWLEDGE_BASE_ENTRY_GROUP", "")
