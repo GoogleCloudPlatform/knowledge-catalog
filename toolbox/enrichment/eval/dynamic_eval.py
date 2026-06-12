@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import textwrap
 import time
 
 from . import loaders
@@ -30,6 +31,13 @@ from . import metrics
 def _log(msg: str) -> None:
   """Progress line to stderr (keeps stdout/--json clean)."""
   print(f"[eval] {msg}", file=sys.stderr, flush=True)
+
+
+def _wrap_para(text: str, width: int = 88) -> str:
+  """Wrap a rationale/insight into width-bounded lines so the report stays
+  readable in editors that don't soft-wrap long lines (e.g. nano)."""
+  body = " ".join((text or "").split())
+  return textwrap.fill(body, width=width) if body else "(none)"
 
 
 def fmt_score(score) -> str:
@@ -72,10 +80,14 @@ def write_report(results: dict, output_dir: str,
     if m.get("description"):
       lines.append(f"_{m['description']}_")
     lines.append("")
-    lines.append(f"**Rationale:** {m.get('rationale', '') or '(none)'}")
+    lines.append("**Rationale:**")
+    lines.append("")
+    lines.append(_wrap_para(m.get("rationale")))
     if m.get("insights"):
       lines.append("")
-      lines.append(f"**Insights:** {m['insights']}")
+      lines.append("**Insights:**")
+      lines.append("")
+      lines.append(_wrap_para(m.get("insights")))
     lines.append("")
   path = os.path.join(output_dir, filename)
   try:
@@ -172,7 +184,9 @@ def run_dynamic_eval(output_dir: str, model: str = "gemini-2.5-pro",
   try:
     rub = metrics.score_rubric(arts, judge, None)
     mres.extend(rub)
-    _log(f"  = {', '.join(fmt_score(r.score) for r in rub)}  ({time.time() - _t:.0f}s)")
+    for r in rub:
+      _log(f"    {r.name} = {fmt_score(r.score)}")
+    _log(f"  (rubric done in {time.time() - _t:.0f}s)")
   except Exception:  # pylint: disable=broad-except
     _log("  (rubric skipped)")
   _log("done — scorecard below")
