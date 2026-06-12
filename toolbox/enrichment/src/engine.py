@@ -202,7 +202,6 @@ def create_doc_query_extractor_runner(model: str) -> InMemoryRunner:
   Returns:
     An InMemoryRunner for the extractor agent.
   """
-  del model  # unused
   agent = llm_agent.LlmAgent(
       name="DocQueryExtractorAgent",
       description=(
