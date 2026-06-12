@@ -20,6 +20,8 @@ from tools.drive_tools import (
     extract_gdoc_id,
     extract_folder_id,
     list_folder_files,
+    list_local_md,
+    read_local_md,
 )
 
 MAX_BATCH_SIZE = 10
@@ -90,6 +92,32 @@ def _build_synthetic_scope(topic: str, folder_files: list[dict]) -> str:
     for f in folder_files:
         lines.append(f"- {f.get('name', 'Untitled')} ({f.get('mimeType', '')})")
     return "\n".join(lines)
+
+
+def _partition_doc_inputs(docs: list, folder):
+    """Split doc-mode inputs into Drive vs local-markdown sources.
+
+    A local .md/.markdown file via --docs is a depth-0 spine doc; a local
+    directory (via --docs OR --folder) contributes its .md files as depth-1
+    children, like a Drive folder. Returns
+    (drive_docs, drive_folder, local_spine_md, local_child_md).
+    """
+    local_spine_md, local_child_md, drive_docs = [], [], []
+    for d in (docs or []):
+        dp = os.path.expanduser(d or "")
+        if os.path.exists(dp):
+            if os.path.isdir(dp):
+                local_child_md.extend(list_local_md(dp))
+            else:
+                local_spine_md.extend(list_local_md(dp))
+        else:
+            drive_docs.append(d)
+    drive_folder = folder
+    if folder and os.path.isdir(os.path.expanduser(folder)):
+        local_child_md.extend(list_local_md(folder))
+        drive_folder = None
+    return (drive_docs, drive_folder,
+            sorted(set(local_spine_md)), sorted(set(local_child_md)))
 
 
 def _normalize_entries(output_dir: str) -> list[str]:
@@ -164,6 +192,16 @@ async def run(topic: str, docs: list[str], folder: str | None, output_dir: str |
     folder_seed_urls = []             # folder files: injected as depth-1 children
     folder_files = []
 
+    # Split local-markdown inputs out from Drive inputs (a local .md via --docs =
+    # depth-0 spine; a local dir via --docs/--folder = depth-1 children). Injected
+    # after the crawl below so they never hit the Drive API.
+    start_docs, folder, local_spine_md, local_child_md = _partition_doc_inputs(
+        start_docs, folder)
+    if local_spine_md or local_child_md:
+        print(f"[Local] 📂 Markdown inputs: {len(local_spine_md)} spine file(s), "
+              f"{len(local_child_md)} folder child(ren). Relative paths resolve "
+              f"from CWD: {os.getcwd()}", flush=True)
+
     folder = extract_folder_id(folder) if folder else folder
 
     # Seed additional inputs by listing a Drive folder (Docs, Sheets, Slides, PDFs).
@@ -182,8 +220,11 @@ async def run(topic: str, docs: list[str], folder: str | None, output_dir: str |
     # the Master Scope, so synthesize one and treat the folder files as its
     # depth-1 children. If explicit --docs were given, those remain the spine.
     synthetic_scope_text = ""
-    if folder_seed_urls and not start_docs:
-        synthetic_scope_text = _build_synthetic_scope(topic, folder_files)
+    scope_files = list(folder_files) + [
+        {"name": os.path.basename(p), "mimeType": "text/markdown"}
+        for p in local_child_md]
+    if scope_files and not start_docs and not local_spine_md:
+        synthetic_scope_text = _build_synthetic_scope(topic, scope_files)
 
     print("=" * 60)
     print(f"=== ADK DOC AGENT: Parallel Depth-Weighted Knowledge Base Enrichment ===")
@@ -231,6 +272,18 @@ async def run(topic: str, docs: list[str], folder: str | None, output_dir: str |
         carried_urls = list(next_level_urls)
 
     print(f"\n[Crawler] 🏁 Finished fetching {len(all_fetched_docs)} documents total.\n")
+
+    # Inject local markdown as already-fetched docs (read from disk, no Drive
+    # round-trip). Spine files at depth 0 (become Master Scope), folder/dir files
+    # at depth 1 — mirroring --docs / --folder for Google Docs.
+    for p in local_spine_md:
+        all_fetched_docs.append((p, 0, read_local_md(p)))
+    for p in local_child_md:
+        all_fetched_docs.append((p, 1, read_local_md(p)))
+    if local_spine_md or local_child_md:
+        print(f"[Local] 📄 Injected {len(local_spine_md) + len(local_child_md)} "
+              f"local markdown file(s): {len(local_spine_md)} spine, "
+              f"{len(local_child_md)} folder child(ren).", flush=True)
 
     # Extract Depth 0 documents as Master Scope. When seeding from a folder
     # there are no depth-0 docs, so the synthetic scope stands in as the spine.

@@ -28,8 +28,8 @@ _MODE = flags.DEFINE_enum("mode", "", ["", "doc", "table"],
                           "Which enrichment flow to run. Empty = infer from flags.")
 _TOPIC = flags.DEFINE_string("topic", "Metadata enrichment",
                              "Free-text use case / instruction guiding enrichment (anything).")
-_DOCS = flags.DEFINE_list("docs", [], "Comma-separated list of Google Doc URLs or IDs (doc mode).")
-_FOLDER = flags.DEFINE_string("folder", None, "Optional Google Drive folder ID/URL to seed from.")
+_DOCS = flags.DEFINE_list("docs", [], "Comma-separated Google Doc URLs/IDs, OR local paths: a local .md file is used as a spine doc, a local directory contributes its .md files (doc mode).")
+_FOLDER = flags.DEFINE_string("folder", None, "Google Drive folder ID/URL, OR a local directory of .md files, to seed from.")
 _DATASET = flags.DEFINE_string("dataset", "", "BigQuery dataset as `project.dataset` (table mode).")
 _OUTPUT_DIR = flags.DEFINE_string("output_dir", None, "Local directory path for the generated mdcode.")
 

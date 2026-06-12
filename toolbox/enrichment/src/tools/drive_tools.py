@@ -11,6 +11,7 @@ insufficientPermissions on content reads, re-run:
     https://www.googleapis.com/auth/drive.readonly'
 """
 
+import glob
 import io
 import os
 import re
@@ -79,6 +80,43 @@ def extract_folder_id(url_or_id: str) -> str:
         return match.group(1)
     # Bare id (possibly with stray query params/trailing slash) — keep the id token.
     return s.split("?", 1)[0].rstrip("/")
+
+
+_MD_EXTS = (".md", ".markdown")
+
+
+def is_local_path(s: str) -> bool:
+    """True if `s` points at an existing local file or directory."""
+    return bool(s) and os.path.exists(os.path.expanduser(s))
+
+
+def list_local_md(path: str) -> list:
+    """Expand a local path into a sorted list of ABSOLUTE markdown file paths.
+
+    A local .md/.markdown file -> [that file]; a local directory -> every
+    .md/.markdown under it (recursive). Anything else -> []. Relative paths are
+    resolved against the process CWD (absolute paths recommended). Local
+    analogue of list_folder_files() for a Drive folder.
+    """
+    p = os.path.abspath(os.path.expanduser(path or ""))
+    if os.path.isfile(p):
+        return [p] if p.lower().endswith(_MD_EXTS) else []
+    if os.path.isdir(p):
+        out = []
+        for ext in _MD_EXTS:
+            out.extend(glob.glob(os.path.join(p, "**", "*" + ext), recursive=True))
+        return sorted(set(out))
+    return []
+
+
+def read_local_md(path: str, max_chars: int = _DEFAULT_MAX_CHARS) -> str:
+    """Read a local markdown file's text (local analogue of fetch_doc_text)."""
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8", errors="replace") as f:
+            return f.read()[:max_chars]
+    except OSError as e:
+        print(f"[Local] could not read {path}: {e}", flush=True)
+        return ""
 
 
 def fetch_gdoc(url: str) -> str:

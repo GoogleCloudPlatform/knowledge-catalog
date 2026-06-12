@@ -23,7 +23,7 @@ from engine import (
     create_table_overview_runner,
 )
 from tools import kcmd_tools
-from tools.drive_tools import list_folder_files, fetch_doc_text, extract_folder_id
+from tools.drive_tools import list_folder_files, fetch_doc_text, extract_folder_id, is_local_path, list_local_md, read_local_md
 
 # kcmd's canonical entry type for BigQuery tables under a bq-dataset scope.
 _BQ_TABLE_TYPE = "dataplex-types.global.bigquery-table"
@@ -90,9 +90,19 @@ async def _prepare_docs(topic: str, folder_id: str | None, usage_acc: dict, mode
     if not folder_id:
         return []
 
-    print(f"[Folder] 📁 Listing Drive folder: {folder_id}", flush=True)
-    files = list_folder_files(folder_id)
-    print(f"[Folder] 📁 Found {len(files)} file(s). Fetching + summarizing...", flush=True)
+    # A local markdown file or directory grounds table overviews from disk (no
+    # Drive). Mirrors the Drive-folder path; descriptors are summarized the same.
+    if is_local_path(folder_id):
+        md_paths = list_local_md(folder_id)
+        files = [{"id": p, "name": os.path.basename(p), "webViewLink": p,
+                  "mimeType": "text/markdown", "_local": True} for p in md_paths]
+        print(f"[Local] 📁 Local markdown grounding: {folder_id} (resolved: "
+              f"{os.path.abspath(os.path.expanduser(folder_id))}) -> {len(files)} "
+              f"file(s). Reading + summarizing...", flush=True)
+    else:
+        print(f"[Folder] 📁 Listing Drive folder: {folder_id}", flush=True)
+        files = list_folder_files(folder_id)
+        print(f"[Folder] 📁 Found {len(files)} file(s). Fetching + summarizing...", flush=True)
 
     sem = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
@@ -100,7 +110,10 @@ async def _prepare_docs(topic: str, folder_id: str | None, usage_acc: dict, mode
         fid = f.get("id")
         url = f.get("webViewLink") or fid
         name = f.get("name", "")
-        content = await asyncio.to_thread(fetch_doc_text, fid, f.get("mimeType", ""))
+        if f.get("_local"):
+            content = await asyncio.to_thread(read_local_md, fid)
+        else:
+            content = await asyncio.to_thread(fetch_doc_text, fid, f.get("mimeType", ""))
         async with sem:
             prompt = f"DOCUMENT TITLE: {name}\nSOURCE URL: {url}\n\nDOCUMENT CONTENT:\n{content[:50000]}"
             descriptor = await common.run_text(create_doc_summarizer_runner(model), prompt, usage_acc)
