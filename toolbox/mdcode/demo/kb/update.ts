@@ -9,6 +9,6 @@ if (!entry.aspects) {
 }
 entry.aspects['dataplex-types.global.overview'] = {
   content: 'New updated content\n',
-  contentType: 'MARKDOWN'
+  contentType: 'MARKDOWN',
 };
 await catalogSnapshot.updateEntry(entry, ['dataplex-types.global.overview']);

@@ -1,16 +1,15 @@
 // Defines the Catalog metadata layout abstraction.
 //
 
+import {DocumentsLayout} from './layouts/documents';
+import {StandardLayout} from './layouts/standard';
+import {CatalogManifest} from './manifest';
 import * as md from './metadata';
-import { StandardLayout } from './layouts/standard';
-import { DocumentsLayout } from './layouts/documents';
-import { CatalogManifest } from './manifest';
 
 export enum Layouts {
   STANDARD = 'standard',
-  DOCUMENTS = 'documents'
+  DOCUMENTS = 'documents',
 }
-
 
 export interface CatalogLayout {
   init(): Promise<void>;
@@ -20,12 +19,14 @@ export interface CatalogLayout {
   loadEntry(name: string): Promise<md.Entry>;
   saveEntry(name: string, entry: md.Entry): Promise<void>;
   deleteEntry(name: string): Promise<void>;
+  getEntryPaths(name: string): {local?: string; ref?: string} | undefined;
 }
 
-
-export function createLayout(layout: Layouts,
-                             catalogPath: string,
-                             manifest?: CatalogManifest): CatalogLayout {
+export function createLayout(
+  layout: Layouts,
+  catalogPath: string,
+  manifest?: CatalogManifest,
+): CatalogLayout {
   switch (layout) {
     case Layouts.STANDARD:
       return new StandardLayout(catalogPath, manifest);

@@ -5,7 +5,8 @@ import * as cp from 'child_process';
 
 const GCLOUD_PROJECT_CMD = 'gcloud -q config get-value project';
 const GCLOUD_LOCATION_CMD = 'gcloud -q config get-value compute/region';
-const GCLOUD_TOKEN_CMD = 'gcloud -q auth application-default print-access-token';
+const GCLOUD_TOKEN_CMD =
+  'gcloud -q auth application-default print-access-token';
 
 export class ApiContext {
   readonly project: string;
@@ -35,7 +36,9 @@ export class ApiContext {
     const location = cp.execSync(GCLOUD_LOCATION_CMD).toString().trim();
     const token = cp.execSync(GCLOUD_TOKEN_CMD).toString().trim();
     if (!project || !location || !token) {
-      throw new Error('Unable to retrieve project, location, or token. Ensure gcloud is configured.');
+      throw new Error(
+        'Unable to retrieve project, location, or token. Ensure gcloud is configured.',
+      );
     }
 
     return new ApiContext(project, location, token);

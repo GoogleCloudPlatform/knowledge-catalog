@@ -1,7 +1,7 @@
+import {YAML} from 'bun';
 import * as cp from 'child_process';
-import * as path from 'node:path';
 import * as kcmd from 'kcmd';
-import { YAML } from 'bun';
+import * as path from 'node:path';
 
 const context = kcmd.gcp.ApiContext.default();
 const project = context.project;
@@ -32,28 +32,29 @@ cp.execSync('bq query --use_legacy_sql=false', {
 console.log(`Created demo BigQuery resources in dataset ${dataset}`);
 console.log();
 
-
-await Bun.file(path.join(process.cwd(), 'catalog.yaml')).write(YAML.stringify({
-  scope: `bq-dataset.${dataset}`,
-  snapshot: {
-    entries: [
-      'dataplex-types.global.bigquery-dataset',
-      'dataplex-types.global.bigquery-table',
-      'dataplex-types.global.bigquery-view'
-    ],
-    aspects: [
-      'dataplex-types.global.overview'
-    ]
-  },
-  publishing: {
-    entries: [
-      'dataplex-types.global.bigquery-dataset',
-      'dataplex-types.global.bigquery-table',
-      'dataplex-types.global.bigquery-view'
-    ],
-    aspects: [
-      'dataplex-types.global.overview'
-    ]
-  }
-}, null, 2));
+await Bun.file(path.join(process.cwd(), 'catalog.yaml')).write(
+  YAML.stringify(
+    {
+      scope: `bq-dataset.${dataset}`,
+      snapshot: {
+        entries: [
+          'dataplex-types.global.bigquery-dataset',
+          'dataplex-types.global.bigquery-table',
+          'dataplex-types.global.bigquery-view',
+        ],
+        aspects: ['dataplex-types.global.overview'],
+      },
+      publishing: {
+        entries: [
+          'dataplex-types.global.bigquery-dataset',
+          'dataplex-types.global.bigquery-table',
+          'dataplex-types.global.bigquery-view',
+        ],
+        aspects: ['dataplex-types.global.overview'],
+      },
+    },
+    null,
+    2,
+  ),
+);
 console.log('Created catalog.yaml manifest');

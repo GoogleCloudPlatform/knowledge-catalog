@@ -1,238 +1,430 @@
 # Metadata as Code
 
-Metadata as Code is a Knowledge Catalog (Dataplex) provides data stewards and data producers and AI agents with a source code artifact-based UX for metadata management and context engineering.
+Metadata as Code is a Knowledge Catalog (Dataplex) provides data stewards and
+data producers and AI agents with a source code artifact-based UX for metadata
+management and context engineering.
 
-Users and agents can author, manage, and enrich metadata artifacts using developer-friendly workflows with version control and CI/CD. It provides a standard metadata format can be used by a variety of tools and agents.
+Users and agents can author, manage, and enrich metadata artifacts using
+developer-friendly workflows with version control and CI/CD. It provides a
+standard metadata format can be used by a variety of tools and agents.
 
 More details are in the [docs/concept.md](docs/concept.md).
 
 ## Key Features
 
-* Intuitive human and agent-friendly representation of metadata as source code in YAML and markdown files. Artifacts are organized in a hierarchical manner mirroring the resource hierarchy of data and metadata assets.
-* Bi-directional sync between local workspace and catalog service (`pull` / `push`).
-* **Context overlay via `reference`** — pull read-only first-party (1P) entries (schema, descriptions) into a separate `reference/` directory so agents/users can ground enrichment on authoritative metadata without permission to edit those 1P entries.
-* **Resource aliases** — short, friendly aspect keys (`schema`, `bigquery-table`, `storage`, …) instead of fully-qualified type names, with sensible predefined aliases for GCP-managed (1P) aspects.
-* **Markdown sidecars** — keep large unstructured aspect content (e.g. an `overview`) in a `<entry>.<aspect>.md` file next to the entry YAML.
-* **Source types** — BigQuery datasets, Dataplex EntryGroups, Knowledge Base EntryGroups, and BigLake/Iceberg namespaces.
-* Support for both 1st party and 3rd party metadata constructs.
-* Distributed as a TypeScript and Python library, a CLI tool (`kcmd`), and an MCP server for use in a variety of applications, agents and workflows.
+`kcmd` (Metadata as Code) provides a developer-friendly UX for Dataplex metadata management, enabling data stewards and AI agents to author and enrich metadata using version-controlled workflows.
+
+#### 1. Core Metadata Management
+
+*   **Metadata as Source Code**: Manage catalog entries as local YAML and Markdown files, organized in a hierarchy that mirrors your cloud resources.
+*   **Bi-directional Sync**: Seamlessly sync local changes with the Catalog service via `pull` and `push` operations.
+
+#### 2. Grounding & Safe Publishing
+
+*   **Contextual Reference Layers**: Pull read-only system metadata (like schemas) into `.ref.yaml` files. This provides an authoritative baseline for enrichment without risking accidental overwrites.
+*   **Automatic Provisioning**: Create missing Entry Groups and Entries directly from your local filesystem during a `push`.
+
+#### 3. Content Flexibility
+
+*   **Optimized Layouts**: Automatically switches between **YAML Layout** (for data assets) and **Markdown Layout** (for human-centric Knowledge Bases).
+*   **Markdown Sidecars**: Detach long-form text (like overviews) into sidecar `.md` files to maintain clean and manageable YAML files.
+
+#### 4. Integration & Extensibility
+
+*   **Agent-Ready (MCP)**: Includes a built-in **Model Context Protocol (MCP)** server, allowing AI agents to list, lookup, and modify metadata autonomously.
+*   **Unified Interface**: Supports BigQuery Datasets, Dataplex Entry Groups,
+    BigLake namespaces, and Business Glossaries through a single command-line
+    tool and library.
+
+#### 5. Linked Metadata & Glossary
+
+*   **EntryLinks**: Catalog relationships (e.g., `definition` linking a BQ
+    column to a business term, or `schema-join` between BQ tables) are
+    first-class artifacts in `pull` and `push`. Declare `entryLinks` in your
+    manifest and they sync alongside entries.
+*   **Column-level Linking**: Links that carry a `Schema.<field>` source path
+    are inlined under `aspects.schema.fields[].links` on the table YAML —
+    per-column governance lives right next to the column definition.
+*   **Glossary as a Source**: `scope:
+    glossary.<project>.<location>.<glossary-id>` manages Business Glossaries
+    (terms, categories, nested structure) using the same `pull`/`push` workflow
+    as other source types. Targets in pulled YAML resolve to the human-readable
+    `project.location.glossary.term` form (display-name based) with the full UID
+    preserved in `id` for round-trip.
+*   **Safe Push Reconciliation**: `push` matches local vs remote links by
+    normalized target + path (project ID/Number agnostic, `@dataplex` proxy
+    unwrapped), so existing links are detected and kept in place — no spurious
+    delete-and-recreate cycles.
 
 ## What's New
 
-* **`kcmd reference`** — an `init`+`pull` for a *read-only* reference resource, driven by a `reference:` block in `catalog.yaml`. Pulls the referenced entries/aspects into `reference/` (never pushed). Ideal for agent enrichment: ground the editable context entries on the live 1P schema/description. Re-run any time to refresh (acts like a `pull --force` for the reference layer).
-* **Resource aliases** — entries pulled from the catalog now use short alias aspect keys by default (e.g. `schema:` rather than `dataplex-types.global.schema:`). Define your own under `aliases:` in the manifest; predefined GCP-managed aliases (`bigquery-dataset`, `bigquery-table`, `schema`, `storage`) cannot be re-used. Both short alias keys and fully-qualified type names are accepted on `push`.
-* **Markdown sidecars in the standard layout** — `<entry>.<aspect>.md` files are merged into the entry's aspect on `push` and emitted on `pull`.
-* **BigLake / Iceberg** — `kcmd init --biglake-namespace <project>.<catalog>.<namespace> --iceberg`.
-
-## Metadata Artifacts
-
-### Directory Layout
-Metadata is organized within a directory representing a resource such as a BigQuery Dataset, Dataplex EntryGroup etc.
-
-```
-path/to/root/
-├── catalog.yaml                       # Manifest and config directives
-├── catalog/                           # The editable metadata snapshot (pushable)
-│   └── <dir1>/
-│       └── <entry-id1>.yaml           # Entry
-│       └── <dir2>/
-│           ├── <entry-id2>.yaml       # Entry with sidecar markdown
-│           └── <entry-id2>.overview.md  #   (an <entry>.<aspect>.md sidecar)
-└── reference/                         # Read-only 1P reference entries (pulled by
-    └── <proj>.<dataset>/              #   `kcmd reference`; NEVER pushed)
-        └── <table>.yaml
-```
-
-## Catalog Snapshot Files
-
-### Manifest File
-**catalog/catalog.yaml**
-```yaml
-scope: bq-dataset.prod-data.ecommerce
-
-aliases:
-  ca-guidelines:
-    aspect: data-agents-project.global.ca-guidelines
-  ecommerce:
-    aspect: data-agents-project.global.ecommerce
-
-snapshot:
-  entries:
-    - bigquery-table
-    - bigquery-view
-    - entry-group
-  aspects:
-    - overview
-    - descriptions
-
-publishing:
-  aspects:
-    - overview
-    - descriptions
-
-# Optional: pull read-only 1P entries into reference/ for grounding (no publishing).
-reference:
-  scope: bq-dataset.prod-data.ecommerce
-  snapshot:
-    entries:
-      - bigquery-table
-    aspects:
-      - schema
-```
-
-* **`scope`** — the resource this workspace manages (`bq-dataset.<proj>.<dataset>`, `entry-group.<proj>.<loc>.<id>`, `kb.<proj>.<loc>.<id>`, or a BigLake namespace).
-* **`aliases`** — your own short names mapping `alias -> { aspect: <fully-qualified type> }`. Predefined GCP-managed aliases (`bigquery-dataset`, `bigquery-table`, `schema`, `storage`) are reserved.
-* **`snapshot`** — the entry + aspect types present locally.
-* **`publishing`** — the subset of aspects `kcmd push` writes back to the catalog.
-* **`reference`** (optional) — a *read-only* resource to pull into `reference/` (its own `scope` + `snapshot`; **no** `publishing`). Populated by `kcmd reference`.
-
-## Entry YAML File
-**catalog/prod-data.ecommerce/products.yaml**
-```yaml
-id: products
-type: bigquery-table
-
-resource:
-  name: projects/prod-data/datasets/ecommerce/tables/products
-  displayName: Products Table
-  description: All products in the catalog
-  labels:
-    env: prod
-  createTime: 2026-04-23T00:44:03Z
-  updateTime: 2026-04-23T00:44:03Z
-
-schema:
-  ...
-
-contacts:
-  ...
-```
-
-## Entry Sidecar Markdown File
-**catalog/prod-data.ecommerce/products.overview.md**
-
-```markdown
----
-userManaged: true
-links:
-  ...
----
-[overview.content]
-```
+*   **Multi-dataset Support**: `kcmd init` now accepts multiple `--bigquery-dataset` flags, enabling a single workspace to manage metadata across multiple BQ datasets.
+*   **Knowledge Base (Wiki) Mode**: Use the `--kb` flag to manage human-authored content via the **Markdown Layout**. It automatically organizes pages as `.md` files with YAML frontmatter.
+*   **AI-Native Reference Layers**: Use `kcmd reference` to pull read-only system metadata. This creates a distinct `.ref.yaml` layer, allowing AI agents to ground their enrichments on authoritative schemas without modifying them.
+*   **Built-in MCP Server**: Native support for the Model Context Protocol, allowing seamless integration with AI agents for automated metadata tasks.
+*   **EntryLinks Sync**: `pull` and `push` now manage `EntryLink` resources as
+    first-class artifacts. Declare link types in `snapshot.entryLinks` to fetch
+    them, in `publishing.entryLinks` to reconcile them on push, and (optionally)
+    in `reference.snapshot.entryLinks` so `.ref.yaml` baselines include the
+    pre-edit link state for clean diffs.
+*   **Glossary Source**: A Business Glossary can be the primary `scope`
+    (`glossary.<project>.<location>.<glossary-id>`), enabling local CRUD of
+    glossary terms and categories via the same `pull`/`push` workflow.
+    Glossaries also work as a `reference.scope` so other workspaces can ground
+    enrichment in glossary terms without owning them.
 
 ## Usage
 
-### Library
+### 1. Initialization (`kcmd init`)
+The initialization flag defines the **Mode** (Source Type) of your workspace. This selection is mandatory and determines how `kcmd` communicates with GCP and how files are structured locally. You must choose **exactly one** primary source type.
 
-You can use the `kcmd` library to programmatically interact with the catalog metadata.
+Source Type (Mode) | CLI Flag              | Required ID Format                            | Target Resource & Layout
+:----------------- | :-------------------- | :-------------------------------------------- | :-----------------------
+**BigQuery**       | `--bigquery-dataset`  | `my-project-id.my-dataset-id`                 | Manages tables, views, and schemas (**YAML** Layout).
+**Knowledge Base** | `--kb`                | `my-project-id.my-location.my-entry-group-id` | Manages human-authored Wiki/Doc content (**Markdown** Layout).
+**Entry Group**    | `--entry-group`       | `my-project-id.my-location.my-entry-group-id` | Manages custom or user-defined catalog entries (**YAML** Layout).
+**BigLake**        | `--biglake-namespace` | `my-project-id.my-catalog-id.my-namespace-id` | Manages Iceberg/BigLake table metadata (**YAML** Layout).
+**Glossary**       | `--glossary`          | `my-project-id.my-location.my-glossary-id`    | Manages a Business Glossary — terms and categories under `catalog/glossaries/` (**YAML** Layout).
 
-```bash
-npm install kcmd
-```
+**Note on BigQuery:** While you must pick one mode, the BigQuery mode allows you to specify multiple datasets by repeating the flag (e.g., `--bigquery-dataset ds1 --bigquery-dataset ds2`).
 
-```typescript
-import * as kcmd from 'kcmd';
+**Note on Glossary:** The glossary scope is flexible — you can specify one or
+more glossaries by ID or display name in a single `--glossary` flag using a
+comma-separated list, or omit the glossary ID entirely to operate in "location
+mode":
 
-// Creating a catalog manifest from scratch
-const manifest = new kcmd.CatalogManifest(...);
-manifest.save('/path/to/root');
+*   **By ID (single or multiple)**: `--glossary
+    my-project.us-central1.glossary-a,glossary-b`
+*   **By display name (exact match)**: `--glossary my-project.us-central1.My
+    Business Glossary` (falls back from ID lookup automatically)
+*   **Location mode** (all glossaries in a location): `--glossary
+    my-project.us-central1`
 
-// Loading a catalog snapshot from the filesystem
-const snapshot = kcmd.CatalogSnapshot.fromPath('/path/to/root');
-
-// Pulling the latest metadata from the Catalog service.
-const pullResult = await snapshot.pull();
-if (pullResult.success) {
-  console.log('Metadata pulled successfully');
-}
-else {
-  console.error('Metadata pull failed:', pullResult.error);
-}
-
-// Pushing the modified metadata to the Catalog service.
-const pushResult = await snapshot.push();
-if (pushResult.success) {
-  console.log('Metadata pushed successfully');
-}
-else {
-  console.error('Metadata push failed:', pushResult.error);
-}
-```
-
-### CLI
-
-The package provides the `kcmd` CLI tool. This is distributed as a standalone binary.
+**Examples:**
 
 ```bash
-# Initialize a new catalog snapshot for a bigquery dataset
-kcmd init --bigquery-dataset <projectId>.<datasetId>
+# Data Mode: Initialize with one or more BigQuery datasets
+kcmd init --bigquery-dataset my-project-id.my-dataset-id
 
-# Initialize a new catalog snapshot for multiple bigquery datasets
-kcmd init --bigquery-dataset <projectId>.<datasetId1> --bigquery-dataset <projectId>.<datasetId2>
+# Wiki Mode: Initialize a human-authored Knowledge Base (uses .md files)
+kcmd init --kb my-project-id.us-central1.my-knowledge-base-id
 
-# Initialize a new catalog snapshot for a bigquery dataset with specific types
-kcmd init --bigquery-dataset <projectId>.<datasetId> \
-  --entry bigquery-table --entry bigquery-view \
-  --aspect overview --aspect description
+# BigLake Mode: Requires the --iceberg flag
+kcmd init --biglake-namespace my-project-id.my-catalog-id.my-namespace-id --iceberg
 
-# Initialize a new catalog snapshot for a custom EntryGroup
-kcmd init --entry-group <projectId>.<locationId>.<entryGroupId>
+# Glossary Mode: Initialize a workspace rooted at a Business Glossary
+kcmd init --glossary my-project-id.us-central1.my-glossary-id
 
-# Initialize a new catalog snapshot for a Knowledge Base EntryGroup
-kcmd init --kb <projectId>.<locationId>.<entryGroupId>
+# Glossary Mode: Multiple glossaries (comma-separated, in the same project/location)
+kcmd init --glossary my-project-id.us-central1.glossary-a,glossary-b
 
-# Initialize a new catalog snapshot for a BigLake (Iceberg) namespace
-kcmd init --biglake-namespace <projectId>.<catalogId>.<namespaceId> --iceberg
-
-# Pull the latest catalog snapshot from the Knowledge Catalog service
-# Reports any conflicts if there are pending changes that have not been
-# pushed to the catalog.
-# Supports dry run with the --dry-run flag.
-kcmd pull
-
-# Pull read-only reference entries (the `reference:` block in catalog.yaml) into
-# reference/. These ground enrichment on the live 1P metadata and are never
-# pushed. Re-run any time to refresh.
-kcmd reference
-
-# Check for local modifications
-kcmd status
-
-# Push local changes to the Knowledge Catalog service. Only pushes changes
-# made since the last pull, and if that metadata has not been modified within
-# catalog in the interim.
-# Supports dry run with the --dry-run flag.
-kcmd push
+# Glossary Mode: Location mode — all glossaries in a given location
+kcmd init --glossary my-project-id.us-central1
 ```
 
-NOTE: The CLI uses `gcloud` to obtain authentication tokens, so ensure you are authenticated via `gcloud auth application-default login`.
+### 2. Synchronization
 
-### MCP Server
+#### Pulling Metadata
 
-To use the Metadata as Code tools as MCP tools in an agentic system such as the Gemini CLI, add the following to your MCP settings file:
+*   **`kcmd pull`**: Downloads editable metadata into the `catalog/` directory.
+    *   Generates `.yaml` files in **YAML** mode or `.md` files in **Markdown** mode.
+    *   **Entry Links**: When `snapshot.entryLinks` is declared, `pull` also
+        calls `lookupEntryLinks` for every fetched entry and inlines the results
+        into the entry YAML — column-level links (those with a `Schema.<field>`
+        source path) land under `aspects.schema.fields[].links`, others under
+        the top-level `links` block. Omit `snapshot.entryLinks` to skip the link
+        fetch entirely.
+*   **`kcmd reference`**: Downloads read-only reference data defined in the
+    `reference:` block of your manifest.
+    *   Generates **`.ref.yaml`** files as siblings to your editable files. These are used for grounding and are never pushed.
+    *   Honors `reference.snapshot.entryLinks` the same way as `pull` honors
+        `snapshot.entryLinks`, so a `.ref.yaml` baseline can include the
+        pre-edit link state for clean `diff`s.
+
+#### Pushing Changes
+
+*   **`kcmd push`**: Uploads local edits from `catalog/` to the Catalog service.
+    *   **Skip Reference Layers**: Files ending in `.ref.yaml` are strictly read-only and **skipped** during push.
+    *   **Auto-Creation**: If an entry (or its parent Entry Group) does not exist in the service, `kcmd` will attempt to create it using parameters derived from your local workspace:
+        *   **Project & Location**: Derived from the workspace context.
+        *   **Entry Group**: Determined by your workspace mode (e.g., `@bigquery` for BigQuery mode, or your custom ID for Knowledge Base/Entry Group modes).
+        *   **Entry ID**: Derived from your local file path. For example, a file at `catalog/bigquery/my-project/my-dataset/my-new-table.yaml` will result in an **Entry ID** of `bigquery.googleapis.com/projects/my-project/datasets/my-dataset/tables/my-new-table`.
+    *   **Entry Link Reconciliation**: When `publishing.entryLinks` is declared,
+        `push` reconciles local vs remote `EntryLink` resources of those types
+        per entry. Matching is symmetrical and project ID/Number agnostic
+        (`@dataplex` proxy unwrapped, both sides normalized to project ID before
+        comparison), so unchanged links are preserved (no delete-then-create).
+        New local links are created; remote links of the configured types with
+        no local match are deleted. Omit (or leave empty)
+        `publishing.entryLinks` to disable link mutations entirely — useful when
+        a workspace only reads links.
+    *   `--force`: Overwrites service metadata, ignoring potential conflicts.
+    *   `--validate-only`: Validates the local snapshot against the service without performing a push.
+
+> [!IMPORTANT] **`kcmd push` does NOT create Glossary, GlossaryCategory, or
+> GlossaryTerm resources.**
+>
+> These three resource kinds are Dataplex **control-plane** resources — they
+> govern catalog *structure* (which terms are sanctioned business vocabulary,
+> how the vocabulary is organized) rather than describing data assets. Their
+> lifecycle is intentionally controlled by humans: a glossary should reflect a
+> deliberate governance decision, not appear as a side effect of an enrichment
+> agent's run.
+>
+> Concretely: * A missing `Glossary`, `GlossaryCategory`, or `GlossaryTerm`
+> referenced by your local snapshot causes `kcmd push` to fail fast with a clear
+> error pointing at the missing resource. * To use a glossary, **create the
+> glossary (and any categories/terms you need) yourself first** — via the
+> Dataplex console or `gcloud dataplex glossaries create …` / `gcloud dataplex
+> glossary-terms create …` — then run `kcmd pull` followed by `kcmd push` to
+> manage metadata (e.g., descriptions, labels) on the existing resources. *
+> `kcmd push` **is allowed to update** the description, labels, and other
+> metadata of an *already-existing* glossary/category/term. This update path is
+> the only mutation kcmd performs against the glossary hierarchy; it never adds
+> or removes a node. * EntryLinks that *reference* glossary terms (e.g.,
+> `definition` links from a BQ column to a term) are catalog metadata and ARE
+> created/deleted normally by `kcmd push` — the no-create rule applies only to
+> the glossary tree itself, not to the relationships pointing at it.
+>
+> If your workflow needs to bootstrap an empty glossary, do it once out-of-band
+> and treat the result as a stable input to `kcmd`.
+
+### 3. AI Agent Integration (MCP)
+To use `kcmd` as a Model Context Protocol (MCP) server for agents like the Gemini CLI:
 
 ```json
 {
   "mcpServers": {
-    "kc-mac": {
-      "command": "kcmd",
-      "args": ["mcp", "--path", "/path/to/root"]
+    "kcmd": {
+      "command": "npx",
+      "args": ["-y", "kcmd", "mcp", "--path", "/absolute/path/to/workspace"]
     }
   }
 }
 ```
 
-The server offers the following tools: 
+The server provides tools like `list-entries`, `lookup-entry`, and `modify-entry` for automated context engineering and metadata enrichment.
 
-| Tool             | Description                                           |
-|------------------|-------------------------------------------------------|
-| pull             | Pull the latest metadata from the Catalog service     |
-| push             | Push the modified metadata to the Catalog service     |
-| list-entries     | List entries in the catalog snapshot                  |
-| lookup-entry     | Lookup an entry and its metadata from the snapshot    |
-| modify-entry     | Modify an entry and its metadata in the snapshot      |
+### 4. Authentication
+The CLI and MCP server use `gcloud` to obtain authentication tokens. Ensure you are authenticated:
 
-NOTE: The server uses `gcloud` to obtain authentication tokens, so ensure you are authenticated via `gcloud auth application-default login`.
+```bash
+gcloud auth application-default login
+```
+
+## Metadata Artifacts
+
+### Directory Layout
+
+`kcmd` organizes metadata based on the resource hierarchy. Each entry (e.g., a table) is managed as a standalone YAML file, potentially with a Markdown sidecar for long-form content.
+
+#### YAML Layout (Data Assets)
+Entries are files named `<entry-id>.yaml`. Sidecars use the format `<entry-id>.<aspect-alias>.md`. Reference layers co-exist as `*.ref.yaml` files.
+
+```text
+/
+├── catalog.yaml
+└── catalog/
+    └── bigquery/
+        └── my-project-id/
+            ├── my-dataset-id.yaml      # Dataset entry file
+            └── my-dataset-id/          # Directory for entries within this dataset
+                ├── table1.yaml         # Table 1 entry file (editable)
+                ├── table1.ref.yaml     # Table 1 reference layer (read-only system metadata)
+                ├── table2.yaml         # Table 2 entry file
+                └── table2.overview.md  # Sidecar for table2's overview aspect
+```
+
+#### Markdown Layout (Knowledge Base)
+Entries are `.md` files containing both metadata and content.
+
+```text
+/
+├── catalog.yaml
+└── catalog/
+    └── my-namespace/
+        └── my-project-id/
+            └── my-location-id/
+                ├── page1.md            # Page 1 (Frontmatter + Markdown)
+                └── page2.md            # Page 2
+```
+
+## Catalog Manifest (`catalog.yaml`)
+
+The manifest defines the synchronization scope, the types of metadata to manage, and optional reference layers for grounding.
+### Example Manifest
+
+```yaml
+# The primary resource(s) to manage. Format: <mode-id>.<project-id>.<resource-id>
+scope: bigquery-mode-id.my-project-id.my-dataset-id
+
+# Defines which entry, aspect, and link types are managed locally.
+snapshot:
+  entries:
+    - dataplex-types.global.bigquery-table
+  aspects:
+    - dataplex-types.global.schema
+    - dataplex-types.global.bigquery-table
+    - dataplex-types.global.storage
+    - dataplex-types.global.overview
+  entryLinks:
+    - definition          # system alias: dataplex-types.global.definition
+    - synonym
+
+# Defines which aspects and links are pushed back to the service.
+publishing:
+  aspects:
+    - dataplex-types.global.overview
+  entryLinks:
+    - definition          # delete remote links of this type that aren't present locally; create new local ones
+
+# Optional: pull read-only metadata for grounding (never pushed).
+reference:
+  scope: bq-dataset.my-project-id.my-dataset-id
+  snapshot:
+    entries:
+      - dataplex-types.global.bigquery-table
+    aspects:
+      - dataplex-types.global.schema
+      - dataplex-types.global.overview
+    entryLinks:
+      - definition        # include pre-edit links in .ref.yaml so diffs surface only the changes
+      - synonym
+```
+
+*   **`scope`** — The "Source of Truth" for your workspace. It defines which GCP
+    resources `kcmd` connects to for pulling metadata and where it deploys
+    changes during a push. It also determines the directory hierarchy within
+    your `catalog/` folder. Supported types include `bq-dataset.*`,
+    `entryGroup.*`, `kb.*`, `biglake-namespace.*`, and
+    `glossary.<project>.<location>.<glossary-id>`.
+*   **`snapshot`** — The entry, aspect, and link types to manage locally.
+    *   `entryLinks` (optional) — short aliases (`definition`, `synonym`,
+        `related`, `schema-join`) or fully-qualified link type refs. When set,
+        `pull` calls `lookupEntryLinks` for every pulled entry and routes
+        results into the entry YAML (top-level `links` for entry-level links,
+        `aspects.schema.fields[].links` for column-level links carrying a
+        `Schema.<field>` path). Omit to skip link sync entirely.
+*   **`publishing`** — The subset of aspects `kcmd push` writes back to the
+    catalog.
+    *   `entryLinks` (optional) — must be a subset of `snapshot.entryLinks`. On
+        `push`, the engine compares local vs remote links of these types (after
+        unwrapping `@dataplex` proxies and normalizing project IDs) and
+        reconciles: existing matches are kept, missing-remote links are created,
+        missing-local links are deleted. Omit (or leave empty) to skip link
+        mutations entirely — useful when you want to read links without taking
+        responsibility for them.
+*   **`reference`** — A read-only resource to pull as a reference layer (saved
+    as `*.ref.yaml`).
+    *   `reference.snapshot.entryLinks` (optional) — when present, `.ref.yaml`
+        files include the pre-edit link state, so diffing live `.yaml` vs
+        `.ref.yaml` surfaces only what your enrichment added or removed.
+
+## Entry Artifacts
+
+### Standard Entry (YAML)
+
+**catalog/bigquery/my-project-id/my-dataset-id/my-table-id.yaml**
+
+```yaml
+name: bigquery/my-project-id/my-dataset-id/my-table-id
+type: dataplex-types.global.bigquery-table
+
+resource:
+  name: projects/my-project-id/datasets/my-dataset-id/tables/my-table-id
+  displayName: my-table-id
+  description: A descriptive summary of this table
+  labels:
+    env: prod
+  location: us-central1
+  ancestors:
+    - name: projects/my-project-id/datasets/my-dataset-id
+      type: dataplex-types.global.bigquery-dataset
+  createTime: 2024-09-18 00:01:34.230000+00:00
+  updateTime: 2024-10-23 22:55:17.063000+00:00
+
+aspects:
+  schema:
+    fields:
+      - name: my-column
+        dataType: STRING
+        metadataType: STRING
+        mode: NULLABLE
+  storage:
+    service: BIGQUERY
+    resourceName: //bigquery.googleapis.com/projects/my-project-id/datasets/my-dataset-id/tables/my-table-id
+
+category: miscellaneous
+```
+
+### Document Entry (Markdown)
+
+**catalog/my-namespace/my-project-id/my-location-id/my-page-id.md**
+
+```markdown
+---
+type: dataplex-types.global.entry
+title: My Page Title
+catalogEntry:
+  id: my-page-id
+  resource:
+    name: projects/my-project-id/locations/my-location-id/entryGroups/my-eg-id/entries/my-page-id
+---
+# Welcome to My Knowledge Base Page
+This is the human-authored content of the page.
+```
+
+### Entry with EntryLinks
+
+Column-level links live under `aspects.schema.fields[].links` and are produced
+automatically when the link's source reference carries a `Schema.<field>` path
+on `pull`. Entry-level links (no `Schema.<field>` path) appear at the top level
+under `links`. The `target` value is the human-readable
+`<project>.<location>.<glossary-display-name>.<term-display-name>` form, and the
+full UID resource path is preserved in `id` so `push` can reconstruct the exact
+catalog reference.
+
+**catalog/bigquery/my-project-id/my-dataset-id/orders.yaml** (excerpt)
+
+```yaml
+aspects:
+  schema:
+    fields:
+      - name: customer_id
+        dataType: STRING
+        mode: NULLABLE
+        links:
+          definition:
+            - target: my-project-id.global.business-glossary.customer-id
+              id: projects/my-project-id/locations/global/glossaries/biz/terms/customer-id
+      - name: total_amount
+        dataType: NUMERIC
+        mode: NULLABLE
+        links:
+          definition:
+            - target: my-project-id.global.business-glossary.transaction-amount
+              id: projects/my-project-id/locations/global/glossaries/biz/terms/transaction-amount
+
+# Top-level links (entry-level relationships without a column path)
+links:
+  related:
+    - target: my-other-project.us.docs-eg.runbook-page
+```
+
+### Glossary Term (YAML)
+
+When the workspace `scope` is `glossary.<project>.<location>.<glossary-id>`, the
+local hierarchy mirrors the glossary's "glossary → category → term" tree.
+
+**catalog/glossaries/Business Glossary (biz)/terms/customer-id.yaml**
+
+```yaml
+name: glossaries/Business Glossary (biz)/terms/customer-id
+type: glossaryTerm
+displayName: customer-id
+description: Unique identifier for a customer record.
+parent: projects/my-project-id/locations/global/glossaries/biz
+```
 
 ## Developer Workflow
 
@@ -244,14 +436,9 @@ cd toolbox/mdcode
 npm install
 ```
 
-### Build
+### Build & Test
 
 ```bash
 npm run build
-```
-
-### Test
-
-```bash
 npm run test
 ```

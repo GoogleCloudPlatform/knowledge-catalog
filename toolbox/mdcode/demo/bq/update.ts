@@ -1,4 +1,4 @@
-import { YAML } from 'bun';
+import {YAML} from 'bun';
 import path from 'node:path';
 
 const filePath = path.join(process.cwd(), process.argv[2]);
@@ -8,8 +8,8 @@ const metadata = YAML.parse(content) as Record<string, any>;
 
 metadata['aspects']['dataplex-types.global.overview'] = {
   content: 'sample updated documentation',
-  contentType: 'MARKDOWN'
-}
+  contentType: 'MARKDOWN',
+};
 
 const updatedContent = YAML.stringify(metadata, null, 2);
 file.write(updatedContent);
