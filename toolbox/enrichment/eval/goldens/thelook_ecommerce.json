@@ -4,6 +4,18 @@
   "dataset": "bigquery-public-data.thelook_ecommerce",
   "_dataset_doc": "Public SOURCE dataset (read-only). Copy it into your project (e.g. <project>.thelook_ecommerce) and enrich the copy — see GOLDENS.md for the one-line `bq` copy.",
   "grounding": "eval/corpora/thelook_ecommerce (4 local markdown docs: business_glossary, order_lifecycle, data_model, metrics) — pass as --folders to the agent.",
+  "run": {
+    "_doc": "Makes this golden a runnable CASE for `python -m eval --run --project <p>`: copy the public dataset into <project>.thelook_ecommerce (idempotent), then enrich it in table mode grounded by the local markdown corpus. --folders is relative to toolbox/enrichment.",
+    "mode": "table",
+    "topic": "Metadata enrichment",
+    "folders": "eval/corpora/thelook_ecommerce",
+    "setup": {
+      "copy_public_dataset": {
+        "source": "bigquery-public-data.thelook_ecommerce",
+        "dataset": "thelook_ecommerce"
+      }
+    }
+  },
   "business_terms": [
     "Gross Margin",
     "Sale Price",

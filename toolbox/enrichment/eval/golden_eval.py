@@ -73,8 +73,16 @@ def _trajectory_source(traj: dict) -> str:
 
 def run_golden_eval(output_dir: str, golden_path: str,
                     model: str = "gemini-2.5-pro", persona_id: str | None = None,
-                    perf_budget: dict | None = None) -> dict:
-  """Evaluate one run against a golden file. Returns a results dict."""
+                    perf_budget: dict | None = None,
+                    report_dir: str | None = None,
+                    report_name: str | None = None) -> dict:
+  """Evaluate one run against a golden file. Returns a results dict.
+
+  `report_dir` / `report_name` let a batch caller collect the per-golden reports
+  in one folder (one .md per golden); by default the report is named by the
+  golden + run so several goldens scoring the same output dir don't clobber each
+  other.
+  """
   with open(golden_path, encoding="utf-8") as f:
     golden = json.load(f)
 
@@ -182,12 +190,17 @@ def run_golden_eval(output_dir: str, golden_path: str,
           "latency_s": latency or None,
       },
   }
-  # Golden reports go to a dedicated tmp folder (not next to trajectory.json),
-  # named by the run dir, so repeated/parallel golden runs don't clobber each other.
-  report_dir = os.path.join(tempfile.gettempdir(), "kc_golden_eval_reports")
+  # Golden reports go to a dedicated tmp folder (not next to trajectory.json).
+  # Named by golden + run so several goldens scoring the same output dir (or
+  # parallel runs) don't clobber each other; a batch caller can override both.
+  report_dir = report_dir or os.path.join(
+      tempfile.gettempdir(), "kc_golden_eval_reports")
   os.makedirs(report_dir, exist_ok=True)
-  fname = f"golden_report_{os.path.basename(output_dir.rstrip('/')) or 'run'}.md"
+  gstem = os.path.splitext(os.path.basename(golden_path))[0]
+  run = os.path.basename(output_dir.rstrip("/")) or "run"
+  fname = report_name or f"golden_report_{gstem}__{run}.md"
   dynamic_eval.write_report(results, report_dir, filename=fname)
+  results["report_path"] = os.path.join(report_dir, fname)
   return results
 
 
