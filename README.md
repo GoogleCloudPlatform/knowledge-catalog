@@ -34,7 +34,7 @@ This repo mirrors the `GoogleCloudPlatform/knowledge-catalog` `toolbox/` layout:
 toolbox/
 ├── mdcode/                  # the kcmd (Metadata as Code) CLI + library
 └── enrichment/
-    └── src/
+    ├── src/
         ├── agent_runner.py  # CLI entrypoint: flags + dispatch to a mode
         ├── engine.py        # LLM agents (Vertex Gemini) for both modes
         ├── common.py        # shared helpers (run_text, mdcode parsing, trajectory)
@@ -44,6 +44,11 @@ toolbox/
         └── tools/
             ├── kcmd_tools.py  # kcmd init/pull discovery + entry reading
             └── drive_tools.py # Google Drive/Docs fetch helpers
+    └── eval/                 # evaluation CLI (dynamic, golden-free)
+        ├── __main__.py        # `python -m eval --output-dir ...`
+        ├── dynamic_eval.py    # golden-free scoring of a single run
+        ├── metrics.py         # metric library (deterministic + LLM-judge)
+        └── loaders.py         # read catalog/ + trajectory.json
 ```
 
 ## Prerequisites
@@ -157,6 +162,77 @@ what the agent read and produced. Inspect it with:
 ```bash
 find /tmp/enrich_out -type f
 ```
+
+## Evaluating the output
+
+Before you publish, you can score an enrichment run with the **dynamic
+(golden-free) evaluator** under `toolbox/enrichment/eval/`. It needs no
+reference answers — it grounds its checks in the agent's own `trajectory.json`
+(what it actually retrieved), so it works on your own data out of the box.
+
+```bash
+cd toolbox/enrichment
+pip install -r eval/requirements.txt
+
+# Judge auth — Vertex AI, the same auth the agent uses:
+export GOOGLE_CLOUD_PROJECT=<project>
+gcloud auth application-default login
+
+# Score a run (the same --output_dir you gave the agent):
+python -m eval --output-dir /tmp/enrich_out
+python -m eval --output-dir /tmp/enrich_out --model gemini-2.5-pro
+```
+
+Each run also writes a full **`eval_report.md`** next to `trajectory.json` in the
+output dir — the same metrics with **untruncated** rationales (the terminal
+scorecard abbreviates them to stay readable).
+
+### Flags
+
+Flags (see `python -m eval --help`):
+
+| Flag | Required | Meaning |
+|------|----------|---------|
+| `--output-dir` | yes | The enrichment run's output dir (contains `catalog/` + `trajectory.json`). |
+| `--model` | no | Judge model — any Vertex AI model id you have access to. Defaults to `gemini-2.5-pro`. |
+| `--json` | no | Emit raw JSON instead of the formatted scorecard (for piping/automation). |
+
+It reports the following, each on a 0–1 scale (higher is better):
+
+- **structural_validity** *(deterministic)* — the generated mdcode is well-formed:
+  entry YAML parses, required fields are present, the entry type matches the mode,
+  and overviews are clean Markdown (headers present, no stray YAML frontmatter, no
+  unclosed code fences).
+- **perf** *(report-only)* — token usage and latency for the run, reported for
+  visibility (not gated against a budget; does not affect pass/fail).
+- **hallucination_free** *(judge)* — is every factual claim in the overviews
+  supported by what the agent actually retrieved? The score is the fraction of
+  extracted claims that are grounded; **1.0 = nothing fabricated**. Claims are
+  checked in parallel across chunks of the retrieved source.
+- **redundancy_index** *(judge)* — does the overview add **novel** context beyond
+  echoing column names/schema? **1 = rich synthesis, 0 = tautological restatement.**
+- **disambiguation_efficacy** *(judge)* — is the enrichment enough to tell this
+  entry apart from similar/overlapping ones (its grain and purpose made explicit)?
+  **1 = clearly distinct.**
+- **absence_of_contradictions** *(judge)* — are there contradictions within or
+  across the generated entries (join keys, enums, metric definitions, freshness)?
+  **1 = none, 0 = an explicit conflict.**
+
+### Enabling the judge-based metrics
+
+The **deterministic** metrics (`structural_validity`, `perf`) always run. The
+**judge-based** metrics (`hallucination_free`, `redundancy_index`,
+`disambiguation_efficacy`, `absence_of_contradictions`) run **automatically as
+soon as judge auth is available** — there is no on/off flag. To turn them on, set
+up Vertex AI auth (the same auth the enrichment agent uses):
+
+```bash
+export GOOGLE_CLOUD_PROJECT=<your-project>
+gcloud auth application-default login
+```
+
+Without auth they are simply skipped and shown as `n/a`; the deterministic metrics
+still run. Choose the judge model with `--model` (default `gemini-2.5-pro`).
 
 ## Publishing to the catalog
 

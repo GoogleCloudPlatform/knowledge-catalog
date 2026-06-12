@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import re
+import time
 
 import yaml
 
@@ -150,6 +151,7 @@ async def _route_docs_for_table(table_meta: dict, docs: list[dict], usage_acc: d
 
 
 async def run(dataset: str, folder: str | None, topic: str, output_dir: str | None, model: str):
+    _t0 = time.monotonic()
     project, dataset_id = _parse_dataset(dataset)
     # Accept either a bare folder id or a full Drive folder URL.
     folder = extract_folder_id(folder) if folder else folder
@@ -252,4 +254,5 @@ async def run(dataset: str, folder: str | None, topic: str, output_dir: str | No
         common.write_trajectory(
             output_dir, "table",
             f"TOPIC: {topic} | DATASET: {project}.{dataset_id}",
-            tool_uses, tool_responses, final_text, usage_acc)
+            tool_uses, tool_responses, final_text, usage_acc,
+            latency=time.monotonic() - _t0)
