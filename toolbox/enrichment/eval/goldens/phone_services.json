@@ -1,0 +1,52 @@
+{
+  "_comment": "Doc-mode golden for the phone_services corpus (eval/corpora/phone_services). Score-mode: run the agent in DOC mode grounded by the corpus into your own entry group, then score: `python -m eval --output-dir <out> --golden eval/goldens/phone_services.json`. Concepts are matched semantically by the judge; facts must trace to the corpus (esp. network_engineering_glossary.md / qos_policy_doc.md). Grounded, medium granularity.",
+  "corpus": "phone_services",
+  "grounding": "eval/corpora/phone_services (run doc mode: --folders=eval/corpora/phone_services --entry_group=<your eg>)",
+  "business_terms": ["APN", "IMSI", "QoS", "VoLTE", "SIM"],
+  "acceptable_extra_concepts": [
+    {"name": "Number Portability", "aliases": ["portability", "number porting", "port-in"]},
+    {"name": "Roaming", "aliases": ["roaming", "roaming partner"]},
+    {"name": "Churn", "aliases": ["customer churn", "churn rate"]}
+  ],
+  "expected_topics": [
+    {
+      "canonical": "APN",
+      "flavor_hints": ["Access Point Name"],
+      "golden_facts": [
+        "the identifier a device presents to say which packet data network it wants to reach",
+        "tells the core which gateway to route a data session through (e.g. public-internet vs internal IMS APN)",
+        "part of the device's data profile, applied when a data session is established; different APNs map to different services/policies"
+      ]
+    },
+    {
+      "canonical": "IMSI",
+      "flavor_hints": ["International Mobile Subscriber Identity", "SIM identity"],
+      "golden_facts": [
+        "the globally unique identity of a subscriber, provisioned onto the SIM",
+        "what the network uses to recognize and authenticate a subscriber",
+        "the key reference used when subscribers connect at home or via roaming"
+      ]
+    },
+    {
+      "canonical": "QoS",
+      "flavor_hints": ["Quality of Service"],
+      "golden_facts": [
+        "mechanisms that prioritize traffic and hold it to latency, packet-loss, and throughput targets",
+        "traffic is sorted into classes, each given a treatment appropriate to its needs",
+        "real-time services need stricter QoS than best-effort data"
+      ]
+    },
+    {
+      "canonical": "VoLTE",
+      "flavor_hints": ["Voice over LTE", "IMS voice"],
+      "golden_facts": [
+        "carries voice calls as packets over the LTE data network via IMS, not the legacy circuit-switched path",
+        "delay-sensitive, so it depends on a high-priority QoS class to keep calls clear",
+        "VoLTE, Voice-over-LTE, and 'IMS voice' all refer to the same service"
+      ]
+    }
+  ],
+  "non_entries": [
+    "'SIM identity' used loosely for IMSI (prefer IMSI; should not be a separate entry)"
+  ]
+}

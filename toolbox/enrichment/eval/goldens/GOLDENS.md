@@ -10,7 +10,7 @@ Run it:
 
 ```bash
 cd toolbox/enrichment
-python -m eval --output-dir <run output> --golden eval/goldens/example_ga_events.json
+python -m eval --output-dir <run output> --golden eval/goldens/supply_chain.json
 ```
 
 (Same judge auth as dynamic eval — `GOOGLE_CLOUD_PROJECT` + ADC.)

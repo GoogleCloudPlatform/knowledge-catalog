@@ -50,7 +50,7 @@ toolbox/
         ├── golden_eval.py     # golden-based scoring (concepts, facts, coverage)
         ├── metrics.py         # metric library (deterministic + LLM-judge)
         ├── loaders.py         # read catalog/ + trajectory.json
-        └── goldens/           # golden schema (TEMPLATE.json), GOLDENS.md, example
+        └── goldens/           # golden schema (TEMPLATE.json) + ready goldens
 ```
 
 ## Prerequisites
@@ -256,7 +256,7 @@ Flags (see `python -m eval --help`):
 | `--model` | no | Judge model — any Vertex AI model id you have access to. Defaults to `gemini-2.5-pro`. |
 | `--json` | no | Emit raw JSON instead of the formatted scorecard (for piping/automation). |
 
-It reports the following, each on a 0–1 scale (higher is better):
+It reports the following, each shown **out of 100** in the scorecard (higher is better):
 
 - **structural_validity** *(deterministic)* — the generated mdcode is well-formed:
   entry YAML parses, required fields are present, the entry type matches the mode,
@@ -266,16 +266,16 @@ It reports the following, each on a 0–1 scale (higher is better):
   visibility (not gated against a budget; does not affect pass/fail).
 - **hallucination_free** *(judge)* — is every factual claim in the overviews
   supported by what the agent actually retrieved? The score is the fraction of
-  extracted claims that are grounded; **1.0 = nothing fabricated**. Claims are
+  extracted claims that are grounded; **100 = nothing fabricated**. Claims are
   checked in parallel across chunks of the retrieved source.
 - **redundancy_index** *(judge)* — does the overview add **novel** context beyond
-  echoing column names/schema? **1 = rich synthesis, 0 = tautological restatement.**
+  echoing column names/schema? **100 = rich synthesis, 0 = tautological restatement.**
 - **disambiguation_efficacy** *(judge)* — is the enrichment enough to tell this
   entry apart from similar/overlapping ones (its grain and purpose made explicit)?
-  **1 = clearly distinct.**
+  **100 = clearly distinct.**
 - **absence_of_contradictions** *(judge)* — are there contradictions within or
   across the generated entries (join keys, enums, metric definitions, freshness)?
-  **1 = none, 0 = an explicit conflict.**
+  **100 = none, 0 = an explicit conflict.**
 
 ### Enabling the judge-based metrics
 
@@ -302,26 +302,26 @@ scale (higher is better):
 
 - **concept_recall** *(judge, doc mode)* — of the concepts the golden expects as
   knowledge-base entries, what fraction did the agent produce (matched by meaning,
-  not exact name)? **1.0 = every expected concept covered.**
+  not exact name)? **100 = every expected concept covered.**
 - **concept_precision** *(judge, doc mode)* — of the entries the agent produced,
   what fraction map to an expected concept? Spurious entries lower it; concepts
-  you list under `acceptable_extra_concepts` are exempt. **1.0 = no off-target
+  you list under `acceptable_extra_concepts` are exempt. **100 = no off-target
   entries.**
 - **fact_recall** *(judge)* — of the `golden_facts` (per table in table mode),
-  what fraction are conveyed by the matched output? **1.0 = all expected facts
+  what fraction are conveyed by the matched output? **100 = all expected facts
   present.**
 - **business_terms_presence** *(judge)* — are the golden's `business_terms`
-  defined or used in the output (matched semantically)? **1.0 = all covered.**
+  defined or used in the output (matched semantically)? **100 = all covered.**
 - **enrichment_diversity** *(deterministic)* — does the output contain the
   sections the golden declares in `expected_headings`? A "Sample Queries" heading
-  is satisfied by a populated `<table>.queries.md` sidecar. **1.0 = all expected
+  is satisfied by a populated `<table>.queries.md` sidecar. **100 = all expected
   sections present.**
 - **entry_grounding** *(deterministic, table mode)* — do all generated entries
-  correspond to real dataset tables, with none invented? **1.0 = nothing
+  correspond to real dataset tables, with none invented? **100 = nothing
   fabricated.**
 - **persona_alignment** *(judge, with `--persona`)* — on the same source, does the
   output emphasize this persona's focus areas while still retaining the shared
-  concepts? **1.0 = strong persona conditioning without dropping shared content.**
+  concepts? **100 = strong persona conditioning without dropping shared content.**
 
 The simplest way is to let the eval **run the case end-to-end** — it does the
 setup (e.g. copying a public dataset into your project), runs the agent, and
@@ -344,7 +344,7 @@ built `kcmd` (`cd toolbox/mdcode && npm run build`).
 To score an output you already produced (no agent run), point `--golden` at it:
 
 ```bash
-python -m eval --output-dir /tmp/enrich_out --golden eval/goldens/example_ga_events.json
+python -m eval --output-dir /tmp/enrich_out --golden eval/goldens/supply_chain.json
 ```
 
 See `eval/goldens/GOLDENS.md` for the golden/case schema (incl. the `run` block

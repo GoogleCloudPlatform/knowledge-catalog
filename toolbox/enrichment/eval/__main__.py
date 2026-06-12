@@ -4,7 +4,7 @@ Two ways to use it, run from `toolbox/enrichment/`:
 
   SCORE an output the agent already produced
     python -m eval --output-dir /path/to/output                       # dynamic (golden-free)
-    python -m eval --output-dir /path/to/output --golden eval/goldens/example_ga_events.json
+    python -m eval --output-dir /path/to/output --golden eval/goldens/supply_chain.json
 
   RUN golden cases on the agent, then score (like the internal Evaluation tab,
   single agent — the golden's `run` block carries the agent inputs + setup):
