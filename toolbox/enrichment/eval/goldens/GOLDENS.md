@@ -48,6 +48,43 @@ The eval auto-detects mode from the run's `trajectory.json` (`agent_type`), so u
    entry, capture the approved/corrected output as a golden. The set then grows
    continuously from real usage instead of being authored once.
 
+## theLook eCommerce — runnable table-mode golden (out-of-the-box)
+
+`thelook_ecommerce.json` is a ready-to-run **table-mode** golden built on the
+public BigQuery dataset `bigquery-public-data.thelook_ecommerce` (a synthetic
+multi-brand online retailer) and grounded by the local markdown corpus under
+`eval/corpora/thelook_ecommerce/` (4 docs: business glossary, order lifecycle,
+data model, metrics) — no Google Drive needed.
+
+Run it end-to-end (from `toolbox/enrichment/`):
+
+```bash
+PROJECT=<your_gcp_project>
+
+# 1. Copy the public dataset into your project (read-only source; idempotent —
+#    `bq cp -n` skips tables that already exist).
+bq --location=US mk -f --dataset "$PROJECT:thelook_ecommerce"
+for t in orders order_items products inventory_items distribution_centers users events; do
+  bq cp -n "bigquery-public-data:thelook_ecommerce.$t" "$PROJECT:thelook_ecommerce.$t"
+done
+
+# 2. Enrich your copy in table mode, grounded by the local markdown corpus.
+export PYTHONPATH=src
+python3 src/agent_runner.py \
+  --mode=table \
+  --dataset="$PROJECT.thelook_ecommerce" \
+  --folders=eval/corpora/thelook_ecommerce \
+  --project="$PROJECT" --model=gemini-2.5-pro \
+  --output_dir=/tmp/thelook_out
+
+# 3. Score the run against the golden (matches each table by name).
+python -m eval --output-dir /tmp/thelook_out --golden eval/goldens/thelook_ecommerce.json
+```
+
+The golden scores per-table `golden_facts` (fact recall), `business_terms`
+coverage, and `expected_headings` — all stated in / derivable from the grounding
+corpus.
+
 ## Notes
 
 - A golden is a strong but imperfect oracle: a good agent can sometimes write
