@@ -311,6 +311,14 @@ See `eval/goldens/GOLDENS.md` for the schema and three ways to build goldens —
 author them, work backward from already-documented data, or harvest them from
 human review.
 
+**Ready-to-run example — theLook eCommerce (table mode):** a complete,
+out-of-the-box golden built on the public `bigquery-public-data.thelook_ecommerce`
+dataset and grounded by a local markdown corpus (`eval/corpora/thelook_ecommerce/`).
+**GOLDENS.md → "theLook eCommerce"** has the full copy-paste flow: copy the public
+dataset into your project (`bq cp`), enrich it in table mode
+(`--folders=eval/corpora/thelook_ecommerce`), then
+`python -m eval --output-dir <out> --golden eval/goldens/thelook_ecommerce.json`.
+
 ## Publishing to the catalog
 
 The agent only **generates** mdcode and runs read-only `kcmd` commands. Pushing
