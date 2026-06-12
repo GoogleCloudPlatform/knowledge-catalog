@@ -56,34 +56,26 @@ multi-brand online retailer) and grounded by the local markdown corpus under
 `eval/corpora/thelook_ecommerce/` (4 docs: business glossary, order lifecycle,
 data model, metrics) — no Google Drive needed.
 
-Run it end-to-end (from `toolbox/enrichment/`):
+Run it end-to-end with **one command** (from `toolbox/enrichment/`). The eval does
+everything from the golden's `run` block — copies the public dataset into your
+project (idempotent), enriches it in table mode grounded by the local corpus, and
+scores it. You only pass your project:
 
 ```bash
-PROJECT=<your_gcp_project>
-
-# 1. Copy the public dataset into your project (read-only source; idempotent —
-#    `bq cp -n` skips tables that already exist).
-bq --location=US mk -f --dataset "$PROJECT:thelook_ecommerce"
-for t in orders order_items products inventory_items distribution_centers users events; do
-  bq cp -n "bigquery-public-data:thelook_ecommerce.$t" "$PROJECT:thelook_ecommerce.$t"
-done
-
-# 2. Enrich your copy in table mode, grounded by the local markdown corpus.
-export PYTHONPATH=src
-python3 src/agent_runner.py \
-  --mode=table \
-  --dataset="$PROJECT.thelook_ecommerce" \
-  --folders=eval/corpora/thelook_ecommerce \
-  --project="$PROJECT" --model=gemini-2.5-pro \
-  --output_dir=/tmp/thelook_out
-
-# 3. Score the run against the golden (matches each table by name).
-python -m eval --output-dir /tmp/thelook_out --golden eval/goldens/thelook_ecommerce.json
+python -m eval --run --goldens eval/goldens/thelook_ecommerce.json \
+    --project <your_gcp_project> --model gemini-2.5-pro --runs 3
 ```
+
+That gives run-level + averaged metrics across 3 runs and writes the reports to a
+timestamped folder under `$TMPDIR/kc_golden_eval_reports/`. Prereqs: ADC
+(`gcloud auth application-default login`) and a built `kcmd`
+(`cd toolbox/mdcode && npm run build`).
 
 The golden scores per-table `golden_facts` (fact recall), `business_terms`
 coverage, and `expected_headings` — all stated in / derivable from the grounding
-corpus.
+corpus. (You don't run `bq` or the agent yourself — `--run` handles the
+copy-public-dataset setup and the agent run; see "Run a golden as a CASE" below
+for the `run`-block schema and how to author your own cases.)
 
 ## Run a golden as a CASE (`--run`) — including your own
 

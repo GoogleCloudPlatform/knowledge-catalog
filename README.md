@@ -295,29 +295,39 @@ still run. Choose the judge model with `--model` (default `gemini-2.5-pro`).
 
 ### Golden-based eval (optional)
 
-Dynamic eval needs no answer key. For deeper checks — *did we capture the expected
-concepts and facts, without spurious entries?* — score against a **golden** that
-declares what the output should contain:
+A **golden** is an answer key you declare for a case — the expected facts, terms,
+and sections. Scoring against it adds **concept_recall**, **concept_precision**,
+**fact_recall**, and section/term coverage on top of the dynamic metrics, so you
+can tell whether the agent captured what it should and didn't invent extras.
+
+The simplest way is to let the eval **run the case end-to-end** — it does the
+setup (e.g. copying a public dataset into your project), runs the agent, and
+scores the result. You only pass your project and the golden:
+
+```bash
+# Runs theLook eCommerce table mode for you (copies the public dataset into
+# <project>, enriches it grounded by the local corpus, scores it) — 3 runs,
+# run-level + averaged metrics:
+python -m eval --run --goldens eval/goldens/thelook_ecommerce.json \
+    --project <your_gcp_project> --model gemini-2.5-pro --runs 3
+```
+
+`--run` repeats each case `--runs` times and writes per-run + averaged reports
+into a timestamped folder under `$TMPDIR/kc_golden_eval_reports/` (printed at the
+end). Add more cases with a comma-separated `--goldens`. Prereqs: ADC
+(`gcloud auth application-default login`) and, for table/context_overlay cases, a
+built `kcmd` (`cd toolbox/mdcode && npm run build`).
+
+To score an output you already produced (no agent run), point `--golden` at it:
 
 ```bash
 python -m eval --output-dir /tmp/enrich_out --golden eval/goldens/example_ga_events.json
 ```
 
-On top of the dynamic metrics this adds **concept_recall**, **concept_precision**,
-**fact_recall**, and section/term coverage. Golden runs write a full
-`golden_report_<run>.md` (untruncated rationales) into a tmp folder
-(`$TMPDIR/kc_golden_eval_reports/`) — the path is printed on the `[eval]` log.
-See `eval/goldens/GOLDENS.md` for the schema and three ways to build goldens —
-author them, work backward from already-documented data, or harvest them from
-human review.
-
-**Ready-to-run example — theLook eCommerce (table mode):** a complete,
-out-of-the-box golden built on the public `bigquery-public-data.thelook_ecommerce`
-dataset and grounded by a local markdown corpus (`eval/corpora/thelook_ecommerce/`).
-**GOLDENS.md → "theLook eCommerce"** has the full copy-paste flow: copy the public
-dataset into your project (`bq cp`), enrich it in table mode
-(`--folders=eval/corpora/thelook_ecommerce`), then
-`python -m eval --output-dir <out> --golden eval/goldens/thelook_ecommerce.json`.
+See `eval/goldens/GOLDENS.md` for the golden/case schema (incl. the `run` block
+for your own cases), `--run`/`--runs`/`--goldens` usage, and three ways to build
+goldens — author them, work backward from already-documented data, or harvest
+them from human review.
 
 ## Publishing to the catalog
 
