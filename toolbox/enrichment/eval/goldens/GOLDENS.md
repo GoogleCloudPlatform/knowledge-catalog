@@ -110,7 +110,9 @@ python -m eval --run --goldens eval/goldens/thelook_ecommerce.json \
 python -m eval --run --goldens eval/goldens/a.json,eval/goldens/b.json --project <p>
 ```
 
-- `--runs N` (default 3 in `--run` mode): per-run + averaged metrics.
+- `--runs N` (default 3 in `--run` mode): per-run + averaged metrics, plus the
+  cross-run **concept_consistency** / **content_consistency** stability metrics
+  (informational; need ≥2 runs — surfaced as n/a for a single run).
 - `--concurrency` (default 2, env `KC_EVAL_MAX_CONCURRENCY`): max concurrent agent
   processes; the agent also caps its own per-mode LLM concurrency, so keep this low.
 - Reports land in a timestamped run folder

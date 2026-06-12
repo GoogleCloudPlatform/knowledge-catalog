@@ -67,6 +67,9 @@ def build_results(output_dir, agent_type, mode, metric_results, traj, tokens,
     out_metrics.append({
         "name": r.name,
         "score": sc,
+        # `passed` is needed by the cross-run roll-up (runs_passed = k/n); kept on
+        # every per-run metric so aggregate.py can mirror the internal harness.
+        "passed": bool(getattr(r, "passed", True)),
         "description": label.get(r.name, r.name),
         "rationale": r.detail,
         "insights": getattr(r, "insights", "") or "",
@@ -117,6 +120,14 @@ def write_report(results: dict, output_dir: str,
     lines.append(f"## {m['name']} — {fmt_score(sc)}/100")
     if m.get("description"):
       lines.append(f"_{m['description']}_")
+    # Per-run signal (mean across runs): runs k/n + each run's score. Consistency
+    # metrics hold entry COUNTS (not 0..1) and explain them in their rationale.
+    rs = m.get("run_scores")
+    if rs and not m["name"].endswith("_consistency"):
+      rp = m.get("runs_passed")
+      lines.append("")
+      lines.append(f"- per run: {', '.join(fmt_score(s) for s in rs)}"
+                   + (f"  ·  passed {rp}" if rp else ""))
     lines.append("")
     lines.append("**Rationale:**")
     lines.append("")
@@ -127,6 +138,26 @@ def write_report(results: dict, output_dir: str,
       lines.append("")
       lines.append(_wrap_para(m.get("insights")))
     lines.append("")
+
+  # Per-run breakdown (multi-run cases): each run's metrics + rationale, so a
+  # reader can drill into what earned each score (mirrors the webapp drill-down).
+  per_run = results.get("per_run")
+  if per_run and len(per_run) > 1:
+    lines.append("---")
+    lines.append("")
+    lines.append("# Per-run breakdown")
+    lines.append("")
+    for run in per_run:
+      avg = run.get("average_score")
+      lines.append(f"## Run {run.get('index')} — average {fmt_score(avg)}/100")
+      lines.append("")
+      for m in run.get("metrics", []):
+        lines.append(f"- **{m['name']}** — {fmt_score(m.get('score'))}/100"
+                     + ("" if m.get("passed", True) else " (below gate)"))
+        rat = " ".join((m.get("rationale") or "").split())
+        if rat:
+          lines.append(f"  - {rat}")
+      lines.append("")
   path = os.path.join(output_dir, filename)
   try:
     with open(path, "w", encoding="utf-8") as f:

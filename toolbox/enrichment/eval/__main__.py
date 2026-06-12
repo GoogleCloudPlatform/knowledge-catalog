@@ -33,6 +33,7 @@ import tempfile
 import uuid
 from collections import defaultdict
 
+from . import aggregate
 from . import runner
 from .dynamic_eval import run_dynamic_eval, fmt_score
 from .golden_eval import run_golden_eval
@@ -59,10 +60,20 @@ def _fmt(results: dict) -> str:
   lines += ["",
             f"  {'metric':{w}} {'score':>7}   rationale",
             f"  {'-'*w} {'-'*7}   {'-'*40}"]
+  multi = bool(n_runs and n_runs > 1)
   for m in metrics:
     rat = (m.get("rationale") or "").replace("\n", " ")
-    if len(rat) > 90:
-      rat = rat[:90] + "…"
+    # On multi-run cases, lead the rationale with the per-run signal the webapp
+    # shows ("runs k/n [s1, s2]") so flaky/variant metrics are obvious.
+    rs = m.get("run_scores")
+    # Consistency metrics carry entry COUNTS in run_scores (not 0..1 scores) and
+    # explain them in their rationale — don't render them as percentages.
+    if multi and rs and not m["name"].endswith("_consistency"):
+      rp = m.get("runs_passed")
+      tag = (f"runs {rp} " if rp else "") + f"[{', '.join(fmt_score(s) for s in rs)}]"
+      rat = f"{tag}  {rat}".strip()
+    if len(rat) > 100:
+      rat = rat[:100] + "…"
     lines.append(f"  {m['name']:{w}} {fmt_score(m['score']):>7}   {rat}")
   lines.append(f"  {'-'*w} {'-'*7}")
   lines.append(f"  {'AVERAGE':{w}} {fmt_score(results.get('average_score')):>7}")
@@ -106,38 +117,12 @@ def _fmt_summary(results: list[dict], batch_dir: str | None) -> str:
   return "\n".join(lines)
 
 
-def _aggregate_runs(run_results: list[dict]) -> dict:
-  """Average N runs of one case into one result (mean per metric + per-run avgs)."""
-  if len(run_results) == 1:
-    r = dict(run_results[0])
-    r["runs"] = 1
-    return r
-  base = run_results[0]
-  by_metric: dict[str, list[float]] = defaultdict(list)
-  for r in run_results:
-    for m in r.get("metrics", []):
-      if isinstance(m.get("score"), (int, float)):
-        by_metric[m["name"]].append(m["score"])
-  metrics = []
-  n = len(run_results)
-  for m in base.get("metrics", []):
-    vals = by_metric.get(m["name"], [])
-    if vals:
-      rng = (f" (range {fmt_score(min(vals))}–{fmt_score(max(vals))})"
-             if min(vals) != max(vals) else "")
-      metrics.append({"name": m["name"], "score": sum(vals) / len(vals),
-                      "rationale": f"mean of {len(vals)}/{n} run(s){rng}."})
-    else:
-      metrics.append({"name": m["name"], "score": None,
-                      "rationale": "n/a across runs."})
-  run_avgs = [r.get("average_score") for r in run_results
-              if isinstance(r.get("average_score"), (int, float))]
-  agg = dict(base)
-  agg["metrics"] = metrics
-  agg["average_score"] = (sum(run_avgs) / len(run_avgs)) if run_avgs else None
-  agg["per_run_averages"] = run_avgs
-  agg["runs"] = n
-  return agg
+def _aggregate_runs(run_results: list[dict], mode: str | None = None,
+                    model: str = "gemini-2.5-pro") -> dict:
+  """Aggregate N runs of one case → one result, matching the internal harness
+  (per-metric mean + representative rationale + run_scores/runs_passed, per-run
+  drill-down, and the cross-run consistency metrics). See aggregate.py."""
+  return aggregate.aggregate_runs(run_results, mode=mode, model=model)
 
 
 # --------------------------- run mode (case-runner) ---------------------------
@@ -198,7 +183,8 @@ async def _run_cases(goldens, project, model, runs, concurrency, batch_dir,
       continue
     per_case[(gp, stem)].append(res)
 
-  results = [_aggregate_runs(rl) for rl in per_case.values() if rl]
+  results = [_aggregate_runs(rl, mode=rl[0].get("mode"), model=model)
+             for rl in per_case.values() if rl]
   return results
 
 

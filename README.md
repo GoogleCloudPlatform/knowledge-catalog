@@ -257,8 +257,13 @@ Flags (see `python -m eval --help`):
 
 | Flag | Required | Meaning |
 |------|----------|---------|
-| `--output-dir` | yes | The enrichment run's output dir (contains `catalog/` + `trajectory.json`). |
+| `--output-dir` | yes (score mode) | The enrichment run's output dir (contains `catalog/` + `trajectory.json`). |
 | `--golden` | no | Golden file → golden-based eval (adds concept_recall/precision, fact_recall, coverage). Omit for dynamic (golden-free) eval. See `eval/goldens/GOLDENS.md`. |
+| `--run` | no | Run each golden as a CASE (generate the mdcode via the agent, then score) instead of scoring an existing dir. Requires `--project`. |
+| `--goldens` | no | Comma-separated golden files (run/score several cases at once). |
+| `--runs` | no | How many times to run each case (default 3 in `--run`). Reports per-run + averaged metrics, and enables the cross-run **consistency** metrics (need ≥2 runs). |
+| `--project` | with `--run` | GCP project the agent runs in (also sets `GOOGLE_CLOUD_PROJECT` for the judge). |
+| `--concurrency` | no | Max concurrent agent processes in `--run` (default 2, env `KC_EVAL_MAX_CONCURRENCY`). |
 | `--persona` | no | Persona id from the golden's `personas` (golden mode only). |
 | `--model` | no | Judge model — any Vertex AI model id you have access to. Defaults to `gemini-2.5-pro`. |
 | `--json` | no | Emit raw JSON instead of the formatted scorecard (for piping/automation). |
@@ -347,6 +352,27 @@ into a timestamped folder under `$TMPDIR/kc_golden_eval_reports/` (printed at th
 end). Add more cases with a comma-separated `--goldens`. Prereqs: ADC
 (`gcloud auth application-default login`) and, for table/context_overlay cases, a
 built `kcmd` (`cd toolbox/mdcode && npm run build`).
+
+### Multiple runs: averaged metrics + consistency
+
+With `--runs N` (N ≥ 2), each metric is reported as the **mean across runs** with
+its per-run scores and how many runs passed (`runs k/n`), the case rationale keeps
+the *real* per-metric explanation (a representative run's, preferring a failing
+one — not just "mean of N"), and the report appends a **per-run breakdown** you
+can drill into. Two extra **cross-run stability** metrics are added (informational
+— they don't gate the case or affect the average):
+
+- **concept_consistency** — does the agent produce the **same set of concepts**
+  every run? Each concept scores the fraction of runs it appears in, so producing
+  more/fewer concepts between runs lowers it (matched by meaning when the judge is
+  on, by name/word overlap otherwise). **100 = identical concept set each run.**
+- **content_consistency** — for concepts that recur across runs, are their
+  **facts consistent** (no drift/contradiction between runs)? **100 = same facts
+  every run.**
+
+Both measure stability *across* runs, so they only apply with **≥2 runs**; with a
+single run they're surfaced as `n/a` with a note to run the case 2–3× to assess
+stability.
 
 To score an output you already produced (no agent run), point `--golden` at it:
 
