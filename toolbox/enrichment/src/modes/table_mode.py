@@ -82,27 +82,35 @@ def _write_table_files(output_dir: str, project: str, dataset_id: str, meta: dic
     return [os.path.join(rel_dir, f"{table}.overview.md")]
 
 
-async def _prepare_docs(topic: str, folder_id: str | None, usage_acc: dict, model: str) -> list[dict]:
-    """Fetch folder docs and summarize each into a compact router descriptor.
+async def _prepare_docs(topic: str, folders: list[str] | None, usage_acc: dict, model: str) -> list[dict]:
+    """Fetch grounding docs from each folder and summarize into router descriptors.
 
-    Returns a list of {id, name, url, content, descriptor}.
+    `folders` is a mixed, comma-separated list routed per entry (see
+    drive_tools.is_local_path): a Drive folder URL/ID is listed via the Drive
+    API; a local directory (or .md file) grounds overviews from disk.
+
+    Returns a list of {id, name, url, content, descriptor, _kind}.
     """
-    if not folder_id:
-        return []
+    files = []
+    for entry in (folders or []):
+        entry = (entry or "").strip()
+        if not entry:
+            continue
+        if is_local_path(entry):
+            md_paths = list_local_md(entry)
+            files.extend({"id": p, "name": os.path.basename(p), "webViewLink": p,
+                          "mimeType": "text/markdown", "_local": True} for p in md_paths)
+            print(f"[Route] --folder {entry!r} -> local markdown ({len(md_paths)} "
+                  f"file(s), resolved {os.path.abspath(os.path.expanduser(entry))}).",
+                  flush=True)
+        else:
+            found = list_folder_files(extract_folder_id(entry))
+            files.extend(found)
+            print(f"[Route] --folder {entry!r} -> Drive folder ({len(found)} file(s)).",
+                  flush=True)
 
-    # A local markdown file or directory grounds table overviews from disk (no
-    # Drive). Mirrors the Drive-folder path; descriptors are summarized the same.
-    if is_local_path(folder_id):
-        md_paths = list_local_md(folder_id)
-        files = [{"id": p, "name": os.path.basename(p), "webViewLink": p,
-                  "mimeType": "text/markdown", "_local": True} for p in md_paths]
-        print(f"[Local] 📁 Local markdown grounding: {folder_id} (resolved: "
-              f"{os.path.abspath(os.path.expanduser(folder_id))}) -> {len(files)} "
-              f"file(s). Reading + summarizing...", flush=True)
-    else:
-        print(f"[Folder] 📁 Listing Drive folder: {folder_id}", flush=True)
-        files = list_folder_files(folder_id)
-        print(f"[Folder] 📁 Found {len(files)} file(s). Fetching + summarizing...", flush=True)
+    if not files:
+        return []
 
     sem = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
@@ -117,7 +125,9 @@ async def _prepare_docs(topic: str, folder_id: str | None, usage_acc: dict, mode
         async with sem:
             prompt = f"DOCUMENT TITLE: {name}\nSOURCE URL: {url}\n\nDOCUMENT CONTENT:\n{content[:50000]}"
             descriptor = await common.run_text(create_doc_summarizer_runner(model), prompt, usage_acc)
-        return {"id": idx, "name": name, "url": url, "content": content, "descriptor": descriptor.strip()}
+        return {"id": idx, "name": name, "url": url, "content": content,
+                "descriptor": descriptor.strip(),
+                "_kind": "local_md" if f.get("_local") else "gdoc"}
 
     docs = await asyncio.gather(*[_prep(i, f) for i, f in enumerate(f for f in files if f.get("id"))])
     return list(docs)
@@ -163,16 +173,17 @@ async def _route_docs_for_table(table_meta: dict, docs: list[dict], usage_acc: d
     return _parse_router(text, len(docs))
 
 
-async def run(dataset: str, folder: str | None, topic: str, output_dir: str | None, model: str):
+async def run(dataset: str, folders: list[str] | None, topic: str, output_dir: str | None, model: str):
     _t0 = time.monotonic()
     project, dataset_id = _parse_dataset(dataset)
-    # Accept either a bare folder id or a full Drive folder URL.
-    folder = extract_folder_id(folder) if folder else folder
+    # --folder is a mixed list (Drive folders and/or local md dirs); each entry is
+    # routed and id-extracted per entry inside _prepare_docs.
+    folders = list(folders or [])
 
     print("=" * 60)
     print("=== ADK TABLE AGENT: Dataplex-Sourced, Folder-Grounded Enrichment ===")
     print(f"Topic: {topic}")
-    print(f"Dataset: {project}.{dataset_id}  |  Folder: {folder or '(none)'}")
+    print(f"Dataset: {project}.{dataset_id}  |  Folders: {folders or '(none)'}")
     print("=" * 60)
 
     usage_acc = {"input": 0, "output": 0}
@@ -200,8 +211,8 @@ async def run(dataset: str, folder: str | None, topic: str, output_dir: str | No
               "Check the dataset id and that you can read its @bigquery entries.", flush=True)
         return
 
-    # 2. Fetch + summarize the Drive folder into per-doc router descriptors.
-    docs = await _prepare_docs(topic, folder, usage_acc, model)
+    # 2. Fetch + summarize the folders (Drive and/or local md) into descriptors.
+    docs = await _prepare_docs(topic, folders, usage_acc, model)
     if not docs:
         print("[Folder] ⚠️  No folder content — tables will be documented from schema only.", flush=True)
 
@@ -242,15 +253,18 @@ async def run(dataset: str, folder: str | None, topic: str, output_dir: str | No
     # 4. catalog.yaml was already written by kcmd_tools.init_pull_dataset (scope +
     #    snapshot declaring schema + publishing only the overview aspect).
 
-    # 5. Persist trajectory for dynamic eval (mirrors doc mode). For each table we
-    # record the routed (relevant) docs, so eval can see the grounding.
+    # 5. Persist trajectory for dynamic eval (mirrors doc mode). Per-source fetches
+    # first (fetch_gdoc/read_local_md) so eval counts tool calls consistently and
+    # grounds hallucination on clean per-doc content; route_docs keeps only the
+    # routing (name/url), not content, to avoid duplicating it.
     if output_dir:
-        tool_uses = [{"name": "get_table_entry", "args": {"table": m["table"]}} for m in tables]
-        tool_responses = [
+        tool_uses, tool_responses = common.doc_tool_calls(docs)
+        tool_uses.extend({"name": "get_table_entry", "args": {"table": m["table"]}} for m in tables)
+        tool_responses.extend(
             {"name": "get_table_entry",
              "response": {"table": m["table"], "schema_fields": m["schema_fields"]}}
             for m in tables
-        ]
+        )
         for (meta, sel_docs, _text) in results:
             tool_uses.append({"name": "route_docs", "args": {"table": meta["table"]}})
             tool_responses.append({
@@ -258,8 +272,7 @@ async def run(dataset: str, folder: str | None, topic: str, output_dir: str | No
                 "response": {
                     "table": meta["table"],
                     "relevant_docs": [
-                        {"name": d["name"], "url": d["url"], "content": d["content"][:50000]}
-                        for d in sel_docs
+                        {"name": d["name"], "url": d["url"]} for d in sel_docs
                     ],
                 },
             })

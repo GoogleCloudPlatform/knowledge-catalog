@@ -74,6 +74,31 @@ def parse_mdcode_blocks(text: str, output_dir: str) -> list[str]:
     return written
 
 
+def doc_tool_calls(docs: list) -> tuple[list, list]:
+    """Build per-document trajectory tool calls from a prepared-docs list.
+
+    Gives table mode the same per-source tool-call recording doc mode has, so
+    eval counts tool calls consistently and grounds hallucination checks on
+    clean per-doc `content` (not a truncated json blob of the routing response).
+    Each doc dict carries a `_kind` set by the mode's prepare step: `local_md`
+    -> read_local_md, `code` -> explore_repo, anything else -> fetch_gdoc.
+    Returns (tool_uses, tool_responses).
+    """
+    uses, responses = [], []
+    for d in (docs or []):
+        kind = d.get("_kind", "gdoc")
+        url = d.get("url", "")
+        content = (d.get("content") or "")[:50000]
+        if kind == "code":
+            uses.append({"name": "explore_repo", "args": {"component": d.get("name", "")}})
+            responses.append({"name": "explore_repo", "response": {"url": url, "content": content}})
+        else:
+            tn = "read_local_md" if kind == "local_md" else "fetch_gdoc"
+            uses.append({"name": tn, "args": {"url": url}})
+            responses.append({"name": tn, "response": {"url": url, "name": d.get("name", ""), "content": content}})
+    return uses, responses
+
+
 def write_trajectory(output_dir: str, agent_type: str, user_input: str,
                      tool_uses: list, tool_responses: list, final_text: str,
                      usage_acc: dict, latency: float = 0.0) -> None:

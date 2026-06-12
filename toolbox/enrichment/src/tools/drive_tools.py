@@ -83,8 +83,24 @@ _MD_EXTS = (".md", ".markdown")
 
 
 def is_local_path(s: str) -> bool:
-    """True if `s` points at an existing local file or directory."""
-    return bool(s) and os.path.exists(os.path.expanduser(s))
+    """Route a single --docs/--folder entry to local markdown vs Google Drive.
+
+    Format-first so the decision never depends on what happens to exist in the
+    process CWD: an http(s) URL or a bare Drive-id token is Drive; a
+    `.md`/`.markdown` suffix or a path-shaped string (absolute, `./`, `../`,
+    `~`, or containing a separator) is local. Only a bare relative name with no
+    path markers falls back to an existence check before defaulting to Drive.
+    """
+    s = (s or "").strip()
+    if not s:
+        return False
+    if s.startswith(("http://", "https://")):  # Google Doc / Drive folder URL
+        return False
+    if s.lower().endswith(_MD_EXTS):  # explicit markdown file
+        return True
+    if s.startswith(("/", "./", "../", "~")) or os.sep in s:  # path-shaped
+        return True
+    return os.path.exists(os.path.expanduser(s))  # bare name: tiebreak, else Drive
 
 
 def list_local_md(path: str) -> list:

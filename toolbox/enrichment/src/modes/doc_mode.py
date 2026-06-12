@@ -95,29 +95,49 @@ def _build_synthetic_scope(topic: str, folder_files: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _partition_doc_inputs(docs: list, folder):
-    """Split doc-mode inputs into Drive vs local-markdown sources.
+def _partition_doc_inputs(docs: list, folders):
+    """Route each --docs/--folder entry to Drive vs local markdown by format.
 
-    A local .md/.markdown file via --docs is a depth-0 spine doc; a local
-    directory (via --docs OR --folder) contributes its .md files as depth-1
-    children, like a Drive folder. Returns
-    (drive_docs, drive_folder, local_spine_md, local_child_md).
+    Both flags are mixed, comma-separated lists routed per entry (see
+    drive_tools.is_local_path, which is format-first):
+      --docs:   a Drive Doc URL/ID -> drive_docs; a local .md file -> depth-0
+                spine; a local directory -> depth-1 children.
+      --folder: a Drive folder URL/ID -> drive_folders; a local directory (or
+                file) -> depth-1 children.
+    Returns (drive_docs, drive_folders, local_spine_md, local_child_md).
     """
-    local_spine_md, local_child_md, drive_docs = [], [], []
+    local_spine_md, local_child_md = [], []
+    drive_docs, drive_folders = [], []
     for d in (docs or []):
-        dp = os.path.expanduser(d or "")
-        if os.path.exists(dp):
-            if os.path.isdir(dp):
-                local_child_md.extend(list_local_md(dp))
+        d = (d or "").strip()
+        if not d:
+            continue
+        if is_local_path(d):
+            files = list_local_md(d)
+            if os.path.isdir(os.path.expanduser(d)):
+                local_child_md.extend(files)
+                kind = f"local md folder ({len(files)} file(s))"
             else:
-                local_spine_md.extend(list_local_md(dp))
+                local_spine_md.extend(files)
+                kind = "local md spine file" if files else "local md file (MISSING)"
         else:
             drive_docs.append(d)
-    drive_folder = folder
-    if folder and os.path.isdir(os.path.expanduser(folder)):
-        local_child_md.extend(list_local_md(folder))
-        drive_folder = None
-    return (drive_docs, drive_folder,
+            kind = "Drive doc"
+        print(f"[Route] --docs {d!r} -> {kind}", flush=True)
+    for f in (folders or []):
+        f = (f or "").strip()
+        if not f:
+            continue
+        if is_local_path(f):
+            files = list_local_md(f)
+            local_child_md.extend(files)
+            kind = (f"local md folder ({len(files)} file(s))" if files
+                    else "local md folder (EMPTY/MISSING)")
+        else:
+            drive_folders.append(f)
+            kind = "Drive folder"
+        print(f"[Route] --folder {f!r} -> {kind}", flush=True)
+    return (drive_docs, drive_folders,
             sorted(set(local_spine_md)), sorted(set(local_child_md)))
 
 
@@ -163,7 +183,7 @@ def _normalize_entries(output_dir: str) -> list[str]:
     return fixed
 
 
-async def run(topic: str, docs: list[str], folder: str | None, output_dir: str | None,
+async def run(topic: str, docs: list[str], folders: list[str] | None, output_dir: str | None,
               model: str, entry_group: str):
     _t0 = time.monotonic()
     # entry_group is `project.location.entryGroupId`; derive the resource-name
@@ -196,21 +216,22 @@ async def run(topic: str, docs: list[str], folder: str | None, output_dir: str |
     # Split local-markdown inputs out from Drive inputs (a local .md via --docs =
     # depth-0 spine; a local dir via --docs/--folder = depth-1 children). Injected
     # after the crawl below so they never hit the Drive API.
-    start_docs, folder, local_spine_md, local_child_md = _partition_doc_inputs(
-        start_docs, folder)
+    start_docs, drive_folders, local_spine_md, local_child_md = _partition_doc_inputs(
+        start_docs, folders)
     if local_spine_md or local_child_md:
         print(f"[Local] 📂 Markdown inputs: {len(local_spine_md)} spine file(s), "
               f"{len(local_child_md)} folder child(ren). Relative paths resolve "
               f"from CWD: {os.getcwd()}", flush=True)
 
-    folder = extract_folder_id(folder) if folder else folder
+    drive_folders = [extract_folder_id(f) for f in drive_folders if f]
 
-    # Seed additional inputs by listing a Drive folder (Docs, Sheets, Slides, PDFs).
-    if folder:
+    # Seed additional inputs by listing each Drive folder (Docs/Sheets/Slides/PDF).
+    for folder in drive_folders:
         print(f"[Crawler] 📁 Listing Drive folder: {folder}", flush=True)
-        folder_files = list_folder_files(folder)
-        print(f"[Crawler] 📁 Found {len(folder_files)} file(s) in folder.", flush=True)
-        for f in folder_files:
+        one = list_folder_files(folder)
+        print(f"[Crawler] 📁 Found {len(one)} file(s) in folder.", flush=True)
+        folder_files.extend(one)
+        for f in one:
             fid = f.get("id")
             if not fid:
                 continue
