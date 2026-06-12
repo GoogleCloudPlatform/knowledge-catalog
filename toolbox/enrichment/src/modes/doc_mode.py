@@ -6,6 +6,7 @@ import asyncio
 import glob
 import os
 import re
+import time
 import uuid
 
 import yaml
@@ -135,6 +136,7 @@ def _normalize_entries(output_dir: str) -> list[str]:
 
 async def run(topic: str, docs: list[str], folder: str | None, output_dir: str | None,
               model: str, entry_group: str):
+    _t0 = time.monotonic()
     # entry_group is `project.location.entryGroupId`; derive the resource-name
     # prefix for the generated KB entries. All entries use the 1P generic entry
     # type (no per-run choice); the enriched content is their `overview` aspect.
@@ -304,4 +306,5 @@ async def run(topic: str, docs: list[str], folder: str | None, output_dir: str |
         for (url, depth, content) in all_fetched_docs
     ]
     common.write_trajectory(output_dir, "doc", f"TOPIC: {topic}",
-                            tool_uses, tool_responses, final_output, usage_acc)
+                            tool_uses, tool_responses, final_output, usage_acc,
+                            latency=time.monotonic() - _t0)

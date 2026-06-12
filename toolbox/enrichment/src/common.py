@@ -76,11 +76,12 @@ def parse_mdcode_blocks(text: str, output_dir: str) -> list[str]:
 
 def write_trajectory(output_dir: str, agent_type: str, user_input: str,
                      tool_uses: list, tool_responses: list, final_text: str,
-                     usage_acc: dict) -> None:
+                     usage_acc: dict, latency: float = 0.0) -> None:
     """Persist trajectory.json capturing the agent's run (same shape for both modes).
 
     Written next to the generated mdcode as a record of what the agent read and
     produced; consumed by external evaluation/tooling that reads it by path.
+    `latency` is the wall-clock seconds the run took (0 if not measured).
     """
     if not output_dir:
         return
@@ -92,6 +93,7 @@ def write_trajectory(output_dir: str, agent_type: str, user_input: str,
         "tool_responses": tool_responses,
         "final_text": final_text,
         "token_usage": {"input": usage_acc["input"], "output": usage_acc["output"]},
+        "latency": round(latency, 2),
     }
     traj_path = os.path.join(output_dir, "trajectory.json")
     with open(traj_path, "w") as f:
