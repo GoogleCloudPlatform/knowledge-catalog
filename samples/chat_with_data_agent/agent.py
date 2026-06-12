@@ -32,6 +32,27 @@ BIGQUERY_MCP_ENDPOINT = "https://bigquery.googleapis.com/mcp"
 DATAPLEX_MCP_ENDPOINT = "https://dataplex.googleapis.com/mcp"
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 
+# Write-only mode (opt-in via env var). When CHAT_AGENT_WRITE_ONLY is truthy,
+# `execute_sql_readonly` is hidden from the BigQuery toolset and the agent
+# instruction is augmented to direct the model to emit SQL in a fenced block
+# instead of executing it. Useful for offline eval where you want to isolate
+# planning quality from BigQuery MCP execution; not recommended for end-user
+# chat where actual query results are expected.
+WRITE_ONLY_MODE = os.environ.get("CHAT_AGENT_WRITE_ONLY", "").lower() in (
+    "1", "true", "yes", "on"
+)
+_WRITE_ONLY_GUIDELINES = (
+    "\n\n## Write-only mode (CHAT_AGENT_WRITE_ONLY=1 is set):\n"
+    "- The `execute_sql_readonly` tool is **not available** in this build.\n"
+    "- When you would normally run a query, instead emit the complete SQL\n"
+    "  inside a fenced ```sql block in your text response and stop.\n"
+    "- Always use fully-qualified BigQuery table names in the form\n"
+    "  `project.dataset.table` so the table is unambiguously identified.\n"
+    "- Do not apologise for not executing — that is the intended behaviour.\n"
+    "- You may still use BigQuery schema/list tools (e.g. `get_table_info`,\n"
+    "  `list_table_ids`) to inspect tables before writing the SQL.\n"
+)
+
 # Credentials object stays in module scope; the httpx event hook below calls
 # .refresh() on it lazily before each MCP request so the Bearer token never
 # goes stale mid-session.
@@ -99,6 +120,8 @@ def load_instruction(project_id: str) -> str:
         " discovery sub-agent and explore/query data using BigQuery and"
         " Dataplex OneMCP tools."
     )
+  if WRITE_ONLY_MODE:
+    content += _WRITE_ONLY_GUIDELINES
   return content + f"\n\nUse Consumer Project ID: {project_id} for billing or running queries"
 
 
@@ -107,6 +130,12 @@ bigquery_mcp_toolset = McpToolset(
         url=BIGQUERY_MCP_ENDPOINT,
         headers=static_headers,
         httpx_client_factory=make_mcp_http_client,
+    ),
+    # In write-only mode, suppress execute_sql_readonly so the agent must emit
+    # SQL as text instead of running it. No-op otherwise.
+    tool_filter=(
+        (lambda tool, ctx=None: tool.name != "execute_sql_readonly")
+        if WRITE_ONLY_MODE else None
     ),
 )
 
