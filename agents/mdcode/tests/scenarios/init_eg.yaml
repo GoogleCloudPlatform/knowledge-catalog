@@ -1,0 +1,14 @@
+name: init_eg
+description: Validate CatalogManifest dynamic initialization with an explicit EntryGroup source.
+setup:
+  catalog:
+    entryGroups:
+      - name: projects/test-proj/locations/us/entryGroups/test-group
+
+init:
+  entryGroup: test-proj.us.test-group
+
+assert:
+  fileSystem:
+    catalog.yaml:
+      contains: "scope: entryGroup.test-proj.us.test-group"

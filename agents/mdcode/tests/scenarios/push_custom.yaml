@@ -1,0 +1,44 @@
+name: push_custom
+description: Push Custom entry modifications
+setup:
+  catalog:
+    entryGroups:
+      - name: projects/p/locations/us/entryGroups/custom-group
+    entryTypes:
+      - name: projects/p/locations/global/entryTypes/custom-type
+    entries:
+      - name: projects/p/locations/us/entryGroups/custom-group/entries/custom-entry
+        entryType: projects/p/locations/global/entryTypes/custom-type
+        entrySource:
+          description: Old custom description
+
+  fileSystem:
+    catalog.yaml: |
+      scope: entryGroup.p.us.custom-group
+      snapshot:
+        entries:
+          - p.global.custom-type
+
+actions:
+  - action: pull
+  - action: updateEntry
+    entry:
+      name: custom-entry
+      type: p.global.custom-type
+      resource:
+        description: New custom description
+    fields:
+      - resource
+  - action: push
+
+assert:
+  fileSystem:
+    catalog/custom-entry.yaml:
+      - contains: "name: custom-entry"
+      - contains: "description: New custom description"
+  catalog:
+    entries:
+      - name: projects/p/locations/us/entryGroups/custom-group/entries/custom-entry
+        entryType: projects/p/locations/global/entryTypes/custom-type
+        entrySource:
+          description: New custom description

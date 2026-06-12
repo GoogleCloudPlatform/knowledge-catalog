@@ -1,0 +1,49 @@
+name: pull_bq_filtered
+description: BigQuery dataset with snapshot filtering
+setup:
+  bigQuery:
+    datasets:
+      - id: p:d
+        datasetReference:
+          projectId: p
+          datasetId: d
+        location: us
+    tables:
+      - id: p:d.t1
+        tableReference:
+          projectId: p
+          datasetId: d
+          tableId: t1
+  catalog:
+    entryTypes:
+      - name: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
+        requiredAspects:
+          - type: projects/dataplex-types/locations/global/aspectTypes/bigquery-dataset
+      - name: projects/dataplex-types/locations/global/entryTypes/bigquery-table
+        requiredAspects:
+          - type: projects/dataplex-types/locations/global/aspectTypes/bigquery-table
+    aspectTypes:
+      - name: projects/dataplex-types/locations/global/aspectTypes/bigquery-dataset
+      - name: projects/dataplex-types/locations/global/aspectTypes/bigquery-table
+    entries:
+      - name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d
+        entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
+      - name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d/tables/t1
+        entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-table
+
+  fileSystem:
+    catalog.yaml: |
+      scope: bq-dataset.p.d
+      snapshot:
+        entries:
+          - dataplex-types.global.bigquery-table
+
+actions:
+  - action: pull
+
+assert:
+  fileSystem:
+    catalog/p.d.yaml: null
+    catalog/p.d/t1.yaml:
+      - contains: "name: p.d/t1"
+      - contains: "type: dataplex-types.global.bigquery-table"

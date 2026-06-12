@@ -1,0 +1,46 @@
+name: reference_bq
+description: Referencing a BQ dataset entries
+setup:
+  bigQuery:
+    datasets:
+      - id: p:d
+        datasetReference:
+          projectId: p
+          datasetId: d
+        location: US
+    tables:
+      - id: p:d.t1
+        tableReference:
+          projectId: p
+          datasetId: d
+          tableId: t1
+  catalog:
+    entryGroups:
+      - name: projects/p/locations/us/entryGroups/custom-group
+    entryTypes:
+      - name: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
+      - name: projects/dataplex-types/locations/global/entryTypes/bigquery-table
+    entries:
+      - name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d
+        entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
+      - name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d/tables/t1
+        entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-table
+
+  fileSystem:
+    catalog.yaml: |
+      scope: entryGroup.p.us.custom-group
+      reference:
+        scope: bq-dataset.p.d
+
+
+actions:
+  - action: reference
+
+assert:
+  fileSystem:
+    reference/p.d.yaml:
+      - contains: "name: p.d"
+      - contains: "type: dataplex-types.global.bigquery-dataset"
+    reference/p.d/t1.yaml:
+      - contains: "name: p.d/t1"
+      - contains: "type: dataplex-types.global.bigquery-table"

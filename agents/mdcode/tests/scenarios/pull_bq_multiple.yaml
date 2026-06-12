@@ -1,0 +1,63 @@
+name: pull_bq_multiple
+description: Multiple BigQuery datasets in list scope format
+setup:
+  bigQuery:
+    datasets:
+      - id: p:d1
+        datasetReference:
+          projectId: p
+          datasetId: d1
+        location: us
+      - id: p:d2
+        datasetReference:
+          projectId: p
+          datasetId: d2
+        location: us
+    tables:
+      - id: p:d1.t1
+        tableReference:
+          projectId: p
+          datasetId: d1
+          tableId: t1
+      - id: p:d2.t2
+        tableReference:
+          projectId: p
+          datasetId: d2
+          tableId: t2
+  catalog:
+    entryTypes:
+      - name: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
+      - name: projects/dataplex-types/locations/global/entryTypes/bigquery-table
+    entries:
+      - name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d1
+        entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
+      - name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d1/tables/t1
+        entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-table
+      - name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d2
+        entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
+      - name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d2/tables/t2
+        entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-table
+
+  fileSystem:
+    catalog.yaml: |
+      scope:
+        - bq-dataset.p.d1
+        - bq-dataset.p.d2
+
+actions:
+  - action: pull
+
+assert:
+  fileSystem:
+    catalog/p.d1.yaml:
+      - contains: "name: p.d1"
+      - contains: "type: dataplex-types.global.bigquery-dataset"
+    catalog/p.d1/t1.yaml:
+      - contains: "name: p.d1/t1"
+      - contains: "type: dataplex-types.global.bigquery-table"
+    catalog/p.d2.yaml:
+      - contains: "name: p.d2"
+      - contains: "type: dataplex-types.global.bigquery-dataset"
+    catalog/p.d2/t2.yaml:
+      - contains: "name: p.d2/t2"
+      - contains: "type: dataplex-types.global.bigquery-table"

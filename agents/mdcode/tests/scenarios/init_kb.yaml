@@ -1,0 +1,14 @@
+name: init_kb
+description: Validate CatalogManifest dynamic initialization with a Wiki EntryGroup.
+setup:
+  catalog:
+    entryGroups:
+      - name: projects/test-proj/locations/us/entryGroups/test-kb
+
+init:
+  kb: test-proj.us.test-kb
+
+assert:
+  fileSystem:
+    catalog.yaml:
+      contains: "scope: kb.test-proj.us.test-kb"
