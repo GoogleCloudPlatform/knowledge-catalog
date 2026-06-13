@@ -6,10 +6,15 @@ import * as yaml from 'yaml';
 import * as z from 'zod';
 import * as gcp from './gcp';
 import { CatalogSource, createSource, Sources } from './source';
+import { ResourceAlias, ResourceType } from './resourcealias';
 
 
 const manifestSchema = z.object({
   scope: z.union([z.string(), z.array(z.string())]),
+  resourceAlias: z.record(
+    z.string(),
+    z.record(z.string(), z.string()),
+  ).optional(),
   snapshot: z.object({
     entries: z.array(z.string()).optional(),
     aspects: z.array(z.string()).optional()
@@ -17,6 +22,13 @@ const manifestSchema = z.object({
   publishing: z.object({
     entries: z.array(z.string()).optional(),
     aspects: z.array(z.string()).optional()
+  }).optional(),
+  reference: z.object({
+    scope: z.union([z.string(), z.array(z.string())]),
+    snapshot: z.object({
+      entries: z.array(z.string()).optional(),
+      aspects: z.array(z.string()).optional()
+    }).optional(),
   }).optional(),
 });
 
@@ -35,20 +47,44 @@ export interface Scope {
   name: string;
 }
 
+export interface ReferenceConfig {
+  scope: string | string[];
+  snapshot?: SnapshotConfig;
+}
+
+
+export class ReferenceManifest {
+  readonly source: CatalogSource;
+  readonly snapshotConfig?: SnapshotConfig;
+
+  constructor (
+    source: CatalogSource,
+    snapshotConfig?: SnapshotConfig,
+  ) {
+    this.source = source;
+    this.snapshotConfig = snapshotConfig;
+  }
+}
 
 export class CatalogManifest {
   readonly source: CatalogSource;
   readonly snapshotConfig?: SnapshotConfig;
   readonly publishingConfig?: PublishingConfig;
+  readonly referenceManifest?: ReferenceManifest;
+  readonly aliasMap: ResourceAlias;
 
   private constructor(
     source: CatalogSource,
+    aliasMap = new ResourceAlias(),
     snapshotConfig?: SnapshotConfig,
-    publishingConfig?: PublishingConfig
+    publishingConfig?: PublishingConfig,
+    referenceManifest?: ReferenceManifest,
   ) {
     this.source = source;
+    this.aliasMap = aliasMap;
     this.snapshotConfig = snapshotConfig;
     this.publishingConfig = publishingConfig;
+    this.referenceManifest = referenceManifest;
   }
 
   static async initWithEntryGroup(name: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
@@ -66,16 +102,7 @@ export class CatalogManifest {
     return new CatalogManifest(source);
   }
 
-  static async load(path: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
-    const content = fs.readFileSync(path, 'utf8');
-    const parsed = yaml.parse(content);
-    
-    const result = manifestSchema.safeParse(parsed);
-    if (!result.success) {
-      throw new Error(`Manifest error: ${result.error.message}`);
-    }
-    
-    const scope = result.data.scope;
+  static async parseScope(scope: string | string[], ctx: gcp.ApiContext): Promise<CatalogSource> {
     let source: CatalogSource;
     if (Array.isArray(scope)) {
       if (scope.length === 0) {
@@ -109,8 +136,24 @@ export class CatalogManifest {
         ctx
       );
     }
+    return source;
+  }
 
-    const snapshot = result.data.snapshot;
+  static parseAlias(aliasList?: Record<string, Record<string, string>>): ResourceAlias {
+    let aliasMap = new ResourceAlias();
+    if (aliasList) {
+      for (const [alias, resource] of Object.entries(aliasList)) {
+        if (Object.keys(resource).length != 1) {
+          throw Error(`Alias ${alias} has multiple mappings.`);
+        }
+        const [resourceType, resourceId] = Object.entries(resource)[0];
+        aliasMap.add(alias, resourceType, resourceId);
+      }
+    }
+    return aliasMap;
+  }
+
+  static parseSnapshot(snapshot?: SnapshotConfig, aliasMap?: ResourceAlias): SnapshotConfig | undefined {
     if (snapshot) {
       if (snapshot.entries) {
         for (const entryType of snapshot.entries) {
@@ -123,15 +166,19 @@ export class CatalogManifest {
 
       if (snapshot.aspects) {
         for (const aspectType of snapshot.aspects) {
-          const parts = aspectType.split('.');
+          let formalName = aliasMap ? aliasMap.lookupAlias(aspectType, ResourceType.ASPECT) : aspectType;
+          const parts = formalName.split('.');
           if (parts.length !== 3) {
             throw new Error(`Manifest error: Invalid Aspect Type '${aspectType}'`);
           }
         }
       }
+      return snapshot;
     }
+    return undefined;
+  }
 
-    const publishing = result.data.publishing;
+  static parsePublishingConfig(snapshot?: SnapshotConfig, publishing?: PublishingConfig, aliasMap?: ResourceAlias): PublishingConfig | undefined {
     if (publishing) {
       if (publishing.entries) {
         for (const entryType of publishing.entries) {
@@ -149,20 +196,54 @@ export class CatalogManifest {
 
       if (publishing.aspects) {
         for (const aspectType of publishing.aspects) {
-          const parts = aspectType.split('.');
+          let formalName = aliasMap ? aliasMap.lookupAlias(aspectType, ResourceType.ASPECT) : aspectType;
+          const parts = formalName.split('.');
           if (parts.length !== 3) {
             throw new Error(`Manifest error: Invalid Aspect Type '${aspectType}'`);
           }
-          if (!snapshot?.aspects?.includes(aspectType)) {
+          if (!snapshot?.aspects?.includes(formalName)) {
             throw new Error(
               `Manifest error: Publishing aspect type '${aspectType}' is not listed in snapshot aspects.`
             );
           }
         }
       }
+      return publishing;
+    }
+    return undefined;
+  }
+
+  static async parseReference(reference: ReferenceConfig | undefined, ctx: gcp.ApiContext): Promise<ReferenceManifest | undefined> {
+    if (reference) {
+      const referenceSource = await this.parseScope(reference.scope, ctx);
+      const referenceSnapshot = this.parseSnapshot(reference.snapshot);
+      return new ReferenceManifest(referenceSource, referenceSnapshot);
     }
 
-    return new CatalogManifest(source, snapshot, publishing);
+    return undefined;
+    
+  }
+
+  static async load(path: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
+    const content = fs.readFileSync(path, 'utf8');
+    const parsed = yaml.parse(content);
+    
+    const result = manifestSchema.safeParse(parsed);
+    if (!result.success) {
+      throw new Error(`Manifest error: ${result.error.message}`);
+    }
+    
+    const source = await this.parseScope(result.data.scope, ctx);
+
+    const aliasMap = await this.parseAlias(result.data.resourceAlias);
+
+    const snapshot = this.parseSnapshot(result.data.snapshot, aliasMap);
+
+    const publishing = this.parsePublishingConfig(snapshot, result.data.publishing, aliasMap);
+    
+    const reference = await this.parseReference(result.data.reference, ctx);
+
+    return new CatalogManifest(source, aliasMap, snapshot, publishing, reference);
   }
 
   save(path: string): void {
