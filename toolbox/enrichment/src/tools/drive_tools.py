@@ -11,6 +11,7 @@ re-run:
     https://www.googleapis.com/auth/drive.readonly'
 """
 
+import glob
 import io
 import os
 import re
@@ -78,6 +79,72 @@ def extract_folder_id(url_or_id: str) -> str:
   return s.split("?", 1)[0].rstrip("/")
 
 
+_MD_EXTS = (".md", ".markdown")
+
+
+def is_local_path(s: str) -> bool:
+  """Route a single --docs/--folder entry to local markdown vs Google Drive.
+
+  Format-first so the decision never depends on what happens to exist in the
+  process CWD (which, via the webapp, is the agent subprocess's dir): an
+  http(s) URL or a bare Drive-id token is Drive; a `.md`/`.markdown` suffix or
+  a path-shaped string (absolute, `./`, `../`, `~`, or containing a separator)
+  is local. Only a bare relative name with no path markers falls back to an
+  existence check before defaulting to Drive. See `extract_gdoc_id` /
+  `extract_folder_id` for the Drive side.
+  """
+  s = (s or "").strip()
+  if not s:
+    return False
+  low = s.lower()
+  if low.startswith(("http://", "https://")):  # Google Doc / Drive folder URL
+    return False
+  if "docs.google.com" in low or "drive.google.com" in low:  # scheme-less URL
+    return False
+  if low.endswith(_MD_EXTS):  # explicit markdown file
+    return True
+  if s.startswith(("/", "./", "../", "~")) or os.sep in s:  # path-shaped
+    return True
+  return os.path.exists(os.path.expanduser(s))  # bare name: tiebreak, else Drive
+
+
+def list_local_md(path: str) -> list[str]:
+  """Expand a local path into a sorted list of ABSOLUTE markdown file paths.
+
+  A local .md/.markdown file -> [that file]; a local directory -> every
+  .md/.markdown under it (recursive). Anything else -> []. Relative paths are
+  resolved against the process CWD (absolute paths are recommended for
+  customers). Local analogue of list_folder_files() for a Drive folder.
+
+  Args:
+    path: A local file or directory path (relative paths resolve from CWD).
+
+  Returns:
+    A sorted list of absolute .md/.markdown file paths, or [] if none.
+  """
+  p = os.path.abspath(os.path.expanduser(path or ""))
+  if os.path.isfile(p):
+    return [p] if p.lower().endswith(_MD_EXTS) else []
+  if os.path.isdir(p):
+    out = []
+    for ext in _MD_EXTS:
+      out.extend(glob.glob(os.path.join(p, "**", "*" + ext), recursive=True))
+    return sorted(set(out))
+  return []
+
+
+def read_local_md(path: str, max_chars: int = _DEFAULT_MAX_CHARS) -> str:
+  """Read a local markdown file's text (local analogue of fetch_doc_text)."""
+  try:
+    with open(
+        os.path.expanduser(path), encoding="utf-8", errors="replace"
+    ) as f:
+      return f.read()[:max_chars]
+  except OSError as e:
+    print(f"[Local] could not read {path}: {e}", flush=True)
+    return ""
+
+
 def list_folder_files(folder_id: str, page_size: int = 100) -> list[dict]:
   """List supported files in a Drive folder as structured dicts.
 
@@ -116,7 +183,18 @@ def list_folder_files(folder_id: str, page_size: int = 100) -> list[dict]:
       page_token = resp.get("nextPageToken")
       if not page_token:
         break
-  except HttpError:
+  except HttpError as e:
+    # Don't fail silently: a 403 here (missing drive.readonly scope) otherwise
+    # looks like an empty folder and the Drive source is quietly skipped.
+    print(
+        f"[Folder] ⚠️  Drive list failed for folder {folder_id!r}: {e}\n"
+        "          If this is 403 insufficientPermissions, your ADC token is\n"
+        "          missing the drive.readonly scope — re-run: gcloud auth\n"
+        "          application-default login --scopes='openid,https://www."
+        "googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/"
+        "drive.readonly'",
+        flush=True,
+    )
     return out
   return out
 

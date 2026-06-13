@@ -21,6 +21,7 @@ import time
 import typing as t
 import common
 from engine import (
+    _light_model,
     create_doc_query_extractor_runner,
     create_doc_summarizer_runner,
     create_router_runner,
@@ -31,7 +32,14 @@ from tools import bq_usage_tools
 from tools import feedback_tools
 from tools import github_tools
 from tools import kcmd_tools
-from tools.drive_tools import extract_folder_id, fetch_doc_text, list_folder_files
+from tools.drive_tools import (
+    extract_folder_id,
+    fetch_doc_text,
+    is_local_path,
+    list_folder_files,
+    list_local_md,
+    read_local_md,
+)
 import yaml
 
 # kcmd's canonical entry type for BigQuery tables under a bq-dataset scope.
@@ -136,29 +144,61 @@ def _write_table_files(
 
 
 async def _prepare_docs(
-    topic: str, folder_id: str | None, usage_acc: t.Dict[str, int], model: str
+    topic: str,
+    folders: list[str] | None,
+    usage_acc: t.Dict[str, int],
+    model: str,
 ) -> t.List[t.Dict[str, t.Any]]:
-  """Fetch folder docs and summarize each into a compact router descriptor.
+  """Fetch grounding docs from each folder and summarize into router descriptors.
+
+  `folders` is a mixed, comma-separated list routed per entry (see
+  drive_tools.is_local_path): a Drive folder URL/ID is listed via the Drive
+  API; a local directory (or .md file) grounds overviews from disk.
 
   Args:
     topic: Focus topic.
-    folder_id: Folder ID.
+    folders: Mixed list of Drive folder URLs/IDs and/or local md dirs/files.
     usage_acc: Usage accumulator.
     model: Model name.
 
   Returns:
-    A list of {id, name, url, content, descriptor}.
+    A list of {id, name, url, content, descriptor, _kind}.
   """
   del topic  # unused
-  if not folder_id:
-    return []
+  files = []
+  for entry in (folders or []):
+    entry = (entry or "").strip()
+    if not entry:
+      continue
+    if is_local_path(entry):
+      md_paths = list_local_md(entry)
+      files.extend(
+          {
+              "id": p,
+              "name": os.path.basename(p),
+              "webViewLink": p,
+              "mimeType": "text/markdown",
+              "modifiedTime": str(os.path.getmtime(p)),
+              "_local": True,
+          }
+          for p in md_paths
+      )
+      print(
+          f"[Route] --folder {entry!r} -> local markdown ({len(md_paths)}"
+          f" file(s), resolved {os.path.abspath(os.path.expanduser(entry))}).",
+          flush=True,
+      )
+    else:
+      folder_id = extract_folder_id(entry)
+      found = list_folder_files(folder_id)
+      files.extend(found)
+      print(
+          f"[Route] --folder {entry!r} -> Drive folder ({len(found)} file(s)).",
+          flush=True,
+      )
 
-  print(f"[Folder] 📁 Listing Drive folder: {folder_id}", flush=True)
-  files = list_folder_files(folder_id)
-  print(
-      f"[Folder] 📁 Found {len(files)} file(s). Fetching + summarizing...",
-      flush=True,
-  )
+  if not files:
+    return []
 
   sem = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
@@ -166,14 +206,17 @@ async def _prepare_docs(
     fid = f.get("id")
     url = f.get("webViewLink") or fid
     name = f.get("name", "")
-    # v5 #2: pass modifiedTime so the per-doc cache invalidates when Drive
-    # reports the file changed since the last run.
-    content = await asyncio.to_thread(
-        fetch_doc_text,
-        fid,
-        f.get("mimeType", ""),
-        modified_time=f.get("modifiedTime"),
-    )
+    if f.get("_local"):
+      content = await asyncio.to_thread(read_local_md, fid)
+    else:
+      # v5 #2: pass modifiedTime so the per-doc cache invalidates when Drive
+      # reports the file changed since the last run.
+      content = await asyncio.to_thread(
+          fetch_doc_text,
+          fid,
+          f.get("mimeType", ""),
+          modified_time=f.get("modifiedTime"),
+      )
     async with sem:
       prompt = (
           f"DOCUMENT TITLE: {name}\nSOURCE URL: {url}\n\nDOCUMENT"
@@ -188,6 +231,7 @@ async def _prepare_docs(
         "url": url,
         "content": content,
         "descriptor": descriptor.strip(),
+        "_kind": "local_md" if f.get("_local") else "gdoc",
     }
 
   docs = await asyncio.gather(
@@ -375,7 +419,7 @@ async def _route_docs_for_table(
 
 async def run(
     dataset: str,
-    folder: str | None,
+    folders: list[str] | None,
     topic: str,
     output_dir: str | None,
     model: str,
@@ -394,8 +438,9 @@ async def run(
 ):
   _t0 = time.monotonic()
   project, dataset_id = _parse_dataset(dataset)
-  # Accept either a bare folder id or a full Drive folder URL.
-  folder = extract_folder_id(folder) if folder else folder
+  # --folder is a mixed list (Drive folders and/or local md dirs); each entry is
+  # routed and id-extracted per entry inside _prepare_docs.
+  folders = list(folders or [])
   # Load user-feedback proposals up front so per-table routing is cheap.
   # Empty list = no feedback path provided (or no proposals found); the
   # rest of the pipeline degrades to "no feedback" semantics naturally.
@@ -404,7 +449,7 @@ async def run(
   print("=" * 60)
   print("=== ADK TABLE AGENT: Dataplex-Sourced, Folder-Grounded Enrichment ===")
   print(f"Topic: {topic}")
-  print(f"Dataset: {project}.{dataset_id}  |  Folder: {folder or '(none)'}")
+  print(f"Dataset: {project}.{dataset_id}  |  Folders: {folders or '(none)'}")
   if all_feedback:
     print(
         f"[Feedback] 📝 Loaded {len(all_feedback)} user-feedback"
@@ -506,7 +551,7 @@ async def run(
         flush=True,
     )
     docs, usage_by_table = await asyncio.gather(
-        _prepare_docs(topic, folder, usage_acc, model),
+        _prepare_docs(topic, folders, usage_acc, model),
         asyncio.to_thread(
             bq_usage_tools.fetch_dataset_usage,
             project,
@@ -526,7 +571,7 @@ async def run(
         flush=True,
     )
   else:
-    docs = await _prepare_docs(topic, folder, usage_acc, model)
+    docs = await _prepare_docs(topic, folders, usage_acc, model)
     usage_by_table = {}
   # Source-code source (optional): explore a GitHub repo agentically and add its
   # component cards to the candidate-document pool. They are scored by the same
@@ -544,6 +589,8 @@ async def run(
         usage_acc,
         mcp_config_path=mcp_config or None,
     )
+    for d in code_docs:
+      d["_kind"] = "code"
     docs.extend(code_docs)
     for i, d in enumerate(docs):
       d["id"] = i
@@ -688,7 +735,7 @@ async def run(
           + feedback_block
       )
       body = await common.generate_text_direct(
-          ENTRY_WRITER_INSTRUCTION, prompt, _WRITER_MODEL, usage_acc
+          ENTRY_WRITER_INSTRUCTION, prompt, _light_model(model), usage_acc
       )
       written = _write_table_files(output_dir, project, dataset_id, meta, body)
       # Merge INFORMATION_SCHEMA-derived patterns + SQL examples extracted
@@ -743,7 +790,7 @@ async def run(
           description=meta.get("description", "") or "",
           category_id=cat_id,
           grounding_prompt=prompt,
-          writer_model=_WRITER_MODEL,
+          writer_model=_light_model(model),
           overview_body=body,
           overview_path=os.path.join(
               kcmd_tools._dataset_dir(output_dir, project, dataset_id),
@@ -772,11 +819,16 @@ async def run(
   # 6. Persist trajectory for dynamic eval (mirrors doc mode). Records the
   # tables, their routed docs, AND the enumeration so eval can ground scoring.
   if output_dir:
-    tool_uses = [
+    # Per-source fetches first (fetch_gdoc/read_local_md/explore_repo) — same
+    # recording doc mode does — so eval counts tool calls consistently and
+    # grounds hallucination on clean per-doc content. route_docs below keeps only
+    # the routing (name/url), not content, to avoid duplicating it.
+    tool_uses, tool_responses = common.doc_tool_calls(docs)
+    tool_uses.extend(
         {"name": "get_table_entry", "args": {"table": m["table"]}}
         for m in tables
-    ]
-    tool_responses = [
+    )
+    tool_responses.extend(
         {
             "name": "get_table_entry",
             "response": {
@@ -785,7 +837,7 @@ async def run(
             },
         }
         for m in tables
-    ]
+    )
     for meta, sel_docs, _text, _es in results:
       tool_uses.append({"name": "route_docs", "args": {"table": meta["table"]}})
       tool_responses.append({
@@ -793,12 +845,7 @@ async def run(
           "response": {
               "table": meta["table"],
               "relevant_docs": [
-                  {
-                      "name": d["name"],
-                      "url": d["url"],
-                      "content": d["content"][:50000],
-                  }
-                  for d in sel_docs
+                  {"name": d["name"], "url": d["url"]} for d in sel_docs
               ],
           },
       })
@@ -893,8 +940,3 @@ def _inject_category(
   except (OSError, yaml.YAMLError):
     pass
 
-
-# Flash for the per-table writer: small inputs (one table + a few docs) stay
-# well under the ADK 32K Flash routing cap. Pro is still the user-supplied
-# --model and is used by the enumerator (which needs reasoning across all tables).
-_WRITER_MODEL = "gemini-3.5-flash"

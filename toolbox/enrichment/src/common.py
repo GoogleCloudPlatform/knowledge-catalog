@@ -3,12 +3,54 @@
 import asyncio
 import json
 import os
+import random
 import re
 import threading
 import uuid
 
 from engine import EnumerationResult, create_enumeration_runner
 from google.genai import Client, types
+
+# Transient Vertex/model-serving errors that are safe to retry. These otherwise
+# abort a whole run: one call's exception propagates out of asyncio.gather and
+# cancels the concurrent siblings. Matched case-insensitively on the error text
+# (the SDK surfaces these as ClientError/ServerError/ApiError with the status in
+# the message, so substring matching is more robust than exception types).
+_RETRYABLE_MARKERS = (
+    "429", "resource_exhausted", "rate limit", "quota exceeded",
+    "503", "unavailable", "500", "internal error",
+    "decode_preempted", "preempted", "unable_to_retry",
+    "deadline", "timed out", "timeout", "connection reset",
+)
+
+
+def _is_retryable(exc: Exception) -> bool:
+  msg = str(exc).lower()
+  return any(m in msg for m in _RETRYABLE_MARKERS)
+
+
+async def _with_retry(fn, *, what="LLM call", attempts=6,
+                      base_delay=2.0, max_delay=60.0):
+  """Run async `fn()` with exponential backoff on transient model errors.
+
+  Retries 429 RESOURCE_EXHAUSTED / 503 / 500 / DECODE_PREEMPTED / timeouts a few
+  times (exp backoff + jitter) so a single transient Vertex blip doesn't abort
+  the whole enrichment run. Non-retryable errors raise immediately; if all
+  attempts are exhausted the last error propagates.
+  """
+  for i in range(attempts):
+    try:
+      return await fn()
+    except Exception as e:  # pylint: disable=broad-except
+      if i == attempts - 1 or not _is_retryable(e):
+        raise
+      delay = min(max_delay, base_delay * (2 ** i)) + random.uniform(0, 1.5)
+      print(
+          f"[retry] {what}: {type(e).__name__}: {str(e)[:140]} — "
+          f"attempt {i + 1}/{attempts}, backing off {delay:.1f}s",
+          flush=True,
+      )
+      await asyncio.sleep(delay)
 
 # v2.5 #4 + v2.6 #5: bypass ADK's LlmAgent/InMemoryRunner.
 # Per-thread client cache — the genai SDK's pyOpenSSL transport mutates an SSL
@@ -66,12 +108,15 @@ async def generate_text_direct(
         model=model, contents=user_prompt, config=config
     )
 
-  response = await asyncio.to_thread(_call)
-  usage = getattr(response, "usage_metadata", None)
-  if usage is not None and usage_acc is not None:
-    usage_acc["input"] += getattr(usage, "prompt_token_count", 0) or 0
-    usage_acc["output"] += getattr(usage, "candidates_token_count", 0) or 0
-  return response.text or ""
+  async def _once():
+    response = await asyncio.to_thread(_call)
+    usage = getattr(response, "usage_metadata", None)
+    if usage is not None and usage_acc is not None:
+      usage_acc["input"] += getattr(usage, "prompt_token_count", 0) or 0
+      usage_acc["output"] += getattr(usage, "candidates_token_count", 0) or 0
+    return response.text or ""
+
+  return await _with_retry(_once, what=f"generate_content({model})")
 
 
 # Back-compat alias for the v2.5 writer callers (semantically the same function).
@@ -104,10 +149,6 @@ async def run_enumeration(
     source context still mentions them.
   """
   runner = create_enumeration_runner(model)
-  user_id = str(uuid.uuid4())
-  session = await runner.session_service.create_session(
-      app_name=runner.app_name, user_id=user_id
-  )
 
   seed_block = ""
   if seed_entries:
@@ -139,28 +180,39 @@ async def run_enumeration(
       f"COMPILED CONTEXT:\n{compiled_context}\n\n"
       "Produce the canonical categorized entry list per the schema."
   )
-  raw_text = ""
-  async for event in runner.run_async(
-      user_id=user_id,
-      session_id=session.id,
-      new_message=types.Content(
-          role="user", parts=[types.Part.from_text(text=prompt)]
-      ),
-  ):
-    usage = getattr(event, "usage_metadata", None)
-    if usage:
-      usage_acc["input"] += getattr(usage, "prompt_token_count", 0) or 0
-      usage_acc["output"] += getattr(usage, "candidates_token_count", 0) or 0
-    if event.content and event.content.parts:
-      for part in event.content.parts:
-        if part.text:
-          raw_text += part.text
-  cleaned = raw_text.strip()
-  if cleaned.startswith("```"):
-    m = re.match(r"^```(?:json)?\s*\n(.*)\n```$", cleaned, re.S)
-    if m:
-      cleaned = m.group(1).strip()
-  return EnumerationResult.model_validate_json(cleaned)
+  async def _once():
+    user_id = str(uuid.uuid4())
+    session = await runner.session_service.create_session(
+        app_name=runner.app_name, user_id=user_id
+    )
+    raw_text = ""
+    local_in = local_out = 0
+    async for event in runner.run_async(
+        user_id=user_id,
+        session_id=session.id,
+        new_message=types.Content(
+            role="user", parts=[types.Part.from_text(text=prompt)]
+        ),
+    ):
+      usage = getattr(event, "usage_metadata", None)
+      if usage:
+        local_in += getattr(usage, "prompt_token_count", 0) or 0
+        local_out += getattr(usage, "candidates_token_count", 0) or 0
+      if event.content and event.content.parts:
+        for part in event.content.parts:
+          if part.text:
+            raw_text += part.text
+    if usage_acc is not None:
+      usage_acc["input"] += local_in
+      usage_acc["output"] += local_out
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+      m = re.match(r"^```(?:json)?\s*\n(.*)\n```$", cleaned, re.S)
+      if m:
+        cleaned = m.group(1).strip()
+    return EnumerationResult.model_validate_json(cleaned)
+
+  return await _with_retry(_once, what="enumeration")
 
 
 async def run_schema_agent(runner, prompt: str, model_cls, usage_acc: dict):
@@ -170,32 +222,39 @@ async def run_schema_agent(runner, prompt: str, model_cls, usage_acc: dict):
   by run_enumeration, for any LlmAgent created with an `output_schema`. Returns
   an instance of `model_cls` (a pydantic BaseModel subclass).
   """
-  user_id = str(uuid.uuid4())
-  session = await runner.session_service.create_session(
-      app_name=runner.app_name, user_id=user_id
-  )
-  raw_text = ""
-  async for event in runner.run_async(
-      user_id=user_id,
-      session_id=session.id,
-      new_message=types.Content(
-          role="user", parts=[types.Part.from_text(text=prompt)]
-      ),
-  ):
-    usage = getattr(event, "usage_metadata", None)
-    if usage and usage_acc is not None:
-      usage_acc["input"] += getattr(usage, "prompt_token_count", 0) or 0
-      usage_acc["output"] += getattr(usage, "candidates_token_count", 0) or 0
-    if event.content and event.content.parts:
-      for part in event.content.parts:
-        if part.text:
-          raw_text += part.text
-  cleaned = raw_text.strip()
-  if cleaned.startswith("```"):
-    m = re.match(r"^```(?:json)?\s*\n(.*)\n```$", cleaned, re.S)
-    if m:
-      cleaned = m.group(1).strip()
-  return model_cls.model_validate_json(cleaned)
+  async def _once():
+    user_id = str(uuid.uuid4())
+    session = await runner.session_service.create_session(
+        app_name=runner.app_name, user_id=user_id
+    )
+    raw_text = ""
+    local_in = local_out = 0
+    async for event in runner.run_async(
+        user_id=user_id,
+        session_id=session.id,
+        new_message=types.Content(
+            role="user", parts=[types.Part.from_text(text=prompt)]
+        ),
+    ):
+      usage = getattr(event, "usage_metadata", None)
+      if usage:
+        local_in += getattr(usage, "prompt_token_count", 0) or 0
+        local_out += getattr(usage, "candidates_token_count", 0) or 0
+      if event.content and event.content.parts:
+        for part in event.content.parts:
+          if part.text:
+            raw_text += part.text
+    if usage_acc is not None:
+      usage_acc["input"] += local_in
+      usage_acc["output"] += local_out
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+      m = re.match(r"^```(?:json)?\s*\n(.*)\n```$", cleaned, re.S)
+      if m:
+        cleaned = m.group(1).strip()
+    return model_cls.model_validate_json(cleaned)
+
+  return await _with_retry(_once, what="schema_agent")
 
 
 async def run_text(runner, prompt: str, usage_acc: dict | None = None) -> str:
@@ -203,27 +262,34 @@ async def run_text(runner, prompt: str, usage_acc: dict | None = None) -> str:
 
   Accumulates token usage into usage_acc when provided.
   """
-  user_id = str(uuid.uuid4())
-  session = await runner.session_service.create_session(
-      app_name=runner.app_name, user_id=user_id
-  )
-  out = ""
-  async for event in runner.run_async(
-      user_id=user_id,
-      session_id=session.id,
-      new_message=types.Content(
-          role="user", parts=[types.Part.from_text(text=prompt)]
-      ),
-  ):
-    usage = getattr(event, "usage_metadata", None)
-    if usage and usage_acc is not None:
-      usage_acc["input"] += getattr(usage, "prompt_token_count", 0) or 0
-      usage_acc["output"] += getattr(usage, "candidates_token_count", 0) or 0
-    if event.content and event.content.parts:
-      for part in event.content.parts:
-        if part.text:
-          out += part.text
-  return out
+  async def _once():
+    user_id = str(uuid.uuid4())
+    session = await runner.session_service.create_session(
+        app_name=runner.app_name, user_id=user_id
+    )
+    out = ""
+    local_in = local_out = 0
+    async for event in runner.run_async(
+        user_id=user_id,
+        session_id=session.id,
+        new_message=types.Content(
+            role="user", parts=[types.Part.from_text(text=prompt)]
+        ),
+    ):
+      usage = getattr(event, "usage_metadata", None)
+      if usage:
+        local_in += getattr(usage, "prompt_token_count", 0) or 0
+        local_out += getattr(usage, "candidates_token_count", 0) or 0
+      if event.content and event.content.parts:
+        for part in event.content.parts:
+          if part.text:
+            out += part.text
+    if usage_acc is not None:
+      usage_acc["input"] += local_in
+      usage_acc["output"] += local_out
+    return out
+
+  return await _with_retry(_once, what="adk_generate")
 
 
 async def run_structured(
@@ -241,6 +307,29 @@ async def run_structured(
   except Exception as e:
     print(f"[!] Error parsing structured output: {e}\nRaw output: {raw_text}")
     return None
+
+
+def _delink_local_sources(text: str) -> str:
+  """Render local-file source citations as plain text instead of links.
+
+  The writer cites sources as `[Title](URL)`. For a local markdown input the
+  "URL" is a filesystem path (e.g. `/tmp/corpus/orders.md`), which is a broken
+  link when the overview is viewed in a browser and meaningless once the entry
+  is published to the catalog. Keep the title text but drop the local target;
+  real web links (http/https/mailto, incl. Google Docs/Drive) are left intact.
+  """
+  def _repl(m):
+    label, target = m.group(1), m.group(2).strip()
+    low = target.lower()
+    if low.startswith(("http://", "https://", "mailto:")):
+      return m.group(0)  # keep real web links
+    if target.startswith(("/", "./", "../", "~")) or low.endswith(
+        (".md", ".markdown")
+    ):
+      return label  # local path: keep the text, drop the broken link
+    return m.group(0)
+
+  return re.sub(r"\[([^\]]+)\]\(([^)]+)\)", _repl, text)
 
 
 def clean_overview_body(text: str) -> str:
@@ -261,6 +350,8 @@ def clean_overview_body(text: str) -> str:
     m = re.match(r"^---\s*\n(?:.*?\n)?---\s*\n(.*)$", t, re.S)
     if m:
       t = m.group(1).strip()
+  # Local-file source citations -> plain text (broken/meaningless as links).
+  t = _delink_local_sources(t)
   return t
 
 
@@ -293,6 +384,34 @@ def parse_mdcode_blocks(text: str, output_dir: str) -> list[str]:
     written.append(filename)
     print(f"[+] Saved {filename} to {full_path}")
   return written
+
+
+def doc_tool_calls(docs: list) -> tuple[list, list]:
+  """Build per-document trajectory tool calls from a prepared-docs list.
+
+  Gives table/context_overlay modes the same per-source tool-call recording doc
+  mode already has, so eval counts tool calls consistently and grounds
+  hallucination checks on clean per-doc `content` (not a truncated json blob of
+  the routing response). Each doc dict carries a `_kind` set by the mode's
+  prepare step: `local_md` -> read_local_md, `code` -> explore_repo, anything
+  else -> fetch_gdoc. Returns (tool_uses, tool_responses).
+  """
+  uses, responses = [], []
+  for d in (docs or []):
+    kind = d.get("_kind", "gdoc")
+    url = d.get("url", "")
+    content = (d.get("content") or "")[:50000]
+    if kind == "code":
+      uses.append({"name": "explore_repo", "args": {"component": d.get("name", "")}})
+      responses.append(
+          {"name": "explore_repo", "response": {"url": url, "content": content}})
+    else:
+      tn = "read_local_md" if kind == "local_md" else "fetch_gdoc"
+      uses.append({"name": tn, "args": {"url": url}})
+      responses.append(
+          {"name": tn,
+           "response": {"url": url, "name": d.get("name", ""), "content": content}})
+  return uses, responses
 
 
 def write_trajectory(

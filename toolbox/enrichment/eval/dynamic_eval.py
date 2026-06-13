@@ -50,6 +50,47 @@ def fmt_score(score) -> str:
   return "n/a" if score is None else f"{float(score) * 100:.1f}"
 
 
+def build_results(output_dir, agent_type, mode, metric_results, traj, tokens,
+                  latency, **extra):
+  """Shared result-dict builder for both the dynamic and golden eval paths.
+
+  Normalizes a list of MetricResult into the on-disk/JSON shape (scores kept
+  0..1; fmt_score scales to 0-100 for display) + the average + telemetry. `extra`
+  merges extra top-level keys (e.g. golden=<path> for the golden path).
+  """
+  label = getattr(metrics, "_METRIC_LABEL", {})
+  out_metrics, numeric = [], []
+  for r in metric_results:
+    sc = None if r.score is None else round(float(r.score), 4)
+    if sc is not None:
+      numeric.append(sc)
+    out_metrics.append({
+        "name": r.name,
+        "score": sc,
+        # `passed` is needed by the cross-run roll-up (runs_passed = k/n); kept on
+        # every per-run metric so aggregate.py can mirror the reference design.
+        "passed": bool(getattr(r, "passed", True)),
+        "description": label.get(r.name, r.name),
+        "rationale": r.detail,
+        "insights": getattr(r, "insights", "") or "",
+    })
+  return {
+      "output_dir": output_dir,
+      "agent_type": agent_type,
+      "mode": mode,
+      "metrics": out_metrics,
+      "average_score": round(sum(numeric) / len(numeric), 4) if numeric else None,
+      "telemetry": {
+          "tokens_in": tokens.get("input", 0),
+          "tokens_out": tokens.get("output", 0),
+          "tokens_total": tokens.get("total", 0),
+          "num_tool_calls": len(traj.get("tool_uses") or []),
+          "latency_s": latency or None,
+      },
+      **extra,
+  }
+
+
 def write_report(results: dict, output_dir: str,
                  filename: str = "eval_report.md") -> str:
   """Write a full, untruncated eval report (Markdown) next to trajectory.json.
@@ -79,6 +120,14 @@ def write_report(results: dict, output_dir: str,
     lines.append(f"## {m['name']} — {fmt_score(sc)}/100")
     if m.get("description"):
       lines.append(f"_{m['description']}_")
+    # Per-run signal (mean across runs): runs k/n + each run's score. Consistency
+    # metrics hold entry COUNTS (not 0..1) and explain them in their rationale.
+    rs = m.get("run_scores")
+    if rs and not m["name"].endswith("_consistency"):
+      rp = m.get("runs_passed")
+      lines.append("")
+      lines.append(f"- per run: {', '.join(fmt_score(s) for s in rs)}"
+                   + (f"  ·  passed {rp}" if rp else ""))
     lines.append("")
     lines.append("**Rationale:**")
     lines.append("")
@@ -89,6 +138,26 @@ def write_report(results: dict, output_dir: str,
       lines.append("")
       lines.append(_wrap_para(m.get("insights")))
     lines.append("")
+
+  # Per-run breakdown (multi-run cases): each run's metrics + rationale, so a
+  # reader can drill into what earned each score.
+  per_run = results.get("per_run")
+  if per_run and len(per_run) > 1:
+    lines.append("---")
+    lines.append("")
+    lines.append("# Per-run breakdown")
+    lines.append("")
+    for run in per_run:
+      avg = run.get("average_score")
+      lines.append(f"## Run {run.get('index')} — average {fmt_score(avg)}/100")
+      lines.append("")
+      for m in run.get("metrics", []):
+        lines.append(f"- **{m['name']}** — {fmt_score(m.get('score'))}/100"
+                     + ("" if m.get("passed", True) else " (below gate)"))
+        rat = " ".join((m.get("rationale") or "").split())
+        if rat:
+          lines.append(f"  - {rat}")
+      lines.append("")
   path = os.path.join(output_dir, filename)
   try:
     with open(path, "w", encoding="utf-8") as f:
@@ -112,7 +181,13 @@ def run_dynamic_eval(output_dir: str, model: str = "gemini-2.5-pro",
   """
   traj = loaders.load_trajectory(output_dir)
   agent_type = traj.get("agent_type", "doc")
-  mode = "table" if agent_type == "table" else "doc"
+  # Pass the real mode through (doc / table / context_overlay), respecting the
+  # agent's per-mode contract. context_overlay keeps its own mode so
+  # check_structural skips the entry-type check (overlay entries are `generic`,
+  # mixed with `.ref` bigquery types — metrics._ENTRY_TYPE has no overlay key) and
+  # the table-only metrics (reference grounding here; entry_grounding/per-table
+  # fact_recall in golden eval) don't apply to it.
+  mode = agent_type if agent_type in ("table", "context_overlay") else "doc"
 
   _log(f"scoring {output_dir}  (mode={mode})")
   arts = loaders.load_mdcode(os.path.join(output_dir, "catalog"))
@@ -191,33 +266,6 @@ def run_dynamic_eval(output_dir: str, model: str = "gemini-2.5-pro",
     _log("  (rubric skipped)")
   _log("done — scorecard below")
 
-  label = getattr(metrics, "_METRIC_LABEL", {})
-  out_metrics, numeric = [], []
-  for r in mres:
-    sc = None if r.score is None else round(float(r.score), 4)
-    if sc is not None:
-      numeric.append(sc)
-    out_metrics.append({
-        "name": r.name,
-        "score": sc,
-        "description": label.get(r.name, r.name),
-        "rationale": r.detail,
-        "insights": getattr(r, "insights", "") or "",
-    })
-
-  results = {
-      "output_dir": output_dir,
-      "agent_type": agent_type,
-      "mode": mode,
-      "metrics": out_metrics,
-      "average_score": round(sum(numeric) / len(numeric), 4) if numeric else None,
-      "telemetry": {
-          "tokens_in": tokens.get("input", 0),
-          "tokens_out": tokens.get("output", 0),
-          "tokens_total": tokens.get("total", 0),
-          "num_tool_calls": len(traj.get("tool_uses") or []),
-          "latency_s": latency or None,
-      },
-  }
+  results = build_results(output_dir, agent_type, mode, mres, traj, tokens, latency)
   write_report(results, output_dir)
   return results

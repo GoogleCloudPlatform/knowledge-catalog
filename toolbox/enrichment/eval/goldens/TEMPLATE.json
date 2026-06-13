@@ -1,0 +1,52 @@
+{
+  "_comment": "Golden template. Keep the fields that fit your enrichment mode; delete the rest. The eval compares the agent's output to these expectations. See README.md.",
+
+  "_doc_mode": "DOC MODE (knowledge base from documents): declare the concepts you expect as entries.",
+  "expected_topics": [
+    {
+      "canonical": "Reorder Point",
+      "flavor_hints": ["reorder level", "ROP", "replenishment trigger"],
+      "golden_facts": [
+        "The reorder point is the inventory level at which a new order is placed.",
+        "ROP = average daily demand x lead time, plus safety stock."
+      ]
+    }
+  ],
+  "_acceptable_extra_concepts_doc": "Optional concepts that are fine to produce and must NOT count against precision.",
+  "acceptable_extra_concepts": [{"name": "SKU", "aliases": ["stock keeping unit"]}],
+
+  "_table_mode": "TABLE MODE (BigQuery dataset): one entry per table; declare each table's golden facts.",
+  "tables": [
+    {
+      "table": "my_table",
+      "golden_facts": [
+        "What the table contains and its grain (one row per ...).",
+        "A key column's meaning, or a lineage/relationship fact."
+      ]
+    }
+  ],
+
+  "_sections": "Sections the overview should contain (scored by enrichment_diversity).",
+  "expected_headings": ["Lineage", "Sample Queries"],
+
+  "_terms": "Business terms the output should cover. Scores business_terms_presence (covered?) and business_terms_validity (a dedicated per-term definition file? — typically low today).",
+  "business_terms": ["session", "event"],
+
+  "_prebaked_facts": "OPTIONAL. Facts that already existed before enrichment and must be PRESERVED (not clobbered) through the run. Scores context_preservation.",
+  "prebaked_facts": ["The orders table is the system of record for fulfilled orders."],
+
+  "_trajectory": "OPTIONAL input-conditioned tool use, checked against the actual trajectory.json tool calls. Categories: drive_fetch, dataset_pull, github_fetch. Scores trajectory.",
+  "trajectory": {
+    "must_call": [],
+    "must_not_call": ["dataset_pull"]
+  },
+
+  "_personas": "OPTIONAL persona-conditioned eval. Run with --persona <id>. Scores persona_alignment.",
+  "personas": {
+    "analyst": {
+      "instruction": "the --topic string this persona would pass to the agent",
+      "focus_areas": ["areas this persona should see emphasized"],
+      "shared_concepts": ["concepts every persona must still cover"]
+    }
+  }
+}

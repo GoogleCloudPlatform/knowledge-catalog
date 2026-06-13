@@ -77,11 +77,16 @@ toolbox/
     │       ├── bq_usage_tools.py # INFORMATION_SCHEMA query history + queries-aspect sidecar
     │       ├── feedback_tools.py # user-feedback proposal loader + per-table router
     │       └── github_tools.py   # agentic GitHub-repo code source via the GitHub MCP server
-    └── eval/                     # evaluation CLI (dynamic, golden-free)
-        ├── __main__.py          # `python -m eval --output-dir ...`
+    └── eval/                     # evaluation CLI (dynamic golden-free + golden-based)
+        ├── __main__.py          # `python -m eval --output-dir ... [--golden ...]` | `--run`
         ├── dynamic_eval.py      # golden-free scoring of a single run
+        ├── golden_eval.py       # golden-based scoring (concepts, facts, coverage)
+        ├── aggregate.py         # multi-run roll-up (per-run + averaged + consistency)
+        ├── runner.py            # `--run` case-runner (setup + N agent runs)
         ├── metrics.py           # metric library (deterministic + LLM-judge)
-        └── loaders.py           # read catalog/ + trajectory.json
+        ├── loaders.py           # read catalog/ + trajectory.json
+        ├── goldens/             # golden schema (TEMPLATE.json) + ready goldens
+        └── corpora/             # local markdown corpora the goldens ground on
 ```
 
 ## Prerequisites
@@ -137,7 +142,7 @@ export PYTHONPATH=toolbox/enrichment/src
 python3 toolbox/enrichment/src/agent_runner.py \
   --mode=table \
   --dataset=<project>.<dataset> \
-  --folder=<drive_folder_id_or_url> \
+  --folders=<drive_folder_id_or_url> \
   --topic="<your use case / instruction>" \
   --project=<your_gcp_project> \
   --location=<vertex_location> \
@@ -148,7 +153,7 @@ python3 toolbox/enrichment/src/agent_runner.py \
 python3 toolbox/enrichment/src/agent_runner.py \
   --mode=doc \
   --docs="https://docs.google.com/document/d/<id>,<id2>" \
-  --folder=<drive_folder_id_or_url> \
+  --folders=<drive_folder_id_or_url> \
   --topic="<your use case / instruction>" \
   --entry_group=<project>.<location>.<entryGroupId> \
   --project=<your_gcp_project> \
@@ -162,7 +167,7 @@ python3 toolbox/enrichment/src/agent_runner.py \
   --mode=context_overlay \
   --dataset=<project>.<dataset> \
   --entry_group=<project>.<location>.<entryGroupId> \
-  --folder=<drive_folder_id_or_url> \
+  --folders=<drive_folder_id_or_url> \
   --topic="<your use case / instruction>" \
   --project=<your_gcp_project> \
   --model=<vertex_model> \
@@ -214,7 +219,7 @@ list). `--project`, `--model`, and `--output_dir` are required in **every** mode
 | `--topic` | ✓ | ✓ | ✓ |
 | `--dataset` | — | R | R |
 | `--entry_group` | R | — | R |
-| `--folder` | ✓ | ✓ | ✓ |
+| `--folders` | ✓ | ✓ | ✓ |
 | `--docs` | ✓ | — | ✓ |
 | `--tables` | — | — | ✓ |
 | `--include_usage` | — | ✓ | ✓ |
@@ -250,8 +255,8 @@ list). `--project`, `--model`, and `--output_dir` are required in **every** mode
 #### Source context (what the agent reads)
 
 - **`--topic`** — *(optional, default `"Metadata enrichment"`)* Free-text use case/instruction that steers enrichment (and the doc-mode topic reduce). Example: `--topic="Customer 360 data"`.
-- **`--folder`** — *(optional)* Google Drive folder ID or URL to seed source documents from (Docs/Sheets/Slides/PDF). Works in all modes. Example: `--folder=https://drive.google.com/drive/folders/<id>`.
-- **`--docs`** — *(doc, context_overlay)* Comma-separated Google Doc URLs or IDs. In doc mode these are the authoritative depth-0 "spine"; in overlay mode they're routed to tables. **Not used in table mode** — use `--folder` there. Example: `--docs="https://docs.google.com/document/d/<id1>,<id2>"`.
+- **`--folders`** — *(optional)* Comma-separated, mixed list (routed per entry): Google Drive folder IDs/URLs (Docs/Sheets/Slides/PDF) **and/or local directories of `.md` files** (read recursively). Works in all modes. `--folder` (singular) is accepted as a deprecated alias. See [Local Markdown inputs](#local-markdown-inputs). Example: `--folders=https://drive.google.com/drive/folders/<id>,./local_md_corpus`.
+- **`--docs`** — *(doc, context_overlay)* Comma-separated, mixed list: Google Doc URLs/IDs **and/or local `.md` files**. In doc mode these are the authoritative depth-0 "spine"; in overlay mode they're routed to tables. **Not used in table mode** — use `--folders` there. Example: `--docs="https://docs.google.com/document/d/<id1>,./notes/x.md"`.
 - **`--tables`** — *(context_overlay only)* Restrict the overlay to specific tables — short names or `proj.ds.table` FQNs, comma-separated. Empty = every table in `--dataset`. Example: `--tables=orders,customers`.
 
 #### BigQuery usage signal — the `queries` aspect *(table, context_overlay)*
@@ -280,7 +285,62 @@ list). `--project`, `--model`, and `--output_dir` are required in **every** mode
 #### Refinement *(all modes, after a run)*
 
 - **`--interactive`** — *(default `false`)* After the initial run, stay in a `refine>` REPL for free-text changes — rewrite an overview, add/remove/recategorize entries, or ask a question. Reuses loaded context (no doc re-read). No-op on a non-TTY.
-- **`--refine_instruction`** — Apply ONE refinement turn to the saved session in `--output_dir`, then exit (the webapp's persist + re-invoke flow). Requires a prior run's `refine_session.json` in `--output_dir`. Example: `--refine_instruction="make the orders overview more concise"`.
+- **`--refine_instruction`** — Apply ONE refinement turn to the saved session in `--output_dir`, then exit (the report's persist + re-invoke flow). Requires a prior run's `refine_session.json` in `--output_dir`. Example: `--refine_instruction="make the orders overview more concise"`.
+
+## Local Markdown inputs
+
+You don't have to put your source material in Google Drive. `--docs` and
+`--folders` both accept **local Markdown** (`.md` / `.markdown`) alongside Google
+Docs / Drive folders — every entry in either flag is routed independently, so a
+single run can mix all four kinds of source.
+
+**How each entry is classified (format-first, so it never depends on your shell's
+working directory):**
+
+1. Starts with `http://` / `https://` → **Google Drive** (Doc or folder URL).
+2. Ends in `.md` / `.markdown` → **local Markdown file**.
+3. Path-shaped (`/abs/path`, `./rel`, `../rel`, `~/path`, or contains a `/`) →
+   **local** (a directory is read recursively; a file is read directly).
+4. A bare relative name that exists on disk → **local**.
+5. Otherwise (a bare opaque token) → **Google Drive ID**.
+
+Because Drive IDs are long opaque tokens and local paths/`.md` files trip rules
+1–3 first, there is no collision between the two. The agent logs how it routed
+each entry (`[Route] --docs '…' -> local md spine file`, etc.). Absolute paths
+are recommended; relative paths resolve from the agent's working directory.
+
+**What local Markdown maps to per mode:**
+
+- **doc mode** — a local `.md` file in `--docs` is a depth-0 *spine* doc (like an
+  authoritative Google Doc); a local directory in `--docs`/`--folders` contributes
+  its `.md` files as depth-1 children (like a Drive folder).
+- **table / context_overlay modes** — local `.md` files/folders join the
+  candidate pool that the relevance router grounds each table's overview in,
+  exactly like Drive documents.
+
+```bash
+# Doc mode mixing Google Docs + local Markdown (files and a folder):
+python3 toolbox/enrichment/src/agent_runner.py \
+  --mode=doc \
+  --docs="https://docs.google.com/document/d/<id>,./notes/data_model.md" \
+  --folders="<drive_folder_id_or_url>,./local_md_corpus" \
+  --topic="<your use case>" \
+  --entry_group=<project>.<location>.<entryGroupId> \
+  --project=<your_gcp_project> --model=<vertex_model> \
+  --output_dir=<local_output_dir>
+
+# Table mode grounded purely in a local Markdown folder (no Drive needed):
+python3 toolbox/enrichment/src/agent_runner.py \
+  --mode=table \
+  --dataset=<project>.<dataset> \
+  --folders=./local_md_corpus \
+  --project=<your_gcp_project> --model=<vertex_model> \
+  --output_dir=<local_output_dir>
+```
+
+Each source the agent reads is recorded in `trajectory.json` as its own tool call
+(`read_local_md` for local files, `fetch_gdoc` for Google Docs), so downstream
+evaluation counts and grounds on exactly what was read.
 
 ## Output
 
@@ -324,11 +384,18 @@ Flags (see `python -m eval --help`):
 
 | Flag | Required | Meaning |
 |------|----------|---------|
-| `--output-dir` | yes | The enrichment run's output dir (contains `catalog/` + `trajectory.json`). |
+| `--output-dir` | yes (score mode) | The enrichment run's output dir (contains `catalog/` + `trajectory.json`). |
+| `--golden` | no | Golden file → golden-based eval (adds concept_recall/precision, fact_recall, coverage). Omit for dynamic (golden-free) eval. See `eval/goldens/README.md`. |
+| `--run` | no | Run each golden as a CASE (generate the mdcode via the agent, then score) instead of scoring an existing dir. Requires `--project`. |
+| `--goldens` | no | Comma-separated golden files (run/score several cases at once). |
+| `--runs` | no | How many times to run each case (default 3 in `--run`). Reports per-run + averaged metrics, and enables the cross-run **consistency** metrics (need ≥2 runs). |
+| `--project` | with `--run` | GCP project the agent runs in (also sets `GOOGLE_CLOUD_PROJECT` for the judge). |
+| `--concurrency` | no | Max concurrent agent processes in `--run` (default 2, env `KC_EVAL_MAX_CONCURRENCY`). |
+| `--persona` | no | Persona id from the golden's `personas` (golden mode only). |
 | `--model` | no | Judge model — any Vertex AI model id you have access to. Defaults to `gemini-2.5-pro`. |
 | `--json` | no | Emit raw JSON instead of the formatted scorecard (for piping/automation). |
 
-It reports the following, each on a 0–1 scale (higher is better):
+It reports the following, each shown **out of 100** in the scorecard (higher is better):
 
 - **structural_validity** *(deterministic)* — the generated mdcode is well-formed:
   entry YAML parses, required fields are present, the entry type matches the mode,
@@ -338,16 +405,16 @@ It reports the following, each on a 0–1 scale (higher is better):
   visibility (not gated against a budget; does not affect pass/fail).
 - **hallucination_free** *(judge)* — is every factual claim in the overviews
   supported by what the agent actually retrieved? The score is the fraction of
-  extracted claims that are grounded; **1.0 = nothing fabricated**. Claims are
+  extracted claims that are grounded; **100 = nothing fabricated**. Claims are
   checked in parallel across chunks of the retrieved source.
 - **redundancy_index** *(judge)* — does the overview add **novel** context beyond
-  echoing column names/schema? **1 = rich synthesis, 0 = tautological restatement.**
+  echoing column names/schema? **100 = rich synthesis, 0 = tautological restatement.**
 - **disambiguation_efficacy** *(judge)* — is the enrichment enough to tell this
   entry apart from similar/overlapping ones (its grain and purpose made explicit)?
-  **1 = clearly distinct.**
+  **100 = clearly distinct.**
 - **absence_of_contradictions** *(judge)* — are there contradictions within or
   across the generated entries (join keys, enums, metric definitions, freshness)?
-  **1 = none, 0 = an explicit conflict.**
+  **100 = none, 0 = an explicit conflict.**
 
 ### Enabling the judge-based metrics
 
@@ -364,6 +431,99 @@ gcloud auth application-default login
 
 Without auth they are simply skipped and shown as `n/a`; the deterministic metrics
 still run. Choose the judge model with `--model` (default `gemini-2.5-pro`).
+
+### Golden-based eval (optional)
+
+A **golden** is an answer key you declare for a case — the expected facts, terms,
+and sections. Golden scoring runs the **full dynamic metric set**
+(`structural_validity`, `perf`, `hallucination_free`, `redundancy_index`,
+`disambiguation_efficacy`, `absence_of_contradictions`) **and adds** the
+golden-driven metrics below (each shown out of 100, higher is better):
+
+- **concept_recall** *(judge, doc mode)* — of the concepts the golden expects as
+  knowledge-base entries, what fraction did the agent produce (matched by meaning,
+  not exact name)? **100 = every expected concept covered.**
+- **concept_precision** *(judge, doc mode)* — of the entries the agent produced,
+  what fraction map to an expected concept? Spurious entries lower it; concepts
+  you list under `acceptable_extra_concepts` are exempt. **100 = no off-target
+  entries.**
+- **fact_recall** *(judge)* — of the `golden_facts` (per table in table mode),
+  what fraction are conveyed by the matched output? **100 = all expected facts
+  present.**
+- **business_terms_presence** *(judge)* — are the golden's `business_terms`
+  defined or used in the output (matched semantically)? **100 = all covered.**
+- **enrichment_diversity** *(deterministic)* — does the output contain the
+  sections the golden declares in `expected_headings`? A "Sample Queries" heading
+  is satisfied by a populated `<table>.queries.md` sidecar. **100 = all expected
+  sections present.**
+- **entry_grounding** *(deterministic, table mode)* — do all generated entries
+  correspond to real dataset tables, with none invented? **100 = nothing
+  fabricated.**
+- **persona_alignment** *(judge, with `--persona`)* — on the same source, does the
+  output emphasize this persona's focus areas while still retaining the shared
+  concepts? **100 = strong persona conditioning without dropping shared content.**
+- **business_terms_validity** *(judge, needs `business_terms`)* — beyond mere
+  presence, does each business term get a dedicated, correct definition (a
+  per-term MaC file)? Typically low today (the agent doesn't emit per-term files
+  yet) — included for parity with the reference design so scores are comparable.
+- **context_preservation** *(judge, needs `prebaked_facts`)* — if the golden
+  declares facts that already existed before enrichment, were they **preserved**
+  (not clobbered) through the run? Only scored when the golden has `prebaked_facts`.
+- **trajectory** *(deterministic, needs a `trajectory` block)* — input-conditioned
+  tool use: did the agent call the tools it should (`must_call`) and avoid those it
+  shouldn't (`must_not_call`)? Derived from `trajectory.json`. Only scored when the
+  golden declares a `trajectory` block (e.g. `{ "must_not_call": ["dataset_pull"] }`
+  for a doc case). **100 = tool use matched the inputs.**
+
+The simplest way is to let the eval **run the case end-to-end** — it does the
+setup (e.g. copying a public dataset into your project), runs the agent, and
+scores the result. You only pass your project and the golden:
+
+```bash
+# Runs theLook eCommerce table mode for you (copies the public dataset into
+# <project>, enriches it grounded by the local corpus, scores it) — 3 runs,
+# run-level + averaged metrics:
+python -m eval --run --goldens eval/goldens/thelook_ecommerce.json \
+    --project <your_gcp_project> --model gemini-2.5-pro --runs 3
+```
+
+`--run` repeats each case `--runs` times and writes per-run + averaged reports
+into a timestamped folder under `$TMPDIR/kc_golden_eval_reports/` (printed at the
+end). Add more cases with a comma-separated `--goldens`. Prereqs: ADC
+(`gcloud auth application-default login`) and a built `kcmd`
+(`cd toolbox/mdcode && npm run build`) — every mode shells out to it.
+
+### Multiple runs: averaged metrics + consistency
+
+With `--runs N` (N ≥ 2), each metric is reported as the **mean across runs** with
+its per-run scores and how many runs passed (`runs k/n`), the case rationale keeps
+the *real* per-metric explanation (a representative run's, preferring a failing
+one — not just "mean of N"), and the report appends a **per-run breakdown** you
+can drill into. Two extra **cross-run stability** metrics are added (informational
+— they don't gate the case or affect the average):
+
+- **concept_consistency** — does the agent produce the **same set of concepts**
+  every run? Each concept scores the fraction of runs it appears in, so producing
+  more/fewer concepts between runs lowers it (matched by meaning when the judge is
+  on, by name/word overlap otherwise). **100 = identical concept set each run.**
+- **content_consistency** — for concepts that recur across runs, are their
+  **facts consistent** (no drift/contradiction between runs)? **100 = same facts
+  every run.**
+
+Both measure stability *across* runs, so they only apply with **≥2 runs**; with a
+single run they're surfaced as `n/a` with a note to run the case 2–3× to assess
+stability.
+
+To score an output you already produced (no agent run), point `--golden` at it:
+
+```bash
+python -m eval --output-dir /tmp/enrich_out --golden eval/goldens/supply_chain.json
+```
+
+See `eval/goldens/README.md` for the golden/case schema (incl. the `run` block
+for your own cases), `--run`/`--runs`/`--goldens` usage, and three ways to build
+goldens — author them, work backward from already-documented data, or harvest
+them from human review.
 
 ## Publishing to the catalog
 

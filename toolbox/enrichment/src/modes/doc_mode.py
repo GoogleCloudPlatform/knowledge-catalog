@@ -15,8 +15,8 @@ from engine import (
     ENTRY_WRITER_INSTRUCTION,  # legacy ADK path, kept for compat
     EnumerationResult,
     PER_DOC_SUMMARIZER_INSTRUCTION,
-    PER_DOC_SUMMARIZER_MODEL,
     TOPIC_REDUCER_INSTRUCTION,
+    _light_model,
     create_entry_writer_runner,  # legacy fallback, no longer wired in
     create_enumeration_runner,
     create_mdcode_runner,
@@ -32,7 +32,10 @@ from tools.drive_tools import (
     extract_gdoc_id,
     fetch_doc_text,
     get_cache_mode,
+    is_local_path,
     list_folder_files,
+    list_local_md,
+    read_local_md,
     read_summary_cache,
     write_summary_cache,
 )
@@ -41,7 +44,7 @@ import yaml
 MAX_BATCH_SIZE = 10  # Reverted from v2.6's 3 (back to v2.5). v2.6 tried Flash via direct API to allow bigger throughput but Vertex routes Flash to a 32K-capped backend variant regardless of API path for this project, forcing batch=3, which then over-saturated Flash quota on back-to-back runs and bloated the EnumerationAgent's input.
 MAX_DEPTH = 2  # Was 3 — depth-3 mostly surfaced tangential links; dropping it cuts crawl + summarize ~30% (v2.5 optimization #1).
 CONCURRENCY_LIMIT = 6  # Reverted from v2.6's 12 (back to v2.5). Summarizer is on Pro again; 12 trips Vertex 429s on big-input Pro calls.
-# Stage 1 (per-doc summary) runs on PER_DOC_SUMMARIZER_MODEL (Flash) — small
+# Stage 1 (per-doc summary) runs on _light_model(model) (Flash) — small
 # per-call payloads, well within Flash routing limits, tolerates 20-way
 # concurrency without 429s. Stage 1 is the cold-run hot path; cache hits
 # bypass it entirely so warm-cache runs ignore this limit.
@@ -271,10 +274,56 @@ def _normalize_entries(output_dir: str) -> list[str]:
   return fixed
 
 
+def _partition_doc_inputs(docs: list[str], folders: list[str] | None):
+  """Route each --docs/--folder entry to Drive vs local markdown by format.
+
+  Both flags are mixed, comma-separated lists routed per entry (see
+  drive_tools.is_local_path, which is format-first):
+    --docs:   a Drive Doc URL/ID -> drive_docs; a local .md file -> depth-0
+              spine; a local directory -> depth-1 children.
+    --folder: a Drive folder URL/ID -> drive_folders; a local directory (or
+              file) -> depth-1 children.
+  Returns (drive_docs, drive_folders, local_spine_md, local_child_md).
+  """
+  local_spine_md, local_child_md = [], []
+  drive_docs, drive_folders = [], []
+  for d in (docs or []):
+    d = (d or "").strip()
+    if not d:
+      continue
+    if is_local_path(d):
+      files = list_local_md(d)
+      if os.path.isdir(os.path.expanduser(d)):
+        local_child_md.extend(files)
+        kind = f"local md folder ({len(files)} file(s))"
+      else:
+        local_spine_md.extend(files)
+        kind = "local md spine file" if files else "local md file (MISSING)"
+    else:
+      drive_docs.append(d)
+      kind = "Drive doc"
+    print(f"[Route] --docs {d!r} -> {kind}", flush=True)
+  for f in (folders or []):
+    f = (f or "").strip()
+    if not f:
+      continue
+    if is_local_path(f):
+      files = list_local_md(f)
+      local_child_md.extend(files)
+      kind = (f"local md folder ({len(files)} file(s))" if files
+              else "local md folder (EMPTY/MISSING)")
+    else:
+      drive_folders.append(f)
+      kind = "Drive folder"
+    print(f"[Route] --folder {f!r} -> {kind}", flush=True)
+  return (drive_docs, drive_folders,
+          sorted(set(local_spine_md)), sorted(set(local_child_md)))
+
+
 async def run(
     topic: str,
     docs: list[str],
-    folder: str | None,
+    folders: list[str] | None,
     output_dir: str | None,
     model: str,
     entry_group: str,
@@ -373,16 +422,25 @@ async def run(
   folder_seed_urls = []  # folder files: injected as depth-1 children
   folder_files = []
 
-  folder = extract_folder_id(folder) if folder else folder
+  # Route --docs/--folder per entry: Drive inputs vs local markdown (a local .md
+  # via --docs is a depth-0 spine; a local dir via --docs/--folder is depth-1
+  # children). Local files are injected after the crawl so they never hit Drive.
+  start_docs, drive_folders, local_spine_md, local_child_md = (
+      _partition_doc_inputs(start_docs, folders))
+  if local_spine_md or local_child_md:
+    print(f"[Local] 📂 Markdown inputs: {len(local_spine_md)} spine file(s), "
+          f"{len(local_child_md)} folder child(ren). Relative paths resolve "
+          f"from CWD: {os.getcwd()}", flush=True)
 
-  # Seed additional inputs by listing a Drive folder (Docs, Sheets, Slides, PDFs).
-  if folder:
+  drive_folders = [extract_folder_id(f) for f in drive_folders if f]
+
+  # Seed additional inputs by listing each Drive folder (Docs/Sheets/Slides/PDF).
+  for folder in drive_folders:
     print(f"[Crawler] 📁 Listing Drive folder: {folder}", flush=True)
-    folder_files = list_folder_files(folder)
-    print(
-        f"[Crawler] 📁 Found {len(folder_files)} file(s) in folder.", flush=True
-    )
-    for f in folder_files:
+    one = list_folder_files(folder)
+    print(f"[Crawler] 📁 Found {len(one)} file(s) in folder.", flush=True)
+    folder_files.extend(one)
+    for f in one:
       fid = f.get("id")
       if not fid:
         continue
@@ -395,8 +453,12 @@ async def run(
   # the Master Scope, so synthesize one and treat the folder files as its
   # depth-1 children. If explicit --docs were given, those remain the spine.
   synthetic_scope_text = ""
-  if folder_seed_urls and not start_docs:
-    synthetic_scope_text = _build_synthetic_scope(topic, folder_files)
+  scope_files = list(folder_files) + [
+      {"name": os.path.basename(p), "mimeType": "text/markdown"}
+      for p in local_child_md
+  ]
+  if scope_files and not start_docs and not local_spine_md:
+    synthetic_scope_text = _build_synthetic_scope(topic, scope_files)
 
   print("=" * 60)
   print(
@@ -465,6 +527,18 @@ async def run(
       " total.\n"
   )
 
+  # Inject local markdown as already-fetched docs (read from disk, no Drive
+  # round-trip). Spine files at depth 0 (become Master Scope), folder/dir files
+  # at depth 1 — exactly mirroring --docs / --folder for Google Docs.
+  for p in local_spine_md:
+    all_fetched_docs.append((p, 0, read_local_md(p)))
+  for p in local_child_md:
+    all_fetched_docs.append((p, 1, read_local_md(p)))
+  if local_spine_md or local_child_md:
+    print(f"[Local] 📄 Injected {len(local_spine_md) + len(local_child_md)} "
+          f"local markdown file(s): {len(local_spine_md)} spine, "
+          f"{len(local_child_md)} folder child(ren).", flush=True)
+
   # Extract Depth 0 documents as Master Scope. When seeding from a folder
   # there are no depth-0 docs, so the synthetic scope stands in as the spine.
   master_scope_docs = [doc for doc in all_fetched_docs if doc[1] == 0]
@@ -477,7 +551,7 @@ async def run(
     )
 
   # 2a. Stage-1 Map (cache-aware): topic-NEUTRAL per-doc summary card.
-  # Runs on PER_DOC_SUMMARIZER_MODEL (Flash) at higher concurrency since each
+  # Runs on _light_model(model) (Flash) at higher concurrency since each
   # call is one small doc in / one short card out — no batch context, well
   # under Flash routing limits. Cache key = (doc_id, modified_time) under
   # ~/.kc_enrich_cache/summaries/ when KC_ENRICH_CACHE_MODE=summary (default);
@@ -485,7 +559,7 @@ async def run(
   cache_mode = get_cache_mode()
   print(
       "[Agent] 🧠 Stage 1: per-doc summary (cache mode:"
-      f" {cache_mode}, model: {PER_DOC_SUMMARIZER_MODEL}, concurrency:"
+      f" {cache_mode}, model: {_light_model(model)}, concurrency:"
       f" {PER_DOC_CONCURRENCY})...",
       flush=True,
   )
@@ -506,7 +580,7 @@ async def run(
             content,
             mtime_by_id.get(doc_id, mtime_by_id.get(url)),
             per_doc_sem,
-            PER_DOC_SUMMARIZER_MODEL,
+            _light_model(model),
             usage_acc,
         )
     )
@@ -673,15 +747,17 @@ async def run(
   # Trajectory persists: per-doc fetches (the "tools" of doc mode) plus the
   # enumerated entry list so eval can ground scoring in BOTH what was read and
   # what was emitted.
+  # Local markdown inputs are read off disk (read_local_md), not fetched from
+  # Drive (fetch_gdoc); label each tool use by its actual source so eval counts
+  # them correctly instead of attributing local files to fetch_gdoc.
   tool_uses = [
-      {"name": "fetch_gdoc", "args": {"url": url, "depth": depth}}
+      {"name": "read_local_md" if is_local_path(url) else "fetch_gdoc",
+       "args": {"url": url, "depth": depth}}
       for (url, depth, _content) in all_fetched_docs
   ]
   tool_responses = [
-      {
-          "name": "fetch_gdoc",
-          "response": {"url": url, "depth": depth, "content": content[:50000]},
-      }
+      {"name": "read_local_md" if is_local_path(url) else "fetch_gdoc",
+       "response": {"url": url, "depth": depth, "content": content[:50000]}}
       for (url, depth, content) in all_fetched_docs
   ]
   for c in code_cards:
@@ -813,7 +889,7 @@ async def _write_one_kb_entry(
     body = await common.generate_text_direct(
         ENTRY_WRITER_INSTRUCTION,
         user_prompt,
-        _LIGHT_MODEL_FOR_WRITER,
+        _light_model(model),
         usage_acc,
     )
 
@@ -861,7 +937,7 @@ async def _write_one_kb_entry(
       description=entry.description,
       category_id=category.id,
       grounding_prompt=user_prompt,
-      writer_model=_LIGHT_MODEL_FOR_WRITER,
+      writer_model=_light_model(model),
       overview_body=body,
       overview_path=overview_path,
       kind="kb",
@@ -998,8 +1074,3 @@ async def apply_reenumeration(session, new_enum, removed_ids) -> None:
             f"[refine] ➕ added entry: {es.category_id}/{es.entry_id}",
             flush=True,
         )
-
-
-# Flash for the writer step: per-entry inputs are small (one entry's slice of
-# context, typically <20K tokens) so the ADK 32K Flash routing trap doesn't bite.
-_LIGHT_MODEL_FOR_WRITER = "gemini-3.5-flash"
