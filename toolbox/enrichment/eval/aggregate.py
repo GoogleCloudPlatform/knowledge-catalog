@@ -237,10 +237,18 @@ def aggregate_runs(run_results: list[dict], mode: str | None = None,
   judge = metrics.default_judge(model) if has_auth else None
 
   rollup = metric_rollup(run_results)
-  try:
-    rollup += consistency_metrics(run_results, judge)
-  except Exception:  # pylint: disable=broad-except
-    pass  # consistency is informational — never let it break the case score.
+  # Only surface the cross-run consistency metrics when there are ≥2 INDEPENDENT
+  # runs (distinct output dirs). Dynamic `--runs` re-scores one output dir, so it
+  # has a single distinct output and consistency is undefined — omit the rows
+  # entirely there rather than show permanent n/a. Real independent runs come from
+  # the golden case-runner (`--run --runs N`).
+  distinct_outputs = len({r.get("output_dir") for r in run_results
+                          if r.get("output_dir")})
+  if distinct_outputs >= 2:
+    try:
+      rollup += consistency_metrics(run_results, judge)
+    except Exception:  # pylint: disable=broad-except
+      pass  # consistency is informational — never let it break the case score.
 
   run_avgs = [r.get("average_score") for r in run_results
               if isinstance(r.get("average_score"), (int, float))]
