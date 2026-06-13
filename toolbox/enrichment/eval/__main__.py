@@ -215,8 +215,9 @@ def main(argv=None) -> int:
                        "Also sets GOOGLE_CLOUD_PROJECT for the judge.")
   ap.add_argument("--runs", type=int, default=None,
                   help="Times to run each case for run-level + averaged metrics. "
-                       "Default: 3 in --run mode (matches the internal harness), 1 in "
-                       "score mode. In score mode >1 means N judge re-scoring passes.")
+                       "Default 3 in --run mode (matches the internal harness). Only "
+                       "valid with a golden (--run / --golden); rejected for dynamic "
+                       "eval, which scores an output dir once.")
   ap.add_argument("--concurrency", type=int,
                   default=max(1, int(os.environ.get("KC_EVAL_MAX_CONCURRENCY", "2"))),
                   help="RUN mode: max concurrent agent processes (default 2 / "
@@ -295,6 +296,14 @@ def main(argv=None) -> int:
   if not args.output_dir:
     print("error: --output-dir is required (or use --run to generate it).",
           file=sys.stderr)
+    return 2
+  # Dynamic eval (no golden) scores ONE output dir once; multiple runs would just
+  # re-score the same output and mean nothing. Reject --runs > 1 there — it only
+  # applies to golden case-runs (`--run`, which generates N independent runs).
+  if not goldens and (args.runs or 0) > 1:
+    print("error: --runs only applies to golden case-runs (--run). Dynamic eval "
+          "scores an output dir once — drop --runs, or pass a golden via --golden "
+          "/ --run.", file=sys.stderr)
     return 2
   output_dirs = [d.strip() for d in args.output_dir.split(",") if d.strip()]
   if goldens:
