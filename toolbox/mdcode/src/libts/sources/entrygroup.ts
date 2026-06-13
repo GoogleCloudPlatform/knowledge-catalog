@@ -48,4 +48,12 @@ export class EntryGroupSource implements CatalogSource {
   serviceName(localName: string): string {
     return `${this._entryGroup.name}/entries/${localName}`;
   }
+
+  tryGetLocalName(serviceName: string): string | undefined {
+    const prefix = `${this._entryGroup.name}/entries/`;
+    if (serviceName.startsWith(prefix)) {
+      return serviceName.substring(prefix.length);
+    }
+    return undefined;
+  }
 }

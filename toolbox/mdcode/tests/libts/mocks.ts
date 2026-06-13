@@ -1,4 +1,5 @@
 import * as gcp from '../../src/libts/gcp';
+import { _fixEntry, _fixEntryLink } from '../../src/libts/gcp/dataplex';
 import * as bigquery from '../../src/libts/gcp/bigquery';
 
 // Bypass actual gcloud CLI calls by using the explicit constructor
@@ -54,6 +55,23 @@ export class CatalogClientMock extends gcp.CatalogClient {
     const res = this.mockAspectTypes.get(name);
     if (res) {
       return { status: 200, result: res };
+    }
+    return { status: 404, message: 'Not found' };
+  }
+  async getGlossary(project: string, location: string, glossaryId: string): Promise<gcp.ApiResult<any>> {
+    const nameSuffix = `/glossaries/${glossaryId}`;
+    const entry = this.mockEntries.find(e => e.name.endsWith(nameSuffix));
+    if (entry) {
+      return { status: 200, result: { displayName: entry.entrySource?.displayName || glossaryId } };
+    }
+    return { status: 404, message: 'Not found' };
+  }
+
+  async getGlossaryTerm(project: string, location: string, glossaryId: string, termId: string): Promise<gcp.ApiResult<any>> {
+    const nameSuffix = `/glossaries/${glossaryId}/terms/${termId}`;
+    const entry = this.mockEntries.find(e => e.name.endsWith(nameSuffix));
+    if (entry) {
+      return { status: 200, result: { displayName: entry.entrySource?.displayName || termId } };
     }
     return { status: 404, message: 'Not found' };
   }
@@ -129,6 +147,67 @@ export class CatalogClientMock extends gcp.CatalogClient {
       return { status: 200, result: existingEntry };
     }
     return { status: 404, message: 'Not found' };
+  }
+
+  public mockEntryLinks: gcp.EntryLink[] = [];
+
+  async lookupEntryLinks(
+    project: string,
+    location: string,
+    entryName: string,
+    entryLinkTypes?: string[]
+  ): Promise<gcp.ApiResult<gcp.LookupEntryLinksResponse>> {
+    const links = this.mockEntryLinks.filter(l =>
+      l.entryReferences.some(r => r.name === entryName) &&
+      (!entryLinkTypes || entryLinkTypes.includes(l.entryLinkType))
+    );
+    const clonedLinks = JSON.parse(JSON.stringify(links));
+    for (const link of clonedLinks) {
+      await _fixEntryLink(link, this.context);
+    }
+    return { status: 200, result: { entryLinks: clonedLinks } };
+  }
+
+  async createEntryLink(
+    project: string,
+    location: string,
+    entryGroup: string,
+    entryLink: gcp.EntryLink
+  ): Promise<gcp.ApiResult<gcp.EntryLink>> {
+    const createdLink = { ...entryLink, name: `${gcp.catalogContainer(project, location, entryGroup)}/entryLinks/link-${Date.now()}` };
+    this.mockEntryLinks.push(createdLink);
+    return { status: 200, result: createdLink };
+  }
+
+  async deleteEntryLink(
+    project: string,
+    location: string,
+    entryGroup: string,
+    entryLinkName: string
+  ): Promise<gcp.ApiResult<any>> {
+    const name = `${gcp.catalogContainer(project, location, entryGroup)}/entryLinks/${entryLinkName}`;
+    const idx = this.mockEntryLinks.findIndex(l => l.name === name || l.name.endsWith(entryLinkName));
+    if (idx !== -1) {
+      this.mockEntryLinks.splice(idx, 1);
+      return { status: 200, result: {} };
+    }
+    return { status: 404, message: 'Not found' };
+  }
+
+  async *listEntryLinks(
+    project: string,
+    location: string,
+    entryGroup: string,
+    filter?: string
+  ): AsyncGenerator<gcp.EntryLink, void, unknown> {
+    const parent = gcp.catalogContainer(project, location, entryGroup);
+    for (const link of this.mockEntryLinks) {
+      if (link.name.startsWith(parent)) {
+        const clonedLink = JSON.parse(JSON.stringify(link));
+        await _fixEntryLink(clonedLink, this.context);
+        yield clonedLink;
+      }
+    }
   }
 
   async createEntry(project: string, location: string, entryGroup: string, entryId: string, entry?: gcp.Entry): Promise<gcp.ApiResult<gcp.Entry>> {

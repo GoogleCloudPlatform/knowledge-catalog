@@ -46,6 +46,12 @@ export class ApiClient {
     return this._requestRetry('PATCH', url, queryParams, body);
   }
 
+  async _delete<T>(resourceName: string,
+                   queryParams?: Record<string, any>): Promise<ApiResult<T>> {
+    const url = `${this._endpoint}/${this._pathPrefix}/${resourceName}`;
+    return this._requestRetry('DELETE', url, queryParams);
+  }
+
   private async _requestRetry<T>(method: string,
                                  url: string,
                                  queryParams?: Record<string, any>,

@@ -8,26 +8,139 @@ import * as gcp from './gcp';
 import { CatalogSource, createSource, Sources } from './source';
 
 
+export const SYSTEM_LINK_ALIASES: Record<string, string> = {
+  'definition': 'dataplex-types.global.definition',
+  'synonym': 'dataplex-types.global.synonym',
+  'related': 'dataplex-types.global.related',
+  'schema-join': 'dataplex-types.global.schema-join',
+};
+
+export function resolveEntryLinkType(
+  typeRef: string,
+  manifest?: CatalogManifest | Record<string, { entryLink?: string }>
+): string {
+  if (manifest) {
+    let customAliases: Record<string, { entryLink?: string }> | undefined;
+    if (manifest instanceof CatalogManifest) {
+      customAliases = manifest.aliases;
+    } else {
+      customAliases = manifest as Record<string, { entryLink?: string }>;
+    }
+    if (customAliases?.[typeRef]?.entryLink) {
+      return customAliases[typeRef].entryLink!;
+    }
+  }
+  if (SYSTEM_LINK_ALIASES[typeRef]) {
+    return SYSTEM_LINK_ALIASES[typeRef];
+  }
+  return typeRef;
+}
+
+export function findAliasForType(
+  typeRef: string,
+  manifest?: CatalogManifest | Record<string, { entryLink?: string }>
+): string {
+  if (manifest) {
+    let customAliases: Record<string, { entryLink?: string }> | undefined;
+    if (manifest instanceof CatalogManifest) {
+      customAliases = manifest.aliases;
+    } else {
+      customAliases = manifest as Record<string, { entryLink?: string }>;
+    }
+    if (customAliases) {
+      for (const [alias, config] of Object.entries(customAliases)) {
+        if (config.entryLink === typeRef) {
+          return alias;
+        }
+      }
+    }
+  }
+  for (const [alias, fullType] of Object.entries(SYSTEM_LINK_ALIASES)) {
+    if (fullType === typeRef) {
+      return alias;
+    }
+  }
+  
+  let cleanRef = typeRef.replace(/^655216118709\./, 'dataplex-types.');
+  if (cleanRef.startsWith('dataplex-types.global.')) {
+    return cleanRef.substring('dataplex-types.global.'.length);
+  }
+  if (cleanRef.startsWith('dataplex-types.')) {
+    return cleanRef.substring('dataplex-types.'.length);
+  }
+  return cleanRef;
+}
+
+export function findAspectAliasForType(
+  typeRef: string,
+  manifest?: CatalogManifest
+): string {
+  if (manifest?.aliases) {
+    for (const [alias, config] of Object.entries(manifest.aliases)) {
+      if (config.aspect === typeRef) {
+        return alias;
+      }
+    }
+  }
+  
+  let cleanRef = typeRef.replace(/^655216118709\./, 'dataplex-types.');
+  if (cleanRef.startsWith('dataplex-types.global.')) {
+    return cleanRef.substring('dataplex-types.global.'.length);
+  }
+  if (cleanRef.startsWith('dataplex-types.')) {
+    return cleanRef.substring('dataplex-types.'.length);
+  }
+  return cleanRef;
+}
+
+export function resolveAspectAlias(
+  alias: string,
+  manifest?: CatalogManifest
+): string {
+  if (manifest?.aliases?.[alias]?.aspect) {
+    return manifest.aliases[alias].aspect!;
+  }
+  let fullAspect = alias;
+  if (fullAspect.split('.').length === 1) {
+    fullAspect = `dataplex-types.global.${fullAspect}`;
+  }
+  return fullAspect;
+}
+
 const manifestSchema = z.object({
   scope: z.union([z.string(), z.array(z.string())]),
+  aliases: z.record(z.string(), z.object({
+    aspect: z.string().optional(),
+    glossary: z.string().optional(),
+    entryLink: z.string().optional()
+  })).optional(),
+  resourceAliases: z.record(z.string(), z.object({
+    aspect: z.string().optional(),
+    glossary: z.string().optional(),
+    entryLink: z.string().optional()
+  })).optional(),
   snapshot: z.object({
     entries: z.array(z.string()).optional(),
-    aspects: z.array(z.string()).optional()
+    aspects: z.array(z.string()).optional(),
+    entryLinks: z.array(z.string()).optional()
   }).optional(),
   publishing: z.object({
     entries: z.array(z.string()).optional(),
-    aspects: z.array(z.string()).optional()
+    aspects: z.array(z.string()).optional(),
+    entryLinks: z.array(z.string()).optional()
   }).optional(),
 });
 
 export interface SnapshotConfig {
   entries?: string[];
   aspects?: string[];
+  entryLinks?: string[];
 }
 
 export interface PublishingConfig {
   entries?: string[];
   aspects?: string[];
+  entryLinks?: string[];
 }
 
 export interface Scope {
@@ -40,15 +153,18 @@ export class CatalogManifest {
   readonly source: CatalogSource;
   readonly snapshotConfig?: SnapshotConfig;
   readonly publishingConfig?: PublishingConfig;
+  readonly aliases?: Record<string, { aspect?: string; glossary?: string; entryLink?: string }>;
 
   private constructor(
     source: CatalogSource,
     snapshotConfig?: SnapshotConfig,
-    publishingConfig?: PublishingConfig
+    publishingConfig?: PublishingConfig,
+    aliases?: Record<string, { aspect?: string; glossary?: string; entryLink?: string }>
   ) {
     this.source = source;
     this.snapshotConfig = snapshotConfig;
     this.publishingConfig = publishingConfig;
+    this.aliases = aliases;
   }
 
   static async initWithEntryGroup(name: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
@@ -110,6 +226,11 @@ export class CatalogManifest {
       );
     }
 
+    const aliases: Record<string, { aspect?: string; glossary?: string; entryLink?: string }> = {
+      ...result.data.resourceAliases,
+      ...result.data.aliases
+    };
+
     const snapshot = result.data.snapshot;
     if (snapshot) {
       if (snapshot.entries) {
@@ -126,6 +247,16 @@ export class CatalogManifest {
           const parts = aspectType.split('.');
           if (parts.length !== 3) {
             throw new Error(`Manifest error: Invalid Aspect Type '${aspectType}'`);
+          }
+        }
+      }
+
+      if (snapshot.entryLinks) {
+        for (const entryLinkType of snapshot.entryLinks) {
+          const resolved = resolveEntryLinkType(entryLinkType, aliases);
+          const parts = resolved.split('.');
+          if (parts.length !== 3) {
+            throw new Error(`Manifest error: Invalid EntryLink Type '${entryLinkType}'`);
           }
         }
       }
@@ -160,9 +291,25 @@ export class CatalogManifest {
           }
         }
       }
+
+      if (publishing.entryLinks) {
+        for (const entryLinkType of publishing.entryLinks) {
+          const resolved = resolveEntryLinkType(entryLinkType, aliases);
+          const parts = resolved.split('.');
+          if (parts.length !== 3) {
+            throw new Error(`Manifest error: Invalid EntryLink Type '${entryLinkType}'`);
+          }
+          const resolvedSnapshotLinks = snapshot?.entryLinks?.map(link => resolveEntryLinkType(link, aliases)) ?? [];
+          if (!resolvedSnapshotLinks.includes(resolved)) {
+            throw new Error(
+              `Manifest error: Publishing entryLink type '${entryLinkType}' is not listed in snapshot entryLinks.`
+            );
+          }
+        }
+      }
     }
 
-    return new CatalogManifest(source, snapshot, publishing);
+    return new CatalogManifest(source, snapshot, publishing, Object.keys(aliases).length ? aliases : undefined);
   }
 
   save(path: string): void {
@@ -177,6 +324,7 @@ export class CatalogManifest {
 
     const data: any = {
       scope: scope,
+      aliases: this.aliases ?? undefined,
       snapshot: this.snapshotConfig ?? undefined,
       publishing: this.publishingConfig ?? undefined
     };
