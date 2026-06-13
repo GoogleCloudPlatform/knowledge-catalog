@@ -71,6 +71,28 @@ def _trajectory_source(traj: dict) -> str:
   return "\n\n".join(parts)
 
 
+# Map each recorded tool_use (trajectory.json) to the marker phrase that
+# metrics.fired_tools() recognizes, so check_trajectory (unchanged, stdout-based
+# in the prototype) can read github's structured tool calls. This lets the
+# trajectory metric (must_call / must_not_call) work off trajectory.json instead
+# of needing the agent's stdout.
+_TRAJ_TOOL_PHRASE = {
+    "fetch_gdoc": "Fetching",          # -> drive_fetch
+    "read_local_md": "Fetching",       # -> drive_fetch (local markdown source)
+    "get_table_entry": "bigquery-dataset",   # -> dataset_pull
+    "reference_table": "bigquery-dataset",   # -> dataset_pull
+    "explore_repo": "github",          # -> github_fetch
+}
+
+
+def _traj_markers(traj: dict) -> str:
+  """Synthesize a marker string from trajectory.json tool_uses so the (unchanged)
+  stdout-based check_trajectory can derive which tool categories fired."""
+  names = [t.get("name") for t in (traj.get("tool_uses") or [])
+           if isinstance(t, dict)]
+  return " ".join(_TRAJ_TOOL_PHRASE.get(n, "") for n in names if n)
+
+
 def run_golden_eval(output_dir: str, golden_path: str,
                     model: str = "gemini-2.5-pro", persona_id: str | None = None,
                     perf_budget: dict | None = None,
@@ -112,15 +134,31 @@ def run_golden_eval(output_dir: str, golden_path: str,
 
   # Deterministic
   res.append(metrics.check_structural(arts, mode))
+  # Input-conditioned tool use (must_call / must_not_call) — same metric as the
+  # prototype. The prototype scans agent stdout; github already records the actual
+  # tool calls in trajectory.json, so we derive the fired tools from there (no
+  # stdout needed). check_trajectory/metrics.py are unchanged.
+  res.append(metrics.check_trajectory(_traj_markers(traj),
+                                      golden.get("trajectory", {})))
   res.append(metrics.check_perf(latency, arts, perf_budget or {}, tokens))
   if mode == "table":
     res.append(metrics.check_entry_grounding(arts))
   if golden.get("expected_headings"):
     res.append(metrics.check_expected_headings(arts, golden["expected_headings"]))
 
-  # Judge: business terms
+  # Judge: business terms — presence + (dedicated per-term MaC) validity, matching
+  # the prototype scorer. business_terms_validity is typically low today (the agent
+  # doesn't emit per-term files) but is included for parity so scores are comparable.
   if golden.get("business_terms"):
     res.append(metrics.check_business_terms(arts, golden["business_terms"], judge))
+    res.append(metrics.check_business_terms_validity(
+        arts, golden["business_terms"], judge))
+
+  # Merge/update path: if the golden declares pre-baked context, verify it was
+  # PRESERVED through enrichment (prototype parity; only when prebaked_facts set).
+  if golden.get("prebaked_facts"):
+    res.append(metrics.check_context_preservation(
+        arts, golden["prebaked_facts"], judge))
 
   thr = _THRESHOLDS
   # Judge: concept recall/precision + fact recall
@@ -161,6 +199,14 @@ def run_golden_eval(output_dir: str, golden_path: str,
   if persona_id and golden.get("personas", {}).get(persona_id):
     res.append(metrics.check_persona_alignment(
         arts, golden["personas"][persona_id], judge))
+
+  # Judge: rubric dims (redundancy_index / disambiguation_efficacy /
+  # absence_of_contradictions) — same set dynamic eval scores; the prototype
+  # scorer runs them for golden runs too. Degrades gracefully without a judge.
+  try:
+    res.extend(metrics.score_rubric(arts, judge, golden.get("business_terms")))
+  except Exception:  # pylint: disable=broad-except
+    pass
 
   # Judge: hallucination grounded on trajectory (+ table reference)
   src = _trajectory_source(traj)

@@ -56,12 +56,12 @@ def metric_rollup(run_results: list[dict]) -> list[dict]:
   and runs_passed."""
   agg: dict[str, dict] = {}
   order: list[str] = []
-  for run_idx, r in enumerate(run_results, 1):
+  for r in run_results:
     for m in r.get("metrics", []):
       name = m["name"]
       if name not in agg:
         agg[name] = {"name": name, "scores": [], "npass": 0, "n": 0,
-                     "rationale": "", "insights": "", "rationale_run": 0,
+                     "rationale": "", "insights": "",
                      "description": m.get("description", name)}
         order.append(name)
       e = agg[name]
@@ -75,26 +75,21 @@ def metric_rollup(run_results: list[dict]) -> list[dict]:
       d = (m.get("rationale") or "").strip()
       if d and (not e["rationale"] or not passed):
         e["rationale"] = d
-        e["rationale_run"] = run_idx  # which run this representative detail is from
       ins = (m.get("insights") or "").strip()
       if ins and (not e["insights"] or not passed):
         e["insights"] = ins
   out = []
-  multi = len(run_results) > 1
   for name in order:
     e = agg[name]
     scores = e["scores"]
-    rationale = e["rationale"]
-    # On multi-run cases the rationale is one representative run's (a failing one
-    # when any failed). Tag which run it came from so a reader can map the
-    # evidence (e.g. a specific unsupported claim) to the right run.
-    if multi and rationale and e["rationale_run"]:
-      rationale = f"[from run {e['rationale_run']}] {rationale}"
     out.append({"name": name,
                 "score": round(sum(scores) / len(scores), 4) if scores else None,
                 "description": e["description"],
-                "rationale": rationale,
-                "rationale_run": e["rationale_run"] or None,
+                # Representative detail (a failing run's when any failed). When a
+                # judge is available this is rewritten into a uniform, run-aware
+                # rationale by explain_metrics in aggregate_runs (see below) —
+                # matching compare._metric_summary; no judge → this fallback stays.
+                "rationale": e["rationale"],
                 "insights": e["insights"],
                 "run_scores": scores,
                 "runs_passed": f"{e['npass']}/{e['n']}"})
@@ -246,6 +241,26 @@ def aggregate_runs(run_results: list[dict], mode: str | None = None,
   judge = metrics.default_judge(model) if has_auth else None
 
   rollup = metric_rollup(run_results)
+  # Rewrite the per-metric rationale/insights into one uniform, run-aware voice
+  # via a single batched judge call (mirrors compare._metric_summary). The
+  # explainer reasons over the evidence + per-run scores and names the specific
+  # lower run(s) itself, so we DON'T tag a single representative run. Falls back to
+  # the deterministic representative detail when there's no judge or the call
+  # fails. explain_metrics reads evidence from `detail`, so pass rationale as that.
+  if judge is not None:
+    try:
+      expl = metrics.explain_metrics(
+          [{**m, "detail": m.get("rationale", "")} for m in rollup],
+          mode or "", judge)
+    except Exception:  # pylint: disable=broad-except
+      expl = {}
+    for m in rollup:
+      e = expl.get(m["name"])
+      if e:
+        if e.get("rationale"):
+          m["rationale"] = e["rationale"]
+        if e.get("insights"):
+          m["insights"] = e["insights"]
   # Only surface the cross-run consistency metrics when there are ≥2 INDEPENDENT
   # runs (distinct output dirs). Dynamic `--runs` re-scores one output dir, so it
   # has a single distinct output and consistency is undefined — omit the rows
