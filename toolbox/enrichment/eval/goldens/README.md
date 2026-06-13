@@ -28,8 +28,15 @@ Keep the fields that fit your mode (see `TEMPLATE.json`):
 | `acceptable_extra_concepts` | doc | concept_precision | Optional concepts that are fine to produce and **won't** count against precision (string or `{name, aliases[]}`). |
 | `tables` | table | fact_recall | List of `{table, golden_facts[]}` — each table's expected facts. |
 | `expected_headings` | both | enrichment_diversity | Sections the overview should contain (e.g. `Lineage`, `Sample Queries`). |
-| `business_terms` | both | business_terms_presence | Terms the output should cover. |
+| `business_terms` | both | business_terms_presence, business_terms_validity | Terms the output should cover (presence) + whether each gets a dedicated per-term definition file (validity). |
 | `personas` | doc | persona_alignment | `{id: {instruction, focus_areas[], shared_concepts[]}}` — run with `--persona <id>`. |
+| `prebaked_facts` | both | context_preservation | Facts that existed before enrichment and must be PRESERVED (not clobbered) through the run. |
+| `trajectory` | both | trajectory | `{must_call: [...], must_not_call: [...]}` — tool categories the agent must / must not use (`drive_fetch`, `dataset_pull`, `github_fetch`). Checked against the actual `trajectory.json` tool calls. |
+
+Every golden run also gets the **dynamic** metrics automatically:
+`structural_validity`, `perf`, `hallucination_free`, and the rubric dims
+`redundancy_index` / `disambiguation_efficacy` / `absence_of_contradictions` — so
+a golden only needs to declare the golden-specific fields above.
 
 The eval auto-detects mode from the run's `trajectory.json` (`agent_type`), so use
 `expected_topics` for doc runs and `tables` for table runs. **`context_overlay`**

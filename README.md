@@ -435,9 +435,10 @@ still run. Choose the judge model with `--model` (default `gemini-2.5-pro`).
 ### Golden-based eval (optional)
 
 A **golden** is an answer key you declare for a case — the expected facts, terms,
-and sections. Scoring against it adds these metrics on top of the dynamic ones
-(`structural_validity`, `perf`, `hallucination_free` still run), each on a 0–1
-scale (higher is better):
+and sections. Golden scoring runs the **full dynamic metric set**
+(`structural_validity`, `perf`, `hallucination_free`, `redundancy_index`,
+`disambiguation_efficacy`, `absence_of_contradictions`) **and adds** the
+golden-driven metrics below (each shown out of 100, higher is better):
 
 - **concept_recall** *(judge, doc mode)* — of the concepts the golden expects as
   knowledge-base entries, what fraction did the agent produce (matched by meaning,
@@ -461,6 +462,18 @@ scale (higher is better):
 - **persona_alignment** *(judge, with `--persona`)* — on the same source, does the
   output emphasize this persona's focus areas while still retaining the shared
   concepts? **100 = strong persona conditioning without dropping shared content.**
+- **business_terms_validity** *(judge, needs `business_terms`)* — beyond mere
+  presence, does each business term get a dedicated, correct definition (a
+  per-term MaC file)? Typically low today (the agent doesn't emit per-term files
+  yet) — included for parity with the internal harness so scores are comparable.
+- **context_preservation** *(judge, needs `prebaked_facts`)* — if the golden
+  declares facts that already existed before enrichment, were they **preserved**
+  (not clobbered) through the run? Only scored when the golden has `prebaked_facts`.
+- **trajectory** *(deterministic, needs a `trajectory` block)* — input-conditioned
+  tool use: did the agent call the tools it should (`must_call`) and avoid those it
+  shouldn't (`must_not_call`)? Derived from `trajectory.json`. Only scored when the
+  golden declares a `trajectory` block (e.g. `{ "must_not_call": ["dataset_pull"] }`
+  for a doc case). **100 = tool use matched the inputs.**
 
 The simplest way is to let the eval **run the case end-to-end** — it does the
 setup (e.g. copying a public dataset into your project), runs the agent, and

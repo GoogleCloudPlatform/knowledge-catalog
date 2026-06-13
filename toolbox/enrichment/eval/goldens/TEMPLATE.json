@@ -29,8 +29,17 @@
   "_sections": "Sections the overview should contain (scored by enrichment_diversity).",
   "expected_headings": ["Lineage", "Sample Queries"],
 
-  "_terms": "Business terms that should be covered in the output (business_terms_presence).",
+  "_terms": "Business terms the output should cover. Scores business_terms_presence (covered?) and business_terms_validity (a dedicated per-term definition file? — typically low today).",
   "business_terms": ["session", "event"],
+
+  "_prebaked_facts": "OPTIONAL. Facts that already existed before enrichment and must be PRESERVED (not clobbered) through the run. Scores context_preservation.",
+  "prebaked_facts": ["The orders table is the system of record for fulfilled orders."],
+
+  "_trajectory": "OPTIONAL input-conditioned tool use, checked against the actual trajectory.json tool calls. Categories: drive_fetch, dataset_pull, github_fetch. Scores trajectory.",
+  "trajectory": {
+    "must_call": [],
+    "must_not_call": ["dataset_pull"]
+  },
 
   "_personas": "OPTIONAL persona-conditioned eval. Run with --persona <id>. Scores persona_alignment.",
   "personas": {
