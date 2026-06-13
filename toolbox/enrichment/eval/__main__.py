@@ -35,7 +35,7 @@ from collections import defaultdict
 
 from . import aggregate
 from . import runner
-from .dynamic_eval import run_dynamic_eval, fmt_score
+from .dynamic_eval import run_dynamic_eval, fmt_score, write_report
 from .golden_eval import run_golden_eval
 
 
@@ -183,8 +183,16 @@ async def _run_cases(goldens, project, model, runs, concurrency, batch_dir,
       continue
     per_case[(gp, stem)].append(res)
 
-  results = [_aggregate_runs(rl, mode=rl[0].get("mode"), model=model)
-             for rl in per_case.values() if rl]
+  results = []
+  for (gp, stem), rl in per_case.items():
+    if not rl:
+      continue
+    agg = _aggregate_runs(rl, mode=rl[0].get("mode"), model=model)
+    # Persist the AVERAGED result too (full, untruncated rationale + per-run
+    # breakdown + consistency) next to the per-run run<i>.md reports, so nothing
+    # is lost to terminal truncation.
+    write_report(agg, os.path.join(batch_dir, stem), filename="aggregate.md")
+    results.append(agg)
   return results
 
 
@@ -324,7 +332,18 @@ def main(argv=None) -> int:
       run_results.append(res)
     if not run_results:
       continue
-    agg = _aggregate_runs(run_results)
+    agg = _aggregate_runs(run_results, mode=run_results[0].get("mode"),
+                          model=args.model)
+    # For multi-run scoring, persist the averaged report (single runs already
+    # wrote their own full report next to trajectory.json / in the golden tmp dir).
+    if len(run_results) > 1:
+      rep_dir = os.path.join(tempfile.gettempdir(), "kc_golden_eval_reports")
+      os.makedirs(rep_dir, exist_ok=True)
+      stem = (os.path.splitext(os.path.basename(g))[0] if g
+              else os.path.basename(d.rstrip("/")) or "run")
+      p = write_report(agg, rep_dir, filename=f"aggregate_{stem}.md")
+      if p and not args.json:
+        print(f"  averaged report → {p}", file=sys.stderr)
     all_results.append(agg)
     if not args.json:
       print(_fmt(agg))

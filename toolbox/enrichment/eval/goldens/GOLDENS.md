@@ -123,7 +123,9 @@ python -m eval --run --goldens eval/goldens/a.json,eval/goldens/b.json --project
   processes; the agent also caps its own per-mode LLM concurrency, so keep this low.
 - Reports land in a timestamped run folder
   (`$TMPDIR/kc_golden_eval_reports/golden_run_<time>_<id>/`) with one report per
-  `<golden>/run<i>.md` plus a `manifest.json`.
+  `<golden>/run<i>.md`, an **averaged `<golden>/aggregate.md`** (the mean metrics
+  with full untruncated rationale, per-metric run scores, and a per-run
+  breakdown — what the terminal scorecard truncates), plus a `manifest.json`.
 - Prereqs for `--run`: ADC (`gcloud auth application-default login`) and, for
   table/context_overlay, a built `kcmd` (`cd toolbox/mdcode && npm run build`).
 
