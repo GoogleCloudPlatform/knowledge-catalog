@@ -32,10 +32,13 @@ Keep the fields that fit your mode (see `TEMPLATE.json`):
 | `personas` | doc | persona_alignment | `{id: {instruction, focus_areas[], shared_concepts[]}}` — run with `--persona <id>`. |
 
 The eval auto-detects mode from the run's `trajectory.json` (`agent_type`), so use
-`expected_topics` for doc runs and `tables` for table runs. **`context_overlay`
-runs are scored with the table metric set** (their output is table-style:
-`bigquery/` tree + `.ref.*` references + queries aspect), so author their goldens
-with `tables` too.
+`expected_topics` for doc runs and `tables` for table runs. **`context_overlay`**
+runs keep their own mode (matching the internal harness): structural validity
+skips the entry-type check (overlay entries are `generic`, mixed with read-only
+`.ref` bigquery entries), and the table-only metrics — `entry_grounding`,
+reference grounding, per-table `fact_recall` — don't apply. Score an overlay
+golden with `business_terms` / `expected_headings` (and rely on the trajectory
+for `hallucination_free`).
 
 ## How to build goldens — three sources
 

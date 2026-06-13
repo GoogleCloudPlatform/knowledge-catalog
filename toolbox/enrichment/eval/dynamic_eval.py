@@ -181,9 +181,13 @@ def run_dynamic_eval(output_dir: str, model: str = "gemini-2.5-pro",
   """
   traj = loaders.load_trajectory(output_dir)
   agent_type = traj.get("agent_type", "doc")
-  # context_overlay produces table-style mdcode (bigquery/ tree + .ref.* references
-  # + queries aspect), so it's evaluated with the table-mode metric set.
-  mode = "table" if agent_type in ("table", "context_overlay") else "doc"
+  # Pass the real mode through (doc / table / context_overlay), matching the
+  # canonical harness (scorer.py). context_overlay keeps its own mode so
+  # check_structural skips the entry-type check (overlay entries are `generic`,
+  # mixed with `.ref` bigquery types — metrics._ENTRY_TYPE has no overlay key) and
+  # the table-only metrics (reference grounding here; entry_grounding/per-table
+  # fact_recall in golden eval) don't apply to it.
+  mode = agent_type if agent_type in ("table", "context_overlay") else "doc"
 
   _log(f"scoring {output_dir}  (mode={mode})")
   arts = loaders.load_mdcode(os.path.join(output_dir, "catalog"))
