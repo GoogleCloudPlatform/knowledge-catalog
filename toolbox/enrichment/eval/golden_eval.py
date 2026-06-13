@@ -88,7 +88,9 @@ def run_golden_eval(output_dir: str, golden_path: str,
 
   traj = loaders.load_trajectory(output_dir)
   agent_type = traj.get("agent_type", "doc")
-  mode = "table" if agent_type == "table" else "doc"
+  # context_overlay produces table-style mdcode (bigquery/ tree + .ref.* references
+  # + queries aspect), so it's evaluated with the table-mode metric set.
+  mode = "table" if agent_type in ("table", "context_overlay") else "doc"
   arts = loaders.load_mdcode(os.path.join(output_dir, "catalog"))
   if not arts.get("overview_md") and not arts.get("yaml"):
     return {"error": f"No generated mdcode found under {output_dir}/catalog."}
