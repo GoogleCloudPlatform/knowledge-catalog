@@ -28,7 +28,7 @@ The `creation_date` field indicates when the nomination post was created, provid
 - `last_editor_display_name`: Display name of the last editor.
 - `last_editor_user_id`: User ID of the last editor.
 - `owner_display_name`: Display name of the post owner.
-- `owner_user_id`: User ID of the post owner. This links to the [/users](/tables/users.md) table.
+- `owner_user_id`: User ID of the post owner. This links to the [/users](users.md) table.
 - `parent_id`: (STRING) ID of the parent post, if this is a reply.
 - `post_type_id`: Type of the post (e.g., 6 for moderator nomination).
 - `score`: The score of the post.

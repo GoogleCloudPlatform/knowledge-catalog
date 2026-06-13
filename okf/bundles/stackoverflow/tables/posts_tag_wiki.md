@@ -7,7 +7,7 @@ tags: stackoverflow, tag, wiki, posts, bigquery
 timestamp: '2026-05-28T23:29:03+00:00'
 ---
 
-The `posts_tag_wiki` table in the BigQuery Stack Overflow dataset stores detailed wiki descriptions for various [tags](/tables/tags.md) used on the platform. Each row represents a wiki entry associated with a specific tag, providing comprehensive information about its purpose, usage, and related concepts. This table is useful for understanding the context and definition of tags, which helps in categorizing questions and answers accurately. The `body` field contains the rich text content of the wiki. This table is a valuable resource for anyone analyzing the structure and content organization of [Stack Overflow](/datasets/stackoverflow.md). The grain of this table is one row per tag wiki entry.
+The `posts_tag_wiki` table in the BigQuery Stack Overflow dataset stores detailed wiki descriptions for various [tags](tags.md) used on the platform. Each row represents a wiki entry associated with a specific tag, providing comprehensive information about its purpose, usage, and related concepts. This table is useful for understanding the context and definition of tags, which helps in categorizing questions and answers accurately. The `body` field contains the rich text content of the wiki. This table is a valuable resource for anyone analyzing the structure and content organization of [Stack Overflow](../datasets/stackoverflow.md). The grain of this table is one row per tag wiki entry.
 
 # Schema
 - `id`: INTEGER, Unique identifier for the tag wiki post.

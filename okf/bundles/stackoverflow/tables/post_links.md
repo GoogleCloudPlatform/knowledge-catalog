@@ -13,13 +13,13 @@ tags:
 timestamp: '2026-05-28T23:34:10+00:00'
 ---
 
-The `post_links` table in the [stackoverflow](/datasets/stackoverflow.md) dataset records relationships between posts on the Stack Overflow platform. Each row represents a single link between two posts, identifying the `post_id` and `related_post_id`. This table can be used to understand how discussions evolve, identify duplicate questions, or find related content across the platform. The `link_type_id` categorizes the nature of the relationship, such as "Linked" or "Duplicate".
+The `post_links` table in the [stackoverflow](../datasets/stackoverflow.md) dataset records relationships between posts on the Stack Overflow platform. Each row represents a single link between two posts, identifying the `post_id` and `related_post_id`. This table can be used to understand how discussions evolve, identify duplicate questions, or find related content across the platform. The `link_type_id` categorizes the nature of the relationship, such as "Linked" or "Duplicate".
 
 # Schema
 
 *   `id` (INTEGER) - Unique identifier for the post link (primary key).
 *   `creation_date` (TIMESTAMP) - The timestamp when the link was created.
-*   `link_type_id` (INTEGER) - The type of link. See the [Link Types reference](/references/link_types.md) for possible values.
+*   `link_type_id` (INTEGER) - The type of link. See the [Link Types reference](../references/link_types.md) for possible values.
 *   `post_id` (INTEGER) - The ID of the source post. Links to the `id` in the `posts_questions` or `posts_answers` tables.
 *   `related_post_id` (INTEGER) - The ID of the target/related post. Links to the `id` in the `posts_questions` or `posts_answers` tables.
 

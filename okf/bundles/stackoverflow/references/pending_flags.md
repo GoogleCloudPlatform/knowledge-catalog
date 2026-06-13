@@ -15,14 +15,14 @@ This table contains information about pending flags and votes related to post mo
 
 ## Schema
 - `Id` (INTEGER) - Unique identifier for the pending flag.
-- `FlagTypeId` (INTEGER) - The type of flag. See the [Flag Types reference](/references/flag_types.md) for possible values:
+- `FlagTypeId` (INTEGER) - The type of flag. See the [Flag Types reference](flag_types.md) for possible values:
     - `13`: canned flag for closure
     - `14`: vote to close
     - `15`: vote to reopen
 - `PostId` (INTEGER) - The ID of the post the flag is associated with. Links to the `posts` tables (`posts_questions` or `posts_answers`).
 - `CreationDate` (TIMESTAMP) - The date and time the flag was created.
-- `CloseReasonTypeId` (INTEGER) - The type of close reason, if applicable. See the [Close Reason Types reference](/references/close_reason_types.md) for possible values.
-- `CloseAsOffTopicReasonTypeId` (INTEGER) - The specific off-topic reason ID, if `CloseReasonTypeId = 102` (off-topic). Links to the [Close As Off-Topic Reason Types reference](/references/close_as_off_topic_reason_types.md).
+- `CloseReasonTypeId` (INTEGER) - The type of close reason, if applicable. See the [Close Reason Types reference](close_reason_types.md) for possible values.
+- `CloseAsOffTopicReasonTypeId` (INTEGER) - The specific off-topic reason ID, if `CloseReasonTypeId = 102` (off-topic). Links to the [Close As Off-Topic Reason Types reference](close_as_off_topic_reason_types.md).
 - `DuplicateOfQuestionId` (INTEGER) - The ID of the duplicate question, if `CloseReasonTypeId` is `1` or `101` (old or current duplicate). Links to the `posts_questions` table.
 - `BelongsOnBaseHostAddress` (STRING) - Indicates the base host address for votes to close and migrate.
 

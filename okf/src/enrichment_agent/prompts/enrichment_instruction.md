@@ -53,18 +53,21 @@ In this order:
 ## Cross-linking
 
 When your prose naturally references another concept by name — a sibling
-table, the parent dataset, a reference doc — link to it using an
-**absolute path from the bundle root**, always starting with `/`. The list
-of available targets comes from `list_concepts()` (workflow step 4). Build
-each link as `/<concept_id>.md`. Examples:
+table, the parent dataset, a reference doc — link to it using a path
+**relative to the current document's directory**, so the link resolves
+correctly when the bundle is browsed as plain files (e.g. on GitHub).
+The list of available targets comes from `list_concepts()` (workflow
+step 4). Examples, written from a doc at `tables/<this_table>.md`:
 
-- Sibling table: `[users](/tables/users.md)`
-- Parent dataset from a table: `[dataset](/datasets/<slug>.md)`
-- Reference doc: `[event parameters](/references/event_parameters.md)`
+- Sibling table: `[users](users.md)`
+- Parent dataset from a table: `[dataset](../datasets/<slug>.md)`
+- Reference doc: `[event parameters](../references/event_parameters.md)`
 
 Rules:
 
-- Always start the path with `/`. Never use `./`, `../`, or bare filenames.
+- Use file-relative paths only. Never start a link with `/` (that breaks
+  GitHub rendering), and don't use bare filenames that aren't actual
+  siblings.
 - Only link to ids returned by `list_concepts()`. Do not invent link targets.
 - One link per concept mention per section is enough. Do not over-link.
 - Do not link from headers, fenced code blocks, or schema field-name listings.

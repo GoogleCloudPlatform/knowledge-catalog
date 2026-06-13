@@ -9,7 +9,7 @@ from typing import Any
 from enrichment_agent.bundle.document import OKFDocument, OKFDocumentError
 
 _INDEX_NAME = "index.md"
-_LINK_RE = re.compile(r"\]\((/[A-Za-z0-9_./\-]+\.md)(?:#[A-Za-z0-9_\-]*)?\)")
+_LINK_RE = re.compile(r"\]\(([^)\s]+\.md)(?:#[A-Za-z0-9_\-]*)?\)")
 _TYPE_PALETTE = {
     "BigQuery Dataset": "#8b5cf6",
     "BigQuery Table": "#3b82f6",
@@ -45,18 +45,27 @@ class Concept:
         }
 
 
-def _extract_links(body: str) -> list[str]:
+def _extract_links(body: str, doc_dir: Path, bundle_root: Path) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
+    bundle_root_resolved = bundle_root.resolve()
     for m in _LINK_RE.finditer(body):
         target = m.group(1)
-        # Strip leading slash and .md to get the concept id.
-        cid = target.lstrip("/")
-        if cid.endswith(".md"):
-            cid = cid[:-3]
-        if cid and cid not in seen:
-            seen.add(cid)
-            out.append(cid)
+        if "://" in target:
+            continue
+        if target.startswith("/"):
+            rel = target.lstrip("/")
+        else:
+            try:
+                resolved = (doc_dir / target).resolve().relative_to(bundle_root_resolved)
+            except ValueError:
+                continue
+            rel = resolved.as_posix()
+        if rel.endswith(".md"):
+            rel = rel[:-3]
+        if rel and rel not in seen:
+            seen.add(rel)
+            out.append(rel)
     return out
 
 
@@ -83,7 +92,7 @@ def _walk_concepts(bundle_root: Path) -> list[Concept]:
             resource=str(fm.get("resource") or ""),
             tags=[str(t) for t in tags],
             body=doc.body or "",
-            links_to=_extract_links(doc.body or ""),
+            links_to=_extract_links(doc.body or "", md_path.parent, bundle_root),
         )
         concepts.append(concept)
     return concepts

@@ -15,9 +15,9 @@ This table records votes cast on suggested edits, indicating approval or rejecti
 
 ## Schema
 - `Id` (INTEGER) - Unique identifier for the suggested edit vote.
-- `SuggestedEditId` (INTEGER) - The ID of the suggested edit that was voted on. Links to the [Suggested Edits reference](/references/suggested_edits.md).
+- `SuggestedEditId` (INTEGER) - The ID of the suggested edit that was voted on. Links to the [Suggested Edits reference](suggested_edits.md).
 - `UserId` (INTEGER) - The ID of the user who cast the vote. Links to the `users` table.
-- `VoteTypeId` (INTEGER) - The type of vote. Specifically `2` for Approve (UpMod) and `3` for Reject (DownMod). See the [Vote Types reference](/references/vote_types.md) for a comprehensive list.
+- `VoteTypeId` (INTEGER) - The type of vote. Specifically `2` for Approve (UpMod) and `3` for Reject (DownMod). See the [Vote Types reference](vote_types.md) for a comprehensive list.
 - `CreationDate` (TIMESTAMP) - The date and time the vote was cast.
 - `TargetUserId` (INTEGER) - The ID of the target user for the vote (e.g., the user whose reputation changed). Links to the `users` table. Nullable.
 - `TargetRepChange` (INTEGER) - The change in reputation for the target user as a result of this vote. Nullable.

@@ -8,7 +8,7 @@ tags: stackoverflow, posts, tag, wiki, orphaned
 timestamp: '2026-05-28T23:27:56+00:00'
 ---
 
-This table, part of the public [Stack Overflow dataset](/datasets/stackoverflow.md), contains posts that were originally created as Tag Wikis but are no longer linked to an existing tag within the Stack Overflow platform. These 'orphaned' Tag Wiki entries typically describe the purpose and usage of a specific programming language, technology, or concept. Each row represents a single Tag Wiki post, identified by a unique `id`. The `post_type_id` for these entries is typically `3`. The table includes the body of the wiki, creation dates, and metadata about the last editor and activity. It can be used to analyze historical Tag Wiki content that has become disassociated from its original tag.
+This table, part of the public [Stack Overflow dataset](../datasets/stackoverflow.md), contains posts that were originally created as Tag Wikis but are no longer linked to an existing tag within the Stack Overflow platform. These 'orphaned' Tag Wiki entries typically describe the purpose and usage of a specific programming language, technology, or concept. Each row represents a single Tag Wiki post, identified by a unique `id`. The `post_type_id` for these entries is typically `3`. The table includes the body of the wiki, creation dates, and metadata about the last editor and activity. It can be used to analyze historical Tag Wiki content that has become disassociated from its original tag.
 
 # Schema
 

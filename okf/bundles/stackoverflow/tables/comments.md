@@ -15,7 +15,7 @@ tags:
 timestamp: '2026-05-28T23:32:34+00:00'
 ---
 
-The `comments` table in the [Stack Overflow dataset](/datasets/stackoverflow.md) captures all user-generated comments on various posts across the platform. Each row in this table represents a unique comment, providing details such as the comment\'s text, its creation timestamp, and a score reflecting its community reception. Comments are linked to the specific [posts](/tables/posts_questions.md) (questions or answers) they belong to via `post_id` and to the [users](/tables/users.md) who authored them via `user_id`. This table is crucial for analyzing user engagement, content quality feedback, and conversational threads on the platform.
+The `comments` table in the [Stack Overflow dataset](../datasets/stackoverflow.md) captures all user-generated comments on various posts across the platform. Each row in this table represents a unique comment, providing details such as the comment\'s text, its creation timestamp, and a score reflecting its community reception. Comments are linked to the specific [posts](posts_questions.md) (questions or answers) they belong to via `post_id` and to the [users](users.md) who authored them via `user_id`. This table is crucial for analyzing user engagement, content quality feedback, and conversational threads on the platform.
 
 # Schema
 - `id` (INTEGER) - Unique identifier for the comment.

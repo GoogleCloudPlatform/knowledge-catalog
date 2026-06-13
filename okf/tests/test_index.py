@@ -51,14 +51,14 @@ def test_regenerate_groups_by_type_and_links_relative(tmp_path: Path):
 
     tables_index = (root / "tables" / "index.md").read_text(encoding="utf-8")
     assert tables_index.startswith("# BigQuery Table")
-    assert "[events_*](/tables/events_.md)" in tables_index
-    assert "[users](/tables/users.md)" in tables_index
+    assert "[events_*](events_.md)" in tables_index
+    assert "[users](users.md)" in tables_index
     assert "Daily-sharded GA4 event tables." in tables_index
 
     root_index = (root / "index.md").read_text(encoding="utf-8")
     assert "# Subdirectories" in root_index
-    assert "(/datasets/) - GA4 obfuscated ecommerce sample." in root_index
-    assert "(/tables/) - stub: 2 items" in root_index
+    assert "(datasets/index.md) - GA4 obfuscated ecommerce sample." in root_index
+    assert "(tables/index.md) - stub: 2 items" in root_index
 
 
 def test_regenerate_skips_empty_directories(tmp_path: Path):
@@ -90,5 +90,5 @@ def test_regenerate_single_child_reuses_description(tmp_path: Path):
     regenerate_indexes(root, model="stub", synthesize=counting_synth)
 
     root_index = (root / "index.md").read_text(encoding="utf-8")
-    assert "(/datasets/) - The only dataset in this bundle." in root_index
+    assert "(datasets/index.md) - The only dataset in this bundle." in root_index
     assert call_count == 0

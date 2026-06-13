@@ -18,7 +18,7 @@ This table stores information about notices applied to posts, such as "Citation 
 ## Schema
 - `Id` (INTEGER) - Unique identifier for the post notice.
 - `PostId` (INTEGER) - The ID of the post the notice is applied to. Links to the `posts` tables (`posts_questions` or `posts_answers`).
-- `PostNoticeTypeId` (INTEGER) - The type of post notice. See the [Post Notice Types reference](/references/post_notice_types.md) for possible values.
+- `PostNoticeTypeId` (INTEGER) - The type of post notice. See the [Post Notice Types reference](post_notice_types.md) for possible values.
 - `CreationDate` (TIMESTAMP) - The date and time the notice was created.
 - `DeletionDate` (TIMESTAMP) - The date and time the notice was deleted. Nullable.
 - `ExpiryDate` (TIMESTAMP) - The date and time the notice is set to expire. Nullable.

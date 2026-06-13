@@ -17,9 +17,9 @@ This table stores the outcomes and details of completed review tasks, such as ap
 ## Schema
 - `Id` (INTEGER) - Unique identifier for the review task result.
 - `ReviewTaskId` (INTEGER) - The ID of the review task this result is for. Links to the `ReviewTasks` table.
-- `ReviewTaskResultTypeId` (INTEGER) - The type of result. See the [Review Task Result Types reference](/references/review_task_result_types.md) for possible values.
+- `ReviewTaskResultTypeId` (INTEGER) - The type of result. See the [Review Task Result Types reference](review_task_result_types.md) for possible values.
 - `CreationDate` (TIMESTAMP) - The date when the result was recorded. Time data is purposefully removed to protect user privacy.
-- `RejectionReasonId` (INTEGER) - The ID of the rejection reason, specifically for suggested edits. Links to the [Review Rejection Reasons reference](/references/review_rejection_reasons.md). Nullable.
+- `RejectionReasonId` (INTEGER) - The ID of the rejection reason, specifically for suggested edits. Links to the [Review Rejection Reasons reference](review_rejection_reasons.md). Nullable.
 - `Comment` (STRING) - A comment associated with the review result. Nullable.
 
 # Citations

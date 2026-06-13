@@ -16,13 +16,13 @@ tags:
 timestamp: '2026-05-28T23:36:03+00:00'
 ---
 
-This table, `votes`, from the [stackoverflow](/datasets/stackoverflow.md) dataset, records individual voting events on various posts (questions, answers, etc.) within the Stack Overflow platform. Each row represents a single vote, providing details such as the unique vote identifier, the timestamp of the vote, the ID of the post that received the vote, and the type of vote (e.g., upvote, downvote, favorite). This table is crucial for analyzing user engagement, post popularity, and the overall quality assessment mechanisms within the Stack Overflow community. The grain of this table is one row per vote event, and it captures historical voting data from its creation date up to the last modification.
+This table, `votes`, from the [stackoverflow](../datasets/stackoverflow.md) dataset, records individual voting events on various posts (questions, answers, etc.) within the Stack Overflow platform. Each row represents a single vote, providing details such as the unique vote identifier, the timestamp of the vote, the ID of the post that received the vote, and the type of vote (e.g., upvote, downvote, favorite). This table is crucial for analyzing user engagement, post popularity, and the overall quality assessment mechanisms within the Stack Overflow community. The grain of this table is one row per vote event, and it captures historical voting data from its creation date up to the last modification.
 
 # Schema
 
 - `id` (INTEGER) - Unique identifier for the vote.
 - `post_id` (INTEGER) - The ID of the post to which the vote was cast. Links to `posts_questions` or `posts_answers` tables.
-- `vote_type_id` (INTEGER) - The type of vote. See the [Vote Types reference](/references/vote_types.md) for a comprehensive list.
+- `vote_type_id` (INTEGER) - The type of vote. See the [Vote Types reference](../references/vote_types.md) for a comprehensive list.
 - `user_id` (INTEGER) - The ID of the user who cast the vote. Present only if `VoteTypeId` is `5` (Favorite/Bookmark) or `8` (BountyStart); -1 if user is deleted. Nullable. Links to the `users` table.
 - `creation_date` (TIMESTAMP) - The date when the vote was cast. Time data is purposefully removed to protect user privacy.
 - `bounty_amount` (INTEGER) - The amount of bounty associated with the vote. Present only if `VoteTypeId` is `8` (BountyStart) or `9` (BountyClose). Nullable.

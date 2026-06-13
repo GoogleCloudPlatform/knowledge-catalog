@@ -17,14 +17,14 @@ This dataset was last updated on 2022-11-25, and it is important to note that it
 
 As a BigQuery Dataset, `stackoverflow` serves as a container for numerous tables rather than having a schema itself. The tables within this dataset collectively represent the structure of Stack Overflow data. Key tables include:
 
-*   [badges](/tables/badges.md): Information about badges awarded to users.
-*   [comments](/tables/comments.md): User comments on posts.
-*   [post_history](/tables/post_history.md): Historical revisions and events for posts.
-*   [posts_answers](/tables/posts_answers.md): Detailed information about answers.
-*   [posts_questions](/tables/posts_questions.md): Detailed information about questions.
-*   [tags](/tables/tags.md): Information about tags used to categorize posts.
-*   [users](/tables/users.md): User profiles and statistics.
-*   [votes](/tables/votes.md): Records of upvotes and downvotes on posts and comments.
+*   [badges](../tables/badges.md): Information about badges awarded to users.
+*   [comments](../tables/comments.md): User comments on posts.
+*   [post_history](../tables/post_history.md): Historical revisions and events for posts.
+*   [posts_answers](../tables/posts_answers.md): Detailed information about answers.
+*   [posts_questions](../tables/posts_questions.md): Detailed information about questions.
+*   [tags](../tables/tags.md): Information about tags used to categorize posts.
+*   [users](../tables/users.md): User profiles and statistics.
+*   [votes](../tables/votes.md): Records of upvotes and downvotes on posts and comments.
 
 # Common query patterns
 

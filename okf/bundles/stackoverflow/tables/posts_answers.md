@@ -15,7 +15,7 @@ tags:
 timestamp: '2026-05-28T23:32:11+00:00'
 ---
 
-The `posts_answers` table in the [stackoverflow](/datasets/stackoverflow.md) dataset contains all posts identified as answers to questions on the Stack Overflow platform. Each row in this table represents a single answer, providing details such as the answer\'s body, its score, creation date, and the ID of the parent question it answers. This table can be joined with other tables like [posts_questions](/tables/posts_questions.md) on `parent_id` to link answers to their respective questions. It\'s a valuable resource for analyzing answer quality, user contributions, and engagement patterns within the Stack Overflow community.
+The `posts_answers` table in the [stackoverflow](../datasets/stackoverflow.md) dataset contains all posts identified as answers to questions on the Stack Overflow platform. Each row in this table represents a single answer, providing details such as the answer\'s body, its score, creation date, and the ID of the parent question it answers. This table can be joined with other tables like [posts_questions](posts_questions.md) on `parent_id` to link answers to their respective questions. It\'s a valuable resource for analyzing answer quality, user contributions, and engagement patterns within the Stack Overflow community.
 
 # Schema
 - `id` (INTEGER) - Unique identifier for the answer.
@@ -35,7 +35,7 @@ The `posts_answers` table in the [stackoverflow](/datasets/stackoverflow.md) dat
 - `owner_display_name` (STRING) - The display name of the answer\'s owner. Nullable.
 - `owner_user_id` (INTEGER) - The ID of the answer\'s owner. Present only if user has not been deleted.
 - `parent_id` (INTEGER) - The ID of the question this answer belongs to. Present only if `PostTypeId = 2`.
-- `post_type_id` (INTEGER) - The type of post. For answers, this is `2`. See the [Post Type IDs reference](/references/post_type_ids.md) for possible values.
+- `post_type_id` (INTEGER) - The type of post. For answers, this is `2`. See the [Post Type IDs reference](../references/post_type_ids.md) for possible values.
 - `score` (INTEGER) - The score of the answer; generally non-zero for Questions, Answers, and Moderator Nominations.
 - `tags` (STRING) - Tags associated with the post. This is typically NULL for answers, as tags are associated with the parent question.
 - `view_count` (INTEGER) - The number of times the post was viewed. This field is only applicable to questions, so it is typically NULL for answers.

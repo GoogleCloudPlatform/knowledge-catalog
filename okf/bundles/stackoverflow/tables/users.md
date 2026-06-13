@@ -14,7 +14,7 @@ tags:
 timestamp: '2026-05-28T23:32:24+00:00'
 ---
 
-This table, `users`, from the [stackoverflow](/datasets/stackoverflow.md) dataset, stores profiles of registered users on the Stack Overflow platform. Each row represents a unique user, identified by their `id`. The table includes details such as display name, creation date, last access date, reputation, and vote counts. It provides insights into the activity and characteristics of the Stack Overflow community members.
+This table, `users`, from the [stackoverflow](../datasets/stackoverflow.md) dataset, stores profiles of registered users on the Stack Overflow platform. Each row represents a unique user, identified by their `id`. The table includes details such as display name, creation date, last access date, reputation, and vote counts. It provides insights into the activity and characteristics of the Stack Overflow community members.
 
 # Schema
 

@@ -12,7 +12,7 @@ tags:
 timestamp: '2026-05-28T22:44:32+00:00'
 ---
 
-The `outputs` table contains records of all transaction outputs within the Bitcoin blockchain. Each row in this table represents a single output from a Bitcoin transaction, detailing the amount transferred, the destination addresses, and other script-related information. This table is crucial for understanding the flow of Bitcoin and analyzing transaction patterns, especially when linked with the `[transactions](/tables/transactions.md)` and `[inputs](/tables/inputs.md)` tables.
+The `outputs` table contains records of all transaction outputs within the Bitcoin blockchain. Each row in this table represents a single output from a Bitcoin transaction, detailing the amount transferred, the destination addresses, and other script-related information. This table is crucial for understanding the flow of Bitcoin and analyzing transaction patterns, especially when linked with the `[transactions](transactions.md)` and `[inputs](inputs.md)` tables.
 
 # Schema
 

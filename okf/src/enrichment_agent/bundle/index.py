@@ -70,7 +70,6 @@ def regenerate_indexes(
         for child in sorted(directory.iterdir()):
             if child.name == _INDEX_FILE:
                 continue
-            rel = child.relative_to(bundle_root).as_posix()
             if child.is_file() and child.suffix == ".md":
                 doc = _load_doc(child)
                 if doc is None:
@@ -79,10 +78,10 @@ def regenerate_indexes(
                 title = str(fm.get("title") or child.stem)
                 desc = str(fm.get("description") or "")
                 typ = str(fm.get("type") or "")
-                entries.append((typ, title, f"/{rel}", desc))
+                entries.append((typ, title, child.name, desc))
             elif child.is_dir():
                 desc = dir_descriptions.get(child, "")
-                entries.append(("Subdirectories", child.name, f"/{rel}/", desc))
+                entries.append(("Subdirectories", child.name, f"{child.name}/{_INDEX_FILE}", desc))
 
         if not entries:
             continue

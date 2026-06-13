@@ -13,7 +13,7 @@ tags:
 timestamp: '2026-05-28T22:44:24+00:00'
 ---
 
-This table, part of the public [crypto_bitcoin](/datasets/crypto_bitcoin.md) dataset, contains detailed information about every input used in Bitcoin transactions. Each row represents a single transaction input, which typically references an unspent output from a previous transaction. This table is crucial for tracing the flow of Bitcoin and understanding the history of transactions. It records where the coins originated (`spent_transaction_hash` and `spent_output_index`) and the associated `value` transferred. This table can be joined with the [transactions](/tables/transactions.md) table on `transaction_hash` and [outputs](/tables/outputs.md) to reconstruct the full transaction graph.
+This table, part of the public [crypto_bitcoin](../datasets/crypto_bitcoin.md) dataset, contains detailed information about every input used in Bitcoin transactions. Each row represents a single transaction input, which typically references an unspent output from a previous transaction. This table is crucial for tracing the flow of Bitcoin and understanding the history of transactions. It records where the coins originated (`spent_transaction_hash` and `spent_output_index`) and the associated `value` transferred. This table can be joined with the [transactions](transactions.md) table on `transaction_hash` and [outputs](outputs.md) to reconstruct the full transaction graph.
 
 # Schema
 

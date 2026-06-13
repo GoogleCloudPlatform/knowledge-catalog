@@ -27,7 +27,7 @@ def _make_bundle(root: Path) -> None:
         tags: [test]
         timestamp: '2026-05-28T00:00:00+00:00'
         ---
-        Parent dataset for [users](/tables/users.md).
+        Parent dataset for [users](../tables/users.md).
         """,
     )
     _write(
@@ -41,7 +41,7 @@ def _make_bundle(root: Path) -> None:
         tags: [users]
         timestamp: '2026-05-28T00:00:00+00:00'
         ---
-        Joinable with [events](/tables/events.md) and see [DAU](/references/metrics/dau.md).
+        Joinable with [events](events.md) and see [DAU](../references/metrics/dau.md).
         """,
     )
     _write(
@@ -55,7 +55,7 @@ def _make_bundle(root: Path) -> None:
         tags: [events]
         timestamp: '2026-05-28T00:00:00+00:00'
         ---
-        See [users](/tables/users.md).
+        See [users](users.md).
         """,
     )
     _write(
@@ -138,7 +138,7 @@ def test_missing_link_targets_are_skipped(tmp_path: Path):
         description: Has a dangling link.
         timestamp: '2026-05-28T00:00:00+00:00'
         ---
-        Links to [missing](/tables/missing.md).
+        Links to [missing](missing.md).
         """,
     )
     out = tmp_path / "viz.html"
@@ -163,3 +163,38 @@ def test_node_colors_match_palette(tmp_path: Path):
 def test_raises_when_bundle_missing(tmp_path: Path):
     with pytest.raises(FileNotFoundError):
         generate_visualization(tmp_path / "nope", tmp_path / "viz.html")
+
+
+def test_legacy_absolute_links_still_resolve(tmp_path: Path):
+    # Older bundles emit bundle-root-absolute links (`/tables/x.md`).
+    # The viewer keeps a back-compat path for those.
+    bundle = tmp_path / "bundle"
+    _write(
+        bundle / "tables" / "a.md",
+        """
+        ---
+        type: BigQuery Table
+        title: A
+        description: a.
+        timestamp: '2026-05-28T00:00:00+00:00'
+        ---
+        Links to [b](/tables/b.md).
+        """,
+    )
+    _write(
+        bundle / "tables" / "b.md",
+        """
+        ---
+        type: BigQuery Table
+        title: B
+        description: b.
+        timestamp: '2026-05-28T00:00:00+00:00'
+        ---
+        End.
+        """,
+    )
+    out = tmp_path / "viz.html"
+    generate_visualization(bundle, out)
+    data = _extract_bundle_data(out.read_text(encoding="utf-8"))
+    pairs = {(e["data"]["source"], e["data"]["target"]) for e in data["edges"]}
+    assert ("tables/a", "tables/b") in pairs

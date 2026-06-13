@@ -8,7 +8,7 @@ tags: Stack Overflow, posts, legacy, deprecated
 timestamp: '2026-05-28T23:30:00+00:00'
 ---
 
-This table, `stackoverflow_posts`, is a legacy table from the [stackoverflow](/datasets/stackoverflow.md) dataset in Google Cloud's BigQuery public datasets. It contains all posts (questions and answers) from Stack Overflow. **This table is deprecated and should not be used for new queries.** Users are advised to use the more specific and updated tables like [posts_questions](/tables/posts_questions.md) for questions and [posts_answers](/tables/posts_answers.md) for answers. Each row in this table represents a single post, with fields such as `id`, `title`, `body`, `creation_date`, and user information. The table contains approximately 31 million rows and over 31 GB of data.
+This table, `stackoverflow_posts`, is a legacy table from the [stackoverflow](../datasets/stackoverflow.md) dataset in Google Cloud's BigQuery public datasets. It contains all posts (questions and answers) from Stack Overflow. **This table is deprecated and should not be used for new queries.** Users are advised to use the more specific and updated tables like [posts_questions](posts_questions.md) for questions and [posts_answers](posts_answers.md) for answers. Each row in this table represents a single post, with fields such as `id`, `title`, `body`, `creation_date`, and user information. The table contains approximately 31 million rows and over 31 GB of data.
 
 # Schema
 

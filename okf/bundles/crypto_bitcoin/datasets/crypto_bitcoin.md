@@ -14,16 +14,16 @@ tags:
 timestamp: '2026-05-28T22:44:47+00:00'
 ---
 
-The `crypto_bitcoin` dataset provides a comprehensive and up-to-date record of the entire Bitcoin blockchain. It includes detailed information about [blocks](/tables/blocks.md), [transactions](/tables/transactions.md), transaction [inputs](/tables/inputs.md), and [outputs](/tables/outputs.md). This dataset is part of the BigQuery Public Datasets program, making it freely accessible for analysis and research into Bitcoin's operations, economics, and historical trends. Researchers, developers, and enthusiasts can use this data to understand transaction patterns, network activity, and the overall state of the Bitcoin network.
+The `crypto_bitcoin` dataset provides a comprehensive and up-to-date record of the entire Bitcoin blockchain. It includes detailed information about [blocks](../tables/blocks.md), [transactions](../tables/transactions.md), transaction [inputs](../tables/inputs.md), and [outputs](../tables/outputs.md). This dataset is part of the BigQuery Public Datasets program, making it freely accessible for analysis and research into Bitcoin's operations, economics, and historical trends. Researchers, developers, and enthusiasts can use this data to understand transaction patterns, network activity, and the overall state of the Bitcoin network.
 
 # Schema
 
 This dataset contains the following tables, providing a complete history of the Bitcoin blockchain:
 
-*   [blocks](/tables/blocks.md)
-*   [inputs](/tables/inputs.md)
-*   [outputs](/tables/outputs.md)
-*   [transactions](/tables/transactions.md)
+*   [blocks](../tables/blocks.md)
+*   [inputs](../tables/inputs.md)
+*   [outputs](../tables/outputs.md)
+*   [transactions](../tables/transactions.md)
 
 # Common query patterns
 

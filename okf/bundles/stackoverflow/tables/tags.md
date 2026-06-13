@@ -15,7 +15,7 @@ tags:
 timestamp: '2026-05-28T23:34:53+00:00'
 ---
 
-This table, `tags`, from the [stackoverflow](/datasets/stackoverflow.md) dataset, provides a comprehensive list of all tags used across the Stack Overflow platform. Each row represents a unique tag, detailing its name, the total count of times it has been used, and references to its corresponding excerpt and wiki posts. This table is essential for understanding the topics and technologies discussed on Stack Overflow, allowing for analysis of tag popularity, trends, and content organization.
+This table, `tags`, from the [stackoverflow](../datasets/stackoverflow.md) dataset, provides a comprehensive list of all tags used across the Stack Overflow platform. Each row represents a unique tag, detailing its name, the total count of times it has been used, and references to its corresponding excerpt and wiki posts. This table is essential for understanding the topics and technologies discussed on Stack Overflow, allowing for analysis of tag popularity, trends, and content organization.
 
 # Schema
 The `tags` table contains the following fields:

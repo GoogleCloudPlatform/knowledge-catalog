@@ -15,7 +15,7 @@ tags:
 timestamp: '2026-05-28T23:31:54+00:00'
 ---
 
-This table, part of the public [Stack Overflow dataset](/datasets/stackoverflow.md), contains comprehensive data for every question asked on the Stack Overflow platform. Each row represents a unique question post, including its content, metadata such as creation and last activity dates, view counts, and score. It serves as a primary resource for analyzing user activity, popular topics, and the overall dynamics of the Q&A community. The table can be joined with other tables like [posts_answers](/tables/posts_answers.md) to link questions to their corresponding answers, or with [users](/tables/users.md) to retrieve information about the question\'s author.
+This table, part of the public [Stack Overflow dataset](../datasets/stackoverflow.md), contains comprehensive data for every question asked on the Stack Overflow platform. Each row represents a unique question post, including its content, metadata such as creation and last activity dates, view counts, and score. It serves as a primary resource for analyzing user activity, popular topics, and the overall dynamics of the Q&A community. The table can be joined with other tables like [posts_answers](posts_answers.md) to link questions to their corresponding answers, or with [users](users.md) to retrieve information about the question\'s author.
 
 # Schema
 The schema contains fields related to the question\'s content, status, and associated user data. Key fields include `id` for unique identification, `title` and `body` for the question\'s content, `creation_date` for when the question was posted, and `tags` for categorizing the question.
@@ -37,7 +37,7 @@ The schema contains fields related to the question\'s content, status, and assoc
 - `owner_display_name` (STRING) - The display name of the post owner. Nullable.
 - `owner_user_id` (INTEGER) - The ID of the post owner. Present only if user has not been deleted; always -1 for tag wiki entries.
 - `parent_id` (STRING) - Parent ID. For questions (`PostTypeId = 1`), this field is typically NULL. It is mainly used for answers (`PostTypeId = 2`) to link to their parent question.
-- `post_type_id` (INTEGER) - The type of the post. For questions, this is `1`. See the [Post Type IDs reference](/references/post_type_ids.md) for possible values.
+- `post_type_id` (INTEGER) - The type of the post. For questions, this is `1`. See the [Post Type IDs reference](../references/post_type_ids.md) for possible values.
 - `score` (INTEGER) - The score of the post; generally non-zero for Questions, Answers, and Moderator Nominations.
 - `tags` (STRING) - The tags associated with the question (for `PostTypeId = 1`).
 - `view_count` (INTEGER) - The number of times the post has been viewed. Nullable.

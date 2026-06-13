@@ -18,7 +18,7 @@ This table collects up and down votes from anonymous visitors and/or unregistere
 - `Id` (INTEGER) - Unique identifier for the post feedback entry.
 - `PostId` (INTEGER) - The ID of the post (`posts_questions` or `posts_answers`) the feedback is for.
 - `IsAnonymous` (BOOLEAN) - Indicates if the feedback was given anonymously.
-- `VoteTypeId` (INTEGER) - The type of vote. Specifically `2` for UpMod and `3` for DownMod in this table. See the [Vote Types reference](/references/vote_types.md) for a comprehensive list.
+- `VoteTypeId` (INTEGER) - The type of vote. Specifically `2` for UpMod and `3` for DownMod in this table. See the [Vote Types reference](vote_types.md) for a comprehensive list.
 - `CreationDate` (TIMESTAMP) - The date and time the feedback was recorded.
 
 # Citations

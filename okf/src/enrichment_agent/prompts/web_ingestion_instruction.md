@@ -60,9 +60,10 @@ The user message contains:
      If all four hold: pick an id under `references/` (e.g.
      `references/event_parameters`), set `type: Reference`, set
      `resource` to this page's URL, call `write_concept_doc`, and
-     cross-link from each related primary doc with an absolute markdown
-     link, e.g.
-     `[Event parameters reference](/references/event_parameters.md)`.
+     cross-link from each related primary doc with a markdown link
+     written **relative to the linking doc's directory**, e.g. from a
+     `tables/<slug>.md` doc:
+     `[Event parameters reference](../references/event_parameters.md)`.
 
      When in doubt, **skip**. A bundle with zero `references/` docs is
      fine; a bundle full of `references/overview` and
