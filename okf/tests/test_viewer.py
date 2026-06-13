@@ -163,38 +163,3 @@ def test_node_colors_match_palette(tmp_path: Path):
 def test_raises_when_bundle_missing(tmp_path: Path):
     with pytest.raises(FileNotFoundError):
         generate_visualization(tmp_path / "nope", tmp_path / "viz.html")
-
-
-def test_legacy_absolute_links_still_resolve(tmp_path: Path):
-    # Older bundles emit bundle-root-absolute links (`/tables/x.md`).
-    # The viewer keeps a back-compat path for those.
-    bundle = tmp_path / "bundle"
-    _write(
-        bundle / "tables" / "a.md",
-        """
-        ---
-        type: BigQuery Table
-        title: A
-        description: a.
-        timestamp: '2026-05-28T00:00:00+00:00'
-        ---
-        Links to [b](/tables/b.md).
-        """,
-    )
-    _write(
-        bundle / "tables" / "b.md",
-        """
-        ---
-        type: BigQuery Table
-        title: B
-        description: b.
-        timestamp: '2026-05-28T00:00:00+00:00'
-        ---
-        End.
-        """,
-    )
-    out = tmp_path / "viz.html"
-    generate_visualization(bundle, out)
-    data = _extract_bundle_data(out.read_text(encoding="utf-8"))
-    pairs = {(e["data"]["source"], e["data"]["target"]) for e in data["edges"]}
-    assert ("tables/a", "tables/b") in pairs
