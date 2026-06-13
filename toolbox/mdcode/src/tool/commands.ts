@@ -11,6 +11,8 @@ import * as context from '../libts/gcp/context';
 export interface InitOptions {
   entryGroup?: string;
   bigqueryDataset?: string | string[];
+  biglakeNamespace?: string;
+  iceberg?: boolean;
   kb?: string;
   pull?: boolean;
 }
@@ -42,8 +44,15 @@ export async function init(options: InitOptions): Promise<number> {
     }
     manifest = await kcmd.CatalogManifest.initWithBigQuery(datasets, ctx);
   }
+  else if (options.biglakeNamespace) {
+    if (!options.iceberg) {
+      console.error('Error: Must specify --iceberg when initializing a BigLake namespace (other metastores are not supported yet)');
+      return 1;
+    }
+    manifest = await kcmd.CatalogManifest.initWithBigLakeNamespace(options.biglakeNamespace, 'iceberg', ctx);
+  }
   else {
-    console.error('Error: Must provide either --entry-group or --bigquery-dataset or --kb');
+    console.error('Error: Must provide either --entry-group, --bigquery-dataset, --biglake-namespace, or --kb');
     return 1;
   }
 
