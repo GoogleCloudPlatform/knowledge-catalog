@@ -118,7 +118,8 @@ python -m eval --run --goldens eval/goldens/a.json,eval/goldens/b.json --project
 
 - `--runs N` (default 3 in `--run` mode): per-run + averaged metrics, plus the
   cross-run **concept_consistency** / **content_consistency** stability metrics
-  (informational; need ≥2 runs — surfaced as n/a for a single run).
+  (informational; shown only when there are ≥2 independent runs — omitted
+  otherwise, since consistency is undefined for a single run).
 - `--concurrency` (default 2, env `KC_EVAL_MAX_CONCURRENCY`): max concurrent agent
   processes; the agent also caps its own per-mode LLM concurrency, so keep this low.
 - Reports land in a timestamped run folder
@@ -126,8 +127,9 @@ python -m eval --run --goldens eval/goldens/a.json,eval/goldens/b.json --project
   `<golden>/run<i>.md`, an **averaged `<golden>/aggregate.md`** (the mean metrics
   with full untruncated rationale, per-metric run scores, and a per-run
   breakdown — what the terminal scorecard truncates), plus a `manifest.json`.
-- Prereqs for `--run`: ADC (`gcloud auth application-default login`) and, for
-  table/context_overlay, a built `kcmd` (`cd toolbox/mdcode && npm run build`).
+- Prereqs for `--run`: ADC (`gcloud auth application-default login`) and a built
+  `kcmd` (`cd toolbox/mdcode && npm run build`) — every mode (doc included) shells
+  out to it (`kcmd init`/`pull`).
 
 ## Bundled runnable goldens
 
@@ -153,7 +155,8 @@ python -m eval --run --project <p> --goldens \
   eval/goldens/thelook_ecommerce.json,eval/goldens/financial_services.json,eval/goldens/phone_services.json,eval/goldens/supply_chain.json
 ```
 
-(doc cases need no `kcmd` build; only the table case does.)
+(All cases need a built `kcmd` — every mode runs `kcmd init`/`pull`. The table
+case additionally needs BigQuery access for the dataset copy.)
 
 ## Notes
 

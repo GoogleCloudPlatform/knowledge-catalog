@@ -477,8 +477,8 @@ python -m eval --run --goldens eval/goldens/thelook_ecommerce.json \
 `--run` repeats each case `--runs` times and writes per-run + averaged reports
 into a timestamped folder under `$TMPDIR/kc_golden_eval_reports/` (printed at the
 end). Add more cases with a comma-separated `--goldens`. Prereqs: ADC
-(`gcloud auth application-default login`) and, for table/context_overlay cases, a
-built `kcmd` (`cd toolbox/mdcode && npm run build`).
+(`gcloud auth application-default login`) and a built `kcmd`
+(`cd toolbox/mdcode && npm run build`) — every mode shells out to it.
 
 ### Multiple runs: averaged metrics + consistency
 
