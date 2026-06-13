@@ -18,6 +18,13 @@ const manifestSchema = z.object({
     entries: z.array(z.string()).optional(),
     aspects: z.array(z.string()).optional()
   }).optional(),
+  reference: z.object({
+    scope: z.union([z.string(), z.array(z.string())]),
+    snapshot: z.object({
+      entries: z.array(z.string()).optional(),
+      aspects: z.array(z.string()).optional()
+    }).optional(),
+  }).optional(),
 });
 
 export interface SnapshotConfig {
@@ -35,20 +42,41 @@ export interface Scope {
   name: string;
 }
 
+export interface ReferenceConfig {
+  scope: string | string[];
+  snapshot?: SnapshotConfig;
+}
+
+
+export class ReferenceManifest {
+  readonly source: CatalogSource;
+  readonly snapshotConfig?: SnapshotConfig;
+
+  constructor (
+    source: CatalogSource,
+    snapshotConfig?: SnapshotConfig,
+  ) {
+    this.source = source;
+    this.snapshotConfig = snapshotConfig;
+  }
+}
 
 export class CatalogManifest {
   readonly source: CatalogSource;
   readonly snapshotConfig?: SnapshotConfig;
   readonly publishingConfig?: PublishingConfig;
+  readonly referenceManifest?: ReferenceManifest;
 
   private constructor(
     source: CatalogSource,
     snapshotConfig?: SnapshotConfig,
-    publishingConfig?: PublishingConfig
+    publishingConfig?: PublishingConfig,
+    referenceManifest?: ReferenceManifest,
   ) {
     this.source = source;
     this.snapshotConfig = snapshotConfig;
     this.publishingConfig = publishingConfig;
+    this.referenceManifest = referenceManifest;
   }
 
   static async initWithEntryGroup(name: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
@@ -66,16 +94,7 @@ export class CatalogManifest {
     return new CatalogManifest(source);
   }
 
-  static async load(path: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
-    const content = fs.readFileSync(path, 'utf8');
-    const parsed = yaml.parse(content);
-    
-    const result = manifestSchema.safeParse(parsed);
-    if (!result.success) {
-      throw new Error(`Manifest error: ${result.error.message}`);
-    }
-    
-    const scope = result.data.scope;
+  static async parseScope(scope: string | string[], ctx: gcp.ApiContext): Promise<CatalogSource> {
     let source: CatalogSource;
     if (Array.isArray(scope)) {
       if (scope.length === 0) {
@@ -109,8 +128,10 @@ export class CatalogManifest {
         ctx
       );
     }
+    return source;
+  }
 
-    const snapshot = result.data.snapshot;
+  static parseSnapshot(snapshot?: SnapshotConfig): SnapshotConfig | undefined {
     if (snapshot) {
       if (snapshot.entries) {
         for (const entryType of snapshot.entries) {
@@ -129,9 +150,12 @@ export class CatalogManifest {
           }
         }
       }
+      return snapshot;
     }
+    return undefined;
+  }
 
-    const publishing = result.data.publishing;
+  static parsePublishingConfig(snapshot?: SnapshotConfig, publishing?: PublishingConfig): PublishingConfig | undefined {
     if (publishing) {
       if (publishing.entries) {
         for (const entryType of publishing.entries) {
@@ -160,9 +184,40 @@ export class CatalogManifest {
           }
         }
       }
+      return publishing;
+    }
+    return undefined;
+  }
+
+  static async parseReference(reference: ReferenceConfig | undefined, ctx: gcp.ApiContext): Promise<ReferenceManifest | undefined> {
+    if (reference) {
+      const referenceSource = await this.parseScope(reference.scope, ctx);
+      const referenceSnapshot = this.parseSnapshot(reference.snapshot);
+      return new ReferenceManifest(referenceSource, referenceSnapshot);
     }
 
-    return new CatalogManifest(source, snapshot, publishing);
+    return undefined;
+    
+  }
+
+  static async load(path: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
+    const content = fs.readFileSync(path, 'utf8');
+    const parsed = yaml.parse(content);
+    
+    const result = manifestSchema.safeParse(parsed);
+    if (!result.success) {
+      throw new Error(`Manifest error: ${result.error.message}`);
+    }
+    
+    const source = await this.parseScope(result.data.scope, ctx);
+
+    const snapshot = this.parseSnapshot(result.data.snapshot);
+
+    const publishing = this.parsePublishingConfig(snapshot, result.data.publishing);
+    
+    const reference = await this.parseReference(result.data.reference, ctx);
+
+    return new CatalogManifest(source, snapshot, publishing, reference);
   }
 
   save(path: string): void {

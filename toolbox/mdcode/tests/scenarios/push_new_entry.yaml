@@ -1,5 +1,5 @@
 name: push_new_entry
-description: Push Custom entry modifications
+description: Push new entry from local workspace
 setup:
   catalog:
     entryGroups:
