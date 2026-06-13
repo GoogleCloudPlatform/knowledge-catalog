@@ -385,7 +385,7 @@ Flags (see `python -m eval --help`):
 | Flag | Required | Meaning |
 |------|----------|---------|
 | `--output-dir` | yes (score mode) | The enrichment run's output dir (contains `catalog/` + `trajectory.json`). |
-| `--golden` | no | Golden file → golden-based eval (adds concept_recall/precision, fact_recall, coverage). Omit for dynamic (golden-free) eval. See `eval/goldens/GOLDENS.md`. |
+| `--golden` | no | Golden file → golden-based eval (adds concept_recall/precision, fact_recall, coverage). Omit for dynamic (golden-free) eval. See `eval/goldens/README.md`. |
 | `--run` | no | Run each golden as a CASE (generate the mdcode via the agent, then score) instead of scoring an existing dir. Requires `--project`. |
 | `--goldens` | no | Comma-separated golden files (run/score several cases at once). |
 | `--runs` | no | How many times to run each case (default 3 in `--run`). Reports per-run + averaged metrics, and enables the cross-run **consistency** metrics (need ≥2 runs). |
@@ -507,7 +507,7 @@ To score an output you already produced (no agent run), point `--golden` at it:
 python -m eval --output-dir /tmp/enrich_out --golden eval/goldens/supply_chain.json
 ```
 
-See `eval/goldens/GOLDENS.md` for the golden/case schema (incl. the `run` block
+See `eval/goldens/README.md` for the golden/case schema (incl. the `run` block
 for your own cases), `--run`/`--runs`/`--goldens` usage, and three ways to build
 goldens — author them, work backward from already-documented data, or harvest
 them from human review.

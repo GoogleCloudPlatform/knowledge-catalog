@@ -1,5 +1,5 @@
 {
-  "_comment": "Golden template. Keep the fields that fit your enrichment mode; delete the rest. The eval compares the agent's output to these expectations. See GOLDENS.md.",
+  "_comment": "Golden template. Keep the fields that fit your enrichment mode; delete the rest. The eval compares the agent's output to these expectations. See README.md.",
 
   "_doc_mode": "DOC MODE (knowledge base from documents): declare the concepts you expect as entries.",
   "expected_topics": [

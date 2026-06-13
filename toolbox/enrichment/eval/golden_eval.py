@@ -3,7 +3,7 @@
 Where the dynamic (golden-free) evaluator grounds only in what the agent
 retrieved, this scores the output against a hand-authored / harvested GOLDEN that
 declares the concepts, facts, sections, and terms the enrichment SHOULD contain.
-See goldens/GOLDENS.md for the golden schema and how to build one.
+See goldens/README.md for the golden schema and how to build one.
 
 Adds, on top of the dynamic metrics (structural_validity, perf, hallucination_free):
   - concept_recall / concept_precision : did we capture the expected concepts as
