@@ -28,13 +28,20 @@ from . import metrics
 
 
 def _run_overviews(run_results: list[dict]) -> list[dict]:
-  """One {concept_name: overview_text} map per run, loaded from each run's
-  generated mdcode. Concept name = the entry's basename sans `.overview.md`."""
-  entries = []
+  """One {concept_name: overview_text} map per *independent* run, loaded from each
+  run's generated mdcode. Concept name = the entry's basename sans `.overview.md`.
+
+  Runs that point at the SAME output dir are deduped: consistency measures
+  agent run-to-run variability, so re-scoring one output N times (dynamic
+  `--runs` on a single dir) is a single independent run, not N — otherwise it
+  would trivially report 100% "consistency" comparing identical output to itself.
+  """
+  entries, seen = [], set()
   for r in run_results:
     od = r.get("output_dir")
-    if not od:
+    if not od or od in seen:
       continue
+    seen.add(od)
     arts = loaders.load_mdcode(os.path.join(od, "catalog"))
     files = arts.get("overview_md") or {}
     if files:
@@ -102,9 +109,13 @@ def consistency_metrics(run_results: list[dict], judge) -> list[dict]:
   if n_runs < 2:
     def _sk(name, desc):
       return {"name": name, "score": None, "passed": True, "description": desc,
-              "rationale": "Only one run — need ≥2 runs to measure cross-run "
-                           "consistency.",
-              "insights": "Run the case 2-3× (--runs) to assess stability.",
+              "rationale": "Need ≥2 independent runs (distinct agent outputs) to "
+                           "measure cross-run consistency. Use the golden "
+                           "case-runner `--run --runs N`, which generates N fresh "
+                           "runs; dynamic `--runs` on one output dir re-scores the "
+                           "same output and isn't independent.",
+              "insights": "Generate the output 2-3× (different runs) to assess "
+                          "stability.",
               "run_scores": counts, "runs_passed": ""}
     return [_sk("concept_consistency",
                 "Cross-run stability of WHICH concepts are produced"),
