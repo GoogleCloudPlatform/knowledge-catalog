@@ -18,13 +18,40 @@ never calls the Dataplex API directly. It runs the read-only `kcmd init` /
 `kcmd pull` commands itself to scaffold `catalog.yaml` and pull existing entries
 (schema, etc.); you run `kcmd push` to publish.
 
-The agent has two modes:
+The agent has three modes:
 
 - **`table`** — pulls a BigQuery dataset's tables (schema) via `kcmd`, routes
   Google Drive documents to each table by relevance, and writes an enriched
-  overview per table in the `kcmd` `bq-dataset` format.
+  overview per table in the `kcmd` `bq-dataset` format. Also emits a `queries`
+  aspect per table that bundles BigQuery `INFORMATION_SCHEMA` query patterns,
+  SQL examples extracted from routed docs, and (optionally) ground-truth SQL
+  from user-feedback proposals. Optionally (`--glossaries`) maps columns to
+  Dataplex glossary terms and injects field-level definition links.
 - **`doc`** — crawls Google Docs (and an optional Drive folder), map-reduce
   summarizes them, and emits a knowledge-base mdcode snapshot.
+- **`context_overlay`** — pulls 1P BigQuery table entries via `kcmd reference`
+  (read-only) and creates a NEW context-overlay entry per table in an editable
+  entry group. The overlay carries the enriched overview + queries aspect so you
+  can ship richer descriptions without touching the live `@bigquery` entry.
+
+Any of the three modes can optionally ingest **user-feedback proposals** via
+`--feedback_dir` / `--feedback_files`. Feedback is treated as the
+**highest-priority context source** — proposals override conflicting information
+from Drive docs, semantic search, or INFORMATION_SCHEMA-derived patterns.
+
+Any of the three modes can also ingest a **GitHub source-code repository** via
+`--repo` (an extra context source — not a fourth mode). A code-understanding
+agent explores the repo **agentically through the GitHub MCP server** and
+distills it into code *component cards*. In `doc` mode the distinct components
+surface as their own knowledge-base entries; in `table` / `context_overlay` mode
+the cards join the relevance router's candidate pool, so code that reads or
+writes a table (or contains SQL referencing it) grounds that table's overview
+and queries aspect.
+
+After a run, you can iterate on the output with free-text **refinement** —
+either an interactive REPL (`--interactive`) or a single re-invocation
+(`--refine_instruction`). Refinement reuses the already-loaded context and never
+re-reads the source docs or re-pulls the dataset.
 
 ## Layout
 
@@ -32,25 +59,34 @@ This repo mirrors the `GoogleCloudPlatform/knowledge-catalog` `toolbox/` layout:
 
 ```
 toolbox/
-├── mdcode/                  # the kcmd (Metadata as Code) CLI + library
+├── mdcode/                      # the kcmd (Metadata as Code) CLI + library
 └── enrichment/
     ├── src/
-        ├── agent_runner.py  # CLI entrypoint: flags + dispatch to a mode
-        ├── engine.py        # LLM agents (Vertex Gemini) for both modes
-        ├── common.py        # shared helpers (run_text, mdcode parsing, trajectory)
-        ├── modes/
-        │   ├── doc_mode.py    # run(topic, docs, folder, output_dir, model, entry_group)
-        │   └── table_mode.py  # run(dataset, folder, topic, output_dir, model)
-        └── tools/
-            ├── kcmd_tools.py  # kcmd init/pull discovery + entry reading
-            └── drive_tools.py # Google Drive/Docs fetch helpers
-    └── eval/                 # evaluation CLI (dynamic + golden-based)
-        ├── __main__.py        # `python -m eval --output-dir ... [--golden ...]`
-        ├── dynamic_eval.py    # golden-free scoring of a single run
-        ├── golden_eval.py     # golden-based scoring (concepts, facts, coverage)
-        ├── metrics.py         # metric library (deterministic + LLM-judge)
-        ├── loaders.py         # read catalog/ + trajectory.json
-        └── goldens/           # golden schema (TEMPLATE.json) + ready goldens
+    │   ├── agent_runner.py      # CLI entrypoint: flags + dispatch to a mode
+    │   ├── engine.py            # LLM agents (Vertex Gemini) for all modes
+    │   ├── common.py            # shared helpers (run_text, mdcode parsing, trajectory)
+    │   ├── refine.py            # multi-turn refinement (REPL + persist/re-invoke)
+    │   ├── linking.py           # glossary column→term linking helper (table mode)
+    │   ├── modes/
+    │   │   ├── doc_mode.py             # run(topic, docs, folder, output_dir, model, entry_group, ...)
+    │   │   ├── table_mode.py           # run(dataset, folder, topic, output_dir, model, ...)
+    │   │   └── context_overlay_mode.py # run(dataset, folder, topic, ..., entry_group, ...)
+    │   └── tools/
+    │       ├── kcmd_tools.py     # kcmd init/pull/reference discovery + entry reading
+    │       ├── drive_tools.py    # Google Drive/Docs fetch helpers
+    │       ├── bq_usage_tools.py # INFORMATION_SCHEMA query history + queries-aspect sidecar
+    │       ├── feedback_tools.py # user-feedback proposal loader + per-table router
+    │       └── github_tools.py   # agentic GitHub-repo code source via the GitHub MCP server
+    └── eval/                     # evaluation CLI (dynamic golden-free + golden-based)
+        ├── __main__.py          # `python -m eval --output-dir ... [--golden ...]` | `--run`
+        ├── dynamic_eval.py      # golden-free scoring of a single run
+        ├── golden_eval.py       # golden-based scoring (concepts, facts, coverage)
+        ├── aggregate.py         # multi-run roll-up (per-run + averaged + consistency)
+        ├── runner.py            # `--run` case-runner (setup + N agent runs)
+        ├── metrics.py           # metric library (deterministic + LLM-judge)
+        ├── loaders.py           # read catalog/ + trajectory.json
+        ├── goldens/             # golden schema (TEMPLATE.json) + ready goldens
+        └── corpora/             # local markdown corpora the goldens ground on
 ```
 
 ## Prerequisites
@@ -78,8 +114,11 @@ toolbox/
    python3 -m venv ~/.venv/kc-enrich
    source ~/.venv/kc-enrich/bin/activate
    pip install google-adk google-genai google-api-python-client google-auth \
-               pypdf pyyaml requests absl-py
+               google-cloud-bigquery mcp pypdf pyyaml requests absl-py
    ```
+   (`google-cloud-bigquery` powers the table-mode usage signal; `mcp` is only
+   needed for the GitHub source over a local stdio server — the default hosted
+   remote server works without it.)
 
 3. **Application Default Credentials** (the agent uses Vertex AI, `kcmd` uses
    `gcloud` for catalog auth, and Drive access for source docs):
@@ -121,18 +160,35 @@ python3 toolbox/enrichment/src/agent_runner.py \
   --location=<vertex_location> \
   --model=<vertex_model> \
   --output_dir=<local_output_dir>
+
+# Context-overlay mode — enrich BQ tables into a SEPARATE entry group you own
+# (the live @bigquery entries are read-only, never modified).
+python3 toolbox/enrichment/src/agent_runner.py \
+  --mode=context_overlay \
+  --dataset=<project>.<dataset> \
+  --entry_group=<project>.<location>.<entryGroupId> \
+  --folders=<drive_folder_id_or_url> \
+  --topic="<your use case / instruction>" \
+  --project=<your_gcp_project> \
+  --model=<vertex_model> \
+  --output_dir=<local_output_dir>
+```
+
+Any mode can additionally pull in a GitHub repository as a code-context source.
+The GitHub MCP server reads a Personal Access Token from its environment:
+
+```bash
+export GITHUB_PERSONAL_ACCESS_TOKEN=ghp_...
+python3 toolbox/enrichment/src/agent_runner.py --mode=doc \
+  --entry_group=<project>.<location>.<entryGroupId> \
+  --topic="Order pipeline" \
+  --repo=my-org/order-service --repo_ref=main \
+  --project=<your_gcp_project> --model=<vertex_model> --output_dir=<local_output_dir>
 ```
 
 All values above are yours to choose, e.g. `--topic="Customer 360 data"`,
 `--location=us-central1` (or `global`), `--model=gemini-2.5-pro`,
 `--output_dir=/tmp/enrich_out`.
-
-> **Optional — `KC_LIGHT_MODEL` (env).** `--model` is used everywhere by default.
-> The high-volume steps (per-doc summaries, relevance routing, per-table/entry
-> writers) make many small LLM calls, so you can point just those at a
-> cheaper/faster model to cut cost or avoid rate limits, without changing
-> `--model`: `export KC_LIGHT_MODEL=<a flash model you have access to>`. Unset, it
-> falls back to `--model`.
 
 > **Doc mode — `--entry_group` is required and must already exist.** The target
 > entry group (`project.location.entryGroupId`) must be **created beforehand** in
@@ -145,20 +201,91 @@ All values above are yours to choose, e.g. `--topic="Customer 360 data"`,
 > The knowledge-base entries are created with the 1P **generic** entry type, with
 > the enriched content as their `overview` aspect.
 
-Flags (see `agent_runner.py --help`):
+### Flags
 
-| Flag | Modes | Required | Meaning |
-|------|-------|----------|---------|
-| `--project` | both | yes | Your Google Cloud project for the Vertex AI model. |
-| `--model` | both | yes | Any Vertex AI model id you have access to, e.g. `gemini-2.5-pro`. |
-| `--location` | both | no | Any Vertex AI location (e.g. `us-central1`, `europe-west1`, or `global`). Defaults to `global`. |
-| `--output_dir` | both | yes | Any local directory for the generated mdcode. |
-| `--mode` | both | no | `doc` or `table`. Empty → inferred (`--dataset` set ⇒ table, else doc). |
-| `--dataset` | table | yes (table) | BigQuery dataset as `project.dataset`. |
-| `--entry_group` | doc | **yes (doc)** | Target entry group as `project.location.entryGroupId`. **It must already exist** in that project (create it first — see note below). Entries are created with the 1P generic entry type. |
-| `--docs` | doc / overlay | no | Comma-separated **mixed list**, routed per entry: Google Doc URLs/IDs **and/or local `.md`/`.markdown` files**. A local file is a doc-mode depth-0 "spine" doc. |
-| `--folders` | all | no | Comma-separated **mixed list**, routed per entry: Google Drive folder URLs/IDs **and/or local directories of `.md` files** (read recursively). Seeds depth-1 children (doc) or grounding docs (table/overlay). (`--folder` is accepted as a deprecated alias.) |
-| `--topic` | both | no | Free-text use case / instruction guiding enrichment (anything, e.g. `"Customer 360 data"`). |
+Every invocation goes through `agent_runner.py` (run it with `--help` for the raw
+list). `--project`, `--model`, and `--output_dir` are required in **every** mode;
+`--dataset` and/or `--entry_group` become required depending on the mode.
+
+**Which flag applies to which mode** — `R` = required, `✓` = optional, `—` = not used:
+
+| Flag | `doc` | `table` | `context_overlay` |
+|------|:-----:|:-------:|:-----------------:|
+| `--project` | R | R | R |
+| `--model` | R | R | R |
+| `--output_dir` | R | R | R |
+| `--location` | ✓ | ✓ | ✓ |
+| `--mode` | ✓ | ✓ | ✓ |
+| `--topic` | ✓ | ✓ | ✓ |
+| `--dataset` | — | R | R |
+| `--entry_group` | R | — | R |
+| `--folders` | ✓ | ✓ | ✓ |
+| `--docs` | ✓ | — | ✓ |
+| `--tables` | — | — | ✓ |
+| `--include_usage` | — | ✓ | ✓ |
+| `--usage_window_days` | — | ✓ | ✓ |
+| `--usage_scope` | — | ✓ | ✓ |
+| `--anonymize_users` | — | ✓ | ✓ |
+| `--glossaries` | — | ✓ | — |
+| `--feedback_dir` | ✓ | ✓ | ✓ |
+| `--feedback_files` | ✓ | ✓ | ✓ |
+| `--repo` | ✓ | ✓ | ✓ |
+| `--repo_ref` | ✓ | ✓ | ✓ |
+| `--repo_subdir` | ✓ | ✓ | ✓ |
+| `--mcp_config` | ✓ | ✓ | ✓ |
+| `--interactive` | ✓ | ✓ | ✓ |
+| `--refine_instruction` | ✓ | ✓ | ✓ |
+
+#### Required in every mode
+
+- **`--project`** — Google Cloud project that hosts the Vertex AI model. Example: `--project=my-gcp-project`.
+- **`--model`** — Vertex AI model id for the reasoning-heavy steps, e.g. `--model=gemini-2.5-pro`. (Small structured steps use a pinned Flash model internally.)
+- **`--output_dir`** — Local directory for the generated mdcode tree, `trajectory.json`, and `refine_session.json`. Example: `--output_dir=/tmp/enrich_out`.
+
+#### Model / location
+
+- **`--location`** — *(optional, default `global`)* Vertex AI location for the model, e.g. `--location=us-central1`.
+
+#### Mode selection & target
+
+- **`--mode`** — *(optional, default inferred)* One of `doc`, `table`, `context_overlay`. If omitted it's inferred: `--dataset` set ⇒ `table`, otherwise `doc`. `context_overlay` is never inferred — pass it explicitly.
+- **`--dataset`** — *(table, context_overlay — required)* BigQuery dataset as `project.dataset`, e.g. `--dataset=my-proj.analytics`. Ignored in doc mode.
+- **`--entry_group`** — *(doc, context_overlay — required)* Entry group `project.location.entryGroupId`. In **doc** mode it **must already exist** (the agent runs read-only `kcmd` and won't create it — see the note above). In **overlay** mode it's where the new overlay entries are created. Ignored in table mode, which writes onto the live `@bigquery` entries.
+
+#### Source context (what the agent reads)
+
+- **`--topic`** — *(optional, default `"Metadata enrichment"`)* Free-text use case/instruction that steers enrichment (and the doc-mode topic reduce). Example: `--topic="Customer 360 data"`.
+- **`--folders`** — *(optional)* Comma-separated, mixed list (routed per entry): Google Drive folder IDs/URLs (Docs/Sheets/Slides/PDF) **and/or local directories of `.md` files** (read recursively). Works in all modes. `--folder` (singular) is accepted as a deprecated alias. See [Local Markdown inputs](#local-markdown-inputs). Example: `--folders=https://drive.google.com/drive/folders/<id>,./local_md_corpus`.
+- **`--docs`** — *(doc, context_overlay)* Comma-separated, mixed list: Google Doc URLs/IDs **and/or local `.md` files**. In doc mode these are the authoritative depth-0 "spine"; in overlay mode they're routed to tables. **Not used in table mode** — use `--folders` there. Example: `--docs="https://docs.google.com/document/d/<id1>,./notes/x.md"`.
+- **`--tables`** — *(context_overlay only)* Restrict the overlay to specific tables — short names or `proj.ds.table` FQNs, comma-separated. Empty = every table in `--dataset`. Example: `--tables=orders,customers`.
+
+#### BigQuery usage signal — the `queries` aspect *(table, context_overlay)*
+
+- **`--include_usage`** — *(default `true`)* Fetch BigQuery `INFORMATION_SCHEMA` query history per table and emit a `<table>.queries.md` sidecar. `--include_usage=false` skips the BQ scan entirely.
+- **`--usage_window_days`** — *(default `30`)* Days of query history to aggregate. Example: `--usage_window_days=90`.
+- **`--usage_scope`** — *(default `auto`)* `auto` tries `JOBS_BY_PROJECT` then falls back to `JOBS_BY_USER` on a permission error; `project` requires `JOBS_BY_PROJECT`; `user` reads only your own queries (always works, but narrow).
+- **`--anonymize_users`** — *(default `false`)* Replace user emails with stable SHA hashes in the usage signal.
+
+#### Glossary column-linking *(table only)*
+
+- **`--glossaries`** — Comma-separated Dataplex glossaries `project.location.glossaryId`. When set, the agent maps BigQuery columns to glossary terms and injects field-level `links.definition` into each table's entry YAML (published by `kcmd push`). Example: `--glossaries=my-proj.us.business-glossary`.
+
+#### User-feedback proposals *(all modes)*
+
+- **`--feedback_dir`** — Directory of user-feedback files (`.md`/`.json`, pure-JSON `{proposals: [...]}` content), walked recursively. Proposals are the highest-priority context and **override** conflicting info from docs/usage. Routed per-table in table/overlay; applied globally in doc mode.
+- **`--feedback_files`** — Explicit comma-separated feedback file paths; combinable with `--feedback_dir`.
+
+#### GitHub source-code input *(all modes)*
+
+- **`--repo`** — GitHub repo as `owner/name` or a URL, explored agentically via the GitHub MCP server as an extra code-context source. Needs a token in the server's environment (default env var `GITHUB_PERSONAL_ACCESS_TOKEN`). Empty = no code source.
+- **`--repo_ref`** — Branch/tag/SHA to read (default: the repo's default branch). Example: `--repo_ref=main`.
+- **`--repo_subdir`** — Path prefix to scope the exploration, e.g. `--repo_subdir=src/server`.
+- **`--mcp_config`** — Path to an `mcp.json` describing the GitHub MCP server. Falls back to `KC_ENRICH_MCP_CONFIG`, then the hosted remote server (`https://api.githubcopilot.com/mcp/`). Pick a server entry with `KC_ENRICH_GITHUB_MCP_SERVER` (default `github_remote`; use `github` for the local stdio binary).
+
+#### Refinement *(all modes, after a run)*
+
+- **`--interactive`** — *(default `false`)* After the initial run, stay in a `refine>` REPL for free-text changes — rewrite an overview, add/remove/recategorize entries, or ask a question. Reuses loaded context (no doc re-read). No-op on a non-TTY.
+- **`--refine_instruction`** — Apply ONE refinement turn to the saved session in `--output_dir`, then exit (the webapp's persist + re-invoke flow). Requires a prior run's `refine_session.json` in `--output_dir`. Example: `--refine_instruction="make the orders overview more concise"`.
 
 ## Local Markdown inputs
 
