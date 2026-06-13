@@ -56,12 +56,12 @@ def metric_rollup(run_results: list[dict]) -> list[dict]:
   and runs_passed."""
   agg: dict[str, dict] = {}
   order: list[str] = []
-  for r in run_results:
+  for run_idx, r in enumerate(run_results, 1):
     for m in r.get("metrics", []):
       name = m["name"]
       if name not in agg:
         agg[name] = {"name": name, "scores": [], "npass": 0, "n": 0,
-                     "rationale": "", "insights": "",
+                     "rationale": "", "insights": "", "rationale_run": 0,
                      "description": m.get("description", name)}
         order.append(name)
       e = agg[name]
@@ -75,17 +75,26 @@ def metric_rollup(run_results: list[dict]) -> list[dict]:
       d = (m.get("rationale") or "").strip()
       if d and (not e["rationale"] or not passed):
         e["rationale"] = d
+        e["rationale_run"] = run_idx  # which run this representative detail is from
       ins = (m.get("insights") or "").strip()
       if ins and (not e["insights"] or not passed):
         e["insights"] = ins
   out = []
+  multi = len(run_results) > 1
   for name in order:
     e = agg[name]
     scores = e["scores"]
+    rationale = e["rationale"]
+    # On multi-run cases the rationale is one representative run's (a failing one
+    # when any failed). Tag which run it came from so a reader can map the
+    # evidence (e.g. a specific unsupported claim) to the right run.
+    if multi and rationale and e["rationale_run"]:
+      rationale = f"[from run {e['rationale_run']}] {rationale}"
     out.append({"name": name,
                 "score": round(sum(scores) / len(scores), 4) if scores else None,
                 "description": e["description"],
-                "rationale": e["rationale"],
+                "rationale": rationale,
+                "rationale_run": e["rationale_run"] or None,
                 "insights": e["insights"],
                 "run_scores": scores,
                 "runs_passed": f"{e['npass']}/{e['n']}"})
