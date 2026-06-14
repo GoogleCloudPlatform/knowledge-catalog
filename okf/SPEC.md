@@ -129,6 +129,15 @@ description: <Optional one-line summary>
 resource: <Optional canonical URI for the underlying asset>
 tags: [<tag>, <tag>, …]            # Optional
 timestamp: <ISO 8601 datetime>     # Optional last-modified time
+sources:                           # Optional machine-readable provenance
+  - id: <Optional stable source identifier>
+    type: <Optional source kind>
+    resource: <Optional URI or bundle-relative path>
+    locator: <Optional source-specific pointer>
+    captured_at: <Optional ISO 8601 datetime>
+    digest:
+      algorithm: <Optional digest algorithm>
+      value: <Optional digest value>
 # … other producer-defined key/value pairs
 ---
 ```
@@ -156,6 +165,8 @@ timestamp: <ISO 8601 datetime>     # Optional last-modified time
   rather than physical resources.
 - `tags` — A YAML list of short strings for cross-cutting categorization.
 - `timestamp` — ISO 8601 datetime of last meaningful change.
+- `sources` — A YAML list of source records for machine-readable
+  provenance. See §8.
 
 **Extensions:** Producers MAY include any additional keys. Consumers
 SHOULD preserve unknown keys when round-tripping and SHOULD NOT reject
@@ -335,6 +346,28 @@ bottom of the document, numbered:
 Citation links MAY be absolute URLs, bundle-relative paths, or paths
 into a `references/` subdirectory that mirrors external material as
 first-class OKF concepts.
+
+Concepts MAY also include a `sources` frontmatter field containing a
+YAML list of source records. `sources` is intended for machine-readable
+provenance. It complements, but does not replace, the human-readable
+`# Citations` section.
+
+A source record MAY contain:
+
+- `id` — Producer-defined stable identifier for the source.
+- `type` — Producer-defined source kind, such as `web_page`, `runbook`,
+  `dataset`, `conversation_turn`, `ticket`, or `paper`.
+- `resource` — Absolute URI or bundle-relative path for the source.
+- `locator` — Producer-defined pointer within the source, such as a
+  line, section, byte range, page, row, turn id, or fragment.
+- `captured_at` — ISO 8601 datetime when the producer captured or
+  snapshotted this source material, if known.
+- `digest` — Optional object containing `algorithm` and `value`,
+  representing a content digest of the source material when the
+  producer has one.
+
+Consumers SHOULD tolerate additional source record fields and SHOULD
+NOT require every source record to contain every field.
 
 ---
 
