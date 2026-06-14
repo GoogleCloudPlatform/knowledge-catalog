@@ -91,6 +91,16 @@ agents/
 
 ## Prerequisites
 
+You'll need a few CLIs on your PATH before installing anything Python-side:
+
+- **Node.js + npm** (any recent LTS — `node --version`, `npm --version`) to
+  build `kcmd`.
+- **`gcloud` CLI** (`gcloud --version`) for Application Default Credentials.
+  Install: <https://cloud.google.com/sdk/docs/install>.
+- **Python 3.11+** (`python3 --version`).
+
+Then:
+
 1. **Build `kcmd`** (the agent shells out to it). From the repo root:
    ```bash
    cd agents/mdcode
@@ -109,16 +119,16 @@ agents/
    (override with `$KCMD_BIN`), so adding it to `PATH` is only needed for running
    `kcmd` yourself (e.g. `kcmd push`). Verify with `which kcmd`.
 
-2. **Python 3.11+** and the agent dependencies (a venv is recommended):
+2. **Python deps** (a venv is recommended):
    ```bash
    python3 -m venv ~/.venv/kc-enrich
    source ~/.venv/kc-enrich/bin/activate
-   pip install google-adk google-genai google-api-python-client google-auth \
-               google-cloud-bigquery mcp pypdf pyyaml requests absl-py
+   pip install -r agents/enrichment/src/requirements.txt
    ```
    (`google-cloud-bigquery` powers the table-mode usage signal; `mcp` is only
    needed for the GitHub source over a local stdio server — the default hosted
-   remote server works without it.)
+   remote server works without it.) The same hand-typed list lives at the top of
+   `agents/enrichment/src/requirements.txt` if you'd rather pin versions yourself.
 
 3. **Application Default Credentials** (the agent uses Vertex AI, `kcmd` uses
    `gcloud` for catalog auth, and Drive access for source docs):
@@ -280,7 +290,24 @@ list). `--project`, `--model`, and `--output_dir` are required in **every** mode
 - **`--repo`** — GitHub repo as `owner/name` or a URL, explored agentically via the GitHub MCP server as an extra code-context source. Needs a token in the server's environment (default env var `GITHUB_PERSONAL_ACCESS_TOKEN`). Empty = no code source.
 - **`--repo_ref`** — Branch/tag/SHA to read (default: the repo's default branch). Example: `--repo_ref=main`.
 - **`--repo_subdir`** — Path prefix to scope the exploration, e.g. `--repo_subdir=src/server`.
-- **`--mcp_config`** — Path to an `mcp.json` describing the GitHub MCP server. Falls back to `KC_ENRICH_MCP_CONFIG`, then the hosted remote server (`https://api.githubcopilot.com/mcp/`). Pick a server entry with `KC_ENRICH_GITHUB_MCP_SERVER` (default `github_remote`; use `github` for the local stdio binary).
+- **`--mcp_config`** — Path to an `mcp.json` describing the GitHub MCP server. Falls back to `KC_ENRICH_MCP_CONFIG`, then the hosted remote server (`https://api.githubcopilot.com/mcp/`). Pick a server entry with `KC_ENRICH_GITHUB_MCP_SERVER` (default `github_remote`; use `github` for the local stdio binary). A minimal `mcp.json` with both entries:
+  ```json
+  {
+    "mcpServers": {
+      "github_remote": {
+        "type": "http",
+        "url": "https://api.githubcopilot.com/mcp/",
+        "headers": {"Authorization": "Bearer ${GITHUB_PERSONAL_ACCESS_TOKEN}"}
+      },
+      "github": {
+        "type": "stdio",
+        "command": "github-mcp-server",
+        "args": ["stdio"],
+        "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}"}
+      }
+    }
+  }
+  ```
 
 #### Refinement *(all modes, after a run)*
 
@@ -362,8 +389,13 @@ reference answers — it grounds its checks in the agent's own `trajectory.json`
 (what it actually retrieved), so it works on your own data out of the box.
 
 ```bash
+# Run from agents/enrichment/ — `python -m eval` resolves the `eval` package
+# relative to this directory.
 cd agents/enrichment
 pip install -r eval/requirements.txt
+# If you plan to use --run (which spawns the agent itself), also install the
+# agent's deps:
+#   pip install -r src/requirements.txt
 
 # Judge auth — Vertex AI, the same auth the agent uses:
 export GOOGLE_CLOUD_PROJECT=<project>

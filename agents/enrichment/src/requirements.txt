@@ -1,0 +1,18 @@
+# Knowledge Catalog Enrichment Agent — Python dependencies.
+#
+# Install with:
+#   pip install -r agents/enrichment/src/requirements.txt
+#
+# Mirrors the hand-typed list in agents/enrichment/README.md (Prerequisites).
+# Pin versions in your own deployment as appropriate.
+
+google-adk
+google-genai
+google-api-python-client
+google-auth
+google-cloud-bigquery
+mcp                # only needed if --repo uses the local stdio GitHub MCP server (the default hosted remote works without it)
+pypdf
+pyyaml
+requests
+absl-py
