@@ -77,11 +77,11 @@ def write_concept_doc(
 ) -> dict[str, Any]:
     """Write (or overwrite) the OKF markdown document for this concept.
 
-    `frontmatter` must include at minimum: type, title, description, timestamp
-    (ISO 8601). `resource` and `tags` are strongly recommended when applicable.
-    The `body` should contain the prose description plus `# Schema`,
-    `# Common query patterns`, and `# Citations` sections per the OKF
-    convention.
+    `frontmatter` must include at minimum `type` (required per OKF §4.1).
+    `title`, `description`, `resource`, `tags`, and `timestamp` (ISO 8601)
+    are recommended when applicable. The `body` should contain the prose
+    description plus `# Schema`, `# Common query patterns`, and
+    `# Citations` sections per the OKF convention.
 
     Returns {'path': <relative path written>, 'bytes': <int>}.
     """
@@ -101,7 +101,7 @@ def write_concept_doc(
         return {
             "error": (
                 f"Refusing to write document with invalid frontmatter: {e}. "
-                f"Required keys: {', '.join(REQUIRED_FRONTMATTER_KEYS)}. "
+                f"Required key(s): {', '.join(REQUIRED_FRONTMATTER_KEYS)}. "
                 f"Re-call write_concept_doc with the complete frontmatter dict."
             ),
             "concept_id": concept_id,

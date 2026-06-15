@@ -7,7 +7,7 @@ from urllib.request import Request, urlopen
 
 from markdownify import markdownify
 
-_USER_AGENT = "okf-enrichment-agent/0.1 (+https://github.com/amirhormati/open-knowledge-format)"
+_USER_AGENT = "okf-enrichment-agent/0.1 (+https://github.com/GoogleCloudPlatform/knowledge-catalog)"
 _MAX_MARKDOWN_BYTES = 40 * 1024
 
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)

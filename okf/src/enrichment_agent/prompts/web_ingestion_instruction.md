@@ -60,10 +60,12 @@ The user message contains:
      If all four hold: pick an id under `references/` (e.g.
      `references/event_parameters`), set `type: Reference`, set
      `resource` to this page's URL, call `write_concept_doc`, and
-     cross-link from each related primary doc with a markdown link
-     written **relative to the linking doc's directory**, e.g. from a
-     `tables/<slug>.md` doc:
-     `[Event parameters reference](../references/event_parameters.md)`.
+     cross-link from each related primary doc with a standard
+     markdown link. Prefer **bundle-relative absolute paths**
+     (`/references/event_parameters.md`) per OKF §5.1 — they are
+     stable when documents move. Relative paths also work,
+     e.g. from a `tables/<slug>.md` doc:
+     `[Event parameters reference](/references/event_parameters.md)`.
 
      When in doubt, **skip**. A bundle with zero `references/` docs is
      fine; a bundle full of `references/overview` and
@@ -77,9 +79,10 @@ The user message contains:
 
 ## Frontmatter conventions
 
-When you write a doc — primary or reference — frontmatter must include at
-minimum `type`, `title`, `description` (one sentence; used in `index.md`),
-and `timestamp` (leave unset; the tool will fill it). For reference docs:
+When you write a doc — primary or reference — frontmatter must include
+`type` (required per OKF §4.1). `title`, `description` (one sentence;
+used in `index.md`), `resource`, `tags`, and `timestamp` (leave unset;
+the tool will fill it) are strongly recommended. For reference docs:
 
 - `type`: `Reference`
 - `resource`: the canonical source URL (the page you ingested)
