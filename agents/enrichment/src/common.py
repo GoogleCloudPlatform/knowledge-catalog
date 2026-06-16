@@ -8,7 +8,12 @@ import re
 import threading
 import uuid
 
-from engine import EnumerationResult, create_enumeration_runner
+from engine import (
+    EnumerationResult,
+    create_enumeration_runner,
+    litellm_call_kwargs,
+    resolve_provider,
+)
 from google.genai import Client, types
 
 # Transient Vertex/model-serving errors that are safe to retry. These otherwise
@@ -91,7 +96,15 @@ async def generate_text_direct(
   `Context has already been used to create a Connection, it cannot be mutated
   again` once a worker thread is reused for a second call. Per-call clients
   are cheap relative to the LLM call latency itself.
+
+  When the model resolves to a non-Vertex provider (resolve_provider == litellm)
+  the call is routed through LiteLLM instead; only the LLM backend changes —
+  Drive/Docs/BigQuery still use GCP.
   """
+  if resolve_provider(model) == "litellm":
+    return await _generate_text_litellm(
+        system_instruction, user_prompt, model, usage_acc
+    )
 
   def _call():
     from google.auth import default
@@ -117,6 +130,41 @@ async def generate_text_direct(
     return response.text or ""
 
   return await _with_retry(_once, what=f"generate_content({model})")
+
+
+async def _generate_text_litellm(
+    system_instruction: str, user_prompt: str, model: str, usage_acc: dict
+) -> str:
+  """Non-Vertex sibling of generate_text_direct, routed through LiteLLM.
+
+  Used for any model resolve_provider() maps to litellm (Anthropic / OpenAI /
+  local). Credentials come from litellm's own env vars (e.g. ANTHROPIC_API_KEY).
+  litellm.acompletion is async-native, so unlike the Vertex path no thread
+  offload is needed. Shares the same retry/usage-accounting contract.
+  """
+  import litellm  # pylint: disable=g-import-not-at-top
+
+  # OpenAI-compatible endpoint + provider passthrough (see litellm_call_kwargs):
+  # api_base/api_key reach a self-hosted vLLM, extra_body can disable a Qwen3
+  # reasoning model's chain-of-thought. Same hook as the ADK make_model path.
+  extra = litellm_call_kwargs()
+
+  async def _once():
+    response = await litellm.acompletion(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": user_prompt},
+        ],
+        **extra,
+    )
+    usage = getattr(response, "usage", None)
+    if usage is not None and usage_acc is not None:
+      usage_acc["input"] += getattr(usage, "prompt_tokens", 0) or 0
+      usage_acc["output"] += getattr(usage, "completion_tokens", 0) or 0
+    return (response.choices[0].message.content or "")
+
+  return await _with_retry(_once, what=f"litellm.acompletion({model})")
 
 
 # Back-compat alias for the v2.5 writer callers (semantically the same function).

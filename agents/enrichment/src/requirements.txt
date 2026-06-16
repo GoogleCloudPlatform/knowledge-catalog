@@ -12,6 +12,8 @@ google-api-python-client
 google-auth
 google-cloud-bigquery
 mcp                # only needed if --repo uses the local stdio GitHub MCP server (the default hosted remote works without it)
+litellm            # only needed for non-Vertex models (--model not gemini-*, or KC_MODEL_PROVIDER=litellm); creds via litellm env vars (e.g. ANTHROPIC_API_KEY)
+python-dotenv      # optional: loads a local .env (KC_MODEL_PROVIDER / OPENAI_API_BASE / OPENAI_API_KEY / GCP vars) at startup
 pypdf
 pyyaml
 requests

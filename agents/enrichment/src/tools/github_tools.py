@@ -42,7 +42,7 @@ import re
 import typing as t
 import uuid
 
-from engine import VertexGemini
+from engine import make_model
 from google.adk.agents import llm_agent
 from google.adk.runners import InMemoryRunner
 from google.genai import types
@@ -473,7 +473,7 @@ async def gather_repo_context(
             "Explores a GitHub repository via MCP tools and emits structured"
             " code component cards."
         ),
-        model=VertexGemini(model=model),
+        model=make_model(model),
         instruction=instruction,
         tools=[toolset],
     )

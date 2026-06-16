@@ -30,6 +30,7 @@ Nothing here is project-specific: the model is supplied by the caller (the
 `--project` / `--location`).
 """
 
+import json
 import os
 import typing as t
 
@@ -62,6 +63,62 @@ class VertexGemini(Gemini):
           location=os.environ.get("GOOGLE_CLOUD_LOCATION", "global"),
       )
     return self._cached_client
+
+
+def resolve_provider(model: str) -> str:
+  """Pick the serving backend ('vertex' | 'litellm') for a model name.
+
+  Vertex (Gemini via ADC) stays the default so existing invocations are
+  unchanged. Anything non-Gemini routes through LiteLLM, letting the agent run
+  on Anthropic / OpenAI / local (ollama) models without touching call sites.
+  Set KC_MODEL_PROVIDER=vertex|litellm to override the inference explicitly.
+  Note: only the LLM serving backend changes — Drive/Docs/BigQuery still use GCP.
+  """
+  explicit = os.environ.get("KC_MODEL_PROVIDER", "").strip().lower()
+  if explicit in ("vertex", "litellm"):
+    return explicit
+  name = (model or "").strip().lower()
+  if not name or name.startswith("gemini") or name.startswith("vertex_ai/"):
+    return "vertex"
+  return "litellm"
+
+
+def litellm_call_kwargs() -> dict:
+  """Optional litellm kwargs from the environment (shared by both LLM paths).
+
+  * OPENAI_API_BASE / OPENAI_API_KEY — point at an OpenAI-compatible endpoint
+    (e.g. a self-hosted vLLM server); vLLM accepts any non-empty key.
+  * KC_LITELLM_EXTRA_BODY — JSON forwarded as litellm `extra_body` for provider
+    passthrough, e.g. `{"chat_template_kwargs": {"enable_thinking": false}}` to
+    stop a Qwen3 reasoning model leaking its chain-of-thought into `content`.
+
+  Keeping this model-agnostic (no hardcoded model names) means the same hook
+  serves any OpenAI-compatible backend.
+  """
+  kw = {}
+  if os.environ.get("OPENAI_API_BASE"):
+    kw["api_base"] = os.environ["OPENAI_API_BASE"]
+  if os.environ.get("OPENAI_API_KEY"):
+    kw["api_key"] = os.environ["OPENAI_API_KEY"]
+  raw = os.environ.get("KC_LITELLM_EXTRA_BODY", "").strip()
+  if raw:
+    kw["extra_body"] = json.loads(raw)
+  return kw
+
+
+def make_model(model: str):
+  """Build the ADK model object for `model` per resolve_provider().
+
+  Returns a VertexGemini (Vertex AI via ADC) or an ADK LiteLlm wrapper. LiteLlm
+  is imported lazily so Vertex-only installs need not depend on litellm; its
+  credentials come from litellm's own env vars (e.g. ANTHROPIC_API_KEY) plus the
+  optional OpenAI-compatible overrides in litellm_call_kwargs().
+  """
+  if resolve_provider(model) == "litellm":
+    from google.adk.models.lite_llm import LiteLlm  # pylint: disable=g-import-not-at-top
+
+    return LiteLlm(model=model, **litellm_call_kwargs())
+  return VertexGemini(model=model)
 
 
 # High-volume / small-input steps (per-doc descriptors, JSON routing, per-doc
@@ -101,7 +158,7 @@ def create_summarizer_runner(model: str) -> InMemoryRunner:
   agent = llm_agent.LlmAgent(
       name="SummarizerAgent",
       description="Summarizes Google Drive documents.",
-      model=VertexGemini(model=model),
+      model=make_model(model),
       instruction=SUMMARIZER_INSTRUCTION,
   )
   return InMemoryRunner(agent=agent)
@@ -158,7 +215,7 @@ def create_per_doc_summarizer_runner(model: str) -> InMemoryRunner:
           "Summarizes a single document into a reusable, topic-neutral doc"
           " card. Output is cached across runs."
       ),
-      model=VertexGemini(model=model),
+      model=make_model(model),
       instruction=PER_DOC_SUMMARIZER_INSTRUCTION,
   )
   return InMemoryRunner(agent=agent)
@@ -207,7 +264,7 @@ def create_doc_query_extractor_runner(model: str) -> InMemoryRunner:
       description=(
           "Extracts SQL examples for ONE table from its routed documentation."
       ),
-      model=VertexGemini(model=_light_model(model)),
+      model=make_model(_light_model(model)),
       instruction=DOC_QUERY_EXTRACTOR_INSTRUCTION,
   )
   return InMemoryRunner(agent=agent)
@@ -244,7 +301,7 @@ def create_topic_reducer_runner(model: str) -> InMemoryRunner:
           "Reduces a batch of neutral per-doc summaries through a topic"
           " lens, producing a structured grouped summary."
       ),
-      model=VertexGemini(model=model),
+      model=make_model(model),
       instruction=TOPIC_REDUCER_INSTRUCTION,
   )
   return InMemoryRunner(agent=agent)
@@ -293,7 +350,7 @@ def create_mdcode_runner(
   agent = llm_agent.LlmAgent(
       name="MdcodeAgent",
       description="Generates Dataplex mdcode entries from summaries.",
-      model=VertexGemini(model=model),
+      model=make_model(model),
       instruction=instruction,
   )
   return InMemoryRunner(agent=agent)
@@ -309,7 +366,7 @@ def create_doc_summarizer_runner(model: str) -> InMemoryRunner:
       description=(
           "Summarizes a single Drive document into a compact descriptor."
       ),
-      model=VertexGemini(model=_light_model(model)),
+      model=make_model(_light_model(model)),
       instruction="""You are summarizing ONE document so a router can decide which BigQuery tables it is relevant to.
 
 Output EXACTLY this Markdown shape and nothing else:
@@ -328,7 +385,7 @@ def create_router_runner(model: str) -> InMemoryRunner:
   agent = llm_agent.LlmAgent(
       name="RelevanceRouterAgent",
       description="Scores folder-document relevance to one BigQuery table.",
-      model=VertexGemini(model=_light_model(model)),
+      model=make_model(_light_model(model)),
       instruction="""You are a precise relevance router. You are given ONE BigQuery table (its name and columns) and a numbered list of candidate documents (each with a title, summary, and key entities).
 
 Decide which documents genuinely provide domain knowledge that would help DOCUMENT THIS SPECIFIC TABLE — e.g. they define this table, its columns/metrics, its source system, or the business process it records. A document that merely shares a broad theme but does not concern this table's data is NOT relevant.
@@ -349,7 +406,7 @@ def create_table_overview_runner(model: str) -> InMemoryRunner:
           "Writes the enriched overview for one BigQuery table from its"
           " relevant docs."
       ),
-      model=VertexGemini(model=model),
+      model=make_model(model),
       instruction="""You are a Knowledge Catalog Enrichment Agent for Google Cloud Dataplex.
 
 You will receive:
@@ -471,7 +528,7 @@ def create_enumeration_runner(model: str) -> InMemoryRunner:
   agent = llm_agent.LlmAgent(
       name="EnumerationAgent",
       description="Produces a canonical, deduplicated, categorized entry list.",
-      model=VertexGemini(model=model),
+      model=make_model(model),
       instruction=_ENUMERATION_INSTRUCTION,
       output_schema=EnumerationResult,
   )
@@ -490,7 +547,7 @@ def create_entry_writer_runner(model: str) -> InMemoryRunner:
       description=(
           "Writes one entry's overview Markdown body from grounded context."
       ),
-      model=VertexGemini(model=model),
+      model=make_model(model),
       instruction=ENTRY_WRITER_INSTRUCTION,
   )
   return InMemoryRunner(agent=agent)
@@ -580,7 +637,7 @@ def create_glossary_runner(model: str) -> InMemoryRunner:
   agent = llm_agent.LlmAgent(
       name="GlossaryAgent",
       description="Extracts business glossary terms from context.",
-      model=VertexGemini(model=model),
+      model=make_model(model),
       instruction=_GLOSSARY_INSTRUCTION,
       output_schema=GlossaryResult,
   )
@@ -712,7 +769,7 @@ def create_refinement_dispatch_runner(model: str) -> InMemoryRunner:
       description=(
           "Classifies a free-text refinement request into a structured plan."
       ),
-      model=VertexGemini(model=model),
+      model=make_model(model),
       instruction=_REFINEMENT_DISPATCH_INSTRUCTION,
       output_schema=RefinementPlan,
   )
@@ -765,7 +822,7 @@ def create_linking_runner(model: str) -> InMemoryRunner:
   agent = llm_agent.LlmAgent(
       name="LinkingAgent",
       description="Maps table columns to glossary terms.",
-      model=VertexGemini(model=model),
+      model=make_model(model),
       instruction=_LINKING_INSTRUCTION,
       output_schema=TableLinkingResult,
   )

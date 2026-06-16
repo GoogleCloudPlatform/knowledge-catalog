@@ -196,7 +196,27 @@ _FEEDBACK_FILES = flags.DEFINE_list(
 )
 
 
+def _load_dotenv():
+  """Best-effort load of a local `.env` (python-dotenv, if installed).
+
+  Lets non-Vertex runs keep KC_MODEL_PROVIDER / OPENAI_API_BASE / OPENAI_API_KEY
+  (and the GCP vars) in a `.env` beside the agent instead of exporting them.
+  No-op if python-dotenv isn't installed or no `.env` is present. Existing
+  environment variables win (`override=False`), so explicit exports still take
+  precedence.
+  """
+  try:
+    from dotenv import load_dotenv  # pylint: disable=g-import-not-at-top
+  except ImportError:
+    return
+  here = os.path.dirname(os.path.abspath(__file__))
+  for path in (os.path.join(here, ".env"), os.path.join(os.getcwd(), ".env")):
+    if os.path.exists(path):
+      load_dotenv(path, override=False)
+
+
 def main(argv):
+  _load_dotenv()
   if len(argv) > 1:
     raise app.UsageError("Too many command-line arguments.")
   if not _PROJECT.value:
