@@ -1,5 +1,4 @@
 import * as gcp from '../../src/libts/gcp';
-import { _fixEntry, _fixEntryLink } from '../../src/libts/gcp/dataplex';
 import * as bigquery from '../../src/libts/gcp/bigquery';
 
 // Bypass actual gcloud CLI calls by using the explicit constructor
@@ -81,7 +80,9 @@ export class CatalogClientMock extends gcp.CatalogClient {
     const name = `projects/${project}/locations/${location}/entryGroups/${entryGroup}/entries/${id}`;
     const entry = this.mockEntries.find(e => e.name == name);
     if (entry) {
-      return { status: 200, result: entry };
+      const cloned = JSON.parse(JSON.stringify(entry));
+      await this.fixEntry(cloned);
+      return { status: 200, result: cloned };
     }
     return { status: 404, message: 'Not found' };
   }
@@ -89,7 +90,9 @@ export class CatalogClientMock extends gcp.CatalogClient {
   async lookupEntry(project: string, location: string, name: string, aspects?: string[]): Promise<gcp.ApiResult<gcp.Entry>> {
     const entry = this.mockEntries.find(e => e.name == name);
     if (entry) {
-      return { status: 200, result: entry };
+      const cloned = JSON.parse(JSON.stringify(entry));
+      await this.fixEntry(cloned);
+      return { status: 200, result: cloned };
     }
     return { status: 404, message: 'Not found' };
   }
@@ -113,7 +116,9 @@ export class CatalogClientMock extends gcp.CatalogClient {
           }
         }
       }
-      return { status: 200, result: existingEntry };
+      const cloned = JSON.parse(JSON.stringify(existingEntry));
+      await this.fixEntry(cloned);
+      return { status: 200, result: cloned };
     }
     return { status: 404, message: 'Not found' };
   }
@@ -121,7 +126,9 @@ export class CatalogClientMock extends gcp.CatalogClient {
   async *listEntries(project: string, location: string,
                      entryGroup: string): AsyncGenerator<gcp.Entry, void, unknown> {
     for (const entry of this.mockEntries) {
-      yield entry;
+      const cloned = JSON.parse(JSON.stringify(entry));
+      await this.fixEntry(cloned);
+      yield cloned;
     }
   }
 
@@ -144,7 +151,9 @@ export class CatalogClientMock extends gcp.CatalogClient {
           }
         }
       }
-      return { status: 200, result: existingEntry };
+      const cloned = JSON.parse(JSON.stringify(existingEntry));
+      await this.fixEntry(cloned);
+      return { status: 200, result: cloned };
     }
     return { status: 404, message: 'Not found' };
   }
@@ -163,7 +172,7 @@ export class CatalogClientMock extends gcp.CatalogClient {
     );
     const clonedLinks = JSON.parse(JSON.stringify(links));
     for (const link of clonedLinks) {
-      await _fixEntryLink(link, this.context);
+      await this.fixEntryLink(link);
     }
     return { status: 200, result: { entryLinks: clonedLinks } };
   }
@@ -204,7 +213,7 @@ export class CatalogClientMock extends gcp.CatalogClient {
     for (const link of this.mockEntryLinks) {
       if (link.name.startsWith(parent)) {
         const clonedLink = JSON.parse(JSON.stringify(link));
-        await _fixEntryLink(clonedLink, this.context);
+        await this.fixEntryLink(clonedLink);
         yield clonedLink;
       }
     }

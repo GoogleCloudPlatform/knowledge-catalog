@@ -42,7 +42,7 @@ export class CatalogSync {
         this._snapshot.manifest.source.type === 'kb';
 
       const entryLinkTypes = snapshotLinks?.map(
-        linkTypeRef => dataplex._typeRefToName(resolveEntryLinkType(linkTypeRef, this._snapshot.manifest), 'entryLink')
+        linkTypeRef => dataplex._typeRefToName(resolveEntryLinkType(linkTypeRef), 'entryLink')
       );
 
       if (isEntryGroupScope) {
@@ -168,7 +168,7 @@ export class CatalogSync {
       if (hasPublishingLinks) {
         const localLinks = await this._snapshot._fetchEntryLinks(name);
         const entryLinkTypes = publishingLinks.map(
-          linkTypeRef => dataplex._typeRefToName(resolveEntryLinkType(linkTypeRef, this._snapshot.manifest), 'entryLink')
+          linkTypeRef => dataplex._typeRefToName(resolveEntryLinkType(linkTypeRef), 'entryLink')
         );
         const linksRes = await this._catalog.lookupEntryLinks(
           project,

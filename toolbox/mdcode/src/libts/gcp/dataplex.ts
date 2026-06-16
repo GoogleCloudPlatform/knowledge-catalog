@@ -212,19 +212,39 @@ export class CatalogClient extends api.ApiClient {
     entryLinkTypes?: string[]
   ): Promise<api.ApiResult<LookupEntryLinksResponse>> {
     const container = `${catalogContainer(project, location)}:lookupEntryLinks`;
-    const params: Record<string, any> = {
-      entry: entryName,
-    };
-    if (entryLinkTypes && entryLinkTypes.length) {
-      params.entryLinkTypes = entryLinkTypes;
-    }
-    const res = await this._get<LookupEntryLinksResponse>(container, params);
-    if (res.status === 200 && res.result?.entryLinks) {
-      for (const link of res.result.entryLinks) {
-        await _fixEntryLink(link, this.context);
+    const entryLinks: EntryLink[] = [];
+    let pageToken: string | undefined = undefined;
+
+    do {
+      const params: Record<string, any> = {
+        entry: entryName,
+        pageSize: 1000,
+      };
+      if (entryLinkTypes && entryLinkTypes.length) {
+        params.entryLinkTypes = entryLinkTypes;
       }
-    }
-    return res;
+      if (pageToken) {
+        params.pageToken = pageToken;
+      }
+      const res = await this._get<LookupEntryLinksResponse>(container, params);
+      if (res.status !== 200) {
+        return res;
+      }
+      if (res.result?.entryLinks) {
+        for (const link of res.result.entryLinks) {
+          await _fixEntryLink(link, this.context);
+          entryLinks.push(link);
+        }
+      }
+      pageToken = res.result?.nextPageToken;
+    } while (pageToken);
+
+    return {
+      status: 200,
+      result: {
+        entryLinks,
+      },
+    };
   }
 
   async createEntryLink(
@@ -314,9 +334,17 @@ export class CatalogClient extends api.ApiClient {
     return res;
   }
 
+  async fixEntry(entry: Entry): Promise<void> {
+    await _fixEntry(entry, this.context);
+  }
+
+  async fixEntryLink(link: EntryLink): Promise<void> {
+    await _fixEntryLink(link, this.context);
+  }
+
 }
 
-export async function _fixEntryLink(link: EntryLink, ctx: context.ApiContext): Promise<void> {
+async function _fixEntryLink(link: EntryLink, ctx: context.ApiContext): Promise<void> {
   link.name = await crm.fixProject(link.name, ctx);
   link.entryLinkType = await crm.fixProject(link.entryLinkType, ctx);
   if (link.entryReferences) {
@@ -341,7 +369,7 @@ export async function _fixEntryLink(link: EntryLink, ctx: context.ApiContext): P
 
 // Fix all entries and aspects to consistently use project id. Its currently a mess with an
 // inconsistent mix of project ids and unusable project numbers.
-export async function _fixEntry(entry: Entry, ctx: context.ApiContext): Promise<void> {
+async function _fixEntry(entry: Entry, ctx: context.ApiContext): Promise<void> {
   entry.name = await crm.fixProject(entry.name, ctx);
   entry.entryType = await crm.fixProject(entry.entryType, ctx);
   if (entry.entrySource?.resource) {

@@ -9,7 +9,7 @@ import { describe, test, expect, mock, spyOn } from 'bun:test';
 import { fs as memfs, vol } from 'memfs';
 import * as kcmac from '../../src/libts';
 import * as gcp from '../../src/libts/gcp';
-import { _fixEntry, _fixEntryLink } from '../../src/libts/gcp/dataplex';
+
 import * as bq from '../../src/libts/gcp/bigquery';
 
 import { CatalogClientMock, BigQueryClientMock, TEST_API_CONTEXT } from './mocks';
@@ -215,11 +215,7 @@ function main() {
   spyOn(gcp.CatalogClient.prototype, 'getEntry').mockImplementation(
     async function(this: gcp.CatalogClient, project: string, location: string, entryGroup: string, entry: string) {
       if (currentCatalogMock) {
-        const res = await currentCatalogMock.getEntry(project, location, entryGroup, entry);
-        if (res.status === 200 && res.result) {
-          await _fixEntry(res.result, this.context);
-        }
-        return res;
+        return await currentCatalogMock.getEntry(project, location, entryGroup, entry);
       }
       return { status: 404, message: 'Not found' };
     }
@@ -228,11 +224,7 @@ function main() {
   spyOn(gcp.CatalogClient.prototype, 'lookupEntry').mockImplementation(
     async function(this: gcp.CatalogClient, project: string, location: string, entry: string) {
       if (currentCatalogMock) {
-        const res = await currentCatalogMock.lookupEntry(project, location, entry);
-        if (res.status === 200 && res.result) {
-          await _fixEntry(res.result, this.context);
-        }
-        return res;
+        return await currentCatalogMock.lookupEntry(project, location, entry);
       }
       return { status: 404, message: 'Not found' };
     }
@@ -241,11 +233,7 @@ function main() {
   spyOn(gcp.CatalogClient.prototype, 'modifyEntry').mockImplementation(
     async function(this: gcp.CatalogClient, project: string, location: string, entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[]) {
       if (currentCatalogMock) {
-        const res = await currentCatalogMock.modifyEntry(project, location, entry, updateMask, aspectKeys);
-        if (res.status === 200 && res.result) {
-          await _fixEntry(res.result, this.context);
-        }
-        return res;
+        return await currentCatalogMock.modifyEntry(project, location, entry, updateMask, aspectKeys);
       }
       return { status: 404, message: 'Not found' };
     }
@@ -255,7 +243,6 @@ function main() {
     async function* (this: gcp.CatalogClient, project: string, location: string, entryGroup: string) {
       if (currentCatalogMock) {
         for await (const entry of currentCatalogMock.listEntries(project, location, entryGroup)) {
-          await _fixEntry(entry, this.context);
           yield entry;
         }
       }
@@ -265,13 +252,7 @@ function main() {
   spyOn(gcp.CatalogClient.prototype, 'lookupEntryLinks').mockImplementation(
     async function(this: gcp.CatalogClient, project: string, location: string, entryName: string, entryLinkTypes?: string[]) {
       if (currentCatalogMock) {
-        const res = await currentCatalogMock.lookupEntryLinks(project, location, entryName, entryLinkTypes);
-        if (res.status === 200 && res.result?.entryLinks) {
-          for (const link of res.result.entryLinks) {
-            await _fixEntryLink(link, this.context);
-          }
-        }
-        return res;
+        return await currentCatalogMock.lookupEntryLinks(project, location, entryName, entryLinkTypes);
       }
       return { status: 200, result: { entryLinks: [] } };
     }
@@ -299,7 +280,6 @@ function main() {
     async function* (this: gcp.CatalogClient, project: string, location: string, entryGroup: string, filter?: string) {
       if (currentCatalogMock) {
         for await (const link of currentCatalogMock.listEntryLinks(project, location, entryGroup, filter)) {
-          await _fixEntryLink(link, this.context);
           yield link;
         }
       }
@@ -309,11 +289,7 @@ function main() {
   spyOn(gcp.CatalogClient.prototype, 'updateEntry').mockImplementation(
     async function(this: gcp.CatalogClient, entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[]) {
       if (currentCatalogMock) {
-        const res = await currentCatalogMock.updateEntry(entry, updateMask, aspectKeys);
-        if (res.status === 200 && res.result) {
-          await _fixEntry(res.result, this.context);
-        }
-        return res;
+        return await currentCatalogMock.updateEntry(entry, updateMask, aspectKeys);
       }
       return { status: 404, message: 'Not found' };
     }

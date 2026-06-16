@@ -425,15 +425,21 @@ async function toLocalEntry(
       if (currentRef && targetRef) {
         const targetLocalName = await toLocalTarget(targetRef.name, manifest, ctx);
 
-        const linkTypeRef = findAliasForType(dataplex._nameToTypeRef(link.entryLinkType), manifest);
+        const linkTypeRef = findAliasForType(dataplex._nameToTypeRef(link.entryLinkType));
 
         let linkId: string | undefined;
         if (targetRef.name) {
           const match = targetRef.name.match(/\/entries\/(.+)$/);
           if (match) {
             linkId = match[1];
-            if (ctx && linkId.startsWith('projects/')) {
-              linkId = await crm.fixProject(linkId, ctx);
+            if (ctx) {
+              if (linkId.startsWith('projects/')) {
+                linkId = await crm.fixProject(linkId, ctx);
+              } else if (linkId.startsWith('bigquery.googleapis.com/projects/')) {
+                const subStr = linkId.substring('bigquery.googleapis.com/'.length);
+                const fixedSub = await crm.fixProject(subStr, ctx);
+                linkId = `bigquery.googleapis.com/${fixedSub}`;
+              }
             }
           }
         }
@@ -568,9 +574,9 @@ function toServiceEntryLinks(
 
   if (entry.links) {
     for (const [linkTypeRef, entryLinks] of Object.entries(entry.links)) {
-      const resolvedLinkType = resolveEntryLinkType(linkTypeRef, manifest);
+      const resolvedLinkType = resolveEntryLinkType(linkTypeRef);
       if (manifest.publishingConfig) {
-        const resolvedPublishingLinks = manifest.publishingConfig.entryLinks?.map(l => resolveEntryLinkType(l, manifest)) ?? [];
+        const resolvedPublishingLinks = manifest.publishingConfig.entryLinks?.map(l => resolveEntryLinkType(l)) ?? [];
         if (!resolvedPublishingLinks.includes(resolvedLinkType)) {
           continue;
         }
@@ -585,13 +591,14 @@ function toServiceEntryLinks(
       const entryLinkType = dataplex._typeRefToName(fullLinkTypeRef, 'entryLink');
       for (const link of entryLinks) {
         let targetName = '';
-        const isGlossaryLink = entryLinkType.endsWith('/entryLinkTypes/definition') ||
-                               entryLinkType.endsWith('/entryLinkTypes/synonym') ||
-                               entryLinkType.endsWith('/entryLinkTypes/related');
-        if (isGlossaryLink && link.id && link.id.includes('/')) {
+        if (link.id && link.id.includes('/')) {
           const match = serviceName.match(/^(projects\/[^/]+\/locations\/[^/]+)/);
           if (match) {
-            targetName = `${match[1]}/entryGroups/@dataplex/entries/${link.id}`;
+            let entryGroup = '@dataplex';
+            if (link.id.startsWith('bigquery.googleapis.com/')) {
+              entryGroup = '@bigquery';
+            }
+            targetName = `${match[1]}/entryGroups/${entryGroup}/entries/${link.id}`;
           }
         }
         if (!targetName) {
@@ -640,9 +647,9 @@ function toServiceEntryLinks(
     for (const field of schemaAspect.fields) {
       if (field.links) {
         for (const [linkTypeRef, entryLinks] of Object.entries(field.links as Record<string, md.EntryLink[]>)) {
-          const resolvedLinkType = resolveEntryLinkType(linkTypeRef, manifest);
+          const resolvedLinkType = resolveEntryLinkType(linkTypeRef);
           if (manifest.publishingConfig) {
-            const resolvedPublishingLinks = manifest.publishingConfig.entryLinks?.map(l => resolveEntryLinkType(l, manifest)) ?? [];
+            const resolvedPublishingLinks = manifest.publishingConfig.entryLinks?.map(l => resolveEntryLinkType(l)) ?? [];
             if (!resolvedPublishingLinks.includes(resolvedLinkType)) {
               continue;
             }
@@ -657,13 +664,14 @@ function toServiceEntryLinks(
           const entryLinkType = dataplex._typeRefToName(fullLinkTypeRef, 'entryLink');
           for (const link of entryLinks) {
             let targetName = '';
-            const isGlossaryLink = entryLinkType.endsWith('/entryLinkTypes/definition') ||
-                                   entryLinkType.endsWith('/entryLinkTypes/synonym') ||
-                                   entryLinkType.endsWith('/entryLinkTypes/related');
-            if (isGlossaryLink && link.id && link.id.includes('/')) {
+            if (link.id && link.id.includes('/')) {
               const match = serviceName.match(/^(projects\/[^/]+\/locations\/[^/]+)/);
               if (match) {
-                targetName = `${match[1]}/entryGroups/@dataplex/entries/${link.id}`;
+                let entryGroup = '@dataplex';
+                if (link.id.startsWith('bigquery.googleapis.com/')) {
+                  entryGroup = '@bigquery';
+                }
+                targetName = `${match[1]}/entryGroups/${entryGroup}/entries/${link.id}`;
               }
             }
             if (!targetName) {
