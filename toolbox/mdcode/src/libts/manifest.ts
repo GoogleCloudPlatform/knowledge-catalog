@@ -21,14 +21,7 @@ export function resolveEntryLinkType(
 export function findAliasForType(
   typeRef: string
 ): string {
-  let cleanRef = typeRef.replace(/^655216118709\./, 'dataplex-types.');
-  if (cleanRef.startsWith('dataplex-types.global.')) {
-    return cleanRef.substring('dataplex-types.global.'.length);
-  }
-  if (cleanRef.startsWith('dataplex-types.')) {
-    return cleanRef.substring('dataplex-types.'.length);
-  }
-  return cleanRef;
+  return typeRef.replace(/^655216118709\./, 'dataplex-types.');
 }
 
 export function findAspectAliasForType(

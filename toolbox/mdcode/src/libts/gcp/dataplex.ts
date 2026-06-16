@@ -255,7 +255,24 @@ export class CatalogClient extends api.ApiClient {
   ): Promise<api.ApiResult<EntryLink>> {
     const parent = catalogContainer(project, location, entryGroup);
     const container = `${parent}/entryLinks`;
-    return await this._post<EntryLink>(container, entryLink);
+
+    const sortedRefs = [...entryLink.entryReferences].sort((a, b) => a.name.localeCompare(b.name));
+    const source = sortedRefs[0]?.name || '';
+    const target = sortedRefs[1]?.name || '';
+    const type = entryLink.entryLinkType.split('/').pop() || '';
+    const sourcePath = sortedRefs[0]?.path || '';
+    const targetPath = sortedRefs[1]?.path || '';
+
+    const hashInput = `${source}|${target}|${type}|${sourcePath}|${targetPath}`;
+    let hash = 0;
+    for (let i = 0; i < hashInput.length; i++) {
+      hash = (hash << 5) - hash + hashInput.charCodeAt(i);
+      hash |= 0;
+    }
+    const entryLinkId = `link-${Math.abs(hash).toString(36)}`;
+    const params = { entryLinkId };
+
+    return await this._post<EntryLink>(container, entryLink, params);
   }
 
   async deleteEntryLink(

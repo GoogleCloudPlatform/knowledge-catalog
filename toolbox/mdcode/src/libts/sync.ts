@@ -5,6 +5,28 @@ import * as gcp from './gcp';
 import * as dataplex from './gcp/dataplex';
 import { CatalogSnapshot } from './snapshot';
 import { resolveEntryLinkType } from './manifest';
+import * as crm from './gcp/crm';
+
+function normalizeToProjectNumberSync(name: string): string {
+  const match = name.match(/^projects\/([^/]+)\//);
+  if (match) {
+    const num = crm.tryGetProjectNumber(match[1]);
+    if (num) {
+      return name.replace(/^projects\/[^/]+\//, `projects/${num}/`);
+    }
+  }
+  return name;
+}
+
+function getTargetEntryGroup(entryName: string): string {
+  const match = entryName.match(
+    /projects\/([^/]+)\/locations\/([^/]+)\/entryGroups\/([^/]+)/
+  );
+  if (!match) {
+    throw new Error(`Invalid entry name: ${entryName}`);
+  }
+  return match[3];
+}
 
 export interface SyncResult {
   success: boolean;
@@ -113,6 +135,15 @@ export class CatalogSync {
   async push(options?: { force?: boolean, validateOnly?: boolean; }): Promise<SyncResult> {
     const entries = await this._snapshot.listEntries();
 
+    const allLocalLinks: dataplex.EntryLink[] = [];
+    for (const name of entries) {
+      const entry = await this._snapshot._fetchEntry(name);
+      if (entry) {
+        const entryLocalLinks = await this._snapshot._fetchEntryLinks(name);
+        allLocalLinks.push(...entryLocalLinks);
+      }
+    }
+
     for (const name of entries) {
       const entry = await this._snapshot._fetchEntry(name);
       if (!entry) {
@@ -181,91 +212,139 @@ export class CatalogSync {
             ? linksRes.result.entryLinks
             : [];
 
-        const entryGroupMatch = entry.name.match(
-          /projects\/([^/]+)\/locations\/([^/]+)\/entryGroups\/([^/]+)/
-        );
-        if (entryGroupMatch) {
-          const entryGroup = entryGroupMatch[3];
+        const targetEntryGroup = getTargetEntryGroup(entry.name);
 
-          for (const remoteLink of remoteLinks) {
-            const remCurrent = remoteLink.entryReferences.find(r => r.name === entry.name) || remoteLink.entryReferences[0];
-            const remOther = remoteLink.entryReferences.find(r => r !== remCurrent) || remoteLink.entryReferences[1];
+        for (const remoteLink of remoteLinks) {
+          const remCurrent = remoteLink.entryReferences.find(r => r.name === entry.name) || remoteLink.entryReferences[0];
+          const remOther = remoteLink.entryReferences.find(r => r !== remCurrent) || remoteLink.entryReferences[1];
 
-            if (remCurrent && remOther) {
-              const foundLocal = localLinks.find(loc => {
-                const locCurrent = loc.entryReferences.find(r => r.name === entry.name) || loc.entryReferences[0];
-                const locOther = loc.entryReferences.find(r => r !== locCurrent) || loc.entryReferences[1];
-                return (
-                  loc.entryLinkType === remoteLink.entryLinkType &&
-                  locOther?.name === remOther.name &&
-                  locCurrent?.path === remCurrent.path &&
-                  locOther?.path === remOther.path
-                );
-              });
+          if (remCurrent && remOther) {
+            const foundLocal = allLocalLinks.find(loc => {
+              const locCurrent = loc.entryReferences[0];
+              const locOther = loc.entryReferences[1];
 
-              if (!foundLocal) {
-                const parts = remoteLink.name.split('/');
-                const linkName = parts[parts.length - 1];
-                await this._catalog.deleteEntryLink(
-                  project,
-                  location,
-                  entryGroup,
-                  linkName
-                );
-              }
-            }
-          }
+              const remCurrentNormName = normalizeToProjectNumberSync(remCurrent.name);
+              const remOtherNormName = normalizeToProjectNumberSync(remOther.name);
+              const locCurrentNormName = normalizeToProjectNumberSync(locCurrent.name);
+              const locOtherNormName = normalizeToProjectNumberSync(locOther.name);
 
-          for (const localLink of localLinks) {
-            const locCurrent = localLink.entryReferences.find(r => r.name === entry.name) || localLink.entryReferences[0];
-            const locOther = localLink.entryReferences.find(r => r !== locCurrent) || localLink.entryReferences[1];
+              const remNames = [remCurrentNormName, remOtherNormName].sort();
+              const locNames = [locCurrentNormName, locOtherNormName].sort();
 
-            const foundRemote = remoteLinks.find(rem => {
-              const remCurrent = rem.entryReferences.find(r => r.name === entry.name) || rem.entryReferences[0];
-              const remOther = rem.entryReferences.find(r => r !== remCurrent) || rem.entryReferences[1];
+              const pathMatched = 
+                (locCurrentNormName === remCurrentNormName && locCurrent.path === remCurrent.path && locOther.path === remOther.path) ||
+                (locCurrentNormName === remOtherNormName && locCurrent.path === remOther.path && locOther.path === remCurrent.path);
+
+              const locType = normalizeToProjectNumberSync(loc.entryLinkType);
+              const remType = normalizeToProjectNumberSync(remoteLink.entryLinkType);
+
               return (
-                rem.entryLinkType === localLink.entryLinkType &&
-                remOther?.name === locOther?.name &&
-                remCurrent?.path === locCurrent?.path &&
-                remOther?.path === locOther?.path
+                locType === remType &&
+                locNames[0] === remNames[0] &&
+                locNames[1] === remNames[1] &&
+                pathMatched
               );
             });
 
-            if (!foundRemote) {
-              await this._catalog.createEntryLink(
+            if (!foundLocal) {
+              const parts = remoteLink.name.split('/');
+              const linkName = parts[parts.length - 1];
+              const remMatch = remoteLink.name.match(/\/entryGroups\/([^/]+)\/entryLinks\//);
+              const remoteEntryGroup = remMatch ? remMatch[1] : targetEntryGroup;
+              const delRes = await this._catalog.deleteEntryLink(
                 project,
                 location,
-                entryGroup,
+                remoteEntryGroup,
+                linkName
+              );
+              if (delRes.status !== 200) {
+                return { success: false, details: `Failed to delete remote entry link ${remoteLink.name}: ${delRes.message || delRes.status}` };
+              }
+            }
+          }
+        }
+
+        for (const localLink of localLinks) {
+          const foundRemote = remoteLinks.find(rem => {
+            const remCurrent = rem.entryReferences.find(r => r.name === entry.name) || rem.entryReferences[0];
+            const remOther = rem.entryReferences.find(r => r !== remCurrent) || rem.entryReferences[1];
+
+            const locCurrent = localLink.entryReferences[0];
+            const locOther = localLink.entryReferences[1];
+
+            const remCurrentNormName = normalizeToProjectNumberSync(remCurrent.name);
+            const remOtherNormName = normalizeToProjectNumberSync(remOther.name);
+            const locCurrentNormName = normalizeToProjectNumberSync(locCurrent.name);
+            const locOtherNormName = normalizeToProjectNumberSync(locOther.name);
+
+            const remNames = [remCurrentNormName, remOtherNormName].sort();
+            const locNames = [locCurrentNormName, locOtherNormName].sort();
+
+            const pathMatched = 
+              (locCurrentNormName === remCurrentNormName && locCurrent.path === remCurrent.path && locOther.path === remOther.path) ||
+              (locCurrentNormName === remOtherNormName && locCurrent.path === remOther.path && locOther.path === remCurrent.path);
+
+            const locType = normalizeToProjectNumberSync(localLink.entryLinkType);
+            const remType = normalizeToProjectNumberSync(rem.entryLinkType);
+
+            return (
+              locType === remType &&
+              locNames[0] === remNames[0] &&
+              locNames[1] === remNames[1] &&
+              pathMatched
+            );
+          });
+
+          if (!foundRemote) {
+            const createRes = await this._catalog.createEntryLink(
+              project,
+              location,
+              targetEntryGroup,
+              localLink
+            );
+            if (createRes.status !== 200) {
+              return { success: false, details: `Failed to create entry link: ${createRes.message || createRes.status}` };
+            }
+          } else {
+            const localAspectsData = Object.fromEntries(
+              Object.entries(localLink.aspects || {}).map(([k, v]) => [
+                normalizeToProjectNumberSync(k),
+                v.data,
+              ])
+            );
+
+            const remoteAspectsData = Object.fromEntries(
+              Object.entries(foundRemote.aspects || {}).map(([k, v]) => [
+                normalizeToProjectNumberSync(k),
+                v.data,
+              ])
+            );
+
+            const localAspectsJson = JSON.stringify(localAspectsData);
+            const remoteAspectsJson = JSON.stringify(remoteAspectsData);
+
+            if (localAspectsJson !== remoteAspectsJson) {
+              const parts = foundRemote.name.split('/');
+              const linkName = parts[parts.length - 1];
+              const remMatch = foundRemote.name.match(/\/entryGroups\/([^/]+)\/entryLinks\//);
+              const remoteEntryGroup = remMatch ? remMatch[1] : targetEntryGroup;
+              const delRes = await this._catalog.deleteEntryLink(
+                project,
+                location,
+                remoteEntryGroup,
+                linkName
+              );
+              if (delRes.status !== 200) {
+                return { success: false, details: `Failed to delete remote entry link ${foundRemote.name}: ${delRes.message || delRes.status}` };
+              }
+              const createRes = await this._catalog.createEntryLink(
+                project,
+                location,
+                targetEntryGroup,
                 localLink
               );
-            } else {
-              const localAspectsJson = JSON.stringify(localLink.aspects || {});
-              const remoteAspectsJson = JSON.stringify(
-                foundRemote.aspects
-                  ? Object.fromEntries(
-                      Object.entries(foundRemote.aspects).map(([k, v]) => [
-                        k,
-                        v.data,
-                      ])
-                    )
-                  : {}
-              );
-
-              if (localAspectsJson !== remoteAspectsJson) {
-                const parts = foundRemote.name.split('/');
-                const linkName = parts[parts.length - 1];
-                await this._catalog.deleteEntryLink(
-                  project,
-                  location,
-                  entryGroup,
-                  linkName
-                );
-                await this._catalog.createEntryLink(
-                  project,
-                  location,
-                  entryGroup,
-                  localLink
-                );
+              if (createRes.status !== 200) {
+                return { success: false, details: `Failed to recreate entry link: ${createRes.message || createRes.status}` };
               }
             }
           }

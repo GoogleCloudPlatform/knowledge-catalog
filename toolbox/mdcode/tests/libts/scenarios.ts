@@ -11,6 +11,7 @@ import * as kcmac from '../../src/libts';
 import * as gcp from '../../src/libts/gcp';
 
 import * as bq from '../../src/libts/gcp/bigquery';
+import { ResourceManagerClient } from '../../src/libts/gcp/crm';
 
 import { CatalogClientMock, BigQueryClientMock, TEST_API_CONTEXT } from './mocks';
 
@@ -320,6 +321,24 @@ function main() {
           yield table;
         }
       }
+    }
+  );
+
+  spyOn(ResourceManagerClient.prototype, 'getProject').mockImplementation(
+    async function(project: string) {
+      const db: Record<string, { name: string; projectId: string }> = {
+        'test-project': { name: 'projects/123456789', projectId: 'test-project' },
+        '123456789': { name: 'projects/123456789', projectId: 'test-project' },
+        'dc-cuj-staging-playground': { name: 'projects/313634309590', projectId: 'dc-cuj-staging-playground' },
+        '313634309590': { name: 'projects/313634309590', projectId: 'dc-cuj-staging-playground' },
+        'dataplex-types': { name: 'projects/655216118709', projectId: 'dataplex-types' },
+        '655216118709': { name: 'projects/655216118709', projectId: 'dataplex-types' },
+      };
+      const match = db[project];
+      if (match) {
+        return { status: 200, result: match };
+      }
+      return { status: 404, message: 'Project not found' };
     }
   );
 

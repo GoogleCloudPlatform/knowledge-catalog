@@ -200,12 +200,27 @@ export class CatalogSnapshot {
     }
 
     const serviceName = this.manifest.source.serviceName(name);
+    let serviceNameWithNumber = serviceName;
+    const projMatch = serviceName.match(/^projects\/([^/]+)\//);
+    if (projMatch) {
+      const projectNumber = await crm.toProjectNumber(projMatch[1], this._ctx);
+      serviceNameWithNumber = serviceName.replace(/^projects\/[^/]+\//, `projects/${projectNumber}/`);
+    }
+
     if (entry.resource?.parent && !entry.resource.parent.startsWith('projects/')) {
       entry.resource.parent = this.manifest.source.serviceName(entry.resource.parent);
     }
+    if (entry.resource?.parent && entry.resource.parent.startsWith('projects/')) {
+      const parentProjMatch = entry.resource.parent.match(/^projects\/([^/]+)\//);
+      if (parentProjMatch) {
+        const parentProjNumber = await crm.toProjectNumber(parentProjMatch[1], this._ctx);
+        entry.resource.parent = entry.resource.parent.replace(/^projects\/[^/]+\//, `projects/${parentProjNumber}/`);
+      }
+    }
+
     return toServiceEntry(
       entry,
-      serviceName,
+      serviceNameWithNumber,
       this.manifest,
       this._entryTypes,
       this._aspectTypes
@@ -215,7 +230,7 @@ export class CatalogSnapshot {
   async _fetchEntryLinks(name: string): Promise<dataplex.EntryLink[]> {
     const entry = await this._layout.loadEntry(name);
     const serviceName = this.manifest.source.serviceName(name);
-    return toServiceEntryLinks(entry, serviceName, this.manifest);
+    return await toServiceEntryLinks(entry, serviceName, this.manifest, this._ctx);
   }
 }
 
@@ -565,12 +580,20 @@ function toServiceEntry(entry: md.Entry,
   };
 }
 
-function toServiceEntryLinks(
+async function toServiceEntryLinks(
   entry: md.Entry,
   serviceName: string,
-  manifest: CatalogManifest
-): dataplex.EntryLink[] {
+  manifest: CatalogManifest,
+  ctx: gcp.ApiContext
+): Promise<dataplex.EntryLink[]> {
   const links: dataplex.EntryLink[] = [];
+
+  let serviceNameWithNumber = serviceName;
+  const projMatch = serviceName.match(/^projects\/([^/]+)\//);
+  if (projMatch) {
+    const projectNumber = await crm.toProjectNumber(projMatch[1], ctx);
+    serviceNameWithNumber = serviceName.replace(/^projects\/[^/]+\//, `projects/${projectNumber}/`);
+  }
 
   if (entry.links) {
     for (const [linkTypeRef, entryLinks] of Object.entries(entry.links)) {
@@ -592,17 +615,33 @@ function toServiceEntryLinks(
       for (const link of entryLinks) {
         let targetName = '';
         if (link.id && link.id.includes('/')) {
-          const match = serviceName.match(/^(projects\/[^/]+\/locations\/[^/]+)/);
-          if (match) {
-            let entryGroup = '@dataplex';
-            if (link.id.startsWith('bigquery.googleapis.com/')) {
-              entryGroup = '@bigquery';
+          let linkId = link.id;
+          linkId = await crm.toProjectNumber(linkId, ctx);
+          const glossaryMatch = linkId.match(/^projects\/([^/]+)\/locations\/([^/]+)\/glossaries\//);
+          if (glossaryMatch) {
+            const targetProj = glossaryMatch[1];
+            linkId = linkId.replace(/\/locations\/[^/]+\/glossaries\//, '/locations/global/glossaries/');
+            targetName = `projects/${targetProj}/locations/global/entryGroups/@dataplex/entries/${linkId}`;
+          } else {
+            const match = serviceName.match(/^(projects\/[^/]+\/locations\/[^/]+)/);
+            if (match) {
+              let entryGroup = '@dataplex';
+              if (linkId.startsWith('bigquery.googleapis.com/')) {
+                entryGroup = '@bigquery';
+              }
+              targetName = `${match[1]}/entryGroups/${entryGroup}/entries/${linkId}`;
             }
-            targetName = `${match[1]}/entryGroups/${entryGroup}/entries/${link.id}`;
           }
         }
         if (!targetName) {
           targetName = fromLocalTarget(link.target, entryLinkType, serviceName, manifest);
+        }
+
+        let targetNameWithNumber = targetName;
+        const targetProjMatch = targetName.match(/^projects\/([^/]+)\//);
+        if (targetProjMatch) {
+          const targetProjNumber = await crm.toProjectNumber(targetProjMatch[1], ctx);
+          targetNameWithNumber = targetName.replace(/^projects\/[^/]+\//, `projects/${targetProjNumber}/`);
         }
 
         let linkName = '';
@@ -623,18 +662,20 @@ function toServiceEntryLinks(
             qualifiedAspectType.replace(/^dataplex-types\./, '655216118709.'),
             'aspect'
           );
-          linkAspects[aspectTypeName] = {
+          const aspectKey = dataplex._nameToTypeRef(aspectTypeName);
+          linkAspects[aspectKey] = {
             aspectType: aspectTypeName,
             data: v
           };
         }
 
+        const isUndirected = entryLinkType.endsWith('/entryLinkTypes/schema-join');
         links.push({
           name: linkName,
           entryLinkType,
           entryReferences: [
-            { name: serviceName, type: 'SOURCE' },
-            { name: targetName, type: 'TARGET' },
+            { name: serviceNameWithNumber, type: isUndirected ? 'UNSPECIFIED' : 'SOURCE' },
+            { name: targetNameWithNumber, type: isUndirected ? 'UNSPECIFIED' : 'TARGET' },
           ],
           aspects: Object.keys(linkAspects).length ? linkAspects : undefined,
         });
@@ -665,17 +706,33 @@ function toServiceEntryLinks(
           for (const link of entryLinks) {
             let targetName = '';
             if (link.id && link.id.includes('/')) {
-              const match = serviceName.match(/^(projects\/[^/]+\/locations\/[^/]+)/);
-              if (match) {
-                let entryGroup = '@dataplex';
-                if (link.id.startsWith('bigquery.googleapis.com/')) {
-                  entryGroup = '@bigquery';
+              let linkId = link.id;
+              linkId = await crm.toProjectNumber(linkId, ctx);
+              const glossaryMatch = linkId.match(/^projects\/([^/]+)\/locations\/([^/]+)\/glossaries\//);
+              if (glossaryMatch) {
+                const targetProj = glossaryMatch[1];
+                linkId = linkId.replace(/\/locations\/[^/]+\/glossaries\//, '/locations/global/glossaries/');
+                targetName = `projects/${targetProj}/locations/global/entryGroups/@dataplex/entries/${linkId}`;
+              } else {
+                const match = serviceName.match(/^(projects\/[^/]+\/locations\/[^/]+)/);
+                if (match) {
+                  let entryGroup = '@dataplex';
+                  if (linkId.startsWith('bigquery.googleapis.com/')) {
+                    entryGroup = '@bigquery';
+                  }
+                  targetName = `${match[1]}/entryGroups/${entryGroup}/entries/${linkId}`;
                 }
-                targetName = `${match[1]}/entryGroups/${entryGroup}/entries/${link.id}`;
               }
             }
             if (!targetName) {
               targetName = fromLocalTarget(link.target, entryLinkType, serviceName, manifest);
+            }
+
+            let targetNameWithNumber = targetName;
+            const targetProjMatch = targetName.match(/^projects\/([^/]+)\//);
+            if (targetProjMatch) {
+              const targetProjNumber = await crm.toProjectNumber(targetProjMatch[1], ctx);
+              targetNameWithNumber = targetName.replace(/^projects\/[^/]+\//, `projects/${targetProjNumber}/`);
             }
 
             let linkName = '';
@@ -696,18 +753,20 @@ function toServiceEntryLinks(
                 qualifiedAspectType.replace(/^dataplex-types\./, '655216118709.'),
                 'aspect'
               );
-              linkAspects[aspectTypeName] = {
+              const aspectKey = dataplex._nameToTypeRef(aspectTypeName);
+              linkAspects[aspectKey] = {
                 aspectType: aspectTypeName,
                 data: v
               };
             }
 
+            const isUndirected = entryLinkType.endsWith('/entryLinkTypes/schema-join');
             links.push({
               name: linkName,
               entryLinkType,
               entryReferences: [
-                { name: serviceName, type: 'SOURCE', path: `schema.${field.name}` },
-                { name: targetName, type: 'TARGET' },
+                { name: serviceNameWithNumber, type: isUndirected ? 'UNSPECIFIED' : 'SOURCE', path: `schema.${field.name}` },
+                { name: targetNameWithNumber, type: isUndirected ? 'UNSPECIFIED' : 'TARGET' },
               ],
               aspects: Object.keys(linkAspects).length ? linkAspects : undefined,
             });
