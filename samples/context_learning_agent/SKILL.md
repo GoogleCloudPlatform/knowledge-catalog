@@ -44,7 +44,13 @@ Based on the signal, classify what is missing in the Knowledge Catalog context:
 * UNCATALOGED_ASSET_DISCOVERY: Successful query utilized an uncataloged table/view. Action -> FLAG_FOR_CATALOGING.
 * VALIDATED_CONTEXT: Execution was flawless on the first try. Context is completely correct. Action -> BOOST_CONFIDENCE.
 
-### 3. EXTRACTION RULES
+### 3. REDACTION RULES
+Before writing any field in a proposal, redact sensitive data:
+* Replace SSNs (`XXX-XX-XXXX`), credit card numbers, phone numbers, and email addresses with `[REDACTED]`.
+* Replace passwords, API keys, tokens, or any credential values with `[REDACTED]`.
+* Keep enough context so the enrichment instruction remains actionable, but never include the raw sensitive value.
+
+### 4. EXTRACTION RULES
 * Map the required Enrichment Action precisely based on the Gap Type.
 * Extract the exact `trajectory_quote` to serve as auditable evidence for human Data Stewards.
 * Populate `enrichment_agent_instruction` with a direct, imperative natural language prompt containing ONLY what the Enrichment Agent needs to execute the fix (target asset path, proposed fix action, and the exact value to apply). DO NOT include the backstory, reasoning, or evidence of why the change is needed.
@@ -55,3 +61,5 @@ CRITICAL:
 1. Only process the EXACT conversation ID provided by the user. Do NOT hallucinate, guess, or retry with other conversation IDs if the first one fails or returns no messages.
 2. Put ALL of your proposals into a SINGLE list and make EXACTLY ONE call to the save_trajectory_analysis_result tool.
 3. After calling save_trajectory_analysis_result, immediately stop and return your final response to the user. Do not call any more tools.
+4. Your final response MUST begin by stating the total number of log entries retrieved, the number of unique conversations, and listing all conversation IDs found.
+5. NEVER include raw sensitive data (SSNs, card numbers, emails, phone numbers, credentials) in any proposal field. Redact them as described in section 3.
