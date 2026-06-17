@@ -183,7 +183,13 @@ export class CatalogClientMock extends gcp.CatalogClient {
     entryGroup: string,
     entryLink: gcp.EntryLink
   ): Promise<gcp.ApiResult<gcp.EntryLink>> {
-    const createdLink = { ...entryLink, name: `${gcp.catalogContainer(project, location, entryGroup)}/entryLinks/link-${Date.now()}` };
+    let name = entryLink.name;
+    if (!name) {
+      const sortedRefs = [...entryLink.entryReferences].sort((a, b) => a.name.localeCompare(b.name));
+      const refKeys = sortedRefs.map(r => r.name.split('/').pop()).join('-to-');
+      name = `${gcp.catalogContainer(project, location, entryGroup)}/entryLinks/link-mock-${refKeys}`;
+    }
+    const createdLink = { ...entryLink, name };
     this.mockEntryLinks.push(createdLink);
     return { status: 200, result: createdLink };
   }

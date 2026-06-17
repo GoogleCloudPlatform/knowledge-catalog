@@ -197,22 +197,22 @@ export class CatalogSync {
       const hasPublishingLinks = publishingLinks && publishingLinks.length > 0;
 
       if (hasPublishingLinks) {
-        const localLinks = await this._snapshot._fetchEntryLinks(name);
-        const entryLinkTypes = publishingLinks.map(
-          linkTypeRef => dataplex._typeRefToName(resolveEntryLinkType(linkTypeRef), 'entryLink')
-        );
-        const linksRes = await this._catalog.lookupEntryLinks(
-          project,
-          location,
-          entry.name,
-          entryLinkTypes
-        );
-        const remoteLinks =
-          linksRes.status === 200 && linksRes.result?.entryLinks
-            ? linksRes.result.entryLinks
-            : [];
+         const localLinks = await this._snapshot._fetchEntryLinks(name);
+         const entryLinkTypes = publishingLinks.map(
+           linkTypeRef => dataplex._typeRefToName(resolveEntryLinkType(linkTypeRef), 'entryLink')
+         );
+         const linksRes = await this._catalog.lookupEntryLinks(
+           project,
+           location,
+           entry.name,
+           entryLinkTypes
+         );
+         const remoteLinks =
+           linksRes.status === 200 && linksRes.result?.entryLinks
+             ? linksRes.result.entryLinks
+             : [];
 
-        const targetEntryGroup = getTargetEntryGroup(entry.name);
+         const targetEntryGroup = getTargetEntryGroup(entry.name);
 
         for (const remoteLink of remoteLinks) {
           const remCurrent = remoteLink.entryReferences.find(r => r.name === entry.name) || remoteLink.entryReferences[0];

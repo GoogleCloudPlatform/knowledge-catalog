@@ -102,12 +102,16 @@ function runScenario(scenario: any) {
       for (const actionStep of actions) {
         const { action, ...params } = actionStep;
         switch (action) {
-          case 'pull':
-            await sync.pull();
+          case 'pull': {
+            const res = await sync.pull();
+            expect(res.success).toBe(true);
             break;
-          case 'push':
-            await sync.push(params.options);
+          }
+          case 'push': {
+            const res = await sync.push(params.options);
+            expect(res.success).toBe(true);
             break;
+          }
           case 'listEntries':
             console.log(await snapshot.listEntries());
             break;
@@ -151,6 +155,9 @@ function runScenario(scenario: any) {
       // Assert expectations - Catalog Service
       if (scenario.assert?.catalog?.entries) {
         expect(JSON.parse(JSON.stringify(catalog.mockEntries))).toEqual(JSON.parse(JSON.stringify(scenario.assert.catalog.entries)));
+      }
+      if (scenario.assert?.catalog?.entryLinks) {
+        expect(JSON.parse(JSON.stringify(catalog.mockEntryLinks))).toEqual(JSON.parse(JSON.stringify(scenario.assert.catalog.entryLinks)));
       }
     });
   });
