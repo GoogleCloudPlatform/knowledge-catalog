@@ -22,6 +22,35 @@ The **Context Learning Agent** is an enterprise Agentic AI assistant built on th
 - **Trajectory Analysis**: Uses Cloud Logging to fetch recent conversational trajectories.
 - **LLM-as-a-judge**: Evaluates conversational turns to extract detection signals, gaps, and generate `ContextEnrichmentProposal` records.
 
+## Running Locally
+
+```bash
+export GOOGLE_CLOUD_PROJECT="your-project-id"
+export GOOGLE_CLOUD_LOCATION="us-central1"
+export GOOGLE_GENAI_USE_VERTEXAI=True
+
+# From the context_learning_agent directory
+adk run .
+```
+
+Example prompt:
+```
+generate learnings for projects/<project-number>/locations/us-central1/reasoningEngines/<engine-id> in the past 7 days
+```
+
+The agent will print the number of log entries retrieved, the unique conversation IDs found, and save enrichment proposals to `proposal.json`.
+
+> **Note on Observability**: The agent retrieves conversations from Cloud Logging using OpenTelemetry trace logs (`gen_ai.client.inference.operation.details`). These logs are only emitted for sessions that ran while **Observability was enabled** on the Reasoning Engine. Sessions started before Observability was activated will not appear.
+
+## Running Tests
+
+```bash
+export GOOGLE_CLOUD_PROJECT=test-project
+
+# From the samples/ directory
+/path/to/venv/bin/python3 -m pytest context_learning_agent/tests/ -v
+```
+
 ## Deployment Instructions
 
 The agent can be managed and deployed on Vertex AI Agent Engine (Reasoning Engines) using the `deploy.py` script. The script uses environment variables for configuration.
