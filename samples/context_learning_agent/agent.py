@@ -171,7 +171,7 @@ def get_agent_trajectories(
             if end_time:
                 filter_str += f' AND timestamp<="{end_time}"'
             
-            entries = list(client.list_entries(filter_=filter_str, order_by=cloud_logging.DESCENDING, max_results=200))
+            entries = list(client.list_entries(filter_=filter_str, order_by=cloud_logging.DESCENDING))
             
             if not entries:
                 output.append("No messages found for this Reasoning Engine in the specified time range.")
@@ -184,7 +184,10 @@ def get_agent_trajectories(
                 c_id = labels.get("gen_ai.conversation.id")
                 if c_id and c_id not in conv_entries:
                     conv_entries[c_id] = entry
-                    
+
+            output.append(f"Total log entries retrieved: {len(entries)}. Unique conversations: {len(conv_entries)}.")
+            output.append(f"Conversation IDs: {', '.join(conv_entries.keys())}")
+
             for c_id, entry in conv_entries.items():
                 output.append(f"\n--- Conversation: {c_id} ---")
                 repr_dict = entry.to_api_repr()
@@ -278,14 +281,84 @@ class TrajectoryAnalysisResult(BaseModel):
         description="A list of proposed enrichments found in the trajectory. Return an empty list [] if no gap or signal is detected."
     )
 
-def save_trajectory_analysis_result(result: TrajectoryAnalysisResult) -> str:
+def _redact_sensitive(text: str) -> str:
+    """Redacts common PII/sensitive patterns from a string."""
+    import re
+    patterns = [
+        (r'\b\d{3}-\d{2}-\d{4}\b', '[SSN REDACTED]'),
+        (r'\b(?:\d[ -]?){13,16}\b', '[CARD REDACTED]'),
+        (r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}', '[EMAIL REDACTED]'),
+        (r'\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b', '[PHONE REDACTED]'),
+        (r'\b(?:password|passwd|secret|api[_-]?key|token|bearer|credential)[\s:=]+\S+', '[CREDENTIAL REDACTED]', re.IGNORECASE),
+    ]
+    for pattern, replacement, *flags in patterns:
+        flag = flags[0] if flags else 0
+        text = re.sub(pattern, replacement, text, flags=flag)
+    return text
+
+
+def _redact_obj(obj):
+    """Recursively redacts sensitive values in a parsed JSON object."""
+    if isinstance(obj, str):
+        return _redact_sensitive(obj)
+    if isinstance(obj, dict):
+        return {k: _redact_obj(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_redact_obj(v) for v in obj]
+    return obj
+
+
+def save_trajectory_analysis_result(result_json: str) -> str:
     """
     Saves the final trajectory analysis result to a local file.
     Must be called to conclude the analysis.
+
+    Args:
+        result_json: JSON string with the following structure:
+            {
+              "proposals": [
+                {
+                  "classification": {
+                    "detection_signal": "<DIRECT_USER_CORRECTION|IMPLICIT_USER_FRICTION|AGENT_SELF_REFLECTION|USER_SATISFACTION>",
+                    "gap_type": "<LEXICAL_SYNONYM_GAP|BUSINESS_LOGIC_GAP|STRUCTURAL_ROUTING_GAP|UNCATALOGED_ASSET_DISCOVERY|VALIDATED_CONTEXT>"
+                  },
+                  "target_asset": {
+                    "type": "<TABLE|COLUMN|GLOSSARY_TERM|UNCATALOGED_ASSET>",
+                    "name": "<asset path, e.g. dataset.table.column>"
+                  },
+                  "current_context_flaw": "<string or null>",
+                  "proposed_enrichment": {
+                    "action": "<UPDATE_OVERVIEW_ASPECT|FLAG_FOR_CATALOGING|BOOST_CONFIDENCE>",
+                    "value": "<the exact synonym, formula, or description to apply>"
+                  },
+                  "evidence": {
+                    "reasoning": "<how the detection_signal proves the gap_type>",
+                    "trajectory_quote": "<exact quote from the trajectory>"
+                  },
+                  "confidence_grade": <0.0 to 1.0>,
+                  "eval_candidate": {
+                    "is_valid_candidate": <true|false>,
+                    "user_query_intent": "<natural language question or null>",
+                    "golden_sql": "<successful SQL or null>"
+                  },
+                  "enrichment_agent_instruction": "<direct imperative instruction for the Enrichment Agent>"
+                }
+              ]
+            }
     """
+    import re
     filename = "proposal.json"
+    try:
+        parsed = json.loads(result_json)
+    except json.JSONDecodeError:
+        # Fix invalid backslash escapes that LLMs sometimes produce inside SQL strings
+        fixed = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', result_json)
+        parsed = json.loads(fixed)
+    if isinstance(parsed, list):
+        parsed = {"proposals": parsed}
+    parsed = _redact_obj(parsed)
     with open(filename, "w") as f:
-        f.write(result.model_dump_json(indent=2))
+        json.dump(parsed, f, indent=2)
     return f"Successfully saved proposal to {filename}"
 
 # Path to the skill file relative to the agent.py location
