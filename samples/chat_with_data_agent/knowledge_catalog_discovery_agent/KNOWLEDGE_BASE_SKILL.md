@@ -35,32 +35,37 @@ matching to a specific piece of metadata:
 > [!IMPORTANT]
 > **CRITICAL CONSTRAINTS:**
 > 1. You SHOULD NOT CALL `knowledge_catalog_multi_search` tool again and again. You are ALLOWED to CALL it a maximum **3** times.
-> 2. **Conditional Skip:** You MUST skip Step 2 and Step 3 ONLY IF the Knowledge Base lookup in Step 1 has returned the actual canonical BigQuery table names (e.g., `project.dataset.table`) extracted from the overview or queries aspect of the relevant entries. If the retrieved entries do not contain these canonical table names in their context (or if the context is null), you MUST NOT skip; instead, proceed to Step 2 and Step 3 to search the target catalog.
+> 2. **Conditional Skip:** If the Knowledge Base lookup in Step 1 is able to find entries and information relevant to the user query, you MUST skip the remaining steps entirely, and directly output the KB results. DO NOT proceed to the next steps.
 
 ## Step 1: Explore the Knowledge Base for Domain Context
 
 Before searching the target catalog, you MUST use the Knowledge Base to understand the domain vocabulary, key columns, and canonical tables related to the user's query.
 
-1.  **Search the KB:** Call `knowledge_catalog_knowledge_base_search(queries)` using the user's core search terms to find relevant concept entries in the configured knowledge base.
-2. **Analyze the Context:**: Read the `combined_context` of each entry, to filter out irrelevant ones.
-3.  **Extract Critical Information:** Read the `combined_context` field of the relevant KB entries to extract:
-    *   **Domain Synonyms:** Industry/business terms
-    *   **Key Columns:** Primary keys, join keys, or critical columns
-    *   **Sample Queries:** Queries that can be used to answer the user's question
-    *   **Canonical Tables:** The exact names of the "Associated Tables" listed in the overview
+1.  **Search the KB:** Call `knowledge_catalog_knowledge_base_search(queries)` using the user's core search terms to find relevant concept entries in the configured knowledge base. The tool returns a `results` list and a `combined_context`. Each result includes an `entry_type` field (`knowledge_entry` or `context_overlay`) and, for context overlay entries, a `resource_id` field containing the authoritative BQ entry name. The `combined_context` already includes fetched context for those BQ entries.
+2.  **Filter Irrelevant Entries:** Read the `combined_context` and discard any results that are clearly unrelated to the user's query. Only carry forward entries with relevant context.
+3.  **Extract Critical Information:** From the `combined_context` of each relevant entry, extract:
+    *   **Domain Synonyms:** Industry/business terms or alternative names for the concept
+    *   **Key Columns:** Primary keys, join keys, or other critical columns
+    *   **Sample Queries:** SQL queries that can be used to answer the user's question
+    *   **Canonical Tables** *(knowledge entries only):* The exact fully-qualified table names (e.g., `project.dataset.table`) listed in the overview or queries. Skip this for context overlay entries — the `resource_id` is already the canonical table.
+4.  **Output KB results:** For each relevant KB entry, return:
+    *   **Entry Name:**
+        *   *Knowledge entry* (`entry_type: knowledge_entry`): the full KB entry name. Also include any **canonical tables** extracted from the combined context.
+        *   *Context overlay entry* (`entry_type: context_overlay`): the `resource_id` value (the BQ entry name). This is itself the canonical table — do not separately extract canonical tables from the combined context.
+    *   **Key columns** and **sample SQL queries** extracted from the combined context (applies to both entry types).
 
 
 ## Step 2: Semantic Decomposition & Query Bootstrapping (Target Project)
 
 > [!IMPORTANT]
-> **Conditional Skip:** You MUST skip Step 2 and Step 3 ONLY IF the Knowledge Base lookup in Step 1 has returned the actual canonical BigQuery table names (e.g., `project.dataset.table`) extracted from the overview or queries aspect of the relevant entries. If the retrieved entries do not contain these canonical table names in their context (or if the context is null), you MUST NOT skip; instead, proceed to Step 2 and Step 3 to search the target catalog.
+> **Conditional Skip:** If the Knowledge Base lookup in Step 1 is able to find entries and information relevant to the user query, you MUST skip the remaining steps entirely, and directly output the KB results. DO NOT proceed to the next steps.
 
 Use the context extracted from the KB in Step 1 to construct highly precise search queries for the target catalog. Do NOT just search for the user's raw terms.
 
 -   **Semantic Decomposition:** Read the user request carefully. Break it down into semantic components: identify core entities, required metrics, and critical constraints (types, systems etc.).
 -   **Think Like a Data Engineer:** Users will ask high-level business questions, but you must translate those into how the data is actually stored (e.g., translate "customer acquisition" to "revenue", "billing", "subscriptions", or "accounts").
 -   **Generate Distinct Search Queries:** Based on your decomposition, generate up to 3 DISTINCT search variations that leverage the context derived from the KB in Step 1:
-    *   *Variation 1 (Direct & Synonyms):* Combine the user's core terms with any **Domain Synonyms** extracted from the KB aspect lookup.
+    *   *Variation 1 (Direct & Synonyms):* Combine the user's core terms with any **Domain Synonyms** extracted from the KB search in Step 1.
     *   *Variation 2 (Canonical Tables):* Formulate a search for the exact **Canonical Tables** identified in the KB.
     *   *Variation 3 (Key Columns):* Search for entries containing the **Key Columns** (e.g. using `column=column_name`) or critical attributes identified from the KB.
 -   **Extract Predicates:** From the user's raw text, extract constraints into valid Knowledge Catalog predicates (e.g., "dataset foo in project your-project-id" becomes `parent=foo projectid=your-project-id`). See the "Predicate Extraction" section. If the user provides `projectid`, you MUST keep them.
@@ -70,7 +75,7 @@ Use the context extracted from the KB in Step 1 to construct highly precise sear
 
 ## Step 3: Call Catalog Search Tool
 
-**IMPORTANT**: You are ALLOWED to CALL `knowledge_catalog_multi_search` a maximum of **3** times (and only if you did NOT skip this step via the **Conditional Skip** rule in Step 2). Do NOT make excessive calls to refine results. All queries and predicates (e.g., projectid, location, types) must be prepared beforehand in Step 2 and combined into the single argument list.
+**IMPORTANT**: You are ALLOWED to CALL `knowledge_catalog_multi_search` a maximum of **3** times (and only if you did NOT skip this step per the **Conditional Skip** rule in the CRITICAL CONSTRAINTS). Do NOT make excessive calls to refine results. All queries and predicates (e.g., projectid, location, types) must be prepared beforehand in Step 2 and combined into the single argument list.
 
 1.  Prepare the list of bootstrapped query strings from Step 2.
 2.  Call `knowledge_catalog_multi_search(queries)` with all the queries from previous step, scoped to the target `project_id` and `location`.
@@ -80,9 +85,7 @@ Use the context extracted from the KB in Step 1 to construct highly precise sear
 You MUST follow one of the two mutually exclusive paths below:
 
 ### PATH A: If you skipped Step 2 & 3 (Conditional Skip)
-If you skipped step 3 because the relevant entries were retrieved from the KB in Step 1:
-1.  **Extract Canonical Table Names:** Carefully inspect the `combined_context` string (specifically the sample queries and overview text) of the retrieved KB entries. Extract the fully qualified, canonical BigQuery table names (formatted as `project.dataset.table`).
-2.  **Output Format:** Output ONLY these canonical BigQuery table names as a plain list, with one table name per line along with ONE sample query retrieved from KB.
+If you skipped Steps 2 and 3 because the KB in Step 1 returned relevant entries, the output was already produced in Step 1 sub-step 5. Present that output directly — do not perform any further extraction or reformatting.
 
 ### PATH B: If you did NOT skip Step 2 & 3 (Catalog Search)
 If you proceeded with the target catalog search in Step 3:
@@ -176,16 +179,16 @@ system=bigquery AND type=table AND name:foo AND projectid=bar`
 **Example 2: Negation** `natural_language_query: Find me all tables not
 containing the name foo` `search_query: type=table AND -name:foo`
 
-**Example 4: Logical OR** `natural_language_query: tables from project foo-1 or
+**Example 3: Logical OR** `natural_language_query: tables from project foo-1 or
 bar-1.` `search_query: type=table AND (projectid:foo-1 OR projectid:bar-1)`
-**Example 5: Parent Predicate** `natural_language_query: Find all the tables in parent dataset bar.` `search_query: type=table AND parent=bar`
-**Example 6: Ambiguous / Unclear Query** `natural_language_query: foo data`
+**Example 4: Parent Predicate** `natural_language_query: Find all the tables in parent dataset bar.` `search_query: type=table AND parent=bar`
+**Example 5: Ambiguous / Unclear Query** `natural_language_query: foo data`
 `search_query:`
-**Example 7: Very Simple Query** `natural_language_query: Show me all the
+**Example 6: Very Simple Query** `natural_language_query: Show me all the
 datasets` `search_query: type=dataset`
-**Example 8: Complex Query with tricky parentheses placement**
+**Example 7: Complex Query with tricky parentheses placement**
 `natural_language_query: show me all the table and datasets in project foo or it must be part of bigquery` `search_query: ((type=table OR type=dataset) AND projectid=foo) OR system=bigquery`
-**Example 9: Query having name and description predicate**
+**Example 8: Query having name and description predicate**
 `natural_language_query: show me all the table that contain name sales and
 description pollution` `search_query: type=table AND name:sales AND
 description=pollution`

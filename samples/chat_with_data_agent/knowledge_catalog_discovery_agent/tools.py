@@ -14,6 +14,9 @@ from .utils import get_consumer_project, get_knowledge_base_entry_group
 
 MAX_WORKERS = 5
 OVERVIEW_ASPECT_TYPE = "dataplex-types.global.overview"
+_BQ_ENTRY_RE = re.compile(
+    r"projects/[^/]+/locations/[^/]+/entryGroups/@bigquery/entries/"
+)
 
 
 def _get_catalog_client() -> dataplex_v1.CatalogServiceClient:
@@ -68,6 +71,45 @@ def _lookup_context(region: str, batch_entries: list[str]) -> str:
     )
     return f"Error retrieving context for {batch_entries}: {e}"
 
+
+
+def lookup_context(entry_names: list[str]) -> str:
+  """Fetches context for a list of catalog entries using the LookupContext API.
+
+  Entries are grouped by region and fetched concurrently in batches of 10.
+
+  Args:
+      entry_names: Fully qualified entry resource names, e.g.,
+          projects/.../locations/.../entryGroups/.../entries/...
+
+  Returns:
+      Combined context string for all entries, or an error message.
+  """
+  if not entry_names:
+    return ""
+
+  entries_by_region: dict[str, list[str]] = {}
+  for entry_name in entry_names:
+    parts = entry_name.split("/")
+    region = "global"
+    if len(parts) >= 4 and parts[0] == "projects" and parts[2] == "locations":
+      region = parts[3]
+    entries_by_region.setdefault(region, []).append(entry_name)
+
+  batches = []
+  for region, items in entries_by_region.items():
+    for i in range(0, len(items), 10):
+      batches.append((region, items[i : i + 10]))
+
+  with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+    futures = [
+        executor.submit(_lookup_context, region, batch)
+        for region, batch in batches
+    ]
+    concurrent.futures.wait(futures)
+    contexts = [f.result() for f in futures]
+
+  return "\n\n".join(filter(None, contexts))
 
 
 def _knowledge_catalog_search(
@@ -258,6 +300,35 @@ def _deduplicate_and_fetch_context(
   }
 
 
+def _classify_and_enrich_kb_results(
+    results_data: dict,
+) -> dict:
+  """Classifies KB results and enriches context overlay entries with BQ context.
+
+  For each result, sets entry_type to 'context_overlay' if its resource_id
+  is a BQ entry name, otherwise 'knowledge_entry'. For context overlay entries,
+  fetches context for the BQ resource names and appends it to combined_context.
+  """
+  results = results_data.get("results", [])
+  combined_context = results_data.get("combined_context", "")
+
+  bq_entry_names = []
+  for item in results:
+    resource_id = item.get("resource_id", "")
+    if resource_id and _BQ_ENTRY_RE.match(resource_id):
+      item["entry_type"] = "context_overlay"
+      bq_entry_names.append(resource_id)
+    else:
+      item["entry_type"] = "knowledge_entry"
+
+  if bq_entry_names:
+    bq_context = lookup_context(bq_entry_names)
+    if bq_context:
+      combined_context = "\n\n".join(filter(None, [combined_context, bq_context]))
+
+  return {"results": results, "combined_context": combined_context}
+
+
 def knowledge_catalog_knowledge_base_search(
     queries: list[str],
 ) -> dict[str, list[dict[str, str]] | str]:
@@ -318,5 +389,6 @@ def knowledge_catalog_knowledge_base_search(
   if errors and len(errors) == len(queries):
     return {"error": "All search queries failed.", "details": errors}
 
-  return _deduplicate_and_fetch_context(query_results_list, 100)
+  kb_results = _deduplicate_and_fetch_context(query_results_list, 100)
+  return _classify_and_enrich_kb_results(kb_results)
 

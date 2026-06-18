@@ -28,6 +28,7 @@ def load_instruction() -> str:
 agent_tools = [tools.knowledge_catalog_multi_search]
 if get_knowledge_base_entry_group():
   agent_tools.append(tools.knowledge_catalog_knowledge_base_search)
+  agent_tools.append(tools.lookup_context)
 
 
 root_agent = llm_agent.Agent(
