@@ -369,6 +369,23 @@ def clean_overview_body(text: str) -> str:
   return t
 
 
+def maybe_convert_to_okf(output_dir: str | None, output_format: str) -> None:
+  """If `output_format == 'okf'`, convert the finished `catalog/` tree into an
+
+  OKF `bundle/` (publishable via `kcmd push --format okf`).
+
+  A no-op for the default 'kcmd' format. Called at the end of each mode's run so
+  every mode emits OKF identically without touching its per-entry write sites.
+  """
+  if output_format != "okf" or not output_dir:
+    return
+  import okf_serializer
+
+  bundle = okf_serializer.convert_tree(output_dir)
+  if bundle:
+    print(f"[OKF] ✅ Converted catalog/ -> OKF bundle at {bundle}", flush=True)
+
+
 def parse_mdcode_blocks(text: str, output_dir: str) -> list[str]:
   """Parse fenced code blocks preceded by a backticked relative path and write
 

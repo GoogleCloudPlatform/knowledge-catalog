@@ -32,7 +32,7 @@ cli
   .option('--pull', 'Optionally pull catalog entries during initialization')
   .option(
     '--format <format>',
-    'On-disk layout: standard (default) | documents',
+    'On-disk layout: standard (default) | documents | okf',
   )
   .action(async (options) => {
     try {
@@ -48,7 +48,7 @@ cli
   .option('--dry-run', 'Perform a dry run without modifying local files')
   .option(
     '--format <format>',
-    'On-disk layout override: standard | documents',
+    'On-disk layout override: standard | documents | okf',
   )
   .action(async (options) => {
     let exitCode = 1;
@@ -69,7 +69,7 @@ cli
   .option('--dry-run', 'Perform a dry run without publishing to service')
   .option(
     '--format <format>',
-    'On-disk layout override: standard | documents',
+    'On-disk layout override: standard | documents | okf',
   )
   .action(async (options) => {
     let exitCode = 1;
@@ -99,7 +99,7 @@ cli
   .command('reference', 'Pull reference resource entries')
   .option(
     '--format <format>',
-    'On-disk layout override: standard | documents',
+    'On-disk layout override: standard | documents | okf',
   )
   .action(async (options) => {
     try {

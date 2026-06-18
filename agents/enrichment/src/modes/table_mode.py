@@ -28,7 +28,7 @@ from engine import (
 import refine
 from tools import bq_usage_tools
 from tools import feedback_tools
-from tools import github_tools
+from tools import confluence_tools, github_tools, sharepoint_tools
 from tools import kcmd_tools
 from tools.drive_tools import (
     extract_folder_id,
@@ -583,6 +583,13 @@ async def run(
     repo_ref: str = "",
     repo_subdir: str = "",
     mcp_config: str = "",
+    output_format: str = "kcmd",
+    confluence_spaces: list[str] | None = None,
+    confluence_cql: list[str] | None = None,
+    confluence_page_ids: list[str] | None = None,
+    sharepoint_sites: list[str] | None = None,
+    sharepoint_search: list[str] | None = None,
+    sharepoint_file_ids: list[str] | None = None,
 ):
   project, dataset_id = _parse_dataset(dataset)
   # --folder is a mixed list (Drive folders and/or local md dirs); each entry is
@@ -738,8 +745,37 @@ async def run(
     for d in code_docs:
       d["_kind"] = "code"
     docs.extend(code_docs)
-    for i, d in enumerate(docs):
-      d["id"] = i
+
+  # Confluence corpus (optional): page cards join the relevance router's
+  # candidate pool alongside Drive docs and code cards.
+  conf_docs = await confluence_tools.gather_confluence_context(
+      confluence_spaces,
+      confluence_cql,
+      confluence_page_ids,
+      topic,
+      model,
+      usage_acc,
+      mcp_config_path=mcp_config or None,
+  )
+  for d in conf_docs:
+    d["_kind"] = "confluence"
+  docs.extend(conf_docs)
+
+  # SharePoint corpus (optional). Same router-descriptor doc shape.
+  sp_docs = await sharepoint_tools.gather_sharepoint_context(
+      sharepoint_sites,
+      sharepoint_search,
+      sharepoint_file_ids,
+      topic,
+      model,
+      usage_acc,
+  )
+  for d in sp_docs:
+    d["_kind"] = "sharepoint"
+  docs.extend(sp_docs)
+
+  for i, d in enumerate(docs):
+    d["id"] = i
 
   if not docs:
     print(
@@ -1029,6 +1065,9 @@ async def run(
   from tools.drive_tools import get_cache_stats
 
   print(f"[Cache] doc-fetch stats: {get_cache_stats()}", flush=True)
+
+  # OKF output: convert the finished catalog/ tree into an OKF bundle/.
+  common.maybe_convert_to_okf(output_dir, output_format)
 
   # Build the refinement session (consumed by agent_runner --interactive).
   return refine.EnrichmentSession(

@@ -28,6 +28,11 @@ More details are in the [docs/concept.md](docs/concept.md).
 
 *   **Optimized Layouts**: Automatically switches between **YAML Layout** (for data assets) and **Markdown Layout** (for human-centric Knowledge Bases).
 *   **Markdown Sidecars**: Detach long-form text (like overviews) into sidecar `.md` files to maintain clean and manageable YAML files.
+*   **OKF Bundles**: Opt into the **OKF Layout** with `--format okf` to
+    read/write an
+    [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+    bundle — one `.md` per concept (YAML frontmatter + body) plus reserved
+    `index.md` directory listings, rooted at `bundle/`.
 
 #### 4. Integration & Extensibility
 
@@ -72,6 +77,18 @@ More details are in the [docs/concept.md](docs/concept.md).
     glossary terms and categories via the same `pull`/`push` workflow.
     Glossaries also work as a `reference.scope` so other workspaces can ground
     enrichment in glossary terms without owning them.
+*   **OKF Layout (`--format okf`)**: `init`, `pull`, `push`, and `reference`
+    accept `--format okf` to read/write an
+    [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+    bundle — a directory of single-`.md` concepts (YAML frontmatter + body) with
+    reserved `index.md` listings, rooted at `bundle/` instead of `catalog/`.
+    `init --format okf` records `layout: okf` in the manifest so later commands
+    default to it. The full entry is preserved under a hidden `x-kcmd`
+    frontmatter key for lossless round-trip (consumers ignore unknown keys per
+    SPEC), and per-folder `index` entries are synthesized from the directory
+    tree on `push` so the catalog hierarchy is recreated — synthesis is skipped
+    for ingested sources (e.g. BigQuery `@bigquery` system entries), where
+    `index.md` stays navigation-only.
 
 ## Usage
 
@@ -122,12 +139,27 @@ kcmd init --glossary my-project-id.us-central1.glossary-a,glossary-b
 kcmd init --glossary my-project-id.us-central1
 ```
 
+**Note on layout (`--format`):** Independently of the source type, `init`,
+`pull`, `push`, and `reference` accept `--format <standard|documents|okf>` to
+override the on-disk layout. `--format okf` reads/writes an **OKF** bundle under
+`bundle/` (instead of `catalog/`); `init --format okf` records `layout: okf` in
+`catalog.yaml` so subsequent commands default to it. See **OKF Layout** under
+Directory Layout below.
+
+```bash
+# Initialize an Entry Group workspace that stores an OKF bundle under bundle/
+kcmd init --entry-group my-project-id.us-central1.my-eg-id --format okf
+```
+
 ### 2. Synchronization
 
 #### Pulling Metadata
 
 *   **`kcmd pull`**: Downloads editable metadata into the `catalog/` directory.
     *   Generates `.yaml` files in **YAML** mode or `.md` files in **Markdown** mode.
+    *   With `--format okf` (or `layout: okf` in the manifest), writes the **OKF
+        Layout** under `bundle/` instead — one `.md` per concept — and
+        regenerates the reserved `index.md` listings after the pull.
     *   **Entry Links**: When `snapshot.entryLinks` is declared, `pull` also
         calls `lookupEntryLinks` for every fetched entry and inlines the results
         into the entry YAML — column-level links (those with a `Schema.<field>`
@@ -140,6 +172,8 @@ kcmd init --glossary my-project-id.us-central1
     *   Honors `reference.snapshot.entryLinks` the same way as `pull` honors
         `snapshot.entryLinks`, so a `.ref.yaml` baseline can include the
         pre-edit link state for clean `diff`s.
+    *   Under `--format okf` the read-only mirror is written as `.ref.md`
+        siblings in `bundle/` (the OKF reference layer).
 
 #### Pushing Changes
 
@@ -160,6 +194,11 @@ kcmd init --glossary my-project-id.us-central1
         a workspace only reads links.
     *   `--force`: Overwrites service metadata, ignoring potential conflicts.
     *   `--validate-only`: Validates the local snapshot against the service without performing a push.
+    *   `--format okf`: Reads the **OKF Layout** from `bundle/`, reconstructing
+        each entry from its `x-kcmd` frontmatter. Per-folder `index` entries are
+        synthesized from the directory tree (so the hierarchy is recreated),
+        except for ingested sources (e.g. `@bigquery`), which can't hold custom
+        entries.
 
 > [!IMPORTANT] **`kcmd push` does NOT create Glossary, GlossaryCategory, or
 > GlossaryTerm resources.**
@@ -249,6 +288,31 @@ Entries are `.md` files containing both metadata and content.
                 └── page2.md            # Page 2
 ```
 
+#### OKF Layout (Bundle)
+
+With `--format okf`, each concept is a single `.md` file (YAML frontmatter +
+overview body) rooted at **`bundle/`** instead of `catalog/`. Reserved
+`index.md` files list each directory's children; only the bundle-root `index.md`
+carries `okf_version`. Read-only reference mirrors are `*.ref.md`.
+
+```text
+/
+├── catalog.yaml                       # manifest (layout: okf)
+└── bundle/
+    ├── index.md                       # root listing (carries okf_version)
+    └── bigquery/
+        └── my-project-id/
+            └── my-dataset-id/
+                ├── index.md           # directory listing (no frontmatter)
+                ├── table1.md          # concept: frontmatter + overview body
+                └── table1.ref.md      # read-only reference mirror
+```
+
+The full Dataplex entry (all aspects, links, `resource.parent`) is preserved
+under a hidden `x-kcmd` frontmatter key so the bundle round-trips losslessly;
+OKF consumers ignore the unknown key. Files authored without `x-kcmd` (hand-
+written OKF) still load, reconstructed from the SPEC frontmatter fields.
+
 ## Catalog Manifest (`catalog.yaml`)
 
 The manifest defines the synchronization scope, the types of metadata to manage, and optional reference layers for grounding.
@@ -298,6 +362,11 @@ reference:
     your `catalog/` folder. Supported types include `bq-dataset.*`,
     `entryGroup.*`, `kb.*`, `biglake-namespace.*`, and
     `glossary.<project>.<location>.<glossary-id>`.
+*   **`layout`** (optional) — overrides the on-disk layout (`standard` |
+    `documents` | `okf`); normally derived from the source type. Written by
+    `init --format` and honored by `--format` on the other commands. `okf` roots
+    the workspace at `bundle/` and stores one `.md` per concept (see **OKF
+    Layout** above).
 *   **`snapshot`** — The entry, aspect, and link types to manage locally.
     *   `entryLinks` (optional) — short aliases (`definition`, `synonym`,
         `related`, `schema-join`) or fully-qualified link type refs. When set,

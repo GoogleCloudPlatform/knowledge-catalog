@@ -106,7 +106,7 @@ export async function pull(options?: PullOptions): Promise<number> {
   const result = await sync.pull(options);
 
   if (result.success) {
-    // layout finalize() runs after the pull; no-op for
+    // OKF regenerates reserved index.md listings after the pull; no-op for
     // other layouts.
     await snapshot.finalize();
     console.log('Successfully updated local snapshot.');
@@ -162,7 +162,7 @@ export async function reference(options?: ReferenceOptions): Promise<number> {
   const result = await sync.reference();
 
   if (result.success) {
-    // layout finalize() runs after pulling references.
+    // OKF regenerates reserved index.md listings after pulling references.
     await snapshot.finalize();
     console.log('Successfully updated local reference entries snapshot.');
     return 0;

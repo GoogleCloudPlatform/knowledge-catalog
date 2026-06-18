@@ -24,7 +24,7 @@ from engine import (
 from google.genai import types
 import refine
 from tools import feedback_tools
-from tools import github_tools
+from tools import confluence_tools, github_tools, sharepoint_tools
 from tools import kcmd_tools
 from tools.drive_tools import (
     extract_folder_id,
@@ -554,6 +554,13 @@ async def run(
     usage_window_days: int = 30,
     anonymize_users: bool = False,
     usage_scope: str = "auto",
+    output_format: str = "kcmd",
+    confluence_spaces: list[str] | None = None,
+    confluence_cql: list[str] | None = None,
+    confluence_page_ids: list[str] | None = None,
+    sharepoint_sites: list[str] | None = None,
+    sharepoint_search: list[str] | None = None,
+    sharepoint_file_ids: list[str] | None = None,
 ):
   # Doc mode generates per-KB-entry overviews. Feedback proposals target
   # tables/columns rather than KB entries, so there's no clean per-entry
@@ -921,6 +928,28 @@ async def run(
         mcp_config_path=mcp_config or None,
     )
 
+  # Confluence corpus (optional): each page becomes its own seed entry (so it
+  # always surfaces as a KB entry) and its card is appended post-reduce.
+  confluence_cards = await confluence_tools.gather_confluence_context(
+      confluence_spaces,
+      confluence_cql,
+      confluence_page_ids,
+      topic,
+      model,
+      usage_acc,
+      mcp_config_path=mcp_config or None,
+  )
+
+  # SharePoint corpus (optional): same treatment as the Confluence cards.
+  sharepoint_cards = await sharepoint_tools.gather_sharepoint_context(
+      sharepoint_sites,
+      sharepoint_search,
+      sharepoint_file_ids,
+      topic,
+      model,
+      usage_acc,
+  )
+
   # 2b. Stage-2 Reduce (uncached): topic-shaped batch reduction over the
   # neutral per-doc cards. Cards are ~5× smaller than raw doc text, so each
   # batch call is cheap relative to the legacy raw-text summarizer.
@@ -977,6 +1006,45 @@ async def run(
         for c in code_cards
     ]
 
+  # Append Confluence page cards verbatim (same post-reduce rationale as
+  # code cards above) and seed each as its own KB entry.
+  confluence_seed_entries = []
+  if confluence_cards:
+    conf_block = "\n\n".join(
+        f"--- CONFLUENCE PAGE: {c['name']} ({c['url']}) ---\n{c['content']}"
+        for c in confluence_cards
+    )
+    compiled_summary += (
+        "\n\n--- CONFLUENCE PAGES ---\n\n" + conf_block
+    )
+    confluence_seed_entries = [
+        {
+            "id": _slugify(c["name"]),
+            "display_name": c["name"],
+            "kind": "kb",
+        }
+        for c in confluence_cards
+    ]
+
+  # Append SharePoint file cards verbatim (same rationale).
+  sharepoint_seed_entries = []
+  if sharepoint_cards:
+    sp_block = "\n\n".join(
+        f"--- SHAREPOINT FILE: {c['name']} ({c['url']}) ---\n{c['content']}"
+        for c in sharepoint_cards
+    )
+    compiled_summary += (
+        "\n\n--- SHAREPOINT FILES ---\n\n" + sp_block
+    )
+    sharepoint_seed_entries = [
+        {
+            "id": _slugify(c["name"]),
+            "display_name": c["name"],
+            "kind": "kb",
+        }
+        for c in sharepoint_cards
+    ]
+
   # HYBRID (reorder + feed): generate the per-table context-overlay entries FIRST,
   # so the KB enumeration below can be scoped to ONLY the cross-cutting knowledge
   # the overlays do NOT already own. The overlays own each table's schema,
@@ -1002,6 +1070,11 @@ async def run(
         usage_window_days=usage_window_days, anonymize_users=anonymize_users,
         usage_scope=usage_scope, repo=repo, repo_ref=repo_ref,
         repo_subdir=repo_subdir, mcp_config=mcp_config,
+        # Reuse the Confluence/SharePoint cards already gathered above for the KB
+        # entries so the overlays are grounded by the same corpus without a second
+        # fetch (passing the cards skips the gather in _prepare_all_docs).
+        confluence_docs=confluence_cards,
+        sharepoint_docs=sharepoint_cards,
         # doc_mode builds ONE combined index over BOTH the KB folders and the
         # overlay folders (merging the overlay dir_meta), so generate_overlays
         # must not build its own -- avoids a double pass that relabels folders.
@@ -1049,7 +1122,7 @@ async def run(
           "kind": "kb",
       }
       for e in existing_kb_entries
-  ] + code_seed_entries
+  ] + code_seed_entries + confluence_seed_entries + sharepoint_seed_entries
   if seed_entries:
     print(
         f"[Agent] 🧭 Enumerating with {len(seed_entries)} seed entries from"
@@ -1241,6 +1314,22 @@ async def run(
         "name": "explore_repo",
         "response": {"url": c["url"], "content": c["content"]},
     })
+  for c in confluence_cards:
+    tool_uses.append(
+        {"name": "read_confluence", "args": {"page": c["name"]}}
+    )
+    tool_responses.append({
+        "name": "read_confluence",
+        "response": {"url": c["url"], "content": c["content"]},
+    })
+  for c in sharepoint_cards:
+    tool_uses.append(
+        {"name": "read_sharepoint", "args": {"file": c["name"]}}
+    )
+    tool_responses.append({
+        "name": "read_sharepoint",
+        "response": {"url": c["url"], "content": c["content"]},
+    })
   tool_uses.append({"name": "enumerate", "args": {"topic": topic}})
   tool_responses.append(
       {"name": "enumerate", "response": enumeration.model_dump()}
@@ -1266,6 +1355,9 @@ async def run(
   from tools.drive_tools import get_cache_stats
 
   print(f"[Cache] doc-fetch stats: {get_cache_stats()}", flush=True)
+
+  # OKF output: convert the finished catalog/ tree into an OKF bundle/.
+  common.maybe_convert_to_okf(output_dir, output_format)
 
   # Build the refinement session (consumed by agent_runner --interactive).
   # HYBRID: include the overlay entries so a later refine turn can target them.

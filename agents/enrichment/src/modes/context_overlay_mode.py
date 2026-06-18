@@ -38,7 +38,7 @@ from modes import table_mode
 import refine
 from tools import bq_usage_tools
 from tools import feedback_tools
-from tools import github_tools
+from tools import confluence_tools, github_tools, sharepoint_tools
 from tools import kcmd_tools
 from tools.drive_tools import (
     extract_gdoc_id,
@@ -158,16 +158,31 @@ async def _prepare_all_docs(
     repo_ref: str = "",
     repo_subdir: str = "",
     mcp_config: str = "",
+    confluence_spaces: list[str] | None = None,
+    confluence_cql: list[str] | None = None,
+    confluence_page_ids: list[str] | None = None,
+    sharepoint_sites: list[str] | None = None,
+    sharepoint_search: list[str] | None = None,
+    sharepoint_file_ids: list[str] | None = None,
+    confluence_docs: list[dict] | None = None,
+    sharepoint_docs: list[dict] | None = None,
 ) -> list[dict]:
   """Build the router-descriptor doc list from folders, explicit docs, and/or a
 
-  GitHub repo.
+  GitHub repo, Confluence corpus, and/or SharePoint corpus.
 
   `folders` and `doc_urls` are mixed lists routed per entry (Drive vs local
   markdown). The router indexes docs by their `id` == list position, so ids are
-  reassigned sequentially after merging the sources. Code component cards (when
-  --repo is set) join the pool in the same shape and are routed to tables like
-  any other candidate document.
+  reassigned sequentially after merging the sources. Code component cards
+  (--repo), Confluence page cards (--confluence_*), and SharePoint file cards
+  (--sharepoint_*) join the pool in the same shape and are routed to tables
+  like any other candidate document.
+
+  `confluence_docs` / `sharepoint_docs`, when provided, are pre-gathered cards
+  reused as-is instead of re-fetching (the hybrid doc-mode path passes the
+  cards it already gathered for its KB entries, so the corpus is explored
+  once). When None, the corpus is gathered from the `confluence_*` /
+  `sharepoint_*` query params as usual.
   """
   docs = []
   if folders:
@@ -188,6 +203,38 @@ async def _prepare_all_docs(
     for d in code_docs:
       d["_kind"] = "code"
     docs.extend(code_docs)
+  # Reuse pre-gathered cards (hybrid path) or gather the corpus now.
+  conf_docs = (
+      confluence_docs
+      if confluence_docs is not None
+      else await confluence_tools.gather_confluence_context(
+          confluence_spaces,
+          confluence_cql,
+          confluence_page_ids,
+          topic,
+          model,
+          usage_acc,
+          mcp_config_path=mcp_config or None,
+      )
+  )
+  for d in conf_docs:
+    d["_kind"] = "confluence"
+  docs.extend(conf_docs)
+  sp_docs = (
+      sharepoint_docs
+      if sharepoint_docs is not None
+      else await sharepoint_tools.gather_sharepoint_context(
+          sharepoint_sites,
+          sharepoint_search,
+          sharepoint_file_ids,
+          topic,
+          model,
+          usage_acc,
+      )
+  )
+  for d in sp_docs:
+    d["_kind"] = "sharepoint"
+  docs.extend(sp_docs)
   for i, d in enumerate(docs):
     d["id"] = i
   return docs
@@ -296,7 +343,6 @@ def _move_into_table_folder(
   )
 
 
-
 async def generate_overlays(
     output_dir: str,
     project: str,
@@ -322,6 +368,14 @@ async def generate_overlays(
     repo_ref: str = "",
     repo_subdir: str = "",
     mcp_config: str = "",
+    confluence_spaces: list[str] | None = None,
+    confluence_cql: list[str] | None = None,
+    confluence_page_ids: list[str] | None = None,
+    sharepoint_sites: list[str] | None = None,
+    sharepoint_search: list[str] | None = None,
+    sharepoint_file_ids: list[str] | None = None,
+    confluence_docs: list[dict] | None = None,
+    sharepoint_docs: list[dict] | None = None,
     build_index: bool = True,
 ) -> dict | None:
   """Generate per-table context-overlay entries into an ALREADY-scaffolded EG
@@ -409,6 +463,14 @@ async def generate_overlays(
           repo_ref=repo_ref,
           repo_subdir=repo_subdir,
           mcp_config=mcp_config,
+          confluence_spaces=confluence_spaces,
+          confluence_cql=confluence_cql,
+          confluence_page_ids=confluence_page_ids,
+          sharepoint_sites=sharepoint_sites,
+          sharepoint_search=sharepoint_search,
+          sharepoint_file_ids=sharepoint_file_ids,
+          confluence_docs=confluence_docs,
+          sharepoint_docs=sharepoint_docs,
       ),
       _fetch_usage_or_empty(),
   )
@@ -814,6 +876,13 @@ async def run(
     repo_subdir: str = "",
     mcp_config: str = "",
     glossaries: list[str] | None = None,
+    output_format: str = "kcmd",
+    confluence_spaces: list[str] | None = None,
+    confluence_cql: list[str] | None = None,
+    confluence_page_ids: list[str] | None = None,
+    sharepoint_sites: list[str] | None = None,
+    sharepoint_search: list[str] | None = None,
+    sharepoint_file_ids: list[str] | None = None,
 ):
   project, dataset_id = table_mode._parse_dataset(dataset)
   eg_project, eg_location, eg_id = _parse_eg(entry_group)
@@ -908,7 +977,11 @@ async def run(
       usage_acc, tables_filter=tables_filter, include_usage=include_usage,
       usage_window_days=usage_window_days, anonymize_users=anonymize_users,
       usage_scope=usage_scope, repo=repo, repo_ref=repo_ref,
-      repo_subdir=repo_subdir, mcp_config=mcp_config, build_index=True)
+      repo_subdir=repo_subdir, mcp_config=mcp_config,
+      confluence_spaces=confluence_spaces, confluence_cql=confluence_cql,
+      confluence_page_ids=confluence_page_ids,
+      sharepoint_sites=sharepoint_sites, sharepoint_search=sharepoint_search,
+      sharepoint_file_ids=sharepoint_file_ids, build_index=True)
   if core is None:
     return None
   results = core["results"]
@@ -921,6 +994,10 @@ async def run(
       output_dir, "context_overlay", traj_user_input, tool_uses,
       tool_responses, core["final_text"], usage_acc)
   print(f"[Cache] doc-fetch stats: {get_cache_stats()}", flush=True)
+
+  # OKF output: convert the finished catalog/ tree into an OKF bundle/.
+  common.maybe_convert_to_okf(output_dir, output_format)
+
   return refine.EnrichmentSession(
       mode="context_overlay",
       topic=topic,
@@ -943,8 +1020,6 @@ async def run(
           "tool_responses": tool_responses,
       },
   )
-
-
 
 
 def _set_overlay_category(

@@ -30,8 +30,8 @@ export class CatalogSnapshot {
     this.basePath = basePath;
     this.manifest = manifest;
 
-    // A manifest `layout:` override wins over the source default; the root dir
-    // name follows the chosen layout (catalog/ for the kcmd-native layouts).
+    // A manifest `layout:` override (e.g. okf) wins over the source default; the
+    // root dir name follows the chosen layout (okf -> bundle/, else catalog/).
     const layout = (manifest.layout as Layouts) ?? manifest.source.layout;
     const catalogPath = path.join(this.basePath, rootDirForLayout(layout));
     this._layout = createLayout(layout, catalogPath, manifest);
@@ -85,7 +85,7 @@ export class CatalogSnapshot {
     return this._layout.listEntries();
   }
 
-  // Optional post-sync finalization (layout-specific finalization
+  // Optional post-sync finalization (e.g. OKF regenerates index.md listings
   // after a pull). No-op for layouts that don't implement it.
   async finalize(): Promise<void> {
     await this._layout.finalize?.();

@@ -15,7 +15,7 @@ export interface LocalEntryLink {
 
 const manifestSchema = z.object({
   scope: z.union([z.string(), z.array(z.string())]),
-  // Optional override of the on-disk layout (standard|documents). When
+  // Optional override of the on-disk layout (standard|documents|okf). When
   // absent, the layout is derived from the source type (see source.layout).
   layout: z.string().optional(),
   resourceAlias: z
@@ -90,7 +90,7 @@ export class CatalogManifest {
   readonly referenceManifest?: ReferenceManifest;
   readonly aliasMap: ResourceAlias;
   readonly entryLinkTypes?: string[];
-  // Optional layout override (standard|documents). Mutable so `init` can set
+  // Optional layout override (standard|documents|okf). Mutable so `init` can set
   // it from the `--format` flag before `save()`; `load()` reads it back.
   layout?: string;
 

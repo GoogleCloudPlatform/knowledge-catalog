@@ -63,6 +63,17 @@ the cards join the relevance router's candidate pool, so code that reads or
 writes a table (or contains SQL referencing it) grounds that table's overview
 and queries aspect.
 
+Beyond Google Drive, any mode can also ingest **Confluence** and **SharePoint**
+as context sources (not extra modes). Pass `--confluence_space` for Confluence
+spaces or `--sharepoint_sites` for SharePoint sites, or simply drop Confluence /
+SharePoint URLs into `--docs` / `--folders` — they are auto-detected and lifted
+into the right source. Their pages/files surface in the same shape as the other
+sources: their own knowledge-base entries in `doc` mode, or relevance-router
+candidates in `table` / `context_overlay`. Confluence is read through the
+Atlassian Rovo MCP server; SharePoint through the Microsoft Graph REST API (text
+files read in full, `.docx`/`.xlsx`/`.pptx`/PDF extracted locally — see
+[docs/sharepoint-setup.md](docs/sharepoint-setup.md) for auth).
+
 After a run, you can iterate on the output with free-text **refinement** —
 either an interactive REPL (`--interactive`) or a single re-invocation
 (`--refine_instruction`). Refinement reuses the already-loaded context and never
@@ -80,6 +91,7 @@ agents/
     │   ├── agent_runner.py      # CLI entrypoint: flags + dispatch to a mode
     │   ├── engine.py            # LLM agents (Vertex Gemini) for all modes
     │   ├── common.py            # shared helpers (run_text, mdcode parsing, trajectory)
+    │   ├── okf_serializer.py    # OKF (Open Knowledge Format) bundle writer (--output_format=okf)
     │   ├── refine.py            # multi-turn refinement (REPL + persist/re-invoke)
     │   ├── linking.py           # glossary column→term linking helper (table mode)
     │   ├── modes/
@@ -91,7 +103,11 @@ agents/
     │       ├── drive_tools.py    # Google Drive/Docs fetch helpers
     │       ├── bq_usage_tools.py # INFORMATION_SCHEMA query history + queries-aspect sidecar
     │       ├── feedback_tools.py # user-feedback proposal loader + per-table router
-    │       └── github_tools.py   # agentic GitHub-repo code source via the GitHub MCP server
+    │       ├── github_tools.py   # agentic GitHub-repo code source via the GitHub MCP server
+    │       ├── confluence_tools.py # Confluence space/page source via the Atlassian Rovo MCP server
+    │       └── sharepoint_tools.py # SharePoint site/file source via the Microsoft Graph REST API
+    ├── scripts/                 # SharePoint auth setup (setup_sharepoint.py, mint_sharepoint_token.py)
+    ├── docs/                    # source-setup guides (sharepoint-setup.md)
     └── eval/                     # evaluation CLI (dynamic golden-free + golden-based)
         ├── __main__.py          # `python -m eval --output-dir ... [--golden ...]` | `--run`
         ├── dynamic_eval.py      # golden-free scoring of a single run
@@ -272,6 +288,9 @@ list). `--project`, `--model`, and `--output_dir` are required in **every** mode
 | `--repo_ref` | ✓ | ✓ | ✓ |
 | `--repo_subdir` | ✓ | ✓ | ✓ |
 | `--mcp_config` | ✓ | ✓ | ✓ |
+| `--confluence_space` | ✓ | ✓ | ✓ |
+| `--sharepoint_sites` | ✓ | ✓ | ✓ |
+| `--output_format` | ✓ | ✓ | ✓ |
 | `--interactive` | ✓ | ✓ | ✓ |
 | `--refine_instruction` | ✓ | ✓ | ✓ |
 
@@ -337,6 +356,18 @@ list). `--project`, `--model`, and `--output_dir` are required in **every** mode
     }
   }
   ```
+
+#### Confluence input *(all modes)*
+
+- **`--confluence_space`** — Comma-separated Confluence space keys to ingest as a context source (e.g. `--confluence_space=DATA,RUNBOOKS`). Top-level pages are listed and the most topic-relevant ones read, through the Atlassian Rovo MCP server. Confluence page/space URLs may also be dropped into `--docs` / `--folders` — they are auto-detected and lifted into this source. Auth via `ATLASSIAN_API_TOKEN` / `ATLASSIAN_OAUTH_TOKEN`; the server can be overridden with `--mcp_config`.
+
+#### SharePoint input *(all modes)*
+
+- **`--sharepoint_sites`** — Comma-separated SharePoint sites — accepts full site URLs from your browser's address bar, e.g. `--sharepoint_sites=https://contoso.sharepoint.com/sites/Marketing`. Walks each site's default document library and reads topic-relevant files via the Microsoft Graph REST API (text read in full; `.docx`/`.xlsx`/`.pptx`/PDF extracted locally). SharePoint URLs may also be dropped into `--docs` / `--folders`. Auth uses an MSAL token cache or `MICROSOFT_ACCESS_TOKEN` — see [docs/sharepoint-setup.md](../docs/sharepoint-setup.md) and `scripts/setup_sharepoint.py`.
+
+#### Output format *(all modes)*
+
+- **`--output_format`** — *(default `kcmd`)* Serialization of the generated tree. `kcmd` writes the native catalog layout (`X.yaml` + `X.overview.md` under `catalog/`). `okf` writes an [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) bundle (one `X.md` per concept with YAML frontmatter + `index.md` listings under `bundle/`), publishable via `kcmd push --format okf`.
 
 #### Refinement *(all modes, after a run)*
 
@@ -408,6 +439,12 @@ overview, an `overview` aspect), and — for tables/overlays — a `…​.queri
 sidecar (the `queries` aspect of sample SQL). Every folder also gets an
 auto-generated `index` entry (`index.yaml` + `index.overview.md`) that names the
 folder and carries `contains`/`parent` links, forming a navigable hierarchy.
+
+With **`--output_format=okf`** the same content is instead written as an
+[Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+bundle under `bundle/` — one `X.md` per concept (YAML frontmatter + the overview
+as the Markdown body) plus reserved `index.md` directory listings (the root one
+carries `okf_version`). Publish it with `kcmd push --format okf`.
 
 **Per mode** (entry `type` in parentheses):
 

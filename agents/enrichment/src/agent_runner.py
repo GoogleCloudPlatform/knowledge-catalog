@@ -29,11 +29,43 @@ Nothing is project-specific: pass your own `--project`, `--location`, and
 
 import asyncio
 import os
+import sys
 
 from absl import app
 from absl import flags
 from modes import context_overlay_mode, doc_mode, table_mode
 import refine
+from tools import confluence_tools, sharepoint_tools
+
+
+def _source_microsoft_env() -> None:
+  """Load `~/.config/kc_agent/microsoft.env` (MICROSOFT_CLIENT_ID /
+  MICROSOFT_TENANT_ID, written by setup_sharepoint.py) into os.environ.
+
+  Existing env vars win — the file is a default, not an override. Also
+  re-sourced after the setup subprocess so its newly-written IDs reach
+  this process (subprocess env mutations don't propagate to the parent).
+  """
+  env_file = os.path.expanduser("~/.config/kc_agent/microsoft.env")
+  if not os.path.exists(env_file):
+    return
+  try:
+    with open(env_file, "r", encoding="utf-8") as f:
+      for line in f:
+        line = line.strip()
+        if not line or line.startswith("#"):
+          continue
+        if not line.startswith("export "):
+          continue
+        body = line[len("export "):]
+        if "=" not in body:
+          continue
+        key, val = body.split("=", 1)
+        val = val.strip().strip("'").strip('"')
+        if key and not os.environ.get(key):
+          os.environ[key] = val
+  except OSError:
+    pass
 
 _MODE = flags.DEFINE_enum(
     "mode",
@@ -48,15 +80,20 @@ _TOPIC = flags.DEFINE_string(
 )
 _DOCS = flags.DEFINE_list(
     "docs", [],
-    "Comma-separated mixed list, routed per entry: Google Doc URLs/IDs and/or "
-    "local .md files. A local .md file is a doc-mode depth-0 spine; for "
+    "Comma-separated mixed list, routed per entry: Google Doc URLs/IDs, "
+    "local .md files, Confluence page URLs (auto-lifted into the Confluence "
+    "source), and/or SharePoint URLs (site URLs auto-merged into "
+    "--sharepoint_sites). A local .md file is a doc-mode depth-0 spine; for "
     "table/context_overlay it grounds table overviews."
 )
 _FOLDERS = flags.DEFINE_list(
     "folders", [],
     "Comma-separated mixed list, routed per entry: Google Drive folder "
-    "URLs/IDs and/or local directories of .md files. Drive/local dirs seed "
-    "depth-1 children (doc mode) or grounding docs (table/context_overlay)."
+    "URLs/IDs, local directories of .md files, Confluence URLs (space or "
+    "page links — auto-lifted into the Confluence source), and/or "
+    "SharePoint URLs (site URLs auto-merged into --sharepoint_sites). "
+    "Drive/local dirs seed depth-1 children (doc mode) or grounding docs "
+    "(table/context_overlay)."
 )
 # Backward-compatible alias for the former singular flag; merged with --folders.
 _FOLDER = flags.DEFINE_list(
@@ -94,7 +131,47 @@ _MCP_CONFIG = flags.DEFINE_string(
     "",
     "Path to an mcp.json describing the GitHub MCP server (falls back to"
     " KC_ENRICH_MCP_CONFIG, then a built-in `github-mcp-server stdio`"
-    " default).",
+    " default). The same file may also carry an Atlassian Rovo MCP server"
+    " entry under key `atlassian_remote` for --confluence_* sources.",
+)
+
+# --- Confluence input (all modes) ----------------------------------------
+# A Confluence agent explores Atlassian via the Rovo MCP server and returns
+# page cards in the same router-descriptor shape as the GitHub source (see
+# tools/confluence_tools.py; auth via ATLASSIAN_API_TOKEN / ATLASSIAN_OAUTH_TOKEN,
+# --mcp_config can override the server). Only --confluence_space is on the CLI;
+# the CQL and page-id sources stay internal (page links in --folders / --docs
+# are auto-lifted into them).
+_CONFLUENCE_SPACES = flags.DEFINE_list(
+    "confluence_space",
+    [],
+    "Optional Confluence space keys to ingest as a corpus context source"
+    " (e.g. `DATA,RUNBOOKS`). Top-level pages are listed and the most"
+    " topic-relevant ones are read. Confluence page/space URLs may also be"
+    " dropped into --folders / --docs — they are auto-detected and lifted"
+    " into this source.",
+)
+
+# --- SharePoint input (all modes) ----------------------------------------
+# An inner agent drives Microsoft Graph REST (site → library → folder → file)
+# via sp_* FunctionTools — direct Graph, not MCP, since the first-party
+# SharePoint MCP rejects third-party Entra tokens. Returns file cards in the
+# same shape as the other sources (see tools/sharepoint_tools.py; text files
+# read in full, .docx/.xlsx/.pptx/PDF extracted locally). Auth: MSAL cache or
+# MICROSOFT_ACCESS_TOKEN (see scripts/setup_sharepoint.py). Only
+# --sharepoint_sites is on the CLI; the search and file-id sources stay
+# internal (file links in --folders / --docs are auto-lifted into them).
+_SHAREPOINT_SITES = flags.DEFINE_list(
+    "sharepoint_sites",
+    [],
+    "Optional SharePoint sites — accepts full site URLs from your"
+    " browser's address bar, e.g."
+    " `https://contoso.sharepoint.com/sites/Marketing`. Walks each site's"
+    " default library and reads files that look topic-relevant. You can"
+    " also drop these URLs into --folders / --docs interchangeably. The"
+    " legacy `<host>:<server-relative-path>` form (e.g."
+    " `contoso.sharepoint.com:sites/Marketing`) is still accepted for"
+    " back-compat.",
 )
 _DATASET = flags.DEFINE_string(
     "dataset",
@@ -201,6 +278,16 @@ _FEEDBACK_FILES = flags.DEFINE_list(
     "Optional explicit list of user-feedback file paths (alternative to /"
     " in addition to --feedback_dir).",
 )
+_OUTPUT_FORMAT = flags.DEFINE_enum(
+    "output_format",
+    "kcmd",
+    ["kcmd", "okf"],
+    "Output serialization format. 'kcmd' (default) writes the native catalog"
+    " layout (X.yaml + X.overview.md under catalog/). 'okf' writes an Open"
+    " Knowledge Format bundle (one X.md per concept with YAML frontmatter +"
+    " index.md listings under bundle/), publishable via `kcmd push --format"
+    " okf`.",
+)
 
 
 def main(argv):
@@ -233,6 +320,107 @@ def main(argv):
   # --folders is canonical; --folder is a deprecated alias. Merge both so old
   # invocations keep working.
   folder_inputs = list(_FOLDERS.value or []) + list(_FOLDER.value or [])
+  doc_inputs = list(_DOCS.value or [])
+
+  # Lift Confluence URLs out of --folders / --docs into the typed Confluence
+  # source lists. Drive URLs/IDs and local markdown paths/dirs pass through
+  # untouched, so the existing per-mode routing in is_local_path() stays
+  # correct (it would otherwise route a Confluence URL as a Drive link and
+  # produce a silent dud). Space links merge into --confluence_space; page
+  # links seed the internal page-id list (no longer its own CLI flag).
+  folder_inputs, confluence_spaces, confluence_page_ids = (
+      confluence_tools.partition_sources(
+          folder_inputs,
+          _CONFLUENCE_SPACES.value,
+          [],
+      )
+  )
+  doc_inputs, confluence_spaces, confluence_page_ids = (
+      confluence_tools.partition_sources(
+          doc_inputs, confluence_spaces, confluence_page_ids
+      )
+  )
+
+  # Same lift for SharePoint URLs — site URLs land in --sharepoint_sites and
+  # file links seed the internal file-id list (no longer its own CLI flag).
+  # Viewer/sharing links surface a warning (sourcedoc GUIDs can't be resolved
+  # to a Graph driveItem id without a roundtrip we'd rather not bake into a
+  # parse step).
+  folder_inputs, sharepoint_sites, sharepoint_file_ids = (
+      sharepoint_tools.partition_sources(
+          folder_inputs,
+          _SHAREPOINT_SITES.value,
+          [],
+      )
+  )
+  doc_inputs, sharepoint_sites, sharepoint_file_ids = (
+      sharepoint_tools.partition_sources(
+          doc_inputs, sharepoint_sites, sharepoint_file_ids
+      )
+  )
+
+  # Credentials gate — SharePoint only. Triggers ONLY when the user actually
+  # asked for SharePoint reads AND no creds are configured. Stays silent
+  # otherwise so users who never touch SharePoint aren't prompted. On a tty we
+  # offer to launch setup_sharepoint.py inline; on a non-tty we hard-error.
+  sp_requested = bool(sharepoint_sites or sharepoint_file_ids)
+  if sp_requested:
+    # Load persisted Microsoft IDs lazily — only when SharePoint is used, so a
+    # normal run never reads the env file or mutates os.environ.
+    _source_microsoft_env()
+  if sp_requested and not sharepoint_tools._credentials_configured():
+    msg = (
+        "SharePoint sources were specified but no Microsoft credentials"
+        " are configured. Run:\n"
+        "  python3 toolbox/enrichment/scripts/setup_sharepoint.py\n"
+        "for a one-time interactive walkthrough (registers Entra app +"
+        " populates MSAL cache for silent refresh)."
+    )
+    if sys.stdin.isatty() and sys.stdout.isatty():
+      print(msg)
+      print()
+      try:
+        answer = input(
+            "Launch setup_sharepoint.py now? [Y/n] (Ctrl+C to abort): "
+        ).strip().lower() or "y"
+      except (EOFError, KeyboardInterrupt):
+        print()
+        raise app.UsageError(
+            "Aborted — re-run agent_runner.py after setup is complete."
+        )
+      if answer.startswith("y"):
+        # Spawn setup_sharepoint.py in this same Python; on success
+        # continue the agent run. On failure / non-zero exit, bail.
+        import subprocess  # noqa: PLC0415
+        setup_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..",
+            "scripts",
+            "setup_sharepoint.py",
+        )
+        rc = subprocess.call([sys.executable, setup_path])
+        if rc != 0:
+          raise app.UsageError(
+              "setup_sharepoint.py exited non-zero — re-run agent_runner.py"
+              " once setup is healthy."
+          )
+        # Pick up the env vars setup_sharepoint.py just wrote to the
+        # config file — subprocess env mutations don't propagate to
+        # the parent process, so we re-source here.
+        _source_microsoft_env()
+        if not sharepoint_tools._credentials_configured():
+          raise app.UsageError(
+              "Setup script claimed success but credentials still don't"
+              " look configured — make sure ~/.config/kc_agent/microsoft.env"
+              " got written, then re-run agent_runner.py."
+          )
+      else:
+        raise app.UsageError(
+            "Re-run after completing SharePoint setup (or remove the"
+            " --sharepoint_* flags / SharePoint URLs from --folders/--docs)."
+        )
+    else:
+      raise app.UsageError(msg)
 
   if mode == "context_overlay":
     if not _DATASET.value:
@@ -252,7 +440,7 @@ def main(argv):
             _OUTPUT_DIR.value,
             _MODEL.value,
             _ENTRY_GROUP.value,
-            docs=_DOCS.value,
+            docs=doc_inputs,
             tables_filter=_TABLES.value,
             include_usage=_INCLUDE_USAGE.value,
             usage_window_days=_USAGE_WINDOW_DAYS.value,
@@ -265,6 +453,13 @@ def main(argv):
             repo_subdir=_REPO_SUBDIR.value,
             mcp_config=_MCP_CONFIG.value,
             glossaries=_GLOSSARIES.value or None,
+            output_format=_OUTPUT_FORMAT.value,
+            confluence_spaces=confluence_spaces,
+            confluence_cql=None,
+            confluence_page_ids=confluence_page_ids,
+            sharepoint_sites=sharepoint_sites,
+            sharepoint_search=None,
+            sharepoint_file_ids=sharepoint_file_ids,
         )
     )
   elif mode == "table":
@@ -286,6 +481,13 @@ def main(argv):
             repo_ref=_REPO_REF.value,
             repo_subdir=_REPO_SUBDIR.value,
             mcp_config=_MCP_CONFIG.value,
+            output_format=_OUTPUT_FORMAT.value,
+            confluence_spaces=confluence_spaces,
+            confluence_cql=None,
+            confluence_page_ids=confluence_page_ids,
+            sharepoint_sites=sharepoint_sites,
+            sharepoint_search=None,
+            sharepoint_file_ids=sharepoint_file_ids,
         )
     )
   else:
@@ -297,7 +499,7 @@ def main(argv):
     session = asyncio.run(
         doc_mode.run(
             _TOPIC.value,
-            _DOCS.value,
+            doc_inputs,
             folder_inputs,
             _OUTPUT_DIR.value,
             _MODEL.value,
@@ -318,6 +520,13 @@ def main(argv):
             usage_window_days=_USAGE_WINDOW_DAYS.value,
             anonymize_users=_ANONYMIZE_USERS.value,
             usage_scope=_USAGE_SCOPE.value,
+            output_format=_OUTPUT_FORMAT.value,
+            confluence_spaces=confluence_spaces,
+            confluence_cql=None,
+            confluence_page_ids=confluence_page_ids,
+            sharepoint_sites=sharepoint_sites,
+            sharepoint_search=None,
+            sharepoint_file_ids=sharepoint_file_ids,
         )
     )
 
