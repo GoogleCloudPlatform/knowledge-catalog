@@ -1,0 +1,56 @@
+{
+  "_comment": "Table-mode golden for enriching a SCHEMA-ONLY replica of the public bigquery-public-data.ga4_obfuscated_sample_ecommerce dataset (OKF's ga4_merch_store sample). The real export is date-sharded (events_YYYYMMDD); we replicate ONE representative `events` table with the same schema, descriptions stripped, via eval/tools/make_public_replica.py (so enrichment must come from the grounding corpus). Out-of-the-box flow: build the replica, run the agent in table mode against it grounded by eval/corpora/ga4_obfuscated_sample_ecommerce/, then score with `python -m eval --output-dir <out> --golden goldens/table_ga4_obfuscated_sample_ecommerce.json`. Scoring matches each table by NAME. This is OKF's single-denormalized-table sample (contrasts crypto_bitcoin's multi-table FK story): one wide events table with nested/repeated RECORDs. Facts grounded in the GA4 BigQuery Export documentation.",
+  "corpus": "ga4_obfuscated_sample_ecommerce",
+  "dataset": "bigquery-public-data.ga4_obfuscated_sample_ecommerce",
+  "_dataset_doc": "Public SOURCE dataset (date-sharded events_YYYYMMDD). Build a schema-only, description-stripped single-`events` replica in your project with `python eval/tools/make_public_replica.py --source bigquery-public-data.ga4_obfuscated_sample_ecommerce --dataset ga4_obfuscated_sample_ecommerce --tables events_20210131=events --project <p>`.",
+  "grounding": "eval/corpora/ga4_obfuscated_sample_ecommerce (2 local markdown docs: dataset overview, events schema/nested records) — pass as --folders to the agent.",
+  "run": {
+    "_doc": "Runnable CASE for `python -m eval --run --project <p>`: build the schema-only replica (one representative events table), then enrich it in table mode grounded by the local corpus. --folders is relative to agents/enrichment.",
+    "mode": "table",
+    "topic": "Metadata enrichment",
+    "folders": "eval/corpora/ga4_obfuscated_sample_ecommerce",
+    "setup": {
+      "schema_only_replica": {
+        "builder": "make_public_replica.py",
+        "source": "bigquery-public-data.ga4_obfuscated_sample_ecommerce",
+        "dataset": "ga4_obfuscated_sample_ecommerce",
+        "tables": ["events_20210131=events"]
+      }
+    }
+  },
+  "business_terms": [
+    "Event",
+    "Session",
+    "User Pseudo ID",
+    "Event Parameter",
+    "Purchase",
+    "Item",
+    "Traffic Source",
+    "Ecommerce"
+  ],
+  "tables": [
+    {
+      "table": "events",
+      "golden_facts": [
+        "holds one row per GA4 event from the Google Merchandise Store -- event-based, not session- or pageview-based",
+        "event_name identifies the interaction (e.g. page_view, view_item, add_to_cart, begin_checkout, purchase) and event_timestamp is microseconds since epoch",
+        "event_params is a repeated key-value record of event-scoped parameters (e.g. page_location, ga_session_id, currency, value) read by UNNEST + filtering on key",
+        "user_pseudo_id is the pseudonymous device identifier (the primary key for counting users); user_id is the business user id used to stitch a signed-in user across devices",
+        "nested RECORD columns device, geo, and traffic_source capture per-event context (device category/OS, country/city, acquisition source/medium)",
+        "ecommerce holds order-level metrics (e.g. purchase_revenue_in_usd, total_item_quantity) and items is a repeated record of the products in the event (item_id, item_name, price, quantity)",
+        "a session is reconstructed at query time from user_pseudo_id plus the ga_session_id event parameter -- there is no separate session or order table"
+      ],
+      "business_terms": [
+        "Event",
+        "Session",
+        "User Pseudo ID",
+        "Purchase",
+        "Item"
+      ]
+    }
+  ],
+  "expected_headings": [
+    "Lineage",
+    "Sample Queries"
+  ]
+}

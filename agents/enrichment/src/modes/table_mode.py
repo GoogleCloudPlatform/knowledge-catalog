@@ -17,11 +17,9 @@ import asyncio
 import json
 import os
 import re
-import time
 import typing as t
 import common
 from engine import (
-    _light_model,
     create_doc_query_extractor_runner,
     create_doc_summarizer_runner,
     create_router_runner,
@@ -122,7 +120,7 @@ def _write_table_files(
   with open(overview_path, "w") as f:
     f.write(common.clean_overview_body(overview_body) + "\n")
 
-  # kcmd's standard layout (see agents/mdcode/src/libts/layouts/standard.ts)
+  # kcmd's standard layout (see toolbox/mdcode/src/libts/layouts/standard.ts)
   # routes BOTH `<table>.overview.md` AND
   # `<table>.dataplex-types.global.overview.md`
   # to the same aspect key — files are processed in readdir order and the
@@ -143,17 +141,49 @@ def _write_table_files(
   return [os.path.join(rel_dir, f"{table}.overview.md")]
 
 
+def _split_descriptor_concepts(raw, table_names):
+  """Split the summarizer output into (router descriptor, per-doc concepts).
+
+  The summarizer emits the Title/Summary/Key-entities descriptor followed by a
+  <CONCEPTS>[...]</CONCEPTS> JSON block (v3: cross-table facts found in THIS doc).
+  We strip the block from the descriptor (so the router prompt is unchanged) and
+  return the parsed concept list, normalizing table tags to real dataset tables.
+  """
+  raw = raw or ""
+  concepts = []
+  m = re.search(r"<CONCEPTS>(.*?)</CONCEPTS>", raw, re.S)
+  if m:
+    try:
+      arr = json.loads(m.group(1).strip() or "[]")
+    except (ValueError, json.JSONDecodeError):
+      arr = []
+    for c in arr if isinstance(arr, list) else []:
+      if not isinstance(c, dict):
+        continue
+      tabs = [str(t) for t in (c.get("tables") or [])]
+      if table_names:
+        tabs = [t for t in tabs if t in table_names]
+      body = (c.get("body") or "").strip()
+      if tabs and body:
+        concepts.append({"kind": str(c.get("kind", "")), "tables": tabs,
+                         "title": (c.get("title") or "").strip(), "body": body})
+  descriptor = re.sub(r"<CONCEPTS>.*?</CONCEPTS>", "", raw, flags=re.S).strip()
+  return descriptor, concepts
+
+
 async def _prepare_docs(
     topic: str,
     folders: list[str] | None,
     usage_acc: t.Dict[str, int],
     model: str,
+    table_names: list[str] | None = None,
 ) -> t.List[t.Dict[str, t.Any]]:
   """Fetch grounding docs from each folder and summarize into router descriptors.
 
   `folders` is a mixed, comma-separated list routed per entry (see
   drive_tools.is_local_path): a Drive folder URL/ID is listed via the Drive
-  API; a local directory (or .md file) grounds overviews from disk.
+  API; a local directory (or .md file) grounds overviews from disk. Both are
+  summarized the same way.
 
   Args:
     topic: Focus topic.
@@ -218,19 +248,22 @@ async def _prepare_docs(
           modified_time=f.get("modifiedTime"),
       )
     async with sem:
+      tbls = f"DATASET TABLES: {table_names}\n\n" if table_names else ""
       prompt = (
-          f"DOCUMENT TITLE: {name}\nSOURCE URL: {url}\n\nDOCUMENT"
+          f"{tbls}DOCUMENT TITLE: {name}\nSOURCE URL: {url}\n\nDOCUMENT"
           f" CONTENT:\n{content[:50000]}"
       )
-      descriptor = await common.run_text(
+      raw = await common.run_text(
           create_doc_summarizer_runner(model), prompt, usage_acc
       )
+    descriptor, concepts = _split_descriptor_concepts(raw, table_names)
     return {
         "id": idx,
         "name": name,
         "url": url,
         "content": content,
-        "descriptor": descriptor.strip(),
+        "descriptor": descriptor,
+        "concepts": concepts,
         "_kind": "local_md" if f.get("_local") else "gdoc",
     }
 
@@ -417,6 +450,121 @@ async def _route_docs_for_table(
   return _parse_router(text, len(docs))
 
 
+# §6.4 cross-table context (v3). Cross-table facts (joins, metrics, source-of-
+# truth/grain relationships) are extracted PER DOC during the summarization read
+# (see create_doc_summarizer_runner + _split_descriptor_concepts), then merged
+# here by _aggregate_concepts and injected into each table's prompt ONLY for the
+# concepts that name it. This mirrors OKF's shared references/{joins,metrics}
+# that every contributing table links to — but folds extraction into a read we
+# already do (no separate full-corpus pass) and reconnects cross-doc facts in a
+# cheap merge step.
+SHARED_CONCEPT_INSTRUCTION = (
+    "You consolidate CROSS-TABLE facts extracted from a dataset's documentation "
+    "so each table's overview can include the relationships and metrics that "
+    "involve it. Only merge or connect what the inputs state — never invent "
+    "joins, keys, or formulas. Output STRICT JSON only, no prose."
+)
+
+
+async def _aggregate_concepts(docs, table_names, usage_acc):
+  """Aggregate the per-doc cross-table concepts (already extracted during the
+  summarization read) into the dataset's shared-concept list. Two steps:
+    1. Deterministic dedup — collapse exact (kind, tables, title) repeats.
+    2. ONE small flash merge pass over the COMPACT concept list (not full docs)
+       to fold near-duplicates and CONNECT facts that only emerge across docs
+       (e.g. one doc gives a join key, another names the table it joins to).
+  Replaces the old full-corpus extraction call: same shared concepts, but the
+  expensive whole-doc read is reused from summarization, so it's far cheaper."""
+  raw = [c for d in docs for c in (d.get("concepts") or [])]
+  if not raw:
+    return []
+  # 1. Deterministic dedup, keeping the most complete body.
+  by_key = {}
+  for c in raw:
+    key = (c.get("kind", ""), tuple(sorted(c.get("tables", []))),
+           (c.get("title", "") or "").strip().lower())
+    prev = by_key.get(key)
+    if prev is None or len(c.get("body", "")) > len(prev.get("body", "")):
+      by_key[key] = c
+  deduped = list(by_key.values())
+  if len(deduped) <= 1:
+    return deduped
+  # 2. Small flash merge/connect pass (compact bullets, no doc bodies).
+  listing = "\n".join(
+      f"{i}. [{c['kind']}] tables={c['tables']} | {c['title']}: {c['body']}"
+      for i, c in enumerate(deduped))
+  prompt = (
+      f"DATASET TABLES: {table_names}\n\nEXTRACTED CROSS-TABLE FACTS (one per"
+      f" line, gathered from separate documents):\n{listing}\n\n"
+      "Consolidate this list: (a) MERGE entries that state the same fact (keep"
+      " the most complete wording, union their tables); (b) CONNECT facts that"
+      " only emerge by combining entries — e.g. one names a join key and another"
+      " names the table it joins to — into a single complete fact; (c) DROP an"
+      " entry only if it is a pure duplicate. Do NOT invent any join, key, or"
+      " formula not present above; do NOT add tables outside DATASET TABLES.\n"
+      "Return STRICT JSON: {\"concepts\":[{\"kind\":...,\"tables\":[...],"
+      "\"title\":...,\"body\":...}, ...]}."
+  )
+  text = await common.generate_text_direct(
+      SHARED_CONCEPT_INSTRUCTION, prompt, _WRITER_MODEL, usage_acc)
+  m = re.search(r"\{.*\}", text or "", re.S)
+  try:
+    obj = json.loads(m.group(0)) if m else {}
+    merged = obj.get("concepts", []) if isinstance(obj, dict) else []
+  except (ValueError, json.JSONDecodeError):
+    merged = []
+  out = []
+  for c in merged:
+    if not isinstance(c, dict):
+      continue
+    tabs = [str(t) for t in (c.get("tables") or []) if str(t) in table_names]
+    body = (c.get("body") or "").strip()
+    if tabs and body:
+      out.append({"kind": str(c.get("kind", "")), "tables": tabs,
+                  "title": (c.get("title") or "").strip(), "body": body})
+  # Fallback: never lose facts if the merge pass returns nothing usable.
+  return out or deduped
+
+
+def build_shared_concept_block(shared_concepts, table_name) -> str:
+  """Filter the dataset's aggregated shared concepts to those that name
+  `table_name` and format them as prompt bullets (or "(none)").
+
+  Bidirectional by design: a concept tagged `tables=[A, B]` is returned for BOTH
+  A and B, so the relationship reaches a table even when the other table's
+  per-table documents are the only ones that state it. Shared verbatim by table
+  mode AND context-overlay/hybrid mode so the injection format never drifts (see
+  `cross_table_context_section`)."""
+  mine = [c for c in (shared_concepts or [])
+          if table_name in (c.get("tables") or [])]
+  if not mine:
+    return "(none)"
+  return "\n".join(
+      f"- [{c['kind']}] {c['title']}: {c['body']}" for c in mine)
+
+
+def cross_table_context_section(shared_block: str) -> str:
+  """The additive CROSS-TABLE SHARED CONTEXT prompt section appended to a
+  per-table writer prompt. `shared_block` is the output of
+  `build_shared_concept_block`. Shared by table mode and
+  context-overlay/hybrid mode so the wording (and its strict "additional, never
+  drop a document fact" contract) stays identical across modes — this is v3's
+  cross-table-concepts feature, now applied in every per-table writer."""
+  return (
+      "CROSS-TABLE SHARED CONTEXT"
+      " (joins / metrics / source-of-truth & grain relationships that involve"
+      " THIS table, distilled once from the dataset's docs — including"
+      " relationships where ANOTHER table references THIS one, which the"
+      " per-table documents above may not state). This is STRICTLY ADDITIONAL"
+      " context: first cover everything the documents above support exactly as"
+      " you would WITHOUT this block, then ADD the relevant cross-table facts"
+      " on top — e.g. a `## Relationships` / `## Joins` section. NEVER drop,"
+      " shorten, or omit a document-grounded fact to make room for these."
+      " They are grounded; state them but do NOT invent beyond them, and do"
+      f" NOT describe other tables for their own sake:\n"
+      f"{shared_block}")
+
+
 async def run(
     dataset: str,
     folders: list[str] | None,
@@ -436,7 +584,6 @@ async def run(
     repo_subdir: str = "",
     mcp_config: str = "",
 ):
-  _t0 = time.monotonic()
   project, dataset_id = _parse_dataset(dataset)
   # --folder is a mixed list (Drive folders and/or local md dirs); each entry is
   # routed and id-extracted per entry inside _prepare_docs.
@@ -512,7 +659,6 @@ async def run(
         kcmd_tools.pull_glossary_as_reference,
         output_dir,
         project,
-        dataset_id,
         glossary_scope,
     )
     print(
@@ -551,7 +697,7 @@ async def run(
         flush=True,
     )
     docs, usage_by_table = await asyncio.gather(
-        _prepare_docs(topic, folders, usage_acc, model),
+        _prepare_docs(topic, folders, usage_acc, model, table_names=[m["table"] for m in tables]),
         asyncio.to_thread(
             bq_usage_tools.fetch_dataset_usage,
             project,
@@ -571,7 +717,7 @@ async def run(
         flush=True,
     )
   else:
-    docs = await _prepare_docs(topic, folders, usage_acc, model)
+    docs = await _prepare_docs(topic, folders, usage_acc, model, table_names=[m["table"] for m in tables])
     usage_by_table = {}
   # Source-code source (optional): explore a GitHub repo agentically and add its
   # component cards to the candidate-document pool. They are scored by the same
@@ -620,6 +766,17 @@ async def run(
       return meta["table"], selected
 
   routing = dict(await asyncio.gather(*[_route_one(m) for m in tables]))
+
+  # §6.4 fix (OKF-style): distill the dataset's cross-table facts ONCE into
+  # structured shared concepts (joins/metrics/relationships), each tagged with
+  # the tables it involves. Per-table routing silos each overview to its own
+  # docs, so a cross-table fact the router scored for table A never reaches table
+  # B even when it is about B; injecting the relevant shared concepts per table
+  # fixes that without dumping raw other-table docs (which distracts the writer).
+  print("[Agent] 🔗 Aggregating per-doc cross-table concepts...", flush=True)
+  shared_concepts = await _aggregate_concepts(
+      docs, [m["table"] for m in tables], usage_acc)
+  print(f"[Agent] ✅ {len(shared_concepts)} shared concept(s).", flush=True)
 
   # 4. ENUMERATE — shared EnumerationAgent groups tables into categories.
   # Seed entries are the tables themselves; the agent only assigns categories.
@@ -700,6 +857,10 @@ async def run(
         )
       else:
         context = "(none — document this table from its schema/metadata only)"
+      # §6.4 (OKF-style): inject ONLY the shared concepts that name THIS table.
+      # Shared helper so table / context-overlay / hybrid all build this block
+      # identically (build_shared_concept_block + cross_table_context_section).
+      shared_block = build_shared_concept_block(shared_concepts, meta["table"])
       table_block = kcmd_tools.flatten_table_for_prompt(meta)
       # Table-mode-specific directive on top of the shared writer
       # instruction: any SQL example we find in the docs belongs in the
@@ -729,13 +890,15 @@ async def run(
           + ("\n".join(f"  - {d['url']}" for d in sel_docs) or "  (none)")
           + "\n\nTARGET TABLE METADATA (from kcmd"
           f" snapshot):\n{table_block}\n\nRELEVANT CONTEXT DOCUMENTS (routed"
-          f" for this table only):\n{context}\n\nWrite the overview Markdown"
+          f" for this table only):\n{context}\n\n"
+          + cross_table_context_section(shared_block)
+          + "\n\nWrite the overview Markdown"
           " body for this table now."
           + table_mode_directive
           + feedback_block
       )
       body = await common.generate_text_direct(
-          ENTRY_WRITER_INSTRUCTION, prompt, _light_model(model), usage_acc
+          ENTRY_WRITER_INSTRUCTION, prompt, _WRITER_MODEL, usage_acc
       )
       written = _write_table_files(output_dir, project, dataset_id, meta, body)
       # Merge INFORMATION_SCHEMA-derived patterns + SQL examples extracted
@@ -790,7 +953,7 @@ async def run(
           description=meta.get("description", "") or "",
           category_id=cat_id,
           grounding_prompt=prompt,
-          writer_model=_light_model(model),
+          writer_model=_WRITER_MODEL,
           overview_body=body,
           overview_path=os.path.join(
               kcmd_tools._dataset_dir(output_dir, project, dataset_id),
@@ -862,7 +1025,6 @@ async def run(
         tool_responses,
         final_text,
         usage_acc,
-        latency=time.monotonic() - _t0,
     )
   from tools.drive_tools import get_cache_stats
 
@@ -940,3 +1102,8 @@ def _inject_category(
   except (OSError, yaml.YAMLError):
     pass
 
+
+# Flash for the per-table writer: small inputs (one table + a few docs) stay
+# well under the ADK 32K Flash routing cap. Pro is still the user-supplied
+# --model and is used by the enumerator (which needs reasoning across all tables).
+_WRITER_MODEL = os.environ.get("KC_LIGHT_MODEL", "gemini-2.5-flash")

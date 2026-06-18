@@ -27,7 +27,7 @@ import yaml
 def _resolve_kcmd() -> str:
   """Locate the kcmd binary: $KCMD_BIN, then the vendored
 
-  agents/mdcode/dist/kcmd (built via `cd agents/mdcode && npm install &&
+  toolbox/mdcode/dist/kcmd (built via `cd toolbox/mdcode && npm install &&
   npm run build`), then `kcmd` on PATH (e.g. an `npm install -g`ed kcmd).
   """
   env_bin = os.environ.get("KCMD_BIN")
@@ -180,12 +180,116 @@ _OVERLAY_MANIFEST = (
     "      - dataplex-types.global.overview\n"
 )
 
+
+def _build_eg_manifest(
+    project: str,
+    location: str,
+    eg: str,
+    entry_type: str,
+    with_glossary_links: bool = False,
+) -> str:
+  """KB/EntryGroup manifest with optional `entryLinks: [definition]` wired
+
+  into snapshot and publishing (so `kcmd pull` brings down existing
+  entry→term links and `kcmd push` reconciles agent-added ones).
+
+  Uses `definition` (directed: SOURCE=entry, TARGET=glossary term) rather
+  than `related` so the link round-trips through kcmd's existing push
+  reconciliation (which keys on SOURCE/TARGET ref types). Semantically
+  `related` would be a tighter fit, but `related` is undirected and the
+  reconciler needs additional work to dedup undirected links.
+  """
+  if not with_glossary_links:
+    return _EG_MANIFEST.format(
+        project=project, location=location, eg=eg, entry_type=entry_type
+    )
+  return (
+      f"scope: entryGroup.{project}.{location}.{eg}\n"
+      "snapshot:\n"
+      "  entries:\n"
+      f"    - {entry_type}\n"
+      "  aspects:\n"
+      "    - dataplex-types.global.generic\n"
+      "    - dataplex-types.global.overview\n"
+      "  entryLinks:\n"
+      "    - definition\n"
+      "publishing:\n"
+      "  entries:\n"
+      f"    - {entry_type}\n"
+      "  aspects:\n"
+      "    - dataplex-types.global.generic\n"
+      "    - dataplex-types.global.overview\n"
+      "  entryLinks:\n"
+      "    - definition\n"
+  )
+
+
+def _build_overlay_manifest(
+    project: str,
+    location: str,
+    eg: str,
+    ref_project: str,
+    ref_dataset: str,
+    entry_type: str,
+    with_glossary_links: bool = False,
+) -> str:
+  """Context-overlay manifest with optional `entryLinks: [definition]` in
+
+  snapshot+publishing — links are anchored on the overlay entry (in the
+  user's EG), TARGET is a glossary term. SOURCE never points at the BQ
+  reference entry, so Dataplex's `@bigquery`-EG-only constraint for
+  BQ-anchored links doesn't apply, and the link resource lives in the
+  user's overlay EG → full version control via `kcmd pull`/`push`.
+
+  Uses `definition` (directed) to match table mode's reconciliation
+  semantics; see `_build_eg_manifest` rationale.
+  """
+  if not with_glossary_links:
+    return _OVERLAY_MANIFEST.format(
+        project=project,
+        location=location,
+        eg=eg,
+        ref_project=ref_project,
+        ref_dataset=ref_dataset,
+        entry_type=entry_type,
+    )
+  return (
+      f"scope: entryGroup.{project}.{location}.{eg}\n"
+      "snapshot:\n"
+      "  entries:\n"
+      f"    - {entry_type}\n"
+      "  aspects:\n"
+      "    - dataplex-types.global.generic\n"
+      "    - dataplex-types.global.overview\n"
+      "    - dataplex-types.global.queries\n"
+      "  entryLinks:\n"
+      "    - definition\n"
+      "publishing:\n"
+      "  entries:\n"
+      f"    - {entry_type}\n"
+      "  aspects:\n"
+      "    - dataplex-types.global.generic\n"
+      "    - dataplex-types.global.overview\n"
+      "    - dataplex-types.global.queries\n"
+      "  entryLinks:\n"
+      "    - definition\n"
+      "reference:\n"
+      f"  scope: bq-dataset.{ref_project}.{ref_dataset}\n"
+      "  snapshot:\n"
+      "    entries:\n"
+      "      - dataplex-types.global.bigquery-table\n"
+      "    aspects:\n"
+      "      - dataplex-types.global.schema\n"
+      "      - dataplex-types.global.overview\n"
+  )
+
+
 def _run(
     args: list[str], cwd: str, project: str | None = None, timeout: int = 300
 ) -> tuple[bool, str]:
   if not os.path.exists(KCMD_BIN):
     return False, (
-        f"kcmd not found. Build it: `cd agents/mdcode && npm install "
+        f"kcmd not found. Build it: `cd toolbox/mdcode && npm install "
         f"&& npm run build`, or set $KCMD_BIN / npm install -g kcmd."
     )
   env = os.environ.copy()
@@ -243,30 +347,36 @@ def init_pull_dataset(
 def pull_glossary_as_reference(
     output_dir: str,
     project: str,
-    dataset: str,
     glossary_scope: str,
 ) -> tuple[bool, str]:
   """Side-channel pull of glossary terms into the workspace as a one-off
 
   reference fetch. Temporarily swaps `catalog.yaml` to point the reference
-  scope at the glossary, runs `kcmd reference` (writes
-  `catalog/glossaries/.../*.ref.yaml`), then restores the original
-  `catalog.yaml` so subsequent `kcmd pull`/`push`/`reference` runs see the
-  caller's manifest unchanged.
+  scope at the glossary while preserving the caller's existing main `scope:`
+  line, runs `kcmd reference` (writes `catalog/glossaries/.../*.ref.yaml`),
+  then restores the original `catalog.yaml` so subsequent
+  `kcmd pull`/`push`/`reference` runs see the caller's manifest unchanged.
 
-  `dataset` is only needed because the main `scope:` line must be a valid
-  parseable scope — we use the caller's BQ dataset as a no-op main scope.
+  Auto-detects the main scope from the existing catalog.yaml — works for any
+  source type (bq-dataset, entryGroup, kb, glossary, ...). The caller must
+  have already written a valid catalog.yaml (typically via `init_pull_*` or
+  `init_reference`).
   """
   manifest_path = os.path.join(output_dir, "catalog.yaml")
   with open(manifest_path) as f:
     original = f.read()
+  # Preserve whatever `scope:` line the caller's manifest already declares;
+  # kcmd just needs SOME parseable main scope to load the manifest, and we
+  # don't trigger any main-scope pull/push between the swap and restore.
+  main_scope_line = next(
+      (line for line in original.splitlines() if line.startswith("scope:")),
+      None,
+  )
+  if main_scope_line is None:
+    return False, "catalog.yaml has no 'scope:' line"
   try:
     with open(manifest_path, "w") as f:
-      f.write(
-          f"scope: bq-dataset.{project}.{dataset}\n"
-          "reference:\n"
-          f"  scope: {glossary_scope}\n"
-      )
+      f.write(f"{main_scope_line}\nreference:\n  scope: {glossary_scope}\n")
     return _run(["reference"], output_dir, project, 300)
   finally:
     with open(manifest_path, "w") as f:
@@ -438,6 +548,7 @@ def _read_table_meta_path(
       "display_name": res.get("displayName", table),
       "description": res.get("description", ""),
       "schema_fields": schema_fields,
+      "source_entry_id": res.get("name", ""),
       "existing_overview": _aspect(entry, "overview").get("content", ""),
       "resource_name": (entry.get("resource", {}) or {}).get("name", ""),
   }
@@ -487,6 +598,7 @@ def init_entry_group(
     output_dir: str,
     entry_group: str,
     entry_type: str = "dataplex-types.global.generic",
+    with_glossary_links: bool = False,
 ) -> tuple[bool, str]:
   """Scaffold the catalog.yaml with `kcmd init --entry-group <proj>.<loc>.<eg>`.
 
@@ -494,6 +606,12 @@ def init_entry_group(
   for a brand-new entry group, and its bare `scope:` output lacks
   snapshot/publishing). `entry_group` is `project.location.eg`; `entry_type` is
   the full `project.location.entryTypeId` for the entries.
+
+  When `with_glossary_links=True`, the manifest also declares
+  `entryLinks: [definition]` so `kcmd pull` brings down existing entry→term
+  links and `kcmd push` reconciles agent-added ones. Callers should also
+  invoke `pull_glossary_as_reference(...)` to bring glossary terms into the
+  workspace for the EntityLinkingAgent's `terms_context`.
   """
   os.makedirs(output_dir, exist_ok=True)
   parts = entry_group.split(".")
@@ -512,11 +630,12 @@ def init_entry_group(
   if len(parts) == 3:
     with open(manifest_path, "w") as f:
       f.write(
-          _EG_MANIFEST.format(
+          _build_eg_manifest(
               project=parts[0],
               location=parts[1],
               eg=parts[2],
               entry_type=entry_type,
+              with_glossary_links=with_glossary_links,
           )
       )
     return True, msg or "wrote entry-group manifest"
@@ -527,6 +646,7 @@ def init_pull_entry_group(
     output_dir: str,
     entry_group: str,
     entry_type: str = "dataplex-types.global.generic",
+    with_glossary_links: bool = False,
 ) -> tuple[bool, str]:
   """init_entry_group + `kcmd pull`.
 
@@ -536,7 +656,9 @@ def init_pull_entry_group(
 
   Returns (ok, message).
   """
-  ok, msg = init_entry_group(output_dir, entry_group, entry_type)
+  ok, msg = init_entry_group(
+      output_dir, entry_group, entry_type, with_glossary_links
+  )
   if not ok:
     return False, msg
   parts = entry_group.split(".")
@@ -608,12 +730,14 @@ def list_kb_entries(output_dir: str) -> list[dict]:
         or entry.get("id")
         or os.path.basename(yaml_path)[: -len(".yaml")]
     )
-    # Pulled entry-group entries carry their FULL nested name
-    # (`<eg>/<project>/<location>/<entryId>`). Use only the last segment as the
-    # local id so it is a valid filename stem and a correct local `name:` when
-    # the entry is re-emitted (kcmd's entrygroup source re-prepends the EG path
-    # at push time — see sources/entrygroup.ts).
-    eid = raw_name.split("/")[-1]
+    # Pulled entry-group entries carry their FULL nested local name
+    # (`<namespace>/<project>/<location>/<entryId>`, where `<entryId>` may itself
+    # contain slashes, e.g. `a/m`). Strip ONLY the 3-segment
+    # namespace/project/location prefix and keep the remainder as the id, so
+    # path-qualified ids (`a/m`, `a/index`) round-trip cleanly through
+    # pull -> enumerate -> push instead of collapsing to the last segment.
+    parts = raw_name.split("/")
+    eid = "/".join(parts[3:]) if len(parts) > 3 else parts[-1]
     entries.append({
         "id": eid,
         "display_name": resource.get(
@@ -635,6 +759,7 @@ def init_reference(
     ref_project: str,
     ref_dataset: str,
     entry_type: str = "dataplex-types.global.generic",
+    with_glossary_links: bool = False,
 ) -> tuple[bool, str]:
   """Write the overlay manifest (editable `scope:` EG + `reference:` bq-dataset)
 
@@ -643,7 +768,11 @@ def init_reference(
   directly.
 
   `entry_group` is `project.location.eg` (where overlays will be pushed);
-  `ref_project.ref_dataset` is the BigQuery dataset whose tables are referenced.
+  `ref_project.ref_dataset` is the BigQuery dataset whose tables are
+  referenced. When `with_glossary_links=True`, the manifest declares
+  `entryLinks: [definition]` so overlay→term links round-trip via `kcmd
+  pull`/`push`; callers should also invoke `pull_glossary_as_reference(...)`
+  to bring glossary terms into the workspace.
   """
   os.makedirs(output_dir, exist_ok=True)
   parts = entry_group.split(".")
@@ -655,16 +784,53 @@ def init_reference(
   project, location, eg = parts
   with open(os.path.join(output_dir, "catalog.yaml"), "w") as f:
     f.write(
-        _OVERLAY_MANIFEST.format(
+        _build_overlay_manifest(
             project=project,
             location=location,
             eg=eg,
-            entry_type=entry_type,
             ref_project=ref_project,
             ref_dataset=ref_dataset,
+            entry_type=entry_type,
+            with_glossary_links=with_glossary_links,
         )
     )
   return _run(["reference"], output_dir, ref_project, 300)
+
+
+def init_reference_and_pull(
+    output_dir: str,
+    entry_group: str,
+    ref_project: str,
+    ref_dataset: str,
+    entry_type: str = "dataplex-types.global.generic",
+    with_glossary_links: bool = False,
+) -> tuple[bool, str]:
+  """Scaffold for HYBRID mode (doc KB entries + table context-overlays in one EG).
+
+  Writes the OVERLAY manifest (a superset of the entry-group manifest: same EG
+  `scope:` publishing generic+overview, plus the `queries` aspect and a
+  `reference:` bq-dataset section), then runs BOTH:
+    * `kcmd reference` — pulls the read-only 1P table entries
+      (`catalog/bigquery/<proj>/<ds>/<table>.ref.yaml`) that ground the overlays;
+    * `kcmd pull`      — pulls any pre-existing entry-group entries so doc-mode
+      can seed/preserve them (exactly like `init_pull_entry_group`).
+
+  So one scaffold supports both entry kinds: doc KB entries (generic+overview)
+  and table overlays (generic+overview+queries), with the BQ tables referenced.
+  Returns (ok, message). A NOT_FOUND on pull (empty/new EG) is treated as OK.
+  """
+  ok, msg = init_reference(
+      output_dir, entry_group, ref_project, ref_dataset, entry_type,
+      with_glossary_links,
+  )
+  if not ok:
+    return False, msg
+  eg_project = entry_group.split(".")[0]
+  ok_pull, msg_pull = _run(["pull"], output_dir, eg_project, 300)
+  combined = (msg + "\n" + msg_pull).strip()[-600:]
+  if not ok_pull and ("NOT_FOUND" in combined or "does not exist" in combined):
+    return True, "(reference OK; entry group not found on cloud — empty local state)"
+  return ok_pull, combined
 
 
 def _reference_dir(output_dir: str, project: str, dataset: str) -> str:

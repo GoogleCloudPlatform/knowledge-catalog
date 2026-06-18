@@ -4,6 +4,11 @@ Dispatches to one of three flows based on `--mode`:
   * doc    — recursive Google-Docs crawl -> map-reduce summarize -> LLM-emitted
              knowledge-base mdcode entries (manifest scaffolded by
              `kcmd init --entry-group`; a normal entry group, STANDARD layout).
+             HYBRID: if `--dataset` is ALSO passed in doc mode, doc mode adds a
+             context-overlay entry per table in that dataset (grounded by the
+             same docs), alongside the standalone KB entries — for knowledge that
+             doesn't belong on a single table. One entry group hosts both (the EG
+             is scaffolded with the overlay manifest + the dataset referenced).
   * table  — kcmd-pulled BigQuery dataset discovery -> relevance-routed,
              folder-grounded table overviews (kcmd bq-dataset format).
   * context_overlay — like table, but the 1P table entries are pulled READ-ONLY
@@ -12,6 +17,8 @@ Dispatches to one of three flows based on `--mode`:
 
 When `--mode` is empty it is inferred: a `--dataset` implies table, else doc.
 (context_overlay is never inferred — pass `--mode=context_overlay` explicitly.)
+(HYBRID is never inferred either — pass `--mode=doc` WITH `--dataset` explicitly;
+a bare `--dataset` still infers plain table mode.)
 
 The agent runs the READ-ONLY kcmd commands itself (`init`, `pull`); generating
 `catalog.yaml` + the local entries. The customer runs `kcmd push` to publish.
@@ -257,6 +264,7 @@ def main(argv):
             repo_ref=_REPO_REF.value,
             repo_subdir=_REPO_SUBDIR.value,
             mcp_config=_MCP_CONFIG.value,
+            glossaries=_GLOSSARIES.value or None,
         )
     )
   elif mode == "table":
@@ -300,6 +308,16 @@ def main(argv):
             repo_ref=_REPO_REF.value,
             repo_subdir=_REPO_SUBDIR.value,
             mcp_config=_MCP_CONFIG.value,
+            glossaries=_GLOSSARIES.value or None,
+            # HYBRID: passing --dataset alongside --mode=doc makes doc mode ALSO
+            # emit a context-overlay entry per table in that dataset (grounded by
+            # the same docs). Empty --dataset => plain doc mode.
+            dataset=_DATASET.value,
+            tables_filter=_TABLES.value,
+            include_usage=_INCLUDE_USAGE.value,
+            usage_window_days=_USAGE_WINDOW_DAYS.value,
+            anonymize_users=_ANONYMIZE_USERS.value,
+            usage_scope=_USAGE_SCOPE.value,
         )
     )
 

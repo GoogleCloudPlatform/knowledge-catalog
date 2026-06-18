@@ -1,0 +1,98 @@
+{
+  "_comment": "Table-mode golden for enriching a SCHEMA-ONLY replica of the public bigquery-public-data.crypto_bitcoin dataset (OKF's cross-table sample, okf/samples/crypto_bitcoin). The source is hundreds of GB and ships rich column descriptions, so instead of copying it we build a schema-only, descriptions-stripped replica in your project with eval/tools/make_crypto_bitcoin_replica.py (so enrichment must come from the grounding corpus, not baked-in schema descriptions). Out-of-the-box flow: build the replica, run the agent in table mode against it grounded by eval/corpora/crypto_bitcoin/, then score with `python -m eval --output-dir <out> --golden goldens/table_crypto_bitcoin.json`. Scoring matches each table by NAME, so the project prefix in your catalog path need not match. The golden_facts below are stated in the grounding corpus (bitcoin-etl schema + GCP 'Bitcoin in BigQuery' docs). Exercises cross-table foreign-key relationships.",
+  "corpus": "crypto_bitcoin",
+  "dataset": "bigquery-public-data.crypto_bitcoin",
+  "_dataset_doc": "Public SOURCE dataset. Too large to copy and its schema ships descriptions; build a schema-only, description-stripped replica in your project with `python eval/tools/make_crypto_bitcoin_replica.py --project <p> --dataset crypto_bitcoin`, then enrich that replica.",
+  "grounding": "eval/corpora/crypto_bitcoin (4 local markdown docs: dataset overview, blocks, transactions/UTXO, inputs/outputs) — pass as --folders to the agent.",
+  "run": {
+    "_doc": "Runnable CASE for `python -m eval --run --project <p>`: build the schema-only replica (make_crypto_bitcoin_replica.py), then enrich it in table mode grounded by the local corpus. --folders is relative to agents/enrichment.",
+    "mode": "table",
+    "topic": "Metadata enrichment",
+    "folders": "eval/corpora/crypto_bitcoin",
+    "setup": {
+      "schema_only_replica": {
+        "builder": "make_crypto_bitcoin_replica.py",
+        "dataset": "crypto_bitcoin"
+      }
+    }
+  },
+  "business_terms": [
+    "Block",
+    "Transaction",
+    "UTXO",
+    "Coinbase Transaction",
+    "Merkle Root",
+    "Block Height",
+    "Transaction Fee",
+    "Input",
+    "Output",
+    "Address"
+  ],
+  "tables": [
+    {
+      "table": "blocks",
+      "golden_facts": [
+        "holds one row per block in the Bitcoin blockchain, loaded by the open-source bitcoin-etl pipeline",
+        "hash is the block's unique identifier and is referenced by transactions.block_hash",
+        "number is the block height -- the block's sequential position in the chain (genesis block is 0), referenced by transactions.block_number",
+        "merkle_root is the root of the Merkle tree whose leaves are the block's transaction hashes",
+        "transaction_count is the number of transactions included in the block",
+        "partitioned by timestamp_month (the month of the block creation timestamp)"
+      ],
+      "business_terms": [
+        "Block",
+        "Block Height",
+        "Merkle Root"
+      ]
+    },
+    {
+      "table": "transactions",
+      "golden_facts": [
+        "holds one row per Bitcoin transaction; each transaction belongs to exactly one block",
+        "block_hash and block_number reference the containing block (blocks.hash / blocks.number)",
+        "follows the UTXO model: nested inputs spend the outputs of prior transactions and nested outputs are newly created spendable outputs",
+        "an input's spent_transaction_hash and spent_output_index reference a prior transaction's output",
+        "fee equals input_value minus output_value",
+        "is_coinbase marks the coinbase transaction, the first transaction in a block that creates new coins (the block reward)",
+        "partitioned by block_timestamp_month"
+      ],
+      "business_terms": [
+        "Transaction",
+        "UTXO",
+        "Coinbase Transaction",
+        "Transaction Fee"
+      ]
+    },
+    {
+      "table": "inputs",
+      "golden_facts": [
+        "a denormalized, one-row-per-input representation of the repeated transactions.inputs[] records",
+        "spent_transaction_hash and spent_output_index reference the previous transaction's output being consumed (the UTXO link)",
+        "joins to transactions on transaction_hash and to blocks on block_hash / block_number",
+        "carries the owning addresses and the value of the spent output"
+      ],
+      "business_terms": [
+        "Input",
+        "UTXO",
+        "Address"
+      ]
+    },
+    {
+      "table": "outputs",
+      "golden_facts": [
+        "a denormalized, one-row-per-output representation of the repeated transactions.outputs[] records",
+        "an output is identified by (transaction_hash, index) and is later referenced by a spending input's (spent_transaction_hash, spent_output_index)",
+        "carries the recipient addresses and the value of the output",
+        "joins to transactions on transaction_hash and to blocks on block_hash / block_number"
+      ],
+      "business_terms": [
+        "Output",
+        "Address"
+      ]
+    }
+  ],
+  "expected_headings": [
+    "Lineage",
+    "Sample Queries"
+  ]
+}

@@ -20,6 +20,8 @@ from typing import Callable
 
 import yaml
 
+from . import anchors
+
 Judge = Callable[[str], str]
 
 
@@ -70,7 +72,72 @@ def parse_json_obj(text: str) -> dict:
 # ============================ deterministic ============================
 
 _ENTRY_TYPE = {"doc": "dataplex-types.global.generic",
-               "table": "dataplex-types.global.bigquery-table"}
+               "table": "dataplex-types.global.bigquery-table",
+               # context_overlay + hybrid emit generic-typed entries (overlay
+               # entries in the editable EG; hybrid also emits generic KB
+               # entries). The read-only `.ref.*` bigquery-table mirrors are
+               # parked in the reference_* buckets, so they're not checked here.
+               "context_overlay": "dataplex-types.global.generic",
+               "hybrid": "dataplex-types.global.generic"}
+
+# ----------------------------- eval content scope -----------------------------
+# Content-based metrics should score an agent's facts WHEREVER the agent emits
+# them -- prose in overview.md, schema-field descriptions + glossary terms in the
+# entry YAML, query patterns in the *.queries.md sidecar -- not assume everything
+# lives in overview.md. Otherwise an agent that distributes its output (v2) is
+# penalized vs one that crams everything into the overview (OKF), even on
+# identical knowledge. Each metric below declares which GENERATED buckets it
+# reads; narrow a metric to specific file types by editing its tuple. The
+# reference_* buckets (pre-enrichment inputs) and the catalog.yaml manifest are
+# never scored as agent output.
+METRIC_CONTENT_SCOPE = {
+    "fact_recall":    ("overview_md", "yaml", "queries_md", "glossary_md"),
+    "rubric":         ("overview_md", "yaml", "queries_md", "glossary_md"),
+    "business_terms": ("overview_md", "yaml", "queries_md", "glossary_md"),
+}
+
+
+def _scoped_items(artifacts: dict, buckets) -> list[tuple[str, str]]:
+  """(path, text) pairs drawn from the given GENERATED artifact buckets, skipping
+  the catalog.yaml manifest and empty files. Missing buckets are ignored, so an
+  agent that emits only an overview (e.g. OKF) is scored on its overview while one
+  that also emits YAML / query sidecars (v2) gets credit for facts living there."""
+  items = []
+  for bucket in buckets:
+    for path, text in (artifacts.get(bucket) or {}).items():
+      if os.path.basename(path) == "catalog.yaml":
+        continue
+      if text and text.strip():
+        items.append((path, text))
+  return items
+
+
+def _scoped_blob(artifacts: dict, buckets,
+                 per_file_cap: int = 24000, total_cap: int = 240000) -> str:
+  """Single `### <path>\\n<text>` blob over the scoped buckets, for judge prompts.
+
+  Clipping is DOCUMENT-AWARE so the blob never gets bisected mid-sentence: a blunt
+  `blob[:N]` tail-cut used to slice whichever file happened to straddle the cap,
+  fabricating a "...truncated sentence" that the contradiction/structural judge then
+  penalized -- and it hit VERBOSE agents hardest (more prose pushed past the cut),
+  so a richer agent looked like a regression on absence_of_contradictions /
+  redundancy / disambiguation. Instead: clip EACH file at a word boundary with
+  `_clip` (clean, explicit "…") so no file ends mid-word, and assemble whole
+  (clipped) files up to `total_cap`, clipping only the final straddling file
+  cleanly rather than cutting a later doc in half. `per_file_cap` (> the 12K
+  overview cap) keeps any one file from dominating so every scored table is fairly
+  represented regardless of how much an agent writes."""
+  parts, used = [], 0
+  for p, t in _scoped_items(artifacts, buckets):
+    seg = f"### {p}\n{_clip(t, per_file_cap)}"
+    if used + len(seg) > total_cap:
+      remaining = total_cap - used
+      if remaining > 200:                    # room for a clean, ellipsized tail
+        parts.append(_clip(seg, remaining))
+      break                                  # never bisect a later document
+    parts.append(seg)
+    used += len(seg) + 2                      # +2 for the "\n\n" join
+  return "\n\n".join(parts)
 
 
 def check_structural(artifacts: dict, mode: str) -> MetricResult:
@@ -135,10 +202,43 @@ def check_structural(artifacts: dict, mode: str) -> MetricResult:
     bad_ov.update(unclosed)
     problems.append("overview(s) have an unclosed code fence: "
                     + ", ".join(os.path.basename(p) for p in unclosed))
-  # Score = fraction of all generated files (entry YAMLs + overview .md) that are
-  # clean. So a markdown problem lowers the score too (no more "score 1.0 but FAIL").
-  total = len(yamls) + len(overviews)
-  clean = ok + (len(overviews) - len(bad_ov))
+  # Folder/index structure: the per-folder navigation entries (index.yaml +
+  # index.overview.md emitted by _build_index_hierarchy). Validate ONLY when the
+  # agent produced index entries -- skipped for flat output (e.g. plain table
+  # mode) so it never penalizes a mode that builds no tree.
+  index_yaml = artifacts.get("index_yaml", {})
+  index_md = artifacts.get("index_md", {})
+  index_ok = 0
+  if index_yaml:
+    # (a) every directory holding a content entry must carry an index entry.
+    content_dirs = {os.path.dirname(p) for p in list(yamls) + list(overviews)}
+    index_dirs = {os.path.dirname(p) for p in index_yaml}
+    missing = sorted(d for d in content_dirs - index_dirs)
+    if missing:
+      problems.append("folder(s) missing an index entry: "
+                      + ", ".join((d or "<root>") for d in missing[:6]))
+    # (b) each index entry must be a well-formed knowledge-base-index node, and
+    #     (c) have its overview sidecar.
+    for p, t in index_yaml.items():
+      base = os.path.dirname(p) or "<root>"
+      try:
+        idoc = yaml.safe_load(t) or {}
+      except yaml.YAMLError:
+        problems.append(f"{base}/index.yaml isn't valid YAML"); continue
+      if not (idoc.get("name") or idoc.get("id")):
+        problems.append(f"{base}/index missing 'name'/'id'"); continue
+      asp = (idoc.get("aspects", {}) or {}).get("dataplex-types.global.generic", {})
+      if (asp or {}).get("type") != "knowledge-base-index":
+        problems.append(f"{base}/index not typed 'knowledge-base-index'"); continue
+      if p[: -len(".yaml")] + ".overview.md" not in index_md:
+        problems.append(f"{base}/index missing its index.overview.md sidecar"); continue
+      index_ok += 1
+
+  # Score = fraction of all generated files (entry YAMLs + overview .md + index
+  # entries) that are clean. So a markdown/index problem lowers the score too (no
+  # more "score 1.0 but FAIL").
+  total = len(yamls) + len(overviews) + len(index_yaml)
+  clean = ok + (len(overviews) - len(bad_ov)) + index_ok
   score = (clean / total) if total else 0.0
   passed = not problems and bool(overviews)
   detail = ("Some generated files aren't valid Metadata-as-Code: "
@@ -200,6 +300,19 @@ def check_expected_headings(artifacts: dict, expected: list[str]) -> MetricResul
   has_queries = bool(queries_blob.strip()) and (
       "sql:" in queries_blob or "select " in queries_blob
       or "queries:" in queries_blob)
+  # A "Lineage"/"Provenance" section is satisfied by genuine provenance CONTENT,
+  # not only the literal heading: agents often fold lineage into the intro prose
+  # or a "Relationships" section (e.g. "a BigQuery mirror of the Stack Exchange
+  # Data Dump", "produced by the bitcoin-etl pipeline", "derived from Cloud
+  # Resource Manager"). Match real provenance phrasing -- deliberately NOT bare
+  # "source" so the always-present "## Source References" citation list doesn't
+  # count as lineage.
+  _LINEAGE_INDICATORS = ("lineage", "provenance", "upstream", "derived from",
+                         "mirror of", "produced by", "exported from",
+                         "export of", "pipeline", "ingested from",
+                         "sourced from", "data dump", "loaded by",
+                         "originates from")
+  has_lineage = any(ind in blob for ind in _LINEAGE_INDICATORS)
   if not blob:
     return MetricResult("enrichment_diversity", 0.0, False,
                         "No overview produced, so none of the expected sections "
@@ -211,8 +324,11 @@ def check_expected_headings(artifacts: dict, expected: list[str]) -> MetricResul
     # A "Sample/Common/Example Queries" section is satisfied by a populated
     # queries.md sidecar even though its YAML body has no heading text.
     is_query_heading = any("quer" in a for a in aliases)
-    matched = any(a and a in blob for a in aliases) or (
-        is_query_heading and has_queries)
+    # A "Lineage"/"Provenance" section is satisfied by provenance content.
+    is_lineage_heading = any("lineage" in a or "provenance" in a for a in aliases)
+    matched = (any(a and a in blob for a in aliases)
+               or (is_query_heading and has_queries)
+               or (is_lineage_heading and has_lineage))
     (present if matched else missing).append(h)
   score = len(present) / len(expected)
   detail = (f"Covers {len(present)} of {len(expected)} expected sections"
@@ -221,14 +337,66 @@ def check_expected_headings(artifacts: dict, expected: list[str]) -> MetricResul
                       extra={"present": present, "missing": missing})
 
 
+def check_index_names(artifacts: dict, expected: list[str]) -> MetricResult:
+  """Folder/index NAME coverage: each expected folder/category name should appear
+  as an emitted index entry's displayName -- matched SEMANTICALLY by significant-
+  token overlap, so a golden "Account Models & States" matches an agent-derived
+  "account-models-and-states" (LLM picks the wording; we score the concept). The
+  per-table overlay folders are named after the table (exact); the doc-mode/hybrid
+  category folders are LLM-derived (semantic). Deterministic -- no judge. Golden-
+  driven: only scored when the case declares `expected_folders`."""
+  if not expected:
+    return MetricResult("index_name_coverage", 1.0, True,
+                        "No expected folders declared for this case.")
+  _stop = {"and", "the", "of", "a", "an", "to", "for", "in", "on", "&",
+           "data", "table", "tables", "entries", "entry", "index"}
+  def toks(s):
+    return {w for w in re.split(r"[^a-z0-9]+", (s or "").lower())
+            if w and w not in _stop}
+  # Emitted index displayNames (+ ids as fallback).
+  emitted = []
+  for t in artifacts.get("index_yaml", {}).values():
+    try:
+      d = yaml.safe_load(t) or {}
+    except yaml.YAMLError:
+      continue
+    nm = (d.get("resource", {}) or {}).get("displayName") or d.get("id") or ""
+    if nm:
+      emitted.append(nm)
+  emitted_toks = [toks(e) for e in emitted]
+  present, missing = [], []
+  for name in expected:
+    nt = toks(name)
+    # matched if some emitted folder shares >=60% of the expected name's tokens
+    ok_match = nt and any(
+        nt and len(nt & et) / len(nt) >= 0.6 for et in emitted_toks)
+    (present if ok_match else missing).append(name)
+  score = len(present) / len(expected)
+  detail = (f"Covers {len(present)} of {len(expected)} expected folder names"
+            + (f"; missing (no semantically-matching index entry): "
+               f"{', '.join(missing)}." if missing else "."))
+  return MetricResult("index_name_coverage", round(score, 3), score >= 0.7,
+                      detail, extra={"present": present, "missing": missing,
+                                     "emitted": emitted})
+
+
 _TRAJECTORY_MARKERS = {
-    "folder_list": [r"Listing Drive folder", r"Found \d+ file"],
-    "drive_fetch": [r"Fetching", r"summariz"],
-    # Table-mode BigQuery dataset discovery ONLY. NOTE: doc mode also runs
-    # `kcmd init --entry-group` + `kcmd pull`, so bare "kcmd"/"pull" must NOT be
-    # markers here or doc mode falsely trips must_not_call:[dataset_pull].
+    # Document grounding from a Drive folder OR a local committed corpus. v1/v2
+    # logged "Listing Drive folder"/"Found N file"; v3 logs "-> Drive folder
+    # (N file(s))" / "-> local markdown (N file(s))" -- match all so the marker
+    # tracks the agent's actual log text across versions and grounding sources.
+    "folder_list": [r"Listing Drive folder", r"Found \d+ file",
+                    r"-> Drive folder", r"-> local markdown"],
+    "drive_fetch": [r"Fetching", r"summariz",
+                    r"-> Drive folder", r"-> local markdown"],
+    # The agent touched a BigQuery dataset: table mode discovers it via
+    # `kcmd init --bigquery-dataset` + pull; context_overlay AND hybrid pull the
+    # 1P tables read-only via `kcmd reference`. Both count as dataset_pull. NOTE:
+    # plain doc mode runs `kcmd init --entry-group` + `kcmd pull` (NOT reference),
+    # so bare "kcmd"/"pull" must NOT be markers here or doc mode falsely trips
+    # must_not_call:[dataset_pull]; `kcmd reference`/`Referencing` are overlay-only.
     "dataset_pull": [r"bigquery-dataset", r"bq-dataset", r"Discovered \d+ table",
-                     r"--dataset\b"],
+                     r"--dataset\b", r"kcmd reference", r"Referencing\b"],
     "github_fetch": [r"github"],
     "sharepoint_fetch": [r"sharepoint"],
 }
@@ -275,19 +443,18 @@ def check_trajectory(stdout: str, golden: dict) -> MetricResult:
 def check_perf(latency_s: float, artifacts: dict, budget: dict,
                tokens: dict | None = None) -> MetricResult:
   """REPORT-ONLY (does NOT gate). Surfaces latency, token usage, and output size
-  for visibility. No pass/fail threshold is enforced here -- this metric is
-  reported, not gated."""
+  so the compare view can show the %diff between the two agent versions. We do not
+  enforce a pass/fail threshold here -- efficiency is judged by comparing A vs B,
+  not against an absolute budget."""
   tok = tokens or {}
   tin, tout = tok.get("input", 0) or 0, tok.get("output", 0) or 0
   ttot = tok.get("total", (tin + tout))
   overviews = artifacts.get("overview_md", {})
   longest = max((len(t) for t in overviews.values()), default=0)
   tok_txt = (f" Used {ttot:,} tokens ({tin:,} in / {tout:,} out)." if ttot else "")
-  lat_txt = (f"Completed in {latency_s:.0f}s." if latency_s and latency_s > 0
-             else "Latency not recorded (re-run the agent to capture it).")
-  detail = (lat_txt + tok_txt +
+  detail = (f"Completed in {latency_s:.0f}s." + tok_txt +
             (f" Longest overview {longest:,} chars." if longest else "") +
-            " (Report-only — not gated.)")
+            " (Report-only — efficiency is compared A-vs-B, not gated.)")
   # Always passes: report-only so it never fails the case gate.
   return MetricResult("perf", 1.0, True, detail,
                       extra={"tokens": {"input": tin, "output": tout, "total": ttot}})
@@ -301,8 +468,10 @@ def check_business_terms(artifacts: dict, terms: list[str],
   available; falls back to a case-insensitive substring check otherwise."""
   if not terms:
     return MetricResult("business_terms_presence", 1.0, True, "none expected")
-  text = ("\n".join(artifacts.get("overview_md", {}).values()) + "\n" +
-          "\n".join(artifacts.get("yaml", {}).values()))
+  # Terms may live in the overview prose, the entry YAML, or a glossary file --
+  # scan all generated buckets (see METRIC_CONTENT_SCOPE).
+  text = "\n".join(t for _, t in
+                   _scoped_items(artifacts, METRIC_CONTENT_SCOPE["business_terms"]))
   if judge is not None:
     prompt = ("Which EXPECTED TERMS are present in the documentation? Count a term "
               "as present if its meaning appears under ANY synonym / paraphrase / "
@@ -341,7 +510,7 @@ def check_context_preservation(artifacts: dict, prebaked_facts: list[str],
   available, case-insensitive substring fallback otherwise. Today the agent always
   scaffolds a CLEAN output dir (doc_mode.py) and regenerates from scratch -- there
   is no merge-into-existing path -- so this is EXPECTED to fail until that
-  capability lands (a known gap)."""
+  capability lands (listed in eval_config.expected_fail_metrics)."""
   if not prebaked_facts:
     return MetricResult("context_preservation", 1.0, True,
                         "No pre-baked context to preserve for this case.")
@@ -412,12 +581,66 @@ def _deterministic_entry_match(topic: dict, produced_basenames: list[str]) -> st
   return ""
 
 
+def _scope_artifacts_to_table(artifacts: dict, table: str) -> dict:
+  """Subset of `artifacts` holding ONLY the entry files for one table -- those
+  whose basename stem matches the table name (`users.overview.md`,
+  `users.queries.md`, `users.yaml`, ...). Used so a table's golden_facts are
+  checked against THAT table's own entry, not against a fact that merely appears
+  on a DIFFERENT table's entry. Cross-table facts (e.g. an inbound foreign-key
+  reference) belong on the referenced table's entry; an agent that fails to carry
+  them there should not get credit just because the child table happens to state
+  the relationship from its side."""
+  base = str(table).split(".")[-1].lower()
+  out: dict = {}
+  for bucket, files in artifacts.items():
+    if not isinstance(files, dict):
+      out[bucket] = files
+      continue
+    sub = {}
+    for path, text in files.items():
+      bn = os.path.basename(path).lower()
+      stem = bn.split(".")[0]            # 'users' from 'users.overview.md'
+      if stem == base:
+        sub[path] = text
+    out[bucket] = sub
+  return out
+
+
 def match_topics(artifacts: dict, expected_topics: list[dict], judge: Judge,
-                 confidence_threshold: float = 0.7) -> dict:
-  """Semantic topic-flavor matching (doc mode): recall/precision/fact coverage."""
-  blob = "\n\n".join(f"### {p}\n{t}"
-                     for p, t in artifacts.get("overview_md", {}).items())
-  n_produced = len(artifacts.get("overview_md", {}))
+                 confidence_threshold: float = 0.7,
+                 scope_to_entry: bool = False) -> dict:
+  """Semantic topic-flavor matching (doc mode): recall/precision/fact coverage.
+
+  `scope_to_entry` (table / context_overlay): score each topic's golden_facts
+  ONLY against that table's own entry files (see `_scope_artifacts_to_table`),
+  so cross-table facts must land on the referenced table to earn credit. In doc
+  mode the target entry isn't known a priori (concepts are matched by meaning),
+  so it stays off and the whole output is searched."""
+  if scope_to_entry:
+    per_topic, fact_covs = [], []
+    for topic in expected_topics:
+      sub = _scope_artifacts_to_table(artifacts, topic["canonical"])
+      r = match_topics(sub, [topic], judge, confidence_threshold)
+      pt = (r.get("per_topic") or [{}])[0]
+      per_topic.append(pt)
+      fact_covs.append(float(pt.get("fact_coverage", 0.0) or 0.0))
+    n_topics = len(expected_topics) or 1
+    recall = sum(1 for t in per_topic if t.get("matched")) / n_topics
+    # Mean over ALL tables (a missing/empty table entry counts as 0 facts) -- the
+    # whole point of per-entry scoping is that an absent table tanks its own facts.
+    mean_cov = (sum(fact_covs) / len(fact_covs)) if fact_covs else 0.0
+    produced = list(artifacts.get("overview_md", {}).keys())
+    return {"concept_recall": recall, "concept_precision": 0.0,
+            "fact_coverage": mean_cov, "per_topic": per_topic,
+            "extra_entries": [],
+            "produced_entries": [os.path.basename(p) for p in produced]}
+  # Score facts wherever the agent put them (overview / entry YAML / queries /
+  # glossary), not just overview.md -- see METRIC_CONTENT_SCOPE.
+  blob = _scoped_blob(artifacts, METRIC_CONTENT_SCOPE["fact_recall"])
+  # concept_precision counts produced ENTRIES, so prefer the overview-file count;
+  # fall back to the scoped-file count if an agent emits no overview at all.
+  n_produced = (len(artifacts.get("overview_md", {}))
+                or len(_scoped_items(artifacts, METRIC_CONTENT_SCOPE["fact_recall"])))
   if n_produced == 0 or not blob.strip():
     # No entries produced -> nothing to match; don't waste judge calls.
     return {"concept_recall": 0.0, "concept_precision": 0.0, "fact_coverage": 0.0,
@@ -455,8 +678,11 @@ def match_topics(artifacts: dict, expected_topics: list[dict], judge: Judge,
       '"missing":"<the specific part of the fact that is NOT conveyed>"}. '
       "Be concrete: name the sub-claim, value, qualifier, or relationship that is "
       "missing -- not just 'partially covered'.\n\n"
+      # Anchors only, no CoT: CoT raised fact_recall error in ablation;
+      # `fact_details` already captures the per-fact evidence.
+      f"{anchors.render_fact_anchors()}"
       f"EXPECTED TOPICS:\n{json.dumps(spec, indent=2)}\n\n"
-      f"GENERATED ENTRIES:\n{blob[:60000]}\n\n"
+      f"GENERATED ENTRIES:\n{blob}\n\n"
       'Return STRICT JSON: {"topics":[{"canonical":"<topic>","matched_entry_id":'
       '"<id or empty>","confidence":<0..1>,"fact_confidences":[<one 0..1 per golden '
       'fact, same order>],"fact_details":[<null or {covered,quote,missing}, same '
@@ -550,22 +776,32 @@ def match_topics(artifacts: dict, expected_topics: list[dict], judge: Judge,
 # golden-driven check_expected_headings -- so neither is judged here anymore.
 _RUBRIC = {
     "redundancy_index":
-        "Does the overview add novel semantic context beyond echoing column "
-        "names/schema? 1=rich synthesis, 0=tautological restatement.",
+        "Does the doc add semantic VALUE, not just restate the raw schema? "
+        "Defining what each column MEANS (its business/semantic role) IS valuable "
+        "catalog context and must score HIGH -- a `## Schema`/`## Key Columns` "
+        "section that EXPLAINS columns is good, not redundant. Only penalize a "
+        "BARE column name+type list (or prose) that adds no meaning beyond the "
+        "schema. 1=columns explained + rich synthesis, 0=tautological name/type "
+        "restatement with no added meaning.",
     "disambiguation_efficacy":
         "Is the enrichment sufficient to distinguish this entry from "
         "similar/overlapping ones (grain + purpose explicit)? 1=clearly unique.",
     "absence_of_contradictions":
-        "Are there contradictions within or across the generated entries "
-        "(join keys, enums, metric defs, freshness)? 1=none, 0=explicit conflict.",
+        "Are there GENUINE contradictions -- statements about the SAME thing that "
+        "conflict (a join key, enum, metric definition, or freshness window the docs "
+        "claim is identical but describe differently; or two conflicting claims "
+        "inside one entry)? Different tables are INDEPENDENT: the same column name "
+        "having a different type/meaning in different entries is NOT a contradiction. "
+        "1=none, 0=explicit conflict.",
 }
 
 
 # Dedicated business-term Metadata-as-Code files (.md/.yaml per term) are NOT
 # emitted by the agent yet, so check_business_terms_validity is EXPECTED to fail
 # today (terms may still appear inline in the overview -> check_business_terms).
-# Reported but not gated, so it doesn't break a regression suite. When the agent
-# gains per-term file output, it passes with no code change.
+# Listed under eval_config.expected_fail_metrics so it's reported but doesn't
+# break the regression gate. When the agent gains per-term file output, it passes
+# with no code change.
 _TERM_FILE_HINTS = ("glossary", "business-term", "business_term", "/terms/", ".term.")
 
 
@@ -575,8 +811,8 @@ def check_business_terms_validity(artifacts: dict, expected_terms: list[str],
   accurately define the term.
 
   File *existence* is deterministic; *content* validity is LLM-judged. Today the
-  agent emits no per-term files, so this fails at the existence gate (a known
-  gap). Once per-term files are
+  agent emits no per-term files, so this fails at the existence gate (expected
+  gap -- listed in eval_config.expected_fail_metrics). Once per-term files are
   emitted, the judge validates that every expected term is present and correctly
   defined.
   """
@@ -613,15 +849,51 @@ def check_business_terms_validity(artifacts: dict, expected_terms: list[str],
                               if bad else ""))
 
 
+# Per-rubric-dimension file scope, so each metric is judged over the RIGHT files
+# (fair across agents that distribute content differently). queries.md is fed to
+# EVERY dimension: an agent that puts its SQL/usage in the `<table>.queries.md`
+# sidecar (v3) must not be judged as thinner than one that inlines SQL in the
+# overview (OKF). absence_of_contradictions also gets the raw `yaml` so it can
+# catch overview-vs-schema-vs-query conflicts; redundancy/disambiguation judge
+# the agent's PROSE synthesis and omit the raw yaml schema so a faithful overview
+# that summarizes columns isn't read as "redundant with the schema it summarizes."
+# Dimensions sharing a scope are judged in one call (efficiency); distinct scopes
+# get their own call. Add a metric here with its own tuple to scope it.
+_RUBRIC_SCOPE = {
+    "redundancy_index":          ("overview_md", "queries_md", "glossary_md"),
+    "disambiguation_efficacy":   ("overview_md", "queries_md", "glossary_md"),
+    "absence_of_contradictions": ("overview_md", "yaml", "queries_md",
+                                  "glossary_md"),
+}
+
+
 def score_rubric(artifacts: dict, judge: Judge,
                  expected_terms: list[str] | None = None) -> list[MetricResult]:
-  """Run the LLM-judge rubric over the generated mdcode in a SINGLE judge call.
+  """Run the LLM-judge rubric, feeding EACH dimension the right files.
 
-  All rubric dimensions are scored at once (one prompt -> one JSON object keyed by
-  dimension), instead of one call per dimension. Far fewer round-trips = much
-  faster runs."""
-  content = "\n\n".join(f"### {p}\n{t}"
-                        for p, t in artifacts.get("overview_md", {}).items())
+  Dimensions are grouped by their `_RUBRIC_SCOPE` file set; each group is scored
+  in one judge call over its own scoped blob (dims that share a scope share a
+  call, so this stays cheap). This makes the evaluation fair: e.g. redundancy and
+  disambiguation see queries.md (so a sidecar agent isn't penalized) but not the
+  raw schema yaml, while contradictions sees the yaml too."""
+  # Group dimensions by their scope tuple (preserve _RUBRIC order within a group).
+  by_scope: dict[tuple, list[str]] = {}
+  for name in _RUBRIC:
+    scope = _RUBRIC_SCOPE.get(name, METRIC_CONTENT_SCOPE.get("rubric"))
+    by_scope.setdefault(tuple(scope), []).append(name)
+  out: list[MetricResult] = []
+  for scope, dims in by_scope.items():
+    out.extend(_score_rubric_group(artifacts, judge, dims, scope))
+  # Restore canonical _RUBRIC order for stable output.
+  order = {n: i for i, n in enumerate(_RUBRIC)}
+  out.sort(key=lambda r: order.get(r.name, 99))
+  return out
+
+
+def _score_rubric_group(artifacts: dict, judge: Judge, dims: list[str],
+                        scope) -> list[MetricResult]:
+  """Judge one group of rubric dimensions that share a file scope, in one call."""
+  content = _scoped_blob(artifacts, scope)
   if not content.strip():
     # Agent produced no overview (e.g. failed/quota-starved run). The judge has
     # nothing to evaluate -- short-circuit with a clear reason instead of a
@@ -629,8 +901,11 @@ def score_rubric(artifacts: dict, judge: Judge,
     return [MetricResult(name, 0.0, False,
                          "no overview produced by the agent -- nothing to "
                          "evaluate (see structural_validity / the agent run)")
-            for name in _RUBRIC]
-  criteria = "\n".join(f"- {name}: {desc}" for name, desc in _RUBRIC.items())
+            for name in dims]
+  criteria = "\n".join(f"- {name}: {_RUBRIC[name]}" for name in dims)
+  # One-shot calibration anchors: show the judge a high-scoring example + why per
+  # criterion so scoring is consistent. "" if no criterion has an anchor.
+  anchor_block = anchors.render_rubric_anchors(dims)
   prompt = (
       "You are a rigorous but fair Data Governance Auditor. Rate the generated "
       "data-catalog documentation on EACH criterion below.\n\n"
@@ -643,18 +918,37 @@ def score_rubric(artifacts: dict, judge: Judge,
       "claims, and merely restating the schema. But genuinely strong work should "
       "still earn a high score -- don't lowball good output.\n"
       "- Judge each criterion independently on its own merits.\n\n"
-      "For every criterion give a score in [0,1], a rationale, and a concrete, "
-      "actionable improvement (1-2 sentences each, as needed).\n"
+      "For every criterion, work in this ORDER (reason first, score second): FIRST "
+      "write `rationale` — reason step by step about BOTH what the documentation "
+      "does WELL and what is genuinely wrong, citing the SPECIFIC lines/evidence "
+      "that drive the verdict — THEN set `score` in [0,1] so it is CONSISTENT with "
+      "that reasoning, plus a concrete `insights` improvement (1-2 sentences "
+      "each). Do NOT deduct for nitpicks that are not real defects: genuinely "
+      "strong, near-perfect work should still score ~0.9-1.0; reserve low scores "
+      "for substantive problems.\n"
       "BE SPECIFIC -- this is the most important part. When you flag a problem, "
       "NAME it and QUOTE/identify the exact offending content and explain WHY it's "
       "a problem. E.g. for absence_of_contradictions, state the two conflicting "
       "statements and why they conflict ('says join key is account_id in the "
       "overview but customer_id in the example'); for redundancy_index, point to "
       "the specific lines that just restate the schema. Generic rationales like "
-      "'has some contradictions' are NOT acceptable.\n\n"
-      f"CRITERIA:\n{criteria}\n\nDOCUMENTATION:\n{content[:60000]}\n\n"
-      "Return STRICT JSON mapping EACH criterion name to an object, e.g.: "
-      '{"redundancy_index":{"score":0.7,"rationale":"...","insights":"..."}, ...}')
+      "'has some contradictions' are NOT acceptable.\n"
+      "CRITICAL for absence_of_contradictions: each entry documents a DIFFERENT, "
+      "INDEPENDENT table. The SAME column name appearing in two different tables "
+      "with a different type or meaning is NOT a contradiction -- they are distinct "
+      "columns that merely share a name (e.g. `partition_date` may be STRING in one "
+      "table and INTEGER in another; `id` may mean different things per table). Only "
+      "flag a contradiction when statements about the SAME thing conflict: within a "
+      "single entry, or a join key / shared metric / enum that the docs EXPLICITLY "
+      "claim is the same across entries but then describe inconsistently. Do NOT "
+      "penalize faithful per-table schema differences.\n"
+      "Also: a document that is clearly clipped with a trailing '…' has been "
+      "truncated by the harness for length -- do NOT treat that '…' as a defect or "
+      "an incomplete/abrupt sentence written by the agent.\n\n"
+      f"CRITERIA:\n{criteria}\n\n{anchor_block}DOCUMENTATION:\n{content}\n\n"
+      "Return STRICT JSON mapping EACH criterion name to an object with keys IN "
+      "THIS ORDER (rationale first so the score follows the reasoning), e.g.: "
+      '{"redundancy_index":{"rationale":"...","score":0.7,"insights":"..."}, ...}')
   # The judge occasionally returns malformed/incomplete JSON for this batched call;
   # when that happens every dimension would silently default to score 0 with an
   # empty rationale (looks like the agent failed, but it's a judge-side flake).
@@ -662,10 +956,10 @@ def score_rubric(artifacts: dict, judge: Judge,
   res = {}
   for _ in range(3):
     res = parse_json_obj(judge(prompt))
-    if isinstance(res, dict) and any(k in res for k in _RUBRIC):
+    if isinstance(res, dict) and any(k in res for k in dims):
       break
   out = []
-  for name in _RUBRIC:
+  for name in dims:
     score, rationale, insights = _rubric_dimension(res.get(name))
     if score is None:
       # Couldn't get a score for this dimension -- do NOT pretend it's a real 0.
@@ -750,7 +1044,7 @@ def check_hallucination(artifacts: dict, source_context: str, judge: Judge,
                         extra_grounding: str = "") -> MetricResult:
   """Groundedness via per-claim, chunked, PARALLEL verification.
 
-  Why this shape: the old single-shot judge capped the
+  Why this shape (see eval_findings §7C): the old single-shot judge capped the
   source at 50K chars and grounded only against prose. On large corpora that cut
   dropped real content (codenames flagged as fabricated); in table mode it
   ignored the schema/dataset facts the overview legitimately states. Now:
@@ -764,8 +1058,12 @@ def check_hallucination(artifacts: dict, source_context: str, judge: Judge,
   # `### lead-time.overview.md` made the extractor invent structural meta-claims
   # ("the aspectType of lead-time.overview.md is ...generic.overview") that are
   # obviously absent from prose and tanked the score with noise.
-  content = "\n\n---\n\n".join(t for t in artifacts.get("overview_md", {}).values()
-                               if (t or "").strip())
+  # Clip each overview at a word boundary (no blunt tail-cut that would drop later
+  # tables' claims or bisect one mid-sentence) so claim extraction is fair across
+  # agents regardless of how much each writes.
+  content = "\n\n---\n\n".join(
+      _clip(t, 24000) for t in artifacts.get("overview_md", {}).values()
+      if (t or "").strip())
   if not content.strip():
     return MetricResult("hallucination_free", 0.0, False,
                         "no overview produced by the agent -- nothing to "
@@ -790,7 +1088,7 @@ def check_hallucination(artifacts: dict, source_context: str, judge: Judge,
       "types, YAML/metadata field values, that a section or heading exists), and "
       "generic boilerplate ('this table is useful for analysis'). Only claims a "
       "domain reader would fact-check.\n\n"
-      f"GENERATED:\n{content[:60000]}\n\n"
+      f"GENERATED:\n{content}\n\n"
       'Return STRICT JSON: {"claims":[<claim strings>]}')
   # Retry extraction: a single judge hiccup returning {} / no claims would
   # otherwise score a FALSE perfect 1.0 ("no claims") on a content-rich overview.
@@ -814,11 +1112,16 @@ def check_hallucination(artifacts: dict, source_context: str, judge: Judge,
   # 2/3. Ground each claim against EVERY chunk, in parallel. Supported-by-any wins.
   chunks = _chunk_text(grounding)
   numbered = "\n".join(f"{i}. {c}" for i, c in enumerate(claims))
+  # No anchors: this runs once PER CHUNK, so anchors would be paid N times for
+  # no gain (accuracy is identical with/without). Leniency line below carries recall.
 
   def _supported_in(chunk: str) -> set:
+    # No CoT: a direct supported/not decision (no rationale step) suffices here.
     p = ("For each numbered CLAIM, decide if it is SUPPORTED by (stated in, or "
          "directly inferable from) the SOURCE CHUNK. Schema/column/dataset facts "
-         "count as supported if present in the chunk. Be lenient on paraphrase.\n\n"
+         "count as supported if present in the chunk. Be lenient on paraphrase: a "
+         "claim is supported if the chunk conveys it in other words; mark it "
+         "unsupported only if the chunk neither states nor implies it.\n\n"
          f"SOURCE CHUNK:\n{chunk[:48000]}\n\nCLAIMS:\n{numbered}\n\n"
          'Return STRICT JSON: {"supported":[<indices of supported claims>]}')
     idxs = parse_json_obj(judge(p)).get("supported") or []
@@ -866,8 +1169,9 @@ def check_persona_alignment(artifacts: dict, persona: dict,
   0 (absent) / 0.5 (mentioned in passing) / 1 (prominent / detailed); shared is
   0/1. Rewards emphasis but docks dropped shared concepts.
   """
-  content = "\n\n---\n\n".join(t for t in artifacts.get("overview_md", {}).values()
-                               if (t or "").strip())
+  content = "\n\n---\n\n".join(
+      _clip(t, 24000) for t in artifacts.get("overview_md", {}).values()
+      if (t or "").strip())
   if not content.strip():
     return MetricResult("persona_alignment", 0.0, False,
                         "no overview produced -- nothing to score")
@@ -885,7 +1189,7 @@ def check_persona_alignment(artifacts: dict, persona: dict,
       "all, else 0.\n\n"
       f"FOCUS AREAS:\n{json.dumps(focus, indent=2)}\n\n"
       f"SHARED CONCEPTS:\n{json.dumps(shared, indent=2)}\n\n"
-      f"GENERATED KNOWLEDGE BASE:\n{content[:60000]}\n\n"
+      f"GENERATED KNOWLEDGE BASE:\n{content}\n\n"
       'Return STRICT JSON: {"focus":[{"area":"<area>","prominence":<0..1>}],'
       '"shared":[{"concept":"<concept>","present":<0 or 1>}],'
       '"rationale":"<one sentence naming what was emphasized vs shallow and any '
@@ -986,7 +1290,7 @@ def explain_metrics(metric_list: list[dict], mode: str,
               # Per-run signal so the explainer can detect flakiness/variance.
               "per_run_scores": m.get("run_scores"),
               "runs_passed": m.get("runs_passed"),
-              # Optional baseline mean for the same metric (e.g. a prior run).
+              # The OTHER agent version's mean for the same metric (for A-vs-B).
               "comparison_baseline_other_version": baselines.get(m.get("name")),
               "evidence": (m.get("detail") or "").strip()}
              for m in metric_list]
@@ -996,7 +1300,7 @@ def explain_metrics(metric_list: list[dict], mode: str,
       f"in '{mode}' mode; each metric includes 'score' (mean across runs), "
       "'per_run_scores' (each run's score, IN RUN ORDER: the first element is Run 1, "
       "the second is Run 2, etc.), 'runs_passed', 'comparison_baseline_other_version' "
-      "(an optional baseline mean for the same metric, e.g. from a prior run), and 'evidence' (the "
+      "(the OTHER agent version's mean for the same metric), and 'evidence' (the "
       "concrete findings). Using ONLY the evidence (do not invent facts), write for "
       "EVERY metric:\n"
       "  - rationale (1-3 sentences): WHY it got this score. Be SPECIFIC and "
@@ -1008,8 +1312,8 @@ def explain_metrics(metric_list: list[dict], mode: str,
       "NUMBER: when per_run_scores differ, state the scores AND name the specific "
       "run(s) that were lower so the developer can open them (e.g. 'averaged 0.9 -- "
       "Run 1 was 1.0 but Run 2 dropped to 0.8'); call it flaky/transient if it "
-      "varies, stable/systematic if consistent. Reference the baseline when it "
-      "differs (e.g. 'vs the baseline 0.875').\n"
+      "varies, stable/systematic if consistent. Reference the other version's "
+      "baseline when it differs (e.g. 'vs the other version's 0.875').\n"
       "  - insights (1-2 sentences, REQUIRED, never empty): the concrete next "
       "improvement, tied to the specific gap named in the rationale (e.g. 'drop the "
       "spurious UPC/GTIN entry by tightening the topic filter', or 'add the missing "
@@ -1031,6 +1335,17 @@ def explain_metrics(metric_list: list[dict], mode: str,
   return out
 
 
+# Judge sampling temperature. Low on purpose: an LLM-as-judge should prioritize
+# reproducibility so a score delta reflects an AGENT change, not judge dice — which
+# is what makes regression detection between agent versions reliable. 0.1 is the
+# empirical sweet spot (peak self-consistency + accuracy, good JSON/format
+# compliance) per "The Necessity of Setting Temperature in LLM-as-a-Judge". We do
+# NOT ensemble the judge at higher temp because the eval already varies the AGENT
+# across runs (multiple enrichment runs scored), so agent variability is captured
+# there; the judge stays stable to isolate it.
+_JUDGE_TEMPERATURE = 0.1
+
+
 def default_judge(model: str = "gemini-2.5-pro") -> Judge:
   """Vertex Gemini judge (ADC project/location from env). Lazy import.
 
@@ -1044,7 +1359,7 @@ def default_judge(model: str = "gemini-2.5-pro") -> Judge:
     import os
     import time
     from google.genai import Client  # pytype: disable=import-error
-    from google.genai.types import HttpOptions  # pytype: disable=import-error
+    from google.genai.types import HttpOptions, GenerateContentConfig  # pytype: disable=import-error
     from google.auth import default as _adc
     creds, _ = _adc()
     client = Client(vertexai=True, credentials=creds,
@@ -1054,7 +1369,9 @@ def default_judge(model: str = "gemini-2.5-pro") -> Judge:
     last = ""
     for attempt in range(3):
       try:
-        resp = client.models.generate_content(model=model, contents=prompt)
+        resp = client.models.generate_content(
+            model=model, contents=prompt,
+            config=GenerateContentConfig(temperature=_JUDGE_TEMPERATURE))
         return resp.text or ""
       except Exception as e:  # pylint: disable=broad-except
         last = str(e)

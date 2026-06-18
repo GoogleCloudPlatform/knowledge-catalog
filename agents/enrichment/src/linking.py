@@ -17,7 +17,7 @@ publishes the new links to Dataplex.
 """
 
 import os
-from typing import Optional
+from typing import Callable, Optional
 
 import common
 import engine
@@ -191,3 +191,117 @@ async def apply_column_linking(
       total_injected += injected_this_table
 
   return total_injected
+
+
+def _term_target_string(term_fqn: str) -> str:
+  """Convert a full glossary-term resource path into the human-readable
+
+  `<project>.<location>.<glossary>.<term>` form used in YAML `target:`
+  fields. Falls back to the raw FQN if the path doesn't match the expected
+  glossary-term shape. (kcmd pull will normalize to display-name form on
+  the next round-trip.)
+  """
+  if "/glossaries/" not in term_fqn:
+    return term_fqn
+  parts = term_fqn.split("/")
+  if len(parts) >= 8 and parts[len(parts) - 2] == "terms":
+    return f"{parts[1]}.{parts[3]}.{parts[5]}.{parts[7]}"
+  if len(parts) >= 6 and parts[len(parts) - 2] == "glossaries":
+    return f"{parts[1]}.{parts[3]}.{parts[5]}"
+  return term_fqn
+
+
+async def apply_entity_linking(
+    output_dir: str,
+    model: str,
+    entries: list[tuple[str, str, str]],
+    inject_links: Callable[[str, list[dict]], None],
+    usage_acc: Optional[dict] = None,
+) -> int:
+  """Runs the entity-level LinkingAgent over a list of pre-summarized entries
+
+  (KB pages or context-overlay entries) and writes back `links.related`
+  pointing at any glossary terms the agent judges relevant.
+
+  Args:
+    output_dir: kcmd workspace root (must contain pulled glossary terms under
+      `catalog/glossaries/`; caller is responsible for the prior
+      `pull_glossary_as_reference` step).
+    model: Vertex Gemini model id.
+    entries: list of (entry_path, title, summary_text) tuples. The agent sees
+      title + summary; the path is opaque to this helper and just gets handed
+      back to `inject_links` after a successful match.
+    inject_links: mode-specific writer. Called as `inject_links(path, links)`
+      where `links` is a list of `{target, id}` dicts. The callback owns the
+      file format — YAML for overlay entries, Markdown frontmatter for KB pages.
+      No-op when the agent returns zero links for an entry.
+    usage_acc: optional `{input, output}` dict for token bookkeeping.
+
+  Returns:
+    Total number of entries that had at least one link injected.
+  """
+  if usage_acc is None:
+    usage_acc = {"input": 0, "output": 0}
+
+  glossary_entries = kcmd_tools.list_glossaries(output_dir)
+  if not glossary_entries:
+    print(
+        "[Linking] ⚠️  No glossary entries found in workspace — skipping"
+        " entity linking. (Did you pull glossary terms first?)"
+    )
+    return 0
+
+  terms_context = "ALLOWED GLOSSARY TERMS:\n"
+  found_terms = False
+  for t in glossary_entries:
+    if t["type"] == "glossaryTerm":
+      found_terms = True
+      ident = t["fqn"] or t["id"]
+      terms_context += (
+          f"- FQN: {ident}\n  Name: {t['display_name']}\n  Description:"
+          f" {t['description']}\n"
+      )
+  if not found_terms:
+    print("[Linking] ⚠️  No glossary terms found — skipping entity linking.")
+    return 0
+
+  runner = engine.create_entity_linking_runner(model)
+  entries_with_links = 0
+
+  for path, title, summary in entries:
+    label = title or os.path.basename(path)
+    print(f"[Linking] Tagging entry: {label}...")
+    prompt = (
+        f"{terms_context}\n\n"
+        f"TARGET ENTRY:\nTitle: {title}\n\nContent summary:\n{summary}\n\n"
+        "Which of the ALLOWED GLOSSARY TERMS does this entry relate to?"
+    )
+    result = await common.run_structured(
+        runner, prompt, engine.EntityLinkingResult, usage_acc
+    )
+    if not result or not result.links:
+      print(f"[Linking] No related terms for {label}.")
+      continue
+
+    # Dedup on term_fqn (agent may rarely emit duplicates).
+    seen = set()
+    links: list[dict] = []
+    for link in result.links:
+      if link.term_fqn in seen:
+        continue
+      seen.add(link.term_fqn)
+      links.append(
+          {"target": _term_target_string(link.term_fqn), "id": link.term_fqn}
+      )
+
+    inject_links(path, links)
+    entries_with_links += 1
+    for link in result.links:
+      if link.term_fqn in seen:  # all that survived dedup
+        print(
+            f"  [+] {label} -> {_term_target_string(link.term_fqn)}"
+            f" ({link.reason})"
+        )
+        seen.discard(link.term_fqn)  # only print each once
+
+  return entries_with_links

@@ -131,6 +131,7 @@ async def run_enumeration(
     usage_acc: dict,
     extra_guidance: str = "",
     drop_ids: set[str] | None = None,
+    scoping_guidance: str = "",
 ) -> EnumerationResult:
   """Shared EnumerationAgent invocation.
 
@@ -174,6 +175,18 @@ async def run_enumeration(
     guidance_block += (
         "DO NOT include these entry ids — the user explicitly removed"
         f" them: {', '.join(sorted(drop_ids))}\n\n"
+    )
+  if scoping_guidance:
+    # HYBRID scoping: per-table overlays already own all table-specific knowledge,
+    # so the KB enumeration must be restricted to the cross-cutting complement.
+    # This OVERRIDES the default "enumerate every concept in the context" behavior;
+    # returning an EMPTY entry set is valid and expected when the source is wholly
+    # table-specific.
+    guidance_block += (
+        "SCOPING CONSTRAINT — this OVERRIDES the default behavior of enumerating"
+        " every concept found in the context. Returning an EMPTY set (no"
+        " categories, no entries) is a VALID and expected answer when nothing"
+        f" qualifies:\n{scoping_guidance}\n\n"
     )
   prompt = (
       f"TOPIC: {topic}\n\n{seed_block}{guidance_block}"
@@ -284,6 +297,7 @@ async def run_text(runner, prompt: str, usage_acc: dict | None = None) -> str:
         for part in event.content.parts:
           if part.text:
             out += part.text
+    # Only fold usage in on success so a retried attempt isn't double-counted.
     if usage_acc is not None:
       usage_acc["input"] += local_in
       usage_acc["output"] += local_out
@@ -422,13 +436,11 @@ def write_trajectory(
     tool_responses: list,
     final_text: str,
     usage_acc: dict,
-    latency: float = 0.0,
 ) -> None:
   """Persist trajectory.json capturing the agent's run (same shape for both modes).
 
   Written next to the generated mdcode as a record of what the agent read and
   produced; consumed by external evaluation/tooling that reads it by path.
-  `latency` is the wall-clock seconds the run took (0 if not measured).
   """
   if not output_dir:
     return
@@ -443,7 +455,6 @@ def write_trajectory(
           "input": usage_acc["input"],
           "output": usage_acc["output"],
       },
-      "latency": round(latency, 2),
   }
   traj_path = os.path.join(output_dir, "trajectory.json")
   with open(traj_path, "w") as f:

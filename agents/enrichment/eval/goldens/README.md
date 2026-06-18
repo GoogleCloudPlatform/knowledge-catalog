@@ -24,9 +24,10 @@ Keep the fields that fit your mode (see `TEMPLATE.json`):
 
 | Field | Mode | Drives | Meaning |
 |-------|------|--------|---------|
-| `expected_topics` | doc | concept_recall, concept_precision, fact_recall | List of `{canonical, flavor_hints[], golden_facts[]}` — the concepts you expect as entries. `flavor_hints` are synonyms the judge treats as the same concept; `golden_facts` are statements the entry should convey. |
+| `expected_topics` | doc, hybrid | concept_recall, concept_precision, fact_recall | List of `{canonical, flavor_hints[], golden_facts[]}` — the concepts you expect as entries. `flavor_hints` are synonyms the judge treats as the same concept; `golden_facts` are statements the entry should convey. |
 | `acceptable_extra_concepts` | doc | concept_precision | Optional concepts that are fine to produce and **won't** count against precision (string or `{name, aliases[]}`). |
-| `tables` | table | fact_recall | List of `{table, golden_facts[]}` — each table's expected facts. |
+| `tables` | table, context_overlay, hybrid | fact_recall | List of `{table, golden_facts[]}` — each table's expected facts. Scored per-table for table/overlay; in **hybrid** the per-table overlay facts and the doc-side concept facts combine into one `fact_recall`. |
+| `expected_folders` | doc, context_overlay, hybrid | index_name_coverage | Per-folder/category names the agent's `index` entries should cover (token-overlap match). |
 | `expected_headings` | both | enrichment_diversity | Sections the overview should contain (e.g. `Lineage`, `Sample Queries`). |
 | `business_terms` | both | business_terms_presence, business_terms_validity | Terms the output should cover (presence) + whether each gets a dedicated per-term definition file (validity). |
 | `personas` | doc | persona_alignment | `{id: {instruction, focus_areas[], shared_concepts[]}}` — run with `--persona <id>`. |
@@ -38,14 +39,26 @@ Every golden run also gets the **dynamic** metrics automatically:
 `redundancy_index` / `disambiguation_efficacy` / `absence_of_contradictions` — so
 a golden only needs to declare the golden-specific fields above.
 
-The eval auto-detects mode from the run's `trajectory.json` (`agent_type`), so use
-`expected_topics` for doc runs and `tables` for table runs. **`context_overlay`**
-runs keep their own mode (matching the reference design): structural validity
-skips the entry-type check (overlay entries are `generic`, mixed with read-only
-`.ref` bigquery entries), and the table-only metrics — `entry_grounding`,
-reference grounding, per-table `fact_recall` — don't apply. Score an overlay
-golden with `business_terms` / `expected_headings` (and rely on the trajectory
-for `hallucination_free`).
+The eval auto-detects mode from the run's `trajectory.json` (`agent_type`) and
+dispatches scoring accordingly:
+
+- **doc / hybrid** → `expected_topics` drives `concept_recall` (+ `concept_precision`
+  for doc) and the concept-side `fact_recall`.
+- **table / context_overlay / hybrid** → `tables` drives the per-table `fact_recall`.
+  **hybrid is scored on BOTH** sides (its KB concepts *and* its per-table overlays)
+  and the two contributions combine into one `fact_recall`.
+- **entry_grounding** runs for **table + context_overlay** (every generated entry must
+  map to a real dataset table); it is **skipped for hybrid**, whose standalone KB
+  entries are legitimately not tables.
+- **index_name_coverage** runs for doc / context_overlay / hybrid when the golden
+  declares `expected_folders`.
+
+`context_overlay` still relaxes one structural check — overlay entries are `generic`
+and mixed with read-only `.ref` bigquery entries, so structural validity skips the
+entry-type match — but it now earns a real per-table `fact_recall`, `entry_grounding`,
+and `index_name_coverage` just like table mode (this changed from the earlier
+reference design, where overlay was scored only on `business_terms` /
+`expected_headings`).
 
 ## How to build goldens — three sources
 
@@ -102,14 +115,17 @@ This mirrors a single-agent eval (single agent).
 
 ```jsonc
 "run": {
-  "mode": "table",                 // "table" | "doc" | "context_overlay"
+  "mode": "table",                 // "table" | "doc" | "context_overlay"  (hybrid = "doc" + a "dataset")
   "topic": "Metadata enrichment",
   "folders": "eval/corpora/my_corpus",   // local dirs and/or Drive folders (comma-sep); relative to agents/enrichment
   "docs": "https://docs.google.com/...,./notes/x.md",  // optional, mixed
   "entry_group": "proj.location.my-eg",  // required for doc / context_overlay
   "dataset": "proj.my_dataset",          // table / context_overlay (omit if using setup below)
-  "setup": {                              // optional: copy a public dataset into your project first
+  "setup": {                              // optional: prepare the dataset in your project first
+    // either copy a public dataset wholesale...
     "copy_public_dataset": {"source": "bigquery-public-data.thelook_ecommerce", "dataset": "thelook_ecommerce"}
+    // ...or build a schema-only, descriptions-stripped replica (large/described sources):
+    // "schema_only_replica": {"builder": "make_public_replica.py", "source": "bigquery-public-data.stackoverflow", "dataset": "stackoverflow", "tables": ["posts_questions","users"]}
   }
 }
 ```
@@ -140,14 +156,33 @@ python -m eval --run --goldens eval/goldens/a.json,eval/goldens/b.json --project
 
 ## Bundled runnable goldens
 
-All four shipped goldens have a `run` block, so each is one-command:
+All shipped goldens have a `run` block, so each is one-command:
 
 | Golden | Mode | Setup |
 |--------|------|-------|
 | `thelook_ecommerce.json` | table | copies `bigquery-public-data.thelook_ecommerce` into your project |
+| `table_crypto_bitcoin.json` | table | schema-only replica of `bigquery-public-data.crypto_bitcoin` (cross-table FK sample) |
+| `table_ga4_obfuscated_sample_ecommerce.json` | table | schema-only replica of `bigquery-public-data.ga4_obfuscated_sample_ecommerce` (single wide nested-RECORD table) |
+| `table_stackoverflow.json` | table | schema-only 7-table replica of `bigquery-public-data.stackoverflow` (many independent entities) |
+| `xref_stackoverflow.json` | table | schema-only stackoverflow replica — **cross-table showcase**: FKs documented child-side only, so a parent table's inbound refs require cross-table aggregation |
+| `overlay_crypto_bitcoin.json` | context_overlay | schema-only crypto_bitcoin replica; writes overlay entries into `{project}.global.kc-eval-overlay` |
+| `overlay_ga4_obfuscated_sample_ecommerce.json` | context_overlay | schema-only ga4 replica; overlay entries into `{project}.global.kc-eval-overlay` |
+| `hybrid_stackoverflow.json` | hybrid (doc CLI + `--dataset`) | schema-only stackoverflow replica + local corpus; KB entries **plus** per-table overlays into `{project}.global.kc-eval-hybrid` |
 | `financial_services.json` | doc | grounds on `eval/corpora/financial_services` |
 | `phone_services.json` | doc | grounds on `eval/corpora/phone_services` |
 | `supply_chain.json` | doc | grounds on `eval/corpora/supply_chain` |
+
+> **context_overlay + hybrid** write to an entry group you own
+> (`{project}.global.kc-eval-overlay` / `kc-eval-hybrid`, the `{project}` placeholder
+> filled from `--project`). The group need not pre-exist — `kcmd pull` tolerates a
+> missing group and nothing is published unless *you* later `kcmd push`.
+
+The three `table_*` cases above use a **schema-only replica** rather than a full
+copy: their public sources are large and ship rich column descriptions, so the
+setup builds empty, descriptions-stripped tables in your project (via
+`eval/tools/make_public_replica.py` / `make_crypto_bitcoin_replica.py`) — so
+enrichment is measured from the grounding corpus, not the schema. `--run` builds
+the replica automatically (see the `schema_only_replica` setup below).
 
 The doc goldens declare a generalizable `entry_group` of the form
 `{project}.global.kc-eval-<name>` — the `{project}` placeholder is replaced with

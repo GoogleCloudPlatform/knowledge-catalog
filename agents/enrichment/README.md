@@ -18,7 +18,7 @@ never calls the Dataplex API directly. It runs the read-only `kcmd init` /
 `kcmd pull` commands itself to scaffold `catalog.yaml` and pull existing entries
 (schema, etc.); you run `kcmd push` to publish.
 
-The agent has three modes:
+The agent has four modes:
 
 - **`table`** — pulls a BigQuery dataset's tables (schema) via `kcmd`, routes
   Google Drive documents to each table by relevance, and writes an enriched
@@ -27,19 +27,34 @@ The agent has three modes:
   SQL examples extracted from routed docs, and (optionally) ground-truth SQL
   from user-feedback proposals. Optionally (`--glossaries`) maps columns to
   Dataplex glossary terms and injects field-level definition links.
+  **Cross-table shared concepts:** facts that span multiple tables (e.g. a
+  relationship documented only on the child side, or a metric defined across
+  tables) are extracted once and injected *additively* into every relevant
+  table's overview — so a parent table can surface its inbound references even
+  when the source only states them child-side, without dropping any
+  document-grounded fact.
 - **`doc`** — crawls Google Docs (and an optional Drive folder), map-reduce
   summarizes them, and emits a knowledge-base mdcode snapshot.
 - **`context_overlay`** — pulls 1P BigQuery table entries via `kcmd reference`
   (read-only) and creates a NEW context-overlay entry per table in an editable
   entry group. The overlay carries the enriched overview + queries aspect so you
-  can ship richer descriptions without touching the live `@bigquery` entry.
+  can ship richer descriptions without touching the live `@bigquery` entry. Like
+  table mode, it injects the **cross-table shared concepts** additively into each
+  overlay.
+- **`hybrid`** — run `doc` mode WITH `--dataset`. The agent builds the
+  knowledge-base entries from the docs (cross-cutting knowledge that doesn't
+  belong to any single table) AND, in the *same* entry group, a context-overlay
+  entry per table in the dataset. Use it when your corpus describes both general
+  concepts and specific tables: one run yields standalone KB entries **plus**
+  per-table overlays. Hybrid is never inferred — you opt in by passing
+  `--mode=doc` together with `--dataset`.
 
-Any of the three modes can optionally ingest **user-feedback proposals** via
+Any of these modes can optionally ingest **user-feedback proposals** via
 `--feedback_dir` / `--feedback_files`. Feedback is treated as the
 **highest-priority context source** — proposals override conflicting information
 from Drive docs, semantic search, or INFORMATION_SCHEMA-derived patterns.
 
-Any of the three modes can also ingest a **GitHub source-code repository** via
+Any of these modes can also ingest a **GitHub source-code repository** via
 `--repo` (an extra context source — not a fourth mode). A code-understanding
 agent explores the repo **agentically through the GitHub MCP server** and
 distills it into code *component cards*. In `doc` mode the distinct components
@@ -182,6 +197,20 @@ python3 agents/enrichment/src/agent_runner.py \
   --project=<your_gcp_project> \
   --model=<vertex_model> \
   --output_dir=<local_output_dir>
+
+# Hybrid mode — doc mode PLUS --dataset: builds knowledge-base entries from the
+# docs AND a context-overlay entry per table, in the same entry group. Output
+# will contain both the standalone KB entries and the per-table overlays.
+python3 agents/enrichment/src/agent_runner.py \
+  --mode=doc \
+  --dataset=<project>.<dataset> \
+  --folders=<drive_folder_id_or_url> \
+  --entry_group=<project>.<location>.<entryGroupId> \
+  --topic="<your use case / instruction>" \
+  --project=<your_gcp_project> \
+  --location=<vertex_location> \
+  --model=<vertex_model> \
+  --output_dir=<local_output_dir>
 ```
 
 Any mode can additionally pull in a GitHub repository as a code-context source.
@@ -258,8 +287,8 @@ list). `--project`, `--model`, and `--output_dir` are required in **every** mode
 
 #### Mode selection & target
 
-- **`--mode`** — *(optional, default inferred)* One of `doc`, `table`, `context_overlay`. If omitted it's inferred: `--dataset` set ⇒ `table`, otherwise `doc`. `context_overlay` is never inferred — pass it explicitly.
-- **`--dataset`** — *(table, context_overlay — required)* BigQuery dataset as `project.dataset`, e.g. `--dataset=my-proj.analytics`. Ignored in doc mode.
+- **`--mode`** — *(optional, default inferred)* One of `doc`, `table`, `context_overlay`. If omitted it's inferred: `--dataset` set ⇒ `table`, otherwise `doc`. `context_overlay` is never inferred — pass it explicitly. **Hybrid** is `--mode=doc` *with* `--dataset` (also never inferred): you get doc-mode KB entries **plus** a context-overlay entry per table.
+- **`--dataset`** — *(table, context_overlay — required; doc — optional)* BigQuery dataset as `project.dataset`, e.g. `--dataset=my-proj.analytics`. In **doc** mode it's optional: supplying it switches the run to **hybrid** (doc KB entries + per-table overlays); omit it for a plain doc-only run.
 - **`--entry_group`** — *(doc, context_overlay — required)* Entry group `project.location.entryGroupId`. In **doc** mode it **must already exist** (the agent runs read-only `kcmd` and won't create it — see the note above). In **overlay** mode it's where the new overlay entries are created. Ignored in table mode, which writes onto the live `@bigquery` entries.
 
 #### Source context (what the agent reads)
@@ -371,11 +400,52 @@ evaluation counts and grounds on exactly what was read.
 
 ## Output
 
-The agent writes a `kcmd` mdcode tree into `--output_dir`: a `catalog.yaml`
-manifest written by `kcmd init`; the per-entry YAML under `catalog/` (pulled by
-`kcmd pull` in table mode, or generated by the agent in doc mode); and the
-enriched overview sidecar Markdown. It also writes a `trajectory.json` recording
-what the agent read and produced. Inspect it with:
+The agent writes a `kcmd` **Metadata-as-Code** tree into `--output_dir`. The
+top-level `catalog.yaml` is the manifest (`kcmd init`); everything else lives
+under `catalog/`. Each entry is a **folder** containing its `…​.yaml` (the entry:
+`name`/`id`/`type`/`resource`/`aspects`), its `…​.overview.md` (the enriched
+overview, an `overview` aspect), and — for tables/overlays — a `…​.queries.md`
+sidecar (the `queries` aspect of sample SQL). Every folder also gets an
+auto-generated `index` entry (`index.yaml` + `index.overview.md`) that names the
+folder and carries `contains`/`parent` links, forming a navigable hierarchy.
+
+**Per mode** (entry `type` in parentheses):
+
+```
+catalog/
+├── catalog.yaml                         # manifest (kcmd init)
+│
+│   ## doc mode — knowledge-base entries grouped into category folders:
+├── <category>/                          # e.g. data-concepts-and-structure/
+│   ├── index.{yaml,overview.md}         #   folder index (generic)
+│   └── <entry>.{yaml,overview.md}       #   KB entry (generic, aspect type=knowledge-base)
+│
+│   ## table / context_overlay / hybrid — per-table folders under bigquery/:
+└── bigquery/<project>/<dataset>/
+    ├── index.{yaml,overview.md}         # dataset-level index
+    └── <table>/
+        ├── <table>.yaml                 # table entry (bigquery-table)  OR overlay (generic, aspect type=context-overlay)
+        ├── <table>.overview.md          # enriched overview
+        ├── <table>.queries.md           # sample-SQL sidecar (queries aspect)
+        ├── <table>.ref.yaml             # read-only 1P @bigquery mirror (overlay/hybrid only; not pushed)
+        └── index.{yaml,overview.md}     # per-table folder index
+```
+
+- **doc** → only the category-grouped KB folders.
+- **table** → only the `bigquery/<project>/<dataset>/<table>/` folders; the
+  overview is written onto the live `@bigquery` table entry (`bigquery-table`).
+- **context_overlay** → the per-table folders, but each `<table>.yaml` is a NEW
+  `generic` overlay entry (aspect `type: context-overlay`) whose `resource.name`
+  points at the real `@bigquery` table; the read-only `…​.ref.*` mirror is parked
+  alongside (never pushed).
+- **hybrid** (`--mode=doc` + `--dataset`) → **BOTH**: the category-grouped KB
+  folders **and** the per-table overlay folders. The KB entries hold only the
+  cross-cutting knowledge that does not belong on any single table; the per-table
+  facts (schema, columns, foreign-key relationships) live in the overlays — they
+  are **not** duplicated as KB entries.
+
+A `trajectory.json` (what the agent read + produced) and an `eval_report.md` are
+also written at the root. Inspect the tree with:
 
 ```bash
 find /tmp/enrich_out -type f
@@ -472,25 +542,32 @@ and sections. Golden scoring runs the **full dynamic metric set**
 `disambiguation_efficacy`, `absence_of_contradictions`) **and adds** the
 golden-driven metrics below (each shown out of 100, higher is better):
 
-- **concept_recall** *(judge, doc mode)* — of the concepts the golden expects as
-  knowledge-base entries, what fraction did the agent produce (matched by meaning,
-  not exact name)? **100 = every expected concept covered.**
+- **concept_recall** *(judge, doc + hybrid)* — of the concepts the golden expects
+  as knowledge-base entries, what fraction did the agent produce (matched by
+  meaning, not exact name)? **100 = every expected concept covered.**
 - **concept_precision** *(judge, doc mode)* — of the entries the agent produced,
   what fraction map to an expected concept? Spurious entries lower it; concepts
   you list under `acceptable_extra_concepts` are exempt. **100 = no off-target
   entries.**
-- **fact_recall** *(judge)* — of the `golden_facts` (per table in table mode),
-  what fraction are conveyed by the matched output? **100 = all expected facts
-  present.**
+- **fact_recall** *(judge)* — of the `golden_facts`, what fraction are conveyed by
+  the matched output? Per table in **table / context_overlay / hybrid** (each
+  golden table treated as a topic); over expected concepts in **doc / hybrid**.
+  **Hybrid is scored on BOTH** its KB entries and its per-table overlays (the two
+  contributions combine into one score). **100 = all expected facts present.**
 - **business_terms_presence** *(judge)* — are the golden's `business_terms`
   defined or used in the output (matched semantically)? **100 = all covered.**
 - **enrichment_diversity** *(deterministic)* — does the output contain the
   sections the golden declares in `expected_headings`? A "Sample Queries" heading
   is satisfied by a populated `<table>.queries.md` sidecar. **100 = all expected
   sections present.**
-- **entry_grounding** *(deterministic, table mode)* — do all generated entries
-  correspond to real dataset tables, with none invented? **100 = nothing
+- **entry_grounding** *(deterministic, table + context_overlay)* — do all generated
+  entries correspond to real dataset tables, with none invented? (Skipped for
+  hybrid, whose standalone KB entries are legitimately not tables.) **100 = nothing
   fabricated.**
+- **index_name_coverage** *(deterministic, needs `expected_folders`)* — for the
+  per-folder `index` entries the agent emits (doc / context_overlay / hybrid), do
+  their display names cover the expected folder/category names (token-overlap
+  match)? **100 = every expected folder named.**
 - **persona_alignment** *(judge, with `--persona`)* — on the same source, does the
   output emphasize this persona's focus areas while still retaining the shared
   concepts? **100 = strong persona conditioning without dropping shared content.**
@@ -524,6 +601,49 @@ into a timestamped folder under `$TMPDIR/kc_golden_eval_reports/` (printed at th
 end). Add more cases with a comma-separated `--goldens`. Prereqs: ADC
 (`gcloud auth application-default login`) and a built `kcmd`
 (`cd agents/mdcode && npm run build`) — every mode shells out to it.
+
+#### Public goldens by mode
+
+All goldens below ground on **public** BigQuery datasets (`bigquery-public-data.*`),
+copied/replicated into your project by each golden's `run.setup`:
+
+| Mode | Goldens |
+| --- | --- |
+| **doc** | `supply_chain`, `financial_services`, `phone_services` |
+| **table** | `table_crypto_bitcoin`, `table_ga4_obfuscated_sample_ecommerce`, `table_stackoverflow`, `thelook_ecommerce`, `xref_stackoverflow` *(cross-table showcase: FKs documented child-side only, so parent inbound refs require cross-table aggregation)* |
+| **context_overlay** | `overlay_crypto_bitcoin`, `overlay_ga4_obfuscated_sample_ecommerce` |
+| **hybrid** *(doc CLI + `--dataset`)* | `hybrid_stackoverflow` |
+
+```bash
+# Cross-table showcase (table mode):
+python -m eval --run --goldens eval/goldens/xref_stackoverflow.json \
+    --project <your_gcp_project> --model gemini-2.5-pro --runs 2
+
+# Context-overlay + hybrid target an entry group you own, so the golden's
+# run.entry_group is `{project}.global.kc-eval-overlay` / `kc-eval-hybrid`
+# (the `{project}` placeholder is filled with your --project). Create the entry
+# group(s) once, then:
+python -m eval --run \
+    --goldens eval/goldens/overlay_crypto_bitcoin.json,eval/goldens/hybrid_stackoverflow.json \
+    --project <your_gcp_project> --model gemini-2.5-pro --runs 2
+```
+
+> **The eval (and the agent) never publish to the catalog.** Every mode produces
+> **local** Metadata-as-Code under `--output_dir`; the eval scores those files and
+> stops. Publishing is always your explicit, separate `kcmd push` step — the agent
+> only ever *reads* the catalog (`kcmd init`/`pull`/`reference`) during a run.
+>
+> What each mode needs in **your project** (so it can't be fully anonymous):
+> - **All modes** — a GCP project for the Vertex model.
+> - **table / context_overlay / hybrid** — read a BigQuery dataset through the
+>   Dataplex catalog, so the golden's `run.setup` replicates the public dataset
+>   into your project first. (table writes its overview onto the dataset's live
+>   `@bigquery` entries; doc reads no dataset.)
+> - **doc / context_overlay / hybrid** — just an entry-group **name** to namespace
+>   the generated entries (e.g. `{project}.global.kc-eval-...`). It does **not** need
+>   to exist beforehand — you don't create anything; `kcmd pull` tolerates a missing
+>   group (the run simply starts from empty local state), and the group is only
+>   actually created/populated if *you* later `kcmd push`. Table mode needs none.
 
 ### Multiple runs: averaged metrics + consistency
 

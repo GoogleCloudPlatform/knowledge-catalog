@@ -66,12 +66,36 @@ def ensure_dataset_copy(source: str, target_project: str, target_dataset: str,
   return f"{target_project}.{target_dataset}"
 
 
+def ensure_schema_only_replica(spec: dict, project: str) -> str:
+  """Reproduce a public dataset as a SCHEMA-ONLY, description-stripped replica in
+  the user's project by invoking a builder under eval/tools/.
+
+  For public datasets that are too large to copy (e.g. crypto_bitcoin,
+  stackoverflow) and/or ship rich column descriptions that would hand the agent
+  free grounding, we replicate only the schema (empty tables, descriptions
+  stripped) so enrichment must come from the grounding corpus. `spec` carries an
+  optional `builder` (default make_public_replica.py), `dataset`, and optionally
+  `source` and `tables`. Returns `<project>.<dataset>`."""
+  builder = spec.get("builder", "make_public_replica.py")
+  script = os.path.join(os.path.dirname(__file__), "tools", builder)
+  argv = [sys.executable, script, "--project", project,
+          "--dataset", spec["dataset"], "--location", spec.get("location", "US")]
+  if spec.get("source"):
+    argv += ["--source", spec["source"]]
+  if spec.get("tables"):
+    argv += ["--tables", ",".join(spec["tables"])]
+  print(f"[setup] schema-only replica via {builder}: {project}.{spec['dataset']}",
+        flush=True)
+  subprocess.run(argv, check=False)
+  return f"{project}.{spec['dataset']}"
+
+
 def resolve_inputs(golden: dict, project: str) -> dict:
   """Build the agent CLI inputs for a golden's `run` block.
 
-  Runs any `setup.copy_public_dataset` and, for it, sets `dataset` to the copy in
-  the user's project. Returns a dict of agent flags (mode/topic/dataset/folders/
-  docs/entry_group/glossaries).
+  Runs any `setup.copy_public_dataset` / `setup.schema_only_replica` and, for it,
+  sets `dataset` to the copy/replica in the user's project. Returns a dict of
+  agent flags (mode/topic/dataset/folders/docs/entry_group/glossaries).
 
   Any `{project}` placeholder in a run-block string value is replaced with the
   user's `--project`, so a doc-mode golden can declare a generalizable
@@ -85,6 +109,9 @@ def resolve_inputs(golden: dict, project: str) -> dict:
     ds = ensure_dataset_copy(cp["source"], project, cp["dataset"],
                              location=cp.get("location", "US"))
     run.setdefault("dataset", ds)
+  sor = setup.get("schema_only_replica")
+  if sor:
+    run.setdefault("dataset", ensure_schema_only_replica(sor, project))
   return {k: (v.replace("{project}", project) if isinstance(v, str) else v)
           for k, v in run.items()}
 
@@ -94,7 +121,7 @@ def _argv(inputs: dict, project: str, model: str, output_dir: str) -> list[str]:
           f"--project={project}", f"--model={model}",
           f"--output_dir={output_dir}"]
   for key in ("mode", "topic", "dataset", "entry_group", "folders", "docs",
-              "glossaries", "location"):
+              "glossaries", "location", "tables"):
     val = inputs.get(key)
     if val:
       argv.append(f"--{key}={val}")

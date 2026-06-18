@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import * as gcp from './gcp/context';
 import * as crm from './gcp/crm';
 import * as dataplex from './gcp/dataplex';
-import {CatalogLayout, createLayout} from './layout';
+import {CatalogLayout, createLayout, Layouts, rootDirForLayout} from './layout';
 import {CatalogManifest} from './manifest';
 import * as md from './metadata';
 import {ResourceAlias, ResourceType} from './resourcealias';
@@ -30,14 +30,18 @@ export class CatalogSnapshot {
     this.basePath = basePath;
     this.manifest = manifest;
 
-    const catalogPath = path.join(this.basePath, 'catalog');
-    this._layout = createLayout(manifest.source.layout, catalogPath, manifest);
+    // A manifest `layout:` override wins over the source default; the root dir
+    // name follows the chosen layout (catalog/ for the kcmd-native layouts).
+    const layout = (manifest.layout as Layouts) ?? manifest.source.layout;
+    const catalogPath = path.join(this.basePath, rootDirForLayout(layout));
+    this._layout = createLayout(layout, catalogPath, manifest);
   }
 
   static async fromPath(
     basePath: string,
     ctx: gcp.ApiContext,
     isReference: boolean = false,
+    formatOverride?: string,
   ): Promise<CatalogSnapshot> {
     const manifestPath = path.join(basePath, 'catalog.yaml');
     if (!fs.existsSync(manifestPath)) {
@@ -45,6 +49,9 @@ export class CatalogSnapshot {
     }
 
     const manifest = await CatalogManifest.load(manifestPath, ctx);
+    if (formatOverride) {
+      manifest.layout = formatOverride;
+    }
     if (isReference && !manifest.referenceManifest) {
       throw new Error(`Cannot find reference config in manifest`);
     }
@@ -76,6 +83,12 @@ export class CatalogSnapshot {
   // Retrieves the list of locally (pulled and/or created) managed entries
   async listEntries(): Promise<string[]> {
     return this._layout.listEntries();
+  }
+
+  // Optional post-sync finalization (layout-specific finalization
+  // after a pull). No-op for layouts that don't implement it.
+  async finalize(): Promise<void> {
+    await this._layout.finalize?.();
   }
 
   // Retrieves the local copy of the entry using its local name
@@ -749,6 +762,29 @@ function toServiceEntry(
     aspects: aspects,
   };
 }
+
+// Dataplex distinguishes directed vs undirected entry links: directed types
+// (e.g. `definition`) require entryReferences with explicit SOURCE/TARGET
+// types, while undirected types (e.g. `related`, `synonym`, `schema-join`)
+// require both refs to be UNSPECIFIED. Sending SOURCE/TARGET for an
+// undirected type returns 400 INVALID_ARGUMENT
+// (ENTRY_LINK_INVALID_REFERENCE_TYPES_ERROR). The set below covers the
+// dataplex-types system link types; custom undirected types would need to
+// be added here too.
+const _UNDIRECTED_LINK_TYPE_IDS = new Set([
+  'related',
+  'synonym',
+  'schema-join',
+]);
+
+function _isUndirectedLinkType(entryLinkType: string): boolean {
+  // entryLinkType is the full Dataplex resource name:
+  //   projects/<P>/locations/<L>/entryLinkTypes/<id>
+  // Match on the trailing id segment.
+  const id = entryLinkType.split('/').pop() || '';
+  return _UNDIRECTED_LINK_TYPE_IDS.has(id);
+}
+
 async function toServiceEntryLinks(
   entry: md.Entry,
   serviceName: string,
@@ -806,6 +842,7 @@ async function toServiceEntryLinks(
           }
         }
 
+        const undirected = _isUndirectedLinkType(entryLinkType);
         links.push({
           name: '',
           entryLinkType,
@@ -815,7 +852,7 @@ async function toServiceEntryLinks(
               // fixProjectToNumber already handles the outer.
               // Main source serviceName produces the inner with ID.
               name: await crm.fixProjectToNumber(serviceName, ctx),
-              type: 'SOURCE',
+              type: undirected ? 'UNSPECIFIED' : 'SOURCE',
             },
             {
               // Glossary TARGET: Both MUST be Number for proxy entries.
@@ -825,7 +862,7 @@ async function toServiceEntryLinks(
                 ),
                 ctx,
               ),
-              type: 'TARGET',
+              type: undirected ? 'UNSPECIFIED' : 'TARGET',
             },
           ],
 
@@ -907,6 +944,7 @@ async function toServiceEntryLinks(
               }
             }
 
+            const undirectedField = _isUndirectedLinkType(entryLinkType);
             links.push({
               name: '',
               entryLinkType,
@@ -914,7 +952,7 @@ async function toServiceEntryLinks(
                 {
                   // BQ SOURCE: Outer is Number, Inner (if proxy) is ID.
                   name: await crm.fixProjectToNumber(serviceName, ctx),
-                  type: 'SOURCE',
+                  type: undirectedField ? 'UNSPECIFIED' : 'SOURCE',
                   path: `Schema.${field.name}`,
                 },
                 {
@@ -925,7 +963,7 @@ async function toServiceEntryLinks(
                     ),
                     ctx,
                   ),
-                  type: 'TARGET',
+                  type: undirectedField ? 'UNSPECIFIED' : 'TARGET',
                 },
               ],
               aspects: link.aspects

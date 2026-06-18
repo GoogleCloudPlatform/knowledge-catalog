@@ -30,6 +30,10 @@ cli
   )
   .option('--glossary <id>', 'Identifier of the Glossary (project.location.id)')
   .option('--pull', 'Optionally pull catalog entries during initialization')
+  .option(
+    '--format <format>',
+    'On-disk layout: standard (default) | documents',
+  )
   .action(async (options) => {
     try {
       await commands.init(options);
@@ -42,6 +46,10 @@ cli
 cli
   .command('pull', 'Pull catalog entries')
   .option('--dry-run', 'Perform a dry run without modifying local files')
+  .option(
+    '--format <format>',
+    'On-disk layout override: standard | documents',
+  )
   .action(async (options) => {
     let exitCode = 1;
     try {
@@ -59,6 +67,10 @@ cli
   .option('--force', 'Force push changes')
   .option('--validate-only', 'Only validate changes without applying')
   .option('--dry-run', 'Perform a dry run without publishing to service')
+  .option(
+    '--format <format>',
+    'On-disk layout override: standard | documents',
+  )
   .action(async (options) => {
     let exitCode = 1;
     try {
@@ -83,14 +95,20 @@ cli
     }
   });
 
-cli.command('reference', 'Pull reference resource entries').action(async () => {
-  try {
-    await commands.reference();
-  } catch (err: any) {
-    console.error('Error:', err.message || err);
-    process.exit(1);
-  }
-});
+cli
+  .command('reference', 'Pull reference resource entries')
+  .option(
+    '--format <format>',
+    'On-disk layout override: standard | documents',
+  )
+  .action(async (options) => {
+    try {
+      await commands.reference(options);
+    } catch (err: any) {
+      console.error('Error:', err.message || err);
+      process.exit(1);
+    }
+  });
 
 cli.parse();
 

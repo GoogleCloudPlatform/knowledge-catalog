@@ -1,0 +1,124 @@
+{
+  "_comment": "PUBLIC hybrid golden (doc CLI + --dataset). Produces standalone KB entries AND one context-overlay per table. KB entries hold ONLY cross-cutting knowledge that does not belong in any single table's overlay (dataset provenance, cross-table structure/metrics); per-table content lives in the overlays, not as duplicate KB entries. Graded on BOTH (expected_topics over the cross-cutting KB + tables over the overlays). Requires a writable entry group in your project.",
+  "corpus": "stackoverflow",
+  "grounding": "Local markdown corpus (eval/corpora/stackoverflow).",
+  "run": {
+    "_doc": "Runnable CASE: hybrid = --mode=doc WITH --dataset. Build the stackoverflow replica, then create KB entries + per-table overlays.",
+    "mode": "doc",
+    "topic": "Stack Overflow public dataset knowledge base",
+    "folders": "eval/corpora/stackoverflow",
+    "entry_group": "{project}.global.kc-eval-hybrid",
+    "tables": "posts_questions,users",
+    "setup": {
+      "schema_only_replica": {
+        "builder": "make_public_replica.py",
+        "source": "bigquery-public-data.stackoverflow",
+        "dataset": "stackoverflow",
+        "tables": [
+          "posts_questions",
+          "users"
+        ]
+      }
+    }
+  },
+  "business_terms": [
+    "Question",
+    "Answer",
+    "User",
+    "Reputation",
+    "Tag",
+    "Badge"
+  ],
+  "expected_topics": [
+    {
+      "canonical": "Stack Exchange Data Dump",
+      "flavor_hints": [
+        "data dump",
+        "provenance",
+        "BigQuery mirror",
+        "public Q&A",
+        "Stack Overflow",
+        "source"
+      ],
+      "golden_facts": [
+        "the dataset is a BigQuery mirror of the Stack Exchange Data Dump for Stack Overflow, the public Q&A site for programmers",
+        "Stack Overflow is modeled as many independent entity tables that join through integer ids (unlike a single denormalized events table)"
+      ]
+    },
+    {
+      "canonical": "Entity Relationship Graph",
+      "flavor_hints": [
+        "foreign keys",
+        "integer ids",
+        "joins",
+        "relationships",
+        "analytical paths",
+        "entity graph",
+        "posts table split",
+        "questions and answers split",
+        "PostTypeId",
+        "posts_questions vs posts_answers",
+        "normalized entity tables",
+        "dataset structure"
+      ],
+      "golden_facts": [
+        "posts, comments, votes, and badges reference users.id via owner_user_id or user_id; an answer references its question via posts_answers.parent_id -> posts_questions.id",
+        "the integer-id joins are the canonical analytical paths (e.g. top answerers, acceptance rate by tag, reputation vs activity)",
+        "the source Posts table (distinguished by PostTypeId) is split in BigQuery into posts_questions (PostTypeId=1) and posts_answers (PostTypeId=2)"
+      ]
+    }
+  ],
+  "acceptable_extra_concepts": [
+    "Reputation system",
+    "Reputation",
+    "Reputation Velocity",
+    "Score",
+    "Voting",
+    "Tagging",
+    "Q&A model",
+    "Accepted answer",
+    "Acceptance Rate",
+    "Engagement Rate",
+    "Active User",
+    "Key Metrics",
+    "Engagement metrics",
+    "Data Governance",
+    "PII",
+    "Glossary"
+  ],
+  "tables": [
+    {
+      "table": "posts_questions",
+      "expected_artifact": "catalog/bigquery/cloud-ml-metadata-test-jialu/stackoverflow/posts_questions/posts_questions.overview.md",
+      "golden_facts": [
+        "one row per question; id is the primary key referenced by answers, votes, and comments",
+        "owner_user_id references users.id (the asker) and tags lists the question's topic labels that correspond to rows in the tags table",
+        "accepted_answer_id references posts_answers.id (the answer the asker accepted, null if none)",
+        "score is upvotes minus downvotes; answer_count and view_count are engagement counters"
+      ],
+      "business_terms": [
+        "Question",
+        "Accepted Answer",
+        "Tag",
+        "Score"
+      ]
+    },
+    {
+      "table": "users",
+      "expected_artifact": "catalog/bigquery/cloud-ml-metadata-test-jialu/stackoverflow/users/users.overview.md",
+      "golden_facts": [
+        "one row per account; id is referenced by posts (owner_user_id), comments, and badges (user_id)",
+        "reputation is the user's core earned trust score, driven by the votes their posts receive",
+        "up_votes and down_votes are the counts of votes the user has cast"
+      ],
+      "business_terms": [
+        "User",
+        "Reputation"
+      ]
+    }
+  ],
+  "expected_headings": [
+    "Lineage",
+    "Sample Queries"
+  ]
+}

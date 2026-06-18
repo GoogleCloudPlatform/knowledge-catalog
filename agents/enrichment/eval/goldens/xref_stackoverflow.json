@@ -1,0 +1,64 @@
+{
+  "_comment": "PUBLIC cross-table showcase (table mode). The corpus documents foreign keys ONLY on the child side, so the parent tables' INBOUND references can only be reconstructed by v3's cross-table concept aggregation. Scores users + posts_questions on inbound refs.",
+  "corpus": "stackoverflow_xref",
+  "grounding": "Local markdown corpus (eval/corpora/stackoverflow_xref); FKs documented child-side only.",
+  "run": {
+    "_doc": "Runnable CASE: schema-only replica of bigquery-public-data.stackoverflow, enrich the parent tables in table mode grounded by the child-side-only corpus.",
+    "mode": "table",
+    "topic": "Metadata enrichment",
+    "folders": "eval/corpora/stackoverflow_xref",
+    "tables": "users,posts_questions",
+    "setup": {
+      "schema_only_replica": {
+        "builder": "make_public_replica.py",
+        "source": "bigquery-public-data.stackoverflow",
+        "dataset": "stackoverflow",
+        "tables": [
+          "users",
+          "posts_questions"
+        ]
+      }
+    }
+  },
+  "business_terms": [
+    "User",
+    "Reputation",
+    "Question",
+    "Answer",
+    "Accepted Answer"
+  ],
+  "tables": [
+    {
+      "table": "users",
+      "expected_artifact": "catalog/bigquery/cloud-ml-metadata-test-jialu/stackoverflow/users/users.overview.md",
+      "golden_facts": [
+        "is referenced as the author of questions and answers via posts_questions.owner_user_id and posts_answers.owner_user_id",
+        "is referenced by comments.user_id as the comment author",
+        "is referenced by badges.user_id as the badge recipient",
+        "reputation is the user's core earned trust score; up_votes and down_votes are the votes this user has cast"
+      ],
+      "business_terms": [
+        "User",
+        "Reputation"
+      ]
+    },
+    {
+      "table": "posts_questions",
+      "expected_artifact": "catalog/bigquery/cloud-ml-metadata-test-jialu/stackoverflow/posts_questions/posts_questions.overview.md",
+      "golden_facts": [
+        "is answered by rows in posts_answers, which reference it via posts_answers.parent_id",
+        "is referenced by votes.post_id and comments.post_id (votes and comments attach to it)",
+        "owner_user_id references users.id (the asker) and accepted_answer_id references posts_answers.id"
+      ],
+      "business_terms": [
+        "Question",
+        "Answer",
+        "Accepted Answer"
+      ]
+    }
+  ],
+  "expected_headings": [
+    "Lineage",
+    "Sample Queries"
+  ]
+}

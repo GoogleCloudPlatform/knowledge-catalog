@@ -759,7 +759,7 @@ def format_queries_sidecar(
   further (INFORMATION_SCHEMA vs Documentation).
 
   YAML frontmatter ONLY (no body): kcmd's patched standard layout
-  (agents/mdcode/src/libts/layouts/standard.ts) skips `content`
+  (toolbox/mdcode/src/libts/layouts/standard.ts) skips `content`
   injection when the body is empty, which keeps Dataplex push happy
   (the queries aspect has no `content` field).
 

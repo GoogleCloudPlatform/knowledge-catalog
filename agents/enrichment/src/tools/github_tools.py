@@ -281,7 +281,7 @@ THEN identify the distinct LOGICAL COMPONENTS found UNDER THE SCOPE ROOT — a c
 
 For EACH component, derive:
   - name: a clear human-readable name (Title Case).
-  - path: the primary directory or file path, as a FULL repo-relative path including the scope-root prefix (e.g. `agents/enrichment/src`, not just `src`).
+  - path: the primary directory or file path, as a FULL repo-relative path including the scope-root prefix (e.g. `toolbox/enrichment/src`, not just `src`).
   - purpose: ONE sentence on what it does.
   - key_entities: the concrete named things it defines or references that a catalog should know — exported classes/functions, public APIs/endpoints, CLI commands, config keys, env vars, data models, and especially any DATA ASSETS the code reads or writes (BigQuery tables/columns, dataset names, topics, file paths). Be specific and use the exact spellings from the code.
   - details: a dense Markdown description (a few paragraphs or bullets) covering responsibilities, architecture, key interfaces, important data flows, dependencies, and any SQL queries or table references found in the code (quote them).

@@ -64,18 +64,19 @@ class VertexGemini(Gemini):
     return self._cached_client
 
 
-# High-volume / small-input steps (per-doc descriptors, JSON routing, per-doc
-# summaries). These default to the caller's --model so nothing is pinned to a
-# model the user may not have access to; set KC_LIGHT_MODEL to point them at a
-# cheaper/faster model (e.g. a Flash variant) without changing --model.
-def _light_model(main_model: str) -> str:
-  """Model for high-volume calls: KC_LIGHT_MODEL if set, else the main --model."""
-  return os.environ.get("KC_LIGHT_MODEL") or main_model
+# Pinned for structured-extraction steps with SMALL inputs (per-doc descriptors,
+# JSON routing). Flash is ~3-4x faster. The caller's --model is used for: (a)
+# the heavy write steps where quality matters, and (b) the doc-mode batch
+# summarizer — see comment on create_summarizer_runner below.
+_LIGHT_MODEL = os.environ.get("KC_LIGHT_MODEL", "gemini-2.5-flash")
 
-# Per-doc summarizer: doc_mode resolves the model via _light_model(model) at run
-# time (KC_LIGHT_MODEL override, else --model). Each call is ONE doc in
-# (≤60K chars) -> one neutral card out (~2K chars), cached at
-# ~/.kc_enrich_cache/summaries/ keyed on (doc_id, modifiedTime).
+# Per-doc summarizer model. Each call is ONE doc in (≤60K chars), one neutral
+# card out (~2K chars) — small enough to stay well under Flash's per-call
+# context limits regardless of routing, and lighter on latency / cost than
+# Pro. Result is cached at ~/.kc_enrich_cache/summaries/ keyed on
+# (doc_id, modifiedTime), so any drift introduced by using a smaller model
+# only shows up on the FIRST run against a doc.
+PER_DOC_SUMMARIZER_MODEL = _LIGHT_MODEL
 
 
 # ============================ Doc mode ============================
@@ -202,12 +203,13 @@ def create_doc_query_extractor_runner(model: str) -> InMemoryRunner:
   Returns:
     An InMemoryRunner for the extractor agent.
   """
+  del model  # unused
   agent = llm_agent.LlmAgent(
       name="DocQueryExtractorAgent",
       description=(
           "Extracts SQL examples for ONE table from its routed documentation."
       ),
-      model=VertexGemini(model=_light_model(model)),
+      model=VertexGemini(model=_LIGHT_MODEL),
       instruction=DOC_QUERY_EXTRACTOR_INSTRUCTION,
   )
   return InMemoryRunner(agent=agent)
@@ -309,16 +311,24 @@ def create_doc_summarizer_runner(model: str) -> InMemoryRunner:
       description=(
           "Summarizes a single Drive document into a compact descriptor."
       ),
-      model=VertexGemini(model=_light_model(model)),
-      instruction="""You are summarizing ONE document so a router can decide which BigQuery tables it is relevant to.
+      model=VertexGemini(model=_LIGHT_MODEL),
+      instruction="""You are summarizing ONE document so a router can decide which BigQuery tables it is relevant to, AND extracting any cross-table facts the document states.
 
-Output EXACTLY this Markdown shape and nothing else:
+Output EXACTLY this shape and nothing else:
 
 Title: <the document's inferred title>
 Summary: <2-4 sentences on what data/system/domain this document describes>
 Key entities: <comma-separated tables, datasets, columns, metrics, systems, or business terms this document actually discusses>
+<CONCEPTS>[ ...JSON array... ]</CONCEPTS>
 
-Be concrete and faithful — list the specific entities/columns/metrics named in the document. Do not invent. Do not add any other sections.""",
+For Title/Summary/Key entities: be concrete and faithful — list the specific entities/columns/metrics named in the document. Do not invent.
+
+For the <CONCEPTS> block: extract every CROSS-TABLE fact this document EXPLICITLY states — facts that connect two or more tables, or that define a metric / grain / source-of-truth spanning tables. Each element:
+  {"kind":"join|metric|relationship",
+   "tables":[table names this fact involves — use the exact names from DATASET TABLES in the prompt when given, else the names as written in the doc],
+   "title":"<short name>",
+   "body":"<the fact in 1-3 sentences, in concise data-catalog documentation style; include the join keys / ON clause or the metric formula verbatim if the doc gives them>"}
+Rules: ground ONLY in this document; do NOT invent joins, keys, or formulas; phrase the body in neutral catalog wording. If the document states no cross-table facts, output <CONCEPTS>[]</CONCEPTS>. Output nothing after the </CONCEPTS> tag.""",
   )
   return InMemoryRunner(agent=agent)
 
@@ -328,7 +338,7 @@ def create_router_runner(model: str) -> InMemoryRunner:
   agent = llm_agent.LlmAgent(
       name="RelevanceRouterAgent",
       description="Scores folder-document relevance to one BigQuery table.",
-      model=VertexGemini(model=_light_model(model)),
+      model=VertexGemini(model=_LIGHT_MODEL),
       instruction="""You are a precise relevance router. You are given ONE BigQuery table (its name and columns) and a numbered list of candidate documents (each with a title, summary, and key entities).
 
 Decide which documents genuinely provide domain knowledge that would help DOCUMENT THIS SPECIFIC TABLE — e.g. they define this table, its columns/metrics, its source system, or the business process it records. A document that merely shares a broad theme but does not concern this table's data is NOT relevant.
@@ -507,6 +517,11 @@ GROUNDING RULES — do not make anything up:
   - Every statement must be supported by the provided context.
   - If the context is thin, the overview can be short — DO NOT pad with plausible-sounding generalities.
   - Keep all source-document links verbatim.
+
+FACT COVERAGE — be thorough about what IS documented (without padding):
+  - Document the table's KEY COLUMNS and explain what each one MEANS (its semantic / business role), grounded in the context. A `## Schema` or `## Key Columns` section that DEFINES columns is core catalog documentation and is valuable.
+  - Capture the SPECIFIC facts the context states: exact values, qualifiers (e.g. "null when there is no accepted answer"), enum/code meanings (e.g. what a vote_type_id or a gold/silver/bronze class value means), lifecycle states, and metric formulas.
+  - The value is the MEANING, not the restatement: give each column its definition/role — do NOT list a column as a bare name+type with nothing added.
 
 STRUCTURE:
   - Start with a single H1 like `# {Display Name} Overview`.
@@ -768,5 +783,68 @@ def create_linking_runner(model: str) -> InMemoryRunner:
       model=VertexGemini(model=model),
       instruction=_LINKING_INSTRUCTION,
       output_schema=TableLinkingResult,
+  )
+  return InMemoryRunner(agent=agent)
+
+
+# ===================== Entity-level Linking Agent =====================
+#
+# For modes whose primary artifact is a non-tabular entry (KB pages, context
+# overlays) rather than a BigQuery table schema. The link semantic shifts
+# from "column → term" (precise definition) to "entry → term" (loose
+# relatedness), so this agent emits `related` links anchored on the entry
+# itself, with no Schema.<field> path. Output term count is unconstrained —
+# the agent picks however many it judges relevant.
+
+
+class EntityTermLink(BaseModel):
+  term_fqn: str = Field(
+      description=(
+          "Full Resource Name (FQN) of the related Glossary Term"
+          " (projects/*/locations/*/glossaries/*/terms/*)."
+      )
+  )
+  reason: str = Field(
+      description="Brief rationale for why this entry relates to this term."
+  )
+
+
+class EntityLinkingResult(BaseModel):
+  links: list[EntityTermLink] = Field(
+      description=(
+          "Glossary terms this entry is related to. May be empty if no terms"
+          " apply. No upper bound — include every term that the entry"
+          " meaningfully covers or discusses."
+      )
+  )
+
+
+_ENTITY_LINKING_INSTRUCTION = """You are a Metadata Governance Expert. Your mission is to identify which Business Glossary Terms a knowledge artifact is related to.
+
+CONTEXT PROVIDED:
+1. ALLOWED GLOSSARY TERMS: A list of established terms with their IDs, Names, and Definitions.
+2. TARGET ENTRY: The title, type, and content summary of one knowledge artifact (a doc page or a context overlay describing a dataset table). This is what you are tagging.
+
+GOAL:
+Determine which ALLOWED GLOSSARY TERMS the TARGET ENTRY meaningfully covers, discusses, or governs. The relationship is broad ("related"), not strict definition equivalence.
+
+RULES:
+- You MUST only use IDs from the ALLOWED GLOSSARY TERMS list. Do NOT invent terms.
+- Include every term the entry meaningfully covers — no upper limit, no quota.
+- Skip terms the entry only mentions in passing or with low confidence.
+- If no term applies, return an empty list.
+
+OUTPUT:
+Strict JSON conforming to the EntityLinkingResult schema."""
+
+
+def create_entity_linking_runner(model: str) -> InMemoryRunner:
+  """Maps a single entry (KB page or overlay) to a set of related glossary terms."""
+  agent = llm_agent.LlmAgent(
+      name="EntityLinkingAgent",
+      description="Tags one entry with related glossary terms (entry-level).",
+      model=VertexGemini(model=model),
+      instruction=_ENTITY_LINKING_INSTRUCTION,
+      output_schema=EntityLinkingResult,
   )
   return InMemoryRunner(agent=agent)

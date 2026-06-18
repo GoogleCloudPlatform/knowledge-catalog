@@ -115,7 +115,9 @@ def run_golden_eval(output_dir: str, golden_path: str,
   # mixed with `.ref` bigquery types — metrics._ENTRY_TYPE has no overlay key) and
   # the table-only metrics (entry_grounding, reference grounding, per-table
   # fact_recall) don't apply to it.
-  mode = agent_type if agent_type in ("table", "context_overlay") else "doc"
+  # HYBRID (doc CLI + --dataset) records agent_type="hybrid"; it is graded on BOTH
+  # its KB entries AND its per-table overlays (see fact scoring below).
+  mode = agent_type if agent_type in ("table", "context_overlay", "hybrid") else "doc"
   arts = loaders.load_mdcode(os.path.join(output_dir, "catalog"))
   if not arts.get("overview_md") and not arts.get("yaml"):
     return {"error": f"No generated mdcode found under {output_dir}/catalog."}
@@ -133,12 +135,20 @@ def run_golden_eval(output_dir: str, golden_path: str,
 
   # Deterministic
   res.append(metrics.check_structural(arts, mode))
+  # Folder/index naming (golden-gated): only when the golden declares
+  # `expected_folders`; deterministic token-overlap of expected folder names vs
+  # the emitted per-folder index displayNames (v3 folder/index hierarchy).
+  if golden.get("expected_folders"):
+    res.append(metrics.check_index_names(arts, golden["expected_folders"]))
   # Input-conditioned tool use (must_call / must_not_call) . github records the actual tool calls in trajectory.json, so we derive the
   # fired tools from there (no agent stdout needed). check_trajectory/metrics.py are unchanged.
   res.append(metrics.check_trajectory(_traj_markers(traj),
                                       golden.get("trajectory", {})))
   res.append(metrics.check_perf(latency, arts, perf_budget or {}, tokens))
-  if mode == "table":
+  # Guard against invented entries not backed by a real dataset table. Applies to
+  # table + context_overlay; skipped for hybrid (its standalone KB entries are
+  # legitimately not tables, so entry-grounding doesn't apply to the run).
+  if mode in ("table", "context_overlay"):
     res.append(metrics.check_entry_grounding(arts))
   if golden.get("expected_headings"):
     res.append(metrics.check_expected_headings(arts, golden["expected_headings"]))
@@ -157,8 +167,16 @@ def run_golden_eval(output_dir: str, golden_path: str,
         arts, golden["prebaked_facts"], judge))
 
   thr = _THRESHOLDS
-  # Judge: concept recall/precision + fact recall
-  if mode == "doc" and golden.get("expected_topics"):
+  # Judge: concept recall/precision + fact recall. Fact scoring spans all four
+  # modes, composed from two scorers so HYBRID (doc KB entries + per-table
+  # overlays) is graded on BOTH (mirrors prototype scorer.py):
+  #   * KB concepts (match_topics over expected_topics): doc + hybrid.
+  #   * Table facts (each golden.table treated as a topic): table +
+  #     context_overlay + hybrid.
+  # Contributions combine (weighted by #topics / #tables) into one fact_recall;
+  # for plain doc/table this reduces to the original single-scorer score.
+  fact_parts = []  # (coverage, weight, detail)
+  if mode in ("doc", "hybrid") and golden.get("expected_topics"):
     tm = metrics.match_topics(arts, golden["expected_topics"], judge, 0.7)
     per_topic = tm.get("per_topic", [])
     matched = [t["topic"] for t in per_topic if t.get("matched")]
@@ -169,27 +187,41 @@ def run_golden_eval(output_dir: str, golden_path: str,
         tm["concept_recall"] >= thr["concept_recall"],
         f"Captured {len(matched)} of {len(per_topic)} expected concepts as entries"
         + (f"; missing: {', '.join(missed)}." if missed else ".")))
-    n_prod = len(tm.get("produced_entries", []))
-    acc, spu = _classify_extras(extra, golden.get("acceptable_extra_concepts"))
-    precision = (n_prod - len(spu)) / n_prod if n_prod else 1.0
-    detail = (f"{n_prod - len(extra)} of {n_prod} produced entries map to a core "
-              "expected concept")
-    if spu:
-      detail += "; spurious: " + ", ".join(e for e, _ in spu)
-    res.append(metrics.MetricResult(
-        "concept_precision", round(precision, 3),
-        precision >= thr["concept_precision"], detail + "."))
-    res.append(metrics.MetricResult(
-        "fact_recall", tm["fact_coverage"],
-        tm["fact_coverage"] >= thr["fact_recall"], _fact_detail(per_topic)))
-  elif mode == "table" and golden.get("tables"):
+    # concept_precision is meaningful for PLAIN doc only. HYBRID also emits one
+    # overlay per table + folder index entries, which would be miscounted as
+    # spurious KB concepts; hybrid is recall-oriented, so we skip precision.
+    if mode == "doc":
+      n_prod = len(tm.get("produced_entries", []))
+      acc, spu = _classify_extras(extra, golden.get("acceptable_extra_concepts"))
+      precision = (n_prod - len(spu)) / n_prod if n_prod else 1.0
+      detail = (f"{n_prod - len(extra)} of {n_prod} produced entries map to a core "
+                "expected concept")
+      if spu:
+        detail += "; spurious: " + ", ".join(e for e, _ in spu)
+      res.append(metrics.MetricResult(
+          "concept_precision", round(precision, 3),
+          precision >= thr["concept_precision"], detail + "."))
+    fact_parts.append(
+        (tm["fact_coverage"], len(per_topic) or 1, _fact_detail(per_topic)))
+  if mode in ("table", "context_overlay", "hybrid") and golden.get("tables"):
     topics = [{"canonical": t["table"], "flavor_hints": [t["table"]],
                "golden_facts": t.get("golden_facts", [])} for t in golden["tables"]]
-    tm = metrics.match_topics(arts, topics, judge, 0.7)
+    # scope_to_entry: a table's golden_facts are scored against THAT table's own
+    # entry, not the global output -- so a cross-table fact (e.g. an inbound FK)
+    # only earns credit if the agent carried it onto the referenced table. This
+    # is what makes the cross-table shared-concepts feature observable in the
+    # score; without it a child table stating the relationship from its side
+    # wrongly satisfies the parent table's fact (see eval audit, 2026-06-18).
+    tmt = metrics.match_topics(arts, topics, judge, 0.7, scope_to_entry=True)
+    fact_parts.append(
+        (tmt["fact_coverage"], len(topics) or 1,
+         _fact_detail(tmt.get("per_topic", []))))
+  if fact_parts:
+    total_w = sum(w for _c, w, _d in fact_parts) or 1
+    cov = sum(c * w for c, w, _d in fact_parts) / total_w
     res.append(metrics.MetricResult(
-        "fact_recall", tm["fact_coverage"],
-        tm["fact_coverage"] >= thr["fact_recall"],
-        _fact_detail(tm.get("per_topic", []))))
+        "fact_recall", cov, cov >= thr["fact_recall"],
+        " | ".join(d for _c, _w, d in fact_parts)))
 
   # Judge: persona alignment (optional)
   if persona_id and golden.get("personas", {}).get(persona_id):

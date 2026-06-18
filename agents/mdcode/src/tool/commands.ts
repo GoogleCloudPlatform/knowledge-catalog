@@ -15,16 +15,19 @@ export interface InitOptions {
   kb?: string;
   glossary?: string;
   pull?: boolean;
+  format?: string;
 }
 
 export interface PullOptions {
   dryRun?: boolean;
+  format?: string;
 }
 
 export interface PushOptions {
   force?: boolean;
   validateOnly?: boolean;
   dryRun?: boolean;
+  format?: string;
 }
 
 export async function init(options: InitOptions): Promise<number> {
@@ -73,11 +76,15 @@ export async function init(options: InitOptions): Promise<number> {
     return 1;
   }
 
+  if (options.format) {
+    manifest.layout = options.format;
+  }
+
   manifest.save('catalog.yaml');
   console.log(fs.readFileSync('catalog.yaml', 'utf8'));
 
   if (options.pull) {
-    return await pull();
+    return await pull({format: options.format});
   }
 
   return 0;
@@ -85,7 +92,12 @@ export async function init(options: InitOptions): Promise<number> {
 
 export async function pull(options?: PullOptions): Promise<number> {
   const ctx = context.ApiContext.default();
-  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+  const snapshot = await kcmd.CatalogSnapshot.fromPath(
+    '.',
+    ctx,
+    false,
+    options?.format,
+  );
 
   const catalog = new dataplex.CatalogClient(ctx);
   const sync = new kcmd.CatalogSync(catalog, snapshot);
@@ -94,6 +106,9 @@ export async function pull(options?: PullOptions): Promise<number> {
   const result = await sync.pull(options);
 
   if (result.success) {
+    // layout finalize() runs after the pull; no-op for
+    // other layouts.
+    await snapshot.finalize();
     console.log('Successfully updated local snapshot.');
     return 0;
   } else {
@@ -104,7 +119,12 @@ export async function pull(options?: PullOptions): Promise<number> {
 
 export async function push(options: PushOptions): Promise<number> {
   const ctx = context.ApiContext.default();
-  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+  const snapshot = await kcmd.CatalogSnapshot.fromPath(
+    '.',
+    ctx,
+    false,
+    options.format,
+  );
 
   const catalog = new dataplex.CatalogClient(ctx);
   const sync = new kcmd.CatalogSync(catalog, snapshot);
@@ -121,10 +141,19 @@ export async function push(options: PushOptions): Promise<number> {
   }
 }
 
-export async function reference(): Promise<number> {
+export interface ReferenceOptions {
+  format?: string;
+}
+
+export async function reference(options?: ReferenceOptions): Promise<number> {
   const ctx = context.ApiContext.default();
 
-  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx, true);
+  const snapshot = await kcmd.CatalogSnapshot.fromPath(
+    '.',
+    ctx,
+    true,
+    options?.format,
+  );
 
   const catalog = new dataplex.CatalogClient(ctx);
   const sync = new kcmd.CatalogSync(catalog, snapshot);
@@ -133,6 +162,8 @@ export async function reference(): Promise<number> {
   const result = await sync.reference();
 
   if (result.success) {
+    // layout finalize() runs after pulling references.
+    await snapshot.finalize();
     console.log('Successfully updated local reference entries snapshot.');
     return 0;
   } else {

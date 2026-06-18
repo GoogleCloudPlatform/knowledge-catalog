@@ -60,12 +60,18 @@ export class EntryGroupSource implements CatalogSource {
     const cleanName = localName.endsWith('.ref')
       ? localName.slice(0, -4)
       : localName;
-    const parts = cleanName.split('/');
-    // parts[0] is namespace, parts[1] is project, parts[2] is location, parts[3+] is entryId
-    // If the path is shorter (e.g. category/id), we assume the last part is the entryId
-    // and use the existing entry group name.
-    const entryId =
-      parts.length >= 4 ? parts.slice(3).join('/') : parts[parts.length - 1];
+    // `localName()` emits the `<namespace>/<project>/<location>/<entryId>` form
+    // on pull, but locally-authored entries may set `name:` to a bare entryId —
+    // which can itself contain '/' (e.g. a path-qualified `category/entry`, or a
+    // folder `index` like `category/index`). Strip the namespace/project/location
+    // prefix ONLY when it's actually present; otherwise the whole name IS the
+    // entryId. (The previous `parts.length >= 4 ? slice(3) : last` heuristic
+    // silently truncated multi-segment bare ids to their last segment, collapsing
+    // every `*/index` onto `index` and dropping the category from leaf ids.)
+    const prefix = `${this.namespace}/${this._name[0]}/${this._name[1]}/`;
+    const entryId = cleanName.startsWith(prefix)
+      ? cleanName.slice(prefix.length)
+      : cleanName;
     return `${this._entryGroup.name}/entries/${entryId}`;
   }
 

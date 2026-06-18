@@ -11,6 +11,12 @@ export enum Layouts {
   DOCUMENTS = 'documents',
 }
 
+// The on-disk root directory name used by each layout (kcmd-native layouts use
+// `catalog/`).
+export function rootDirForLayout(_layout: Layouts): string {
+  return 'catalog';
+}
+
 export interface CatalogLayout {
   init(): Promise<void>;
 
@@ -20,6 +26,9 @@ export interface CatalogLayout {
   saveEntry(name: string, entry: md.Entry): Promise<void>;
   deleteEntry(name: string): Promise<void>;
   getEntryPaths(name: string): {local?: string; ref?: string} | undefined;
+
+  // Optional post-sync hook. Layouts that don't need it simply omit it.
+  finalize?(): Promise<void>;
 }
 
 export function createLayout(

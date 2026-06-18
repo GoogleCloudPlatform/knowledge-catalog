@@ -15,6 +15,9 @@ export interface LocalEntryLink {
 
 const manifestSchema = z.object({
   scope: z.union([z.string(), z.array(z.string())]),
+  // Optional override of the on-disk layout (standard|documents). When
+  // absent, the layout is derived from the source type (see source.layout).
+  layout: z.string().optional(),
   resourceAlias: z
     .record(z.string(), z.record(z.string(), z.string()))
     .optional(),
@@ -87,6 +90,9 @@ export class CatalogManifest {
   readonly referenceManifest?: ReferenceManifest;
   readonly aliasMap: ResourceAlias;
   readonly entryLinkTypes?: string[];
+  // Optional layout override (standard|documents). Mutable so `init` can set
+  // it from the `--format` flag before `save()`; `load()` reads it back.
+  layout?: string;
 
   private constructor(
     source: CatalogSource,
@@ -375,7 +381,7 @@ export class CatalogManifest {
 
     const entryLinkTypes = result.data.entryLinkTypes;
 
-    return new CatalogManifest(
+    const manifest = new CatalogManifest(
       source,
       ctx,
       aliasMap,
@@ -384,6 +390,8 @@ export class CatalogManifest {
       reference,
       entryLinkTypes,
     );
+    manifest.layout = result.data.layout;
+    return manifest;
   }
 
   save(path: string): void {
@@ -397,6 +405,7 @@ export class CatalogManifest {
 
     const data: any = {
       scope: scope,
+      layout: this.layout ?? undefined,
       snapshot: this.snapshotConfig ?? undefined,
       publishing: this.publishingConfig ?? undefined,
       entryLinkTypes: this.entryLinkTypes ?? undefined,

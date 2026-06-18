@@ -203,6 +203,25 @@ export class CatalogSync {
   }): Promise<SyncResult> {
     const entries = await this._snapshot.listEntries();
 
+    // Push parents before children. Dataplex `Entry.parent_entry` is IMMUTABLE
+    // and is validated to reference an already-existing entry at create time, so
+    // any entry whose `resource.parent` points at another entry in this same
+    // push must be created AFTER that parent. Entry ids are path-qualified
+    // (e.g. a folder `index` entry `a/index` is the parent of both its
+    // same-folder leaves `a/m` and its sub-folder index `a/another_folder/index`),
+    // so a stable order by (1) path depth ascending, then (2) `index` entries
+    // before their same-depth siblings, guarantees every parent is created
+    // first. A leaf's parent is the `index` of its OWN directory, which sits at
+    // the same depth — hence the index-first tiebreak. This is a pure
+    // reordering; independent entries are unaffected.
+    const isIndexEntry = (n: string): boolean =>
+      n === 'index' || n.endsWith('/index');
+    entries.sort((a, b) => {
+      const depthDiff = a.split('/').length - b.split('/').length;
+      if (depthDiff !== 0) return depthDiff;
+      return (isIndexEntry(a) ? 0 : 1) - (isIndexEntry(b) ? 0 : 1);
+    });
+
     const publishingLinks =
       this._snapshot.manifest.publishingConfig?.entryLinks;
     const entryLinkTypes = publishingLinks?.map((linkTypeAlias) => {

@@ -59,9 +59,16 @@ export class KnowledgeBaseSource implements CatalogSource {
     const cleanName = localName.endsWith('.ref')
       ? localName.slice(0, -4)
       : localName;
-    const parts = cleanName.split('/');
-    // parts[0] is namespace, parts[1] is project, parts[2] is location, parts[3+] is entryId
-    const entryId = parts.slice(3).join('/');
+    // `localName()` emits `<namespace>/<project>/<location>/<entryId>` on pull,
+    // but locally-authored entries may set `name:` to a bare entryId that itself
+    // contains '/' (e.g. a path-qualified `category/entry` or a folder `index`).
+    // Strip the namespace/project/location prefix only when present; otherwise
+    // the whole name IS the entryId (the old unconditional `slice(3)` dropped the
+    // first three segments of any bare multi-segment id).
+    const prefix = `${this.namespace}/${this._name[0]}/${this._name[1]}/`;
+    const entryId = cleanName.startsWith(prefix)
+      ? cleanName.slice(prefix.length)
+      : cleanName;
     return `${this._entryGroup.name}/entries/${entryId}`;
   }
 

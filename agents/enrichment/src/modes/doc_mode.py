@@ -7,7 +7,6 @@ import asyncio
 import glob
 import os
 import re
-import time
 import uuid
 
 import common
@@ -15,8 +14,8 @@ from engine import (
     ENTRY_WRITER_INSTRUCTION,  # legacy ADK path, kept for compat
     EnumerationResult,
     PER_DOC_SUMMARIZER_INSTRUCTION,
+    PER_DOC_SUMMARIZER_MODEL,
     TOPIC_REDUCER_INSTRUCTION,
-    _light_model,
     create_entry_writer_runner,  # legacy fallback, no longer wired in
     create_enumeration_runner,
     create_mdcode_runner,
@@ -44,7 +43,7 @@ import yaml
 MAX_BATCH_SIZE = 10  # Reverted from v2.6's 3 (back to v2.5). v2.6 tried Flash via direct API to allow bigger throughput but Vertex routes Flash to a 32K-capped backend variant regardless of API path for this project, forcing batch=3, which then over-saturated Flash quota on back-to-back runs and bloated the EnumerationAgent's input.
 MAX_DEPTH = 2  # Was 3 — depth-3 mostly surfaced tangential links; dropping it cuts crawl + summarize ~30% (v2.5 optimization #1).
 CONCURRENCY_LIMIT = 6  # Reverted from v2.6's 12 (back to v2.5). Summarizer is on Pro again; 12 trips Vertex 429s on big-input Pro calls.
-# Stage 1 (per-doc summary) runs on _light_model(model) (Flash) — small
+# Stage 1 (per-doc summary) runs on PER_DOC_SUMMARIZER_MODEL (Flash) — small
 # per-call payloads, well within Flash routing limits, tolerates 20-way
 # concurrency without 429s. Stage 1 is the cold-run hot path; cache hits
 # bypass it entirely so warm-cache runs ignore this limit.
@@ -228,6 +227,59 @@ def _build_synthetic_scope(topic: str, folder_files: list[dict]) -> str:
   return "\n".join(lines)
 
 
+def _partition_doc_inputs(docs: list[str], folders: list[str] | None):
+  """Route each --docs/--folder entry to Drive vs local markdown by format.
+
+  Both flags are mixed, comma-separated lists routed per entry (see
+  drive_tools.is_local_path, which is format-first so the decision doesn't
+  depend on the process CWD except for bare relative names):
+    --docs:   a Drive Doc URL/ID -> drive_docs; a local .md file -> depth-0
+              spine; a local directory -> depth-1 children.
+    --folder: a Drive folder URL/ID -> drive_folders; a local directory (or
+              file) -> depth-1 children.
+
+  Args:
+    docs: mixed --docs entries (Drive Doc URLs/IDs and/or local .md files/dirs).
+    folders: mixed --folder entries (Drive folder URLs/IDs and/or local dirs).
+
+  Returns:
+    A 4-tuple (drive_docs, drive_folders, local_spine_md, local_child_md).
+  """
+  local_spine_md, local_child_md = [], []
+  drive_docs, drive_folders = [], []
+  for d in (docs or []):
+    d = (d or "").strip()
+    if not d:
+      continue
+    if is_local_path(d):
+      files = list_local_md(d)
+      if os.path.isdir(os.path.expanduser(d)):
+        local_child_md.extend(files)
+        kind = f"local md folder ({len(files)} file(s))"
+      else:
+        local_spine_md.extend(files)
+        kind = "local md spine file" if files else "local md file (MISSING)"
+    else:
+      drive_docs.append(d)
+      kind = "Drive doc"
+    print(f"[Route] --docs {d!r} -> {kind}", flush=True)
+  for f in (folders or []):
+    f = (f or "").strip()
+    if not f:
+      continue
+    if is_local_path(f):
+      files = list_local_md(f)
+      local_child_md.extend(files)
+      kind = (f"local md folder ({len(files)} file(s))" if files
+              else "local md folder (EMPTY/MISSING)")
+    else:
+      drive_folders.append(f)
+      kind = "Drive folder"
+    print(f"[Route] --folder {f!r} -> {kind}", flush=True)
+  return (drive_docs, drive_folders,
+          sorted(set(local_spine_md)), sorted(set(local_child_md)))
+
+
 def _normalize_entries(output_dir: str) -> list[str]:
   """Normalize every generated KB entry YAML so `kcmd push` accepts it:
 
@@ -274,50 +326,208 @@ def _normalize_entries(output_dir: str) -> list[str]:
   return fixed
 
 
-def _partition_doc_inputs(docs: list[str], folders: list[str] | None):
-  """Route each --docs/--folder entry to Drive vs local markdown by format.
+# Files that are never listed as children and never get a parent assigned: the
+# manifest, reference layers, and the index sidecars themselves.
+def _is_listable_entry_yaml(name: str) -> bool:
+  return (
+      name.endswith(".yaml")
+      and name != "catalog.yaml"
+      and name != "index.yaml"
+      and not name.endswith(".ref.yaml")
+  )
 
-  Both flags are mixed, comma-separated lists routed per entry (see
-  drive_tools.is_local_path, which is format-first):
-    --docs:   a Drive Doc URL/ID -> drive_docs; a local .md file -> depth-0
-              spine; a local directory -> depth-1 children.
-    --folder: a Drive folder URL/ID -> drive_folders; a local directory (or
-              file) -> depth-1 children.
-  Returns (drive_docs, drive_folders, local_spine_md, local_child_md).
+
+def _read_entry_yaml(yaml_path: str) -> dict:
+  try:
+    with open(yaml_path) as f:
+      return yaml.safe_load(f) or {}
+  except (OSError, yaml.YAMLError):
+    return {}
+
+
+def _md_cell(text: str) -> str:
+  """Sanitize a value for a single Markdown table cell."""
+  return (text or "").replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _build_index_hierarchy(
+    output_dir: str | None,
+    eg_full_name: str,
+    entry_type: str,
+    resource_name_prefix: str,
+    topic: str,
+    dir_meta: dict[str, tuple[str, str]] | None = None,
+) -> None:
+  """Generate a per-folder `index` entry and publish parent/child links.
+
+  Walks the on-disk `catalog/` tree (robust to arbitrary nesting depth) and, for
+  EVERY directory, writes an `index.yaml` + `index.overview.md` whose overview is
+  a Markdown table of that directory's DIRECT children
+  (`Path | Title | Type | Description`, type = folder/file). Then assigns
+  `resource.parent` (Dataplex `parentEntry`) on every entry following the natural
+  tree:
+
+    * a leaf entry's parent  = the `index` of its own directory;
+    * a directory's `index`'s parent = the `index` of the parent directory;
+    * the root `catalog/index.yaml` has no parent.
+
+  Index entries are full generic entries (with the required `generic` aspect) so
+  `kcmd push` publishes them. The `glossaries/` reference subtree (pulled via
+  `kcmd reference`) is skipped — those entries aren't ours to re-parent.
+
+  Index ids are path-qualified relative to `catalog/`: `index`, `a/index`,
+  `a/another_folder/index`, …
   """
-  local_spine_md, local_child_md = [], []
-  drive_docs, drive_folders = [], []
-  for d in (docs or []):
-    d = (d or "").strip()
-    if not d:
+  if not output_dir:
+    return
+  dir_meta = dir_meta or {}
+  catalog_dir = os.path.join(output_dir, "catalog")
+  if not os.path.isdir(catalog_dir):
+    return
+
+  # Quick guard: never emit an `index` for a directory that has no real entry
+  # anywhere in its subtree (e.g. a KB category folder whose entries were all
+  # scoped out / dropped in hybrid mode). Remove such entry-less folders
+  # BOTTOM-UP first, so we neither write a stray index into them nor leave a
+  # dangling child row in the parent index. Folders that only hold nested entries
+  # (e.g. bigquery/<project>/<dataset>) are kept — their subtree has entries.
+  def _subtree_has_entry(directory: str) -> bool:
+    for _root, _dirs, files in os.walk(directory):
+      if any(_is_listable_entry_yaml(f) for f in files):
+        return True
+    return False
+
+  for directory in sorted(
+      (root for root, _d, _f in os.walk(catalog_dir)),
+      key=lambda p: p.count(os.sep),
+      reverse=True,
+  ):
+    if directory == catalog_dir:
       continue
-    if is_local_path(d):
-      files = list_local_md(d)
-      if os.path.isdir(os.path.expanduser(d)):
-        local_child_md.extend(files)
-        kind = f"local md folder ({len(files)} file(s))"
+    rk_dir = os.path.relpath(directory, catalog_dir).replace(os.sep, "/")
+    if rk_dir == "glossaries" or rk_dir.startswith("glossaries/"):
+      continue  # read-only reference subtree (kcmd reference) — not ours to prune
+    if os.path.isdir(directory) and not _subtree_has_entry(directory):
+      for r, ds, fs in os.walk(directory, topdown=False):
+        for f in fs:
+          os.remove(os.path.join(r, f))
+        for d in ds:
+          os.rmdir(os.path.join(r, d))
+      os.rmdir(directory)
+
+  def rel_key(directory: str) -> str:
+    rel = os.path.relpath(directory, catalog_dir)
+    return "" if rel == "." else rel.replace(os.sep, "/")
+
+  def index_id_for(directory: str) -> str:
+    rk = rel_key(directory)
+    return "index" if rk == "" else f"{rk}/index"
+
+  # Collect every directory under catalog/ (including catalog/ itself), pruning
+  # the reference-only `glossaries` subtree we don't own.
+  all_dirs: list[str] = []
+  for root, dirnames, _files in os.walk(catalog_dir):
+    dirnames[:] = [d for d in dirnames if d != "glossaries"]
+    all_dirs.append(root)
+
+  # Pass 1: write index.yaml + index.overview.md per directory, BOTTOM-UP so a
+  # folder row can read its subfolder's already-written index for title/desc.
+  for directory in sorted(all_dirs, key=lambda p: p.count(os.sep), reverse=True):
+    rk = rel_key(directory)
+    iid = index_id_for(directory)
+    children: list[tuple[str, str, str, str]] = []  # (path, title, type, desc)
+    for name in sorted(os.listdir(directory)):
+      full = os.path.join(directory, name)
+      if os.path.isdir(full):
+        if name == "glossaries":
+          continue
+        sub_index = os.path.join(full, "index.yaml")
+        data = _read_entry_yaml(sub_index) if os.path.exists(sub_index) else {}
+        res = data.get("resource") or {}
+        title = res.get("displayName") or name
+        path_rel = os.path.relpath(full, output_dir).replace(os.sep, "/")
+        children.append((path_rel, title, "folder", res.get("description", "")))
+      elif _is_listable_entry_yaml(name):
+        data = _read_entry_yaml(full)
+        res = data.get("resource") or {}
+        path_rel = os.path.relpath(
+            full[: -len(".yaml")], output_dir
+        ).replace(os.sep, "/")
+        title = res.get("displayName") or data.get("id") or os.path.basename(
+            path_rel
+        )
+        children.append((path_rel, title, "file", res.get("description", "")))
+
+    title, description = dir_meta.get(rk, (None, None))
+    if rk == "":
+      title = title or (topic or "Catalog")
+      description = description or (
+          f"Index of the catalog root ({len(children)} item(s))."
+      )
+    else:
+      title = title or rk.split("/")[-1].replace("-", " ").replace("_", " ").title()
+      description = description or (
+          f"Index of catalog/{rk} ({len(children)} item(s))."
+      )
+
+    index_yaml = {
+        "name": iid,
+        "id": iid,
+        "type": entry_type,
+        "resource": {
+            "name": f"{resource_name_prefix}/{iid}",
+            "displayName": title,
+            "description": description,
+        },
+        "aspects": {
+            "dataplex-types.global.generic": {
+                "type": "knowledge-base-index",
+                "system": "enrichment-agent",
+            },
+        },
+    }
+    with open(os.path.join(directory, "index.yaml"), "w") as f:
+      yaml.safe_dump(index_yaml, f, sort_keys=False, allow_unicode=True)
+
+    lines = [
+        f"# {title}",
+        "",
+        description,
+        "",
+        "| Path | Title | Type | Description |",
+        "|------|-------|------|-------------|",
+    ]
+    for path_rel, ctitle, ctype, cdesc in children:
+      lines.append(
+          f"| {path_rel} | {_md_cell(ctitle)} | {ctype} | {_md_cell(cdesc)} |"
+      )
+    if not children:
+      lines.append("| _(empty)_ |  |  |  |")
+    with open(os.path.join(directory, "index.overview.md"), "w") as f:
+      f.write("\n".join(lines) + "\n")
+
+  # Pass 2: assign resource.parent on every entry (leaf + index) per the tree.
+  for directory in all_dirs:
+    is_root = os.path.abspath(directory) == os.path.abspath(catalog_dir)
+    for name in sorted(os.listdir(directory)):
+      if name == "index.yaml":
+        parent_id = None if is_root else index_id_for(os.path.dirname(directory))
+      elif _is_listable_entry_yaml(name):
+        parent_id = index_id_for(directory)
       else:
-        local_spine_md.extend(files)
-        kind = "local md spine file" if files else "local md file (MISSING)"
-    else:
-      drive_docs.append(d)
-      kind = "Drive doc"
-    print(f"[Route] --docs {d!r} -> {kind}", flush=True)
-  for f in (folders or []):
-    f = (f or "").strip()
-    if not f:
-      continue
-    if is_local_path(f):
-      files = list_local_md(f)
-      local_child_md.extend(files)
-      kind = (f"local md folder ({len(files)} file(s))" if files
-              else "local md folder (EMPTY/MISSING)")
-    else:
-      drive_folders.append(f)
-      kind = "Drive folder"
-    print(f"[Route] --folder {f!r} -> {kind}", flush=True)
-  return (drive_docs, drive_folders,
-          sorted(set(local_spine_md)), sorted(set(local_child_md)))
+        continue
+      yaml_path = os.path.join(directory, name)
+      data = _read_entry_yaml(yaml_path)
+      if not data:
+        continue
+      resource = data.get("resource") or {}
+      if parent_id is None:
+        resource.pop("parent", None)
+      else:
+        resource["parent"] = f"{eg_full_name}/entries/{parent_id}"
+      data["resource"] = resource
+      with open(yaml_path, "w") as f:
+        yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True)
 
 
 async def run(
@@ -333,8 +543,18 @@ async def run(
     repo_ref: str = "",
     repo_subdir: str = "",
     mcp_config: str = "",
+    glossaries: list[str] | None = None,
+    # HYBRID mode (doc mode + a BigQuery dataset): when `dataset` is set, doc mode
+    # ALSO creates a context-overlay entry per table in that dataset (grounded by
+    # the SAME docs), alongside the standalone KB entries it builds for knowledge
+    # that doesn't belong on a single table. Empty `dataset` => plain doc mode.
+    dataset: str = "",
+    tables_filter: list[str] | None = None,
+    include_usage: bool = True,
+    usage_window_days: int = 30,
+    anonymize_users: bool = False,
+    usage_scope: str = "auto",
 ):
-  _t0 = time.monotonic()
   # Doc mode generates per-KB-entry overviews. Feedback proposals target
   # tables/columns rather than KB entries, so there's no clean per-entry
   # routing — instead the loaded proposals are prepended globally to
@@ -363,10 +583,18 @@ async def run(
         "--entry-group must be `project.location.entryGroupId` (got"
         f" '{entry_group}')."
     )
-  eg_project, eg_location, _eg_id = eg_parts
+  eg_project, eg_location, eg_id = eg_parts
   entry_type = _GENERIC_ENTRY_TYPE
   resource_name_prefix = (
       f"projects/{eg_project}/locations/{eg_location}/catalog"
+  )
+  # Full Dataplex EntryGroup resource name — used to build the `resource.parent`
+  # (Dataplex `parentEntry`) of each entry. Parent values must be FULL resource
+  # names (`<eg>/entries/<parent-id>`), unlike the local `name:` which is just
+  # the entry id (kcmd re-prepends `<eg>/entries/` at push — see
+  # toolbox/mdcode/src/libts/sources/entrygroup.ts).
+  eg_full_name = (
+      f"projects/{eg_project}/locations/{eg_location}/entryGroups/{eg_id}"
   )
 
   # Scaffold the manifest up front with `kcmd init --entry-group` AND pull any
@@ -375,17 +603,82 @@ async def run(
   # little new content to enrich them), and their existing overview is fed
   # to the per-entry writer as additional grounding context — see
   # _write_one_kb_entry.
+  # Optional glossary: when supplied, the entry-group manifest declares
+  # `entryLinks: [related]` so existing entry→term links round-trip via
+  # pull/push, and after KB entries are generated we run the
+  # EntityLinkingAgent to tag each one with relevant glossary terms.
+  glossary_scope = None
+  if glossaries:
+    glossary_scope, warning = kcmd_tools.build_glossary_scope(glossaries)
+    if glossary_scope is None:
+      print(
+          f"[Linking] ⚠️  {warning} — disabling glossary linking.", flush=True
+      )
+      glossaries = None
+    elif warning:
+      print(f"[Linking] ⚠️  {warning}", flush=True)
+
+  # HYBRID: a BigQuery dataset was also passed. Scaffold with the OVERLAY
+  # manifest (a superset of the entry-group manifest) so ONE catalog.yaml hosts
+  # both the doc KB entries (generic+overview) and the per-table context overlays
+  # (generic+overview+queries), with the dataset's 1P tables referenced
+  # read-only. Plain doc mode keeps the entry-group-only scaffold.
+  hybrid = bool(dataset)
+  ref_project = ref_dataset = ""
+  if hybrid:
+    from modes import table_mode  # lazy import: avoid load-time import cycles
+    ref_project, ref_dataset = table_mode._parse_dataset(dataset)
+
   existing_kb_entries = []
   if output_dir:
-    ok, msg = kcmd_tools.init_pull_entry_group(
-        output_dir, entry_group, entry_type
-    )
-    print(
-        f"[kcmd] init+pull --entry-group {entry_group}:"
-        f" {'OK' if ok else 'FAILED'} {msg}",
-        flush=True,
-    )
-    existing_kb_entries = kcmd_tools.list_kb_entries(output_dir)
+    if hybrid:
+      ok, msg = kcmd_tools.init_reference_and_pull(
+          output_dir, entry_group, ref_project, ref_dataset, entry_type,
+          bool(glossary_scope),
+      )
+      print(
+          f"[kcmd] HYBRID init: reference {ref_project}.{ref_dataset} + pull"
+          f" --entry-group {entry_group}"
+          f"{' (with glossary links)' if glossary_scope else ''}:"
+          f" {'OK' if ok else 'FAILED'} {msg}",
+          flush=True,
+      )
+    else:
+      ok, msg = kcmd_tools.init_pull_entry_group(
+          output_dir, entry_group, entry_type, bool(glossary_scope)
+      )
+      print(
+          f"[kcmd] init+pull --entry-group {entry_group}"
+          f"{' (with glossary links)' if glossary_scope else ''}:"
+          f" {'OK' if ok else 'FAILED'} {msg}",
+          flush=True,
+      )
+    if glossary_scope:
+      print(
+          f"[kcmd] 🔎 Pulling glossary terms ({glossary_scope}) as"
+          " reference ...",
+          flush=True,
+      )
+      # The reference pull only succeeds if `reference.scope` is the
+      # glossary; we temp-swap catalog.yaml and restore (helper does both).
+      ok_g, msg_g = kcmd_tools.pull_glossary_as_reference(
+          output_dir, eg_project, glossary_scope
+      )
+      print(
+          f"[kcmd] {'OK' if ok_g else '⚠️  FAILED'} (glossary"
+          f" reference): {msg_g}",
+          flush=True,
+      )
+    pulled_entries = kcmd_tools.list_kb_entries(output_dir)
+    # Folder `index` entries (id `index` or `<path>/index`) are regenerated from
+    # scratch every run by _build_index_hierarchy — never seed them back into the
+    # enumerator (they're navigation entries, not content), though their pulled
+    # files ARE deleted below so they don't linger at the EG-nested path.
+    existing_kb_entries = [
+        e
+        for e in pulled_entries
+        if e["id"] != "index" and not e["id"].endswith("/index")
+    ]
     if existing_kb_entries:
       print(
           f"[kcmd] pulled {len(existing_kb_entries)} pre-existing KB entries —"
@@ -401,8 +694,8 @@ async def run(
     # overview); their on-disk files live at the EG-nested catalog path. Every
     # entry is re-emitted into a category subdir below, so remove the pulled
     # originals now to keep a single source of truth (avoids duplicate entries
-    # on push).
-    for _e in existing_kb_entries:
+    # on push). Index entries are deleted too (regenerated fresh).
+    for _e in pulled_entries:
       _yp = _e.get("yaml_path")
       if not _yp:
         continue
@@ -422,15 +715,20 @@ async def run(
   folder_seed_urls = []  # folder files: injected as depth-1 children
   folder_files = []
 
-  # Route --docs/--folder per entry: Drive inputs vs local markdown (a local .md
-  # via --docs is a depth-0 spine; a local dir via --docs/--folder is depth-1
-  # children). Local files are injected after the crawl so they never hit Drive.
+  # Split local-markdown inputs out from Drive inputs (see
+  # _partition_doc_inputs): a local .md file via --docs is a depth-0 spine; a
+  # local dir via --docs/--folder contributes its .md files as depth-1
+  # children. Injected after the crawl below.
   start_docs, drive_folders, local_spine_md, local_child_md = (
-      _partition_doc_inputs(start_docs, folders))
+      _partition_doc_inputs(start_docs, folders)
+  )
   if local_spine_md or local_child_md:
-    print(f"[Local] 📂 Markdown inputs: {len(local_spine_md)} spine file(s), "
-          f"{len(local_child_md)} folder child(ren). Relative paths resolve "
-          f"from CWD: {os.getcwd()}", flush=True)
+    print(
+        f"[Local] 📂 Markdown inputs: {len(local_spine_md)} spine file(s),"
+        f" {len(local_child_md)} folder child(ren). Relative paths resolve from"
+        f" CWD: {os.getcwd()}",
+        flush=True,
+    )
 
   drive_folders = [extract_folder_id(f) for f in drive_folders if f]
 
@@ -529,15 +827,22 @@ async def run(
 
   # Inject local markdown as already-fetched docs (read from disk, no Drive
   # round-trip). Spine files at depth 0 (become Master Scope), folder/dir files
-  # at depth 1 — exactly mirroring --docs / --folder for Google Docs.
+  # at depth 1 — exactly mirroring --docs / --folder for Google Docs. mtime is
+  # registered so the per-doc summary cache keys on (path, mtime) like Drive
+  # docs.
   for p in local_spine_md:
     all_fetched_docs.append((p, 0, read_local_md(p)))
+    mtime_by_id[p] = str(os.path.getmtime(p))
   for p in local_child_md:
     all_fetched_docs.append((p, 1, read_local_md(p)))
+    mtime_by_id[p] = str(os.path.getmtime(p))
   if local_spine_md or local_child_md:
-    print(f"[Local] 📄 Injected {len(local_spine_md) + len(local_child_md)} "
-          f"local markdown file(s): {len(local_spine_md)} spine, "
-          f"{len(local_child_md)} folder child(ren).", flush=True)
+    print(
+        f"[Local] 📄 Injected {len(local_spine_md) + len(local_child_md)} local"
+        f" markdown file(s): {len(local_spine_md)} spine, {len(local_child_md)}"
+        " folder child(ren).",
+        flush=True,
+    )
 
   # Extract Depth 0 documents as Master Scope. When seeding from a folder
   # there are no depth-0 docs, so the synthetic scope stands in as the spine.
@@ -551,7 +856,7 @@ async def run(
     )
 
   # 2a. Stage-1 Map (cache-aware): topic-NEUTRAL per-doc summary card.
-  # Runs on _light_model(model) (Flash) at higher concurrency since each
+  # Runs on PER_DOC_SUMMARIZER_MODEL (Flash) at higher concurrency since each
   # call is one small doc in / one short card out — no batch context, well
   # under Flash routing limits. Cache key = (doc_id, modified_time) under
   # ~/.kc_enrich_cache/summaries/ when KC_ENRICH_CACHE_MODE=summary (default);
@@ -559,7 +864,7 @@ async def run(
   cache_mode = get_cache_mode()
   print(
       "[Agent] 🧠 Stage 1: per-doc summary (cache mode:"
-      f" {cache_mode}, model: {_light_model(model)}, concurrency:"
+      f" {cache_mode}, model: {PER_DOC_SUMMARIZER_MODEL}, concurrency:"
       f" {PER_DOC_CONCURRENCY})...",
       flush=True,
   )
@@ -580,7 +885,7 @@ async def run(
             content,
             mtime_by_id.get(doc_id, mtime_by_id.get(url)),
             per_doc_sem,
-            _light_model(model),
+            PER_DOC_SUMMARIZER_MODEL,
             usage_acc,
         )
     )
@@ -638,6 +943,16 @@ async def run(
   compiled_summary = "\n\n".join(
       [f"--- BATCH SUMMARY {i+1} ---\n{s}" for i, s in enumerate(all_summaries)]
   )
+  # NOTE (shared-concepts across modes): this `compiled_summary` is doc mode's
+  # flavor of the cross-document/cross-table concept sharing that table mode +
+  # context-overlay mode do via the structured <CONCEPTS> mechanism
+  # (table_mode._aggregate_concepts + build_shared_concept_block). Here every
+  # per-entry writer is grounded in the SAME reduced cross-document summary, so a
+  # fact stated in one doc can inform an entry sourced primarily from another.
+  # The structured per-table injection is applied to the HYBRID overlay side via
+  # context_overlay_mode.generate_overlays (called below); the standalone KB
+  # entries intentionally keep this map-reduce flavor (see plan: "doc keeps its
+  # flavor").
 
   # Append code component cards verbatim (post-reduce, so they're not filtered
   # by the topic lens). The per-entry writer's _slice_summary_for_entry will
@@ -661,6 +976,66 @@ async def run(
         }
         for c in code_cards
     ]
+
+  # HYBRID (reorder + feed): generate the per-table context-overlay entries FIRST,
+  # so the KB enumeration below can be scoped to ONLY the cross-cutting knowledge
+  # the overlays do NOT already own. The overlays own each table's schema,
+  # per-table facts, AND the cross-table relationships involving that table; KB
+  # entries must be the complement (dataset-wide concepts, multi-table processes,
+  # glossary, cross-table metrics) — never a restatement of a single table.
+  overlay_core = None
+  scoping_guidance = ""
+  if hybrid and output_dir:
+    from modes import context_overlay_mode  # lazy import: avoid cycles
+    print("=" * 60, flush=True)
+    print(
+        f"[Hybrid] 🔱 Generating context-overlay entries FIRST for"
+        f" {ref_project}.{ref_dataset}; KB entries will be scoped to the"
+        " cross-cutting complement ...",
+        flush=True,
+    )
+    overlay_core = await context_overlay_mode.generate_overlays(
+        output_dir, ref_project, ref_dataset, eg_project, eg_location, eg_id,
+        entry_group, topic, model, folders, docs, all_feedback, glossary_scope,
+        usage_acc,
+        tables_filter=tables_filter, include_usage=include_usage,
+        usage_window_days=usage_window_days, anonymize_users=anonymize_users,
+        usage_scope=usage_scope, repo=repo, repo_ref=repo_ref,
+        repo_subdir=repo_subdir, mcp_config=mcp_config,
+        # doc_mode builds ONE combined index over BOTH the KB folders and the
+        # overlay folders (merging the overlay dir_meta), so generate_overlays
+        # must not build its own -- avoids a double pass that relabels folders.
+        build_index=False,
+    )
+    if overlay_core and overlay_core.get("results"):
+      covered_tables = [m["table"] for (m, _d, _t, _es) in overlay_core["results"]]
+      digests = []
+      for (m, _d, text, _es) in overlay_core["results"]:
+        snippet = " ".join((text or "").split())[:500]
+        digests.append(f"- `{m['table']}`: {snippet}")
+      print(
+          f"[Hybrid] ✅ Generated {len(covered_tables)} context-overlay entr(ies)"
+          f" for: {', '.join(covered_tables)}",
+          flush=True,
+      )
+      scoping_guidance = (
+          "HYBRID MODE. Per-table CONTEXT-OVERLAY entries ALREADY EXIST for these"
+          f" dataset tables and OWN all of their knowledge: {', '.join(covered_tables)}.\n"
+          "Each overlay already covers that table's purpose, schema/columns,"
+          " per-table facts, AND every cross-table relationship that INVOLVES that"
+          " table (foreign keys, joins, lineage). What each overlay already"
+          " conveys:\n" + "\n".join(digests) + "\n\n"
+          "Enumerate ADDITIONAL knowledge-base entries ONLY for knowledge that"
+          " does NOT belong in any single table's overlay and could not sensibly"
+          " live there — e.g. dataset-wide domain/business concepts, multi-step"
+          " processes or workflows spanning several tables, glossary/business-term"
+          " definitions, or metrics/KPIs defined ACROSS tables. DO NOT create an"
+          " entry that is 'about' one of the tables above, that restates a table's"
+          " schema/columns/purpose, or that merely describes a relationship"
+          " between those tables — the overlays already own ALL of that. Prefer"
+          " FEWER entries; an EMPTY set is correct when the source is wholly"
+          " table-specific."
+      )
 
   # 3. ENUMERATE — one schema-validated call producing the canonical entry list.
   # Pre-existing KB entries (from kcmd pull) are passed as seed_entries so
@@ -692,7 +1067,33 @@ async def run(
       seed_entries=seed_entries or None,
       model=model,
       usage_acc=usage_acc,
+      scoping_guidance=scoping_guidance,
   )
+  # HYBRID deterministic backstop: even with the scoping guidance, drop any KB
+  # entry that collides by name with a table that already has its own overlay --
+  # such an entry is by definition table-specific and is owned by the overlay, so
+  # it must not be duplicated as a standalone KB entry.
+  if overlay_core and overlay_core.get("results"):
+    _norm = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())
+    covered_norm = {
+        _norm(m["table"]) for (m, _d, _t, _es) in overlay_core["results"]
+    }
+    dropped = []
+    for cat in enumeration.categories:
+      kept = []
+      for e in cat.entries:
+        if _norm(e.id) in covered_norm or _norm(e.display_name) in covered_norm:
+          dropped.append(e.display_name or e.id)
+        else:
+          kept.append(e)
+      cat.entries = kept
+    enumeration.categories = [c for c in enumeration.categories if c.entries]
+    if dropped:
+      print(
+          f"[Hybrid] 🧹 Dropped {len(dropped)} table-duplicate KB entr(ies)"
+          f" (owned by overlays): {dropped}",
+          flush=True,
+      )
   n_entries = sum(len(c.entries) for c in enumeration.categories)
   print(
       f"[Agent] ✅ Enumerated {n_entries} entries across"
@@ -744,6 +1145,76 @@ async def run(
   all_overviews = [body for (body, _es) in write_results]
   entry_states = [es for (_body, es) in write_results if es is not None]
 
+  # Optional entity-level linking: when --glossaries was supplied, tag each
+  # KB entry with related glossary terms. The link is anchored on the entry
+  # itself (SOURCE = entry in the user's EG, TARGET = glossary term), so the
+  # link resource lives in the user's EG and rounds-trip cleanly via kcmd
+  # pull/push — full version control.
+  if glossary_scope and output_dir and entry_states:
+    import linking
+
+    entries_for_linking = []
+    for es in entry_states:
+      # entry_id is path-qualified (`a/m`); derive the yaml path from the
+      # overview sidecar rather than `category_dir + entry_id` (which would
+      # double the folder).
+      entry_yaml_path = _yaml_path_for(es.overview_path)
+      if not entry_yaml_path or not os.path.exists(entry_yaml_path):
+        continue
+      summary = (es.overview_body or "")[:5000]
+      entries_for_linking.append((entry_yaml_path, es.display_name, summary))
+
+    def _inject_kb_links(path: str, new_links: list[dict]):
+      # Inject as `definition` (directed: SOURCE=KB entry, TARGET=term) to
+      # match table-mode push reconciliation semantics. Semantically
+      # "related" would fit better but the reconciler keys on SOURCE/TARGET
+      # ref types and undirected (`related`) collapses keys in dedup.
+      with open(path) as f:
+        data = yaml.safe_load(f) or {}
+      data.setdefault("links", {}).setdefault("definition", [])
+      existing_ids = {l.get("id") for l in data["links"]["definition"]}
+      for nl in new_links:
+        if nl["id"] not in existing_ids:
+          data["links"]["definition"].append(nl)
+      with open(path, "w") as f:
+        yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True)
+
+    print("[Linking] 🔗 Tagging KB entries with glossary terms ...", flush=True)
+    n = await linking.apply_entity_linking(
+        output_dir, model, entries_for_linking, _inject_kb_links, usage_acc
+    )
+    print(
+        f"[Linking] ✅ Tagged {n} entry/entries with related terms.", flush=True
+    )
+
+  # HYBRID overlays were generated BEFORE enumeration (see the "[Hybrid] generate
+  # overlays FIRST" block above) so the KB entries could be scoped to the
+  # cross-cutting complement. `overlay_core` is already populated here.
+
+  # Generate the per-folder `index` entries and publish parent/child links over
+  # the final on-disk tree (after all entries + any glossary links are written).
+  if output_dir:
+    dir_meta = {
+        cat.id: (cat.title, cat.description) for cat in enumeration.categories
+    }
+    # HYBRID: also label the per-table overlay folders (bigquery/<proj>/<ds>/
+    # <table>) so the ONE combined index pass covers KB folders AND overlay
+    # folders with meaningful titles.
+    if overlay_core:
+      dir_meta.update(overlay_core.get("dir_meta") or {})
+    print(
+        "[Agent] 🗂️  Building folder index entries + parent/child links ...",
+        flush=True,
+    )
+    _build_index_hierarchy(
+        output_dir,
+        eg_full_name,
+        entry_type,
+        resource_name_prefix,
+        topic,
+        dir_meta,
+    )
+
   # Trajectory persists: per-doc fetches (the "tools" of doc mode) plus the
   # enumerated entry list so eval can ground scoring in BOTH what was read and
   # what was emitted.
@@ -751,13 +1222,17 @@ async def run(
   # Drive (fetch_gdoc); label each tool use by its actual source so eval counts
   # them correctly instead of attributing local files to fetch_gdoc.
   tool_uses = [
-      {"name": "read_local_md" if is_local_path(url) else "fetch_gdoc",
-       "args": {"url": url, "depth": depth}}
+      {
+          "name": "read_local_md" if is_local_path(url) else "fetch_gdoc",
+          "args": {"url": url, "depth": depth},
+      }
       for (url, depth, _content) in all_fetched_docs
   ]
   tool_responses = [
-      {"name": "read_local_md" if is_local_path(url) else "fetch_gdoc",
-       "response": {"url": url, "depth": depth, "content": content[:50000]}}
+      {
+          "name": "read_local_md" if is_local_path(url) else "fetch_gdoc",
+          "response": {"url": url, "depth": depth, "content": content[:50000]},
+      }
       for (url, depth, content) in all_fetched_docs
   ]
   for c in code_cards:
@@ -771,27 +1246,39 @@ async def run(
       {"name": "enumerate", "response": enumeration.model_dump()}
   )
   final_text = "\n\n".join(t for t in all_overviews if t)
+  # HYBRID: fold the overlay slice of the trajectory in so eval/trajectory sees
+  # BOTH the doc tools (fetch_gdoc/read_local_md) and the overlay tools
+  # (reference_table/route_docs); tag the run "hybrid".
+  if overlay_core:
+    tool_uses = tool_uses + overlay_core["tool_uses"]
+    tool_responses = tool_responses + overlay_core["tool_responses"]
+    final_text = (final_text + "\n\n" + overlay_core["final_text"]).strip()
   common.write_trajectory(
       output_dir,
-      "doc",
-      f"TOPIC: {topic}",
+      "hybrid" if hybrid else "doc",
+      f"TOPIC: {topic}"
+      + (f" | DATASET: {ref_project}.{ref_dataset}" if hybrid else ""),
       tool_uses,
       tool_responses,
       final_text,
       usage_acc,
-      latency=time.monotonic() - _t0,
   )
   from tools.drive_tools import get_cache_stats
 
   print(f"[Cache] doc-fetch stats: {get_cache_stats()}", flush=True)
 
   # Build the refinement session (consumed by agent_runner --interactive).
+  # HYBRID: include the overlay entries so a later refine turn can target them.
+  session_entries = {es.entry_id: es for es in entry_states}
+  if overlay_core:
+    for (_m, _d, _t, es) in overlay_core["results"]:
+      session_entries[es.entry_id] = es
   return refine.EnrichmentSession(
-      mode="doc",
+      mode="hybrid" if hybrid else "doc",
       topic=topic,
       model=model,
       output_dir=output_dir or "",
-      entries={es.entry_id: es for es in entry_states},
+      entries=session_entries,
       usage_acc=usage_acc,
       # Phase-2 state so a `reenumerate` refinement can re-run enumeration over
       # the same compiled context and write/move/delete entries without
@@ -800,6 +1287,7 @@ async def run(
       writer_params={
           "entry_type": entry_type,
           "resource_name_prefix": resource_name_prefix,
+          "eg_full_name": eg_full_name,
           "feedback_block_global": feedback_block_global,
       },
       traj_meta={
@@ -889,28 +1377,41 @@ async def _write_one_kb_entry(
     body = await common.generate_text_direct(
         ENTRY_WRITER_INSTRUCTION,
         user_prompt,
-        _light_model(model),
+        _LIGHT_MODEL_FOR_WRITER,
         usage_acc,
     )
 
   if not output_dir:
     return body, None
-  cat_dir = os.path.join(output_dir, "catalog", category.id)
-  os.makedirs(cat_dir, exist_ok=True)
+  # Path-qualified id: `<category>/<entry>` (e.g. `a/m`). This makes the entry id
+  # unique across categories and mirrors the on-disk tree, so the published
+  # Dataplex name carries its folder. Pulled pre-existing entries already arrive
+  # with a qualified id (it contains '/') — keep it stable instead of
+  # re-prefixing, so ids round-trip across runs. The on-disk location is derived
+  # FROM the id, so folder == id path == published parent chain.
+  # `resource.parent` is NOT set here — the index pass (_build_index_hierarchy)
+  # assigns every entry's parent from its location.
+  full_id = entry.id if "/" in entry.id else f"{category.id}/{entry.id}"
+  top_category = full_id.split("/")[0]
+  catalog_dir = os.path.join(output_dir, "catalog")
+  yaml_path = os.path.join(catalog_dir, f"{full_id}.yaml")
+  overview_path = os.path.join(catalog_dir, f"{full_id}.overview.md")
+  # full_id may be nested (e.g. `a/sub/m`) — create the parent dirs.
+  os.makedirs(os.path.dirname(yaml_path), exist_ok=True)
   # YAML: deterministic, no LLM. Includes the required `generic` aspect and a
-  # `category:` field so downstream consumers can group by it.
-  # `name:` is the LOCAL name (just the entry id). kcmd's entrygroup source
+  # `category:` field (the top path segment) so downstream consumers can group.
+  # `name:` is the LOCAL name (the path-qualified entry id). kcmd's entrygroup
   # source.serviceName() prepends `<eg-path>/entries/` to produce the full
-  # Dataplex resource path at push time — see agents/mdcode/src/libts/
-  # sources/entrygroup.ts line 48-50. Setting `name:` to the full path here
+  # Dataplex resource path at push time — see toolbox/mdcode/src/libts/
+  # sources/entrygroup.ts line 59-70. Setting `name:` to the full path here
   # causes a double-prefix at push.
   entry_yaml = {
-      "name": entry.id,
-      "id": entry.id,
+      "name": full_id,
+      "id": full_id,
       "type": entry_type,
-      "category": category.id,
+      "category": top_category,
       "resource": {
-          "name": f"{resource_name_prefix}/{entry.id}",
+          "name": f"{resource_name_prefix}/{full_id}",
           "displayName": entry.display_name,
           "description": entry.description,
       },
@@ -921,28 +1422,49 @@ async def _write_one_kb_entry(
           },
       },
   }
-  yaml_path = os.path.join(cat_dir, f"{entry.id}.yaml")
   with open(yaml_path, "w") as f:
     yaml.safe_dump(entry_yaml, f, sort_keys=False, allow_unicode=True)
-  overview_path = os.path.join(cat_dir, f"{entry.id}.overview.md")
   with open(overview_path, "w") as f:
     f.write(common.clean_overview_body(body) + "\n")
-  print(f"[Agent] ✅ {category.id}/{entry.id}", flush=True)
+  print(f"[Agent] ✅ {full_id}", flush=True)
 
   # Per-entry state for multi-turn refinement. A refinement overwrites only the
   # overview sidecar (the entry YAML is unchanged by a content refinement).
+  # entry_id is the path-qualified id so session keys are unique and match the
+  # on-disk `name:`.
   entry_state = refine.EntryState(
-      entry_id=entry.id,
+      entry_id=full_id,
       display_name=entry.display_name,
       description=entry.description,
-      category_id=category.id,
+      category_id=top_category,
       grounding_prompt=user_prompt,
-      writer_model=_light_model(model),
+      writer_model=_LIGHT_MODEL_FOR_WRITER,
       overview_body=body,
       overview_path=overview_path,
       kind="kb",
   )
   return body, entry_state
+
+
+def _yaml_path_for(overview_path: str) -> str | None:
+  """The entry `.yaml` next to an `.overview.md` sidecar.
+
+  Entry ids are path-qualified (e.g. `a/m`), so reconstructing the yaml path
+  from `category_dir + entry_id` would double the folder (`catalog/a/a/m.yaml`).
+  The sidecar path already encodes the true on-disk location, so swap its
+  extension instead.
+  """
+  if overview_path and overview_path.endswith(".overview.md"):
+    return overview_path[: -len(".overview.md")] + ".yaml"
+  return None
+
+
+def _leaf_id(entry_id: str, category_id: str) -> str:
+  """Strip the leading `<category>/` from a path-qualified id (`a/m` -> `m`)."""
+  prefix = f"{category_id}/"
+  if entry_id.startswith(prefix):
+    return entry_id[len(prefix) :]
+  return entry_id.split("/")[-1]
 
 
 def _delete_doc_entry_files(es) -> None:
@@ -953,41 +1475,45 @@ def _delete_doc_entry_files(es) -> None:
   overview_path = es.overview_path
   if not overview_path:
     return
-  cat_dir = os.path.dirname(overview_path)
-  yaml_path = os.path.join(cat_dir, f"{es.entry_id}.yaml")
+  yaml_path = _yaml_path_for(overview_path)
   for p in (overview_path, yaml_path):
     try:
-      if os.path.exists(p):
+      if p and os.path.exists(p):
         os.remove(p)
     except OSError:
       pass
 
 
-def _recategorize_doc_entry(es, new_cat, output_dir: str) -> None:
+def _recategorize_doc_entry(
+    es, new_cat, output_dir: str, resource_name_prefix: str = ""
+) -> None:
   """Move a kept doc entry's files into the new category dir; update YAML + state.
 
-  Doc-mode layout is `catalog/{category}/{entry}.{yaml,overview.md}`, so a
-  category change is a file move. The overview body (and any prior refinement
-  edits) is preserved — only its location and the YAML `category:` field change.
+  Doc-mode layout is `catalog/{category}/{entry}.{yaml,overview.md}` with a
+  path-qualified id (`<category>/<entry>`), so a category change is BOTH a file
+  move AND a rename of the id/name/resource (the category is encoded in the id).
+  The overview body (and any prior refinement edits) is preserved — only the
+  location and the id-bearing YAML fields change. `resource.parent` is left to
+  the index pass (_build_index_hierarchy), which re-derives it from the new
+  location.
   """
   old_overview = es.overview_path
-  old_dir = os.path.dirname(old_overview) if old_overview else None
+  if not old_overview:
+    return
+  old_yaml = _yaml_path_for(old_overview)
+  leaf = _leaf_id(es.entry_id, es.category_id)
+  new_full_id = f"{new_cat.id}/{leaf}"
   new_dir = os.path.join(output_dir, "catalog", new_cat.id)
-  os.makedirs(new_dir, exist_ok=True)
-  new_overview = os.path.join(new_dir, f"{es.entry_id}.overview.md")
+  new_overview = os.path.join(new_dir, f"{leaf}.overview.md")
+  new_yaml = os.path.join(new_dir, f"{leaf}.yaml")
+  os.makedirs(os.path.dirname(new_overview), exist_ok=True)
   # Move the overview sidecar.
   try:
-    if (
-        old_overview
-        and os.path.exists(old_overview)
-        and old_overview != new_overview
-    ):
+    if os.path.exists(old_overview) and old_overview != new_overview:
       os.replace(old_overview, new_overview)
   except OSError:
     pass
-  # Move the entry YAML and update its `category:` field.
-  old_yaml = os.path.join(old_dir, f"{es.entry_id}.yaml") if old_dir else None
-  new_yaml = os.path.join(new_dir, f"{es.entry_id}.yaml")
+  # Move the entry YAML and update its id-bearing fields.
   data = {}
   if old_yaml and os.path.exists(old_yaml):
     try:
@@ -995,8 +1521,15 @@ def _recategorize_doc_entry(es, new_cat, output_dir: str) -> None:
         data = yaml.safe_load(f) or {}
     except (OSError, yaml.YAMLError):
       data = {}
+  data["name"] = new_full_id
+  data["id"] = new_full_id
   data["category"] = new_cat.id
+  resource = data.get("resource") or {}
+  if resource_name_prefix:
+    resource["name"] = f"{resource_name_prefix}/{new_full_id}"
+  data["resource"] = resource
   try:
+    os.makedirs(os.path.dirname(new_yaml), exist_ok=True)
     with open(new_yaml, "w") as f:
       yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True)
     if old_yaml and os.path.exists(old_yaml) and old_yaml != new_yaml:
@@ -1004,6 +1537,7 @@ def _recategorize_doc_entry(es, new_cat, output_dir: str) -> None:
   except OSError:
     pass
   es.category_id = new_cat.id
+  es.entry_id = new_full_id
   es.overview_path = new_overview
 
 
@@ -1021,16 +1555,30 @@ async def apply_reenumeration(session, new_enum, removed_ids) -> None:
   wp = session.writer_params or {}
   entry_type = wp.get("entry_type", _GENERIC_ENTRY_TYPE)
   resource_name_prefix = wp.get("resource_name_prefix", "")
+  eg_full_name = wp.get("eg_full_name", "")
   feedback_block = wp.get("feedback_block_global", "")
   removed_ids = set(removed_ids or [])
 
-  new_by_id = {
-      e.id: (e, cat) for cat in new_enum.categories for e in cat.entries
-  }
+  # Map each enumerated entry to its PATH-QUALIFIED id. Kept seeds come back from
+  # the enumerator with the exact (already-qualified) id we seeded
+  # (refine._reenumerate seeds `e.entry_id`); newly discovered entries carry a
+  # bare leaf id, so qualify them with their category. session.entries is keyed
+  # by the path-qualified id, so all comparisons below use the qualified form.
+  new_items = []  # (full_id, entry, cat, is_existing)
+  for cat in new_enum.categories:
+    for e in cat.entries:
+      if e.id in session.entries:
+        new_items.append((e.id, e, cat, True))
+      else:
+        # Mirror _write_one_kb_entry: a bare leaf id gets category-qualified;
+        # an already-qualified id is kept as-is.
+        full = e.id if "/" in e.id else f"{cat.id}/{e.id}"
+        new_items.append((full, e, cat, False))
+  new_full_ids = {fid for (fid, *_rest) in new_items}
   old_ids = set(session.entries)
   # Drop anything no longer enumerated, plus anything the user explicitly asked
   # to remove (so a re-add by the enumerator from the same context is ignored).
-  to_remove = (old_ids - set(new_by_id)) | removed_ids
+  to_remove = (old_ids - new_full_ids) | removed_ids
   for eid in sorted(to_remove):
     es = session.entries.get(eid)
     if es is None:
@@ -1042,10 +1590,11 @@ async def apply_reenumeration(session, new_enum, removed_ids) -> None:
   # Additions + recategorizations.
   sem = asyncio.Semaphore(max(CONCURRENCY_LIMIT, 24))
   add_tasks = []
-  for eid, (entry, cat) in new_by_id.items():
-    if eid in removed_ids:
+  for full_id, entry, cat, is_existing in new_items:
+    if full_id in removed_ids:
       continue
-    if eid not in session.entries:
+    if not is_existing:
+      # _write_one_kb_entry derives the same `f"{cat.id}/{entry.id}"` id.
       add_tasks.append(
           _write_one_kb_entry(
               entry,
@@ -1062,15 +1611,35 @@ async def apply_reenumeration(session, new_enum, removed_ids) -> None:
               feedback_block=feedback_block,
           )
       )
-    elif session.entries[eid].category_id != cat.id:
-      _recategorize_doc_entry(session.entries[eid], cat, output_dir)
-      print(f"[refine] 🔀 recategorized {eid} -> {cat.id}", flush=True)
+    elif session.entries[full_id].category_id != cat.id:
+      es = session.entries[full_id]
+      _recategorize_doc_entry(es, cat, output_dir, resource_name_prefix)
+      # The id is path-qualified, so a category change renames it — re-key.
+      session.entries.pop(full_id, None)
+      session.entries[es.entry_id] = es
+      print(f"[refine] 🔀 recategorized {full_id} -> {es.entry_id}", flush=True)
 
   if add_tasks:
     for _body, es in await asyncio.gather(*add_tasks):
       if es is not None:
         session.entries[es.entry_id] = es
-        print(
-            f"[refine] ➕ added entry: {es.category_id}/{es.entry_id}",
-            flush=True,
-        )
+        print(f"[refine] ➕ added entry: {es.entry_id}", flush=True)
+
+  # Rebuild the folder index entries + parent/child links from the new on-disk
+  # tree (handles adds / removes / recategorizations in one pass).
+  dir_meta = {
+      cat.id: (cat.title, cat.description) for cat in new_enum.categories
+  }
+  _build_index_hierarchy(
+      output_dir,
+      eg_full_name,
+      entry_type,
+      resource_name_prefix,
+      session.topic,
+      dir_meta,
+  )
+
+
+# Flash for the writer step: per-entry inputs are small (one entry's slice of
+# context, typically <20K tokens) so the ADK 32K Flash routing trap doesn't bite.
+_LIGHT_MODEL_FOR_WRITER = os.environ.get("KC_LIGHT_MODEL", "gemini-2.5-flash")
