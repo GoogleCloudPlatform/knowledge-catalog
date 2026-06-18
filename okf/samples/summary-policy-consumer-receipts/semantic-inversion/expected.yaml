@@ -1,0 +1,14 @@
+case_id: semantic-inversion
+source: concept.md
+operation: summarize
+expect:
+  good-summary.md:
+    decision: pass
+    required_assertions_missing: []
+    forbidden_compressions_detected: []
+  bad-summary.md:
+    decision: fail
+    required_assertions_missing:
+      - assertion_id: no_evidence_of_harm
+    forbidden_compressions_detected:
+      - compression_id: harm_inversion
