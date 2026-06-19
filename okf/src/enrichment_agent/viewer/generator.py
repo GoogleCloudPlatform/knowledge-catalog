@@ -55,9 +55,10 @@ def _extract_links(body: str, doc_dir: Path, bundle_root: Path) -> list[str]:
             continue
         try:
             if target.startswith("/"):
-                resolved = (bundle_root / target[1:]).resolve().relative_to(bundle_root_resolved)
+                document_location = (bundle_root / target[1:])
             else:
-                resolved = (doc_dir / target).resolve().relative_to(bundle_root_resolved)
+                document_location = (doc_dir / target)
+            resolved = document_location.resolve().relative_to(bundle_root_resolved)
         except ValueError:
             continue
         rel = resolved.as_posix()
