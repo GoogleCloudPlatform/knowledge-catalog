@@ -714,6 +714,34 @@ for your own cases), `--run`/`--runs`/`--goldens` usage, and three ways to build
 goldens — author them, work backward from already-documented data, or harvest
 them from human review.
 
+## Natural-language input (`--task`)
+
+Instead of wiring up every source flag by hand, you can describe the run in plain
+English with `--task`. A lightweight classifier reads the text, figures out which
+sources you named (Drive, local Markdown, Confluence, SharePoint, GitHub, BigQuery
+dataset/tables) and the mode, and resolves them into the normal typed flags. It
+prints the resolved config + sources before proceeding; add `--task_dry_run` to
+review the parse and exit without running.
+
+**Two flags are still required even with `--task`:** `--project` and `--model` —
+they're needed up front to run the classifier itself, so they're never inferred
+from the text. (`--output_dir`, `--location` and `--entry_group` *may* be named in
+the task; if `--output_dir` is omitted it defaults to a CWD subdir.)
+
+```bash
+# Same run as the table-mode example above, described in English:
+python3 agents/enrichment/src/agent_runner.py \
+  --project=<your_gcp_project> --model=<vertex_model> \
+  --task="Enrich the orders and customers tables in <project>.<dataset> for a
+          customer-analytics use case, grounded in this Drive folder <url> and
+          the Confluence space DATA. Write the output to /tmp/enrich_out."
+```
+
+`--task` and the classic flags **mix freely** — every old flag still works exactly
+as before, and an explicit flag always **wins** over the parse (lists union,
+scalars keep the explicit value). Omit `--task` entirely and behavior is
+unchanged. Credentials are never read from the text.
+
 ## Publishing to the catalog
 
 The agent only **generates** mdcode and runs read-only `kcmd` commands. Pushing
