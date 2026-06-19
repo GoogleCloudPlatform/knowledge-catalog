@@ -35,7 +35,7 @@ from absl import app
 from absl import flags
 from modes import context_overlay_mode, doc_mode, table_mode
 import refine
-from tools import confluence_tools, sharepoint_tools
+from tools import confluence_tools, sharepoint_tools, source_classifier
 
 
 def _source_microsoft_env() -> None:
@@ -77,6 +77,31 @@ _TOPIC = flags.DEFINE_string(
     "topic",
     "Metadata enrichment",
     "Free-text use case / instruction guiding enrichment (anything).",
+)
+# --- Natural-language source intake (all modes) --------------------------
+# A single free-text description of what to enrich and WHICH SOURCES to read.
+# A focused classifier agent (tools/source_classifier.py) extracts and
+# classifies the sources out of the text on the LIGHT model, a deterministic
+# guardrail layer filters/corrects them, and the resolved values are MERGED INTO
+# the typed source flags below (explicit flags always win). --output_dir,
+# --location and --entry_group may also be named in the task; --project and
+# --model are NOT (they are needed up front to run the classifier itself).
+# Credentials are never parsed from --task. The resolved config + sources are
+# echoed, then the run auto-proceeds (use --task_dry_run to inspect only).
+_TASK = flags.DEFINE_string(
+    "task",
+    "",
+    "Natural-language description of the enrichment + its sources, e.g. "
+    '"Enrich my-proj.analytics for Customer 360 using this Drive folder <url> '
+    'and Confluence space DATA". Sources are classified out of the text and '
+    "merged into the typed source flags; explicit flags override the parse. "
+    "--project and --model must still be supplied as flags.",
+)
+_TASK_DRY_RUN = flags.DEFINE_bool(
+    "task_dry_run",
+    False,
+    "Classify --task, print the resolved config + sources, then exit without"
+    " running.",
 )
 _DOCS = flags.DEFINE_list(
     "docs", [],
@@ -185,7 +210,10 @@ _TABLES = flags.DEFINE_list(
     " `proj.ds.table` FQNs). Empty = enrich every table in --dataset.",
 )
 _OUTPUT_DIR = flags.DEFINE_string(
-    "output_dir", None, "Local directory path for the generated mdcode."
+    "output_dir", None,
+    "Local directory path for the generated mdcode. May also be named in"
+    " --task. Defaults to a subdir of the CWD named after the dataset/entry"
+    " group (e.g. ./<dataset>_enrichment) if unset.",
 )
 
 # Customer-supplied GCP + model configuration (nothing is hardcoded).
@@ -290,18 +318,87 @@ _OUTPUT_FORMAT = flags.DEFINE_enum(
 )
 
 
+def _adc_default_project() -> str:
+  """Best-effort Google Cloud project from Application Default Credentials."""
+  try:
+    from google.auth import default  # noqa: PLC0415
+
+    _, project = default()
+    return project or ""
+  except Exception:  # pylint: disable=broad-except
+    return ""
+
+
+def _default_output_dir(dataset: str, entry_group: str) -> str:
+  """A subdir under the CWD when no --output_dir is given.
+
+  Named after the dataset (table/overlay) or the entry group (doc), so repeat
+  runs don't clobber the CWD or each other; falls back to `kc_enrichment`.
+  """
+  base = ""
+  if dataset:
+    base = dataset.split(".")[-1]
+  elif entry_group:
+    base = entry_group.split(".")[-1]
+  name = f"{base}_enrichment" if base else "kc_enrichment"
+  return os.path.join(os.getcwd(), name)
+
+
+def _ask_mode() -> str:
+  """Prompt the user to choose a mode when --task inference was ambiguous.
+
+  Shows a helpful summary of every mode. On a tty, loops until a valid choice;
+  on a non-tty, hard-errors pointing at --mode (so CI fails fast rather than
+  guessing).
+  """
+  print()
+  print("Could not confidently infer the enrichment --mode from your --task.")
+  print(source_classifier.mode_help())
+  if not (sys.stdin.isatty() and sys.stdout.isatty()):
+    raise app.UsageError(
+        "Ambiguous --mode and non-interactive. Re-run with an explicit"
+        " --mode=<doc|table|context_overlay> (hybrid = --mode=doc with a"
+        " --dataset). See the mode summary above."
+    )
+  valid = ("doc", "table", "context_overlay", "hybrid")
+  while True:
+    try:
+      ans = input(
+          "Which mode? [doc / table / context_overlay / hybrid]: "
+      ).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+      print()
+      raise app.UsageError("Aborted at mode selection.")
+    if ans in valid:
+      return ans
+    print("Please enter one of: doc, table, context_overlay, hybrid.")
+
+
 def main(argv):
   if len(argv) > 1:
     raise app.UsageError("Too many command-line arguments.")
-  if not _PROJECT.value:
-    raise app.UsageError("--project is required (your Google Cloud project).")
-  if not _MODEL.value:
-    raise app.UsageError("--model is required (e.g. --model=gemini-2.5-pro).")
 
-  # Configure Vertex AI for the agent's model from the customer's flags.
+  # --- Resolve the two flags needed to make ANY Vertex call (including the
+  # --task classifier itself), BEFORE anything else runs. --model is required.
+  # --project resolves: flag -> GOOGLE_CLOUD_PROJECT -> ADC default project.
+  # (project + model cannot come from --task: we need them to run the parser
+  # that reads --task. --output_dir / --location / --entry_group CAN.)
+  model = _MODEL.value
+  if not model:
+    raise app.UsageError("--model is required (e.g. --model=gemini-2.5-pro).")
+  project = (
+      _PROJECT.value or os.environ.get("GOOGLE_CLOUD_PROJECT")
+      or _adc_default_project()
+  )
+  if not project:
+    raise app.UsageError(
+        "--project is required (pass --project, set GOOGLE_CLOUD_PROJECT, or a"
+        " gcloud ADC default project)."
+    )
+  location = _LOCATION.value
   os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "True"
-  os.environ["GOOGLE_CLOUD_PROJECT"] = _PROJECT.value
-  os.environ["GOOGLE_CLOUD_LOCATION"] = _LOCATION.value
+  os.environ["GOOGLE_CLOUD_PROJECT"] = project
+  os.environ["GOOGLE_CLOUD_LOCATION"] = location
 
   # Refinement re-invocation: rehydrate the saved session and apply one turn,
   # skipping the enrichment pipeline entirely (no doc re-read / dataset re-pull).
@@ -310,28 +407,87 @@ def main(argv):
       raise app.UsageError("--output_dir is required with --refine_instruction.")
     asyncio.run(
         refine.run_one_refinement(
-            _OUTPUT_DIR.value, _REFINE_INSTRUCTION.value, _MODEL.value
+            _OUTPUT_DIR.value, _REFINE_INSTRUCTION.value, model
         )
     )
     return
 
-  mode = _MODE.value or ("table" if _DATASET.value else "doc")
+  # --- Natural-language --task intake -------------------------------------
+  # Classify the sources (+ output_dir/location/entry_group) out of the free
+  # text on the light model, then MERGE into the explicit flags (explicit wins;
+  # scalars keep the explicit value, lists union). Vertex env is already set
+  # above, so the classifier can run.
+  cls: dict = {}
+  cls_topic = ""
+  dropped: list = []
+  cls_cfg: dict = {}
+  output_dir = _OUTPUT_DIR.value or ""
+  entry_group = _ENTRY_GROUP.value or ""
+  if _TASK.value:
+    print("[task] Classifying sources from --task ...", flush=True)
+    # Classifier defaults to the same --model (no extra model dependency);
+    # KC_LIGHT_MODEL optionally overrides it for a cheaper/faster parse.
+    kept, dropped, cls_topic, cls_cfg = asyncio.run(
+        source_classifier.classify_task(_TASK.value, model)
+    )
+    cls = source_classifier.to_flag_values(kept)
+    output_dir = output_dir or cls_cfg.get("output_dir", "")
+    entry_group = entry_group or cls_cfg.get("entry_group", "")
+    if cls_cfg.get("location") and _LOCATION.value == "global":
+      location = cls_cfg["location"]
+      os.environ["GOOGLE_CLOUD_LOCATION"] = location
 
-  # --folders is canonical; --folder is a deprecated alias. Merge both so old
-  # invocations keep working.
-  folder_inputs = list(_FOLDERS.value or []) + list(_FOLDER.value or [])
-  doc_inputs = list(_DOCS.value or [])
+  def _union(*lists) -> list:
+    """Order-preserving, case-insensitive union of several lists."""
+    out, seen = [], set()
+    for lst in lists:
+      for x in lst or []:
+        k = str(x).strip()
+        if k and k.lower() not in seen:
+          seen.add(k.lower())
+          out.append(x)
+    return out
+
+  # Effective scalar source flags: explicit flag wins, else the classifier's.
+  dataset = _DATASET.value or cls.get("dataset", "")
+  repo = _REPO.value or cls.get("repo", "")
+  repo_ref = _REPO_REF.value or cls.get("repo_ref", "")
+  repo_subdir = _REPO_SUBDIR.value or cls.get("repo_subdir", "")
+  tables = _union(_TABLES.value, cls.get("tables"))
+  topic = _TOPIC.value
+  if cls_topic and _TOPIC.value == "Metadata enrichment":
+    topic = cls_topic
+
+  # Default the output dir to a CWD subdir named after the target when neither a
+  # flag nor the task supplied one.
+  output_dir = output_dir or _default_output_dir(dataset, entry_group)
+
+  # Mode: explicit --mode ALWAYS wins; else the mode inferred from --task; else,
+  # for non-task runs, the legacy fallback (dataset => table, else doc). If
+  # --task was given but inference was unsure (empty) and no --mode was passed,
+  # selected_mode stays "" and we ASK the user after the echo / dry-run.
+  inferred_mode = cls_cfg.get("mode", "")
+  selected_mode = _MODE.value or inferred_mode
+  if not selected_mode and not _TASK.value:
+    selected_mode = "table" if dataset else "doc"
+
+  # --folders is canonical; --folder is a deprecated alias. `mixed_passthrough`
+  # carries Confluence/SharePoint URLs the classifier identified but did NOT
+  # pre-resolve — they ride in via --folders so the partition_sources parsers
+  # below lift them into the right typed lists (space key / page id / site).
+  folder_inputs = _union(
+      _FOLDERS.value, _FOLDER.value, cls.get("folders"),
+      cls.get("mixed_passthrough"),
+  )
+  doc_inputs = _union(_DOCS.value, cls.get("docs"))
 
   # Lift Confluence URLs out of --folders / --docs into the typed Confluence
-  # source lists. Drive URLs/IDs and local markdown paths/dirs pass through
-  # untouched, so the existing per-mode routing in is_local_path() stays
-  # correct (it would otherwise route a Confluence URL as a Drive link and
-  # produce a silent dud). Space links merge into --confluence_space; page
-  # links seed the internal page-id list (no longer its own CLI flag).
+  # source lists. Space links merge into --confluence_space; page links seed the
+  # internal page-id list (no longer its own CLI flag).
   folder_inputs, confluence_spaces, confluence_page_ids = (
       confluence_tools.partition_sources(
           folder_inputs,
-          _CONFLUENCE_SPACES.value,
+          _union(_CONFLUENCE_SPACES.value, cls.get("confluence_space")),
           [],
       )
   )
@@ -343,9 +499,6 @@ def main(argv):
 
   # Same lift for SharePoint URLs — site URLs land in --sharepoint_sites and
   # file links seed the internal file-id list (no longer its own CLI flag).
-  # Viewer/sharing links surface a warning (sourcedoc GUIDs can't be resolved
-  # to a Graph driveItem id without a roundtrip we'd rather not bake into a
-  # parse step).
   folder_inputs, sharepoint_sites, sharepoint_file_ids = (
       sharepoint_tools.partition_sources(
           folder_inputs,
@@ -358,6 +511,49 @@ def main(argv):
           doc_inputs, sharepoint_sites, sharepoint_file_ids
       )
   )
+
+  # --task: echo the resolved config + sources, then auto-proceed (or exit on
+  # --task_dry_run). NL parsing is non-deterministic, so surfacing the
+  # interpretation is mandatory.
+  if _TASK.value:
+    echo_flags = {
+        "docs": doc_inputs,
+        "folders": folder_inputs,
+        "confluence_space": confluence_spaces,
+        "confluence_page_ids": confluence_page_ids,
+        "sharepoint_sites": sharepoint_sites,
+        "tables": tables,
+        "repo": repo,
+        "repo_ref": repo_ref,
+        "repo_subdir": repo_subdir,
+        "dataset": dataset,
+    }
+    config_view = {
+        "project": project,
+        "model": model,
+        "output_dir": output_dir,
+        "location": location,
+        "entry_group": entry_group,
+    }
+    print(
+        source_classifier.format_echo(
+            echo_flags, dropped,
+            inferred_mode=(selected_mode or "ambiguous (will ask, or pass --mode)"),
+            config=config_view,
+        )
+    )
+    if _TASK_DRY_RUN.value:
+      return
+
+  # Resolve an ambiguous mode (classifier returned "" and no explicit --mode):
+  # ask the user, showing a summary of each mode. (Non-task runs always have a
+  # mode by now; dry-run already returned above without prompting.)
+  if not selected_mode:
+    selected_mode = _ask_mode()
+  # `hybrid` is realized as doc mode WITH a dataset.
+  mode = "doc" if selected_mode == "hybrid" else selected_mode
+  if _TASK.value:
+    print(f"[task] proceeding in '{selected_mode}' mode.", flush=True)
 
   # Credentials gate — SharePoint only. Triggers ONLY when the user actually
   # asked for SharePoint reads AND no creds are configured. Stays silent
@@ -423,34 +619,34 @@ def main(argv):
       raise app.UsageError(msg)
 
   if mode == "context_overlay":
-    if not _DATASET.value:
+    if not dataset:
       raise app.UsageError(
           "--dataset is required for context_overlay mode (`project.dataset`)."
       )
-    if not _ENTRY_GROUP.value:
+    if not entry_group:
       raise app.UsageError(
           "--entry_group is required for context_overlay mode "
           "(`project.location.entryGroupId` where overlays are created)."
       )
     session = asyncio.run(
         context_overlay_mode.run(
-            _DATASET.value,
+            dataset,
             folder_inputs,
-            _TOPIC.value,
-            _OUTPUT_DIR.value,
-            _MODEL.value,
-            _ENTRY_GROUP.value,
+            topic,
+            output_dir,
+            model,
+            entry_group,
             docs=doc_inputs,
-            tables_filter=_TABLES.value,
+            tables_filter=tables,
             include_usage=_INCLUDE_USAGE.value,
             usage_window_days=_USAGE_WINDOW_DAYS.value,
             anonymize_users=_ANONYMIZE_USERS.value,
             usage_scope=_USAGE_SCOPE.value,
             feedback_dir=_FEEDBACK_DIR.value,
             feedback_files=_FEEDBACK_FILES.value,
-            repo=_REPO.value,
-            repo_ref=_REPO_REF.value,
-            repo_subdir=_REPO_SUBDIR.value,
+            repo=repo,
+            repo_ref=repo_ref,
+            repo_subdir=repo_subdir,
             mcp_config=_MCP_CONFIG.value,
             glossaries=_GLOSSARIES.value or None,
             output_format=_OUTPUT_FORMAT.value,
@@ -465,11 +661,11 @@ def main(argv):
   elif mode == "table":
     session = asyncio.run(
         table_mode.run(
-            _DATASET.value,
+            dataset,
             folder_inputs,
-            _TOPIC.value,
-            _OUTPUT_DIR.value,
-            _MODEL.value,
+            topic,
+            output_dir,
+            model,
             include_usage=_INCLUDE_USAGE.value,
             usage_window_days=_USAGE_WINDOW_DAYS.value,
             anonymize_users=_ANONYMIZE_USERS.value,
@@ -477,9 +673,9 @@ def main(argv):
             feedback_dir=_FEEDBACK_DIR.value,
             feedback_files=_FEEDBACK_FILES.value,
             glossaries=_GLOSSARIES.value or None,
-            repo=_REPO.value,
-            repo_ref=_REPO_REF.value,
-            repo_subdir=_REPO_SUBDIR.value,
+            repo=repo,
+            repo_ref=repo_ref,
+            repo_subdir=repo_subdir,
             mcp_config=_MCP_CONFIG.value,
             output_format=_OUTPUT_FORMAT.value,
             confluence_spaces=confluence_spaces,
@@ -491,31 +687,31 @@ def main(argv):
         )
     )
   else:
-    if not _ENTRY_GROUP.value:
+    if not entry_group:
       raise app.UsageError(
           "--entry_group is required for doc mode "
           "(`project.location.entryGroupId`)."
       )
     session = asyncio.run(
         doc_mode.run(
-            _TOPIC.value,
+            topic,
             doc_inputs,
             folder_inputs,
-            _OUTPUT_DIR.value,
-            _MODEL.value,
-            _ENTRY_GROUP.value,
+            output_dir,
+            model,
+            entry_group,
             feedback_dir=_FEEDBACK_DIR.value,
             feedback_files=_FEEDBACK_FILES.value,
-            repo=_REPO.value,
-            repo_ref=_REPO_REF.value,
-            repo_subdir=_REPO_SUBDIR.value,
+            repo=repo,
+            repo_ref=repo_ref,
+            repo_subdir=repo_subdir,
             mcp_config=_MCP_CONFIG.value,
             glossaries=_GLOSSARIES.value or None,
             # HYBRID: passing --dataset alongside --mode=doc makes doc mode ALSO
             # emit a context-overlay entry per table in that dataset (grounded by
             # the same docs). Empty --dataset => plain doc mode.
-            dataset=_DATASET.value,
-            tables_filter=_TABLES.value,
+            dataset=dataset,
+            tables_filter=tables,
             include_usage=_INCLUDE_USAGE.value,
             usage_window_days=_USAGE_WINDOW_DAYS.value,
             anonymize_users=_ANONYMIZE_USERS.value,
@@ -540,7 +736,7 @@ def main(argv):
   # --interactive so the default one-shot behavior (and the webapp subprocess
   # path) is unchanged. run_repl is a no-op on a non-tty or empty session.
   if _INTERACTIVE.value and session:
-    asyncio.run(refine.run_repl(session, _MODEL.value))
+    asyncio.run(refine.run_repl(session, model))
 
 
 if __name__ == "__main__":
