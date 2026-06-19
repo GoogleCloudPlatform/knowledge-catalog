@@ -51,10 +51,13 @@ def _extract_links(body: str, doc_dir: Path, bundle_root: Path) -> list[str]:
     bundle_root_resolved = bundle_root.resolve()
     for m in _LINK_RE.finditer(body):
         target = m.group(1)
-        if "://" in target or target.startswith("/"):
+        if "://" in target:
             continue
         try:
-            resolved = (doc_dir / target).resolve().relative_to(bundle_root_resolved)
+            if target.startswith("/"):
+                resolved = (bundle_root / target[1:]).resolve().relative_to(bundle_root_resolved)
+            else:
+                resolved = (doc_dir / target).resolve().relative_to(bundle_root_resolved)
         except ValueError:
             continue
         rel = resolved.as_posix()
