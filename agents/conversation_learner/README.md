@@ -19,8 +19,9 @@
 **ConversationLearner** is an enterprise Agentic AI assistant built on the Google Agent Development Kit (ADK). It acts as an LLM-as-a-judge over conversational trajectories to detect friction and hallucination, generating metadata enrichment proposals.
 
 ## Architecture & Integration
-- **Trajectory Analysis**: Uses Cloud Logging to fetch recent conversational trajectories.
-- **LLM-as-a-judge**: Evaluates conversational turns to extract detection signals, gaps, and generate `ContextEnrichmentProposal` records.
+- **Trajectory Analysis**: Uses Cloud Logging to fetch recent conversational trajectories. For each conversation, the messages from every inference log entry are merged (deduplicated, in chronological order) into one transcript — earlier entries backfill any later entry whose `gen_ai.*.messages` label exceeded Cloud Logging's 64 KiB limit and was truncated.
+- **Per-conversation LLM-as-a-judge**: Each conversation is judged **independently and in parallel** (a direct Vertex `generate_content` call per conversation), extracting detection signals, gaps, and `ContextEnrichmentProposal` records. This bounds each judge's context for more consistent analysis and scales to many conversations, instead of analyzing every conversation in a single pass.
+- **Cross-conversation dedup**: A lightweight aggregation pass deduplicates proposals across conversations (same asset + gap type), keeping the highest-confidence instance, before saving to `proposal.json`.
 
 ## Running Locally
 
@@ -28,6 +29,9 @@
 export GOOGLE_CLOUD_PROJECT="your-project-id"
 export GOOGLE_CLOUD_LOCATION="us-central1"
 export GOOGLE_GENAI_USE_VERTEXAI=True
+
+# Authenticate so the Cloud Logging client can read trajectories
+gcloud auth application-default login
 
 # From the conversation_learner directory
 adk run .

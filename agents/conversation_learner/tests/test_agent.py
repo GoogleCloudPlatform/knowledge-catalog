@@ -14,11 +14,13 @@
 
 """Unit tests for the ConversationLearner agent."""
 
+import asyncio
 import json
 import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 # Required before importing agent — get_consumer_project() reads this at module level.
@@ -28,10 +30,17 @@ os.environ.setdefault("GOOGLE_CLOUD_PROJECT", "test-project")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from conversation_learner.agent import (  # noqa: E402
+    _aggregate_proposals,
+    _conversation_filter,
+    _format_message,
+    _group_by_conversation,
     _parse_generic_payload,
-    _parse_reasoning_engine_labels,
+    _reasoning_engine_filter,
     _redact_obj,
     _redact_sensitive,
+    _render_conversation,
+    _tolerant_json_array,
+    generate_learnings,
     get_agent_trajectories,
     save_trajectory_analysis_result,
 )
@@ -56,6 +65,7 @@ def _make_log_entry(conversation_id=None, gen_ai_labels=False, payload="log line
         )
     entry.to_api_repr.return_value = {"labels": labels}
     entry.payload = payload
+    entry.timestamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
     return entry
 
 
@@ -236,82 +246,163 @@ class TestSaveTrajectoryAnalysisResult(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# _parse_reasoning_engine_labels
+# _tolerant_json_array
 # ---------------------------------------------------------------------------
 
-class TestParseReasoningEngineLabels(unittest.TestCase):
+class TestTolerantJsonArray(unittest.TestCase):
 
-    def _labels(self, input_msgs=None, output_msgs=None):
-        labels = {}
-        if input_msgs is not None:
-            labels["gen_ai.input.messages"] = json.dumps(input_msgs)
-        if output_msgs is not None:
-            labels["gen_ai.output.messages"] = json.dumps(output_msgs)
-        return labels
+    def test_valid_array_parses(self):
+        elements, truncated = _tolerant_json_array('[{"a": 1}, {"b": 2}]')
+        self.assertEqual(elements, [{"a": 1}, {"b": 2}])
+        self.assertFalse(truncated)
 
-    def test_returns_false_for_empty_labels(self):
-        output = []
-        self.assertFalse(_parse_reasoning_engine_labels({}, output))
-        self.assertEqual(output, [])
+    def test_empty_string(self):
+        self.assertEqual(_tolerant_json_array(""), ([], False))
 
-    def test_returns_true_with_input_messages_label(self):
-        labels = self._labels(input_msgs=[{"role": "user", "parts": [{"text": "hello"}]}])
-        output = []
-        self.assertTrue(_parse_reasoning_engine_labels(labels, output))
+    def test_garbage_returns_empty_and_truncated(self):
+        elements, truncated = _tolerant_json_array("not-json")
+        self.assertEqual(elements, [])
+        self.assertTrue(truncated)
 
-    def test_message_text_appears_in_output(self):
-        labels = self._labels(input_msgs=[{"role": "user", "parts": [{"text": "what is cost?"}]}])
-        output = []
-        _parse_reasoning_engine_labels(labels, output)
-        self.assertTrue(any("what is cost?" in line for line in output))
+    def test_truncated_array_salvages_complete_elements(self):
+        # Simulates Cloud Logging cutting the value off mid second element.
+        full = json.dumps([
+            {"role": "user", "parts": [{"text": "keep me"}]},
+            {"role": "assistant", "parts": [{"text": "X" * 200}]},
+        ])
+        chopped = full[:-30]
+        elements, truncated = _tolerant_json_array(chopped)
+        self.assertTrue(truncated)
+        self.assertEqual(len(elements), 1)
+        self.assertEqual(elements[0]["parts"][0]["text"], "keep me")
 
-    def test_role_uppercased_in_output(self):
-        labels = self._labels(input_msgs=[{"role": "user", "parts": [{"text": "hi"}]}])
-        output = []
-        _parse_reasoning_engine_labels(labels, output)
-        self.assertTrue(any("[USER]:" in line for line in output))
+
+# ---------------------------------------------------------------------------
+# _format_message
+# ---------------------------------------------------------------------------
+
+class TestFormatMessage(unittest.TestCase):
+
+    def test_text_part(self):
+        self.assertEqual(
+            _format_message({"role": "user", "parts": [{"text": "hi there"}]}),
+            "[USER]: hi there",
+        )
+
+    def test_content_part(self):
+        out = _format_message({"role": "assistant", "parts": [{"content": "here is the answer"}]})
+        self.assertIn("here is the answer", out)
 
     def test_tool_call_part_formatted(self):
         msg = {"role": "assistant", "parts": [{"name": "run_sql", "arguments": {"query": "SELECT 1"}}]}
-        labels = self._labels(input_msgs=[msg])
-        output = []
-        _parse_reasoning_engine_labels(labels, output)
-        self.assertTrue(any("Tool Call: run_sql" in line for line in output))
+        self.assertIn("Tool Call: run_sql", _format_message(msg))
 
-    def test_content_part_included(self):
-        msg = {"role": "assistant", "parts": [{"content": "here is the answer"}]}
-        labels = self._labels(input_msgs=[msg])
-        output = []
-        _parse_reasoning_engine_labels(labels, output)
-        self.assertTrue(any("here is the answer" in line for line in output))
+    def test_role_uppercased(self):
+        self.assertTrue(_format_message({"role": "user", "parts": []}).startswith("[USER]:"))
 
-    def test_separator_added_after_each_message(self):
-        labels = self._labels(input_msgs=[
-            {"role": "user", "parts": [{"text": "q1"}]},
-            {"role": "assistant", "parts": [{"text": "a1"}]},
-        ])
-        output = []
-        _parse_reasoning_engine_labels(labels, output)
-        separators = [l for l in output if l == "-" * 20]
-        self.assertEqual(len(separators), 2)
+    def test_non_dict_message_handled(self):
+        self.assertIn("UNKNOWN", _format_message("just a string"))
 
-    def test_malformed_json_in_labels_handled_gracefully(self):
-        labels = {"gen_ai.input.messages": "not-valid-json"}
-        output = []
-        result = _parse_reasoning_engine_labels(labels, output)
-        self.assertTrue(result)
-        self.assertTrue(any("Error" in line for line in output))
 
-    def test_both_input_and_output_messages_combined(self):
-        labels = self._labels(
-            input_msgs=[{"role": "user", "parts": [{"text": "query"}]}],
-            output_msgs=[{"role": "assistant", "parts": [{"text": "answer"}]}],
+# ---------------------------------------------------------------------------
+# _render_conversation
+# ---------------------------------------------------------------------------
+
+class TestRenderConversation(unittest.TestCase):
+
+    def _entry(self, input_msgs=None, output_msgs=None, ts=0, payload="log line", conv="c1"):
+        """Mock log entry; *_msgs may be a list (json-encoded) or a raw string."""
+        entry = MagicMock()
+        labels = {"gen_ai.conversation.id": conv}
+        if input_msgs is not None:
+            labels["gen_ai.input.messages"] = (
+                input_msgs if isinstance(input_msgs, str) else json.dumps(input_msgs)
+            )
+        if output_msgs is not None:
+            labels["gen_ai.output.messages"] = (
+                output_msgs if isinstance(output_msgs, str) else json.dumps(output_msgs)
+            )
+        entry.to_api_repr.return_value = {"labels": labels}
+        entry.timestamp = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=ts)
+        entry.payload = payload
+        return entry
+
+    def test_single_entry_input_and_output(self):
+        entry = self._entry(
+            input_msgs=[{"role": "user", "parts": [{"text": "the question"}]}],
+            output_msgs=[{"role": "assistant", "parts": [{"text": "the answer"}]}],
         )
         output = []
-        _parse_reasoning_engine_labels(labels, output)
+        _render_conversation([entry], output)
         full = "\n".join(output)
-        self.assertIn("query", full)
-        self.assertIn("answer", full)
+        self.assertIn("the question", full)
+        self.assertIn("the answer", full)
+
+    def test_separator_added_after_each_message(self):
+        entry = self._entry(
+            input_msgs=[
+                {"role": "user", "parts": [{"text": "q1"}]},
+                {"role": "assistant", "parts": [{"text": "a1"}]},
+            ],
+        )
+        output = []
+        _render_conversation([entry], output)
+        self.assertEqual(len([l for l in output if l == "-" * 20]), 2)
+
+    def test_messages_deduplicated_across_entries(self):
+        # The later entry's input repeats the first turn (accumulated history).
+        e1 = self._entry(
+            input_msgs=[{"role": "user", "parts": [{"text": "turn one"}]}],
+            output_msgs=[{"role": "assistant", "parts": [{"text": "reply one"}]}],
+            ts=0,
+        )
+        e2 = self._entry(
+            input_msgs=[
+                {"role": "user", "parts": [{"text": "turn one"}]},
+                {"role": "assistant", "parts": [{"text": "reply one"}]},
+                {"role": "user", "parts": [{"text": "turn two"}]},
+            ],
+            output_msgs=[{"role": "assistant", "parts": [{"text": "reply two"}]}],
+            ts=1,
+        )
+        output = []
+        _render_conversation([e2, e1], output)  # deliberately out of chronological order
+        full = "\n".join(output)
+        self.assertEqual(full.count("turn one"), 1)  # deduped despite appearing twice
+        for txt in ("turn one", "reply one", "turn two", "reply two"):
+            self.assertIn(txt, full)
+
+    def test_truncated_last_entry_backfilled_by_earlier(self):
+        # Chronologically last entry's input label is truncated to invalid JSON,
+        # but the earlier (smaller) entry still holds the opening turn.
+        good_input = json.dumps([{"role": "user", "parts": [{"text": "original question"}]}])
+        big = json.dumps([
+            {"role": "user", "parts": [{"text": "original question"}]},
+            {"role": "tool", "parts": [{"text": "Y" * 500}]},
+        ])
+        truncated_input = big[:-40]
+        e1 = self._entry(
+            input_msgs=good_input,
+            output_msgs=[{"role": "assistant", "parts": [{"text": "tool call"}]}],
+            ts=0,
+        )
+        e2 = self._entry(
+            input_msgs=truncated_input,
+            output_msgs=[{"role": "assistant", "parts": [{"text": "final answer"}]}],
+            ts=1,
+        )
+        output = []
+        _render_conversation([e1, e2], output)
+        full = "\n".join(output)
+        self.assertIn("original question", full)  # recovered from the earlier entry
+        self.assertIn("final answer", full)       # from the last entry's small output label
+        self.assertIn("truncated", full.lower())  # truncation note emitted
+
+    def test_no_message_labels_falls_back_to_payload(self):
+        entry = self._entry(payload="raw payload text")  # no gen_ai message labels
+        output = []
+        _render_conversation([entry], output)
+        self.assertTrue(any("raw payload text" in line for line in output))
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +477,7 @@ class TestGetAgentTrajectories(unittest.TestCase):
         mock_logging.Client.return_value = mock_client
         mock_logging.DESCENDING = "DESCENDING"
 
-        # 3 entries, 2 unique conversation IDs — first seen (= latest) wins
+        # 3 entries, 2 unique conversation IDs — entries are grouped/merged per id
         entries = [
             _make_log_entry("conv-1", gen_ai_labels=True),
             _make_log_entry("conv-2", gen_ai_labels=True),
@@ -498,6 +589,188 @@ class TestGetAgentTrajectories(unittest.TestCase):
             project_id="test-project",
         )
         self.assertIn("Total log entries retrieved: 5", result)
+
+
+# ---------------------------------------------------------------------------
+# Cloud Logging filter builders
+# ---------------------------------------------------------------------------
+
+class TestFilters(unittest.TestCase):
+
+    def test_conversation_filter_pins_id_and_resource_type(self):
+        f = _conversation_filter("conv-123")
+        self.assertIn('resource.type="aiplatform.googleapis.com/ReasoningEngine"', f)
+        self.assertIn('labels."gen_ai.conversation.id"="conv-123"', f)
+
+    def test_reasoning_engine_filter_requires_nonempty_conversation_id(self):
+        f = _reasoning_engine_filter("123", "2026-06-05T00:00:00+00:00")
+        self.assertIn('resource.labels.reasoning_engine_id="123"', f)
+        self.assertIn('labels."gen_ai.conversation.id"!=""', f)
+        self.assertIn('timestamp>="2026-06-05T00:00:00+00:00"', f)
+        self.assertNotIn("timestamp<=", f)
+
+    def test_reasoning_engine_filter_includes_end_time(self):
+        f = _reasoning_engine_filter("123", "2026-06-01T00:00:00Z", "2026-06-17T00:00:00Z")
+        self.assertIn('timestamp<="2026-06-17T00:00:00Z"', f)
+
+
+# ---------------------------------------------------------------------------
+# _group_by_conversation
+# ---------------------------------------------------------------------------
+
+class TestGroupByConversation(unittest.TestCase):
+
+    def test_groups_entries_and_skips_unlabeled(self):
+        entries = [
+            _make_log_entry("c1", gen_ai_labels=True),
+            _make_log_entry("c2", gen_ai_labels=True),
+            _make_log_entry("c1"),
+            _make_log_entry(conversation_id=None),  # no id — skipped
+        ]
+        grouped = _group_by_conversation(entries)
+        self.assertEqual(set(grouped.keys()), {"c1", "c2"})
+        self.assertEqual(len(grouped["c1"]), 2)
+        self.assertEqual(len(grouped["c2"]), 1)
+
+
+# ---------------------------------------------------------------------------
+# _aggregate_proposals
+# ---------------------------------------------------------------------------
+
+class TestAggregateProposals(unittest.TestCase):
+
+    def _p(self, name, gap="BUSINESS_LOGIC_GAP", atype="COLUMN", conf=0.5, instr="do X"):
+        return {
+            "classification": {"detection_signal": "DIRECT_USER_CORRECTION", "gap_type": gap},
+            "target_asset": {"type": atype, "name": name},
+            "proposed_enrichment": {"action": "UPDATE_OVERVIEW_ASPECT", "value": "v"},
+            "confidence_grade": conf,
+            "enrichment_agent_instruction": instr,
+        }
+
+    def test_same_asset_and_gap_collapsed_keeping_higher_confidence(self):
+        out = _aggregate_proposals([self._p("ds.t.col", conf=0.6), self._p("DS.T.COL", conf=0.9)])
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["confidence_grade"], 0.9)
+
+    def test_different_gap_type_not_merged(self):
+        out = _aggregate_proposals([
+            self._p("ds.t.col", gap="BUSINESS_LOGIC_GAP"),
+            self._p("ds.t.col", gap="STRUCTURAL_ROUTING_GAP"),
+        ])
+        self.assertEqual(len(out), 2)
+
+    def test_different_asset_not_merged(self):
+        out = _aggregate_proposals([self._p("ds.t.a"), self._p("ds.t.b")])
+        self.assertEqual(len(out), 2)
+
+    def test_blank_name_distinct_instructions_not_collapsed(self):
+        out = _aggregate_proposals([
+            self._p("", atype="UNCATALOGED_ASSET", gap="UNCATALOGED_ASSET_DISCOVERY", instr="catalog table A"),
+            self._p("", atype="UNCATALOGED_ASSET", gap="UNCATALOGED_ASSET_DISCOVERY", instr="catalog table B"),
+        ])
+        self.assertEqual(len(out), 2)
+
+    def test_blank_name_same_instruction_collapsed(self):
+        out = _aggregate_proposals([
+            self._p("", atype="UNCATALOGED_ASSET", gap="UNCATALOGED_ASSET_DISCOVERY", instr="catalog A", conf=0.4),
+            self._p("", atype="UNCATALOGED_ASSET", gap="UNCATALOGED_ASSET_DISCOVERY", instr="catalog A", conf=0.8),
+        ])
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["confidence_grade"], 0.8)
+
+
+# ---------------------------------------------------------------------------
+# generate_learnings (per-conversation fan-out + dedup orchestration)
+# ---------------------------------------------------------------------------
+
+class TestGenerateLearnings(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.orig_dir = os.getcwd()
+        os.chdir(self.tmpdir)  # proposal.json is written to cwd
+
+    def tearDown(self):
+        os.chdir(self.orig_dir)
+
+    def _proposal(self, name="ds.t.cost", gap="BUSINESS_LOGIC_GAP", conf=0.9):
+        return {
+            "classification": {"detection_signal": "DIRECT_USER_CORRECTION", "gap_type": gap},
+            "target_asset": {"type": "COLUMN", "name": name},
+            "proposed_enrichment": {"action": "UPDATE_OVERVIEW_ASPECT", "value": "USD"},
+            "confidence_grade": conf,
+            "enrichment_agent_instruction": "update cost",
+        }
+
+    @patch("conversation_learner.agent._judge_conversation_sync")
+    @patch("conversation_learner.agent.cloud_logging")
+    def test_validation_error_when_no_params(self, mock_logging, mock_judge):
+        result = asyncio.run(generate_learnings(project_id="test-project"))
+        self.assertIn("Either conversation_id", result)
+        mock_judge.assert_not_called()
+
+    @patch("conversation_learner.agent._judge_conversation_sync")
+    @patch("conversation_learner.agent.cloud_logging")
+    def test_fans_out_per_conversation_and_dedups(self, mock_logging, mock_judge):
+        mock_client = MagicMock()
+        mock_logging.Client.return_value = mock_client
+        mock_logging.DESCENDING = "DESCENDING"
+        mock_client.list_entries.return_value = [
+            _make_log_entry("c1", gen_ai_labels=True),
+            _make_log_entry("c2", gen_ai_labels=True),
+        ]
+        # Both conversations surface the SAME asset+gap proposal -> dedup to 1.
+        mock_judge.return_value = [self._proposal()]
+
+        result = asyncio.run(generate_learnings(
+            reasoning_engine_id="projects/p/locations/l/reasoningEngines/123",
+            days_ago=7, project_id="test-project",
+        ))
+
+        self.assertEqual(mock_judge.call_count, 2)  # one judge call per conversation
+        self.assertIn("Unique conversations: 2", result)
+        self.assertIn("from 2 raw", result)
+        self.assertIn("saved 1 deduplicated", result)
+        with open("proposal.json") as f:
+            saved = json.load(f)
+        self.assertEqual(len(saved["proposals"]), 1)
+
+    @patch("conversation_learner.agent._judge_conversation_sync")
+    @patch("conversation_learner.agent.cloud_logging")
+    def test_one_conversation_failure_does_not_abort_batch(self, mock_logging, mock_judge):
+        mock_client = MagicMock()
+        mock_logging.Client.return_value = mock_client
+        mock_logging.DESCENDING = "DESCENDING"
+        mock_client.list_entries.return_value = [
+            _make_log_entry("c1", gen_ai_labels=True),
+            _make_log_entry("c2", gen_ai_labels=True),
+        ]
+
+        def _side_effect(cid, transcript):
+            if cid == "c1":
+                raise RuntimeError("boom")  # non-retryable -> conversation yields []
+            return [self._proposal(name="ds.t.other")]
+        mock_judge.side_effect = _side_effect
+
+        result = asyncio.run(generate_learnings(
+            reasoning_engine_id="projects/p/locations/l/reasoningEngines/123",
+            days_ago=7, project_id="test-project",
+        ))
+        self.assertIn("from 1 raw", result)
+        self.assertIn("saved 1 deduplicated", result)
+
+    @patch("conversation_learner.agent.cloud_logging")
+    def test_no_conversations_found(self, mock_logging):
+        mock_client = MagicMock()
+        mock_logging.Client.return_value = mock_client
+        mock_logging.DESCENDING = "DESCENDING"
+        mock_client.list_entries.return_value = []
+        result = asyncio.run(generate_learnings(
+            reasoning_engine_id="projects/p/locations/l/reasoningEngines/123",
+            days_ago=7, project_id="test-project",
+        ))
+        self.assertIn("Unique conversations: 0", result)
 
 
 if __name__ == "__main__":
