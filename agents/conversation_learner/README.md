@@ -21,7 +21,7 @@
 ## Architecture & Integration
 - **Trajectory Analysis**: Uses Cloud Logging to fetch recent conversational trajectories. For each conversation, the messages from every inference log entry are merged (deduplicated, in chronological order) into one transcript — earlier entries backfill any later entry whose `gen_ai.*.messages` label exceeded Cloud Logging's 64 KiB limit and was truncated.
 - **Per-conversation LLM-as-a-judge**: Each conversation is judged **independently and in parallel** (a direct Vertex `generate_content` call per conversation), extracting detection signals, gaps, and `ContextEnrichmentProposal` records. This bounds each judge's context for more consistent analysis and scales to many conversations, instead of analyzing every conversation in a single pass.
-- **Cross-conversation dedup**: A lightweight aggregation pass deduplicates proposals across conversations (same asset + gap type), keeping the highest-confidence instance, before saving to `proposal.json`.
+- **Cross-conversation aggregation**: A lightweight pass merges proposals across conversations by identity (same asset + gap type) into one learning, rolling up the recurrence signal — `occurrence_count`, `source_conversation_ids`, aggregated `supporting_evidence`, `first_seen`/`last_seen`, and a recurrence-boosted `confidence_grade` (noisy-OR over instances; `max_instance_confidence` preserves the best single instance) — before saving to `proposal.json`.
 
 ## Running Locally
 

@@ -35,6 +35,7 @@ from conversation_learner.agent import (  # noqa: E402
     _conversation_filter,
     _format_message,
     _group_by_conversation,
+    _noisy_or,
     _parse_generic_payload,
     _proposal_id,
     _reasoning_engine_filter,
@@ -642,19 +643,37 @@ class TestGroupByConversation(unittest.TestCase):
 
 class TestAggregateProposals(unittest.TestCase):
 
-    def _p(self, name, gap="BUSINESS_LOGIC_GAP", atype="COLUMN", conf=0.5, instr="do X"):
-        return {
+    def _p(self, name, gap="BUSINESS_LOGIC_GAP", atype="COLUMN", conf=0.5,
+           instr="do X", conv=None, evidence=None):
+        p = {
             "classification": {"detection_signal": "DIRECT_USER_CORRECTION", "gap_type": gap},
             "target_asset": {"type": atype, "name": name},
             "proposed_enrichment": {"action": "UPDATE_OVERVIEW_ASPECT", "value": "v"},
             "confidence_grade": conf,
             "enrichment_agent_instruction": instr,
         }
+        if evidence is not None:
+            p["evidence"] = evidence
+        if conv is not None:
+            p["_provenance"] = {"conversation_id": conv,
+                                "timestamp": f"2026-01-0{conv[-1]}T00:00:00+00:00"}
+        return p
 
-    def test_same_asset_and_gap_collapsed_keeping_higher_confidence(self):
+    def test_same_asset_and_gap_merged_into_one(self):
         out = _aggregate_proposals([self._p("ds.t.col", conf=0.6), self._p("DS.T.COL", conf=0.9)])
         self.assertEqual(len(out), 1)
-        self.assertEqual(out[0]["confidence_grade"], 0.9)
+
+    def test_merge_preserves_best_instance_and_boosts_confidence(self):
+        out = _aggregate_proposals([self._p("ds.t.col", conf=0.6), self._p("ds.t.col", conf=0.9)])
+        # Best single-instance grade preserved; aggregate boosted above it.
+        self.assertEqual(out[0]["max_instance_confidence"], 0.9)
+        # noisy-OR(0.6, 0.9) = 1 - (0.4 * 0.1) = 0.96
+        self.assertAlmostEqual(out[0]["confidence_grade"], 0.96, places=4)
+
+    def test_single_instance_confidence_unchanged(self):
+        out = _aggregate_proposals([self._p("ds.t.col", conf=0.9)])
+        self.assertAlmostEqual(out[0]["confidence_grade"], 0.9, places=4)
+        self.assertEqual(out[0]["occurrence_count"], 1)
 
     def test_different_gap_type_not_merged(self):
         out = _aggregate_proposals([
@@ -667,6 +686,27 @@ class TestAggregateProposals(unittest.TestCase):
         out = _aggregate_proposals([self._p("ds.t.a"), self._p("ds.t.b")])
         self.assertEqual(len(out), 2)
 
+    def test_provenance_rolled_up_across_conversations(self):
+        out = _aggregate_proposals([
+            self._p("ds.t.col", conf=0.6, conv="c1",
+                    evidence={"reasoning": "r1", "trajectory_quote": "q1"}),
+            self._p("ds.t.col", conf=0.8, conv="c2",
+                    evidence={"reasoning": "r2", "trajectory_quote": "q2"}),
+        ])
+        self.assertEqual(len(out), 1)
+        merged = out[0]
+        self.assertEqual(merged["occurrence_count"], 2)
+        self.assertEqual(merged["source_conversation_ids"], ["c1", "c2"])
+        self.assertEqual(len(merged["supporting_evidence"]), 2)
+        self.assertEqual(merged["first_seen"], "2026-01-01T00:00:00+00:00")
+        self.assertEqual(merged["last_seen"], "2026-01-02T00:00:00+00:00")
+        self.assertNotIn("_provenance", merged)  # transient key stripped before saving
+
+    def test_occurrence_counts_distinct_conversations(self):
+        # Two proposals from the SAME conversation count as one occurrence.
+        out = _aggregate_proposals([self._p("ds.t.col", conv="c1"), self._p("ds.t.col", conv="c1")])
+        self.assertEqual(out[0]["occurrence_count"], 1)
+
     def test_blank_name_distinct_instructions_not_collapsed(self):
         out = _aggregate_proposals([
             self._p("", atype="UNCATALOGED_ASSET", gap="UNCATALOGED_ASSET_DISCOVERY", instr="catalog table A"),
@@ -674,13 +714,29 @@ class TestAggregateProposals(unittest.TestCase):
         ])
         self.assertEqual(len(out), 2)
 
-    def test_blank_name_same_instruction_collapsed(self):
+    def test_blank_name_same_instruction_merged(self):
         out = _aggregate_proposals([
             self._p("", atype="UNCATALOGED_ASSET", gap="UNCATALOGED_ASSET_DISCOVERY", instr="catalog A", conf=0.4),
             self._p("", atype="UNCATALOGED_ASSET", gap="UNCATALOGED_ASSET_DISCOVERY", instr="catalog A", conf=0.8),
         ])
         self.assertEqual(len(out), 1)
-        self.assertEqual(out[0]["confidence_grade"], 0.8)
+        self.assertEqual(out[0]["max_instance_confidence"], 0.8)
+
+
+class TestNoisyOr(unittest.TestCase):
+
+    def test_single_value_unchanged(self):
+        self.assertAlmostEqual(_noisy_or([0.7]), 0.7, places=4)
+
+    def test_recurrence_increases_confidence(self):
+        self.assertAlmostEqual(_noisy_or([0.6, 0.9]), 0.96, places=4)
+        self.assertGreater(_noisy_or([0.5, 0.5, 0.5]), 0.5)
+
+    def test_empty_is_zero(self):
+        self.assertEqual(_noisy_or([]), 0.0)
+
+    def test_none_treated_as_zero(self):
+        self.assertAlmostEqual(_noisy_or([None, 0.5]), 0.5, places=4)
 
 
 # ---------------------------------------------------------------------------

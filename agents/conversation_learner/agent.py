@@ -527,8 +527,9 @@ GEMINI_MODEL = f"projects/{consumer_project}/locations/global/publishers/google/
 # PER-CONVERSATION LLM-AS-JUDGE ORCHESTRATION
 # ==============================================================================
 # Each conversation is judged by its own direct generate_content call (bypassing
-# ADK), fanned out in parallel, then proposals are deduplicated across
-# conversations. This bounds each judge's context (vs. one giant pass over every
+# ADK), fanned out in parallel, then proposals sharing an identity are merged
+# across conversations (dedup + provenance roll-up + recurrence-boosted
+# confidence). This bounds each judge's context (vs. one giant pass over every
 # conversation), scales, and isolates per-conversation failures. Mirrors the
 # direct-call + asyncio.gather + retry pattern in agents/enrichment/src/common.py.
 
@@ -674,19 +675,78 @@ def _judge_conversation_sync(conversation_id: str, transcript: str) -> List[Dict
         return []
 
 
-def _aggregate_proposals(proposals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Deduplicates proposals across conversations (lightweight aggregation pass).
+def _noisy_or(confidences: List[Optional[float]]) -> float:
+    """Combines independent per-instance confidences via noisy-OR.
 
-    Proposals with the same identity (see _proposal_identity) are treated as the
-    same learning; the highest-confidence instance is kept.
+    ``P = 1 - Π(1 - cᵢ)``. A learning corroborated by several conversations is
+    more trustworthy than any single instance, so recurrence raises confidence
+    while staying in [0, 1]; a lone instance is returned unchanged. Note this
+    saturates toward 1 with many instances — acceptable because recurring
+    signals are exactly what we want to surface; temper it if low-quality
+    proposals start accumulating.
     """
-    by_key: Dict[Tuple, Dict[str, Any]] = {}
+    prob_none = 1.0
+    for c in confidences:
+        prob_none *= 1.0 - min(max(c or 0.0, 0.0), 1.0)
+    return 1.0 - prob_none
+
+
+def _merge_group(members: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Merges all proposals sharing one identity into a single enriched learning.
+
+    The highest-confidence instance supplies the representative fields (asset,
+    proposed value, instruction, eval candidate). On top of that we roll up the
+    cross-conversation signal: how many conversations surfaced it, which ones,
+    all supporting evidence, the time span, and a recurrence-boosted confidence
+    (``max_instance_confidence`` preserves the best single-instance grade).
+    Provenance (``_provenance``) is attached by the orchestrator; when absent
+    (e.g. direct unit-test calls) the count falls back to the member count.
+    """
+    representative = max(members, key=lambda p: p.get("confidence_grade") or 0.0)
+    merged = {k: v for k, v in representative.items() if k != "_provenance"}
+
+    conv_ids: List[str] = []
+    timestamps: List[str] = []
+    supporting: List[Dict[str, Any]] = []
+    for p in members:
+        prov = p.get("_provenance") or {}
+        cid, ts = prov.get("conversation_id"), prov.get("timestamp")
+        if cid and cid not in conv_ids:
+            conv_ids.append(cid)
+        if ts:
+            timestamps.append(ts)
+        ev = p.get("evidence")
+        if isinstance(ev, dict):
+            supporting.append({**({"conversation_id": cid} if cid else {}), **ev})
+
+    merged["confidence_grade"] = round(
+        _noisy_or([p.get("confidence_grade") for p in members]), 4
+    )
+    merged["max_instance_confidence"] = max(
+        (p.get("confidence_grade") or 0.0) for p in members
+    )
+    merged["occurrence_count"] = len(conv_ids) if conv_ids else len(members)
+    if conv_ids:
+        merged["source_conversation_ids"] = conv_ids
+    if supporting:
+        merged["supporting_evidence"] = supporting
+    if timestamps:
+        merged["first_seen"], merged["last_seen"] = min(timestamps), max(timestamps)
+    return merged
+
+
+def _aggregate_proposals(proposals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merges proposals across conversations into deduplicated learnings.
+
+    Proposals with the same identity (see _proposal_identity) describe the same
+    gap on the same asset and are merged into one record carrying the recurrence
+    signal — occurrence count, source conversations, aggregated evidence, time
+    span, and a recurrence-boosted confidence (see _merge_group).
+    """
+    groups: Dict[Tuple, List[Dict[str, Any]]] = {}
     for p in proposals:
-        key = _proposal_identity(p)
-        existing = by_key.get(key)
-        if existing is None or (p.get("confidence_grade") or 0) > (existing.get("confidence_grade") or 0):
-            by_key[key] = p
-    return list(by_key.values())
+        groups.setdefault(_proposal_identity(p), []).append(p)
+    return [_merge_group(members) for members in groups.values()]
 
 
 async def generate_learnings(
@@ -701,8 +761,8 @@ async def generate_learnings(
     """Analyzes agent conversation trajectories and saves enrichment proposals.
 
     Fetches trajectories from Cloud Logging, runs the LLM-as-judge independently
-    on EACH conversation in parallel, deduplicates the proposals across
-    conversations, saves them to proposal.json, and returns a summary.
+    on EACH conversation in parallel, merges proposals across conversations into
+    recurrence-aware learnings, saves them to proposal.json, and returns a summary.
 
     Args:
         conversation_id: A single conversation id to analyze.
@@ -738,12 +798,19 @@ async def generate_learnings(
             "No conversations with trajectories were found for the given parameters."
         )
 
-    # Render each conversation into its own transcript.
+    # Render each conversation into its own transcript, capturing its latest
+    # timestamp for provenance roll-up during aggregation.
     transcripts: Dict[str, str] = {}
+    conv_ts: Dict[str, Optional[str]] = {}
     for c_id, c_entries in grouped.items():
         lines: List[str] = []
         _render_conversation(c_entries, lines)
         transcripts[c_id] = "\n".join(lines)
+        latest = max(
+            (e.timestamp for e in c_entries if getattr(e, "timestamp", None)),
+            default=None,
+        )
+        conv_ts[c_id] = latest.isoformat() if latest else None
 
     # Fan out one judge call per conversation, concurrency-capped and retried
     # independently so a single failure yields [] rather than aborting the batch.
@@ -752,13 +819,18 @@ async def generate_learnings(
     async def _judge(c_id: str, transcript: str) -> List[Dict[str, Any]]:
         async with sem:
             try:
-                return await _with_retry(
+                proposals = await _with_retry(
                     lambda: asyncio.to_thread(_judge_conversation_sync, c_id, transcript),
                     what=f"judge[{c_id}]",
                 )
             except Exception as e:  # pylint: disable=broad-except
                 print(f"[judge] {c_id}: failed after retries: {e}", flush=True)
                 return []
+        # Tag each proposal with its source so aggregation can roll up the
+        # cross-conversation recurrence signal (stripped before saving).
+        for p in proposals:
+            p["_provenance"] = {"conversation_id": c_id, "timestamp": conv_ts.get(c_id)}
+        return proposals
 
     results = await asyncio.gather(*[_judge(c, t) for c, t in transcripts.items()])
     raw_proposals = [p for sub in results for p in sub]
@@ -768,11 +840,13 @@ async def generate_learnings(
 
     save_trajectory_analysis_result(json.dumps({"proposals": deduped}))
 
+    recurring = sum(1 for p in deduped if (p.get("occurrence_count") or 1) > 1)
     return (
         f"Total log entries retrieved: {len(entries)}. Unique conversations: {len(grouped)}.\n"
         f"Conversation IDs: {', '.join(grouped.keys())}\n"
         f"Analyzed each conversation independently; saved {len(deduped)} "
-        f"deduplicated proposal(s) (from {len(raw_proposals)} raw) to proposal.json."
+        f"deduplicated proposal(s) (from {len(raw_proposals)} raw; {recurring} "
+        f"recurring across multiple conversations) to proposal.json."
     )
 
 

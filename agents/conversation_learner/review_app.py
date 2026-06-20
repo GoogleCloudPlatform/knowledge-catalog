@@ -139,9 +139,11 @@ with tab_review:
         with st.container(border=True):
             head = st.columns([4, 1])
             with head[0]:
+                occ = p.get("occurrence_count") or 1
                 st.markdown(
                     _badge(gap, GAP_COLORS.get(gap, "#555")) + " "
                     + _badge(_signal(p), "#374151")
+                    + (f" {_badge(f'recurring ×{occ}', '#7c3aed')}" if occ > 1 else "")
                     + f" &nbsp; <b>{(p.get('target_asset') or {}).get('type', '?')}</b> "
                     + f"· <code>{_asset_name(p)}</code>",
                     unsafe_allow_html=True,
@@ -152,10 +154,19 @@ with tab_review:
             with head[1]:
                 st.metric("confidence", f"{_conf(p):.2f}")
                 st.progress(min(max(_conf(p), 0.0), 1.0))
-            with st.expander("Evidence"):
-                st.write(ev.get("reasoning", ""))
-                if ev.get("trajectory_quote"):
-                    st.code(ev["trajectory_quote"])
+            with st.expander(f"Evidence ({occ} conversation{'s' if occ != 1 else ''})"):
+                supporting = p.get("supporting_evidence") or []
+                if supporting:
+                    for s in supporting:
+                        cid = s.get("conversation_id")
+                        if s.get("reasoning"):
+                            st.write((f"**{cid}** — " if cid else "") + s["reasoning"])
+                        if s.get("trajectory_quote"):
+                            st.code(s["trajectory_quote"])
+                else:
+                    st.write(ev.get("reasoning", ""))
+                    if ev.get("trajectory_quote"):
+                        st.code(ev["trajectory_quote"])
             with st.expander("Enrichment instruction"):
                 st.write(p.get("enrichment_agent_instruction", ""))
                 golden_sql = (p.get("eval_candidate") or {}).get("golden_sql")
