@@ -44,6 +44,8 @@ generate learnings for projects/<project-number>/locations/us-central1/reasoning
 
 The agent will print the number of log entries retrieved, the unique conversation IDs found, and save enrichment proposals to `proposal.json`.
 
+To attach a deterministic, run-stable `id` to each saved proposal, ask for them — e.g. append `with proposal ids` to your prompt. The id is derived from the proposal's identity (asset type + asset name + gap type), so the same gap on the same asset yields the same id across runs. The (volatile) proposed wording is ignored, and the asset name is canonicalized so an optional `project.` prefix doesn't produce two different ids.
+
 > **Note on Observability**: The agent retrieves conversations from Cloud Logging using OpenTelemetry trace logs (`gen_ai.client.inference.operation.details`). These logs are only emitted for sessions that ran while **Observability was enabled** on the Reasoning Engine. Sessions started before Observability was activated will not appear.
 
 ## Running Tests
