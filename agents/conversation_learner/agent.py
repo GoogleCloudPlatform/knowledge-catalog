@@ -234,7 +234,7 @@ def _fetch_and_group(
             datetime.now(timezone.utc) - timedelta(days=days_ago)
         ).isoformat()
         filter_str = _reasoning_engine_filter(re_id, start_time_str, end_time)
-    entries = list(client.list_entries(filter_=filter_str, order_by=cloud_logging.DESCENDING))
+    entries = list(client.list_entries(filter_=filter_str, order_by=cloud_logging.DESCENDING, page_size=1000))
     return entries, _group_by_conversation(entries)
 
 
@@ -268,7 +268,7 @@ def get_agent_trajectories(
         if conversation_id:
             output.append(f"--- Fetching Conversation: {conversation_id} ---")
             filter_str = _conversation_filter(conversation_id)
-            entries = list(client.list_entries(filter_=filter_str, order_by=cloud_logging.DESCENDING))
+            entries = list(client.list_entries(filter_=filter_str, order_by=cloud_logging.DESCENDING, page_size=1000))
 
             output.append("--- Chat History ---")
 
@@ -294,7 +294,7 @@ def get_agent_trajectories(
             re_id = reasoning_engine_id.split("/")[-1]
             filter_str = _reasoning_engine_filter(re_id, start_time_str, end_time)
 
-            entries = list(client.list_entries(filter_=filter_str, order_by=cloud_logging.DESCENDING))
+            entries = list(client.list_entries(filter_=filter_str, order_by=cloud_logging.DESCENDING, page_size=1000))
 
             if not entries:
                 output.append("No messages found for this Reasoning Engine in the specified time range.")
