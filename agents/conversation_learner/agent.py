@@ -430,7 +430,22 @@ def _redact_obj(obj):
     return obj
 
 
-def save_trajectory_analysis_result(result_json: str) -> str:
+# Where save_trajectory_analysis_result writes when no explicit path is given.
+# The CLI overrides this via set_default_output_path() so that BOTH the direct
+# generate_learnings() call and the LLM-driven tool call (which never passes a
+# path) honor --output. Defaults to "proposal.json" in the current directory,
+# matching the original `adk run` behavior.
+_DEFAULT_OUTPUT_PATH = "proposal.json"
+
+
+def set_default_output_path(path: str) -> None:
+    """Sets the default file path for saved proposals (process-wide)."""
+    global _DEFAULT_OUTPUT_PATH
+    if path:
+        _DEFAULT_OUTPUT_PATH = path
+
+
+def save_trajectory_analysis_result(result_json: str, output_path: Optional[str] = None) -> str:
     """
     Saves the final trajectory analysis result to a local file.
     Must be called to conclude the analysis.
@@ -467,9 +482,15 @@ def save_trajectory_analysis_result(result_json: str) -> str:
                 }
               ]
             }
+        output_path: Optional file path to write to. Defaults to
+            _DEFAULT_OUTPUT_PATH ("proposal.json" in the current directory unless
+            overridden by set_default_output_path()).
     """
     import re
-    filename = "proposal.json"
+    filename = output_path or _DEFAULT_OUTPUT_PATH
+    out_dir = os.path.dirname(filename)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     try:
         parsed = json.loads(result_json)
     except json.JSONDecodeError:

@@ -45,6 +45,7 @@ from conversation_learner.agent import (  # noqa: E402
     generate_learnings,
     get_agent_trajectories,
     save_trajectory_analysis_result,
+    set_default_output_path,
 )
 
 
@@ -891,6 +892,38 @@ class TestGenerateLearnings(unittest.TestCase):
     def test_no_ids_by_default(self, mock_logging, mock_judge):
         proposals = self._run_one(mock_logging, mock_judge, include_ids=False)
         self.assertTrue(proposals and all("id" not in p for p in proposals))
+
+
+# ---------------------------------------------------------------------------
+# Output path control (set_default_output_path + save output_path arg)
+# ---------------------------------------------------------------------------
+
+class TestOutputPath(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.orig_dir = os.getcwd()
+        os.chdir(self.tmpdir)
+
+    def tearDown(self):
+        os.chdir(self.orig_dir)
+        set_default_output_path("proposal.json")  # restore the module default
+
+    def test_explicit_output_path_creates_parent_dirs(self):
+        target = os.path.join(self.tmpdir, "nested", "out.json")
+        save_trajectory_analysis_result(json.dumps({"proposals": []}), target)
+        self.assertTrue(os.path.exists(target))
+
+    def test_set_default_output_path_redirects_save(self):
+        set_default_output_path(os.path.join(self.tmpdir, "custom.json"))
+        save_trajectory_analysis_result(json.dumps({"proposals": []}))
+        self.assertTrue(os.path.exists(os.path.join(self.tmpdir, "custom.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.tmpdir, "proposal.json")))
+
+    def test_set_default_output_path_ignores_empty(self):
+        set_default_output_path("")  # no-op — keeps the existing default
+        save_trajectory_analysis_result(json.dumps({"proposals": []}))
+        self.assertTrue(os.path.exists(os.path.join(self.tmpdir, "proposal.json")))
 
 
 if __name__ == "__main__":

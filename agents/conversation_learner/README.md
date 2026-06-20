@@ -46,6 +46,48 @@ The agent will print the number of log entries retrieved, the unique conversatio
 
 To attach a deterministic, run-stable `id` to each saved proposal, ask for them — e.g. append `with proposal ids` to your prompt. The id is derived from the proposal's identity (asset type + asset name + gap type), so the same gap on the same asset yields the same id across runs. The (volatile) proposed wording is ignored, and the asset name is canonicalized so an optional `project.` prefix doesn't produce two different ids.
 
+### Running via CLI (non-interactive)
+
+For scripted/automated runs (cron, CI, pipelines) the agent ships a flag-based
+CLI that does the same work without the interactive REPL. It writes the same
+`proposal.json` (consumed by the review UI below). It supports two input styles.
+
+**Deterministic flags** — call the analysis directly (no LLM front-end), so it is
+fast and reproducible:
+
+```bash
+export GOOGLE_CLOUD_PROJECT="your-project-id"
+
+# From the agents/ directory:
+python -m conversation_learner \
+  --reasoning_engine_id projects/<project-number>/locations/us-central1/reasoningEngines/<engine-id> \
+  --days_ago 7 --include_ids
+
+# Or by a single conversation id:
+python -m conversation_learner --conversation_id <conversation-id>
+
+# Or run the script directly (works from any directory):
+python conversation_learner/cli.py --reasoning_engine_id <id> --days_ago 7
+```
+
+**Natural language (`--prompt`)** — routes the request through the LLM agent once
+(same parsing as `adk run`, but one-shot):
+
+```bash
+python -m conversation_learner \
+  --prompt "generate learnings for projects/<n>/locations/us-central1/reasoningEngines/<id> in the past 7 days with proposal ids"
+```
+
+Use `--output <path>` to write proposals somewhere other than `./proposal.json`
+(a directory is allowed — `proposal.json` is created inside it). Run
+`python -m conversation_learner --help` for the full flag list.
+
+Key flags: `--conversation_id`, `--reasoning_engine_id` (bare id or full resource
+path), `--days_ago`, `--start_time` / `--end_time` (ISO 8601), `--include_ids`,
+`--project` (default `$GOOGLE_CLOUD_PROJECT`), `--location`, `--output`. Provide
+either `--conversation_id`, or `--reasoning_engine_id` with one of `--days_ago` /
+`--start_time` (or use `--prompt`). The same ADC auth as `adk run` applies.
+
 > **Note on Observability**: The agent retrieves conversations from Cloud Logging using OpenTelemetry trace logs (`gen_ai.client.inference.operation.details`). These logs are only emitted for sessions that ran while **Observability was enabled** on the Reasoning Engine. Sessions started before Observability was activated will not appear.
 
 ## Reviewing proposals (human-in-the-loop)
