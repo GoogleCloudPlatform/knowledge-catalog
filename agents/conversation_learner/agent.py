@@ -15,6 +15,7 @@
 """ConversationLearner agent for analyzing conversational trajectories."""
 
 import asyncio
+import hashlib
 import json
 import os
 from enum import Enum
@@ -539,6 +540,8 @@ ORCHESTRATOR_INSTRUCTION = (
     "- If given a Reasoning Engine id (or full resource path) and a time filter, "
     "pass `reasoning_engine_id` plus either `days_ago` or `start_time`/`end_time` "
     "(ISO 8601).\n"
+    "- If the user asks for proposal IDs (e.g. 'with ids' / 'stable ids'), pass "
+    "`include_ids=true` (it defaults to false).\n"
     "Then report the tool's returned summary verbatim to the user. Do not call "
     "the tool more than once and do not call any other tools."
 )
@@ -643,28 +646,72 @@ def _judge_conversation_sync(conversation_id: str, transcript: str) -> List[Dict
         return []
 
 
+def _canonical_asset_name(name: Optional[str], asset_type: str = "") -> str:
+    """Canonicalizes a BigQuery-style asset path so the same asset normalizes the
+    same whether or not the LLM included the project prefix.
+
+    References look like ``project.dataset.table.column`` (or any suffix). A
+    leading project component is dropped when detectable: a project id may contain
+    hyphens (BigQuery dataset/table/column identifiers may not), and a four-part
+    path is always ``project.dataset.table.column``. Glossary terms aren't paths,
+    so only their case/whitespace is normalized.
+
+    Residual limit: a hyphen-free project in an ambiguous three-part path
+    (``project.dataset.table`` vs ``dataset.table.column``) can't be told apart
+    and is left intact.
+    """
+    name = (name or "").strip().lower()
+    if not name or asset_type == "GLOSSARY_TERM":
+        return name
+    parts = name.split(".")
+    if len(parts) >= 2 and ("-" in parts[0] or len(parts) == 4):
+        parts = parts[1:]  # drop the leading project component
+    return ".".join(parts)
+
+
+def _proposal_identity(proposal: Dict[str, Any]) -> Tuple:
+    """The fields that define a unique proposal — used for BOTH cross-conversation
+    dedup and the optional proposal id, so the two never disagree.
+
+    Identity is asset type + canonical name + gap_type. It deliberately excludes
+    the proposed value (volatile LLM-generated text that varies run to run). The
+    asset name is canonicalized (see _canonical_asset_name) so the project prefix
+    being present or absent doesn't split one asset into two. A blank asset name
+    (e.g. uncataloged-asset discoveries) falls back to a hash of the enrichment
+    instruction so genuinely distinct finds are not merged.
+    """
+    asset = proposal.get("target_asset") or {}
+    atype = asset.get("type", "")
+    name = _canonical_asset_name(asset.get("name"), atype)
+    gap = (proposal.get("classification") or {}).get("gap_type", "")
+    if name:
+        return (atype, name, gap)
+    instr = proposal.get("enrichment_agent_instruction") or json.dumps(
+        proposal.get("proposed_enrichment", ""), sort_keys=True
+    )
+    return (atype, gap, hashlib.sha1(instr.encode()).hexdigest()[:12])
+
+
+def _proposal_id(proposal: Dict[str, Any]) -> str:
+    """Deterministic, run-stable id derived from a proposal's identity.
+
+    The same gap on the same asset yields the same id across runs (useful for
+    tracking, linking, and idempotent downstream processing). Uses hashlib, NOT
+    the builtin hash() (which is per-process salted and would not be reproducible).
+    """
+    canonical = "|".join(str(part) for part in _proposal_identity(proposal))
+    return "prop_" + hashlib.sha256(canonical.encode()).hexdigest()[:12]
+
+
 def _aggregate_proposals(proposals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Deduplicates proposals across conversations (lightweight aggregation pass).
 
-    Proposals targeting the same asset (type + normalized name) with the same
-    gap_type are treated as the same learning; the highest-confidence instance is
-    kept. A blank asset name (e.g. uncataloged-asset discoveries) falls back to a
-    hash of the enrichment instruction so genuinely distinct finds are not merged.
+    Proposals with the same identity (see _proposal_identity) are treated as the
+    same learning; the highest-confidence instance is kept.
     """
-    import hashlib
-    by_key: Dict[tuple, Dict[str, Any]] = {}
+    by_key: Dict[Tuple, Dict[str, Any]] = {}
     for p in proposals:
-        asset = p.get("target_asset") or {}
-        atype = asset.get("type", "")
-        name = (asset.get("name") or "").strip().lower()
-        gap = (p.get("classification") or {}).get("gap_type", "")
-        if name:
-            key = (atype, name, gap)
-        else:
-            instr = p.get("enrichment_agent_instruction") or json.dumps(
-                p.get("proposed_enrichment", ""), sort_keys=True
-            )
-            key = (atype, gap, hashlib.sha1(instr.encode()).hexdigest()[:12])
+        key = _proposal_identity(p)
         existing = by_key.get(key)
         if existing is None or (p.get("confidence_grade") or 0) > (existing.get("confidence_grade") or 0):
             by_key[key] = p
@@ -678,6 +725,7 @@ async def generate_learnings(
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
     project_id: str = consumer_project,
+    include_ids: bool = False,
 ) -> str:
     """Analyzes agent conversation trajectories and saves enrichment proposals.
 
@@ -692,6 +740,8 @@ async def generate_learnings(
         start_time: ISO 8601 start of an explicit time window.
         end_time: ISO 8601 end of an explicit time window.
         project_id: Google Cloud Project ID.
+        include_ids: When True, attach a deterministic, run-stable ``id`` to each
+            saved proposal (derived from its identity; see _proposal_id).
 
     Returns:
         A human-readable summary of what was analyzed and saved.
@@ -742,6 +792,8 @@ async def generate_learnings(
     results = await asyncio.gather(*[_judge(c, t) for c, t in transcripts.items()])
     raw_proposals = [p for sub in results for p in sub]
     deduped = _aggregate_proposals(raw_proposals)
+    if include_ids:
+        deduped = [{"id": _proposal_id(p), **p} for p in deduped]
 
     save_trajectory_analysis_result(json.dumps({"proposals": deduped}))
 

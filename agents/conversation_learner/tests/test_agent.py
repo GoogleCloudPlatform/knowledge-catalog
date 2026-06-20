@@ -31,10 +31,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from conversation_learner.agent import (  # noqa: E402
     _aggregate_proposals,
+    _canonical_asset_name,
     _conversation_filter,
     _format_message,
     _group_by_conversation,
     _parse_generic_payload,
+    _proposal_id,
     _reasoning_engine_filter,
     _redact_obj,
     _redact_sensitive,
@@ -681,6 +683,99 @@ class TestAggregateProposals(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# _canonical_asset_name
+# ---------------------------------------------------------------------------
+
+class TestCanonicalAssetName(unittest.TestCase):
+
+    def test_drops_hyphenated_project_prefix(self):
+        self.assertEqual(
+            _canonical_asset_name("weiyi-test-dataplex.weiyiaidataset.monthly_cloud_billing.cost"),
+            "weiyiaidataset.monthly_cloud_billing.cost",
+        )
+
+    def test_no_project_unchanged(self):
+        self.assertEqual(
+            _canonical_asset_name("weiyiaidataset.monthly_cloud_billing.cost"),
+            "weiyiaidataset.monthly_cloud_billing.cost",
+        )
+
+    def test_drops_four_part_project_without_hyphen(self):
+        self.assertEqual(_canonical_asset_name("proj.ds.tbl.col"), "ds.tbl.col")
+
+    def test_hyphenated_project_three_part_table(self):
+        self.assertEqual(
+            _canonical_asset_name("dataplex-demo.demo_concord_tables.analysis_x"),
+            "demo_concord_tables.analysis_x",
+        )
+
+    def test_project_plus_dataset(self):
+        self.assertEqual(_canonical_asset_name("weiyi-test-dataplex.weiyi_kb_0"), "weiyi_kb_0")
+
+    def test_single_component_unchanged(self):
+        self.assertEqual(_canonical_asset_name("weiyi_kb_0"), "weiyi_kb_0")
+
+    def test_glossary_term_not_path_stripped(self):
+        self.assertEqual(_canonical_asset_name("foo-bar.baz", "GLOSSARY_TERM"), "foo-bar.baz")
+
+    def test_lowercases_and_handles_empty(self):
+        self.assertEqual(_canonical_asset_name("DS.T.COL"), "ds.t.col")
+        self.assertEqual(_canonical_asset_name(None), "")
+
+
+# ---------------------------------------------------------------------------
+# _proposal_id
+# ---------------------------------------------------------------------------
+
+class TestProposalId(unittest.TestCase):
+
+    def _p(self, name="ds.t.col", gap="BUSINESS_LOGIC_GAP", atype="COLUMN", value="v", instr="do X"):
+        return {
+            "classification": {"detection_signal": "DIRECT_USER_CORRECTION", "gap_type": gap},
+            "target_asset": {"type": atype, "name": name},
+            "proposed_enrichment": {"action": "UPDATE_OVERVIEW_ASPECT", "value": value},
+            "confidence_grade": 0.9,
+            "enrichment_agent_instruction": instr,
+        }
+
+    def test_deterministic_and_prefixed(self):
+        self.assertEqual(_proposal_id(self._p()), _proposal_id(self._p()))
+        self.assertTrue(_proposal_id(self._p()).startswith("prop_"))
+
+    def test_independent_of_proposed_value(self):
+        # The whole point: re-phrased value must NOT change the id.
+        self.assertEqual(
+            _proposal_id(self._p(value="unit is thousands of dollars")),
+            _proposal_id(self._p(value="values are in 1000s of USD")),
+        )
+
+    def test_changes_with_gap_type(self):
+        self.assertNotEqual(
+            _proposal_id(self._p(gap="BUSINESS_LOGIC_GAP")),
+            _proposal_id(self._p(gap="STRUCTURAL_ROUTING_GAP")),
+        )
+
+    def test_changes_with_asset(self):
+        self.assertNotEqual(_proposal_id(self._p(name="ds.t.a")), _proposal_id(self._p(name="ds.t.b")))
+
+    def test_normalizes_asset_name_case(self):
+        self.assertEqual(_proposal_id(self._p(name="DS.T.COL")), _proposal_id(self._p(name="ds.t.col")))
+
+    def test_stable_across_project_prefix(self):
+        # The caveat fix: same asset with vs without the project prefix -> same id.
+        self.assertEqual(
+            _proposal_id(self._p(name="weiyi-test-dataplex.weiyiaidataset.monthly_cloud_billing.cost")),
+            _proposal_id(self._p(name="weiyiaidataset.monthly_cloud_billing.cost")),
+        )
+
+    def test_id_matches_dedup_identity(self):
+        # Two proposals the dedup collapses into one must share the same id.
+        a, b = self._p(value="x", instr="i1"), self._p(value="y", instr="i2")
+        self.assertEqual(_proposal_id(a), _proposal_id(b))
+        self.assertEqual(len(_aggregate_proposals([a, b])), 1)
+
+
+# ---------------------------------------------------------------------------
 # generate_learnings (per-conversation fan-out + dedup orchestration)
 # ---------------------------------------------------------------------------
 
@@ -771,6 +866,31 @@ class TestGenerateLearnings(unittest.TestCase):
             days_ago=7, project_id="test-project",
         ))
         self.assertIn("Unique conversations: 0", result)
+
+    def _run_one(self, mock_logging, mock_judge, include_ids):
+        mock_client = MagicMock()
+        mock_logging.Client.return_value = mock_client
+        mock_logging.DESCENDING = "DESCENDING"
+        mock_client.list_entries.return_value = [_make_log_entry("c1", gen_ai_labels=True)]
+        mock_judge.return_value = [self._proposal()]
+        asyncio.run(generate_learnings(
+            reasoning_engine_id="projects/p/locations/l/reasoningEngines/123",
+            days_ago=7, project_id="test-project", include_ids=include_ids,
+        ))
+        with open("proposal.json") as f:
+            return json.load(f)["proposals"]
+
+    @patch("conversation_learner.agent._judge_conversation_sync")
+    @patch("conversation_learner.agent.cloud_logging")
+    def test_include_ids_adds_id_field(self, mock_logging, mock_judge):
+        proposals = self._run_one(mock_logging, mock_judge, include_ids=True)
+        self.assertTrue(proposals and all(p.get("id", "").startswith("prop_") for p in proposals))
+
+    @patch("conversation_learner.agent._judge_conversation_sync")
+    @patch("conversation_learner.agent.cloud_logging")
+    def test_no_ids_by_default(self, mock_logging, mock_judge):
+        proposals = self._run_one(mock_logging, mock_judge, include_ids=False)
+        self.assertTrue(proposals and all("id" not in p for p in proposals))
 
 
 if __name__ == "__main__":
