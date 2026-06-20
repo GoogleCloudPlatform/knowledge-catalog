@@ -72,6 +72,10 @@ def _conf(p):
     return p.get("confidence_grade") or 0.0
 
 
+def _occ(p):
+    return p.get("occurrence_count") or 1
+
+
 # --- load ---
 proposals_path = rs.DEFAULT_PROPOSALS_PATH
 if not os.path.exists(proposals_path):
@@ -102,7 +106,10 @@ f_status = sb.multiselect("Status", list(rs.STATUSES), default=list(rs.STATUSES)
 f_gap = sb.multiselect("Gap type", gap_opts, default=gap_opts)
 f_sig = sb.multiselect("Detection signal", sig_opts, default=sig_opts)
 f_conf = sb.slider("Min confidence", 0.0, 1.0, 0.0, 0.05)
+max_occ = max((_occ(p) for p in merged), default=1)
+f_min_occ = sb.slider("Min occurrences", 1, max_occ, 1) if max_occ > 1 else 1
 f_query = sb.text_input("🔎 Asset contains")
+sort_by = sb.selectbox("Sort by", ["Occurrences", "Confidence"], index=0)
 
 sb.divider()
 sb.subheader("Bulk action")
@@ -123,10 +130,17 @@ def _visible(p):
             and _gap(p) in f_gap
             and _signal(p) in f_sig
             and _conf(p) >= f_conf
+            and _occ(p) >= f_min_occ
             and f_query.lower() in _asset_name(p).lower())
 
 
-filtered = [p for p in merged if _visible(p)]
+# Sort most-recurring (then highest-confidence) first by default, so high-impact
+# learnings aren't hidden behind the MAX_CARDS cap.
+_SORT_KEYS = {
+    "Occurrences": lambda p: (_occ(p), _conf(p)),
+    "Confidence": lambda p: (_conf(p), _occ(p)),
+}
+filtered = sorted((p for p in merged if _visible(p)), key=_SORT_KEYS[sort_by], reverse=True)
 
 tab_review, tab_analytics = st.tabs(["Review", "Analytics"])
 
@@ -182,8 +196,9 @@ with tab_review:
             act[2].markdown(f"status: **{STATUS_BADGE.get(p['status'], p['status'])}**"
                             + (f" — _{p['review_note']}_" if p.get("review_note") else ""))
     if len(filtered) > MAX_CARDS:
-        st.info(f"Showing the first {MAX_CARDS} of {len(filtered)}. "
-                f"Refine filters or bulk-approve to narrow the queue.")
+        st.info(f"Showing the first {MAX_CARDS} of {len(filtered)} "
+                f"(sorted by {sort_by.lower()}). Refine filters (incl. min "
+                f"occurrences) or bulk-approve to narrow the queue.")
 
 with tab_analytics:
     st.subheader("By status")
