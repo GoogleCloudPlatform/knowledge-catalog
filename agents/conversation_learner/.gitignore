@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 .env
 proposal.json
+reviews.json
+approved_proposals.json

@@ -48,6 +48,28 @@ To attach a deterministic, run-stable `id` to each saved proposal, ask for them 
 
 > **Note on Observability**: The agent retrieves conversations from Cloud Logging using OpenTelemetry trace logs (`gen_ai.client.inference.operation.details`). These logs are only emitted for sessions that ran while **Observability was enabled** on the Reasoning Engine. Sessions started before Observability was activated will not appear.
 
+## Reviewing proposals (human-in-the-loop)
+
+`proposal.json` is a queue of *suggested* enrichments — a human reviews and approves them before the Enrichment Agent acts. A local Streamlit UI provides this step. It reads the JSON files directly (no cloud, no agent runtime needed), so its dependency is kept **separate** from `requirements.txt`:
+
+```bash
+# From the conversation_learner directory
+pip install -r requirements-review.txt
+streamlit run review_app.py
+```
+
+The UI lets you:
+- Filter by status, gap type, detection signal, confidence, and asset name.
+- Approve / reject each proposal, or **bulk-approve** all pending proposals above a confidence threshold.
+- See live counts and an **Analytics** tab (by status / gap type / confidence band).
+- **Export** the approved subset to `approved_proposals.json` — the hand-off the Enrichment Agent consumes.
+
+State is fully local:
+- Decisions are written to `reviews.json`, **keyed by each proposal's stable `id`** — so re-running the agent and regenerating `proposal.json` never clobbers your decisions.
+- If `proposal.json` was generated without ids, the UI computes the same id on the fly (id logic is shared via `proposal_id.py`), so review still works.
+
+> **Productionizing**: this demo keeps review state in local JSON. A hosted, multi-user deployment would move the lifecycle to a transactional store (e.g. Firestore or Cloud SQL) with audit fields (reviewer, timestamp) and RBAC, mirror it to BigQuery for dashboards/analytics, and add content-drift re-review. Out of scope here.
+
 ## Running Tests
 
 ```bash
