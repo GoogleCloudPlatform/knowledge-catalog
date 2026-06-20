@@ -60,6 +60,31 @@ export class CatalogSync {
     }
   }
 
+  async reference(): Promise<SyncResult> {
+    try {
+      const entries = this._snapshot.manifest!.referenceManifest!.source.entries(this._catalog.context);
+      
+      for await (const entry of entries) {
+        if (this._snapshot.referenceEntryTypes.size && !this._snapshot.referenceEntryTypes.has(entry.entryType)) {
+          continue;
+        }
+
+        const nameParts = entry.name.split('/');
+        const res = await this._catalog.lookupEntry(nameParts[1], nameParts[3], entry.name,
+                                                    [...this._snapshot.referenceAspectTypes.keys()]);
+        if (res.status != 200 || !res.result) {
+          continue;
+        }
+
+        await this._snapshot._storeEntry(res.result, true);
+      }
+      return { success: true };
+    }
+    catch (e: any) {
+      return { success: false, details: e.message };
+    }
+  }
+
   // Pushes local metadata to the Catalog service to publish/deploy it.
   async push(options?: { force?: boolean, validateOnly?: boolean; }): Promise<SyncResult> {
     const entries = await this._snapshot.listEntries();
