@@ -1,6 +1,6 @@
 # Stack Overflow public dataset sample
 
-Runs the enrichment agent against the public
+Runs the reference agent against the public
 `bigquery-public-data.stackoverflow` dataset (a mirror of the Stack
 Exchange Data Dump for Stack Overflow — `posts_questions`,
 `posts_answers`, `users`, `votes`, `comments`, `badges`, `tags`,
@@ -34,7 +34,7 @@ updates more than one concept per fetched page.
 ## Run
 
 ```
-.venv/bin/python -m enrichment_agent enrich \
+.venv/bin/python -m reference_agent enrich \
     --source bq \
     --dataset bigquery-public-data.stackoverflow \
     --web-seed-file samples/stackoverflow/seeds.txt \

@@ -7,7 +7,7 @@ from textwrap import dedent
 
 import pytest
 
-from enrichment_agent.viewer.generator import generate_visualization
+from reference_agent.viewer.generator import generate_visualization
 
 
 def _write(path: Path, body: str) -> None:

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from enrichment_agent.bundle.document import OKFDocument, OKFDocumentError
+from reference_agent.bundle.document import OKFDocument, OKFDocumentError
 
 _INDEX_NAME = "index.md"
 _LINK_RE = re.compile(r"\]\(([^)\s]+\.md)(?:#[A-Za-z0-9_\-]*)?\)")

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from enrichment_agent.sources.base import Source
+from reference_agent.sources.base import Source
 
 
 @dataclass

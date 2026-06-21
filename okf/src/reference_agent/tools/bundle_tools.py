@@ -4,13 +4,13 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from enrichment_agent.bundle.document import (
+from reference_agent.bundle.document import (
     REQUIRED_FRONTMATTER_KEYS,
     OKFDocument,
     OKFDocumentError,
 )
-from enrichment_agent.bundle.paths import concept_id_to_path, parse_concept_id
-from enrichment_agent.tools.context import get_context, is_web_pass
+from reference_agent.bundle.paths import concept_id_to_path, parse_concept_id
+from reference_agent.tools.context import get_context, is_web_pass
 
 _PREFERRED_KEY_ORDER = ("type", "resource", "title", "description", "tags", "timestamp")
 

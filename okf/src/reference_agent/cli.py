@@ -6,10 +6,10 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
-from enrichment_agent.agent import DEFAULT_MODEL
-from enrichment_agent.bundle.paths import parse_concept_id
-from enrichment_agent.runner import EnrichmentRunner
-from enrichment_agent.sources.bigquery import BigQuerySource
+from reference_agent.agent import DEFAULT_MODEL
+from reference_agent.bundle.paths import parse_concept_id
+from reference_agent.runner import ReferenceRunner
+from reference_agent.sources.bigquery import BigQuerySource
 
 _SOURCES = ("bq",)
 
@@ -57,7 +57,7 @@ def _dedup_preserve_order(items: list[str]) -> list[str]:
 
 
 def _parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="enrichment-agent")
+    p = argparse.ArgumentParser(prog="reference-agent")
     sub = p.add_subparsers(dest="command", required=True)
 
     enrich = sub.add_parser(
@@ -168,13 +168,13 @@ def main(argv: list[str] | None = None) -> int:
         format="%(message)s",
     )
     if getattr(args, "verbose", False):
-        logging.getLogger("enrichment_agent").setLevel(logging.DEBUG)
+        logging.getLogger("reference_agent").setLevel(logging.DEBUG)
     # Quiet chatty third-party loggers regardless of mode.
     for noisy in ("google", "google_genai", "google_adk", "urllib3", "httpx"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     if args.command == "visualize":
-        from enrichment_agent.viewer import generate_visualization
+        from reference_agent.viewer import generate_visualization
         out = args.out or (args.bundle / "viz.html")
         stats = generate_visualization(args.bundle, out, bundle_name=args.name)
         print(
@@ -193,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
             allowed_hosts = {urlparse(s).netloc for s in seeds if urlparse(s).netloc}
             if args.web_allowed_host:
                 allowed_hosts |= set(args.web_allowed_host)
-        runner = EnrichmentRunner(
+        runner = ReferenceRunner(
             source=source,
             bundle_root=args.out,
             model=args.model,

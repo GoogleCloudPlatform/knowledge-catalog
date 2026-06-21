@@ -5,7 +5,7 @@ from typing import Any
 
 from google.cloud import bigquery
 
-from enrichment_agent.sources.base import ConceptRef, Source
+from reference_agent.sources.base import ConceptRef, Source
 
 _SHARD_SUFFIX_RE = re.compile(r"^(?P<prefix>.+?_)(?P<shard>\d{6,8})$")
 

@@ -4,8 +4,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Callable
 
-from enrichment_agent.bundle.document import OKFDocument
-from enrichment_agent.bundle.synthesizer import synthesize_description
+from reference_agent.bundle.document import OKFDocument
+from reference_agent.bundle.synthesizer import synthesize_description
 
 _INDEX_FILE = "index.md"
 _FALLBACK_MODEL = "gemini-flash-latest"

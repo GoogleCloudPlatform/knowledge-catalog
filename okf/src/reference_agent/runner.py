@@ -11,10 +11,10 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from enrichment_agent.agent import DEFAULT_MODEL, build_bq_agent, build_web_agent
-from enrichment_agent.bundle.index import regenerate_indexes
-from enrichment_agent.sources.base import ConceptRef, Source
-from enrichment_agent.tools.context import (
+from reference_agent.agent import DEFAULT_MODEL, build_bq_agent, build_web_agent
+from reference_agent.bundle.index import regenerate_indexes
+from reference_agent.sources.base import ConceptRef, Source
+from reference_agent.tools.context import (
     clear_web_state,
     set_context,
     set_web_state,
@@ -22,8 +22,8 @@ from enrichment_agent.tools.context import (
 
 log = logging.getLogger(__name__)
 
-_BQ_APP_NAME = "enrichment_agent_bq"
-_WEB_APP_NAME = "enrichment_agent_web"
+_BQ_APP_NAME = "reference_agent_bq"
+_WEB_APP_NAME = "reference_agent_web"
 _USER_ID = "enricher"
 
 _COMPACT_STR_LIMIT = 120
@@ -152,7 +152,7 @@ def _build_web_user_message(
     return types.Content(role="user", parts=[types.Part(text=text)])
 
 
-class EnrichmentRunner:
+class ReferenceRunner:
     def __init__(
         self,
         source: Source,

@@ -33,7 +33,7 @@ def _build_mock_client(table_ids, table_objects_by_id):
     return client
 
 
-@patch("enrichment_agent.sources.bigquery.bigquery.Client")
+@patch("reference_agent.sources.bigquery.bigquery.Client")
 def test_wildcard_sharded_tables_collapse_to_one_concept(client_cls):
     table_ids = [
         "events_20210101",
@@ -59,7 +59,7 @@ def test_wildcard_sharded_tables_collapse_to_one_concept(client_cls):
     }
     client_cls.return_value = _build_mock_client(table_ids, table_objects)
 
-    from enrichment_agent.sources.bigquery import BigQuerySource
+    from reference_agent.sources.bigquery import BigQuerySource
 
     src = BigQuerySource(dataset="proj.dset")
     concepts = src.list_concepts()
@@ -77,7 +77,7 @@ def test_wildcard_sharded_tables_collapse_to_one_concept(client_cls):
     assert family.hint["last_shard"] == "events_20210103"
 
 
-@patch("enrichment_agent.sources.bigquery.bigquery.Client")
+@patch("reference_agent.sources.bigquery.bigquery.Client")
 def test_sample_rows_uses_list_rows_for_table(client_cls):
     table_objects = {
         "users": SimpleNamespace(table_type="TABLE"),
@@ -88,7 +88,7 @@ def test_sample_rows_uses_list_rows_for_table(client_cls):
     ]
     client_cls.return_value = client
 
-    from enrichment_agent.sources.bigquery import BigQuerySource
+    from reference_agent.sources.bigquery import BigQuerySource
 
     src = BigQuerySource(dataset="proj.dset")
     ref = next(c for c in src.list_concepts() if c.id == ("tables", "users"))
@@ -99,7 +99,7 @@ def test_sample_rows_uses_list_rows_for_table(client_cls):
     client.query.assert_not_called()
 
 
-@patch("enrichment_agent.sources.bigquery.bigquery.Client")
+@patch("reference_agent.sources.bigquery.bigquery.Client")
 def test_sample_rows_falls_back_to_query_for_view(client_cls):
     table_objects = {
         "user_summary": SimpleNamespace(table_type="VIEW"),
@@ -112,7 +112,7 @@ def test_sample_rows_falls_back_to_query_for_view(client_cls):
     client.query.return_value = query_job
     client_cls.return_value = client
 
-    from enrichment_agent.sources.bigquery import BigQuerySource
+    from reference_agent.sources.bigquery import BigQuerySource
 
     src = BigQuerySource(dataset="proj.dset")
     ref = next(c for c in src.list_concepts() if c.id == ("tables", "user_summary"))
@@ -126,7 +126,7 @@ def test_sample_rows_falls_back_to_query_for_view(client_cls):
     assert "LIMIT 4" in sql
 
 
-@patch("enrichment_agent.sources.bigquery.bigquery.Client")
+@patch("reference_agent.sources.bigquery.bigquery.Client")
 def test_read_concept_returns_schema_and_partitioning(client_cls):
     table_ids = ["events_20210103"]
     inner = [
@@ -155,7 +155,7 @@ def test_read_concept_returns_schema_and_partitioning(client_cls):
     }
     client_cls.return_value = _build_mock_client(table_ids, table_objects)
 
-    from enrichment_agent.sources.bigquery import BigQuerySource
+    from reference_agent.sources.bigquery import BigQuerySource
 
     src = BigQuerySource(dataset="proj.dset")
     family = next(c for c in src.list_concepts() if c.id == ("tables", "events_"))

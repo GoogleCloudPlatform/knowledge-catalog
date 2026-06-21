@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from enrichment_agent.bundle.paths import parse_concept_id
-from enrichment_agent.tools.context import get_context
+from reference_agent.bundle.paths import parse_concept_id
+from reference_agent.tools.context import get_context
 
 
 def _ref_to_dict(ref) -> dict[str, Any]:
