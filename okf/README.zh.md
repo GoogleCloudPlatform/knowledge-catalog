@@ -1,116 +1,66 @@
-# Open Knowledge Format (OKF)
+# 开放知识格式 (OKF)
 
-### 📖 [Read the Open Knowledge Format v0.1 specification → SPEC.md](SPEC.md)
+[🇺🇸 English](./README.md) | [🇨🇳 中文](./README.zh.md)
 
-> **This repository is primarily about the [Open Knowledge Format
-> (OKF)](SPEC.md).**
+---
+
+### 📖 [阅读 OKF v0.1 规范 → SPEC.zh.md](SPEC.zh.md)
+
+> **本仓库主要关于 [开放知识格式 (OKF)](SPEC.zh.md)。**
 >
-> OKF is a **universal, vendor-neutral format** for representing knowledge
-> as plain markdown files with YAML frontmatter. It is **not tied to any
-> particular agent, framework, model provider, or serving system**. The
-> goal is simple:
+> OKF 是一种**通用、厂商中立的格式**，用于将知识表示为
+> 带 YAML frontmatter 的纯 Markdown 文件。它**不绑定任何特定的智能体、框架、模型提供商或服务系统**。目标很简单：
 >
-> - **Anyone can produce** OKF — humans authoring by hand, agents built on
->   any framework (Google ADK, LangChain, custom), export pipelines from
->   existing catalogs (Dataplex, Unity Catalog, Collibra, …), or scripts
->   walking a database.
-> - **Anyone can serve and consume** OKF — a static file server, a
->   knowledge-management UI (Obsidian, Notion, MkDocs), an LLM loading
->   files into context, a search index, or a graph viewer like the one
->   bundled in this repo.
+> - **任何人都可以生产** OKF —— 人工手写的、基于任何框架（Google ADK、LangChain、自定义）构建的智能体、从现有目录（Dataplex、Unity Catalog、Collibra 等）导出的管道，或遍历数据库的脚本。
+> - **任何人都可以服务和消费** OKF —— 静态文件服务器、知识管理 UI（Obsidian、Notion、MkDocs）、加载文件到上下文的 LLM、搜索索引，或像本仓库中捆绑的那个图谱查看器。
 >
-> The agent below is a **proof of concept** demonstrating *one* way to
-> produce OKF bundles automatically. The format itself is the
-> contribution; this agent and the visualizer exist to make the format
-> tangible at both ends — production and consumption.
+> 下面的智能体是一个**概念验证**，演示了自动生产 OKF 捆绑包的*一种*方式。格式本身是贡献；这个智能体和可视化工具的存在是为了让格式在生产和消费两端都变得具体。
 >
-> **See OKF in practice** — three ready-to-browse bundles produced by this
-> agent, checked into [`bundles/`](bundles/):
+> **查看实践中的 OKF** —— 三个由这个智能体生产的、可以直接浏览的捆绑包，签入到 [`bundles/`](bundles/)：
 >
-> - [`bundles/ga4/`](bundles/ga4/) — GA4 e-commerce dataset
+> - [`bundles/ga4/`](bundles/ga4/) — GA4 电商数据集
 >   ([viz.html](bundles/ga4/viz.html))
 > - [`bundles/stackoverflow/`](bundles/stackoverflow/) — Stack Overflow
->   public dataset ([viz.html](bundles/stackoverflow/viz.html))
-> - [`bundles/crypto_bitcoin/`](bundles/crypto_bitcoin/) — Bitcoin
->   blocks/transactions ([viz.html](bundles/crypto_bitcoin/viz.html))
+>   公共数据集 ([viz.html](bundles/stackoverflow/viz.html))
+> - [`bundles/crypto_bitcoin/`](bundles/crypto_bitcoin/) — 比特币
+>   区块/交易 ([viz.html](bundles/crypto_bitcoin/viz.html))
 
-## Why OKF?
+## 为什么需要 OKF？
 
-OKF represents catalog knowledge as plain markdown files with YAML
-frontmatter, organized in a directory hierarchy. That choice unlocks a few
-properties that are hard to get from a service-owned metadata store:
+OKF 将目录知识表示为带 YAML frontmatter 的纯 Markdown 文件，按目录层级组织。这个选择解锁了一些从服务拥有的元数据存储中难以获得的特性：
 
-- **Human- and agent-readable.** No SDK or query language stands between a
-  reader and the content. An engineer can `cat` a concept; an LLM can ingest
-  it verbatim into context.
-- **Version-controllable out of the box.** Bundles live in git. Pull
-  requests, line-by-line diffs, blame, and review workflows just work —
-  knowledge curation becomes a normal software-engineering activity.
-- **Portable and lock-in free.** A bundle is a directory. Ship it as a
-  tarball, host it in any repo, mount it from any filesystem, or sync it to
-  any system that speaks files. No proprietary API stands between you and
-  your metadata.
-- **Mixes structured and unstructured data deliberately.** Use frontmatter
-  for the few fields you want to query, filter, or index on (`type`,
-  `resource`, `tags`, `timestamp`); use the markdown body for the prose,
-  schemas, and example queries that LLMs and humans actually read.
-- **Minimally opinionated, freely extensible.** A small set of required
-  keys ensures interoperability, but bundles can carry arbitrary extra
-  frontmatter keys and arbitrary body sections without breaking
-  consumers.
-- **Composes with existing tooling.** Many knowledge tools — Notion,
-  Obsidian, MkDocs, Hugo, Jekyll — already speak markdown plus YAML
-  frontmatter, so bundles can be browsed, edited, or rendered without
-  custom UI.
-- **Progressive disclosure built in.** Auto-generated `index.md` files
-  let an agent or human navigate the hierarchy one level at a time
-  instead of loading the entire bundle into context.
-- **Graph-shaped, not just tree-shaped.** Concepts link to each other via
-  normal markdown links, expressing relationships richer than the
-  parent/child implied by the directory layout.
+- **对人和智能体都可读。** 在读者和内容之间没有任何 SDK 或查询语言。工程师可以 `cat` 一个概念；LLM 可以将其逐字摄入上下文。
+- **开箱即用的版本控制。** 捆绑包存放在 git 中。拉取请求、逐行差异、追溯和审查工作流都能正常工作 —— 知识策展变成了普通的软件工程活动。
+- **可移植且无锁定。** 捆绑包是一个目录。将其作为 tarball 分发，托管在任何仓库中，从任何文件系统挂载，或同步到任何支持文件的系统。在你的元数据和你之间没有任何专有 API。
+- **刻意混合结构化和非结构化数据。** 使用 frontmatter 来存储你想要查询、过滤或索引的少数字段（`type`、`resource`、`tags`、`timestamp`）；使用 Markdown 正文来存储散文、模式和示例查询，这些才是 LLM 和人类实际阅读的内容。
+- **最小限度主观臆断，自由可扩展。** 一小套必需键确保了互操作性，但捆绑包可以携带任意额外的 frontmatter 键和任意正文章节，而不会破坏消费者。
+- **与现有工具组合。** 许多知识工具 —— Notion、Obsidian、MkDocs、Hugo、Jekyll —— 已经支持 Markdown 加 YAML frontmatter，因此捆绑包可以在没有自定义 UI 的情况下被浏览、编辑或渲染。
+- **内置渐进式展开。** 自动生成的 `index.md` 文件让智能体或人类一次浏览一个层级的目录，而不是将整个捆绑包加载到上下文中。
+- **图谱形状，而不仅仅是树形。** 概念通过普通 Markdown 链接相互链接，表达比目录布局所隐含的父/子更丰富的关系。
 
-The net effect is that reference agents, consumption agents, and humans
-collaborate on the same artifacts in the same way they already collaborate
-on source code.
+最终效果是，参考智能体、消费智能体和人类以他们已经在源代码上协作的相同方式，在同一工件上协作。
 
-## Install
+## 安装
 
-```
+```bash
 python3.13 -m venv .venv
 .venv/bin/pip install --index-url https://pypi.org/simple/ -e .[dev]
 ```
 
-## Credentials
+## 凭证
 
-- BigQuery: `gcloud auth application-default login` plus a project for billing
-  (`gcloud config set project <id>`). Public datasets are readable, but the
-  caller's project is billed for query bytes.
-- Gemini: set `GEMINI_API_KEY` (AI Studio) **or** use Vertex AI by setting
-  `GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_CLOUD_PROJECT=<id>`, and
-  `GOOGLE_CLOUD_LOCATION=<region>`.
+- **BigQuery：** `gcloud auth application-default login` 加上用于计费的项目（`gcloud config set project <id>`）。公共数据集是可读的，但调用者的项目会按查询字节数计费。
+- **Gemini：** 设置 `GEMINI_API_KEY`（AI Studio）**或者** 通过设置 `GOOGLE_GENAI_USE_VERTEXAI=true`、`GOOGLE_CLOUD_PROJECT=<id>` 和 `GOOGLE_CLOUD_LOCATION=<region>` 来使用 Vertex AI。
 
-## How the reference agent works
+## 参考智能体如何工作
 
-The reference agent runs in two passes. The **BQ pass** writes one OKF
-doc per concept the source advertises, using BigQuery metadata alone.
-The **web pass** then runs the LLM as its own crawler: it receives a
-list of seed URLs (provided via `--web-seed` or `--web-seed-file`),
-fetches the seeds via the `fetch_url` tool, and decides which outbound
-links are worth following based on whether they look like authoritative
-documentation for the existing concepts. For each page it fetches, the
-agent chooses to (a) enrich one or more existing concept docs, (b) mint
-a standalone `references/<slug>` doc, or (c) skip. A hard
-`--web-max-pages` cap and a same-domain allowed-hosts filter
-(configurable via `--web-allowed-host`) are enforced inside the tool,
-so the agent cannot overrun. Use `--no-web` to skip the web pass.
+参考智能体分两轮运行。**BQ 轮**为每个源通告的概念写入一个 OKF 文档，仅使用 BigQuery 元数据。**Web 轮**然后让 LLM 作为自己的爬虫：它接收一个种子 URL 列表（通过 `--web-seed` 或 `--web-seed-file` 提供），通过 `fetch_url` 工具获取种子，并根据它们是否看起来像现有概念的权威文档来决定哪些出站链接值得跟踪。对于它获取的每个页面，智能体选择 (a) 丰富一个或多个现有概念文档，(b) 铸造一个独立的 `references/<slug>` 文档，或 (c) 跳过。在工具内部强制执行硬性的 `--web-max-pages` 上限和同域允许主机过滤器（可通过 `--web-allowed-host` 配置），因此智能体不会 overrun。使用 `--no-web` 跳过 Web 轮。
 
-## Run
+## 运行
 
-Minimum invocation — point at a BigQuery dataset and a bundle output
-directory. Seeds for the web pass are explicit; omit them (or pass
-`--no-web`) to run BQ-only:
+最小调用 —— 指向一个 BigQuery 数据集和一个捆绑包输出目录。Web 轮的种子是显式的；省略它们（或传递 `--no-web`）以仅运行 BQ：
 
-```
+```bash
 .venv/bin/python -m reference_agent enrich \
     --source bq \
     --dataset <project>.<dataset> \
@@ -118,95 +68,67 @@ directory. Seeds for the web pass are explicit; omit them (or pass
     --out ./bundles/<name>
 ```
 
-Iterate on a single concept by adding `--concept <type>/<name>` (e.g.
-`--concept tables/events_`); repeatable.
+通过添加 `--concept <type>/<name>`（例如 `--concept tables/events_`）来迭代单个概念；可重复。
 
-## Samples
+## 示例
 
-Each sample pairs a **recipe** (`samples/<name>/`, with the seed URLs and
-exact `enrich` command) with the **produced bundle** (`bundles/<name>/`)
-that the recipe generated. Open the recipe to reproduce; open the bundle
-to browse the result directly.
+每个示例将一个**配方**（`samples/<name>/`，包含种子 URL 和确切的 `enrich` 命令）与配方生成的**生产的捆绑包**（`bundles/<name>/`）配对。打开配方以重现；打开捆绑包以直接浏览结果：
 
-- **GA4 Google Merchandise Store** — public e-commerce dataset, seeded
-  with canonical GA4 BigQuery Export documentation URLs.
-  · [recipe](samples/ga4_merch_store/README.md)
-  · [bundle](bundles/ga4/)
+- **GA4 Google Merchandise Store** — 公共电商数据集，用规范的 GA4 BigQuery Export 文档 URL 作为种子。
+  · [配方](samples/ga4_merch_store/README.md)
+  · [捆绑包](bundles/ga4/)
   · [viz.html](bundles/ga4/viz.html)
-- **Stack Overflow** — public dataset (mirror of the Stack Exchange Data
-  Dump), seeded with the community's canonical schema references.
-  Exercises multi-concept enrichment from cross-cutting docs pages.
-  · [recipe](samples/stackoverflow/README.md)
-  · [bundle](bundles/stackoverflow/)
+- **Stack Overflow** — 公共数据集（Stack Exchange 数据转储的镜像），用社区规范的模式引用作为种子。练习来自横切文档页面的多概念丰富。
+  · [配方](samples/stackoverflow/README.md)
+  · [捆绑包](bundles/stackoverflow/)
   · [viz.html](bundles/stackoverflow/viz.html)
-- **Bitcoin (crypto)** — public dataset (blocks, transactions, inputs,
-  outputs) from the `bitcoin-etl` pipeline. Exercises cross-table
-  foreign-key relationships in prose.
-  · [recipe](samples/crypto_bitcoin/README.md)
-  · [bundle](bundles/crypto_bitcoin/)
+- **Bitcoin (crypto)** — 来自 `bitcoin-etl` 管道的公共数据集（区块、交易、输入、输出）。练习散文中的跨表外键关系。
+  · [配方](samples/crypto_bitcoin/README.md)
+  · [捆绑包](bundles/crypto_bitcoin/)
   · [viz.html](bundles/crypto_bitcoin/viz.html)
 
-## Visualize
+## 可视化
 
-The `visualize` subcommand renders any OKF bundle as a **self-contained
-interactive HTML file** — one file, no backend, no install on the
-viewing side. Open it in any modern browser, share it as an artifact,
-host it on a static file server, or commit it next to the bundle (as
-this repo does).
+`visualize` 子命令将任何 OKF 捆绑包渲染为**自包含的交互式 HTML 文件** —— 一个文件，在查看端无需后端、无需安装。在任何现代浏览器中打开它，将其作为工件共享，将其托管在静态文件服务器上，或将其与捆绑包一起签入（就像本仓库所做的那样）。
 
-The viewer is itself a proof-of-concept *consumer* of OKF, mirroring
-the way the reference agent is a proof-of-concept *producer*. OKF
-bundles can be consumed by anything that reads markdown; this is just
-one shape.
+查看器本身就是一个 OKF 的*消费端*概念验证，就像参考智能体是*生产端*概念验证一样。OKF 捆绑包可以被任何读取 Markdown 的东西消费；这只是一种形式。
 
-### What it shows
+### 它显示什么
 
-- A **force-directed graph** of every concept in the bundle, with
-  colored nodes by type (datasets, tables, references, …) and directed
-  edges drawn from each cross-link in the markdown bodies.
-- A **detail panel** for the selected concept showing its frontmatter
-  (description, resource link, tags) and its rendered markdown body —
-  with internal `[…](/path/to/concept.md)` links rewired to navigate
-  within the viewer instead of following the path.
-- A **"Cited by" backlinks** list under each concept (computed from the
-  reverse of the link graph).
-- A **search box** (matches title, concept id, and tags), a **type
-  filter**, and switchable graph layouts (cose / concentric /
-  breadth-first / circle / grid).
+- 捆绑包中每个概念的**力导向图谱**，按类型（数据集、表、引用等）着色的节点，以及从 Markdown 正文中的每个交叉链接绘制的有向边。
+- 所选概念的**详情面板**，显示其 frontmatter（描述、资源链接、标签）及其渲染的 Markdown 正文 —— 内部的 `[…](/path/to/concept.md)` 链接被重新接线以在查看器内导航，而不是跟随路径。
+- 每个概念下的**"被引用"反向链接**列表（从链接图谱的反向计算）。
+- **搜索框**（匹配标题、概念 ID 和标签）、**类型过滤器**，以及可切换的图谱布局（cose / concentric / breadthfirst / circle / grid）。
 
-### Generate
+### 生成
 
-```
+```bash
 .venv/bin/python -m reference_agent visualize --bundle ./bundles/<name>
 ```
 
-That writes `bundles/<name>/viz.html`. Flags:
+这会写入 `bundles/<name>/viz.html`。标志：
 
-| Flag           | Default                | Description                                 |
+| 标志           | 默认                | 描述                                 |
 |----------------|------------------------|---------------------------------------------|
-| `--bundle`     | *(required)*           | Bundle root directory.                      |
-| `--out`        | `<bundle>/viz.html`    | Output HTML path.                           |
-| `--name`       | bundle directory name  | Display name shown in the viewer header.    |
+| `--bundle`     | *(必需)*           | 捆绑包根目录。                      |
+| `--out`        | `<bundle>/viz.html`    | 输出 HTML 路径。                           |
+| `--name`       | 捆绑包目录名  | 查看器标题中显示的显示名称。    |
 
-Example, writing the output somewhere else and overriding the header:
+示例，将输出写到别处并覆盖标题：
 
-```
+```bash
 .venv/bin/python -m reference_agent visualize \
     --bundle ./bundles/crypto_bitcoin \
     --out /tmp/btc.html \
     --name "Bitcoin OKF"
 ```
 
-### How it's built
+### 它是如何构建的
 
-The HTML embeds the bundle as a JSON blob and uses
-[Cytoscape.js](https://js.cytoscape.org/) for the graph and
-[marked](https://marked.js.org/) for in-browser markdown rendering,
-both loaded from a CDN. No data leaves the page; the bundle is parsed
-once at generation time and serialized into the file.
+HTML 将捆绑包作为 JSON blob 嵌入，并使用 [Cytoscape.js](https://js.cytoscape.org/) 处理图谱，使用 [marked](https://marked.js.org/) 进行浏览器内 Markdown 渲染，两者都从 CDN 加载。没有数据离开页面；捆绑包在生成时解析一次并序列化到文件中。
 
-## Tests
+## 测试
 
-```
+```bash
 .venv/bin/pytest
 ```

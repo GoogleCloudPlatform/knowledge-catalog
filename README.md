@@ -1,3 +1,5 @@
+[🇺🇸 English](./README.md) | [🇨🇳 中文](./README.zh.md)
+
 # Knowledge Catalog
 
 [Knowledge Catalog](https://cloud.google.com/products/knowledge-catalog) (formerly Dataplex), is an AI-powered data catalog and metadata management platform. It provides a dynamic knowledge graph of all your data, structured and unstructured, to provide semantics and business context to AI agents
