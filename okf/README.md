@@ -1,4 +1,4 @@
-# Reference Agent — an OKF proof of concept
+# Open Knowledge Format (OKF)
 
 ### 📖 [Read the Open Knowledge Format v0.1 specification → SPEC.md](SPEC.md)
 
@@ -33,14 +33,6 @@
 >   public dataset ([viz.html](bundles/stackoverflow/viz.html))
 > - [`bundles/crypto_bitcoin/`](bundles/crypto_bitcoin/) — Bitcoin
 >   blocks/transactions ([viz.html](bundles/crypto_bitcoin/viz.html))
-
-A reference agent that ingests metadata from a pluggable source and emits an
-**[OKF](SPEC.md) bundle**: a directory of markdown documents with YAML
-frontmatter that catalog tools, downstream agents, and humans can all read.
-
-Built on the Google [Agent Development Kit](https://adk.dev/) with Gemini as the
-model backend. BigQuery is the first source implementation; the
-`Source` interface is designed to grow.
 
 ## Why OKF?
 
