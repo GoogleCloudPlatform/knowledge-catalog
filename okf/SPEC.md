@@ -76,8 +76,10 @@ sense for the knowledge being captured.
 
 ```
 path/to/bundle/
+├── .okfignore                    # Optional. Marks .md files that are not concepts (§3.2).
 ├── index.md                      # Optional. Directory listing for progressive disclosure.
 ├── log.md                        # Optional. Chronological history of updates.
+├── README.md                     # Non-concept file; listed in .okfignore.
 ├── <concept>.md                  # A concept at the bundle root.
 └── <subdirectory>/               # Subdirectories organize concepts into groups.
     ├── index.md
@@ -94,31 +96,75 @@ A bundle MAY be distributed as:
 
 ### 3.1 Reserved filenames
 
-The following filenames have defined meaning at any level of the
-hierarchy and MUST NOT be used for concept documents:
+Two filenames have defined OKF meaning at any level of the hierarchy
+and MUST NOT be used for concept documents:
 
-| Filename             | Purpose                                      |
-|----------------------|----------------------------------------------|
-| `index.md`           | Directory listing. See §6.                   |
-| `log.md`             | Update history. See §7.                      |
-| `README.md`          | Human-oriented readme. Ignored by consumers. |
-| `LICENSE.md`         | License text. Ignored by consumers.          |
-| `CONTRIBUTING.md`    | Contribution guide. Ignored by consumers.    |
-| `CODE_OF_CONDUCT.md` | Community health file. Ignored by consumers. |
-| `SECURITY.md`        | Community health file. Ignored by consumers. |
-| `CHANGELOG.md`       | Changelog. Ignored by consumers.             |
-| `CLAUDE.md`          | Agent instructions. Ignored by consumers.    |
-| `AGENTS.md`          | Agent instructions. Ignored by consumers.    |
+| Filename   | Purpose                    |
+|------------|----------------------------|
+| `index.md` | Directory listing. See §6. |
+| `log.md`   | Update history. See §7.    |
 
-All other `.md` files are concept documents. Reserved files other than
-`index.md` and `log.md` carry no OKF meaning: they are neither required
-to have frontmatter nor parsed as concepts, and exist so that an OKF
-bundle can coexist with ordinary repository and agent conventions.
+Every other `.md` file is a concept document and MUST carry frontmatter
+(§4), unless it is excluded by `.okfignore` (§3.2). A bundle can still
+ship ordinary repository and agent files — `README.md`, `LICENSE.md`,
+`CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md`, and the like — by
+listing them in `.okfignore`; they then carry no OKF meaning and are
+neither required to have frontmatter nor parsed as concepts.
 
 Tags themselves remain a first-class concept — see the `tags`
 frontmatter field in §4.1. OKF does not specify a separate file format
 for aggregating documents by tag; producers that want a tag-browsing
 view can synthesize one at consumption time by scanning frontmatter.
+
+### 3.2 The `.okfignore` file
+
+A bundle MAY include an `.okfignore` file at its root. It lists the
+`.md` files that are **not** concept documents, so a bundle can ship
+readmes, licenses, changelogs, agent instructions, and similar files
+without their being parsed as concepts — and without OKF maintaining a
+fixed list of such names.
+
+`.okfignore` is a UTF-8 text file, one pattern per line:
+
+- Blank lines, and lines whose first non-space character is `#`, are
+  ignored (comments).
+- Every other line is a glob pattern matched against the path of a
+  `.md` file **relative to the bundle root**, using this
+  gitignore-style subset:
+  - `*` matches any run of characters except `/`.
+  - `?` matches any single character except `/`.
+  - `**` matches any number of path segments, including none.
+  - A pattern containing no `/` matches a file's basename at any depth
+    (`README.md` matches both `/README.md` and `/docs/README.md`).
+  - A pattern beginning with `/` is anchored to the bundle root
+    (`/README.md` matches only the root file).
+
+A `.md` file whose bundle-relative path matches any pattern is
+**excluded**: it carries no OKF meaning and is neither required to have
+frontmatter nor parsed as a concept. Patterns that match `index.md` or
+`log.md` have no effect — those names are reserved by §3.1.
+
+A `.md` file that is neither reserved (§3.1) nor excluded here is a
+concept document and MUST carry frontmatter, so a validator surfaces a
+stray or unfinished `.md` rather than silently dropping it (see §9).
+Negation patterns (`!`) and per-directory `.okfignore` files are not
+defined in v0.1; a future minor version MAY add them.
+
+A typical `.okfignore`:
+
+```text
+# Repository and community-health files
+README.md
+LICENSE.md
+CHANGELOG.md
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+SECURITY.md
+
+# Agent instructions
+CLAUDE.md
+AGENTS.md
+```
 
 ---
 
@@ -399,8 +445,12 @@ first-class OKF concepts.
 
 A bundle is **conformant** with OKF v0.1 if:
 
-1. Every concept document (every `.md` file that is not a reserved
-   filename per §3.1) contains a parseable YAML frontmatter block.
+1. Every concept document contains a parseable YAML frontmatter block.
+   A concept document is any `.md` file that is neither a reserved
+   filename (§3.1) nor excluded by `.okfignore` (§3.2). A `.md` file
+   that is neither reserved nor excluded yet has no parseable
+   frontmatter is **non-conformant**: a validator MUST surface it
+   rather than silently ignoring it.
 2. Every frontmatter block contains a non-empty `type` field.
 3. When present, an `index.md` contains no frontmatter except as
    permitted in §6, and a `log.md` uses ISO 8601 `YYYY-MM-DD` date
@@ -478,6 +528,8 @@ out-of-band (e.g. signed commits or tags, transport-level trust).
 
 ```
 my_bundle/
+├── .okfignore
+├── README.md
 ├── index.md
 ├── datasets/
 │   ├── index.md
@@ -486,6 +538,12 @@ my_bundle/
     ├── index.md
     ├── orders.md
     └── customers.md
+```
+
+`.okfignore`:
+
+```text
+README.md
 ```
 
 `datasets/sales.md`:
