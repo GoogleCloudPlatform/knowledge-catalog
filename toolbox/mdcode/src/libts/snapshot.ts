@@ -155,7 +155,7 @@ export class CatalogSnapshot {
             throw new Error(`Unable to load type information for aspect type ${requiredAspect.type}`);
           }
           this._aspectTypes.set(res.result.name, res.result);
-          this._aspectTypes.set(`${parts[0]}.${parts[3]}.${parts[5]}`, res.result);
+          this._aspectTypes.set(`${parts[1]}.${parts[3]}.${parts[5]}`, res.result);
         }
       }
     }
