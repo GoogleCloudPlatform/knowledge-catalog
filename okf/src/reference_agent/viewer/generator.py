@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from reference_agent.bundle.document import OKFDocument, OKFDocumentError
+from reference_agent.bundle.document import OKFDocument
 
 _INDEX_NAME = "index.md"
 _LINK_RE = re.compile(r"\]\(([^)\s]+\.md)(?:#[A-Za-z0-9_\-]*)?\)")
@@ -75,7 +75,14 @@ def _walk_concepts(bundle_root: Path) -> list[Concept]:
         concept_id = "/".join(rel.parts)
         try:
             doc = OKFDocument.parse(md_path.read_text(encoding="utf-8"))
-        except OKFDocumentError:
+        except (ValueError, OSError):
+            # Skip a single malformed/unreadable file rather than aborting the
+            # whole visualization. ValueError covers OKFDocument parse failures
+            # (OKFDocumentError) and invalid UTF-8 (UnicodeDecodeError) — both
+            # ValueError subclasses — plus PyYAML's *bare* ValueError for an
+            # out-of-range frontmatter value such as a bad timestamp; OSError
+            # covers read errors. bundle.index._load_doc tolerates the same
+            # files via a broader `except Exception`.
             continue
         fm = doc.frontmatter or {}
         tags = fm.get("tags") or []
