@@ -205,6 +205,50 @@ The HTML embeds the bundle as a JSON blob and uses
 both loaded from a CDN. No data leaves the page; the bundle is parsed
 once at generation time and serialized into the file.
 
+## Validate
+
+The `validate` subcommand checks an OKF bundle against the
+**[SPEC §9](SPEC.md) conformance rules** — no credentials, no model, no
+network required:
+
+```
+.venv/bin/python -m reference_agent validate --bundle ./bundles/<name>
+```
+
+It verifies that:
+
+- every non-reserved `.md` file has a **parseable YAML frontmatter
+  block** (§9.1),
+- every frontmatter block has a **non-empty `type`** (§9.2), and
+- reserved `index.md` files carry no frontmatter except an optional
+  bundle-root `okf_version` (§6/§11).
+
+The remaining §9.3 structure — `log.md` date headings (§7) and
+`index.md` body sections (§6) — is **not** validated: telling a real
+`##` heading apart from fenced-code content needs a full CommonMark
+parser, which is out of scope for this dependency-light checker. The
+command therefore reports *no violations in the checked rules* rather
+than asserting full v0.1 conformance.
+
+One line is printed per violation as `path: [rule] message`, and the
+command exits non-zero if any are found — so it drops cleanly into CI to
+keep bundles conformant as they evolve. A clean bundle prints
+`OK: … — no OKF v0.1 violations found (§9.1, §9.2, index.md §6/§11)` and
+exits `0`; all three bundles in [`bundles/`](bundles/) pass.
+
+Add `--strict` to additionally require the producer-level recommended
+keys (`title`, `description`, `timestamp`) from §4.1 on every concept:
+
+```
+.venv/bin/python -m reference_agent validate --bundle ./bundles/ga4 --strict
+```
+
+The sample bundles already populate those keys, so they pass `--strict`
+unchanged; the extra `§4.1` violations surface on bundles that omit them.
+
+It is also usable as a library — `from reference_agent.bundle.conformance
+import check_bundle` returns a list of `Violation`s for programmatic use.
+
 ## Tests
 
 ```
