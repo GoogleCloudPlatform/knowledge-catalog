@@ -160,6 +160,40 @@ def test_node_colors_match_palette(tmp_path: Path):
     assert by_id["references/metrics/dau"]["color"] == "#10b981"
 
 
+def test_unreadable_concept_file_is_skipped(tmp_path: Path):
+    # A single file with invalid UTF-8 bytes must not abort the whole
+    # visualization — it should be skipped like a malformed-frontmatter file.
+    bundle = tmp_path / "bundle"
+    _make_bundle(bundle)
+    corrupt = bundle / "tables" / "corrupt.md"
+    corrupt.parent.mkdir(parents=True, exist_ok=True)
+    corrupt.write_bytes(b"---\ntype: BigQuery Table\n\xff\xfe not utf-8\n---\n")
+    out = tmp_path / "viz.html"
+    stats = generate_visualization(bundle, out)
+    assert out.exists()
+    # The 4 well-formed concepts still render; the corrupt file is skipped.
+    assert stats["concepts"] == 4
+
+
+def test_malformed_timestamp_concept_file_is_skipped(tmp_path: Path):
+    # A valid-UTF-8 file whose frontmatter has an out-of-range timestamp makes
+    # PyYAML raise a *bare* ValueError (not an OKFDocumentError); it must be
+    # skipped like any other malformed file, not abort the whole viz.
+    bundle = tmp_path / "bundle"
+    _make_bundle(bundle)
+    bad = bundle / "tables" / "badts.md"
+    bad.parent.mkdir(parents=True, exist_ok=True)
+    bad.write_text(
+        "---\ntype: BigQuery Table\ntimestamp: 2026-13-45\n---\nbody\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "viz.html"
+    stats = generate_visualization(bundle, out)
+    assert out.exists()
+    # The 4 well-formed concepts still render; the bad-timestamp file is skipped.
+    assert stats["concepts"] == 4
+
+
 def test_raises_when_bundle_missing(tmp_path: Path):
     with pytest.raises(FileNotFoundError):
         generate_visualization(tmp_path / "nope", tmp_path / "viz.html")
