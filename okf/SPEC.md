@@ -76,8 +76,10 @@ sense for the knowledge being captured.
 
 ```
 path/to/bundle/
+├── .okfignore                    # Optional. Marks .md files that are not concepts (§3.2).
 ├── index.md                      # Optional. Directory listing for progressive disclosure.
 ├── log.md                        # Optional. Chronological history of updates.
+├── README.md                     # Non-concept file; listed in .okfignore.
 ├── <concept>.md                  # A concept at the bundle root.
 └── <subdirectory>/               # Subdirectories organize concepts into groups.
     ├── index.md
@@ -94,20 +96,75 @@ A bundle MAY be distributed as:
 
 ### 3.1 Reserved filenames
 
-The following filenames have defined meaning at any level of the
-hierarchy and MUST NOT be used for concept documents:
+Two filenames have defined OKF meaning at any level of the hierarchy
+and MUST NOT be used for concept documents:
 
-| Filename     | Purpose                                                |
-|--------------|--------------------------------------------------------|
-| `index.md`   | Directory listing. See §6.                             |
-| `log.md`     | Update history. See §7.                                |
+| Filename   | Purpose                    |
+|------------|----------------------------|
+| `index.md` | Directory listing. See §6. |
+| `log.md`   | Update history. See §7.    |
 
-All other `.md` files are concept documents.
+Every other `.md` file is a concept document and MUST carry frontmatter
+(§4), unless it is excluded by `.okfignore` (§3.2). A bundle can still
+ship ordinary repository and agent files — `README.md`, `LICENSE.md`,
+`CHANGELOG.md`, `CONTRIBUTING.md`, `AGENTS.md`, and the like — by
+listing them in `.okfignore`; they then carry no OKF meaning and are
+neither required to have frontmatter nor parsed as concepts.
 
 Tags themselves remain a first-class concept — see the `tags`
 frontmatter field in §4.1. OKF does not specify a separate file format
 for aggregating documents by tag; producers that want a tag-browsing
 view can synthesize one at consumption time by scanning frontmatter.
+
+### 3.2 The `.okfignore` file
+
+A bundle MAY include an `.okfignore` file at its root. It lists the
+`.md` files that are **not** concept documents, so a bundle can ship
+readmes, licenses, changelogs, agent instructions, and similar files
+without their being parsed as concepts — and without OKF maintaining a
+fixed list of such names.
+
+`.okfignore` is a UTF-8 text file, one pattern per line:
+
+- Blank lines, and lines whose first non-space character is `#`, are
+  ignored (comments).
+- Every other line is a glob pattern matched against the path of a
+  `.md` file **relative to the bundle root**, using this
+  gitignore-style subset:
+  - `*` matches any run of characters except `/`.
+  - `?` matches any single character except `/`.
+  - `**` matches any number of path segments, including none.
+  - A pattern containing no `/` matches a file's basename at any depth
+    (`README.md` matches both `/README.md` and `/docs/README.md`).
+  - A pattern beginning with `/` is anchored to the bundle root
+    (`/README.md` matches only the root file).
+
+A `.md` file whose bundle-relative path matches any pattern is
+**excluded**: it carries no OKF meaning and is neither required to have
+frontmatter nor parsed as a concept. Patterns that match `index.md` or
+`log.md` have no effect — those names are reserved by §3.1.
+
+A `.md` file that is neither reserved (§3.1) nor excluded here is a
+concept document and MUST carry frontmatter, so a validator surfaces a
+stray or unfinished `.md` rather than silently dropping it (see §9).
+Negation patterns (`!`) and per-directory `.okfignore` files are not
+defined in v0.1; a future minor version MAY add them.
+
+A typical `.okfignore`:
+
+```text
+# Repository and community-health files
+README.md
+LICENSE.md
+CHANGELOG.md
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+SECURITY.md
+
+# Agent instructions
+CLAUDE.md
+AGENTS.md
+```
 
 ---
 
@@ -118,6 +175,11 @@ Every concept is a UTF-8 markdown file. It has two parts:
 1. A **YAML frontmatter block**, delimited by `---` on its own line at
    the start of the file and a closing `---` on its own line.
 2. A **markdown body**, containing free-form content.
+
+Concept IDs and link targets are **case-sensitive**. Producers SHOULD
+avoid paths that differ only in case (e.g. `Tables/Users.md` and
+`tables/users.md`), since such bundles cannot be represented on
+case-insensitive filesystems and will not round-trip across platforms.
 
 ### 4.1 Frontmatter
 
@@ -143,7 +205,12 @@ timestamp: <ISO 8601 datetime>     # Optional last-modified time
   Type values are **not** registered centrally. Producers SHOULD pick
   values that are descriptive and self-explanatory; consumers MUST
   tolerate unknown types gracefully (typically by treating them as
-  generic concepts).
+  generic concepts). `type` is therefore a presentation and routing
+  **hint**, not an interoperability contract: two producers MAY use
+  different strings (`BigQuery Table` vs. `bq_table`) for the same kind
+  of concept, and consumers MUST NOT assume any particular `type` value
+  is present or machine-recognizable. It is required only so that every
+  concept is self-labeled with something a human can read.
 
 **Recommended (in priority order):**
 
@@ -237,14 +304,22 @@ forms are supported:
 
 ### 5.1 Absolute (bundle-relative) links
 
-Begin with `/`, interpreted relative to the bundle root.
+Begin with `/`, interpreted relative to the **bundle root** — which is
+not necessarily the repository root.
 
 ```markdown
 See the [customers table](/tables/customers.md) for the join key.
 ```
 
-This is the **recommended** form because it is stable when documents are
-moved within their subdirectory.
+This form is stable regardless of where the **linking** document is moved
+within the bundle, which makes it convenient for generated content. Note
+the trade-off: when a bundle is distributed as a subdirectory of a larger
+repository (§3), a leading `/` resolves to the *repository* root in
+standard markdown renderers (e.g. GitHub, GitLab, Obsidian), not the
+bundle root. Producers who need links that render correctly without an
+OKF-aware consumer SHOULD prefer relative links (§5.2) in that case.
+Consumers that resolve absolute links MUST resolve them against the
+bundle root, not the repository root.
 
 ### 5.2 Relative links
 
@@ -254,6 +329,15 @@ Standard markdown relative paths.
 See the [neighboring concept](./other.md).
 ```
 
+### 5.2a Resolving a link to a concept
+
+A link target resolves to a concept by taking the target path (after
+applying absolute or relative resolution above), stripping a trailing
+`.md`, and matching the result against a Concept ID (§2). A trailing
+slash (e.g. `subdir/`) denotes a directory rather than a concept and
+resolves to that directory's `index.md` if present. Path matching is
+case-sensitive (see §4).
+
 ### 5.3 Link semantics
 
 A link from concept A to concept B asserts a *relationship*. The
@@ -261,6 +345,11 @@ specific kind of relationship (parent/child, references, joins-with,
 depends-on, etc.) is conveyed by the surrounding prose, not by the link
 itself. Consumers that build a graph view typically treat all links as
 directed edges of an untyped relationship.
+
+Because a concept's identity is its path, moving or renaming a concept
+breaks inbound links. OKF deliberately favors path-simplicity over
+guaranteed referential integrity; the permissive treatment of broken
+links below is a consequence of that choice, not an oversight.
 
 Consumers MUST tolerate broken links — a link whose target does not
 exist in the bundle is not malformed; it may simply represent
@@ -275,8 +364,11 @@ root. It enumerates the directory's contents to support **progressive
 disclosure** — letting a human or agent see what is available before
 opening individual documents.
 
-Index files contain no frontmatter. The body uses one or more sections,
-each grouping concepts under a heading:
+Index files contain no frontmatter, with one exception: the
+bundle-root `index.md` MAY carry a single-key frontmatter block declaring
+the OKF version (see §11). No other `index.md`, at any level, may carry
+frontmatter. The body uses one or more sections, each grouping concepts
+under a heading:
 
 ```markdown
 # Section / Group Heading
@@ -292,6 +384,12 @@ each grouping concepts under a heading:
 Entries SHOULD include the description from the linked concept's
 frontmatter. Producers MAY generate `index.md` automatically; consumers
 MAY synthesize one on the fly when none is present.
+
+Each entry is a list item of the form `* [<title>](<url>) — <description>`.
+Consumers parsing entries SHOULD treat the link as authoritative and the
+text after the **first** ` — ` (or ` - `) following the link as the
+description; the description MAY itself contain hyphens. List items that
+do not begin with a markdown link SHOULD be ignored rather than rejected.
 
 ---
 
@@ -316,6 +414,11 @@ date-grouped entries, newest first:
 Date headings MUST use ISO 8601 `YYYY-MM-DD` form. Log entries are
 prose; the leading bold word (`**Update**`, `**Creation**`,
 `**Deprecation**`, etc.) is a convention, not a requirement.
+
+Where a bundle is distributed as a git repository, commit history is the
+authoritative record of change; `log.md` is an optional human-curated
+summary and MAY be incomplete. Consumers SHOULD NOT assume `log.md` is
+exhaustive or in sync with commit history.
 
 ---
 
@@ -342,11 +445,17 @@ first-class OKF concepts.
 
 A bundle is **conformant** with OKF v0.1 if:
 
-1. Every non-reserved `.md` file in the tree contains a parseable YAML
-   frontmatter block.
+1. Every concept document contains a parseable YAML frontmatter block.
+   A concept document is any `.md` file that is neither a reserved
+   filename (§3.1) nor excluded by `.okfignore` (§3.2). A `.md` file
+   that is neither reserved nor excluded yet has no parseable
+   frontmatter is **non-conformant**: a validator MUST surface it
+   rather than silently ignoring it.
 2. Every frontmatter block contains a non-empty `type` field.
-3. Every reserved filename (`index.md`, `log.md`) follows the structure
-   described in §6 and §7 respectively when present.
+3. When present, an `index.md` contains no frontmatter except as
+   permitted in §6, and a `log.md` uses ISO 8601 `YYYY-MM-DD` date
+   headings as described in §7. The remaining contents of these files
+   are conventional (SHOULD-level) and do not affect conformance.
 
 Consumers SHOULD treat all other constraints as soft guidance. In
 particular, consumers MUST NOT reject a bundle because of:
@@ -390,10 +499,28 @@ versioned in the form `<major>.<minor>`:
   fields, changing reserved filenames).
 
 Bundles MAY declare the OKF version they target by including
-`okf_version: "0.1"` in a bundle-root `index.md` frontmatter block (the
-only place frontmatter is permitted in an `index.md`). Consumers that
+`okf_version: "0.1"` in a frontmatter block at the top of the
+bundle-root `index.md`. This is the only frontmatter permitted in any
+`index.md`, and the only key permitted in it (see §6). Consumers that
 do not understand the declared version SHOULD attempt best-effort
 consumption rather than refusing the bundle.
+
+---
+
+## 12. Trust and safety
+
+OKF bundles are designed to be exchanged across organizations and
+consumed by automated agents. Consumers MUST treat the contents of a
+bundle — frontmatter values and concept bodies alike — as untrusted
+**data**, never as instructions to execute. In particular, an agent that
+incorporates concept bodies into a prompt MUST NOT follow directives
+contained in that text (prompt injection); bundle authorship is not
+authenticated by the format itself.
+
+OKF provides no built-in authenticity or integrity guarantee.
+Distribution as a git repository (§3) gives commit-level provenance and
+history, but consumers that require authenticity SHOULD verify it
+out-of-band (e.g. signed commits or tags, transport-level trust).
 
 ---
 
@@ -401,6 +528,8 @@ consumption rather than refusing the bundle.
 
 ```
 my_bundle/
+├── .okfignore
+├── README.md
 ├── index.md
 ├── datasets/
 │   ├── index.md
@@ -409,6 +538,12 @@ my_bundle/
     ├── index.md
     ├── orders.md
     └── customers.md
+```
+
+`.okfignore`:
+
+```text
+README.md
 ```
 
 `datasets/sales.md`:
