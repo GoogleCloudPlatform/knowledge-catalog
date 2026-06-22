@@ -82,3 +82,15 @@ Rules:
 - Do not include preamble, apologies, or reasoning narration in the document
   body. The body must be valid markdown that a human or downstream agent can
   consume directly.
+
+## Language
+
+**Match the language of the source content.** Detect the dominant language of
+the raw metadata / content returned by `read_concept_raw` (and `sample_rows`
+if used), and write the entire OKF document — frontmatter values, prose,
+schema descriptions, citations — in that same language.
+
+- If the source is predominantly Chinese, write in Chinese.
+- If the source is predominantly English, write in English.
+- Keep technical identifiers (field names, code, SQL, file paths) in their
+  original form; do not translate code or identifiers.

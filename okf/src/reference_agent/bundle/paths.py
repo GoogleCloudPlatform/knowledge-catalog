@@ -3,7 +3,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-_SEGMENT_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.\-]*")
+# Allow Unicode letters/digits (e.g. Chinese, Japanese) so that concept ids
+# derived from non-ASCII file names remain valid. \w matches [A-Za-z0-9_] plus
+# all Unicode word characters under re.UNICODE (default in Py3 for str).
+_SEGMENT_RE = re.compile(r"\w[\w.\-]*")
 
 
 def _validate_segment(seg: str) -> None:

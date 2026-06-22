@@ -10,8 +10,9 @@ from reference_agent.agent import DEFAULT_MODEL
 from reference_agent.bundle.paths import parse_concept_id
 from reference_agent.runner import ReferenceRunner
 from reference_agent.sources.bigquery import BigQuerySource
+from reference_agent.sources.localfile import LocalFileSource
 
-_SOURCES = ("bq",)
+_SOURCES = ("bq", "localfile")
 
 
 def _build_source(name: str, args: argparse.Namespace):
@@ -20,6 +21,14 @@ def _build_source(name: str, args: argparse.Namespace):
             raise SystemExit("--dataset is required for --source bq")
         return BigQuerySource(
             dataset=args.dataset, billing_project=args.billing_project
+        )
+    if name == "localfile":
+        if not args.local_path:
+            raise SystemExit("--local-path is required for --source localfile")
+        return LocalFileSource(
+            path=args.local_path,
+            pattern=args.local_pattern or "**/*",
+            recursive=not args.local_no_recursive,
         )
     raise SystemExit(f"Unknown source: {name}")
 
@@ -72,6 +81,20 @@ def _parser() -> argparse.ArgumentParser:
         "--billing-project",
         help="Google Cloud project to bill for queries; "
         "defaults to ADC default.",
+    )
+    enrich.add_argument(
+        "--local-path",
+        help="Local directory path (for --source localfile).",
+    )
+    enrich.add_argument(
+        "--local-pattern",
+        default="**/*",
+        help="File glob pattern for localfile source (default: **/*).",
+    )
+    enrich.add_argument(
+        "--local-no-recursive",
+        action="store_true",
+        help="Disable recursive directory scan for localfile source.",
     )
     enrich.add_argument(
         "--out", required=True, type=Path, help="Bundle root directory."
@@ -142,6 +165,49 @@ def _parser() -> argparse.ArgumentParser:
     )
     enrich.add_argument("-v", "--verbose", action="store_true")
 
+    # Shortcut subcommand: localfile
+    # Equivalent to `enrich --source localfile --no-web`, but with positional
+    # path argument and sensible defaults for local-file workflows.
+    lf = sub.add_parser(
+        "localfile",
+        help="Shortcut: enrich OKF bundle from local files (no web pass).",
+    )
+    lf.add_argument(
+        "path",
+        type=Path,
+        nargs="?",
+        default=Path("."),
+        help="Local directory to scan (default: current directory).",
+    )
+    lf.add_argument(
+        "--pattern",
+        default="**/*",
+        help="File glob pattern (default: **/*). Examples: '**/*.pdf', '**/*.{md,txt}'.",
+    )
+    lf.add_argument(
+        "-o", "--out",
+        type=Path,
+        default=Path("./okf-bundle"),
+        help="Bundle root directory (default: ./okf-bundle).",
+    )
+    lf.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help=f"Gemini model id (default: {DEFAULT_MODEL}).",
+    )
+    lf.add_argument(
+        "--no-recursive",
+        action="store_true",
+        help="Disable recursive directory scan.",
+    )
+    lf.add_argument(
+        "--concept",
+        action="append",
+        default=None,
+        help="Enrich only this concept id (e.g. 'tables/events_'). Repeatable.",
+    )
+    lf.add_argument("-v", "--verbose", action="store_true")
+
     viz = sub.add_parser(
         "visualize",
         help="Generate a self-contained HTML graph view of an OKF bundle.",
@@ -211,5 +277,29 @@ def main(argv: list[str] | None = None) -> int:
         n = runner.enrich_all(only=only)
         web_note = f"; web pass used {len(seeds)} seed(s)" if seeds else "; web pass skipped"
         print(f"Enriched {n} concept(s) into {args.out}{web_note}", file=sys.stderr)
+        return 0
+
+    if args.command == "localfile":
+        # Shortcut path: local files only, no web pass, sensible defaults.
+        source = LocalFileSource(
+            path=str(args.path),
+            pattern=args.pattern,
+            recursive=not args.no_recursive,
+        )
+        runner = ReferenceRunner(
+            source=source,
+            bundle_root=args.out,
+            model=args.model,
+            web_seeds=None,
+            verbose=args.verbose,
+        )
+        only = (
+            [parse_concept_id(c) for c in args.concept] if args.concept else None
+        )
+        n = runner.enrich_all(only=only)
+        print(
+            f"Enriched {n} concept(s) from {args.path} into {args.out} (web pass skipped)",
+            file=sys.stderr,
+        )
         return 0
     return 1

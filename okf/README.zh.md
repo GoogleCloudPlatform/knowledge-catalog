@@ -70,6 +70,124 @@ python3.13 -m venv .venv
 
 通过添加 `--concept <type>/<name>`（例如 `--concept tables/events_`）来迭代单个概念；可重复。
 
+## 从本地文件生成 OKF
+
+`localfile` 子命令是 `enrich --source localfile --no-web` 的快捷方式，专为从本地文件（PDF/Word/Excel/PPT/Markdown/代码等）生成知识库而设计。它自动跳过 Web 轮，使用位置参数和合理默认值，命令更简洁。
+
+### 安装
+
+```bash
+cd knowledge-catalog/okf
+python3.11 -m venv .venv
+.venv/bin/pip install -e ".[localfile]"
+```
+
+安装后 `reference-agent` 命令全局可用（确保 `~/.local/bin` 在 `PATH` 中）：
+
+```bash
+pip install --user -e ".[localfile]"
+```
+
+### 凭证
+
+设置 Gemini API Key：
+
+```bash
+export GEMINI_API_KEY=<your-key>
+```
+
+### 用法
+
+```bash
+# 最简形式：扫描当前目录，输出到 ./okf-bundle/
+cd /path/to/docs
+reference-agent localfile
+
+# 指定文件类型（推荐）
+reference-agent localfile --pattern "**/*.pdf"
+
+# 指定源目录和输出目录
+reference-agent localfile /path/to/docs --pattern "**/*.pdf" -o ./my-bundle
+
+# 指定模型 + 详细日志
+reference-agent localfile /path/to/docs --model gemini-flash-latest -v
+
+# 仅处理特定概念（可重复）
+reference-agent localfile /path/to/docs --concept "ERP_WIKI"
+```
+
+### 参数说明
+
+| 参数               | 默认值            | 说明                                          |
+|--------------------|-------------------|-----------------------------------------------|
+| `path`             | `.`（当前目录）   | 要扫描的本地目录（位置参数，可选）              |
+| `--pattern`        | `**/*`            | 文件匹配模式，如 `**/*.pdf`、`**/*.{md,txt}`   |
+| `-o / --out`       | `./okf-bundle`    | 输出目录                                       |
+| `--model`          | `gemini-flash-latest` | Gemini 模型 ID                            |
+| `--no-recursive`   | *(关闭)*          | 禁用递归扫描                                   |
+| `--concept`        | *(全部)*          | 仅处理指定概念 ID（可重复）                     |
+| `-v / --verbose`   | *(关闭)*          | 详细日志输出                                   |
+
+### 支持的文件类型
+
+| 扩展名                    | 概念类型               |
+|---------------------------|------------------------|
+| `.pdf`                    | PDF Document           |
+| `.docx`                   | Word Document          |
+| `.xlsx` / `.xls`          | Excel Spreadsheet      |
+| `.pptx` / `.ppt`          | PowerPoint Presentation|
+| `.md` / `.markdown`       | Document               |
+| `.txt`                    | Document               |
+| `.py` / `.ts` / `.js`     | Python/TypeScript/JavaScript Module |
+| `.json` / `.yaml` / `.yml`| Config File            |
+| `.html`                   | HTML Document          |
+| `.csv`                    | Data File              |
+
+### 语言自动匹配
+
+智能体会自动检测源文件内容的主导语言，并用相同语言生成 OKF 文档：
+- 源文件是中文 → 生成中文 OKF 文档
+- 源文件是英文 → 生成英文 OKF 文档
+- 技术标识符（字段名、代码、SQL、文件路径）保持原样不翻译
+
+### 示例
+
+从 `docs/` 目录下的 PDF 生成知识库：
+
+```bash
+cd /Users/jianglang/CodeBuddy/LangWIKI/docs
+reference-agent localfile --pattern "**/*.pdf" -o ./pdf-bundle
+```
+
+生成的结构：
+
+```
+docs/
+├── Karpathy LLM 编程行为.pdf
+├── ERP-WIKI.pdf
+├── LLM-wiki.pdf
+└── pdf-bundle/                    # 自动生成
+    ├── index.md                   # 索引文件
+    ├── Karpathy_LLM_编程行为.md    # 概念文档
+    ├── ERP_WIKI.md
+    └── LLM_wiki.md
+```
+
+### 可视化
+
+生成 OKF 捆绑包后，可生成交互式 HTML 图谱：
+
+```bash
+reference-agent visualize --bundle ./pdf-bundle
+# → 生成 ./pdf-bundle/viz.html
+```
+
+### 注意事项
+
+- **API 限流**：Gemini 免费层有限流（约 5 次/分钟），大量文件时可能遇到 429 错误，等待 30 秒后重试或使用付费 key。
+- **文件大小**：单文件上限 10MB。
+- **忽略目录**：`.git`、`.venv`、`node_modules`、`__pycache__`、`okf-bundle` 等目录会被自动跳过。
+
 ## 示例
 
 每个示例将一个**配方**（`samples/<name>/`，包含种子 URL 和确切的 `enrich` 命令）与配方生成的**生产的捆绑包**（`bundles/<name>/`）配对。打开配方以重现；打开捆绑包以直接浏览结果：

@@ -17,6 +17,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
+localfile = [
+    "pdfplumber>=0.11",
+    "python-docx>=1.0",
+    "openpyxl>=3.1",
+    "python-pptx>=0.6",
+]
 
 [project.scripts]
 reference-agent = "reference_agent.cli:main"
