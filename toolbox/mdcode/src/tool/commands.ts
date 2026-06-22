@@ -98,3 +98,25 @@ export async function push(options: PushOptions): Promise<number> {
     return 1;
   }
 }
+
+
+export async function reference(): Promise<number> {
+  const ctx = context.ApiContext.default();
+
+  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx, true);
+
+  const catalog = new dataplex.CatalogClient(ctx);
+  const sync = new kcmd.CatalogSync(catalog, snapshot);
+
+  console.log('Pulling reference entries...');
+  const result = await sync.reference();
+
+  if (result.success) {
+    console.log('Successfully updated local reference entries snapshot.');
+    return 0;
+  }
+  else {
+    console.error('Error pulling reference entries:', result.details);
+    return 1;
+  }
+}
