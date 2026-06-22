@@ -53,8 +53,9 @@ assert:
   fileSystem:
     catalog/kb-entry.yaml:
       - contains: "name: kb-entry"
-      - contains: "New custom description"
       - contains: "description: updated basic description"
+    catalog/kb-entry.dataplex-types.global.overview.md:
+      - contains: "New custom description"
   catalog:
     entries:
       - name: projects/p/locations/us/entryGroups/kb/entries/kb-entry

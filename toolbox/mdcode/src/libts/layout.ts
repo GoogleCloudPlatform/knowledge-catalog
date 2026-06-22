@@ -4,6 +4,7 @@
 import * as md from './metadata';
 import { StandardLayout } from './layouts/standard';
 import { DocumentsLayout } from './layouts/documents';
+import { CatalogManifest } from './manifest';
 
 export enum Layouts {
   STANDARD = 'standard',
@@ -23,10 +24,11 @@ export interface CatalogLayout {
 
 
 export function createLayout(layout: Layouts,
-                             catalogPath: string): CatalogLayout {
+                             catalogPath: string,
+                             manifest?: CatalogManifest): CatalogLayout {
   switch (layout) {
     case Layouts.STANDARD:
-      return new StandardLayout(catalogPath);
+      return new StandardLayout(catalogPath, manifest);
     case Layouts.DOCUMENTS:
       return new DocumentsLayout(catalogPath);
     default:
