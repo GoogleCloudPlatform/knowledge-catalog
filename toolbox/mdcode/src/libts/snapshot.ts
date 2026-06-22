@@ -6,8 +6,9 @@ import * as path from 'node:path';
 
 import * as gcp from './gcp/context';
 import * as dataplex from './gcp/dataplex';
+import * as crm from './gcp/crm';
 import * as md from './metadata';
-import { CatalogManifest } from './manifest';
+import { CatalogManifest, resolveEntryLinkType, findAliasForType, findAspectAliasForType, resolveAspectAlias } from './manifest';
 import { CatalogLayout, createLayout } from './layout';
 
 
@@ -20,10 +21,12 @@ export class CatalogSnapshot {
   private readonly _aspectTypes: Map<string, dataplex.AspectType> = new Map();
 
   private readonly _layout: CatalogLayout;
+  private readonly _ctx: gcp.ApiContext;
 
-  private constructor(basePath: string, manifest: CatalogManifest) {
+  private constructor(basePath: string, manifest: CatalogManifest, ctx: gcp.ApiContext) {
     this.basePath = basePath;
     this.manifest = manifest;
+    this._ctx = ctx;
 
     const catalogPath = path.join(this.basePath, 'catalog');
     this._layout = createLayout(manifest.source.layout, catalogPath);
@@ -36,7 +39,7 @@ export class CatalogSnapshot {
     }
 
     const manifest = await CatalogManifest.load(manifestPath, ctx);
-    const snapshot = new CatalogSnapshot(basePath, manifest);
+    const snapshot = new CatalogSnapshot(basePath, manifest, ctx);
 
     await snapshot._buildTypes(manifest, ctx);
     await snapshot._layout.init();
@@ -178,9 +181,12 @@ export class CatalogSnapshot {
   // Stores a Dataplex entry into the locally managed catalog snapshot. This will internally map
   // The service representation into the local metadata representation.
   // This is only meant to be used within the syncing process (as part of pull operations).
-  async _storeEntry(entry: dataplex.Entry): Promise<void> {
+  async _storeEntry(
+    entry: dataplex.Entry,
+    entryLinks?: dataplex.EntryLink[]
+  ): Promise<void> {
     const localName = this.manifest.source.localName(entry);
-    await this._layout.saveEntry(localName, toLocalEntry(entry, localName));
+    await this._layout.saveEntry(localName, await toLocalEntry(entry, localName, entryLinks, this.manifest, this._ctx));
   }
 
   // Fetches a Dataplex entry from its local metadata representation.
@@ -194,25 +200,304 @@ export class CatalogSnapshot {
     }
 
     const serviceName = this.manifest.source.serviceName(name);
+    let serviceNameWithNumber = serviceName;
+    const projMatch = serviceName.match(/^projects\/([^/]+)\//);
+    if (projMatch) {
+      const projectNumber = await crm.toProjectNumber(projMatch[1], this._ctx);
+      serviceNameWithNumber = serviceName.replace(/^projects\/[^/]+\//, `projects/${projectNumber}/`);
+    }
+
     if (entry.resource?.parent && !entry.resource.parent.startsWith('projects/')) {
       entry.resource.parent = this.manifest.source.serviceName(entry.resource.parent);
     }
+    if (entry.resource?.parent && entry.resource.parent.startsWith('projects/')) {
+      const parentProjMatch = entry.resource.parent.match(/^projects\/([^/]+)\//);
+      if (parentProjMatch) {
+        const parentProjNumber = await crm.toProjectNumber(parentProjMatch[1], this._ctx);
+        entry.resource.parent = entry.resource.parent.replace(/^projects\/[^/]+\//, `projects/${parentProjNumber}/`);
+      }
+    }
+
     return toServiceEntry(
       entry,
-      serviceName,
+      serviceNameWithNumber,
       this.manifest,
       this._entryTypes,
       this._aspectTypes
     );
   }
+
+  async _fetchEntryLinks(name: string): Promise<dataplex.EntryLink[]> {
+    const entry = await this._layout.loadEntry(name);
+    const serviceName = this.manifest.source.serviceName(name);
+    return await toServiceEntryLinks(entry, serviceName, this.manifest, this._ctx);
+  }
+}
+
+const GLOSSARY_DISPLAY_NAME_CACHE = new Map<string, string>();
+const GLOSSARY_TERM_DISPLAY_NAME_CACHE = new Map<string, string>();
+
+async function getGlossaryDisplayName(
+  project: string,
+  location: string,
+  glossaryId: string,
+  ctx: gcp.ApiContext
+): Promise<string> {
+  const cacheKey = `${project}/${location}/glossaries/${glossaryId}`;
+  if (GLOSSARY_DISPLAY_NAME_CACHE.has(cacheKey)) {
+    return GLOSSARY_DISPLAY_NAME_CACHE.get(cacheKey)!;
+  }
+
+  const catalog = new dataplex.CatalogClient(ctx);
+  try {
+    const res = await catalog.getGlossary(project, location, glossaryId);
+    if (res.status === 200 && res.result?.displayName) {
+      const displayName = res.result.displayName;
+      GLOSSARY_DISPLAY_NAME_CACHE.set(cacheKey, displayName);
+      return displayName;
+    }
+  } catch (err) {
+    // Fallback to ID if lookup fails
+  }
+
+  GLOSSARY_DISPLAY_NAME_CACHE.set(cacheKey, glossaryId);
+  return glossaryId;
+}
+
+async function getGlossaryTermDisplayName(
+  project: string,
+  location: string,
+  glossaryId: string,
+  termId: string,
+  ctx: gcp.ApiContext
+): Promise<string> {
+  const cacheKey = `${project}/${location}/glossaries/${glossaryId}/terms/${termId}`;
+  if (GLOSSARY_TERM_DISPLAY_NAME_CACHE.has(cacheKey)) {
+    return GLOSSARY_TERM_DISPLAY_NAME_CACHE.get(cacheKey)!;
+  }
+
+  const catalog = new dataplex.CatalogClient(ctx);
+  try {
+    const res = await catalog.getGlossaryTerm(project, location, glossaryId, termId);
+    if (res.status === 200 && res.result?.displayName) {
+      const displayName = res.result.displayName;
+      GLOSSARY_TERM_DISPLAY_NAME_CACHE.set(cacheKey, displayName);
+      return displayName;
+    }
+  } catch (err) {
+    // Fallback to ID if lookup fails
+  }
+
+  GLOSSARY_TERM_DISPLAY_NAME_CACHE.set(cacheKey, termId);
+  return termId;
+}
+
+export async function toLocalTarget(
+  serviceName: string,
+  manifest: CatalogManifest | undefined,
+  ctx: gcp.ApiContext | undefined
+): Promise<string> {
+  if (!ctx) {
+    return serviceName;
+  }
+
+  // 1. Glossary Term
+  const glossaryMatch = serviceName.match(/^projects\/([^/]+)\/locations\/([^/]+)\/entryGroups\/@dataplex\/entries\/(projects\/[^/]+\/locations\/[^/]+\/glossaries\/[^/]+\/terms\/[^/]+)$/);
+  if (glossaryMatch) {
+    const normalizedSub = await crm.fixProject(glossaryMatch[3], ctx);
+    const parts = normalizedSub.split('/');
+    const targetProject = parts[1];
+    const targetLocation = parts[3];
+    const glossaryId = parts[5];
+    const termId = parts[7];
+
+    const glossaryDisplayName = await getGlossaryDisplayName(
+      targetProject,
+      targetLocation,
+      glossaryId,
+      ctx
+    );
+    const termDisplayName = await getGlossaryTermDisplayName(
+      targetProject,
+      targetLocation,
+      glossaryId,
+      termId,
+      ctx
+    );
+
+    return `${targetProject}.${targetLocation}.${glossaryDisplayName}.${termDisplayName}`;
+  }
+
+  // 2. BigQuery Dataset/Table
+  const bqMatch = serviceName.match(/^projects\/[^/]+\/locations\/([^/]+)\/entryGroups\/@bigquery\/entries\/bigquery.googleapis.com\/projects\/([^/]+)\/datasets\/([^/]+)(\/tables\/([^/]+))?$/);
+  if (bqMatch) {
+    const [, , project, dataset, , table] = bqMatch;
+    const normalizedProject = await crm.fixProject(`projects/${project}`, ctx);
+    const projectId = normalizedProject.split('/')[1];
+    if (table) {
+      return `${projectId}.${dataset}.${table}`;
+    }
+    return `${projectId}.${dataset}`;
+  }
+
+  // 3. General EntryGroup Entry
+  const generalMatch = serviceName.match(/^projects\/([^/]+)\/locations\/([^/]+)\/entryGroups\/([^/]+)\/entries\/(.+)$/);
+  if (generalMatch) {
+    const [, project, location, entryGroup, entryId] = generalMatch;
+    const normalizedProject = await crm.fixProject(`projects/${project}`, ctx);
+    const projectId = normalizedProject.split('/')[1];
+    return `${projectId}.${location}.${entryGroup}.${entryId}`;
+  }
+
+  // Fallback to manifest tryGetLocalName if available
+  if (manifest) {
+    const resolved = manifest.source.tryGetLocalName(serviceName);
+    if (resolved !== undefined) {
+      return resolved.replace(/\//g, '.');
+    }
+  }
+
+  return serviceName;
+}
+
+export function fromLocalTarget(
+  localTarget: string,
+  entryLinkType: string,
+  serviceNameContext: string,
+  manifest?: CatalogManifest
+): string {
+  if (localTarget.startsWith('projects/')) {
+    return localTarget;
+  }
+
+  const parts = localTarget.split('.');
+
+  // 1. Glossary Term (definition, synonym, related link types)
+  const isGlossaryLink = entryLinkType.endsWith('/entryLinkTypes/definition') ||
+                         entryLinkType.endsWith('/entryLinkTypes/synonym') ||
+                         entryLinkType.endsWith('/entryLinkTypes/related');
+
+  if (isGlossaryLink && parts.length === 4) {
+    const [project, location, glossary, term] = parts;
+    const match = serviceNameContext.match(/^projects\/([^/]+)\/locations\/([^/]+)\/entryGroups\//);
+    if (match) {
+      const catalogProject = match[1];
+      const catalogLocation = match[2];
+      return `projects/${catalogProject}/locations/${catalogLocation}/entryGroups/@dataplex/entries/projects/${project}/locations/${location}/glossaries/${glossary}/terms/${term}`;
+    }
+  }
+
+  // 2. BigQuery Dataset/Table (3 parts: project.dataset.table, or 2 parts: project.dataset)
+  if (parts.length === 3 || parts.length === 2) {
+    const [project, dataset, table] = parts;
+    const match = serviceNameContext.match(/^projects\/([^/]+)\/locations\/([^/]+)\/entryGroups\//);
+    if (match) {
+      const catalogProject = match[1];
+      const catalogLocation = match[2];
+      const entryGroup = `projects/${catalogProject}/locations/${catalogLocation}/entryGroups/@bigquery`;
+      const entryName = `${entryGroup}/entries/bigquery.googleapis.com/projects/${project}/datasets/${dataset}`;
+      if (table) {
+        return `${entryName}/tables/${table}`;
+      }
+      return entryName;
+    }
+  }
+
+  // 3. General EntryGroup Entry (4 parts: project.location.entryGroup.entryId)
+  if (parts.length === 4) {
+    const [project, location, entryGroup, entryId] = parts;
+    return `projects/${project}/locations/${location}/entryGroups/${entryGroup}/entries/${entryId}`;
+  }
+
+  if (manifest) {
+    return manifest.source.serviceName(localTarget);
+  }
+
+  return localTarget;
 }
 
 // Converts a Dataplex entry into the local metadata representation.
-function toLocalEntry(entry: dataplex.Entry, localName: string): md.Entry {
+async function toLocalEntry(
+  entry: dataplex.Entry,
+  localName: string,
+  entryLinks?: dataplex.EntryLink[],
+  manifest?: CatalogManifest,
+  ctx?: gcp.ApiContext
+): Promise<md.Entry> {
   const aspects: Record<string, md.Aspect> = {};
   if (entry.aspects) {
     for (const key in entry.aspects) {
       aspects[key] = entry.aspects[key].data ?? {};
+    }
+  }
+
+  const links: Record<string, md.EntryLink[]> = {};
+  if (entryLinks) {
+    for (const link of entryLinks) {
+      const currentRef = link.entryReferences.find(ref => ref.name === entry.name) || link.entryReferences[0];
+      const targetRef = link.entryReferences.find(ref => ref !== currentRef) || link.entryReferences[1];
+
+      if (currentRef && targetRef) {
+        const targetLocalName = await toLocalTarget(targetRef.name, manifest, ctx);
+
+        const linkTypeRef = findAliasForType(dataplex._nameToTypeRef(link.entryLinkType));
+
+        let linkId: string | undefined;
+        if (targetRef.name) {
+          const match = targetRef.name.match(/\/entries\/(.+)$/);
+          if (match) {
+            linkId = match[1];
+            if (ctx) {
+              if (linkId.startsWith('projects/')) {
+                linkId = await crm.fixProject(linkId, ctx);
+              } else if (linkId.startsWith('bigquery.googleapis.com/projects/')) {
+                const subStr = linkId.substring('bigquery.googleapis.com/'.length);
+                const fixedSub = await crm.fixProject(subStr, ctx);
+                linkId = `bigquery.googleapis.com/${fixedSub}`;
+              }
+            }
+          }
+        }
+
+        const localLink: md.EntryLink = {
+          target: targetLocalName,
+        };
+        if (linkId) {
+          localLink.id = linkId;
+        }
+
+        if (link.aspects) {
+          for (const [aspectKey, aspectValue] of Object.entries(link.aspects)) {
+            const resolvedAspectKey = findAspectAliasForType(aspectKey, manifest);
+            localLink[resolvedAspectKey] = aspectValue.data ?? {};
+          }
+        }
+
+        if (currentRef.path) {
+          const pathParts = currentRef.path.split('.');
+          if (pathParts[0] === 'schema' && pathParts[1]) {
+            const schemaAspect = aspects['dataplex-types.global.schema'];
+            if (schemaAspect && Array.isArray(schemaAspect.fields)) {
+              const field = schemaAspect.fields.find((f: any) => f.name === pathParts[1]);
+              if (field) {
+                if (!field.links) {
+                  field.links = {};
+                }
+                if (!field.links[linkTypeRef]) {
+                  field.links[linkTypeRef] = [];
+                }
+                field.links[linkTypeRef].push(localLink);
+                continue;
+              }
+            }
+          }
+        }
+
+        if (!links[linkTypeRef]) {
+          links[linkTypeRef] = [];
+        }
+        links[linkTypeRef].push(localLink);
+      }
     }
   }
 
@@ -231,7 +516,8 @@ function toLocalEntry(entry: dataplex.Entry, localName: string): md.Entry {
         createTime: entrySource.createTime ?? undefined,
         updateTime: entrySource.updateTime ?? undefined
       },
-      aspects: aspects ?? undefined
+      aspects: aspects ?? undefined,
+      links: Object.keys(links).length ? links : undefined
   };
 }
 
@@ -292,4 +578,203 @@ function toServiceEntry(entry: md.Entry,
     },
     aspects: aspects
   };
+}
+
+async function toServiceEntryLinks(
+  entry: md.Entry,
+  serviceName: string,
+  manifest: CatalogManifest,
+  ctx: gcp.ApiContext
+): Promise<dataplex.EntryLink[]> {
+  const links: dataplex.EntryLink[] = [];
+
+  let serviceNameWithNumber = serviceName;
+  const projMatch = serviceName.match(/^projects\/([^/]+)\//);
+  if (projMatch) {
+    const projectNumber = await crm.toProjectNumber(projMatch[1], ctx);
+    serviceNameWithNumber = serviceName.replace(/^projects\/[^/]+\//, `projects/${projectNumber}/`);
+  }
+
+  if (entry.links) {
+    for (const [linkTypeRef, entryLinks] of Object.entries(entry.links)) {
+      const resolvedLinkType = resolveEntryLinkType(linkTypeRef);
+      if (manifest.publishingConfig) {
+        const resolvedPublishingLinks = manifest.publishingConfig.entryLinks?.map(l => resolveEntryLinkType(l)) ?? [];
+        if (!resolvedPublishingLinks.includes(resolvedLinkType)) {
+          continue;
+        }
+      }
+
+      let fullLinkTypeRef = resolvedLinkType;
+      if (fullLinkTypeRef.split('.').length === 1) {
+        fullLinkTypeRef = `dataplex-types.global.${fullLinkTypeRef}`;
+      }
+      fullLinkTypeRef = fullLinkTypeRef.replace(/^dataplex-types\./, '655216118709.');
+
+      const entryLinkType = dataplex._typeRefToName(fullLinkTypeRef, 'entryLink');
+      for (const link of entryLinks) {
+        let targetName = '';
+        if (link.id && link.id.includes('/')) {
+          let linkId = link.id;
+          linkId = await crm.toProjectNumber(linkId, ctx);
+          const glossaryMatch = linkId.match(/^projects\/([^/]+)\/locations\/([^/]+)\/glossaries\//);
+          if (glossaryMatch) {
+            const targetProj = glossaryMatch[1];
+            linkId = linkId.replace(/\/locations\/[^/]+\/glossaries\//, '/locations/global/glossaries/');
+            targetName = `projects/${targetProj}/locations/global/entryGroups/@dataplex/entries/${linkId}`;
+          } else {
+            const match = serviceName.match(/^(projects\/[^/]+\/locations\/[^/]+)/);
+            if (match) {
+              let entryGroup = '@dataplex';
+              if (linkId.startsWith('bigquery.googleapis.com/')) {
+                entryGroup = '@bigquery';
+              }
+              targetName = `${match[1]}/entryGroups/${entryGroup}/entries/${linkId}`;
+            }
+          }
+        }
+        if (!targetName) {
+          targetName = fromLocalTarget(link.target, entryLinkType, serviceName, manifest);
+        }
+
+        let targetNameWithNumber = targetName;
+        const targetProjMatch = targetName.match(/^projects\/([^/]+)\//);
+        if (targetProjMatch) {
+          const targetProjNumber = await crm.toProjectNumber(targetProjMatch[1], ctx);
+          targetNameWithNumber = targetName.replace(/^projects\/[^/]+\//, `projects/${targetProjNumber}/`);
+        }
+
+        let linkName = '';
+        if (link.id && !link.id.includes('/')) {
+          const match = serviceName.match(/^(projects\/[^/]+\/locations\/[^/]+\/entryGroups\/[^/]+)/);
+          if (match) {
+            linkName = `${match[1]}/entryLinks/${link.id}`;
+          }
+        }
+
+        const linkAspects: Record<string, dataplex.Aspect> = {};
+        for (const [k, v] of Object.entries(link)) {
+          if (k === 'target' || k === 'id') {
+            continue;
+          }
+          const qualifiedAspectType = resolveAspectAlias(k, manifest);
+          const aspectTypeName = dataplex._typeRefToName(
+            qualifiedAspectType.replace(/^dataplex-types\./, '655216118709.'),
+            'aspect'
+          );
+          const aspectKey = dataplex._nameToTypeRef(aspectTypeName);
+          linkAspects[aspectKey] = {
+            aspectType: aspectTypeName,
+            data: v
+          };
+        }
+
+        const isUndirected = entryLinkType.endsWith('/entryLinkTypes/schema-join');
+        links.push({
+          name: linkName,
+          entryLinkType,
+          entryReferences: [
+            { name: serviceNameWithNumber, type: isUndirected ? 'UNSPECIFIED' : 'SOURCE' },
+            { name: targetNameWithNumber, type: isUndirected ? 'UNSPECIFIED' : 'TARGET' },
+          ],
+          aspects: Object.keys(linkAspects).length ? linkAspects : undefined,
+        });
+      }
+    }
+  }
+
+  const schemaAspect = entry.aspects?.['dataplex-types.global.schema'];
+  if (schemaAspect && Array.isArray(schemaAspect.fields)) {
+    for (const field of schemaAspect.fields) {
+      if (field.links) {
+        for (const [linkTypeRef, entryLinks] of Object.entries(field.links as Record<string, md.EntryLink[]>)) {
+          const resolvedLinkType = resolveEntryLinkType(linkTypeRef);
+          if (manifest.publishingConfig) {
+            const resolvedPublishingLinks = manifest.publishingConfig.entryLinks?.map(l => resolveEntryLinkType(l)) ?? [];
+            if (!resolvedPublishingLinks.includes(resolvedLinkType)) {
+              continue;
+            }
+          }
+
+          let fullLinkTypeRef = resolvedLinkType;
+          if (fullLinkTypeRef.split('.').length === 1) {
+            fullLinkTypeRef = `dataplex-types.global.${fullLinkTypeRef}`;
+          }
+          fullLinkTypeRef = fullLinkTypeRef.replace(/^dataplex-types\./, '655216118709.');
+
+          const entryLinkType = dataplex._typeRefToName(fullLinkTypeRef, 'entryLink');
+          for (const link of entryLinks) {
+            let targetName = '';
+            if (link.id && link.id.includes('/')) {
+              let linkId = link.id;
+              linkId = await crm.toProjectNumber(linkId, ctx);
+              const glossaryMatch = linkId.match(/^projects\/([^/]+)\/locations\/([^/]+)\/glossaries\//);
+              if (glossaryMatch) {
+                const targetProj = glossaryMatch[1];
+                linkId = linkId.replace(/\/locations\/[^/]+\/glossaries\//, '/locations/global/glossaries/');
+                targetName = `projects/${targetProj}/locations/global/entryGroups/@dataplex/entries/${linkId}`;
+              } else {
+                const match = serviceName.match(/^(projects\/[^/]+\/locations\/[^/]+)/);
+                if (match) {
+                  let entryGroup = '@dataplex';
+                  if (linkId.startsWith('bigquery.googleapis.com/')) {
+                    entryGroup = '@bigquery';
+                  }
+                  targetName = `${match[1]}/entryGroups/${entryGroup}/entries/${linkId}`;
+                }
+              }
+            }
+            if (!targetName) {
+              targetName = fromLocalTarget(link.target, entryLinkType, serviceName, manifest);
+            }
+
+            let targetNameWithNumber = targetName;
+            const targetProjMatch = targetName.match(/^projects\/([^/]+)\//);
+            if (targetProjMatch) {
+              const targetProjNumber = await crm.toProjectNumber(targetProjMatch[1], ctx);
+              targetNameWithNumber = targetName.replace(/^projects\/[^/]+\//, `projects/${targetProjNumber}/`);
+            }
+
+            let linkName = '';
+            if (link.id && !link.id.includes('/')) {
+              const match = serviceName.match(/^(projects\/[^/]+\/locations\/[^/]+\/entryGroups\/[^/]+)/);
+              if (match) {
+                linkName = `${match[1]}/entryLinks/${link.id}`;
+              }
+            }
+
+            const linkAspects: Record<string, dataplex.Aspect> = {};
+            for (const [k, v] of Object.entries(link)) {
+              if (k === 'target' || k === 'id') {
+                continue;
+              }
+              const qualifiedAspectType = resolveAspectAlias(k, manifest);
+              const aspectTypeName = dataplex._typeRefToName(
+                qualifiedAspectType.replace(/^dataplex-types\./, '655216118709.'),
+                'aspect'
+              );
+              const aspectKey = dataplex._nameToTypeRef(aspectTypeName);
+              linkAspects[aspectKey] = {
+                aspectType: aspectTypeName,
+                data: v
+              };
+            }
+
+            const isUndirected = entryLinkType.endsWith('/entryLinkTypes/schema-join');
+            links.push({
+              name: linkName,
+              entryLinkType,
+              entryReferences: [
+                { name: serviceNameWithNumber, type: isUndirected ? 'UNSPECIFIED' : 'SOURCE', path: `schema.${field.name}` },
+                { name: targetNameWithNumber, type: isUndirected ? 'UNSPECIFIED' : 'TARGET' },
+              ],
+              aspects: Object.keys(linkAspects).length ? linkAspects : undefined,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  return links;
 }
