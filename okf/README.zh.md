@@ -130,18 +130,27 @@ reference-agent localfile /path/to/docs --concept "ERP_WIKI"
 
 ### 支持的文件类型
 
-| 扩展名                    | 概念类型               |
-|---------------------------|------------------------|
-| `.pdf`                    | PDF Document           |
-| `.docx`                   | Word Document          |
-| `.xlsx` / `.xls`          | Excel Spreadsheet      |
-| `.pptx` / `.ppt`          | PowerPoint Presentation|
-| `.md` / `.markdown`       | Document               |
-| `.txt`                    | Document               |
-| `.py` / `.ts` / `.js`     | Python/TypeScript/JavaScript Module |
-| `.json` / `.yaml` / `.yml`| Config File            |
-| `.html`                   | HTML Document          |
-| `.csv`                    | Data File              |
+> 原项目仅支持 BigQuery 数据源。其中 PDF/Word/Excel/PPT 为新增文档格式（需安装可选依赖），其余为基础文本格式（内置支持）。
+
+#### 新增文档格式（需安装 `[localfile]` 可选依赖）
+
+| 扩展名                    | 概念类型               | 解析方式                    | 新增 |
+|---------------------------|------------------------|-----------------------------|------|
+| `.pdf`                    | PDF Document           | pdfplumber 提取文本         | ✅   |
+| `.docx`                   | Word Document          | python-docx 提取段落        | ✅   |
+| `.xlsx` / `.xls`          | Excel Spreadsheet      | pandas + openpyxl，限50行   | ✅   |
+| `.pptx` / `.ppt`          | PowerPoint Presentation| python-pptx 提取幻灯片      | ✅   |
+
+#### 基础文本格式（内置支持，无需额外依赖）
+
+| 扩展名                    | 概念类型               | 解析方式                    |
+|---------------------------|------------------------|-----------------------------|
+| `.md` / `.markdown`       | Document               | 直接读取 UTF-8              |
+| `.txt`                    | Document               | UTF-8，回退 GBK             |
+| `.py` / `.ts` / `.js`     | Python/TypeScript/JavaScript Module | 读取，超8000字符截断 |
+| `.json` / `.yaml` / `.yml`| Config File            | 直接读取                    |
+| `.html`                   | HTML Document          | 读取，超8000字符截断        |
+| `.csv`                    | Data File              | 支持采样前5行               |
 
 ### 语言自动匹配
 
@@ -187,6 +196,111 @@ reference-agent visualize --bundle ./pdf-bundle
 - **API 限流**：Gemini 免费层有限流（约 5 次/分钟），大量文件时可能遇到 429 错误，等待 30 秒后重试或使用付费 key。
 - **文件大小**：单文件上限 10MB。
 - **忽略目录**：`.git`、`.venv`、`node_modules`、`__pycache__`、`okf-bundle` 等目录会被自动跳过。
+
+## 多数据源支持
+
+除了本地文件，`reference-agent` 现在支持多种数据源：
+
+### 1. 本地文件 (localfile)
+```bash
+reference-agent localfile /path/to/docs --pattern "**/*.pdf"
+```
+
+### 2. 远程 URL (API 源)
+```bash
+# 从指定 URL 获取文件
+reference-agent enrich --source api \
+    --api-url https://raw.githubusercontent.com/.../README.md \
+    --api-url https://raw.githubusercontent.com/.../CONTRIBUTING.md \
+    --out ./api-bundle
+
+# 从 API 端点获取文件列表
+reference-agent enrich --source api \
+    --api-endpoint https://api.example.com/files \
+    --api-url-field "download_url" \
+    --api-token $API_TOKEN \
+    --out ./remote-bundle
+
+# 从文本文件读取 URL 列表
+echo "https://example.com/file1.pdf" > urls.txt
+echo "https://example.com/file2.docx" >> urls.txt
+reference-agent enrich --source api \
+    --api-url-file urls.txt \
+    --out ./url-bundle
+```
+
+### 3. 混合本地和远程文件
+```bash
+# localfile 子命令支持混合
+reference-agent localfile /path/to/local/docs \
+    --pattern "**/*.pdf" \
+    --api-url https://example.com/remote-file.pdf \
+    --api-token $TOKEN \
+    -o ./mixed-bundle
+```
+
+## 多 LLM 支持
+
+不再局限于 Gemini！`reference-agent` 现在支持多种 LLM：
+
+### 支持的模型（通过 `--model` 参数指定）
+
+```bash
+# 查看所有支持的模型
+reference-agent list-models
+
+# 使用不同模型
+reference-agent localfile /path --model gemini-flash-latest      # Google Gemini（默认）
+reference-agent localfile /path --model claude-sonnet-4          # Anthropic Claude
+reference-agent localfile /path --model openai/gpt-4o            # OpenAI GPT-4o
+reference-agent localfile /path --model deepseek/deepseek-chat   # DeepSeek（国内可用）
+reference-agent localfile /path --model openai/qwen-plus         # 通义千问（OpenAI 兼容接口）
+reference-agent localfile /path --model ollama/qwen2.5:7b        # Ollama 本地模型
+```
+
+### 环境变量配置
+
+```bash
+# Gemini（默认）
+export GEMINI_API_KEY=xxx
+
+# OpenAI / 通义千问
+export OPENAI_API_KEY=xxx
+export OPENAI_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1  # 仅通义千问需要
+
+# DeepSeek
+export DEEPSEEK_API_KEY=xxx
+
+# Claude
+export ANTHROPIC_API_KEY=xxx
+
+# Ollama（本地，无需 key，但需启动服务）
+ollama serve  # 启动 Ollama 服务
+# 默认端点：http://localhost:11434
+```
+
+### 依赖安装
+
+```bash
+# 安装 litellm（支持 OpenAI/DeepSeek/Qwen/Ollama）
+pip install litellm
+
+# 安装 Claude 支持
+pip install anthropic
+
+# 安装本地文件处理依赖
+pip install ".[localfile]"
+```
+
+### 模型选择建议
+
+| 使用场景 | 推荐模型 | 优点 |
+|---------|----------|------|
+| 免费使用 | `gemini-flash-latest` | Google 免费层，但有限流 |
+| 国内环境 | `deepseek/deepseek-chat` | 国内可用，性价比高 |
+| 高质量 | `claude-sonnet-4` | 推理能力强 |
+| 离线使用 | `ollama/qwen2.5:7b` | 完全离线，无需 API key |
+| 中文优化 | `openai/qwen-plus` | 通义千问，中文理解好 |
 
 ## 示例
 

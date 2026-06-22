@@ -1,4 +1,4 @@
-[🇺🇸 English](./README.md) | [🇨🇳 中文](./README.zh.md)
+[🇺🇸 English](./README.md) | [🇨🇳 中文](./README.zh.md) | [🇨🇳 开发](./README.dev.md)
 
 # Knowledge Catalog
 
