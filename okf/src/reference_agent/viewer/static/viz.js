@@ -75,12 +75,28 @@
         selector: ".dim",
         style: { "opacity": 0.15 },
       },
+      {
+        selector: "node.focus",
+        style: { "border-width": 3, "border-color": "#f59e0b" },
+      },
+      {
+        selector: "edge.incident",
+        style: { "width": 3 },
+      },
+      {
+        selector: ".mid",
+        style: { "opacity": 0.5 },
+      },
+      {
+        selector: ".far",
+        style: { "opacity": 0.12 },
+      },
     ],
     layout: { name: "cose", animate: false, padding: 30 },
     wheelSensitivity: 0.2,
   });
 
-  cy.on("tap", "node", (evt) => showDetail(evt.target.id()));
+  cy.on("tap", "node", (evt) => selectNode(evt.target.id()));
   cy.on("tap", (evt) => {
     if (evt.target === cy) clearSelection();
   });
@@ -131,8 +147,47 @@
 
   function clearSelection() {
     cy.elements().unselect();
+    resetHighlight();
     document.getElementById("detail-empty").hidden = false;
     document.getElementById("detail-content").hidden = true;
+  }
+
+  function resetHighlight() {
+    cy.elements().removeClass("dim focus incident near mid far");
+  }
+
+  // Click-to-focus: fade the graph by hop distance from the clicked node —
+  // 0-1 hops bright, 2 hops medium, 3+ / unreachable faint — so it is obvious
+  // what a concept connects to without losing the surrounding context.
+  function focusNeighborhood(nodeId) {
+    const node = cy.getElementById(nodeId);
+    resetHighlight();
+    if (!node || node.empty()) return;
+    const dist = {};
+    cy.elements().bfs({
+      roots: node,
+      directed: false,
+      visit: (v, e, u, i, depth) => {
+        dist[v.id()] = depth;
+      },
+    });
+    const tier = (d) => (d == null ? "far" : d <= 1 ? "near" : d === 2 ? "mid" : "far");
+    cy.batch(() => {
+      cy.nodes().forEach((n) => n.addClass(tier(dist[n.id()])));
+      cy.edges().forEach((ed) => {
+        const ds = dist[ed.source().id()];
+        const dt = dist[ed.target().id()];
+        const dd = ds == null || dt == null ? null : Math.max(ds, dt);
+        ed.addClass(tier(dd));
+      });
+      node.addClass("focus");
+      node.connectedEdges().addClass("incident");
+    });
+  }
+
+  function selectNode(nodeId) {
+    showDetail(nodeId);
+    focusNeighborhood(nodeId);
   }
 
   function showDetail(conceptId) {
@@ -151,7 +206,31 @@
     chip.style.background = data.color;
 
     document.getElementById("detail-title").textContent = data.label;
-    document.getElementById("detail-id").textContent = conceptId;
+    const idEl = document.getElementById("detail-id");
+    idEl.innerHTML = "";
+    const parts = conceptId.split("/");
+    parts.forEach((seg, i) => {
+      if (i > 0) {
+        const sep = document.createElement("span");
+        sep.className = "bc-sep";
+        sep.textContent = "/";
+        idEl.appendChild(sep);
+      }
+      const isLast = i === parts.length - 1;
+      const prefixId = parts.slice(0, i + 1).join("/");
+      if (!isLast && nodeIndex[prefixId]) {
+        const a = document.createElement("a");
+        a.className = "internal";
+        a.textContent = seg;
+        a.addEventListener("click", () => selectNode(prefixId));
+        idEl.appendChild(a);
+      } else {
+        const span = document.createElement("span");
+        span.className = isLast ? "bc-current" : "bc-seg";
+        span.textContent = seg;
+        idEl.appendChild(span);
+      }
+    });
     document.getElementById("detail-description").textContent = data.description || "—";
 
     const resourceEl = document.getElementById("detail-resource");
@@ -181,6 +260,30 @@
       tagsEl.textContent = "—";
     }
 
+    // Siblings — other concepts in the same directory group.
+    const sibSection = document.getElementById("detail-siblings");
+    const sibList = document.getElementById("siblings-list");
+    sibList.innerHTML = "";
+    const parentPrefix = parts.slice(0, -1).join("/");
+    const siblings = bundle.nodes
+      .map((n) => n.data.id)
+      .filter((id) => id !== conceptId)
+      .filter((id) => id.split("/").slice(0, -1).join("/") === parentPrefix);
+    if (siblings.length) {
+      sibSection.hidden = false;
+      for (const sid of siblings) {
+        const li = document.createElement("li");
+        const a = document.createElement("a");
+        a.className = "internal";
+        a.textContent = nodeIndex[sid]?.label || sid;
+        a.addEventListener("click", () => selectNode(sid));
+        li.appendChild(a);
+        sibList.appendChild(li);
+      }
+    } else {
+      sibSection.hidden = true;
+    }
+
     const body = bundle.bodies[conceptId] || "";
     const html = marked.parse(body, { breaks: false, gfm: true });
     const bodyEl = document.getElementById("detail-body");
@@ -198,7 +301,7 @@
         const a = document.createElement("a");
         a.textContent = nodeIndex[src]?.label || src;
         a.dataset.target = src;
-        a.addEventListener("click", () => showDetail(src));
+        a.addEventListener("click", () => selectNode(src));
         li.appendChild(a);
         const muted = document.createElement("span");
         muted.className = "muted";
@@ -224,7 +327,7 @@
           a.setAttribute("href", "javascript:void(0)");
           a.addEventListener("click", (e) => {
             e.preventDefault();
-            showDetail(target);
+            selectNode(target);
           });
           return;
         }
