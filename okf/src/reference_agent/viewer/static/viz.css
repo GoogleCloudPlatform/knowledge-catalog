@@ -136,3 +136,14 @@ hr { border: none; border-top: 1px solid #e2e8f0; margin: 14px 0; }
 #detail-backlinks h2 { font-size: 13px; color: #64748b; margin-bottom: 6px; }
 #detail-backlinks ul { padding-left: 18px; }
 #detail-backlinks a { color: #2563eb; cursor: pointer; }
+
+#detail-id { word-break: break-all; }
+#detail-id a.internal { color: #2563eb; cursor: pointer; }
+#detail-id .bc-sep { margin: 0 3px; color: #cbd5e1; }
+#detail-id .bc-current { color: #475569; }
+
+#detail-siblings { margin: 12px 0; }
+#detail-siblings h2 { font-size: 13px; color: #64748b; margin-bottom: 6px; }
+#detail-siblings ul { list-style: none; padding-left: 0; margin: 0; }
+#detail-siblings li { margin: 3px 0; }
+#detail-siblings a.internal { color: #2563eb; cursor: pointer; }
