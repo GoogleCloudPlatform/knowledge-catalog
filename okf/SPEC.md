@@ -123,22 +123,23 @@ Every concept is a UTF-8 markdown file. It has two parts:
 
 ```yaml
 ---
-type: <Type name>                  # REQUIRED
+type: <kebab-case-type-name>        # REQUIRED
 title: <Optional display name>
 description: <Optional one-line summary>
 resource: <Optional canonical URI for the underlying asset>
 tags: [<tag>, <tag>, …]            # Optional
-timestamp: <ISO 8601 datetime>     # Optional last-modified time
+created: <ISO 8601 datetime>       # Optional — when the concept was first written
+updated: <ISO 8601 datetime>       # Optional — when the concept was last meaningfully changed
 # … other producer-defined key/value pairs
 ---
 ```
 
 **Required:**
 
-- `type` — A short string identifying the kind of concept. Consumers
-  use this for routing, filtering, and presentation. Example values:
-  `BigQuery Table`, `BigQuery Dataset`, `API Endpoint`, `Metric`,
-  `Playbook`, `Reference`.
+- `type` — A short kebab-case string identifying the kind of concept.
+  Consumers use this for routing, filtering, and presentation. Example
+  values: `bigquery-table`, `bigquery-dataset`, `api-endpoint`,
+  `metric`, `playbook`, `reference`.
 
   Type values are **not** registered centrally. Producers SHOULD pick
   values that are descriptive and self-explanatory; consumers MUST
@@ -155,7 +156,12 @@ timestamp: <ISO 8601 datetime>     # Optional last-modified time
   concept describes. Absent for concepts that describe abstract ideas
   rather than physical resources.
 - `tags` — A YAML list of short strings for cross-cutting categorization.
-- `timestamp` — ISO 8601 datetime of last meaningful change.
+- `created` — ISO 8601 datetime when the concept document was first
+  written. Enrichment agents SHOULD set this on creation and MUST NOT
+  update it thereafter.
+- `updated` — ISO 8601 datetime of the last meaningful change to the
+  concept's content. Enrichment agents SHOULD update this on every
+  substantive edit.
 
 **Extensions:** Producers MAY include any additional keys. Consumers
 SHOULD preserve unknown keys when round-tripping and SHOULD NOT reject
@@ -180,12 +186,13 @@ There are no required body sections. The following section headings have
 
 ```markdown
 ---
-type: BigQuery Table
+type: bigquery-table
 title: Customer Orders
 description: One row per completed customer order across all channels.
 resource: https://console.cloud.google.com/bigquery?p=acme&d=sales&t=orders
 tags: [sales, orders, revenue]
-timestamp: 2026-05-28T14:30:00Z
+created: 2026-05-01T10:00:00Z
+updated: 2026-05-28T14:30:00Z
 ---
 
 # Schema
@@ -210,11 +217,12 @@ Joined with [customers](/tables/customers.md) on `customer_id`.
 
 ```markdown
 ---
-type: Playbook
+type: playbook
 title: Incident response — data freshness alert
 description: Steps to triage a freshness alert on the orders pipeline.
 tags: [oncall, incident]
-timestamp: 2026-04-12T09:00:00Z
+created: 2026-04-12T09:00:00Z
+updated: 2026-04-12T09:00:00Z
 ---
 
 # Trigger
@@ -272,8 +280,16 @@ not-yet-written knowledge.
 
 An `index.md` file MAY appear in any directory, including the bundle
 root. It enumerates the directory's contents to support **progressive
-disclosure** — letting a human or agent see what is available before
-opening individual documents.
+disclosure** — letting a human or agent discover what is available
+before opening individual documents.
+
+`index.md` is **advisory**: it is a convenience for navigation, not an
+authoritative record of the directory's contents. Consumers that need
+a complete view of a directory MUST fall back to scanning the filesystem
+when `index.md` is absent, and MAY do so even when it is present.
+Producers that generate `index.md` automatically SHOULD keep it in sync
+with the actual files, but consumers MUST NOT treat a missing or stale
+entry as evidence that the corresponding concept does not exist.
 
 Index files contain no frontmatter. The body uses one or more sections,
 each grouping concepts under a heading:
@@ -415,12 +431,13 @@ my_bundle/
 
 ```markdown
 ---
-type: BigQuery Dataset
+type: bigquery-dataset
 title: Sales
 description: All sales-related tables for the retail business.
 resource: https://console.cloud.google.com/bigquery?p=acme&d=sales
 tags: [sales]
-timestamp: 2026-05-28T00:00:00Z
+created: 2026-05-28T00:00:00Z
+updated: 2026-05-28T00:00:00Z
 ---
 
 The sales dataset contains transactional tables, including
@@ -431,12 +448,13 @@ The sales dataset contains transactional tables, including
 
 ```markdown
 ---
-type: BigQuery Table
+type: bigquery-table
 title: Orders
 description: One row per completed customer order.
 resource: https://console.cloud.google.com/bigquery?p=acme&d=sales&t=orders
 tags: [sales, orders]
-timestamp: 2026-05-28T00:00:00Z
+created: 2026-05-28T00:00:00Z
+updated: 2026-05-28T00:00:00Z
 ---
 
 # Schema
