@@ -5,7 +5,7 @@ from typing import Any
 
 import yaml
 
-REQUIRED_FRONTMATTER_KEYS = ("type", "title", "description", "timestamp")
+REQUIRED_FRONTMATTER_KEYS = ("type",)
 
 _FRONTMATTER_DELIM = "---"
 
