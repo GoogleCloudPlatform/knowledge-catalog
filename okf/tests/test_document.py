@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from enrichment_agent.bundle.document import OKFDocument, OKFDocumentError
+from reference_agent.bundle.document import OKFDocument, OKFDocumentError
 
 
 def test_roundtrip_preserves_frontmatter_and_body():

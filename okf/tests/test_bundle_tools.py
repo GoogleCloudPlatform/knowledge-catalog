@@ -5,8 +5,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from enrichment_agent.tools.bundle_tools import write_concept_doc
-from enrichment_agent.tools.context import (
+from reference_agent.tools.bundle_tools import write_concept_doc
+from reference_agent.tools.context import (
     clear_web_state,
     set_context,
     set_web_state,

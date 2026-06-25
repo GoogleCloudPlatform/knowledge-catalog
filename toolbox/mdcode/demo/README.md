@@ -120,7 +120,7 @@ bun cleanup.ts
 
 ## OKF Wiki
 
-This demo demonstrates publishing an [Open Knowledge Format](https://github.com/google/okf)
+This demo demonstrates publishing an [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)
 wiki bundle (a directory of markdown files with YAML frontmatter) into a
 Knowledge Catalog EntryGroup via the Documents Layout. The bundle in
 `okf/catalog/` is a GA4 sample with indexes, references, a dataset, and a

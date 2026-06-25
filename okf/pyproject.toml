@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "enrichment-agent"
+name = "reference-agent"
 version = "0.1.0"
-description = "Reference enrichment agent that produces Open Knowledge Format bundles"
+description = "Reference agent that produces Open Knowledge Format bundles"
 requires-python = ">=3.11"
 dependencies = [
     "google-adk>=2.0",
@@ -19,13 +19,13 @@ dependencies = [
 dev = ["pytest>=7.0"]
 
 [project.scripts]
-enrichment-agent = "enrichment_agent.cli:main"
+reference-agent = "reference_agent.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-enrichment_agent = ["prompts/*.md", "viewer/templates/*.html", "viewer/static/*"]
+reference_agent = ["prompts/*.md", "viewer/templates/*.html", "viewer/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
