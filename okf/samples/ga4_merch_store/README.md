@@ -1,6 +1,6 @@
 # GA4 Google Merchandise Store sample
 
-Runs the enrichment agent against the public
+Runs the reference agent against the public
 `bigquery-public-data.ga4_obfuscated_sample_ecommerce` dataset (a GA4 export
 from the Google Merchandise Store) and seeds the web pass with canonical GA4
 BigQuery Export documentation URLs.
@@ -26,7 +26,7 @@ BigQuery Export documentation URLs.
 ## Run
 
 ```
-.venv/bin/python -m enrichment_agent enrich \
+.venv/bin/python -m reference_agent enrich \
     --source bq \
     --dataset bigquery-public-data.ga4_obfuscated_sample_ecommerce \
     --web-seed-file samples/ga4_merch_store/seeds.txt \

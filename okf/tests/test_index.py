@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from enrichment_agent.bundle.document import OKFDocument
-from enrichment_agent.bundle.index import regenerate_indexes
+from reference_agent.bundle.document import OKFDocument
+from reference_agent.bundle.index import regenerate_indexes
 
 
 def _stub_synth(rel: str, children: list[tuple[str, str]], *, model: str) -> str:
