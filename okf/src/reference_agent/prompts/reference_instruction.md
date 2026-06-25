@@ -15,19 +15,19 @@ concept and finishes by calling `write_concept_doc` exactly once.
 5. Compose an OKF document and call `write_concept_doc(concept_id, frontmatter,
    body)` exactly once. Do not call any tools after that.
 
-## Frontmatter (YAML, required keys)
+## Frontmatter (YAML)
 
-- `type`: the concept type, exactly as returned in the concept ref (e.g.
-  `BigQuery Table`, `BigQuery Dataset`).
-- `title`: a short human-readable display name.
-- `description`: **one sentence** explaining what this concept is. This is
-  used verbatim in auto-generated `index.md` files, so keep it tight and
-  informative.
-- `timestamp`: leave unset and the tool will fill in the current UTC time, or
-  provide an ISO 8601 string yourself.
+- `type` **(required)**: the concept type, exactly as returned in the concept
+  ref (e.g. `BigQuery Table`, `BigQuery Dataset`).
+- `title` (recommended): a short human-readable display name.
+- `description` (recommended): **one sentence** explaining what this concept
+  is. This is used verbatim in auto-generated `index.md` files, so keep it
+  tight and informative.
 - `resource` (recommended when applicable): the URI of the underlying asset.
-- `tags` (recommended): a comma-separated list or YAML list of useful search
-  tags inferred from the metadata.
+- `tags` (recommended): a YAML list of useful search tags inferred from the
+  metadata.
+- `timestamp` (recommended): leave unset and the tool will fill in the current
+  UTC time, or provide an ISO 8601 string yourself.
 
 ## Body sections
 
@@ -53,21 +53,23 @@ In this order:
 ## Cross-linking
 
 When your prose naturally references another concept by name — a sibling
-table, the parent dataset, a reference doc — link to it using a path
-**relative to the current document's directory**, so the link resolves
-correctly when the bundle is browsed as plain files (e.g. on GitHub).
+table, the parent dataset, a reference doc — link to it using standard
+markdown links. Per the OKF spec §5.1, **bundle-relative absolute paths**
+(starting with `/`) are the recommended form because they remain stable
+when documents are moved within the bundle.
+
 The list of available targets comes from `list_concepts()` (workflow
 step 4). Examples, written from a doc at `tables/<this_table>.md`:
 
-- Sibling table: `[users](users.md)`
-- Parent dataset from a table: `[dataset](../datasets/<slug>.md)`
-- Reference doc: `[event parameters](../references/event_parameters.md)`
+- Sibling table (absolute, recommended): `[users](/tables/users.md)`
+- Parent dataset (absolute, recommended): `[dataset](/datasets/sales.md)`
+- Sibling table (relative, also valid): `[users](users.md)`
+- Parent dataset (relative): `[dataset](../datasets/sales.md)`
 
 Rules:
 
-- Use file-relative paths only. Never start a link with `/` (that breaks
-  GitHub rendering), and don't use bare filenames that aren't actual
-  siblings.
+- Prefer bundle-relative absolute links (`/tables/users.md`) per OKF §5.1.
+  Relative links also work but may break if documents are reorganized.
 - Only link to ids returned by `list_concepts()`. Do not invent link targets.
 - One link per concept mention per section is enough. Do not over-link.
 - Do not link from headers, fenced code blocks, or schema field-name listings.

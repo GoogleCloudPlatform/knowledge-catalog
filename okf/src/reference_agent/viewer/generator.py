@@ -9,7 +9,7 @@ from typing import Any
 from reference_agent.bundle.document import OKFDocument, OKFDocumentError
 
 _INDEX_NAME = "index.md"
-_LINK_RE = re.compile(r"\]\(([^)\s]+\.md)(?:#[A-Za-z0-9_\-]*)?\)")
+_LINK_RE = re.compile(r'\]\(([^)\s]+\.md)(?:#[A-Za-z0-9_\-]*)?(?:\s+"[^"]*")?\)')
 _TYPE_PALETTE = {
     "BigQuery Dataset": "#8b5cf6",
     "BigQuery Table": "#3b82f6",
@@ -46,15 +46,25 @@ class Concept:
 
 
 def _extract_links(body: str, doc_dir: Path, bundle_root: Path) -> list[str]:
+    """Extract concept links from markdown body.
+
+    Handles both spec-recommended bundle-relative absolute links (OKF §5.1:
+    starting with `/`) and relative links. Skips external URLs.
+    """
     out: list[str] = []
     seen: set[str] = set()
     bundle_root_resolved = bundle_root.resolve()
     for m in _LINK_RE.finditer(body):
         target = m.group(1)
-        if "://" in target or target.startswith("/"):
+        if "://" in target:
             continue
         try:
-            resolved = (doc_dir / target).resolve().relative_to(bundle_root_resolved)
+            if target.startswith("/"):
+                # Bundle-relative absolute link — resolve from bundle root.
+                resolved = (bundle_root_resolved / target.lstrip("/")).resolve()
+            else:
+                resolved = (doc_dir / target).resolve()
+            resolved = resolved.relative_to(bundle_root_resolved)
         except ValueError:
             continue
         rel = resolved.as_posix()
