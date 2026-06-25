@@ -43,12 +43,18 @@ def test_unterminated_frontmatter_raises():
         OKFDocument.parse(src)
 
 
-def test_validate_rejects_missing_required_keys():
-    doc = OKFDocument(frontmatter={"type": "X", "title": "Y"})
+def test_validate_rejects_missing_type():
+    """Only 'type' is REQUIRED per OKF §4.1."""
+    doc = OKFDocument(frontmatter={"title": "Y", "description": "Z", "timestamp": "2026-05-27T00:00:00+00:00"})
     with pytest.raises(OKFDocumentError) as exc:
         doc.validate()
-    assert "description" in str(exc.value)
-    assert "timestamp" in str(exc.value)
+    assert "type" in str(exc.value)
+
+
+def test_validate_accepts_minimal_frontmatter():
+    """Only 'type' is required — all other fields are optional per OKF §4.1."""
+    doc = OKFDocument(frontmatter={"type": "X"})
+    doc.validate()
 
 
 def test_validate_accepts_full_frontmatter():
