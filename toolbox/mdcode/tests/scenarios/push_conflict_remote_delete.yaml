@@ -1,0 +1,98 @@
+name: push_conflict_remote_delete
+description: Verify conflict detection when local updates aspect/entry that was deleted remotely
+setup:
+  bigQuery:
+    datasets:
+      - id: p:d
+        datasetReference:
+          projectId: p
+          datasetId: d
+        location: us
+  catalog:
+    entryTypes:
+      - name: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
+    aspectTypes:
+      - name: projects/dataplex-types/locations/global/aspectTypes/overview
+      - name: projects/dataplex-types/locations/global/aspectTypes/schema
+    entries:
+      - name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d
+        entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
+        aspects:
+          dataplex-types.global.overview:
+            aspectType: projects/dataplex-types/locations/global/aspectTypes/overview
+            data:
+              content: Remote description base
+              contentType: MARKDOWN
+          dataplex-types.global.schema:
+            aspectType: projects/dataplex-types/locations/global/aspectTypes/schema
+            data:
+              content: Remote schema base
+              contentType: MARKDOWN
+
+  fileSystem:
+    catalog.yaml: |
+      scope: bq-dataset.p.d
+      snapshot:
+        entries:
+          - dataplex-types.global.bigquery-dataset
+        aspects:
+          - dataplex-types.global.overview
+          - dataplex-types.global.schema
+
+actions:
+  # First pull establishes the base state
+  - action: pull
+    options: {}
+
+  # Now we modify both aspects locally
+  - action: fileSystem
+    write:
+      catalog/p.d.overview.md: |
+        Local modified description
+      catalog/p.d.schema.md: |
+        Local modified schema
+
+  - action: status
+    assert:
+      modified: true
+
+  # Simulate remote deletion of overview aspect
+  - action: updateRemoteEntry
+    name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d
+    fields:
+      aspects:
+        # We only leave schema, meaning overview is deleted remotely
+        dataplex-types.global.schema:
+          aspectType: projects/dataplex-types/locations/global/aspectTypes/schema
+          data:
+            content: Remote schema base
+            contentType: MARKDOWN
+
+  # Push should fail because overview was deleted remotely but updated locally
+  - action: push
+    assert:
+      success: false
+      details: "Cannot push: conflict on p.d aspect dataplex-types.global.overview. Use --force to overwrite or --allow-partial to skip."
+
+  # Push with allowPartial should succeed and only push schema
+  - action: push
+    options:
+      allowPartial: true
+    assert:
+      success: true
+
+  # Simulate remote deletion of the entire entry
+  - action: deleteRemoteEntry
+    name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d
+  
+  # Local still has modifications (we modify schema again)
+  - action: fileSystem
+    write:
+      catalog/p.d.schema.md: |
+        Local modified schema again
+
+  # Push should fail because entry was deleted remotely but updated locally
+  - action: push
+    assert:
+      success: false
+      details: "Cannot push: conflict on p.d. It was deleted remotely but modified locally. Use --force to recreate it."

@@ -152,6 +152,15 @@ function runScenario(scenario: any) {
           case 'createRemoteEntry':
             (catalog as any).mockEntries.push(params.entry);
             break;
+          case 'deleteRemoteEntry':
+            {
+                const entries = (catalog as any).mockEntries;
+                const index = entries.findIndex((e: any) => e.name === params.name);
+                if (index !== -1) {
+                    entries.splice(index, 1);
+                }
+            }
+            break;
           case 'updateEntry':
             await snapshot.updateEntry(params.entry, params.fields);
             break;

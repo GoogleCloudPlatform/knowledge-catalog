@@ -256,6 +256,20 @@ export class CatalogSync {
         const entryExists = existRes.status === 200 && !!existRes.result;
 
         if (!entryExists) {
+            if (stateEntry && !options.force) {
+                if (options.dryRun && !options.allowPartial) {
+                    console.log(`[Dry Run] Conflict: ${localName} was deleted remotely but modified locally (would abort push)`);
+                    continue;
+                }
+                if (!options.allowPartial) {
+                    return { success: false, details: `Cannot push: conflict on ${localName}. It was deleted remotely but modified locally. Use --force to recreate it.` };
+                }
+                if (options.dryRun) {
+                    console.log(`[Dry Run] Partial Push: skipping conflicting entry ${localName}`);
+                }
+                continue;
+            }
+
             if (options.dryRun) {
                 console.log(`[Dry Run] Would create entry ${localName}`);
             } else {
@@ -323,15 +337,18 @@ export class CatalogSync {
               if (!stateEntry || stateEntry.aspects?.[aspectKey] !== localChecksum) {
                  // Locally modified aspect
                  let aspectConflict = false;
+                 const baseChecksum = stateEntry?.aspects?.[aspectKey];
                  
                  if (remoteEntry && remoteEntry.aspects?.[aspectKey]) {
                      const remoteAspectData = remoteEntry.aspects[aspectKey];
                      const remoteAspectChecksum = calculateAspectChecksum(remoteAspectData);
-                     const baseChecksum = stateEntry?.aspects?.[aspectKey];
                      if (remoteAspectChecksum !== baseChecksum) {
                          aspectConflict = true;
                          conflictDetected = true;
                      }
+                 } else if (baseChecksum !== undefined) {
+                     aspectConflict = true;
+                     conflictDetected = true;
                  }
                  
                  if (aspectConflict) {
