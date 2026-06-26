@@ -130,8 +130,13 @@ export class DocumentsLayout implements CatalogLayout {
 
   async deleteEntry(name: string): Promise<void> {
     const entryPath = this._index.get(name);
-    if (!entryPath) {
+    if (entryPath === undefined) {
       throw new Error(`Entry not found: ${name}`);
+    }
+    if (entryPath === null) {
+      this._index.delete(name);
+      this._synthesizeIndexEntries();
+      return;
     }
     if (!fs.existsSync(entryPath)) {
       throw new Error(`Entry not found: ${name}`);
