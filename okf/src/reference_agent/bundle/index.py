@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Callable
 
 from reference_agent.bundle.document import OKFDocument
+from reference_agent.bundle.paths import RESERVED_FILENAMES
 from reference_agent.bundle.synthesizer import synthesize_description
 
 _INDEX_FILE = "index.md"
@@ -68,7 +69,7 @@ def regenerate_indexes(
         entries: list[tuple[str, str, str, str]] = []
 
         for child in sorted(directory.iterdir()):
-            if child.name == _INDEX_FILE:
+            if child.name in RESERVED_FILENAMES:
                 continue
             if child.is_file() and child.suffix == ".md":
                 doc = _load_doc(child)
