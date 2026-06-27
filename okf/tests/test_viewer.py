@@ -114,6 +114,22 @@ def test_index_md_is_not_a_concept(tmp_path: Path):
     }
 
 
+def test_log_md_is_not_a_concept(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    _make_bundle(bundle)
+    _write(bundle / "tables" / "log.md", "Added users on 2026-05-28.\n")
+    out = tmp_path / "viz.html"
+    generate_visualization(bundle, out)
+    data = _extract_bundle_data(out.read_text(encoding="utf-8"))
+    ids = {n["data"]["id"] for n in data["nodes"]}
+    assert ids == {
+        "datasets/my_dataset",
+        "tables/users",
+        "tables/events",
+        "references/metrics/dau",
+    }
+
+
 def test_cross_links_become_edges(tmp_path: Path):
     bundle = tmp_path / "bundle"
     _make_bundle(bundle)

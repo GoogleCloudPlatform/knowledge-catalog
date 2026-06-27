@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+RESERVED_FILENAMES = frozenset({"index.md", "log.md"})
+
 _SEGMENT_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.\-]*")
 
 

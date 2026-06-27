@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from reference_agent.bundle.document import OKFDocument, OKFDocumentError
+from reference_agent.bundle.paths import RESERVED_FILENAMES
 
-_INDEX_NAME = "index.md"
 _LINK_RE = re.compile(r"\]\(([^)\s]+\.md)(?:#[A-Za-z0-9_\-]*)?\)")
 _TYPE_PALETTE = {
     "BigQuery Dataset": "#8b5cf6",
@@ -69,7 +69,7 @@ def _extract_links(body: str, doc_dir: Path, bundle_root: Path) -> list[str]:
 def _walk_concepts(bundle_root: Path) -> list[Concept]:
     concepts: list[Concept] = []
     for md_path in sorted(bundle_root.rglob("*.md")):
-        if md_path.name == _INDEX_NAME:
+        if md_path.name in RESERVED_FILENAMES:
             continue
         rel = md_path.relative_to(bundle_root).with_suffix("")
         concept_id = "/".join(rel.parts)

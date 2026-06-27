@@ -92,3 +92,20 @@ def test_regenerate_single_child_reuses_description(tmp_path: Path):
     root_index = (root / "index.md").read_text(encoding="utf-8")
     assert "(datasets/index.md) - The only dataset in this bundle." in root_index
     assert call_count == 0
+
+
+def test_regenerate_excludes_reserved_log_md(tmp_path: Path):
+    root = tmp_path / "bundle"
+    _write_doc(
+        root / "tables" / "users.md",
+        "BigQuery Table",
+        "users",
+        "Per-user dimension.",
+    )
+    (root / "tables" / "log.md").write_text("Added users.\n", encoding="utf-8")
+
+    regenerate_indexes(root, model="stub", synthesize=_stub_synth)
+
+    tables_index = (root / "tables" / "index.md").read_text(encoding="utf-8")
+    assert "[users](users.md)" in tables_index
+    assert "log.md" not in tables_index
