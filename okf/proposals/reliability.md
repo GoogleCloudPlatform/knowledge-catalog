@@ -24,7 +24,7 @@ This is the fourth trust axis, distinct from the three already in flight:
 ### 2.1 Floor
 
 - `confidence` (required within the object) — an ordinal band, one of `HIGH | MEDIUM | LOW | UNVERIFIED`. This is the interoperable surface consumers filter on.
-- `basis` — how the claim was obtained, one of `live-source | partner-attested | vendor-doc | forecast | computed | inferred`, ordered most to least authoritative when sources disagree.
+- `basis` — how the claim was obtained, one of `live-source | partner-attested | vendor-doc | forecast | computed | inferred`, ordered most to least authoritative when sources disagree. (Open question from the human-authored-KB shape: curated or decided knowledge is neither a live/computed/forecast reading nor an inference, so it has no honest value here; an `authored` value is under discussion on the proposal thread.)
 
 ### 2.2 Corroboration tier
 
@@ -107,4 +107,4 @@ Consistent with OKF's stance that it *references* schemas rather than subsuming 
 - Schema: <https://dynamicfeed.ai/schemas/okf-reliability-v1.json>
 - Worked example bundle: <https://dynamicfeed.ai/schemas/okf-reliability-examples.json>
 
-Producers MAY validate against it. Per SPEC §4.1, consumers MUST NOT reject a document solely for omitting `reliability` or for carrying keys beyond those defined here. The schema encodes the §3 honesty rules as constraints, and has been validated against three independent production shapes (a live-data layer, a multi-version corpus, and a multi-domain human-authored KB).
+Producers MAY validate against it. Per SPEC §4.1, consumers MUST NOT reject a document solely for omitting `reliability` or for carrying keys beyond those defined here. The schema encodes the §3 honesty rules as constraints, and a portable conformance-vector suite (12 cases across all five rules, 6 valid and 6 invalid) is published alongside it (<https://github.com/dynamicfeed/df-verify/tree/main/reliability>) so independent implementations can confirm they agree. Independent runs from a live-data layer and a multi-version corpus pass in full; a human-authored-KB shape passes the honesty rules and surfaced the open `basis` question noted in §2.1.
