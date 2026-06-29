@@ -48,6 +48,7 @@ These keep the axis trustworthy rather than decorative:
 2. `verified: true` MUST assert `sources >= 2`.
 3. An `UNVERIFIED` band, or a disputed conflict, MUST NOT be `verified`.
 4. When `score` is present it MUST be recomputable from `signals` and ordinally coherent with `confidence`. Note the band is **not** a pure re-banding of the score: it also reflects a corroboration ceiling, so a single-source reading caps at `MEDIUM` even when its raw score is high.
+5. A disputed conflict caps `confidence` at `MEDIUM` (`HIGH` excluded). An open disagreement is a corroboration failure, so the claim cannot be `HIGH`; the position the trust ordering selects MAY still carry up to `MEDIUM` (a conservative producer MAY floor to `LOW`), while `disputed: true` stays flagged. This is the same corroboration ceiling as rule 4, applied to disputes: it gives a consumer both the dispute flag and a usable graded answer rather than discarding the prevailing reading.
 
 ## 4. Examples
 
