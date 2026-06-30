@@ -4,11 +4,16 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Callable
 
+from reference_agent import DEFAULT_MODEL
 from reference_agent.bundle.document import OKFDocument
 from reference_agent.bundle.synthesizer import synthesize_description
 
 _INDEX_FILE = "index.md"
-_FALLBACK_MODEL = "gemini-flash-latest"
+
+# SPEC §11: bundles MAY declare the OKF version they target via
+# `okf_version` in the bundle-root index.md frontmatter — the only place
+# frontmatter is permitted in an index file.
+_OKF_VERSION = "0.1"
 
 
 def _load_doc(path: Path) -> OKFDocument | None:
@@ -34,6 +39,12 @@ def _build_index_text(entries: list[tuple[str, str, str, str]]) -> str:
     return "\n\n".join(sections) + "\n"
 
 
+def _with_root_frontmatter(body: str) -> str:
+    return OKFDocument(
+        frontmatter={"okf_version": _OKF_VERSION}, body=body
+    ).serialize()
+
+
 def _directories_to_index(bundle_root: Path) -> list[Path]:
     dirs: set[Path] = set()
     for md in bundle_root.rglob("*.md"):
@@ -49,7 +60,7 @@ def _directories_to_index(bundle_root: Path) -> list[Path]:
 def regenerate_indexes(
     bundle_root: Path,
     *,
-    model: str = _FALLBACK_MODEL,
+    model: str = DEFAULT_MODEL,
     synthesize: Callable[..., str] = synthesize_description,
 ) -> list[Path]:
     bundle_root = Path(bundle_root)
@@ -86,8 +97,11 @@ def regenerate_indexes(
         if not entries:
             continue
 
+        index_text = _build_index_text(entries)
+        if directory == bundle_root:
+            index_text = _with_root_frontmatter(index_text)
         index_path = directory / _INDEX_FILE
-        index_path.write_text(_build_index_text(entries), encoding="utf-8")
+        index_path.write_text(index_text, encoding="utf-8")
         written.append(index_path)
 
         if directory == bundle_root:

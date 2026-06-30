@@ -61,6 +61,31 @@ def test_regenerate_groups_by_type_and_links_relative(tmp_path: Path):
     assert "(tables/index.md) - stub: 2 items" in root_index
 
 
+def test_root_index_declares_okf_version_others_have_no_frontmatter(
+    tmp_path: Path,
+):
+    root = tmp_path / "bundle"
+    _write_doc(
+        root / "tables" / "users.md",
+        "BigQuery Table",
+        "users",
+        "Per-user dimension.",
+    )
+
+    regenerate_indexes(root, model="stub", synthesize=_stub_synth)
+
+    # SPEC §11: the bundle-root index.md is the only index that carries
+    # frontmatter, and it declares the targeted OKF version.
+    root_doc = OKFDocument.parse((root / "index.md").read_text(encoding="utf-8"))
+    assert root_doc.frontmatter == {"okf_version": "0.1"}
+
+    # Subdirectory indexes remain frontmatter-free.
+    sub_doc = OKFDocument.parse(
+        (root / "tables" / "index.md").read_text(encoding="utf-8")
+    )
+    assert sub_doc.frontmatter == {}
+
+
 def test_regenerate_skips_empty_directories(tmp_path: Path):
     root = tmp_path / "bundle"
     root.mkdir()
