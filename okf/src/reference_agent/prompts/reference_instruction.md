@@ -15,7 +15,7 @@ concept and finishes by calling `write_concept_doc` exactly once.
 5. Compose an OKF document and call `write_concept_doc(concept_id, frontmatter,
    body)` exactly once. Do not call any tools after that.
 
-## Frontmatter (YAML, required keys)
+## Frontmatter (YAML — always include all of these)
 
 - `type`: the concept type, exactly as returned in the concept ref (e.g.
   `BigQuery Table`, `BigQuery Dataset`).

@@ -5,6 +5,11 @@ from typing import Any
 
 import yaml
 
+# Keys this agent requires before it will write a document. Note this is
+# stricter than OKF conformance: the SPEC (§4.1, §9) requires only `type`
+# and treats title/description/timestamp as recommended. We enforce all
+# four as a quality bar for *generated* documents — hand-authored bundles
+# with only `type` are still SPEC-conformant and accepted by consumers.
 REQUIRED_FRONTMATTER_KEYS = ("type", "title", "description", "timestamp")
 
 _FRONTMATTER_DELIM = "---"
