@@ -170,11 +170,13 @@ prose, since structure aids both human reading and agent retrieval.
 There are no required body sections. The following section headings have
 **conventional** meaning and SHOULD be used when applicable:
 
-| Heading        | Purpose                                                |
-|----------------|--------------------------------------------------------|
-| `# Schema`     | Structured description of an asset's columns/fields.   |
-| `# Examples`   | Concrete usage examples, often as fenced code blocks.  |
-| `# Citations`  | External sources backing claims in the body. See §8.   |
+| Heading                  | Purpose                                                |
+|--------------------------|--------------------------------------------------------|
+| `# Schema`               | Structured description of an asset's columns/fields.   |
+| `# Examples`             | Concrete usage examples, often as fenced code blocks.  |
+| `# Common query patterns`| Representative queries against the asset, fenced as code. |
+| `# Joins`                | How this asset relates to or joins with others.        |
+| `# Citations`            | External sources backing claims in the body. See §8.   |
 
 ### 4.3 Example: a concept bound to a resource
 
