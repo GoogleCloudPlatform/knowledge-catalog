@@ -31,8 +31,9 @@ Open-source tools built by the community around OKF:
 - [openknowledge](https://github.com/openknowledge-sh/openknowledge) — a Go CLI to create, inspect and publish OKF bundles (implements v0.1).
 
 **Generation & publishing**
-- [OKFy](https://github.com/0dust/OKFy) — turns existing docs into agent-readable OKF bundles.
 - [kiso](https://github.com/oak-invest/kiso) — a publishing engine that turns OKF bundles into static sites (with llms.txt and sitemap).
+- [KnowHub](https://github.com/smgam29/knowhub) — a model-agnostic pipeline that turns implementation documents (guides, PDFs, decks) into OKF bundles via cross-model extraction.
+- [OKFy](https://github.com/0dust/OKFy) — turns existing docs into agent-readable OKF bundles.
 
 ## Contributing
 
