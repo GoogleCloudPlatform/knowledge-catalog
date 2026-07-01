@@ -10,6 +10,30 @@ This repository features tools, agents, and samples that demonstrate Knowledge C
 [![Open in Cloud Shell](http://gstatic.com/cloudssh/images/open-btn.svg)](https://console.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https%3A%2F%2Fgithub.com%2FGoogleCloudPlatform%2Fknowledge-catalog.git)
 
 
+## Community & ecosystem tools
+
+Open-source tools built by the community around OKF:
+
+**Editors**
+- [OWOX Model Canvas](https://github.com/OWOX/owox-model-canvas) — visual canvas / ERD editor; imports & exports OKF v0.1 and opens the GA4, Stack Overflow and Bitcoin samples. Apache-2.0, free live demo.
+- [OnyxWriter](https://github.com/activetwist/OnyxWriter) — local-first desktop editor (Tauri) for OKF bundles, with visual and raw editing.
+
+**Agent skills & toolkits**
+- [okf-knowledge](https://github.com/sniperunder123/okf-knowledge) — a portable `/okf` Claude Code skill to create, read, maintain and visualize bundles.
+- [okf-skills](https://github.com/scaccogatto/okf-skills) — a Claude Code toolkit to author, maintain, validate and visualize OKF bundles.
+- [okf-frontmatter](https://github.com/longsizhuo/okf-frontmatter) — a pure-Python agent skill that keeps repo docs under OKF with fast doc/schema lookup.
+
+**Validation & linting**
+- [okf-conformance](https://github.com/Sudhakaran88/okf-conformance) — a conformance criteria document plus an executable validator for OKF bundles.
+- [okf-lint](https://github.com/thisismydesign/okf-lint) — a linter for OKF bundles that catches conformance violations.
+
+**CLI**
+- [openknowledge](https://github.com/openknowledge-sh/openknowledge) — a Go CLI to create, inspect and publish OKF bundles (implements v0.1).
+
+**Generation & publishing**
+- [OKFy](https://github.com/0dust/OKFy) — turns existing docs into agent-readable OKF bundles.
+- [kiso](https://github.com/oak-invest/kiso) — a publishing engine that turns OKF bundles into static sites (with llms.txt and sitemap).
+
 ## Contributing
 
 See the contributing [instructions](CONTRIBUTING.md) to get started contributed.
