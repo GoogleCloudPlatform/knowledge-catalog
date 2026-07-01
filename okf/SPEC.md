@@ -129,6 +129,7 @@ description: <Optional one-line summary>
 resource: <Optional canonical URI for the underlying asset>
 tags: [<tag>, <tag>, …]            # Optional
 timestamp: <ISO 8601 datetime>     # Optional last-modified time
+rationale: <Optional one-line reason the concept exists>
 # … other producer-defined key/value pairs
 ---
 ```
@@ -156,6 +157,9 @@ timestamp: <ISO 8601 datetime>     # Optional last-modified time
   rather than physical resources.
 - `tags` — A YAML list of short strings for cross-cutting categorization.
 - `timestamp` — ISO 8601 datetime of last meaningful change.
+- `rationale` — A single sentence stating why the concept exists or why
+  its current value was chosen. Used by consumers to reconcile
+  disagreeing documents by stated intent rather than recency alone.
 
 **Extensions:** Producers MAY include any additional keys. Consumers
 SHOULD preserve unknown keys when round-tripping and SHOULD NOT reject
