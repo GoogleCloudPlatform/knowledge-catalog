@@ -193,13 +193,13 @@ timestamp: 2026-05-28T14:30:00Z
 | Column        | Type      | Description                              |
 |---------------|-----------|------------------------------------------|
 | `order_id`    | STRING    | Globally unique order identifier.        |
-| `customer_id` | STRING    | Foreign key into [customers](/tables/customers.md). |
+| `customer_id` | STRING    | Foreign key into [customers](./customers.md). |
 | `total_usd`   | NUMERIC   | Order total in US dollars.               |
 | `placed_at`   | TIMESTAMP | When the customer submitted the order.   |
 
 # Joins
 
-Joined with [customers](/tables/customers.md) on `customer_id`.
+Joined with [customers](./customers.md) on `customer_id`.
 
 # Citations
 
@@ -220,7 +220,7 @@ timestamp: 2026-04-12T09:00:00Z
 # Trigger
 
 A freshness alert fires when `orders` lags more than 30 minutes behind
-its expected SLA. See the [orders table](/tables/orders.md).
+its expected SLA. See the [orders table](../tables/orders.md).
 
 # Steps
 
@@ -235,7 +235,21 @@ its expected SLA. See the [orders table](/tables/orders.md).
 Concepts MAY link to other concepts using standard markdown links. Two
 forms are supported:
 
-### 5.1 Absolute (bundle-relative) links
+### 5.1 Relative links (recommended)
+
+Standard markdown relative paths.
+
+```markdown
+See the [neighboring concept](./other.md).
+```
+
+This is the **recommended** form because it resolves correctly in any
+standard markdown renderer — `cat`, a browser, GitHub, an editor preview
+— without OKF-aware tooling, which keeps the bundle portable and
+browsable raw. Its only drawback is that a link breaks if either
+document is moved relative to the other.
+
+### 5.2 Absolute (bundle-relative) links
 
 Begin with `/`, interpreted relative to the bundle root.
 
@@ -243,16 +257,14 @@ Begin with `/`, interpreted relative to the bundle root.
 See the [customers table](/tables/customers.md) for the join key.
 ```
 
-This is the **recommended** form because it is stable when documents are
-moved within their subdirectory.
-
-### 5.2 Relative links
-
-Standard markdown relative paths.
-
-```markdown
-See the [neighboring concept](./other.md).
-```
+This form is stable when a document is moved within the bundle, but it
+**requires an OKF-aware resolver**: a non-OKF renderer resolves a
+leading `/` against its own root (the host origin in a browser, the
+repository root on GitHub), which is not the bundle root once the bundle
+is nested as a subdirectory within a larger repository (§3). In that
+case the link mislinks or 404s. Use this form only when the bundle is
+served at a root that an OKF-aware consumer maps to the bundle root;
+prefer §5.1 for bundles meant to be browsed raw.
 
 ### 5.3 Link semantics
 
