@@ -33,7 +33,7 @@ Open-source tools built by the community around OKF:
 **Generation & publishing**
 - [kiso](https://github.com/oak-invest/kiso) — a publishing engine that turns OKF bundles into static sites (with llms.txt and sitemap).
 - [KnowHub](https://github.com/smgam29/knowhub) — a model-agnostic pipeline that turns implementation documents (guides, PDFs, decks) into OKF bundles via cross-model extraction.
-- [OKFy](https://github.com/0dust/OKFy) — turns existing docs into agent-readable OKF bundles.
+- [OKFy](https://github.com/0dust/OKFy) — converts docs sites and local Markdown folders into OKF bundles, with validation, inspection, and an MCP server for agents.
 
 ## Contributing
 
