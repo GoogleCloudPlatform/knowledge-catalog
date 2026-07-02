@@ -127,6 +127,40 @@ def test_cross_links_become_edges(tmp_path: Path):
     assert ("tables/events", "tables/users") in pairs
 
 
+def test_absolute_links_become_edges(tmp_path: Path):
+    """SPEC 5.1: links beginning with "/" are interpreted relative to the bundle root."""
+    bundle = tmp_path / "bundle"
+    _write(
+        bundle / "domain" / "mapping.md",
+        """
+        ---
+        type: Domain Concept
+        title: Mapping
+        description: Links via an absolute (bundle-relative) path.
+        timestamp: '2026-05-28T00:00:00+00:00'
+        ---
+        See the [mappings API](/api/mappings.md), not [outside](/../escape.md).
+        """,
+    )
+    _write(
+        bundle / "api" / "mappings.md",
+        """
+        ---
+        type: API Endpoint
+        title: Mappings API
+        description: Target of an absolute link.
+        timestamp: '2026-05-28T00:00:00+00:00'
+        ---
+        Body.
+        """,
+    )
+    out = tmp_path / "viz.html"
+    generate_visualization(bundle, out)
+    data = _extract_bundle_data(out.read_text(encoding="utf-8"))
+    pairs = {(e["data"]["source"], e["data"]["target"]) for e in data["edges"]}
+    assert pairs == {("domain/mapping", "api/mappings")}
+
+
 def test_missing_link_targets_are_skipped(tmp_path: Path):
     bundle = tmp_path / "bundle"
     _write(
