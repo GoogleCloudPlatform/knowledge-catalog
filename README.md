@@ -16,7 +16,7 @@ Open-source tools built by the community around OKF:
 
 **Editors**
 - [OWOX Model Canvas](https://github.com/OWOX/owox-model-canvas) — visual canvas / ERD editor; imports & exports OKF v0.1 and opens the GA4, Stack Overflow and Bitcoin samples. Apache-2.0, free live demo.
-- [OnyxWriter](https://github.com/activetwist/OnyxWriter) — local-first desktop editor (Tauri) for OKF bundles, with visual and raw editing.
+- [OnyxWriter](https://github.com/activetwist/OnyxWriter) — local-first desktop editor (Tauri) for OKF bundles: visual and raw editing, encrypted bundles, and MCP/CLI support.
 
 **Agent skills & toolkits**
 - [okf-knowledge](https://github.com/sniperunder123/okf-knowledge) — a portable `/okf` Claude Code skill to create, read, maintain and visualize bundles.
