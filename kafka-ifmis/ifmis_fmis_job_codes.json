@@ -1,0 +1,40 @@
+{
+    "activeFlag": true,
+    "assemblyDescription": "VENDOR RTN Ignition System",
+    "assemblyChangeDate": "2024-05-06T13:36:26Z",
+    "assemblyCode": null,
+    "jobCode": "VR-033",
+    "recordNo": null,
+    "restrictedToAssets": true,
+    "restrictedToLocations": true,
+    "restrictedToProducts": true,
+    "restrictedToTasks": true,
+    "systemCode": "033",
+    "taskSystems": {
+        "activeFlag": true,
+        "assemblyCount": 8,
+        "assemblyRequired": false,
+        "crossReference": null,
+        "description": "Ignition System",
+        "descriptionLanguage1": "Ignition System",
+        "descriptionLanguage2": null,
+        "descriptionLanguage3": null,
+        "procedureInfo": null,
+        "restrictedToAssets": true,
+        "restrictedToLocations": true,
+        "restrictedToProducts": true,
+        "restrictedToTasks": true,
+        "recordNo": null,
+        "systemChangeDate": "2020-10-23T15:51:37Z"
+    },
+    "wacCode": "VR",
+    "workAccomplishedCodes": {
+        "activeFlag": true,
+        "description": "VENDOR RTN",
+        "descriptionLanguage1": null,
+        "descriptionLanguage2": null,
+        "descriptionLanguage3": null,
+        "recordNo": null,
+        "wacChangeDate": "2024-05-06T13:36:26Z"
+    }
+}

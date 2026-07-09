@@ -1,0 +1,107 @@
+{
+    "account": {
+        "accountIdNum": "869926907",
+        "accountName": "US POSTAL SERVICE 980",
+        "accountOrgId": "200101534",
+        "accountOrgName": "4E-WESTPAC"
+    },
+    "approvalCode": "00879770",
+    "authorizationCode": null,
+    "captureMethod": "8",
+    "declineReason": null,
+    "driver": {
+        "driverFirstName": "JOSHUA",
+        "driverLastName": "KOLB",
+        "driverNumber": "717298",
+        "driverUserDefinedCode1": "06611760",
+        "driverUserDefinedCode2": null,
+        "driverUserDefinedCode3": null,
+        "driverUserDefinedCode4": null,
+        "driverUserDefinedCode5": null
+    },
+    "invoiceNumber": "0021063",
+    "merchant": {
+        "name": "SHELL SERVICE STATION",
+        "address": "3800 KITSAP WAY",
+        "city": "BREMERTON",
+        "state": "WA",
+        "zip": "98312-2454",
+        "latitude": 47.570109,
+        "longitude": -122.665354,
+        "participantCode": "002"
+    },
+    "cardPrompt": {
+        "type": "DRIVER"
+    },
+    "card": {
+        "cardExpirationDate": "2028-02-29",
+        "cardNumber": "807220",
+        "cardOrgId": "600041190",
+        "cardOrgName": "000",
+        "cardUserDefinedCode1": null,
+        "cardUserDefinedCode2": null,
+        "cardUserDefinedCode3": null,
+        "cardUserDefinedCode4": null,
+        "cardUserDefinedCode5": "1800"
+    },
+    "saleTypeDescription": "At the Pump",
+    "serviceType": "Unknown",
+    "odometer": 8476,
+    "products": [
+        {
+            "productSequence": 1,
+            "productCode": "01",
+            "productSourceCode": "01",
+            "productAmount": 43.56,
+            "productQuantity": 7.92,
+            "productDescription": "UNLEADED",
+            "unitPrice": 5.5,
+            "unitType": "Gallon",
+            "federalGasTaxRate": 0.183,
+            "federalGasTaxName": "FED GAS TAX",
+            "federalGasTaxAmountAssessed": 1.45,
+            "federalGasTaxAmount": 0.0,
+            "stateSalesTaxRate": 0.0,
+            "stateSalesTaxName": null,
+            "stateSalesTaxAmountAssessed": 0.0,
+            "stateSalesTaxAmount": 0.0,
+            "stateSecondaryGasTaxRate": 0.0,
+            "stateSecondaryGasTaxName": null,
+            "stateSecondaryGasTaxAmountAssessed": 0.0,
+            "stateSecondaryGasTaxAmount": 0.0,
+            "statePrimaryGasTaxRate": 0.554,
+            "statePrimaryGasTaxName": "WA MTR FUEL TAX",
+            "statePrimaryGasTaxAmountAssessed": 4.39,
+            "statePrimaryGasTaxAmount": 0.0,
+            "miscellaneousAmount": 0.0,
+            "miscellaneousAmountAssessed": 0.0,
+            "localSalesTaxRate": 0.0,
+            "localSalesTaxName": null,
+            "localSalesTaxAmountAssessed": 0.0,
+            "localSalesTaxAmount": 0.0,
+            "totalTaxAmountExempted": 0.0,
+            "foreignCurrencyName": null,
+            "foreignCurrencyAmount": 0.0,
+            "foreignCurrencyExchangeRate": 0.0
+        }
+    ],
+    "totalTransactionAmount": 43.56,
+    "transPostedDate": "2026-06-29",
+    "transDate": "2026-06-28",
+    "transTime": "21:53:00",
+    "transRefNumber": 5320623,
+    "vehicle": {
+        "vehicleNumber": "889807",
+        "vin": "548331TACOMA WA V",
+        "trueVIN": "1GBCS10A1M2918327",
+        "license": {
+            "number": "0218801",
+            "state": null
+        },
+        "vehicleUserDefinedCode1": null,
+        "vehicleUserDefinedCode2": null,
+        "vehicleUserDefinedCode3": null,
+        "vehicleUserDefinedCode4": null,
+        "vehicleUserDefinedCode5": null
+    }
+}

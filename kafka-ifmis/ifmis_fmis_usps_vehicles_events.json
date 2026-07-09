@@ -1,0 +1,22 @@
+{
+    "eventType": "VEHICLE_MOVE_USING",
+    "source": "M5",
+    "vehicleNumber": "3307188",
+    "assetDescription": "1/2T GRUMMAN LLV 93 RH",
+    "vin": "1GBCS10A7P2915131",
+    "modelCode": "1076",
+    "modelYear": "1993",
+    "financeNum": "192046",
+    "datePlacedInService": "1993-04-30T07:00:00Z",
+    "dateRetired": null,
+    "vehicleCost": 13523.0,
+    "eventDateTime": "2026-07-07T12:53:03Z",
+    "salvageValue": "351.6",
+    "retirementTypeCode": null,
+    "costOfRemoval": 0.0,
+    "proceedsOfSale": "0.0",
+    "purchaseContract": "PS-86-D-1795",
+    "prevFinanceNum": "198356",
+    "prevOwningDeptId": null,
+    "adjustmentCost": 0.0
+}
