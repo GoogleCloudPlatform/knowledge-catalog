@@ -185,7 +185,7 @@
     const html = marked.parse(body, { breaks: false, gfm: true });
     const bodyEl = document.getElementById("detail-body");
     bodyEl.innerHTML = html;
-    rewriteInternalLinks(bodyEl);
+    rewriteInternalLinks(bodyEl, conceptId);
 
     const bl = backlinks[conceptId] || [];
     const blSection = document.getElementById("detail-backlinks");
@@ -213,21 +213,41 @@
     cy.animate({ center: { eles: node }, zoom: Math.max(cy.zoom(), 1.0) }, { duration: 200 });
   }
 
-  function rewriteInternalLinks(root) {
+  // Resolve a markdown-link href to a concept id, honoring both absolute
+  // ("/clinical/careplan.md") and relative ("../clinical/careplan.md",
+  // "founding-member-v1.md") links, the latter relative to currentId's dir.
+  function hrefToConceptId(href, currentId) {
+    let h = href.split("#")[0];
+    if (!h.endsWith(".md")) return null;
+    h = h.slice(0, -3);
+    let parts;
+    if (h.startsWith("/")) {
+      parts = h.slice(1).split("/");
+    } else {
+      parts = currentId.split("/").slice(0, -1).concat(h.split("/"));
+    }
+    const out = [];
+    for (const p of parts) {
+      if (p === "" || p === ".") continue;
+      if (p === "..") out.pop();
+      else out.push(p);
+    }
+    return out.join("/");
+  }
+
+  function rewriteInternalLinks(root, currentId) {
     root.querySelectorAll("a[href]").forEach((a) => {
       const href = a.getAttribute("href");
       if (!href) return;
-      if (href.startsWith("/") && href.endsWith(".md")) {
-        const target = href.slice(1, -3);
-        if (nodeIndex[target]) {
-          a.className = "internal";
-          a.setAttribute("href", "javascript:void(0)");
-          a.addEventListener("click", (e) => {
-            e.preventDefault();
-            showDetail(target);
-          });
-          return;
-        }
+      const target = hrefToConceptId(href, currentId || "");
+      if (target && nodeIndex[target]) {
+        a.className = "internal";
+        a.setAttribute("href", "javascript:void(0)");
+        a.addEventListener("click", (e) => {
+          e.preventDefault();
+          showDetail(target);
+        });
+        return;
       }
       a.className = "external";
       a.setAttribute("target", "_blank");
