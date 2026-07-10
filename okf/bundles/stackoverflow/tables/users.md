@@ -1,80 +1,80 @@
 ---
 type: BigQuery Table
 resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow/tables/users
-title: Users
-description: This table contains information about users registered on Stack Overflow,
-  including detailed profile information, activity metrics, and network-wide identifiers.
-tags:
-- Stack Overflow
-- users
-- profiles
-- community
-- schema
-- data dump
-timestamp: '2026-05-28T23:32:24+00:00'
+title: Stack Overflow Users
+description: Contains information about registered users on the Stack Overflow platform.
+tags: stackoverflow, users, community, reputation
+generated:
+  by: reference_agent/gemini-2.5-flash
+  at: '2026-07-10T22:51:02+00:00'
+sources:
+- resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow/tables/users
+  title: 'BigQuery Table: users'
+  id: bq-table-users
 ---
 
-This table, `users`, from the [stackoverflow](../datasets/stackoverflow.md) dataset, stores profiles of registered users on the Stack Overflow platform. Each row represents a unique user, identified by their `id`. The table includes details such as display name, creation date, last access date, reputation, and vote counts. It provides insights into the activity and characteristics of the Stack Overflow community members.
+The `users` table in the [stackoverflow](../datasets/stackoverflow.md) dataset provides a comprehensive profile for each registered user on the Stack Overflow platform. Each row in this table represents a unique user, capturing details such as their display name, reputation score, activity dates, and biographical information. This table is essential for analyzing user behavior, community engagement, and overall platform dynamics.
 
 # Schema
 
-*   `id` (INTEGER) - Unique identifier for the user.
-*   `display_name` (STRING) - The publicly visible name of the user.
-*   `about_me` (STRING) - User-provided free-form text about themselves. Nullable.
-*   `age` (INTEGER) - User-provided age. Nullable.
-*   `account_id` (INTEGER) - User\'s Stack Exchange Network profile ID; NULL if the user has hidden this community in their profile. Nullable.
-*   `creation_date` (TIMESTAMP) - Timestamp when the user account was created.
-*   `email_hash` (STRING) - Gravatar email hash, now always NULL and will not appear as an attribute in the data dump XML. Nullable.
-*   `last_access_date` (TIMESTAMP) - Datetime user last loaded a page; updated every 30 minutes at most.
-*   `location` (STRING) - User-provided geographical location. Nullable.
-*   `reputation` (INTEGER) - The user\'s reputation score.
-*   `up_votes` (INTEGER) - How many upvotes the user has cast.
-*   `down_votes` (INTEGER) - Total number of downvotes received by the user.
-*   `views` (INTEGER) - Number of times the user\'s profile has been viewed.
-*   `profile_image_url` (STRING) - URL of the user\'s profile picture. Nullable.
-*   `website_url` (STRING) - URL of the user\'s personal website. Nullable.
+- `id`: Unique identifier for the user.
+- `display_name`: The public display name chosen by the user.
+- `about_me`: A short biography provided by the user.
+- `age`: User's age (as a string, if provided).
+- `creation_date`: Timestamp when the user account was created.
+- `last_access_date`: Timestamp of the user's last activity or login.
+- `location`: The geographical location provided by the user.
+- `reputation`: The user's reputation score.
+- `up_votes`: Total number of upvotes received by the user.
+- `down_votes`: Total number of downvotes received by the user.
+- `views`: Number of times the user's profile has been viewed.
+- `profile_image_url`: URL to the user's profile picture.
+- `website_url`: URL to the user's personal website.
 
 # Common query patterns
 
-1.  Find the top 10 users by reputation:
-    ```sql
-    SELECT
-      id,
-      display_name,
-      reputation
-    FROM
-      `bigquery-public-data.stackoverflow.users`
-    ORDER BY
-      reputation DESC
-    LIMIT 10
-    ```
-2.  Count users created per year:
-    ```sql
-    SELECT
-      EXTRACT(YEAR FROM creation_date) AS creation_year,
-      COUNT(id) AS user_count
-    FROM
-      `bigquery-public-data.stackoverflow.users`
-    GROUP BY
-      creation_year
-    ORDER BY
-      creation_year
-    ```
-3.  Find users with a high number of upvotes given:
-    ```sql
-    SELECT
-      display_name,
-      up_votes
-    FROM
-      `bigquery-public-data.stackoverflow.users`
-    WHERE
-      up_votes > 1000
-    ORDER BY
-      up_votes DESC
-    LIMIT 5
-    ```
+```sql
+-- Get the top 10 users by reputation
+SELECT
+    display_name,
+    reputation,
+    location
+FROM
+    `bigquery-public-data.stackoverflow.users`
+ORDER BY
+    reputation DESC
+LIMIT 10;
+```
 
-# Citations
+```sql
+-- Find users who joined in 2020 and have a high number of upvotes
+SELECT
+    id,
+    display_name,
+    creation_date,
+    up_votes
+FROM
+    `bigquery-public-data.stackoverflow.users`
+WHERE
+    EXTRACT(YEAR FROM creation_date) = 2020
+    AND up_votes > 1000
+ORDER BY
+    up_votes DESC
+LIMIT 5;
+```
 
-[1] [Stack Overflow Users Table](https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow/tables/users)
-[2] [Database schema documentation for the public data dump and SEDE](https://meta.stackexchange.com/questions/2677/database-schema-documentation-for-the-public-data-dump-and-sede)
+```sql
+-- Count users by location (top 5 locations)
+SELECT
+    location,
+    COUNT(id) AS user_count
+FROM
+    `bigquery-public-data.stackoverflow.users`
+WHERE
+    location IS NOT NULL AND location != ''
+GROUP BY
+    location
+ORDER BY
+    user_count DESC
+LIMIT 5;
+```

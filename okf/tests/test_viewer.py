@@ -25,7 +25,7 @@ def _make_bundle(root: Path) -> None:
         description: A test dataset.
         resource: https://example.com/dataset
         tags: [test]
-        timestamp: '2026-05-28T00:00:00+00:00'
+        generated: {by: 'reference_agent/gemini', at: '2026-05-28T00:00:00+00:00'}
         ---
         Parent dataset for [users](../tables/users.md).
         """,
@@ -39,7 +39,14 @@ def _make_bundle(root: Path) -> None:
         description: User profiles.
         resource: https://example.com/users
         tags: [users]
-        timestamp: '2026-05-28T00:00:00+00:00'
+        status: deprecated
+        generated: {by: 'reference_agent/gemini', at: '2026-05-28T00:00:00+00:00'}
+        verified:
+          - {by: 'process:finance-nightly', at: '2026-05-29T00:00:00+00:00'}
+          - {by: 'human:ahormati', at: '2026-05-30T00:00:00+00:00'}
+        stale_after: '2020-01-01'
+        sources:
+          - {id: bq, resource: 'https://example.com/users', title: BigQuery}
         ---
         Joinable with [events](events.md) and see [DAU](../references/metrics/dau.md).
         """,
@@ -53,7 +60,7 @@ def _make_bundle(root: Path) -> None:
         description: User events.
         resource: https://example.com/events
         tags: [events]
-        timestamp: '2026-05-28T00:00:00+00:00'
+        generated: {by: 'reference_agent/gemini', at: '2026-05-28T00:00:00+00:00'}
         ---
         See [users](users.md).
         """,
@@ -67,7 +74,7 @@ def _make_bundle(root: Path) -> None:
         description: DAU metric.
         resource: https://example.com/dau
         tags: [metric]
-        timestamp: '2026-05-28T00:00:00+00:00'
+        generated: {by: 'reference_agent/gemini', at: '2026-05-28T00:00:00+00:00'}
         ---
         COUNT(DISTINCT user_id) per day.
         """,
@@ -136,7 +143,7 @@ def test_missing_link_targets_are_skipped(tmp_path: Path):
         type: BigQuery Table
         title: Lonely
         description: Has a dangling link.
-        timestamp: '2026-05-28T00:00:00+00:00'
+        generated: {by: 'reference_agent/gemini', at: '2026-05-28T00:00:00+00:00'}
         ---
         Links to [missing](missing.md).
         """,
@@ -158,6 +165,23 @@ def test_node_colors_match_palette(tmp_path: Path):
     assert by_id["datasets/my_dataset"]["color"] == "#8b5cf6"
     assert by_id["tables/users"]["color"] == "#3b82f6"
     assert by_id["references/metrics/dau"]["color"] == "#10b981"
+
+
+def test_v02_signals_appear_in_graph_payload(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    _make_bundle(bundle)
+    out = tmp_path / "viz.html"
+    generate_visualization(bundle, out)
+    data = _extract_bundle_data(out.read_text(encoding="utf-8"))
+    users = {n["data"]["id"]: n["data"] for n in data["nodes"]}["tables/users"]
+    assert users["status"] == "deprecated"
+    # Both a process and a human attestation → human-reviewed tier.
+    assert users["trust_tier"] == "human-reviewed"
+    # stale_after is in the past → stale.
+    assert users["stale"] is True
+    assert users["generated"]["by"] == "reference_agent/gemini"
+    assert len(users["verified"]) == 2
+    assert users["sources"][0]["id"] == "bq"
 
 
 def test_raises_when_bundle_missing(tmp_path: Path):

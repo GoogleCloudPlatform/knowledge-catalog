@@ -30,7 +30,7 @@ BigQuery Export documentation URLs.
     --source bq \
     --dataset bigquery-public-data.ga4_obfuscated_sample_ecommerce \
     --web-seed-file samples/ga4_merch_store/seeds.txt \
-    --out ./bundles/ga4_merch_store
+    --out ./bundles/ga4
 ```
 
 To iterate on a single concept, add `--concept tables/events_`. To skip
@@ -39,7 +39,7 @@ the web pass, add `--no-web`. To raise or lower the web budget, use
 
 ## What you get
 
-A bundle under `./bundles/ga4_merch_store/` with one OKF doc per BQ
+A bundle under `./bundles/ga4/` with one OKF doc per BQ
 concept (dataset + tables), optionally augmented and cross-linked with
 reference docs minted from the seeded GA4 documentation pages, plus an
 auto-generated `index.md` at each directory level.

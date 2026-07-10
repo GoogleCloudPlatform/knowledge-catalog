@@ -1,3 +1,3 @@
 # BigQuery Dataset
 
-* [Cryptocurrency Bitcoin](crypto_bitcoin.md) - This BigQuery public dataset contains a complete history of the Bitcoin blockchain and updates every 10 minutes.
+* [Bitcoin Blockchain Dataset](crypto_bitcoin.md) - A public Google BigQuery dataset containing the complete transaction ledger and block history of the Bitcoin blockchain.

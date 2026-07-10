@@ -144,10 +144,15 @@ def _build_web_user_message(
         f"- Allowed hosts: {allowed_lines}\n"
         f"- Allowed URL path prefixes: {prefixes}\n"
         f"- Denied URL path substrings: {denied}\n\n"
-        f"Follow the web-ingestion workflow. For each fetched page, decide "
-        f"whether it enriches an existing concept, deserves its own "
-        f"`references/<slug>` doc, or should be skipped. Prefer skipping over "
-        f"borderline fetches — the budget is small."
+        f"Follow the web-ingestion workflow. Do not stop after a single page: "
+        f"seed pages are usually indexes or schema references, so follow their "
+        f"in-domain links to the high-value pages (sample-query / cookbook, "
+        f"metric definitions, field/enum references) and keep going until the "
+        f"relevant material is covered or the page budget is spent. For each "
+        f"fetched page, decide whether it enriches an existing concept, "
+        f"deserves its own `references/<slug>` doc, or should be skipped. Skip "
+        f"obvious junk (nav, marketing, login), but do not skip authoritative "
+        f"documentation just to conserve budget."
     )
     return types.Content(role="user", parts=[types.Part(text=text)])
 
@@ -171,7 +176,7 @@ class ReferenceRunner:
         self.model = model
         self.verbose = verbose
         self.bundle_root.mkdir(parents=True, exist_ok=True)
-        set_context(self.source, self.bundle_root)
+        set_context(self.source, self.bundle_root, model=self.model)
 
         self.web_seeds = list(web_seeds or [])
         self.web_max_pages = int(web_max_pages)

@@ -1,55 +1,74 @@
 ---
 type: BigQuery Dataset
 resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/crypto_bitcoin
-title: Cryptocurrency Bitcoin
-description: This BigQuery public dataset contains a complete history of the Bitcoin
-  blockchain and updates every 10 minutes.
+title: Bitcoin Blockchain Dataset
+description: A public Google BigQuery dataset containing the complete transaction
+  ledger and block history of the Bitcoin blockchain.
 tags:
-- cryptocurrency
 - bitcoin
 - blockchain
-- public data
-- gcp
-- data-analytics
-timestamp: '2026-05-28T22:44:47+00:00'
+- crypto
+- public-data
+generated:
+  by: reference_agent/gemini-3.5-flash
+  at: '2026-07-10T23:14:11+00:00'
+sources:
+- title: BigQuery Dataset Metadata - crypto_bitcoin
+  resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/crypto_bitcoin
+  id: bq-crypto-bitcoin-meta
 ---
 
-The `crypto_bitcoin` dataset provides a comprehensive and up-to-date record of the entire Bitcoin blockchain. It includes detailed information about [blocks](../tables/blocks.md), [transactions](../tables/transactions.md), transaction [inputs](../tables/inputs.md), and [outputs](../tables/outputs.md). This dataset is part of the BigQuery Public Datasets program, making it freely accessible for analysis and research into Bitcoin's operations, economics, and historical trends. Researchers, developers, and enthusiasts can use this data to understand transaction patterns, network activity, and the overall state of the Bitcoin network.
+The `crypto_bitcoin` dataset is a public Google BigQuery dataset containing the entire blockchain transaction history for Bitcoin. It is updated continuously and provides a highly structured, queryable format of block and transaction data from the genesis block onwards.
+
+The dataset contains four primary tables:
+- [blocks](../tables/blocks.md) representing Bitcoin blocks, including hashes, sizes, transaction counts, and block rewards.
+- [transactions](../tables/transactions.md) containing top-level transaction details such as inputs/outputs totals, fees, and cryptographic signatures.
+- [inputs](../tables/inputs.md) containing the transaction inputs (spending previous outputs) representing the source of funds.
+- [outputs](../tables/outputs.md) containing the transaction outputs representing the destinations of funds (addresses and values).
+
+This dataset is widely used for blockchain forensics, macroeconomic analysis of transaction volumes, wallet balance tracking, and research into mining activities.
 
 # Schema
 
-This dataset contains the following tables, providing a complete history of the Bitcoin blockchain:
+As a BigQuery Dataset, `crypto_bitcoin` acts as a namespace and container for the following tables:
 
-*   [blocks](../tables/blocks.md)
-*   [inputs](../tables/inputs.md)
-*   [outputs](../tables/outputs.md)
-*   [transactions](../tables/transactions.md)
+| Table ID | Description |
+| :--- | :--- |
+| **[blocks](../tables/blocks.md)** | Blocks containing transactions that have been validated and written to the ledger. |
+| **[transactions](../tables/transactions.md)** | Individual ledger entries where value is transferred between participants. |
+| **[inputs](../tables/inputs.md)** | References to UTXOs (Unspent Transaction Outputs) being spent in transactions. |
+| **[outputs](../tables/outputs.md)** | Outputs created by transactions that become new UTXOs. |
 
 # Common query patterns
 
-```sql
--- Count the total number of blocks in the Bitcoin blockchain
-SELECT
-    COUNT(*)
-FROM
-    `bigquery-public-data.crypto_bitcoin.blocks`;
-```
+### 1. Count of blocks and average transaction count per block by month
+This query calculates the monthly volume of blocks and the average number of transactions included per block.
 
 ```sql
--- Get the total number of transactions over time
 SELECT
-    DATE(block_timestamp) AS transaction_date,
-    COUNT(transaction_id) AS total_transactions
+  TIMESTAMP_TRUNC(timestamp, MONTH) AS month,
+  COUNT(1) AS total_blocks,
+  AVG(transaction_count) AS avg_transactions_per_block
 FROM
-    `bigquery-public-data.crypto_bitcoin.transactions`
+  `bigquery-public-data.crypto_bitcoin.blocks`
 GROUP BY
-    transaction_date
+  month
 ORDER BY
-    transaction_date DESC
-LIMIT 100;
+  month DESC
+LIMIT 12;
 ```
 
-# Citations
+### 2. Transaction fee statistics (in Satoshis) over the last 30 days
+This query explores transaction fee distributions across recent transactions.
 
-[1] [BigQuery Public Dataset: crypto_bitcoin](https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/crypto_bitcoin)
-[2] [Bitcoin in BigQuery: blockchain analytics on public data](https://cloud.google.com/blog/products/gcp/bitcoin-in-bigquery-blockchain-analytics-on-public-data)
+```sql
+SELECT
+  MIN(fee) AS min_fee,
+  MAX(fee) AS max_fee,
+  AVG(fee) AS avg_fee,
+  APPROX_QUANTILES(fee, 2)[OFFSET(1)] AS median_fee
+FROM
+  `bigquery-public-data.crypto_bitcoin.transactions`
+WHERE
+  block_timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY);
+```
