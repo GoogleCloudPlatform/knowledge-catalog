@@ -395,6 +395,13 @@ only place frontmatter is permitted in an `index.md`). Consumers that
 do not understand the declared version SHOULD attempt best-effort
 consumption rather than refusing the bundle.
 
+A single concept document distributed on its own — outside any bundle — MAY
+likewise declare `okf_version` in its own frontmatter. This lets a standalone
+file identify itself as OKF content without a surrounding bundle or a root
+`index.md`; consumers SHOULD treat such a file as a one-concept bundle. When
+the file is later placed inside a bundle that declares its own version at the
+root, the bundle-root declaration takes precedence.
+
 ---
 
 ## Appendix A — Minimal example bundle
