@@ -9,7 +9,9 @@ from typing import Any
 from reference_agent.bundle.document import OKFDocument, OKFDocumentError
 
 _INDEX_NAME = "index.md"
-_LINK_RE = re.compile(r"\]\(([^)\s]+\.md)(?:#[A-Za-z0-9_\-]*)?\)")
+_LINK_RE = re.compile(
+    r"\]\(([^)\s]+\.md)(?:#[A-Za-z0-9_\-]*)?(?:\s+\"[^\"]*\"|\s+'[^']*')?\)"
+)
 _TYPE_PALETTE = {
     "BigQuery Dataset": "#8b5cf6",
     "BigQuery Table": "#3b82f6",
@@ -51,10 +53,16 @@ def _extract_links(body: str, doc_dir: Path, bundle_root: Path) -> list[str]:
     bundle_root_resolved = bundle_root.resolve()
     for m in _LINK_RE.finditer(body):
         target = m.group(1)
-        if "://" in target or target.startswith("/"):
+        if "://" in target:
             continue
+        if target.startswith("/"):
+            # SPEC recommends absolute bundle-relative links (rooted at the
+            # bundle), so resolve them from the bundle root rather than skipping.
+            base = bundle_root_resolved / target.lstrip("/")
+        else:
+            base = doc_dir / target
         try:
-            resolved = (doc_dir / target).resolve().relative_to(bundle_root_resolved)
+            resolved = base.resolve().relative_to(bundle_root_resolved)
         except ValueError:
             continue
         rel = resolved.as_posix()
