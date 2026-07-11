@@ -5,7 +5,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from reference_agent.tools.bundle_tools import write_concept_doc
+from reference_agent.tools.bundle_tools import (
+    _schema_field_names,
+    _section_content_lines,
+    write_concept_doc,
+)
 from reference_agent.tools.context import (
     clear_web_state,
     set_context,
@@ -148,3 +152,35 @@ def test_web_pass_skips_guard_for_non_bigquery_table_types(tmp_path):
         "# Citations\n[1] [Src](https://src)\n",
     )
     assert "error" not in result
+
+
+def test_section_survives_fenced_hash_comment():
+    body = (
+        "# Schema\n"
+        "- `id` STRING\n"
+        "```\n"
+        "# looks like a heading but is code\n"
+        "```\n"
+        "- `name` STRING\n"
+        "# Other\n"
+        "- ignored\n"
+    )
+    text = "\n".join(_section_content_lines(body, "# Schema"))
+    assert "`id`" in text
+    assert "`name`" in text
+    assert "ignored" not in text
+
+
+def test_schema_fields_survive_fenced_hash_comment():
+    body = (
+        "# Schema\n"
+        "- `id` STRING\n"
+        "```sql\n"
+        "# partition by ingestion day\n"
+        "SELECT 1\n"
+        "```\n"
+        "- `name` STRING\n"
+        "# Citations\n"
+        "[1] [BQ](https://bq)\n"
+    )
+    assert _schema_field_names(body) == {"id", "name"}
