@@ -18,12 +18,20 @@ _FIELD_NAME_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_.]*)`")
 
 
 def _section_content_lines(body: str, heading: str) -> list[str]:
-    """Return non-blank lines under a top-level `# heading` section."""
+    """Return non-blank lines under a top-level `# heading` section.
+
+    Fenced code blocks are treated as content: a `#`-prefixed line inside a
+    fence is not mistaken for a heading, so it does not prematurely end the
+    section.
+    """
     in_section = False
+    in_fence = False
     out: list[str] = []
     for line in body.splitlines():
         stripped = line.strip()
-        if stripped.startswith("# "):
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+        elif not in_fence and stripped.startswith("# "):
             in_section = stripped == heading
             continue
         if in_section and stripped:
