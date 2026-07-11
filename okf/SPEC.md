@@ -266,6 +266,21 @@ Consumers MUST tolerate broken links — a link whose target does not
 exist in the bundle is not malformed; it may simply represent
 not-yet-written knowledge.
 
+### 5.4 Link target encoding
+
+Link targets are ordinary markdown/CommonMark link destinations resolved as
+bundle paths, not pre-encoded URLs. Because concept IDs are file paths,
+producers SHOULD keep path segments URL-safe (letters, digits, `_`, `-`, `.`)
+so that no percent-encoding is needed and a link resolves identically whether
+it is treated as a file path or as a URL.
+
+If a path segment must contain a character that is unsafe in a URL (for
+example a space), producers MAY percent-encode it in the link target
+(`[Q1 report](/reports/q1%20report.md)`), exactly as CommonMark requires for
+rendering. Consumers that resolve links against the filesystem SHOULD
+percent-decode a target before matching it to a concept path. Prefer segments
+that need no encoding to avoid the ambiguity entirely.
+
 ---
 
 ## 6. Index Files
