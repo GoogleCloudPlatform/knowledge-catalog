@@ -109,6 +109,19 @@ frontmatter field in §4.1. OKF does not specify a separate file format
 for aggregating documents by tag; producers that want a tag-browsing
 view can synthesize one at consumption time by scanning frontmatter.
 
+### 3.2 Ignore files (optional)
+
+An `.okfignore` file MAY appear at the bundle root, and — applying to its own
+subtree — in any subdirectory. It lists gitignore-style path patterns, one per
+line; blank lines and lines beginning with `#` are ignored. Consumers and
+enrichment agents SHOULD skip files and directories matching a pattern when
+walking the bundle — for example drafts, scratch notes, or large binaries that
+are not meant to be consumed as knowledge.
+
+An `.okfignore` never affects conformance: matching files are skipped, not
+forbidden, so a bundle is equally valid without one, and a consumer that does
+not implement ignore files MAY read the whole tree.
+
 ---
 
 ## 4. Concept Documents
