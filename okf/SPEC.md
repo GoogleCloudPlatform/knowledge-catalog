@@ -128,7 +128,7 @@ title: <Optional display name>
 description: <Optional one-line summary>
 resource: <Optional canonical URI for the underlying asset>
 tags: [<tag>, <tag>, …]            # Optional
-timestamp: <ISO 8601 datetime>     # Optional last-modified time
+timestamp: <ISO 8601 datetime>     # Recommended last-modified time
 # … other producer-defined key/value pairs
 ---
 ```
@@ -155,7 +155,9 @@ timestamp: <ISO 8601 datetime>     # Optional last-modified time
   concept describes. Absent for concepts that describe abstract ideas
   rather than physical resources.
 - `tags` — A YAML list of short strings for cross-cutting categorization.
-- `timestamp` — ISO 8601 datetime of last meaningful change.
+- `timestamp` — ISO 8601 datetime of last meaningful change. Because
+  consumers rely on it to detect stale knowledge, producers SHOULD set it
+  whenever a concept is created or updated.
 
 **Extensions:** Producers MAY include any additional keys. Consumers
 SHOULD preserve unknown keys when round-tripping and SHOULD NOT reject
