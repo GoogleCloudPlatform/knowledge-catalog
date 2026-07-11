@@ -317,6 +317,11 @@ Date headings MUST use ISO 8601 `YYYY-MM-DD` form. Log entries are
 prose; the leading bold word (`**Update**`, `**Creation**`,
 `**Deprecation**`, etc.) is a convention, not a requirement.
 
+Log entries are append-only: producers SHOULD add new dated entries rather
+than editing or deleting past ones, so the log remains a faithful history. A
+correction SHOULD be recorded as a new entry that supersedes the earlier
+statement, not as a rewrite of it.
+
 ---
 
 ## 8. Citations
