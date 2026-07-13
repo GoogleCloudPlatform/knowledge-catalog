@@ -81,7 +81,7 @@ A consumer reads a concept's dispute state from the edges alone, without an adju
 
 Two settlement dispositions:
 
-- **Supersession.** The winning concept gains a `supersedes` edge to the losing concept; the losing concept's `validity.valid_until` closes. Query-time: exclude the loser from the live set. The closing bound (`valid_until`) records when; the appended, attributed resolution event, written to the bundle's `log.md`, records that the close was an affirmed supersession and binds it to the winner's stable concept id per #120. Exclusion of the loser and promotion of the winner key on that `log.md` event, never on the closed `valid_until` alone.
+- **Supersession.** The winning concept gains a `supersedes` edge to the losing concept; the losing concept's `validity.valid_until` closes. Both records retain `contested_by` — the edge is symmetric and retained regardless of disposition, so the winner carries it too, marking that this concept emerged from a contest rather than as an uncontested replacement. `supersedes` and `contested_by` encode different facts and co-exist on the winner: the first says it won and the loser is out of force, the second is the contest provenance. Query-time: exclude the loser from the live set. The closing bound (`valid_until`) records when; the appended, attributed resolution event, written to the bundle's `log.md`, records that the close was an affirmed supersession and binds it to the winner's stable concept id per #120. Exclusion of the loser and promotion of the winner key on that `log.md` event, never on the closed `valid_until` alone. Open versus settled is read from `valid_until` plus the `log.md` event, not from the presence of `contested_by`.
 - **Dismissal.** The contest is judged without supersession — one side is dismissed as not a genuine dispute. No `supersedes` edge; the dismissed concept's `validity.valid_until` closes; a resolution receipt in `log.md` carries attribution. The `contested_by` edge remains on both records.
 
 ## Composition with the status axis
@@ -130,6 +130,10 @@ contested_by: remember://lesson/lesson-b2c3d4e5
 type: Claim
 resource: remember://lesson/lesson-d4e5f6a7
 supersedes: remember://lesson/lesson-e5f6a7b8
+contested_by: remember://lesson/lesson-e5f6a7b8
+# winner retains contested_by (symmetric, retained regardless of disposition):
+# it marks that this concept emerged from a contest. supersedes says it won and
+# the loser is out of force; the two edges encode different facts and co-exist.
 
 # one-percent-corpus-est-e5f6a7b8.md  (superseded)
 type: Claim
