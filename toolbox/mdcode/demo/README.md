@@ -124,14 +124,22 @@ This demo demonstrates publishing an [Open Knowledge Format](https://github.com/
 wiki bundle (a directory of markdown files with YAML frontmatter) into a
 Knowledge Catalog EntryGroup via the Documents Layout. The bundle in
 `okf/catalog/` is a GA4 sample with indexes, references, a dataset, and a
-table, 17 markdown files in total. The Documents Layout maps each `.md`
+table, 14 markdown files in total. The Documents Layout maps each `.md`
 file to an entry whose name is derived from the file path, with the
 markdown body stored on the `dataplex-types.global.overview` aspect.
+
+The generic Documents Layout only carries `title`/`description`/`tags` +
+body. OKF's signal layer (`resource`, `type`, `generated`, `sources`) has
+no generic home, so `push.ts`/`pull.ts` translate it into a custom typed
+`okf` Dataplex aspect (created by `setup.ts`) and back, keeping the
+on-disk files clean OKF and round-tripping the signal losslessly.
 
 **Setup**
 
 * Creates an empty Dataplex EntryGroup (`okf_ga4`).
-* Creates a `catalog.yaml` manifest pointing at the EntryGroup.
+* Creates the custom `okf` aspect type from `okf-aspect.json`.
+* Creates a `catalog.yaml` manifest pointing at the EntryGroup and listing
+  the `okf` aspect.
 * The `catalog/` directory is already populated with the GA4 markdown bundle.
 
 ```bash
@@ -143,28 +151,39 @@ ls -R catalog
 **Publish Metadata Snapshot**
 
 * Push the bundled markdown to Knowledge Catalog. Entry names mirror the
-  file path (e.g. `references/metrics/event_count.md` &rarr; entry
-  `references/metrics/event_count`). Custom `type:` values in frontmatter
-  that aren't valid Dataplex type refs fall back to
-  `dataplex-types.global.generic`.
+  file path (e.g. `references/metrics/purchasers.md` &rarr; entry
+  `references/metrics/purchasers`). Custom `type:` values in frontmatter
+  that aren't valid Dataplex type refs are preserved on the `okf` aspect
+  (the entry itself falls back to `dataplex-types.global.generic`).
 
 ```bash
-../../dist/kcmd push
+bun push.ts
+```
+
+**Pull Metadata Snapshot**
+
+* Pull the snapshot back down into `catalog/` as clean OKF. The signal
+  layer is restored from the `okf` aspect, so a pull right after a push
+  leaves `catalog/` unchanged.
+
+```bash
+bun pull.ts
 ```
 
 **Modify Metadata Snapshot**
 
-* Edit any markdown file under `catalog/` directly. Both frontmatter
-  fields (`title`, `description`, `tags`) and the markdown body can be
-  changed, then push again.
+* Edit any markdown file under `catalog/` directly. Frontmatter fields
+  (`title`, `description`, `tags`, plus the OKF signal keys `resource`,
+  `type`, `generated`, `sources`) and the markdown body can be changed,
+  then push again.
 
 ```bash
-../../dist/kcmd push
+bun push.ts
 ```
 
 **Cleanup**
 
-* Deletes the Dataplex EntryGroup
+* Deletes the Dataplex EntryGroup and the custom `okf` aspect type.
 
 ```bash
 bun cleanup.ts
