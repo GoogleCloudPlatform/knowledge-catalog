@@ -1,3 +1,3 @@
-# Tables
+# BigQuery Table
 
-- [`orders`](./orders.md) — one row per completed customer order, all channels
+* [Customer Orders](orders.md) - One row per completed customer order across web, mobile, and marketplace channels.
