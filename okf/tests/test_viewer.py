@@ -127,6 +127,30 @@ def test_cross_links_become_edges(tmp_path: Path):
     assert ("tables/events", "tables/users") in pairs
 
 
+def test_absolute_links_become_edges(tmp_path: Path):
+    """SPEC §5.1: links beginning with "/" resolve against the bundle root."""
+    bundle = tmp_path / "bundle"
+    _make_bundle(bundle)
+    _write(
+        bundle / "references" / "glossary.md",
+        """
+        ---
+        type: Reference
+        title: Glossary
+        description: Uses absolute (bundle-relative) links.
+        timestamp: '2026-05-28T00:00:00+00:00'
+        ---
+        See [users](/tables/users.md) and [DAU](/references/metrics/dau.md#dau).
+        """,
+    )
+    out = tmp_path / "viz.html"
+    generate_visualization(bundle, out)
+    data = _extract_bundle_data(out.read_text(encoding="utf-8"))
+    pairs = {(e["data"]["source"], e["data"]["target"]) for e in data["edges"]}
+    assert ("references/glossary", "tables/users") in pairs
+    assert ("references/glossary", "references/metrics/dau") in pairs
+
+
 def test_missing_link_targets_are_skipped(tmp_path: Path):
     bundle = tmp_path / "bundle"
     _write(
