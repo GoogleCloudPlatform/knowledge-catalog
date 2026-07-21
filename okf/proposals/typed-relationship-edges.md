@@ -67,6 +67,8 @@ contested_by:
 
 **Load-bearing invariant:** `contested_by` only earns its place if the disputed concept **stays in the bundle**. Drop it and a reader returning weeks later cannot tell a question that was settled from one that was never asked. That distinction is the whole point of the edge.
 
+**Logical identity and mirror completeness.** Both records carry the edge — storage redundancy, so either reads standalone without a second lookup — but the *logical* edge is one thing: the sorted-endpoint triple `(min(a,b), contested_by, max(a,b))`. Consumers count and dedup on that triple, so a symmetric pair is never mistaken for two separate contests. Because the convention requires both sides to carry it, the same `symmetric` declaration also gives a validator a completeness check: if one record carries `contested_by` and its mirror does not, the standalone-readability guarantee is silently broken on one side and SHOULD be flagged. (Storage-vs-identity split contributed by @jpavley on #148.)
+
 ## Resolution semantics — three states, append-only
 
 A consumer reads a concept's dispute state from the edges alone, without an adjudication engine shipped. There are exactly three states, distinguished by what is present in the bundle. No record is ever edited; every resolution is a new append.
@@ -146,6 +148,16 @@ contested_by: remember://lesson/lesson-d4e5f6a7
 # (log.md) records THAT it was an affirmed supersession and binds it to the
 # winner's stable id. contested_by retained append-only; exclude from live set.
 ```
+
+## Lint affordances
+
+Each edge declares a **directionality** — `supersedes` is asymmetric, `contested_by` is symmetric — and that single declaration is enough for a validator to run three checks with no lifecycle-specific knowledge. The general form is @jpavley's, drawn from a production civic-records vocabulary on #148; these two edges slot into it as ordinary entries.
+
+1. **Closed vocabulary.** An edge verb outside the registered set warns. This is what makes the other two checks meaningful.
+2. **Asymmetric contradiction.** For `supersedes`, both `A supersedes B` and `B supersedes A` present is a flag. The validator cannot know which direction is correct, but it refuses to let the pair pass silently; the same check extends to a cycle in a supersession chain.
+3. **Symmetric identity + mirror completeness.** For `contested_by`, endpoints normalize to the sorted triple so a pair is one logical edge, and a missing mirror is flagged (per the completeness note above).
+
+One thing the declaration cannot check is **semantic direction**: whether a specific, well-formed `supersedes` edge happens to point the right way. That stays a human or agent review step — a convention that implied otherwise would oversell what typing buys. The mitigation is advisory (emit asymmetric edges grouped by verb as a review sheet), which keeps the guarantee the lint *does* give precise: each edge has exactly one place to be wrong.
 
 ## Conformance
 
