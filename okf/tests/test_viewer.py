@@ -127,6 +127,63 @@ def test_cross_links_become_edges(tmp_path: Path):
     assert ("tables/events", "tables/users") in pairs
 
 
+def test_bundle_relative_links_become_edges(tmp_path: Path):
+    # SPEC.md recommends absolute, bundle-root-relative links (starting with
+    # "/") over plain relative links for stability.
+    bundle = tmp_path / "bundle"
+    _write(
+        bundle / "datasets" / "my_dataset.md",
+        """
+        ---
+        type: BigQuery Dataset
+        title: My dataset
+        description: A test dataset.
+        timestamp: '2026-05-28T00:00:00+00:00'
+        ---
+        Parent dataset for [users](/tables/users.md).
+        """,
+    )
+    _write(
+        bundle / "tables" / "users.md",
+        """
+        ---
+        type: BigQuery Table
+        title: Users
+        description: User profiles.
+        timestamp: '2026-05-28T00:00:00+00:00'
+        ---
+        See [dataset](/datasets/my_dataset.md).
+        """,
+    )
+    out = tmp_path / "viz.html"
+    generate_visualization(bundle, out)
+    data = _extract_bundle_data(out.read_text(encoding="utf-8"))
+    pairs = {(e["data"]["source"], e["data"]["target"]) for e in data["edges"]}
+    assert ("datasets/my_dataset", "tables/users") in pairs
+    assert ("tables/users", "datasets/my_dataset") in pairs
+
+
+def test_bundle_relative_link_outside_bundle_is_skipped(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    _write(
+        bundle / "tables" / "lonely.md",
+        """
+        ---
+        type: BigQuery Table
+        title: Lonely
+        description: Has an out-of-bundle absolute link.
+        timestamp: '2026-05-28T00:00:00+00:00'
+        ---
+        Links to [outside](/../outside.md).
+        """,
+    )
+    out = tmp_path / "viz.html"
+    generate_visualization(bundle, out)
+    data = _extract_bundle_data(out.read_text(encoding="utf-8"))
+    assert data["edges"] == []
+    assert len(data["nodes"]) == 1
+
+
 def test_missing_link_targets_are_skipped(tmp_path: Path):
     bundle = tmp_path / "bundle"
     _write(
