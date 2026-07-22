@@ -31,11 +31,9 @@ formats that are:
 - **Portable** across tools, organizations, and time.
 
 Increasingly, a knowledge corpus is not authored once and then read: it
-is **continuously written and maintained by agents**. This repository is
-an instance, where `reference_agent` mints and enriches concepts
-automatically. When most concepts are machine-generated, a consumer needs
-answers that a plain markdown-plus-frontmatter convention does not make
-first-class:
+is **continuously written and maintained by agents**. When most concepts 
+are machine-generated, a consumer needs answers that a plain 
+markdown-plus-frontmatter convention does not make first-class:
 
 1. What was this created from, and how was it verified? (**provenance**)
 2. How much should I trust it? (**trust**)
@@ -44,17 +42,10 @@ first-class:
 5. Was this number produced the way we said it must be? (**attestation**)
 
 OKF v0.2 makes provenance, trust, lifecycle, and attestation first-class
-while keeping the format minimally opinionated.
-
-### Design principle: frontmatter is the signal layer
-
-Frontmatter is read by deterministic, non-LLM consumer code and can be
-lifted into `index.md` for progressive disclosure, so it costs context
-budget every time a concept is scanned. The body is content: prose,
-schemas, and computations that a human or an LLM reads in full. OKF
-places queryable signals (who generated a concept, whether it was
-verified, when it goes stale, how to run a sanctioned computation) in
-frontmatter, and leaves everything that must be read in full in the body.
+while keeping the format minimally opinionated. The format is minimally 
+opinionated. It standardizes only the small set of structural conventions 
+needed to make a knowledge corpus self-describing — anything beyond that
+is left to the producer.
 
 ### Goals
 
@@ -72,8 +63,6 @@ frontmatter, and leaves everything that must be read in full in the body.
 - Prescribing storage, serving, or query infrastructure.
 - Replacing domain-specific schemas (Avro, Protobuf, OpenAPI, and so on).
   OKF *references* them; it does not subsume them.
-- Specifying a runtime protocol. Attestation receipts and verdicts are
-  runtime artifacts and are not stored in the bundle (see §10).
 - Specifying a packaging or invocation standard for the code an executor
   or attester points at. OKF fixes the interface, not the packaging.
 
@@ -561,7 +550,7 @@ a convention, not a requirement.
 
 ---
 
-## 10. Attested computations
+## 10. Attested computations concept
 
 An Attested Computation concept carries not just what a value *means* but a
 sanctioned way to *compute* it, so a consumer can confirm the agent ran the
