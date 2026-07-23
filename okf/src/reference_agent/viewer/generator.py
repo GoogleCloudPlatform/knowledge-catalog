@@ -196,7 +196,7 @@ def generate_visualization(
         .replace("/*__VIZ_CSS__*/", css)
         .replace("/*__VIZ_JS__*/", js)
         .replace("__BUNDLE_NAME__", json.dumps(name))
-        .replace("__BUNDLE_DATA__", json.dumps(graph))
+        .replace("__BUNDLE_DATA__", json.dumps(graph, default=str))
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html, encoding="utf-8")
