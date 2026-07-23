@@ -33,6 +33,8 @@
 >   public dataset ([viz.html](bundles/stackoverflow/viz.html))
 > - [`bundles/crypto_bitcoin/`](bundles/crypto_bitcoin/) — Bitcoin
 >   blocks/transactions ([viz.html](bundles/crypto_bitcoin/viz.html))
+> - [`bundles/acme_retail/`](bundles/acme_retail/) — Acme Retail
+>   ([viz.html](bundles/acme_retail/viz.html))
 
 ## Why OKF?
 
