@@ -10,6 +10,7 @@ from reference_agent.sources.base import Source
 class ToolContext:
     source: Source
     bundle_root: Path
+    model: str = ""
 
 
 @dataclass
@@ -28,9 +29,9 @@ _ctx: ToolContext | None = None
 _web: WebState | None = None
 
 
-def set_context(source: Source, bundle_root: Path) -> None:
+def set_context(source: Source, bundle_root: Path, model: str = "") -> None:
     global _ctx
-    _ctx = ToolContext(source=source, bundle_root=Path(bundle_root))
+    _ctx = ToolContext(source=source, bundle_root=Path(bundle_root), model=model)
 
 
 def get_context() -> ToolContext:

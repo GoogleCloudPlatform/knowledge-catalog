@@ -46,6 +46,20 @@
         },
       },
       {
+        selector: "node[?stale]",
+        style: {
+          "border-width": 2,
+          "border-color": "#b91c1c",
+          "border-style": "dashed",
+        },
+      },
+      {
+        selector: 'node[status = "deprecated"]',
+        style: {
+          "opacity": 0.55,
+        },
+      },
+      {
         selector: "node:selected",
         style: {
           "border-width": 3,
@@ -181,6 +195,57 @@
       tagsEl.textContent = "—";
     }
 
+    // v0.2 signal badges: status, trust tier, staleness.
+    const badgesEl = document.getElementById("detail-badges");
+    badgesEl.innerHTML = "";
+    const status = data.status || "stable";
+    badgesEl.appendChild(makeBadge(status, "status-" + status));
+    const tier = data.trust_tier || "unverified";
+    badgesEl.appendChild(makeBadge(tier.replace(/-/g, " "), "trust-" + tier));
+    if (data.stale) {
+      const label = data.stale_after ? `stale (since ${data.stale_after})` : "stale";
+      badgesEl.appendChild(makeBadge(label, "stale"));
+    } else if (data.stale_after) {
+      badgesEl.appendChild(makeBadge(`stale after ${data.stale_after}`, "fresh"));
+    }
+
+    document.getElementById("detail-generated").textContent = formatActorEvent(data.generated);
+
+    const verifiedEl = document.getElementById("detail-verified");
+    const verified = data.verified || [];
+    if (verified.length) {
+      verifiedEl.textContent = verified.map(formatActorEvent).join("; ");
+    } else {
+      verifiedEl.textContent = "—";
+    }
+
+    const sourcesEl = document.getElementById("detail-sources");
+    sourcesEl.innerHTML = "";
+    const sources = data.sources || [];
+    if (sources.length) {
+      const ul = document.createElement("ul");
+      ul.className = "sources-list";
+      for (const s of sources) {
+        const li = document.createElement("li");
+        const label = s.title || s.resource || s.id || "source";
+        if (s.resource && /^https?:\/\//.test(s.resource)) {
+          const a = document.createElement("a");
+          a.href = s.resource;
+          a.textContent = label;
+          a.target = "_blank";
+          a.rel = "noopener";
+          a.className = "external";
+          li.appendChild(a);
+        } else {
+          li.textContent = s.resource ? `${label} (${s.resource})` : label;
+        }
+        ul.appendChild(li);
+      }
+      sourcesEl.appendChild(ul);
+    } else {
+      sourcesEl.textContent = "—";
+    }
+
     const body = bundle.bodies[conceptId] || "";
     const html = marked.parse(body, { breaks: false, gfm: true });
     const bodyEl = document.getElementById("detail-body");
@@ -211,6 +276,18 @@
     }
 
     cy.animate({ center: { eles: node }, zoom: Math.max(cy.zoom(), 1.0) }, { duration: 200 });
+  }
+
+  function makeBadge(text, cls) {
+    const span = document.createElement("span");
+    span.className = "badge " + cls;
+    span.textContent = text;
+    return span;
+  }
+
+  function formatActorEvent(event) {
+    if (!event || !event.by) return "—";
+    return event.at ? `${event.by} · ${event.at}` : String(event.by);
   }
 
   function rewriteInternalLinks(root) {

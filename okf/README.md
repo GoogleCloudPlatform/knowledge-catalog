@@ -1,6 +1,6 @@
 # Open Knowledge Format (OKF)
 
-### 📖 [Read the Open Knowledge Format v0.1 specification → SPEC.md](SPEC.md)
+### 📖 [Read the Open Knowledge Format v0.2 specification → SPEC.md](SPEC.md)
 
 > **This repository is primarily about the [Open Knowledge Format
 > (OKF)](SPEC.md).**
@@ -33,6 +33,8 @@
 >   public dataset ([viz.html](bundles/stackoverflow/viz.html))
 > - [`bundles/crypto_bitcoin/`](bundles/crypto_bitcoin/) — Bitcoin
 >   blocks/transactions ([viz.html](bundles/crypto_bitcoin/viz.html))
+> - [`bundles/acme_retail/`](bundles/acme_retail/) — Acme Retail
+>   ([viz.html](bundles/acme_retail/viz.html))
 
 ## Why OKF?
 
@@ -52,8 +54,14 @@ properties that are hard to get from a service-owned metadata store:
   your metadata.
 - **Mixes structured and unstructured data deliberately.** Use frontmatter
   for the few fields you want to query, filter, or index on (`type`,
-  `resource`, `tags`, `timestamp`); use the markdown body for the prose,
-  schemas, and example queries that LLMs and humans actually read.
+  `resource`, `tags`, `generated`, `status`); use the markdown body for the
+  prose, schemas, and example queries that LLMs and humans actually read.
+- **Trust, provenance, and freshness are first-class.** v0.2 puts queryable
+  signals in frontmatter — where a concept came from (`sources` with per-source
+  credibility signals), who produced and confirmed it (`generated`, `verified`,
+  from which consumers derive a trust tier), and whether it is still current
+  (`status`, `stale_after`) — so an agent-maintained corpus stays trustable
+  without any bespoke runtime.
 - **Minimally opinionated, freely extensible.** A small set of required
   keys ensures interoperability, but bundles can carry arbitrary extra
   frontmatter keys and arbitrary body sections without breaking

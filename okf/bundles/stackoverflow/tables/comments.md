@@ -2,77 +2,84 @@
 type: BigQuery Table
 resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow/tables/comments
 title: Comments
-description: This table contains comments made by users on posts within the Stack
-  Overflow platform, including details about the comment text, score, and author,
-  along with licensing information.
+description: Contains all comments made on posts within the Stack Overflow dataset.
 tags:
-- stackoverflow
 - comments
-- community
-- user-generated content
-- schema
-- data dump
-timestamp: '2026-05-28T23:32:34+00:00'
+- stackoverflow
+- user activity
+generated:
+  by: reference_agent/gemini-2.5-flash
+  at: '2026-07-10T22:47:09+00:00'
+sources:
+- id: stackoverflow-comments
+  resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow/tables/comments
+  title: Stack Overflow Comments Table
 ---
 
-The `comments` table in the [Stack Overflow dataset](../datasets/stackoverflow.md) captures all user-generated comments on various posts across the platform. Each row in this table represents a unique comment, providing details such as the comment\'s text, its creation timestamp, and a score reflecting its community reception. Comments are linked to the specific [posts](posts_questions.md) (questions or answers) they belong to via `post_id` and to the [users](users.md) who authored them via `user_id`. This table is crucial for analyzing user engagement, content quality feedback, and conversational threads on the platform.
+The `comments` table within the [Stack Overflow dataset](../datasets/stackoverflow.md) contains a record of all comments posted on questions and answers by users. Each row represents a single comment, providing details such as the comment's text, its creation date, the associated post, and the user who made the comment. This table can be joined with the [posts_questions](posts_questions.md) or [posts_answers](posts_answers.md) tables on `post_id` to retrieve the content being commented on, and with the [users](users.md) table on `user_id` to get more information about the commenter. The data spans from September 2008 onwards.
 
 # Schema
-- `id` (INTEGER) - Unique identifier for the comment.
-- `post_id` (INTEGER) - The ID of the post (question or answer) to which the comment belongs.
-- `score` (INTEGER) - The score of the comment, reflecting upvotes and downvotes.
-- `text` (STRING) - The content of the comment (Comment body).
-- `creation_date` (TIMESTAMP) - The date and time the comment was posted.
-- `user_display_name` (STRING) - The display name of the user who made the comment. Nullable.
-- `user_id` (INTEGER) - The ID of the user who made the comment. Optional, absent if user has been deleted.
-- `content_license` (STRING) - Indicates the Creative Commons license under which the content is licensed.
+
+- `id`: Unique identifier for the comment.
+- `text`: The content of the comment.
+- `creation_date`: Timestamp when the comment was created.
+- `post_id`: The ID of the post (question or answer) the comment belongs to.
+- `user_id`: The ID of the user who made the comment.
+- `user_display_name`: The display name of the user who made the comment (may be NULL if user is anonymous or deleted).
+- `score`: The score or upvotes received by the comment.
 
 # Common query patterns
-```sql
--- Retrieve the 10 most recent comments
-SELECT
-  id,
-  text,
-  creation_date,
-  user_display_name
-FROM
-  `bigquery-public-data.stackoverflow.comments`
-ORDER BY
-  creation_date DESC
-LIMIT 10;
-```
 
-```sql
--- Count comments per user
-SELECT
-  user_display_name,
-  COUNT(id) AS total_comments
-FROM
-  `bigquery-public-data.stackoverflow.comments`
-WHERE
-  user_display_name IS NOT NULL
-GROUP BY
-  user_display_name
-ORDER BY
-  total_comments DESC
-LIMIT 10;
-```
+1.  **Retrieve all comments for a specific post:**
+    ```sql
+    SELECT
+      id,
+      text,
+      creation_date,
+      user_display_name,
+      score
+    FROM
+      `bigquery-public-data.stackoverflow.comments`
+    WHERE
+      post_id = 47885
+    ORDER BY
+      creation_date DESC
+    LIMIT 100;
+    ```
 
-```sql
--- Find comments with a high score for a specific post
-SELECT
-  id,
-  text,
-  score,
-  creation_date
-FROM
-  `bigquery-public-data.stackoverflow.comments`
-WHERE
-  post_id = 45651 AND score > 5
-ORDER BY
-  score DESC;
-```
+2.  **Count comments per user:**
+    ```sql
+    SELECT
+      user_display_name,
+      COUNT(id) AS total_comments
+    FROM
+      `bigquery-public-data.stackoverflow.comments`
+    WHERE
+      user_display_name IS NOT NULL
+    GROUP BY
+      user_display_name
+    ORDER BY
+      total_comments DESC
+    LIMIT 10;
+    ```
 
-# Citations
-[1] [BigQuery Public Dataset: Stack Overflow Comments](https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow/tables/comments)
-[2] [Database schema documentation for the public data dump and SEDE](https://meta.stackexchange.com/questions/2677/database-schema-documentation-for-the-public-data-dump-and-sede)
+3.  **Find comments on questions containing a specific keyword:**
+    ```sql
+    SELECT
+      c.id,
+      c.text AS comment_text,
+      q.title AS question_title,
+      q.body AS question_body,
+      c.creation_date
+    FROM
+      `bigquery-public-data.stackoverflow.comments` AS c
+    JOIN
+      `bigquery-public-data.stackoverflow.posts_questions` AS q
+    ON
+      c.post_id = q.id
+    WHERE
+      q.title LIKE '%python%'
+    ORDER BY
+      c.creation_date DESC
+    LIMIT 10;
+    ```
