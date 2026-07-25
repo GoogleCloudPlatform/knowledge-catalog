@@ -100,6 +100,16 @@ export class CatalogClientMock extends gcp.CatalogClient {
     return { status: 404, message: 'Not found' };
   }
 
+  async deleteEntry(project: string, location: string, entryGroup: string, id: string): Promise<gcp.ApiResult<void>> {
+    const name = `projects/${project}/locations/${location}/entryGroups/${entryGroup}/entries/${id}`;
+    const existingIndex = this.mockEntries.findIndex(e => e.name == name);
+    if (existingIndex >= 0) {
+      this.mockEntries.splice(existingIndex, 1);
+      return { status: 200 };
+    }
+    return { status: 404, message: 'Not found' };
+  }
+
   async *listEntries(project: string, location: string,
                      entryGroup: string): AsyncGenerator<gcp.Entry, void, unknown> {
     for (const entry of this.mockEntries) {
@@ -107,7 +117,7 @@ export class CatalogClientMock extends gcp.CatalogClient {
     }
   }
 
-  async updateEntry(entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[]): Promise<gcp.ApiResult<gcp.Entry>> {
+  async updateEntry(entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[], deleteMissingAspects?: boolean): Promise<gcp.ApiResult<gcp.Entry>> {
     const existingEntry = this.mockEntries.find(e => e.name == entry.name);
     if (existingEntry) {
       if (updateMask?.find(m => m == 'entry_source')) {
@@ -117,11 +127,11 @@ export class CatalogClientMock extends gcp.CatalogClient {
         if (!existingEntry.aspects) {
           existingEntry.aspects = {};
         }
-        for (const f in aspectKeys ?? []) {
+        for (const f of aspectKeys ?? []) {
           if (entry.aspects?.[f]) {
             existingEntry.aspects[f] = entry.aspects[f];
           }
-          else {
+          else if (deleteMissingAspects) {
             delete existingEntry.aspects[f];
           }
         }

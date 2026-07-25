@@ -15,7 +15,7 @@
     "build:tool": "npx bun build --compile --outfile dist/kcmd src/tool/main.ts",
     "build": "npm run build:libts && npm run build:tool",
     "compile": "npx tsc --noEmit",
-    "test:libts": "npx bun test ./tests/libts/scenarios.ts",
+    "test:libts": "npx bun test ./tests/libts/scenarios.ts ./tests/libts/checksum.test.ts ./tests/libts/state.test.ts",
     "test": "npm run test:libts",
     "x:mcp": "npx @modelcontextprotocol/inspector dist/kcmd mcp"
   },
@@ -27,6 +27,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "cac": "^7.0.0",
     "glob": "^13.0.6",
+    "ohash": "^2.0.11",
     "yaml": "^2.8.4",
     "zod": "^4.4.2"
   },

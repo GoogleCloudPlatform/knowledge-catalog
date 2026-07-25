@@ -24,10 +24,14 @@ cli.command('init', 'Initialize a new catalog snapshot')
 
 
 cli.command('pull', 'Pull catalog entries')
-   .action(async () => {
+   .option('--force', 'Force pull to overwrite local modifications')
+   .option('--allow-partial', 'Skip pulling conflicting entries')
+   .option('--dry-run', 'Dry run without modifying local files')
+   .option('--conflict-resolution <strategy>', 'Conflict resolution strategy (accept-remote, strict)')
+   .action(async (options) => {
       let exitCode = 1;
       try {
-        exitCode = await commands.pull();
+        exitCode = await commands.pull(options);
       }
       catch (err: any) {
         console.error('Error:', err.message || err);
@@ -39,11 +43,28 @@ cli.command('pull', 'Pull catalog entries')
 
 cli.command('push', 'Push catalog entries')
    .option('--force', 'Force push changes')
+   .option('--allow-partial', 'Skip conflicting aspects and push clean ones')
+   .option('--dry-run', 'Preview changes without modifying GCP')
    .option('--validate-only', 'Only validate changes without applying')
+   .option('--conflict-resolution <strategy>', 'Conflict resolution strategy (accept-local, strict)')
    .action(async (options) => {
       let exitCode = 1;
       try {
         exitCode = await commands.push(options);
+      }
+      catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+      
+      process.exit(exitCode);
+   });
+
+cli.command('status', 'Show local status of catalog entries')
+   .action(async () => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.status();
       }
       catch (err: any) {
         console.error('Error:', err.message || err);

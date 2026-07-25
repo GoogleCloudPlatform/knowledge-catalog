@@ -18,7 +18,10 @@ export interface InitOptions {
 
 export interface PushOptions {
   force?: boolean;
+  allowPartial?: boolean;
+  dryRun?: boolean;
   validateOnly?: boolean;
+  conflictResolution?: 'accept-local' | 'accept-remote' | 'strict';
 }
 
 
@@ -58,7 +61,14 @@ export async function init(options: InitOptions): Promise<number> {
 }
 
 
-export async function pull(): Promise<number> {
+export interface PullOptions {
+  force?: boolean;
+  allowPartial?: boolean;
+  dryRun?: boolean;
+  conflictResolution?: 'accept-local' | 'accept-remote' | 'strict';
+}
+
+export async function pull(options: PullOptions = {}): Promise<number> {
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
 
@@ -66,10 +76,12 @@ export async function pull(): Promise<number> {
   const sync = new kcmd.CatalogSync(catalog, snapshot);
 
   console.log('Pulling catalog entries...');
-  const result = await sync.pull();
+  const result = await sync.pull(options);
 
   if (result.success) {
-    console.log('Successfully updated local snapshot.');
+    if (!options.dryRun) {
+        console.log('Successfully updated local snapshot.');
+    }
     return 0;
   }
   else {
@@ -97,4 +109,25 @@ export async function push(options: PushOptions): Promise<number> {
     console.error('Error pushing catalog entries:', result.details);
     return 1;
   }
+}
+
+export async function status(): Promise<number> {
+  const ctx = context.ApiContext.default();
+  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+
+  const catalog = new dataplex.CatalogClient(ctx);
+  const sync = new kcmd.CatalogSync(catalog, snapshot);
+
+  const result = await sync.status();
+
+  if (result.changes.length === 0) {
+    console.log('No entries in the local snapshot.');
+    return 0;
+  }
+
+  for (const change of result.changes) {
+    console.log(`${change.status.padEnd(10)} ${change.name}`);
+  }
+
+  return 0;
 }

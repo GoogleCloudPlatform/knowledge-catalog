@@ -1,0 +1,103 @@
+name: push_conflict
+description: Verify push 3-way merge conflict detection and resolution
+setup:
+  bigQuery:
+    datasets:
+      - id: p:d
+        datasetReference:
+          projectId: p
+          datasetId: d
+        location: us
+  catalog:
+    entryTypes:
+      - name: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
+    aspectTypes:
+      - name: projects/dataplex-types/locations/global/aspectTypes/overview
+      - name: projects/dataplex-types/locations/global/aspectTypes/schema
+    entries:
+      - name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d
+        entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
+        aspects:
+          dataplex-types.global.overview:
+            aspectType: projects/dataplex-types/locations/global/aspectTypes/overview
+            data:
+              content: Remote description base
+              contentType: MARKDOWN
+          dataplex-types.global.schema:
+            aspectType: projects/dataplex-types/locations/global/aspectTypes/schema
+            data:
+              content: Remote schema base
+              contentType: MARKDOWN
+
+  fileSystem:
+    catalog.yaml: |
+      scope: bq-dataset.p.d
+      snapshot:
+        entries:
+          - dataplex-types.global.bigquery-dataset
+        aspects:
+          - dataplex-types.global.overview
+          - dataplex-types.global.schema
+
+actions:
+  # First pull establishes the base state
+  - action: pull
+    options: {}
+
+  # Now we modify BOTH aspects locally
+  - action: fileSystem
+    write:
+      catalog/p.d.overview.md: |
+        Local modified description
+      catalog/p.d.schema.md: |
+        Local modified schema
+
+  - action: status
+    assert:
+      modified: true
+
+  # Simulate remote modification of overview
+  - action: updateRemoteEntry
+    name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d
+    fields:
+      aspects:
+        dataplex-types.global.overview:
+          aspectType: projects/dataplex-types/locations/global/aspectTypes/overview
+          data:
+            content: Remote description updated
+            contentType: MARKDOWN
+        dataplex-types.global.schema:
+          aspectType: projects/dataplex-types/locations/global/aspectTypes/schema
+          data:
+            content: Remote schema base
+            contentType: MARKDOWN
+
+  # Push should fail because of conflict on overview
+  - action: push
+    assert:
+      success: false
+
+  # Dry run should succeed and print conflicts
+  - action: push
+    options:
+      dryRun: true
+
+  # Partial push should skip overview (conflicting) and push schema (clean)
+  - action: push
+    options:
+      allowPartial: true
+    assert:
+      success: true
+
+  # After partial push, schema should be updated on remote, overview should remain unchanged
+  # To verify, we can pull with force to see what's on remote
+  - action: pull
+    options:
+      force: true
+    
+assert:
+  fileSystem:
+    catalog/p.d.schema.md:
+      - contains: "Local modified schema"
+    catalog/p.d.overview.md:
+      - contains: "Remote description updated"

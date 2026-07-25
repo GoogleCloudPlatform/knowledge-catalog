@@ -1,5 +1,5 @@
-name: push_bq
-description: Push BigQuery dataset modifications
+name: push_aspect_deletion
+description: Verify push correctly deletes aspects from remote
 setup:
   bigQuery:
     datasets:
@@ -13,6 +13,7 @@ setup:
       - name: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
     aspectTypes:
       - name: projects/dataplex-types/locations/global/aspectTypes/overview
+      - name: projects/dataplex-types/locations/global/aspectTypes/schema
     entries:
       - name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d
         entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
@@ -20,7 +21,12 @@ setup:
           dataplex-types.global.overview:
             aspectType: projects/dataplex-types/locations/global/aspectTypes/overview
             data:
-              content: Old aspect description
+              content: Remote description base
+              contentType: MARKDOWN
+          dataplex-types.global.schema:
+            aspectType: projects/dataplex-types/locations/global/aspectTypes/schema
+            data:
+              content: Remote schema base
               contentType: MARKDOWN
 
   fileSystem:
@@ -31,34 +37,43 @@ setup:
           - dataplex-types.global.bigquery-dataset
         aspects:
           - dataplex-types.global.overview
+          - dataplex-types.global.schema
 
 actions:
+  # First pull establishes the base state
   - action: pull
-  - action: updateEntry
-    entry:
-      name: p.d
-      type: dataplex-types.global.bigquery-dataset
-      aspects:
-        dataplex-types.global.overview:
-          content: New aspect description
-          contentType: MARKDOWN
-    fields:
-      - dataplex-types.global.overview
+    options: {}
+
+  # Now we delete the overview aspect locally (empty file = delete request)
+  - action: fileSystem
+    write:
+      catalog/p.d.overview.md: ""
+
+  - action: status
+    assert:
+      modified: true
+
+  # Push should succeed and delete the aspect remotely
   - action: push
+    assert:
+      success: true
+
+  # To verify, pull again and ensure overview remains deleted (meaning it's not present remotely)
+  - action: pull
+    options: {}
 
 assert:
   fileSystem:
-    catalog/p.d.yaml:
-      - contains: "name: p.d"
-    catalog/p.d.overview.md:
-      - contains: "New aspect description"
+    catalog/p.d.schema.md:
+      - contains: "Remote schema base"
+    catalog/p.d.overview.md: null
   catalog:
     entries:
       - name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d
         entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
         aspects:
-          dataplex-types.global.overview:
-            aspectType: projects/dataplex-types/locations/global/aspectTypes/overview
+          dataplex-types.global.schema:
+            aspectType: projects/dataplex-types/locations/global/aspectTypes/schema
             data:
-              content: New aspect description
+              content: Remote schema base
               contentType: MARKDOWN
