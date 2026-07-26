@@ -158,6 +158,22 @@ def _parser() -> argparse.ArgumentParser:
         "--name", default=None,
         help="Display name for the bundle (default: bundle directory name).",
     )
+
+    val = sub.add_parser(
+        "validate",
+        help="Validate an OKF bundle against SPEC.md conformance rules.",
+    )
+    val.add_argument(
+        "--bundle",
+        type=Path,
+        required=True,
+        help="Bundle root directory to validate.",
+    )
+    val.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit non-zero on warnings as well as errors.",
+    )
     return p
 
 
@@ -183,6 +199,27 @@ def main(argv: list[str] | None = None) -> int:
             f"{stats['bytes']} bytes → {out}",
             file=sys.stderr,
         )
+        return 0
+
+    if args.command == "validate":
+        from reference_agent.bundle.validate import validate_bundle
+
+        try:
+            report = validate_bundle(args.bundle)
+        except FileNotFoundError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        for finding in report.findings:
+            print(
+                f"{finding.severity}: {finding.rule}: {finding.path}: "
+                f"{finding.message}",
+                file=sys.stderr,
+            )
+        n_errors = len(report.errors())
+        n_warnings = len(report.warnings())
+        print(f"{n_errors} error(s), {n_warnings} warning(s)", file=sys.stderr)
+        if n_errors or (args.strict and n_warnings):
+            return 1
         return 0
 
     if args.command == "enrich":

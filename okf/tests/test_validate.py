@@ -223,3 +223,27 @@ def test_links_inside_fenced_code_are_ignored(tmp_path: Path) -> None:
     )
     _write(root / "tables" / "orders.md", doc)
     assert validate_bundle(root).findings == []
+
+
+def test_cli_validate_exit_codes(tmp_path: Path, capsys) -> None:
+    from reference_agent.cli import main
+
+    root = _make_bundle(tmp_path / "b")
+    assert main(["validate", "--bundle", str(root)]) == 0
+
+    _write(root / "tables" / "orders.md", _good_doc().replace("customers.md", "missing.md"))
+    assert main(["validate", "--bundle", str(root)]) == 0
+    assert main(["validate", "--bundle", str(root), "--strict"]) == 1
+    err = capsys.readouterr().err
+    assert "link-broken" in err
+    assert "warning(s)" in err
+
+    _write(root / "tables" / "bare.md", "no frontmatter\n")
+    assert main(["validate", "--bundle", str(root)]) == 1
+
+
+def test_cli_validate_missing_bundle_exits_2(tmp_path: Path, capsys) -> None:
+    from reference_agent.cli import main
+
+    assert main(["validate", "--bundle", str(tmp_path / "nope")]) == 2
+    assert "not found" in capsys.readouterr().err
