@@ -93,6 +93,12 @@ def test_yaml_native_stale_after_is_valid(tmp_path: Path) -> None:
     assert _warning_rules(_one_doc_bundle(tmp_path / "b", doc)) == []
 
 
+def test_yaml_native_datetime_stale_after_warns(tmp_path: Path) -> None:
+    doc = _doc_with("stale_after: 2026-09-23T00:00:00\n")
+    rules = _warning_rules(_one_doc_bundle(tmp_path / "b", doc))
+    assert rules == ["stale-after-invalid"]
+
+
 def test_timestamp_is_legacy_warning(tmp_path: Path) -> None:
     doc = _doc_with('timestamp: "2026-05-28T14:30:00Z"\n')
     rules = _warning_rules(_one_doc_bundle(tmp_path / "b", doc))

@@ -84,6 +84,16 @@ def test_unterminated_frontmatter_is_unparseable(tmp_path: Path) -> None:
     assert "Unterminated" in report.errors()[0].message
 
 
+def test_non_utf8_file_is_error_not_crash(tmp_path: Path) -> None:
+    root = _make_bundle(tmp_path / "b")
+    (root / "tables" / "binary.md").write_bytes(b"\xff\xfe invalid")
+    report = validate_bundle(root)  # must return a report, never raise
+    errors = report.errors()
+    assert [f.rule for f in errors] == ["frontmatter-unparseable"]
+    assert errors[0].path == "tables/binary.md"
+    assert "UTF-8" in errors[0].message
+
+
 def test_empty_type_is_error(tmp_path: Path) -> None:
     root = _make_bundle(tmp_path / "b")
     _write(root / "tables" / "untyped.md", "---\ntype: \"\"\ntitle: X\n---\n\nBody.\n")

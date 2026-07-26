@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -64,7 +64,25 @@ def validate_bundle(bundle_root: Path) -> ValidationReport:
 
     for md_path in md_files:
         rel = md_path.relative_to(bundle_root).as_posix()
-        raw = md_path.read_text(encoding="utf-8").lstrip("\ufeff")
+        try:
+            raw = md_path.read_text(encoding="utf-8").lstrip("\ufeff")
+        except UnicodeDecodeError as exc:
+            if md_path.name == "index.md":
+                rule = "index-malformed"
+            elif md_path.name == "log.md":
+                rule = "log-malformed"
+            else:
+                rule = "frontmatter-unparseable"
+            report.findings.append(
+                Finding(
+                    "error",
+                    rule,
+                    rel,
+                    "Not valid UTF-8 (SPEC v0.2 \u00a74: concept documents are "
+                    f"UTF-8): {exc}",
+                )
+            )
+            continue
         if md_path.name == "index.md":
             _check_index(raw, rel, md_path.parent == bundle_root, report)
         elif md_path.name == "log.md":
@@ -191,7 +209,7 @@ def _check_families(fm: dict[str, Any], rel: str, report: ValidationReport) -> N
                     "generated-missing-by",
                     rel,
                     "`generated` must be a mapping with a non-empty `by` "
-                    "(SPEC v0.2 §5.4).",
+                    "(SPEC v0.2 §5.2).",
                 )
             )
     if "verified" in fm:
@@ -221,13 +239,13 @@ def _check_families(fm: dict[str, Any], rel: str, report: ValidationReport) -> N
                 "warning",
                 "status-invalid",
                 rel,
-                "`status` must be draft|stable|deprecated (SPEC v0.2 §5.5); "
+                "`status` must be draft|stable|deprecated (SPEC v0.2 §5.4); "
                 f"got {fm['status']!r}.",
             )
         )
     if "stale_after" in fm:
         value = fm["stale_after"]
-        valid = isinstance(value, date) or (
+        valid = (isinstance(value, date) and not isinstance(value, datetime)) or (
             isinstance(value, str)
             and bool(_ISO_DATE_RE.match(value))
             and _parses_as_date(value)
