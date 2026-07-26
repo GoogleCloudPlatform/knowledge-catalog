@@ -177,3 +177,49 @@ def test_log_with_frontmatter_and_iso_headings_passes(tmp_path: Path) -> None:
         """,
     )
     assert validate_bundle(root).findings == []
+
+
+def test_broken_relative_link_warns(tmp_path: Path) -> None:
+    root = _make_bundle(tmp_path / "b")
+    _write(root / "tables" / "orders.md", _good_doc().replace("customers.md", "missing.md"))
+    report = validate_bundle(root)
+    assert [f.rule for f in report.warnings()] == ["link-broken"]
+    assert report.errors() == []
+    assert report.ok
+
+
+def test_absolute_link_resolves_from_root(tmp_path: Path) -> None:
+    root = _make_bundle(tmp_path / "b")
+    _write(
+        root / "tables" / "orders.md",
+        _good_doc().replace("(customers.md)", "(/tables/customers.md)"),
+    )
+    assert validate_bundle(root).findings == []
+
+
+def test_link_escaping_bundle_root_warns(tmp_path: Path) -> None:
+    root = _make_bundle(tmp_path / "b")
+    _write(
+        root / "tables" / "orders.md",
+        _good_doc().replace("(customers.md)", "(../../outside.md)"),
+    )
+    report = validate_bundle(root)
+    assert [f.rule for f in report.warnings()] == ["link-broken"]
+    assert "escapes" in report.warnings()[0].message
+
+
+def test_links_inside_fenced_code_are_ignored(tmp_path: Path) -> None:
+    root = _make_bundle(tmp_path / "b")
+    doc = _good_doc() + textwrap.dedent(
+        """\
+
+        # Common query patterns
+
+        ```sql
+        -- see [ghost](ghost.md) inside a fence
+        SELECT 1;
+        ```
+        """
+    )
+    _write(root / "tables" / "orders.md", doc)
+    assert validate_bundle(root).findings == []
