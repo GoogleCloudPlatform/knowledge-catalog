@@ -213,6 +213,32 @@ The HTML embeds the bundle as a JSON blob and uses
 both loaded from a CDN. No data leaves the page; the bundle is parsed
 once at generation time and serialized into the file.
 
+## Validate
+
+The `validate` subcommand checks a bundle against the OKF v0.2
+conformance rules in [SPEC.md](SPEC.md) §11 — deterministically, with no
+LLM or network access.
+
+```
+.venv/bin/python -m reference_agent validate --bundle ./bundles/<name>
+```
+
+Errors are base-conformance violations (unparseable or missing
+frontmatter, missing `type`, malformed reserved `index.md`/`log.md`
+files). Warnings cover SHOULD-level guidance and shape checks for the
+optional v0.2 frontmatter families (`sources`, `generated`, `verified`,
+`status`, `stale_after`), broken cross-links (which consumers must
+tolerate per §6), legacy v0.1 constructs (`timestamp`, body
+`# Citations`), and incomplete `Attested Computation` declarations.
+
+| Flag       | Default      | Description                                  |
+|------------|--------------|----------------------------------------------|
+| `--bundle` | *(required)* | Bundle root directory.                       |
+| `--strict` | off          | Exit non-zero on warnings as well as errors. |
+
+Exit codes: `0` clean (warnings may still print), `1` errors found (or
+warnings with `--strict`), `2` bundle directory not found.
+
 ## Tests
 
 ```
