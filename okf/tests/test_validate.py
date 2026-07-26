@@ -89,3 +89,91 @@ def test_empty_type_is_error(tmp_path: Path) -> None:
     _write(root / "tables" / "untyped.md", "---\ntype: \"\"\ntitle: X\n---\n\nBody.\n")
     report = validate_bundle(root)
     assert [f.rule for f in report.errors()] == ["type-missing"]
+
+
+def test_nonroot_index_frontmatter_is_error(tmp_path: Path) -> None:
+    root = _make_bundle(tmp_path / "b")
+    _write(
+        root / "tables" / "index.md",
+        """\
+        ---
+        okf_version: "0.2"
+        ---
+
+        # BigQuery Table
+
+        * [Orders](orders.md) - One row per order.
+        """,
+    )
+    report = validate_bundle(root)
+    assert [f.rule for f in report.errors()] == ["index-malformed"]
+    assert report.errors()[0].path == "tables/index.md"
+
+
+def test_root_index_frontmatter_is_allowed(tmp_path: Path) -> None:
+    root = _make_bundle(tmp_path / "b")
+    _write(
+        root / "index.md",
+        """\
+        ---
+        okf_version: "0.2"
+        ---
+
+        # Subdirectories
+
+        * [tables](tables/index.md) - Transactional tables.
+        """,
+    )
+    assert validate_bundle(root).findings == []
+
+
+def test_index_non_link_bullet_is_error(tmp_path: Path) -> None:
+    root = _make_bundle(tmp_path / "b")
+    _write(
+        root / "tables" / "index.md",
+        """\
+        # BigQuery Table
+
+        * Orders - not a link entry.
+        """,
+    )
+    report = validate_bundle(root)
+    assert [f.rule for f in report.errors()] == ["index-malformed"]
+    assert "link-first" in report.errors()[0].message
+
+
+def test_log_non_iso_heading_is_error(tmp_path: Path) -> None:
+    root = _make_bundle(tmp_path / "b")
+    _write(
+        root / "log.md",
+        """\
+        # Bundle history
+
+        ## May 22, 2026
+
+        - **Update**: something.
+        """,
+    )
+    report = validate_bundle(root)
+    assert [f.rule for f in report.errors()] == ["log-malformed"]
+    assert "May 22, 2026" in report.errors()[0].message
+
+
+def test_log_with_frontmatter_and_iso_headings_passes(tmp_path: Path) -> None:
+    root = _make_bundle(tmp_path / "b")
+    _write(
+        root / "log.md",
+        """\
+        ---
+        type: Log
+        title: History
+        ---
+
+        # Bundle history
+
+        ## 2026-07-01
+
+        - **Verified** the bundle.
+        """,
+    )
+    assert validate_bundle(root).findings == []
