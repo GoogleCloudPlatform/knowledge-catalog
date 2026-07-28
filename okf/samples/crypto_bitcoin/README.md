@@ -1,6 +1,6 @@
 # Bitcoin public dataset sample
 
-Runs the enrichment agent against the public
+Runs the reference agent against the public
 `bigquery-public-data.crypto_bitcoin` dataset (blocks, transactions,
 inputs, outputs — produced by the open-source `bitcoin-etl` pipeline)
 and seeds the web pass with the canonical schema source and the
@@ -35,7 +35,7 @@ how the agent surfaces cross-table foreign-key relationships in prose.
 ## Run
 
 ```
-.venv/bin/python -m enrichment_agent enrich \
+.venv/bin/python -m reference_agent enrich \
     --source bq \
     --dataset bigquery-public-data.crypto_bitcoin \
     --web-seed-file samples/crypto_bitcoin/seeds.txt \

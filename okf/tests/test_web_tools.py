@@ -4,9 +4,9 @@ from unittest.mock import patch
 
 import pytest
 
-from enrichment_agent.tools.context import clear_web_state, set_web_state
-from enrichment_agent.tools.web_tools import fetch_url
-from enrichment_agent.web.fetcher import Page
+from reference_agent.tools.context import clear_web_state, set_web_state
+from reference_agent.tools.web_tools import fetch_url
+from reference_agent.web.fetcher import Page
 
 
 @pytest.fixture(autouse=True)
@@ -35,7 +35,7 @@ def _page(url: str, links: list[str] | None = None) -> Page:
 def test_seed_fetch_succeeds_and_records_link_depth():
     _set_state()
     with patch(
-        "enrichment_agent.tools.web_tools.fetch_and_parse",
+        "reference_agent.tools.web_tools.fetch_and_parse",
         return_value=_page(
             "https://docs.example.com/docs/intro",
             links=["https://docs.example.com/docs/next"],
@@ -45,7 +45,7 @@ def test_seed_fetch_succeeds_and_records_link_depth():
     assert "error" not in result
     assert result["depth"] == 0
     # The followed link is now reachable at depth 1.
-    from enrichment_agent.tools.context import get_web_state
+    from reference_agent.tools.context import get_web_state
     assert get_web_state().url_depth["https://docs.example.com/docs/next"] == 1
 
 
@@ -55,7 +55,7 @@ def test_allowed_path_prefix_rejects_off_path_urls():
         allowed_path_prefixes=["/docs/"],
     )
     with patch(
-        "enrichment_agent.tools.web_tools.fetch_and_parse",
+        "reference_agent.tools.web_tools.fetch_and_parse",
         return_value=_page(
             "https://docs.example.com/docs/intro",
             links=["https://docs.example.com/blog/post"],
@@ -73,7 +73,7 @@ def test_denied_path_substring_rejects():
         denied_path_substrings=["/login"],
     )
     with patch(
-        "enrichment_agent.tools.web_tools.fetch_and_parse",
+        "reference_agent.tools.web_tools.fetch_and_parse",
         return_value=_page(
             "https://docs.example.com/docs/intro",
             links=["https://docs.example.com/login"],
@@ -91,7 +91,7 @@ def test_max_depth_caps_recursion():
         max_depth=1,
     )
     with patch(
-        "enrichment_agent.tools.web_tools.fetch_and_parse",
+        "reference_agent.tools.web_tools.fetch_and_parse",
         side_effect=[
             _page("https://docs.example.com/a", links=["https://docs.example.com/b"]),
             _page("https://docs.example.com/b", links=["https://docs.example.com/c"]),

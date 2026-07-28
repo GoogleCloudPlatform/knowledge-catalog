@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
-from enrichment_agent.bundle.document import OKFDocument, OKFDocumentError
+from reference_agent.bundle.document import (
+    OKFDocument,
+    OKFDocumentError,
+    is_stale,
+    normalize_verified,
+    trust_tier,
+)
 
 
 def test_roundtrip_preserves_frontmatter_and_body():
@@ -43,21 +51,44 @@ def test_unterminated_frontmatter_raises():
         OKFDocument.parse(src)
 
 
-def test_validate_rejects_missing_required_keys():
-    doc = OKFDocument(frontmatter={"type": "X", "title": "Y"})
+def test_validate_rejects_missing_type():
+    doc = OKFDocument(frontmatter={"title": "Y"})
     with pytest.raises(OKFDocumentError) as exc:
         doc.validate()
-    assert "description" in str(exc.value)
-    assert "timestamp" in str(exc.value)
+    assert "type" in str(exc.value)
 
 
-def test_validate_accepts_full_frontmatter():
-    doc = OKFDocument(
-        frontmatter={
-            "type": "X",
-            "title": "Y",
-            "description": "Z",
-            "timestamp": "2026-05-27T00:00:00+00:00",
-        }
-    )
-    doc.validate()
+def test_validate_accepts_type_only():
+    # OKF v0.2 §11: `type` is the only always-required key.
+    OKFDocument(frontmatter={"type": "X"}).validate()
+
+
+def test_normalize_verified_treats_bare_mapping_as_list():
+    fm = {"verified": {"by": "human:ahormati", "at": "2026-06-25T09:00:00Z"}}
+    assert normalize_verified(fm) == [
+        {"by": "human:ahormati", "at": "2026-06-25T09:00:00Z"}
+    ]
+    assert normalize_verified({}) == []
+
+
+def test_trust_tier():
+    assert trust_tier({}) == "unverified"
+    assert trust_tier(
+        {"verified": [{"by": "process:finance-nightly", "at": "x"}]}
+    ) == "machine-confirmed"
+    assert trust_tier(
+        {"verified": [
+            {"by": "process:finance-nightly", "at": "x"},
+            {"by": "human:ahormati", "at": "y"},
+        ]}
+    ) == "human-reviewed"
+    # A bare mapping is treated as a one-element list.
+    assert trust_tier({"verified": {"by": "human:ahormati", "at": "z"}}) == "human-reviewed"
+
+
+def test_is_stale():
+    ref = date(2026, 9, 23)
+    assert is_stale({"stale_after": "2026-09-23"}, today=ref) is True
+    assert is_stale({"stale_after": "2026-09-24"}, today=ref) is False
+    assert is_stale({}, today=ref) is False
+    assert is_stale({"stale_after": "not-a-date"}, today=ref) is False

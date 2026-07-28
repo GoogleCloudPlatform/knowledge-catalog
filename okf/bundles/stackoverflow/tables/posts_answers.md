@@ -2,90 +2,83 @@
 type: BigQuery Table
 resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow/tables/posts_answers
 title: Posts Answers
-description: Contains information about answers to questions posted on Stack Overflow,
-  including detailed schema fields, their descriptions, and licensing information.
-tags:
-- stackoverflow
-- posts
-- answers
-- community
-- programming
-- schema
-- data dump
-timestamp: '2026-05-28T23:32:11+00:00'
+description: Contains Stack Overflow answers, including their content, scores, and
+  associated metadata.
+tags: stackoverflow, answers, posts, Q&A
+generated:
+  by: reference_agent/gemini-2.5-flash
+  at: '2026-07-10T22:48:04+00:00'
+sources:
+- title: Stack Overflow Posts Answers Table
+  id: stackoverflow-posts_answers
+  resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow/tables/posts_answers
 ---
 
-The `posts_answers` table in the [stackoverflow](../datasets/stackoverflow.md) dataset contains all posts identified as answers to questions on the Stack Overflow platform. Each row in this table represents a single answer, providing details such as the answer\'s body, its score, creation date, and the ID of the parent question it answers. This table can be joined with other tables like [posts_questions](posts_questions.md) on `parent_id` to link answers to their respective questions. It\'s a valuable resource for analyzing answer quality, user contributions, and engagement patterns within the Stack Overflow community.
+The `posts_answers` table in the `bigquery-public-data.stackoverflow` dataset contains all answers submitted by users on the Stack Overflow platform. Each row in this table represents a single answer to a question. Key information includes the answer's `body` (content), `creation_date`, `score`, and `owner_user_id`. Answers are linked to their corresponding questions via the `parent_id` field, which references the `id` from the [posts_questions](posts_questions.md) table. This table is useful for analyzing answer quality, user contributions, and trends in responses over time.
 
 # Schema
-- `id` (INTEGER) - Unique identifier for the answer.
-- `title` (STRING) - The title of the post. This is typically NULL for answers.
-- `body` (STRING) - The body of the post, as rendered HTML, not Markdown.
-- `accepted_answer_id` (INTEGER) - The ID of the answer that was accepted for a question. This field is only applicable to questions, so it is typically NULL for answers.
-- `answer_count` (INTEGER) - The number of answers. This field is only applicable to questions, so it is typically NULL for answers.
-- `closed_date` (TIMESTAMP) - The date and time the post was closed; present only if the post is closed. This is typically NULL for answers.
-- `comment_count` (INTEGER) - The number of comments.
-- `community_owned_date` (TIMESTAMP) - The date and time the post became community wiki\'d.
-- `creation_date` (TIMESTAMP) - The date and time the answer was created.
-- `favorite_count` (INTEGER) - The number of times the post has been favorited. Nullable. This is typically NULL for answers.
-- `last_activity_date` (TIMESTAMP) - The datetime of the post\'s most recent activity.
-- `last_edit_date` (TIMESTAMP) - The date and time of the most recent edit to the answer.
-- `last_editor_display_name` (STRING) - The display name of the last editor. Nullable.
-- `last_editor_user_id` (INTEGER) - The ID of the last editor user. Nullable.
-- `owner_display_name` (STRING) - The display name of the answer\'s owner. Nullable.
-- `owner_user_id` (INTEGER) - The ID of the answer\'s owner. Present only if user has not been deleted.
-- `parent_id` (INTEGER) - The ID of the question this answer belongs to. Present only if `PostTypeId = 2`.
-- `post_type_id` (INTEGER) - The type of post. For answers, this is `2`. See the [Post Type IDs reference](../references/post_type_ids.md) for possible values.
-- `score` (INTEGER) - The score of the answer; generally non-zero for Questions, Answers, and Moderator Nominations.
-- `tags` (STRING) - Tags associated with the post. This is typically NULL for answers, as tags are associated with the parent question.
-- `view_count` (INTEGER) - The number of times the post was viewed. This field is only applicable to questions, so it is typically NULL for answers.
-- `content_license` (STRING) - Indicates the Creative Commons license under which the content is licensed.
+
+- id: INTEGER (Unique ID of the answer)
+- title: STRING (Title of the post. Typically NULL for answers, as the title belongs to the question)
+- body: STRING (The HTML content of the answer)
+- accepted_answer_id: STRING (ID of the accepted answer for the parent question. Typically NULL for answers themselves)
+- answer_count: STRING (Number of answers for the parent question. Typically NULL for answers)
+- comment_count: INTEGER (Number of comments on this specific answer)
+- community_owned_date: TIMESTAMP (Date when the answer became community-owned)
+- creation_date: TIMESTAMP (UTC timestamp when the answer was posted)
+- favorite_count: STRING (Number of times the parent question was favorited. Typically NULL for answers)
+- last_activity_date: TIMESTAMP (UTC timestamp of the last activity on this answer)
+- last_edit_date: TIMESTAMP (UTC timestamp of the last edit to this answer)
+- last_editor_display_name: STRING (Display name of the user who last edited the answer)
+- last_editor_user_id: INTEGER (User ID of the user who last edited the answer)
+- owner_display_name: STRING (Display name of the user who posted the answer)
+- owner_user_id: INTEGER (User ID of the user who posted the answer)
+- parent_id: INTEGER (The ID of the question this answer belongs to. Links to `id` in the [posts_questions](posts_questions.md) table.)
+- post_type_id: INTEGER (The type of post; `2` for answers.)
+- score: INTEGER (The current score of the answer, based on upvotes and downvotes)
+- tags: STRING (Tags associated with the parent question. Typically NULL for answers)
+- view_count: STRING (View count of the parent question. Typically NULL for answers)
 
 # Common query patterns
-1. Get the 10 most highly-scored answers in a specific date range:
+
 ```sql
 SELECT
   id,
+  body,
   score,
-  creation_date,
-  body
+  creation_date
 FROM
   `bigquery-public-data.stackoverflow.posts_answers`
-WHERE
-  creation_date BETWEEN \'2023-01-01\' AND \'2023-01-31\'
 ORDER BY
   score DESC
 LIMIT 10
 ```
-2. Find the total number of answers by a specific user:
+
 ```sql
 SELECT
   owner_user_id,
-  COUNT(id) AS total_answers
+  count(id) AS answer_count
 FROM
   `bigquery-public-data.stackoverflow.posts_answers`
 WHERE
-  owner_user_id = 12345 -- Replace with a valid user ID
+  owner_user_id IS NOT NULL
 GROUP BY
   owner_user_id
-```
-3. Join answers with their corresponding questions:
-```sql
-SELECT
-  q.title AS question_title,
-  a.body AS answer_body,
-  a.score AS answer_score
-FROM
-  `bigquery-public-data.stackoverflow.posts_answers` AS a
-JOIN
-  `bigquery-public-data.stackoverflow.posts_questions` AS q
-ON
-  a.parent_id = q.id
-WHERE
-  q.id = 5000 -- Example question ID
+ORDER BY
+  answer_count DESC
+LIMIT 5
 ```
 
-# Citations
-[1] [Stack Overflow Posts Answers Table](https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow/tables/posts_answers)
-[2] [Stack Overflow Public Data Explorer](https://data.stackexchange.com/)
-[3] [Database schema documentation for the public data dump and SEDE](https://meta.stackexchange.com/questions/2677/database-schema-documentation-for-the-public-data-dump-and-sede)
+```sql
+SELECT
+  id,
+  body,
+  score,
+  owner_display_name
+FROM
+  `bigquery-public-data.stackoverflow.posts_answers`
+WHERE
+  parent_id = 12345
+ORDER BY
+  score DESC
+```
