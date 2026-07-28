@@ -1,3 +1,5 @@
+[🇺🇸 English](./README.md) | [🇨🇳 中文](./README.zh-CN.md)
+
 # Metadata as Code
 
 Metadata as Code is a Knowledge Catalog (Dataplex) provides data stewards and data producers and AI agents with a source code artifact-based UX for metadata management and context engineering.

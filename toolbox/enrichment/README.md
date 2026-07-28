@@ -1,3 +1,5 @@
+[🇺🇸 English](./README.md) | [🇨🇳 中文](./README.zh-CN.md)
+
 # Enrichment Agent
 
 The enrichment agent for Knowledge Catalog provides a customizable agentic

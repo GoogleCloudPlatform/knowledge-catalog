@@ -1,3 +1,5 @@
+[🇺🇸 English](./README.md) | [🇨🇳 中文](./README.zh.md)
+
 # Open Knowledge Format (OKF)
 
 ### 📖 [Read the Open Knowledge Format v0.2 specification → SPEC.md](SPEC.md)

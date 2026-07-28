@@ -1,3 +1,5 @@
+[🇺🇸 English](./README.md) | [🇨🇳 中文](./README.zh.md)
+
 # Samples
 
 The samples demonstrate the use of Knowledge Catalog to manage metadata and
