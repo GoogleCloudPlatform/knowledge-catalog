@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from enrichment_agent.web.fetcher import FetchError, fetch_and_parse
+from reference_agent.web.fetcher import FetchError, fetch_and_parse
 
 
 def _mock_response(body: bytes, content_type: str = "text/html; charset=utf-8", url: str = "https://example.com/page"):
@@ -29,7 +29,7 @@ def test_fetch_and_parse_extracts_title_links_markdown():
       <a href="javascript:void(0)">also skip</a>
     </body></html>
     """
-    with patch("enrichment_agent.web.fetcher.urlopen") as urlopen:
+    with patch("reference_agent.web.fetcher.urlopen") as urlopen:
         urlopen.return_value = _mock_response(html)
         page = fetch_and_parse("https://example.com/page")
 
@@ -44,7 +44,7 @@ def test_fetch_and_parse_extracts_title_links_markdown():
 
 
 def test_fetch_and_parse_rejects_non_html():
-    with patch("enrichment_agent.web.fetcher.urlopen") as urlopen:
+    with patch("reference_agent.web.fetcher.urlopen") as urlopen:
         urlopen.return_value = _mock_response(b"{}", content_type="application/json")
         with pytest.raises(FetchError):
             fetch_and_parse("https://example.com/data.json")
@@ -53,7 +53,7 @@ def test_fetch_and_parse_rejects_non_html():
 def test_fetch_and_parse_truncates_large_pages():
     big_text = "<p>" + ("x" * 200_000) + "</p>"
     html = f"<html><head><title>big</title></head><body>{big_text}</body></html>".encode()
-    with patch("enrichment_agent.web.fetcher.urlopen") as urlopen:
+    with patch("reference_agent.web.fetcher.urlopen") as urlopen:
         urlopen.return_value = _mock_response(html)
         page = fetch_and_parse("https://example.com/big")
 
@@ -62,7 +62,7 @@ def test_fetch_and_parse_truncates_large_pages():
 
 
 def test_fetch_and_parse_wraps_network_errors():
-    with patch("enrichment_agent.web.fetcher.urlopen") as urlopen:
+    with patch("reference_agent.web.fetcher.urlopen") as urlopen:
         urlopen.side_effect = OSError("connection refused")
         with pytest.raises(FetchError) as exc:
             fetch_and_parse("https://example.com/dead")

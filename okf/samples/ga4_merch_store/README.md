@@ -1,6 +1,6 @@
 # GA4 Google Merchandise Store sample
 
-Runs the enrichment agent against the public
+Runs the reference agent against the public
 `bigquery-public-data.ga4_obfuscated_sample_ecommerce` dataset (a GA4 export
 from the Google Merchandise Store) and seeds the web pass with canonical GA4
 BigQuery Export documentation URLs.
@@ -26,11 +26,11 @@ BigQuery Export documentation URLs.
 ## Run
 
 ```
-.venv/bin/python -m enrichment_agent enrich \
+.venv/bin/python -m reference_agent enrich \
     --source bq \
     --dataset bigquery-public-data.ga4_obfuscated_sample_ecommerce \
     --web-seed-file samples/ga4_merch_store/seeds.txt \
-    --out ./bundles/ga4_merch_store
+    --out ./bundles/ga4
 ```
 
 To iterate on a single concept, add `--concept tables/events_`. To skip
@@ -39,7 +39,7 @@ the web pass, add `--no-web`. To raise or lower the web budget, use
 
 ## What you get
 
-A bundle under `./bundles/ga4_merch_store/` with one OKF doc per BQ
+A bundle under `./bundles/ga4/` with one OKF doc per BQ
 concept (dataset + tables), optionally augmented and cross-linked with
 reference docs minted from the seeded GA4 documentation pages, plus an
 auto-generated `index.md` at each directory level.

@@ -1,5 +1,5 @@
 # Subdirectories
 
-* [datasets](datasets/index.md) - A sample of obfuscated Google Analytics BigQuery event export data for three months from the Google Merchandise Store is available as a public dataset in BigQuery.
-* [references](references/index.md) - This directory contains specifications for data joins and definitions for user activity and purchase metrics.
-* [tables](tables/index.md) - Contains Google Analytics event export data from the `ga4_obfuscated_sample_ecommerce` dataset.
+* [datasets](datasets/index.md) - Obfuscated Google Analytics 4 dataset emulating a web ecommerce implementation of the Google Merchandise Store.
+* [references](references/index.md) - This directory contains sql queries and schemas to define and build various user audience metrics based on acquisition sources, activity levels, and purchasing behavior.
+* [tables](tables/index.md) - Google Analytics 4 event-level daily sharded export tables containing user interaction logs.

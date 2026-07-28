@@ -1,6 +1,6 @@
-# Enrichment Agent — an OKF proof of concept
+# Open Knowledge Format (OKF)
 
-### 📖 [Read the Open Knowledge Format v0.1 specification → SPEC.md](SPEC.md)
+### 📖 [Read the Open Knowledge Format v0.2 specification → SPEC.md](SPEC.md)
 
 > **This repository is primarily about the [Open Knowledge Format
 > (OKF)](SPEC.md).**
@@ -33,14 +33,8 @@
 >   public dataset ([viz.html](bundles/stackoverflow/viz.html))
 > - [`bundles/crypto_bitcoin/`](bundles/crypto_bitcoin/) — Bitcoin
 >   blocks/transactions ([viz.html](bundles/crypto_bitcoin/viz.html))
-
-A reference agent that ingests metadata from a pluggable source and emits an
-**[OKF](SPEC.md) bundle**: a directory of markdown documents with YAML
-frontmatter that catalog tools, downstream agents, and humans can all read.
-
-Built on the Google [Agent Development Kit](https://adk.dev/) with Gemini as the
-model backend. BigQuery is the first source implementation; the
-`Source` interface is designed to grow.
+> - [`bundles/acme_retail/`](bundles/acme_retail/) — Acme Retail
+>   ([viz.html](bundles/acme_retail/viz.html))
 
 ## Why OKF?
 
@@ -60,8 +54,14 @@ properties that are hard to get from a service-owned metadata store:
   your metadata.
 - **Mixes structured and unstructured data deliberately.** Use frontmatter
   for the few fields you want to query, filter, or index on (`type`,
-  `resource`, `tags`, `timestamp`); use the markdown body for the prose,
-  schemas, and example queries that LLMs and humans actually read.
+  `resource`, `tags`, `generated`, `status`); use the markdown body for the
+  prose, schemas, and example queries that LLMs and humans actually read.
+- **Trust, provenance, and freshness are first-class.** v0.2 puts queryable
+  signals in frontmatter — where a concept came from (`sources` with per-source
+  credibility signals), who produced and confirmed it (`generated`, `verified`,
+  from which consumers derive a trust tier), and whether it is still current
+  (`status`, `stale_after`) — so an agent-maintained corpus stays trustable
+  without any bespoke runtime.
 - **Minimally opinionated, freely extensible.** A small set of required
   keys ensures interoperability, but bundles can carry arbitrary extra
   frontmatter keys and arbitrary body sections without breaking
@@ -77,7 +77,7 @@ properties that are hard to get from a service-owned metadata store:
   normal markdown links, expressing relationships richer than the
   parent/child implied by the directory layout.
 
-The net effect is that enrichment agents, consumption agents, and humans
+The net effect is that reference agents, consumption agents, and humans
 collaborate on the same artifacts in the same way they already collaborate
 on source code.
 
@@ -97,20 +97,20 @@ python3.13 -m venv .venv
   `GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_CLOUD_PROJECT=<id>`, and
   `GOOGLE_CLOUD_LOCATION=<region>`.
 
-## How enrichment works
+## How the reference agent works
 
-Enrichment runs in two passes. The **BQ pass** writes one OKF doc per
-concept the source advertises, using BigQuery metadata alone. The **web
-pass** then runs the LLM as its own crawler: it receives a list of seed
-URLs (provided via `--web-seed` or `--web-seed-file`), fetches the seeds
-via the `fetch_url` tool, and decides which outbound links are worth
-following based on whether they look like authoritative documentation for
-the existing concepts. For each page it fetches, the agent chooses to
-(a) enrich one or more existing concept docs, (b) mint a standalone
-`references/<slug>` doc, or (c) skip. A hard `--web-max-pages` cap and a
-same-domain allowed-hosts filter (configurable via `--web-allowed-host`)
-are enforced inside the tool, so the agent cannot overrun. Use `--no-web`
-to skip the web pass.
+The reference agent runs in two passes. The **BQ pass** writes one OKF
+doc per concept the source advertises, using BigQuery metadata alone.
+The **web pass** then runs the LLM as its own crawler: it receives a
+list of seed URLs (provided via `--web-seed` or `--web-seed-file`),
+fetches the seeds via the `fetch_url` tool, and decides which outbound
+links are worth following based on whether they look like authoritative
+documentation for the existing concepts. For each page it fetches, the
+agent chooses to (a) enrich one or more existing concept docs, (b) mint
+a standalone `references/<slug>` doc, or (c) skip. A hard
+`--web-max-pages` cap and a same-domain allowed-hosts filter
+(configurable via `--web-allowed-host`) are enforced inside the tool,
+so the agent cannot overrun. Use `--no-web` to skip the web pass.
 
 ## Run
 
@@ -119,7 +119,7 @@ directory. Seeds for the web pass are explicit; omit them (or pass
 `--no-web`) to run BQ-only:
 
 ```
-.venv/bin/python -m enrichment_agent enrich \
+.venv/bin/python -m reference_agent enrich \
     --source bq \
     --dataset <project>.<dataset> \
     --web-seed-file <path/to/seeds.txt> \
@@ -163,7 +163,7 @@ host it on a static file server, or commit it next to the bundle (as
 this repo does).
 
 The viewer is itself a proof-of-concept *consumer* of OKF, mirroring
-the way the enrichment agent is a proof-of-concept *producer*. OKF
+the way the reference agent is a proof-of-concept *producer*. OKF
 bundles can be consumed by anything that reads markdown; this is just
 one shape.
 
@@ -185,7 +185,7 @@ one shape.
 ### Generate
 
 ```
-.venv/bin/python -m enrichment_agent visualize --bundle ./bundles/<name>
+.venv/bin/python -m reference_agent visualize --bundle ./bundles/<name>
 ```
 
 That writes `bundles/<name>/viz.html`. Flags:
@@ -199,7 +199,7 @@ That writes `bundles/<name>/viz.html`. Flags:
 Example, writing the output somewhere else and overriding the header:
 
 ```
-.venv/bin/python -m enrichment_agent visualize \
+.venv/bin/python -m reference_agent visualize \
     --bundle ./bundles/crypto_bitcoin \
     --out /tmp/btc.html \
     --name "Bitcoin OKF"

@@ -1,10 +1,9 @@
 # Reference
 
-* [Average Pageviews](avg_pageviews.md) - The average number of pageviews per user.
-* [Average Spend Per Purchase Session By User](avg_spend_per_purchase_session_by_user.md) - The average amount of money spent per purchase session for each individual user.
-* [Average Transactions Per Purchaser](avg_transactions_per_purchaser.md) - The average number of transactions made by purchasers.
-* [Day Count](day_count.md) - Total number of unique days.
-* [Event Count](event_count.md) - Total number of events.
-* [New User Count](new_user_count.md) - The number of unique users who triggered a first_visit or first_open event.
-* [Overall Average Spend Per Purchase Session](overall_avg_spend_per_purchase_session.md) - The overall average amount spent across all unique purchase sessions.
-* [User Count](user_count.md) - Total number of unique users.
+* [Acquired Users Metric](acquired_users.md) - Builds an audience of users acquired via a specific Source, Medium, and Campaign name.
+* [Frequently Active Users Metric](frequently_active_users.md) - Builds an audience of users active on at least N of the last M days.
+* [Google Acquired Cohorts Metric](google_acquired_cohorts.md) - Builds an audience of users acquired in a specific time-window cohort filtered by Google campaign source.
+* [Highly Active Users Metric](highly_active_users.md) - Builds an audience of users active for more than N minutes in the last M days.
+* [N-Day Active Users Metric](n_day_active_users.md) - Builds an audience of users active in the last N days based on engagement_time_msec.
+* [N-Day Inactive Users Metric](n_day_inactive_users.md) - Builds an audience of users active in the last M days who have not been active in the last N days.
+* [Purchasers Audience Metric](purchasers.md) - Computes the count or list of users who have completed a purchase or in-app purchase.
