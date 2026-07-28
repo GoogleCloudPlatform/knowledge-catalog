@@ -12,7 +12,19 @@ from reference_agent.bundle.document import (
 from reference_agent.bundle.paths import concept_id_to_path, parse_concept_id
 from reference_agent.tools.context import get_context, is_web_pass
 
-_PREFERRED_KEY_ORDER = ("type", "resource", "title", "description", "tags", "timestamp")
+_PREFERRED_KEY_ORDER = (
+    "type",
+    "resource",
+    "title",
+    "description",
+    "tags",
+    "status",
+    "generated",
+    "verified",
+    "stale_after",
+    "sources",
+    "usage_window",
+)
 
 _FIELD_NAME_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_.]*)`")
 
@@ -38,8 +50,13 @@ def _schema_field_names(body: str) -> set[str]:
     return names
 
 
-def _citation_entry_count(body: str) -> int:
-    return len(_section_content_lines(body, "# Citations"))
+def _sources_count(frontmatter: dict[str, Any]) -> int:
+    sources = frontmatter.get("sources")
+    if isinstance(sources, list):
+        return len(sources)
+    if sources:  # a bare mapping counts as one entry
+        return 1
+    return 0
 
 
 def _reorder_frontmatter(fm: dict[str, Any]) -> dict[str, Any]:
@@ -77,11 +94,15 @@ def write_concept_doc(
 ) -> dict[str, Any]:
     """Write (or overwrite) the OKF markdown document for this concept.
 
-    `frontmatter` must include at minimum: type, title, description, timestamp
-    (ISO 8601). `resource` and `tags` are strongly recommended when applicable.
-    The `body` should contain the prose description plus `# Schema`,
-    `# Common query patterns`, and `# Citations` sections per the OKF
-    convention.
+    `frontmatter` must include at minimum `type` (OKF v0.2 §11). `title`,
+    `description`, `resource`, and `tags` are strongly recommended when
+    applicable. `generated` is filled in automatically: leave it unset and the
+    tool records `generated: {by: reference_agent/<model>, at: <now>}`, or
+    provide your own `{by, at}` mapping. Provenance goes in the `sources`
+    frontmatter family (not a `# Citations` body section); attribute individual
+    body claims with markdown footnotes keyed to `sources[].id`. The `body`
+    should contain the prose description plus `# Schema` and
+    `# Common query patterns` sections per the OKF convention.
 
     Returns {'path': <relative path written>, 'bytes': <int>}.
     """
@@ -90,8 +111,16 @@ def write_concept_doc(
     path = concept_id_to_path(ctx.bundle_root, cid)
 
     fm = dict(frontmatter)
-    if not fm.get("timestamp"):
-        fm["timestamp"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    generated = fm.get("generated")
+    if not isinstance(generated, dict):
+        generated = {}
+    else:
+        generated = dict(generated)
+    if not generated.get("by"):
+        generated["by"] = f"reference_agent/{ctx.model}" if ctx.model else "reference_agent"
+    if not generated.get("at"):
+        generated["at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    fm["generated"] = generated
     fm = _reorder_frontmatter(fm)
 
     doc = OKFDocument(frontmatter=fm, body=body or "")
@@ -108,8 +137,8 @@ def write_concept_doc(
         }
 
     # Augmentation guard: during the web pass, refuse writes that shrink
-    # an existing BigQuery Table doc's # Schema field set or # Citations
-    # entry count. The BQ pass populates these from real metadata; the
+    # an existing BigQuery Table doc's # Schema field set or its `sources`
+    # frontmatter list. The BQ pass populates these from real metadata; the
     # web pass must augment, not replace.
     if is_web_pass() and path.exists():
         try:
@@ -137,18 +166,18 @@ def write_concept_doc(
                     ),
                     "concept_id": concept_id,
                 }
-            old_cites = _citation_entry_count(existing.body)
-            new_cites = _citation_entry_count(body or "")
-            if new_cites < old_cites:
+            old_sources = _sources_count(existing.frontmatter)
+            new_sources = _sources_count(fm)
+            if new_sources < old_sources:
                 return {
                     "error": (
-                        f"Refusing to write: the existing # Citations "
-                        f"section had {old_cites} entries (including the "
-                        f"BigQuery resource URL), but your new # Citations "
-                        f"has only {new_cites}. Append your new citation "
-                        f"rather than replacing the list. Re-call "
-                        f"write_concept_doc with every existing entry "
-                        f"preserved plus the new one."
+                        f"Refusing to write: the existing `sources` "
+                        f"frontmatter had {old_sources} entr(y/ies) "
+                        f"(including the BigQuery resource), but your new "
+                        f"`sources` has only {new_sources}. Merge your new "
+                        f"source into the existing list rather than replacing "
+                        f"it. Re-call write_concept_doc with every existing "
+                        f"`sources` entry preserved plus the new one."
                     ),
                     "concept_id": concept_id,
                 }

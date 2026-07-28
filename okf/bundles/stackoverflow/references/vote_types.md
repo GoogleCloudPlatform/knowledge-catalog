@@ -1,56 +1,57 @@
 ---
 type: Reference
 resource: https://meta.stackexchange.com/questions/2677/database-schema-documentation-for-the-public-data-dump-and-sede
-title: Vote Types
-description: Enumerated types for votes on posts and other entities across Stack Exchange
-  sites.
+title: Vote Types Reference
+description: Enum lookup values for the VoteTypeId column in the Stack Overflow votes
+  table.
 tags:
-- votes
+- lookup
 - enum
-- moderation
-- schema
-- data dump
-timestamp: '2026-05-28T23:33:26+00:00'
+- votes
+generated:
+  by: reference_agent/gemini-3.5-flash
+  at: '2026-07-10T23:02:36+00:00'
+sources:
+- id: meta_schema_doc
+  resource: https://meta.stackexchange.com/questions/2677/database-schema-documentation-for-the-public-data-dump-and-sede
+  title: Database schema documentation for the public data dump and SEDE
+- title: List of Vote type IDs
+  resource: https://meta.stackexchange.com/questions/171176/list-of-vote-type-ids
+  id: meta_vote_types
 ---
 
-This document defines the enumerated types for various votes that can occur on posts and other entities across Stack Exchange sites.
+# Vote Types Reference
 
-- `-1`: InformModerator
-- `0`: UndoMod
-- `1`: AcceptedByOriginator
-- `2`: UpMod (Upvote)
-- `3`: DownMod (Downvote)
-- `4`: Offensive
-- `5`: Favorite (Bookmark) - feature removed after October 2022, replaced by Saves.
-- `6`: Close - Close votes are only stored in the `PostHistory` table after 2013-06-25.
-- `7`: Reopen
-- `8`: BountyStart
-- `9`: BountyClose
-- `10`: Deletion
-- `11`: Undeletion
-- `12`: Spam
-- `15`: ModeratorReview - a moderator looking at a flagged post.
-- `16`: ApproveEditSuggestion
-- `17`: Reaction1 (Teams: celebrate)
-- `18`: Helpful
-- `19`: ThankYou
-- `20`: WellWritten
-- `21`: Follow
-- `22`: Reaction2 (Teams: smile)
-- `23`: Reaction3 (Teams: mind blown)
-- `24`: Reaction4 (Teams: clap)
-- `25`: Reaction5 (Teams: heart)
-- `26`: Reaction6 (Teams: fire)
-- `27`: Reaction7 (Teams: trophy)
-- `28`: Reaction8 (Teams: wave)
-- `29`: Outdated
-- `30`: NotOutdated
-- `31`: PreVote
-- `32`: CollectiveDiscussionUpvote
-- `33`: CollectiveDiscussionDownvote (no longer used)
-- `35`: privateAiAnswerCorrect
-- `36`: privateAiAnswerIncorrect
-- `37`: privateAiAnswerPartiallyCorrect
+A lookup catalog defining the meaning of the `VoteTypeId` attribute in the `votes` table.
 
-# Citations
-- [Database schema documentation for the public data dump and SEDE](https://meta.stackexchange.com/questions/2677/database-schema-documentation-for-the-public-data-dump-and-sede)
+## Lookup Catalog
+
+| VoteTypeId | Name | Description |
+|---|---|---|
+| -1 | InformModerator | Flag raised to bring a moderator's attention to a post. |
+| 0 | UndoMod | Undo a moderation action or vote. |
+| 1 | AcceptedByOriginator | Question owner accepted an answer. |
+| 2 | UpMod | Question/Answer upvote. |
+| 3 | DownMod | Question/Answer downvote. |
+| 4 | Offensive | Flagged as offensive or abusive. |
+| 5 | Favorite | Bookmark (now deprecated and replaced by Saves). |
+| 6 | Close | Vote to close a question. (No longer populated here; close votes reside in PostHistory). |
+| 7 | Reopen | Vote to reopen a question. |
+| 8 | BountyStart | User started a bounty on a question. |
+| 9 | BountyClose | Bounty closed/awarded on a question. |
+| 10 | Deletion | Vote to delete a post. |
+| 11 | Undeletion | Vote to undelete a post. |
+| 12 | Spam | Flagged as spam. |
+| 15 | ModeratorReview | A moderator reviewed a flagged post. |
+| 16 | ApproveEditSuggestion | Vote to approve a suggested edit. |
+| 17-28 | Teams Reactions | Reactions (e.g. celebrate, smile, heart) implemented in Stack Overflow for Teams. |
+| 29 | Outdated | Answer flagged as outdated. |
+| 30 | NotOutdated | Vote asserting an answer is not outdated. |
+| 31 | PreVote | Pre-vote action. |
+| 32 | CollectiveDiscussionUpvote | Upvote on a Collectives discussion. |
+| 33 | CollectiveDiscussionDownvote | Downvote on a Collectives discussion (deprecated). |
+| 35 | privateAiAnswerCorrect | Vote stating AI answer is correct (experiment). |
+| 36 | privateAiAnswerIncorrect | Vote stating AI answer is incorrect (experiment). |
+| 37 | privateAiAnswerPartiallyCorrect | Vote stating AI answer is partially correct. |
+
+[^1]: Verified from [Database Schema Documentation](https://meta.stackexchange.com/questions/2677/database-schema-documentation-for-the-public-data-dump-and-sede) and [List of Vote type IDs](https://meta.stackexchange.com/questions/171176/list-of-vote-type-ids) on Meta Stack Exchange.

@@ -97,6 +97,32 @@ dl.frontmatter a { color: #2563eb; word-break: break-all; }
   font-size: 11px;
 }
 
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 4px;
+}
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.badge.status-stable { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+.badge.status-draft { background: #fefce8; color: #a16207; border-color: #fde68a; }
+.badge.status-deprecated { background: #f1f5f9; color: #64748b; border-color: #cbd5e1; text-decoration: line-through; }
+.badge.trust-unverified { background: #f1f5f9; color: #64748b; border-color: #cbd5e1; }
+.badge.trust-machine-confirmed { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
+.badge.trust-human-reviewed { background: #f5f3ff; color: #6d28d9; border-color: #ddd6fe; }
+.badge.stale { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
+.badge.fresh { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+
+.sources-list { padding-left: 18px; margin: 0; }
+.sources-list li { margin: 1px 0; }
+
 hr { border: none; border-top: 1px solid #e2e8f0; margin: 14px 0; }
 
 #detail-body { font-size: 13px; line-height: 1.55; }

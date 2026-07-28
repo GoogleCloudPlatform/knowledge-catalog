@@ -2,88 +2,88 @@
 type: BigQuery Table
 resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow/tables/post_history
 title: Post History
-description: Tracks the revision history of posts on Stack Overflow, including details
-  about event types, associated users, and content changes.
+description: Records the history of all changes and events related to posts on Stack
+  Overflow.
 tags:
 - stackoverflow
-- post history
-- revisions
-- edits
-- schema
-- data dump
-timestamp: '2026-05-28T23:33:54+00:00'
+- posts
+- history
+- changes
+- events
+generated:
+  by: reference_agent/gemini-2.5-flash
+  at: '2026-07-10T22:47:32+00:00'
+sources:
+- id: post-history-resource
+  resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow/tables/post_history
+  title: Post History BigQuery Table
 ---
 
-This table, part of the [Stack Overflow dataset](../datasets/stackoverflow.md), records every historical event related to posts, such as edits, rollbacks, and changes in post type. Each row represents a single historical event for a particular post, identified by `post_id`, with the event\'s timestamp recorded in `creation_date`. This allows for a comprehensive audit trail of how content on Stack Overflow evolves over time.
+The `post_history` table in the [stackoverflow](../datasets/stackoverflow.md) dataset records a detailed history of all changes and events associated with posts on Stack Overflow. Each row represents a specific historical event or revision made to a post, including initial creation, edits, rollbacks, and changes in status. This table is crucial for auditing post evolution and understanding how content changes over time. Records date back to October 2016, with a total of over 150 million entries.
 
-### Schema
+# Schema
 
-- `id` (INTEGER) - Unique identifier for the post history entry.
-- `post_history_type_id` (INTEGER) - An integer representing the type of history event. See the [Post History Type IDs reference](../references/post_history_type_ids.md) for possible values.
-- `post_id` (INTEGER) - The ID of the post to which this history event belongs. Links to `posts_questions` or `posts_answers` tables.
-- `revision_guid` (STRING) - A GUID that groups multiple history records caused by a single action.
-- `creation_date` (TIMESTAMP) - The timestamp when the history event occurred (e.g., `2009-03-05T22:28:34.823`).
-- `user_id` (INTEGER) - The ID of the user who performed the action, if applicable. Links to the `users` table.
-- `user_display_name` (STRING) - Populated if a user has been removed and is no longer referenced by `user_id`; also happens to the author of a migrated post. Nullable.
-- `comment` (STRING) - A brief comment describing the history event. This field can also contain specific IDs based on `PostHistoryTypeId`:
-    - If `PostHistoryTypeId = 10`, it contains the `CloseReasonId`. See the [Close Reason Types reference](../references/close_reason_types.md).
-    - If `PostHistoryTypeId` is `33` or `34`, it contains the `PostNoticeId`.
-- `text` (STRING) - A raw version of the new value for a given revision. This field can also contain specific JSON encoded strings based on `PostHistoryTypeId`:
-    - If `PostHistoryTypeId` is `10, 11, 12, 13, 14, 15, 19, 20, 35`, it contains a JSON encoded string with all users who have voted for that `PostHistoryTypeId`.
-    - If it is a duplicate close vote, the JSON string contains an array of original questions as `OriginalQuestionIds`.
-    - If `PostHistoryTypeId = 17`, it contains migration details (`from <url>` or `to <url>`).
-- `content_license` (STRING) - Indicates the Creative Commons license under which the content is licensed.
+- `id`: Unique identifier for each post history entry.
+- `creation_date`: Timestamp when this history entry was created.
+- `post_id`: The ID of the post to which this history entry belongs. This links to the `id` field in the [posts_questions](../tables/posts_questions.md) and [posts_answers](../tables/posts_answers.md) tables.
+- `post_history_type_id`: An integer ID representing the type of history event (e.g., initial title, body edit, tag edit). Specific meanings for these IDs are typically found in a separate lookup table.
+- `revision_guid`: A unique GUID used to group related history entries that constitute a single revision.
+- `user_id`: The ID of the user who performed this action. This links to the `id` field in the [users](../tables/users.md) table.
+- `text`: The content associated with this history entry. Its meaning depends on `post_history_type_id` (e.g., new title, new body content, old tags).
+- `comment`: An optional comment provided by the user for this change.
 
-### Common query patterns
+# Common query patterns
 
+**Retrieve all history entries for a specific post:**
 ```sql
 SELECT
+  id,
   creation_date,
+  post_id,
   post_history_type_id,
+  revision_guid,
   user_id,
-  comment,
-  text
+  text,
+  comment
 FROM
   `bigquery-public-data.stackoverflow.post_history`
 WHERE
-  post_id = 456789 -- Example post ID
+  post_id = 12345 -- Replace with a specific post ID
 ORDER BY
-  creation_date DESC
+  creation_date DESC;
+```
+
+**Find the most recent edits made by a specific user:**
+```sql
+SELECT
+  ph.creation_date,
+  ph.post_id,
+  ph.text,
+  ph.comment,
+  pq.title AS post_title
+FROM
+  `bigquery-public-data.stackoverflow.post_history` AS ph
+JOIN
+  `bigquery-public-data.stackoverflow.posts_questions` AS pq ON ph.post_id = pq.id
+WHERE
+  ph.user_id = 67890 -- Replace with an actual user ID
+  AND ph.post_history_type_id IN (2, 5) -- Example: assuming 2 and 5 represent body/title edits
+ORDER BY
+  ph.creation_date DESC
 LIMIT 10;
 ```
 
+**Count distinct types of history events for a given post:**
 ```sql
 SELECT
   post_history_type_id,
   COUNT(*) AS event_count
 FROM
   `bigquery-public-data.stackoverflow.post_history`
+WHERE
+  post_id = 12345 -- Replace with a specific post ID
 GROUP BY
   post_history_type_id
 ORDER BY
   event_count DESC;
 ```
-
-```sql
-SELECT
-  t2.display_name,
-  COUNT(t1.id) AS edit_count
-FROM
-  `bigquery-public-data.stackoverflow.post_history` AS t1
-INNER JOIN
-  `bigquery-public-data.stackoverflow.users` AS t2
-ON
-  t1.user_id = t2.id
-WHERE
-  t1.post_history_type_id = 2 -- Assuming \'2\' means \'Post Edited\'
-GROUP BY
-  t2.display_name
-ORDER BY
-  edit_count DESC
-LIMIT 5;
-```
-
-### Citations
-
-[1] [BigQuery Public Dataset: Stack Overflow Post History](https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow/tables/post_history)
-[2] [Database schema documentation for the public data dump and SEDE](https://meta.stackexchange.com/questions/2677/database-schema-documentation-for-the-public-data-dump-and-sede)

@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OKF Bundle Viewer</title>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+  color: #0f172a;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: #fff;
+  border-bottom: 1px solid #e2e8f0;
+  flex-shrink: 0;
+}
+.title strong { font-size: 16px; margin-right: 8px; }
+.muted { color: #64748b; font-size: 12px; }
+.controls { display: flex; gap: 8px; }
+.controls input, .controls select, .controls button {
+  font-size: 13px;
+  padding: 5px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: #fff;
+}
+.controls input { width: 220px; }
+.controls button { cursor: pointer; background: #f1f5f9; }
+.controls button:hover { background: #e2e8f0; }
+
+main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+#graph {
+  flex: 1 1 60%;
+  background: #fff;
+  border-right: 1px solid #e2e8f0;
+  min-width: 0;
+  position: relative;
+}
+#detail {
+  flex: 0 0 40%;
+  overflow-y: auto;
+  padding: 18px 22px;
+  background: #fff;
+}
+#detail-empty {
+  text-align: center;
+  margin-top: 40px;
+}
+
+.detail-header { margin-bottom: 12px; }
+.detail-header h1 {
+  font-size: 18px;
+  margin: 4px 0 2px;
+  font-weight: 600;
+}
+.type-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+dl.frontmatter {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  row-gap: 4px;
+  column-gap: 12px;
+  margin: 8px 0 12px;
+  font-size: 13px;
+}
+dl.frontmatter dt {
+  color: #64748b;
+  font-weight: 500;
+}
+dl.frontmatter dd { margin: 0; }
+dl.frontmatter a { color: #2563eb; word-break: break-all; }
+
+.tag {
+  display: inline-block;
+  padding: 1px 6px;
+  margin: 0 4px 2px 0;
+  border-radius: 4px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 11px;
+}
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 4px;
+}
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+.badge.status-stable { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+.badge.status-draft { background: #fefce8; color: #a16207; border-color: #fde68a; }
+.badge.status-deprecated { background: #f1f5f9; color: #64748b; border-color: #cbd5e1; text-decoration: line-through; }
+.badge.trust-unverified { background: #f1f5f9; color: #64748b; border-color: #cbd5e1; }
+.badge.trust-machine-confirmed { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
+.badge.trust-human-reviewed { background: #f5f3ff; color: #6d28d9; border-color: #ddd6fe; }
+.badge.stale { background: #fef2f2; color: #b91c1c; border-color: #fecaca; }
+.badge.fresh { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+
+.sources-list { padding-left: 18px; margin: 0; }
+.sources-list li { margin: 1px 0; }
+
+hr { border: none; border-top: 1px solid #e2e8f0; margin: 14px 0; }
+
+#detail-body { font-size: 13px; line-height: 1.55; }
+#detail-body h1 {
+  font-size: 16px; margin: 18px 0 6px;
+  padding-bottom: 4px; border-bottom: 1px solid #e2e8f0;
+}
+#detail-body h2 { font-size: 14px; margin: 14px 0 4px; }
+#detail-body h3 { font-size: 13px; margin: 12px 0 4px; }
+#detail-body p { margin: 6px 0; }
+#detail-body code {
+  background: #f1f5f9;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+}
+#detail-body pre {
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 10px 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 12px;
+}
+#detail-body pre code { background: transparent; color: inherit; padding: 0; }
+#detail-body ul, #detail-body ol { padding-left: 22px; margin: 6px 0; }
+#detail-body li { margin: 2px 0; }
+#detail-body table { border-collapse: collapse; margin: 8px 0; }
+#detail-body th, #detail-body td {
+  border: 1px solid #e2e8f0; padding: 4px 8px; font-size: 12px;
+}
+#detail-body a.internal { color: #2563eb; cursor: pointer; }
+#detail-body a.external { color: #2563eb; }
+
+#detail-backlinks { margin-top: 18px; }
+#detail-backlinks h2 { font-size: 13px; color: #64748b; margin-bottom: 6px; }
+#detail-backlinks ul { padding-left: 18px; }
+#detail-backlinks a { color: #2563eb; cursor: pointer; }
+
+</style>
+</head>
+<body>
+<header>
+  <div class="title">
+    <strong id="bundle-name"></strong>
+    <span class="muted">OKF bundle</span>
+  </div>
+  <div class="controls">
+    <input id="search" type="search" placeholder="Search title / id / tag">
+    <select id="filter-type">
+      <option value="">All types</option>
+    </select>
+    <select id="layout">
+      <option value="cose">cose (force)</option>
+      <option value="concentric">concentric</option>
+      <option value="breadthfirst">breadth-first</option>
+      <option value="circle">circle</option>
+      <option value="grid">grid</option>
+    </select>
+    <button id="reset">Reset view</button>
+  </div>
+</header>
+
+<main>
+  <section id="graph"></section>
+  <section id="detail">
+    <div id="detail-empty" class="muted">Click a node to see its details.</div>
+    <article id="detail-content" hidden>
+      <header class="detail-header">
+        <span class="type-chip" id="detail-type"></span>
+        <h1 id="detail-title"></h1>
+        <div class="muted" id="detail-id"></div>
+      </header>
+      <div class="badges" id="detail-badges"></div>
+      <dl class="frontmatter">
+        <dt>Description</dt><dd id="detail-description"></dd>
+        <dt>Resource</dt><dd id="detail-resource"></dd>
+        <dt>Tags</dt><dd id="detail-tags"></dd>
+        <dt>Generated</dt><dd id="detail-generated"></dd>
+        <dt>Verified</dt><dd id="detail-verified"></dd>
+        <dt>Sources</dt><dd id="detail-sources"></dd>
+      </dl>
+      <hr>
+      <div id="detail-body"></div>
+      <section id="detail-backlinks" hidden>
+        <h2>Cited by</h2>
+        <ul id="backlinks-list"></ul>
+      </section>
+    </article>
+  </section>
+</main>
+
+<script>
+window.BUNDLE_NAME = "acme_retail";
+window.BUNDLE = {"nodes": [{"data": {"id": "computations/gross-margin-period", "label": "Gross margin for a period", "type": "Attested Computation", "description": "Sanctioned SQL that produces the gross-margin figure for a period, per Acme's FY2026 Cost Allocation Standard (full COGS = product + fulfillment + shipping + payment fees).", "resource": "", "tags": ["finance", "margin", "attested"], "status": "stable", "generated": {"by": "reference_agent/gemini-2.5-pro", "at": "2026-06-30 14:00:00+00:00"}, "verified": [{"by": "human:jsmith@acme", "at": "2026-07-01 09:00:00+00:00"}], "stale_after": "2026-12-31", "sources": [{"id": "margin-standard", "resource": "policies/margin-standard.md", "title": "Cost Allocation & Margin Standard (FY2026)", "author": "human:jsmith@acme", "last_modified": "2026-06-15"}, {"id": "revenue-policy", "resource": "policies/revenue-recognition.md", "title": "Revenue Recognition Policy (FY2026)", "author": "human:jsmith@acme", "last_modified": "2026-06-15"}], "trust_tier": "human-reviewed", "stale": false, "color": "#94a3b8", "size": 40}}, {"data": {"id": "computations/revenue-ytd", "label": "Revenue for a fiscal year", "type": "Attested Computation", "description": "Sanctioned SQL that produces the recognized-revenue figure for a given fiscal year, per Acme's FY2026 Revenue Recognition Policy.", "resource": "", "tags": ["finance", "revenue", "attested"], "status": "stable", "generated": {"by": "reference_agent/gemini-2.5-pro", "at": "2026-06-30 14:00:00+00:00"}, "verified": [{"by": "human:jsmith@acme", "at": "2026-07-01 09:00:00+00:00"}], "stale_after": "2026-12-31", "sources": [{"id": "revenue-policy", "resource": "policies/revenue-recognition.md", "title": "Revenue Recognition Policy (FY2026)", "author": "human:jsmith@acme", "last_modified": "2026-06-15"}, {"id": "orders-table", "resource": "tables/orders.md", "title": "Customer Orders (BigQuery table)", "author": "team:data-platform", "last_modified": "2026-07-01"}], "trust_tier": "human-reviewed", "stale": false, "color": "#94a3b8", "size": 38}}, {"data": {"id": "log", "label": "Acme Retail bundle history", "type": "Log", "description": "", "resource": "", "tags": [], "status": "stable", "generated": {}, "verified": [], "stale_after": "", "sources": [], "trust_tier": "unverified", "stale": false, "color": "#94a3b8", "size": 35}}, {"data": {"id": "metrics/gross-margin-legacy", "label": "Gross Margin (legacy, pre-FY2026)", "type": "Metric", "description": "Retired gross-margin definition that included only product cost. Preserved for historical query reproducibility. Do not use for new analyses.", "resource": "", "tags": ["finance", "margin", "deprecated"], "status": "deprecated", "generated": {"by": "human:jsmith@acme", "at": "2024-01-15 10:00:00+00:00"}, "verified": [{"by": "human:jsmith@acme", "at": "2024-01-15 10:00:00+00:00"}], "stale_after": "", "sources": [], "trust_tier": "human-reviewed", "stale": false, "color": "#94a3b8", "size": 35}}, {"data": {"id": "metrics/gross-margin", "label": "Gross Margin", "type": "Metric", "description": "Gross margin for a period, per Acme's FY2026 Cost Allocation Standard (product cost + inbound fulfillment + outbound shipping + payment fees).", "resource": "", "tags": ["finance", "margin", "headline-metric"], "status": "stable", "generated": {"by": "reference_agent/gemini-2.5-pro", "at": "2026-06-30 14:00:00+00:00"}, "verified": [{"by": "human:jsmith@acme", "at": "2026-07-01 09:00:00+00:00"}], "stale_after": "2026-12-31", "sources": [{"id": "margin-standard", "resource": "policies/margin-standard.md", "title": "Cost Allocation & Margin Standard (FY2026)", "author": "human:jsmith@acme", "last_modified": "2026-06-15"}, {"id": "revenue-policy", "resource": "policies/revenue-recognition.md", "title": "Revenue Recognition Policy (FY2026)", "author": "human:jsmith@acme", "last_modified": "2026-06-15"}], "trust_tier": "human-reviewed", "stale": false, "color": "#94a3b8", "size": 37}}, {"data": {"id": "metrics/revenue", "label": "Revenue", "type": "Metric", "description": "Recognized revenue for a period, per Acme's FY2026 revenue-recognition policy. Backed by an Attested Computation.", "resource": "", "tags": ["finance", "revenue", "headline-metric"], "status": "stable", "generated": {"by": "reference_agent/gemini-2.5-pro", "at": "2026-06-30 14:00:00+00:00"}, "verified": [{"by": "human:jsmith@acme", "at": "2026-07-01 09:00:00+00:00"}], "stale_after": "2026-12-31", "sources": [{"id": "revenue-policy", "resource": "policies/revenue-recognition.md", "title": "Revenue Recognition Policy (FY2026)", "author": "human:jsmith@acme", "last_modified": "2026-06-15"}], "trust_tier": "human-reviewed", "stale": false, "color": "#94a3b8", "size": 36}}, {"data": {"id": "policies/margin-standard", "label": "Acme Retail \u2014 Cost Allocation & Margin Standard (FY2026)", "type": "Policy", "description": "Finance policy defining COGS composition and the standard gross-margin formula. Introduced FY2026 (superseded a legacy definition that excluded fulfillment/shipping).", "resource": "https://wiki.acme.internal/finance/margin-standard", "tags": ["finance", "policy", "margin", "cogs"], "status": "stable", "generated": {"by": "human:jsmith@acme", "at": "2026-02-01 10:00:00+00:00"}, "verified": [{"by": "human:jsmith@acme", "at": "2026-06-15 09:00:00+00:00"}], "stale_after": "2026-12-31", "sources": [], "trust_tier": "human-reviewed", "stale": false, "color": "#94a3b8", "size": 39}}, {"data": {"id": "policies/revenue-recognition", "label": "Acme Retail \u2014 Revenue Recognition Policy (FY2026)", "type": "Policy", "description": "Finance policy defining when a customer order is recognized as revenue. Reviewed annually.", "resource": "https://wiki.acme.internal/finance/revenue-recognition", "tags": ["finance", "policy", "revenue"], "status": "stable", "generated": {"by": "human:jsmith@acme", "at": "2026-01-05 10:00:00+00:00"}, "verified": [{"by": "human:jsmith@acme", "at": "2026-06-15 09:00:00+00:00"}], "stale_after": "2026-12-31", "sources": [], "trust_tier": "human-reviewed", "stale": false, "color": "#94a3b8", "size": 39}}, {"data": {"id": "skills/run-on-bq", "label": "Run an Attested Computation on BigQuery", "type": "Skill", "description": "Executor skill for `Attested Computation` concepts with `runtime: bigquery`. Binds declared parameters, submits the job, and returns a receipt the attester will verify.", "resource": "", "tags": ["skill", "executor", "bigquery"], "status": "stable", "generated": {"by": "human:kliu@acme", "at": "2026-06-30 14:00:00+00:00"}, "verified": [], "stale_after": "", "sources": [], "trust_tier": "unverified", "stale": false, "color": "#94a3b8", "size": 41}}, {"data": {"id": "tables/orders", "label": "Customer Orders", "type": "BigQuery Table", "description": "One row per completed customer order across web, mobile, and marketplace channels. The grain is the order, not the line item; per-line product detail lives in `order_lines`.", "resource": "https://console.cloud.google.com/bigquery?p=acme&d=sales&t=orders", "tags": ["sales", "orders", "revenue"], "status": "stable", "generated": {"by": "reference_agent/gemini-2.5-pro", "at": "2026-06-30 14:00:00+00:00"}, "verified": [{"by": "human:kliu@acme", "at": "2026-07-01 16:00:00+00:00"}], "stale_after": "2026-12-31", "sources": [{"id": "warehouse-schema", "resource": "https://wiki.acme.internal/data/warehouse/schemas/sales", "title": "Acme Retail warehouse schema \u2014 sales dataset", "author": "team:data-platform", "usage_count": 1240, "last_modified": "2026-06-15"}, {"id": "revenue-policy", "resource": "policies/revenue-recognition.md", "title": "Revenue Recognition Policy (FY2026)", "author": "human:jsmith@acme", "last_modified": "2026-06-15"}], "trust_tier": "human-reviewed", "stale": false, "color": "#3b82f6", "size": 40}}], "edges": [{"data": {"id": "computations/gross-margin-period__computations/revenue-ytd", "source": "computations/gross-margin-period", "target": "computations/revenue-ytd"}}, {"data": {"id": "metrics/gross-margin-legacy__metrics/gross-margin", "source": "metrics/gross-margin-legacy", "target": "metrics/gross-margin"}}, {"data": {"id": "metrics/gross-margin__metrics/gross-margin-legacy", "source": "metrics/gross-margin", "target": "metrics/gross-margin-legacy"}}, {"data": {"id": "metrics/gross-margin__metrics/revenue", "source": "metrics/gross-margin", "target": "metrics/revenue"}}, {"data": {"id": "metrics/gross-margin__computations/gross-margin-period", "source": "metrics/gross-margin", "target": "computations/gross-margin-period"}}, {"data": {"id": "metrics/revenue__computations/revenue-ytd", "source": "metrics/revenue", "target": "computations/revenue-ytd"}}], "bodies": {"computations/gross-margin-period": "# Computation\n\n```sql\nWITH recognized_orders AS (\n  SELECT\n    o.order_id,\n    CASE\n      WHEN o.currency = 'USD' THEN o.net_amount\n      ELSE o.net_amount * fx.rate_to_usd\n    END AS revenue_usd\n  FROM `acme.sales.orders` AS o\n  LEFT JOIN `acme.finance.fx_daily_rates` AS fx\n    ON fx.currency = o.currency\n    AND fx.rate_date = DATE(o.order_ts)\n  WHERE o.order_status = 'delivered'\n    AND DATE_DIFF(CURRENT_DATE(), DATE(o.order_ts), DAY) >= 30\n    AND DATE(o.order_ts) BETWEEN @period_start AND @period_end\n),\ncogs_full AS (\n  SELECT\n    ol.order_id,\n    SUM(ol.quantity * p.cost) AS product_cost,\n    SUM(fc.allocated_cost) AS fulfillment_cost,\n    SUM(sc.shipping_cost) AS shipping_cost,\n    SUM(pf.fee_amount) AS payment_fee\n  FROM `acme.sales.order_lines` AS ol\n  JOIN `acme.catalog.products` AS p ON p.product_id = ol.product_id\n  LEFT JOIN `acme.logistics.fulfillment_cost` AS fc ON fc.order_id = ol.order_id\n  LEFT JOIN `acme.logistics.shipment_cost` AS sc ON sc.order_id = ol.order_id\n  LEFT JOIN `acme.finance.payment_fees` AS pf ON pf.order_id = ol.order_id\n  GROUP BY ol.order_id\n)\nSELECT\n  SUM(r.revenue_usd) - SUM(\n    COALESCE(c.product_cost, 0)\n    + COALESCE(c.fulfillment_cost, 0)\n    + COALESCE(c.shipping_cost, 0)\n    + COALESCE(c.payment_fee, 0)\n  ) AS gross_margin_usd\nFROM recognized_orders AS r\nLEFT JOIN cogs_full AS c USING (order_id)\n```\n\n# Notes on the COGS composition\n\nEvery one of the four COGS components is required per the FY2026 Cost Allocation Standard. [^margin-standard] A receipt whose executed SQL drops any of the four LEFT JOINs on `cogs_full` will fail attestation, because canonicalized-SQL equality includes the join graph.\n\nThe revenue side uses the same recognition rules as [`computations/revenue-ytd.md`](./revenue-ytd.md), by policy.\n\n# Freshness\n\n`stale_after: 2026-12-31` mirrors the cost-allocation standard's annual review. The standard is expected to remain stable through the FY, but a consumer running this after 2027-01-01 MUST re-verify against the FY2027 standard before serving.\n\n[^margin-standard]: Cost Allocation & Margin Standard (FY2026)\n[^revenue-policy]: Revenue Recognition Policy (FY2026)", "computations/revenue-ytd": "# Computation\n\n```sql\nSELECT\n  SUM(\n    CASE\n      WHEN o.currency = 'USD' THEN o.net_amount\n      ELSE o.net_amount * fx.rate_to_usd\n    END\n  ) AS revenue_usd\nFROM `acme.sales.orders` AS o\nLEFT JOIN `acme.finance.fx_daily_rates` AS fx\n  ON fx.currency = o.currency\n  AND fx.rate_date = DATE(o.order_ts)\nWHERE o.order_status = 'delivered'\n  AND DATE_DIFF(CURRENT_DATE(), DATE(o.order_ts), DAY) >= 30\n  AND EXTRACT(YEAR FROM o.order_ts) = @year\n```\n\nThis computation implements the four rules of the FY2026 Revenue Recognition Policy: [^revenue-policy]\n\n1. **Recognition trigger:** `order_status = 'delivered'` AND the 30-day return window has closed.\n2. **Recognized amount:** `net_amount` (excludes shipping and tax).\n3. **Currency:** non-USD orders convert at the `order_ts` daily rate.\n4. **Fiscal year:** calendar year from `order_ts`.\n\n# What the attester checks\n\n`attesters/sql_equality.py` receives the receipt returned by `skills/run-on-bq.md` and verifies two things:\n\n1. **Provenance:** `receipt.executed_sql`, canonicalized (whitespace, comment stripping, keyword casing), equals the SQL above canonicalized the same way. Any rewrite (a swapped table, an added filter, a dropped JOIN) fails the check.\n2. **Fidelity:** the value the caller is about to display equals `receipt.result[0]`.\n\nA run whose SQL does not match is treated as unattested; the consumer MUST refuse to display the value.\n\n# Freshness\n\n`stale_after: 2026-12-31` mirrors the revenue-recognition policy's annual review cycle. On 2027-01-01, a consumer running this computation SHOULD flag the result for re-verification before serving it, per the memory-aware consumer contract.\n\n[^revenue-policy]: Revenue Recognition Policy (FY2026)", "log": "# Bundle history\n\n## 2026-07-01\n\n- **Verified** the full bundle for OKF v0.2 conformance. `human:kliu@acme` reviewed all `verified` and `sources` entries.\n\n## 2026-06-30\n\n- **Re-generated** `metrics/revenue.md`, `computations/revenue-ytd.md`, and `policies/revenue-recognition.md` after Finance published the FY2026 revenue recognition policy addendum. Updated `stale_after` on both revenue concepts to `2026-12-31`.\n\n## 2026-04-15\n\n- **Deprecated** the legacy gross-margin definition. Original file moved to `metrics/gross-margin-legacy.md` with `status: deprecated`. New definition at `metrics/gross-margin.md` implements the FY2026 Cost Allocation Standard (includes fulfillment and shipping costs in COGS).\n\n## 2026-02-10\n\n- **Bundle bootstrapped** by `reference_agent/gemini-2.5-pro` from the BigQuery `INFORMATION_SCHEMA` and a 90-day sample of `region-us.INFORMATION_SCHEMA.JOBS_BY_PROJECT`. Initial trust tier: machine-confirmed across the board; finance-critical concepts flagged for human review.", "metrics/gross-margin-legacy": "# Deprecated\n\n**This metric is retired.** The current gross-margin definition is [`metrics/gross-margin.md`](./gross-margin.md), which implements the FY2026 Cost Allocation Standard (product cost + inbound fulfillment + outbound shipping + payment fees).\n\nThis concept is preserved so historical reports written before 2026-02-01 remain reproducible. Do not reference it for new work.\n\n# Legacy definition (for reproducibility only)\n\nUnder the pre-FY2026 definition, gross margin was:\n\n```\ngross-margin-legacy(period) = revenue(period) - SUM(products.cost * order_lines.quantity)  over orders recognized in period\n```\n\nThat is, COGS was product cost only; fulfillment, shipping, and payment fees were booked to operating expenses rather than COGS. Finance concluded in Q4 2025 that this understated the operational cost of goods and made the number unreconcilable to the general ledger.\n\n# Why no attested computation\n\nThere is no `Attested Computation` for this metric. When it was retired, its SQL was deleted from the sanctioned set. Anyone re-running historical reports must reconstruct the SQL from this narrative and clearly label the result as legacy.", "metrics/gross-margin": "# Definition\n\n**Not:** revenue minus product cost only (that was the pre-2026 formula; see [`gross-margin-legacy`](./gross-margin-legacy.md)).\n\nGross margin for a period equals recognized [Revenue](./revenue.md) minus **full COGS**, where full COGS is the sum of product cost, inbound fulfillment cost, outbound shipping cost, and payment processing fees. [^margin-standard]\n\n```\ngross_margin(period) = revenue(period) - cogs_full(period)\n```\n\nThe sanctioned computation is [`computations/gross-margin-period.md`](../computations/gross-margin-period.md). Consumers MUST run and attest that computation.\n\n# What changed in FY2026\n\nPrior to 2026-02-01, Acme's gross-margin definition included only product cost, excluding fulfillment, shipping, and payment fees. That legacy definition is preserved in [`metrics/gross-margin-legacy.md`](./gross-margin-legacy.md) as `status: deprecated` for historical query reproducibility.\n\nThe switch reduced reported gross margin by roughly 4-6 percentage points depending on category. It also brought the number in line with the general ledger, closing a long-standing reconciliation gap.\n\n# Trust and freshness\n\n- **Verified:** VP Finance sign-off on 2026-07-01, against the FY2026 margin standard.\n- **Stale after 2026-12-31:** the cost-allocation standard is reviewed annually. Consumers must re-verify against the FY2027 standard before serving.\n\n[^margin-standard]: Cost Allocation & Margin Standard (FY2026)\n[^revenue-policy]: Revenue Recognition Policy (FY2026)", "metrics/revenue": "# Definition\n\nRevenue for a fiscal year is the sum of `net_amount` over orders that (a) reached `order_status = 'delivered'`, (b) completed the 30-day return window, and (c) fall in the fiscal year by `order_ts`. Multi-currency orders are converted to USD at the `order_ts` daily reference rate. [^revenue-policy]\n\nThe sanctioned computation is [`computations/revenue-ytd.md`](../computations/revenue-ytd.md). Consumers MUST run and attest that computation rather than composing their own SUM. The attester rejects any receipt whose executed SQL does not match the sanctioned form.\n\n# Reporting cuts\n\n- **By fiscal year:** the sanctioned computation takes `year` as its sole parameter.\n- **By channel or category:** these are approved narrations, not new metrics. Join the receipt's row-level result to `orders.channel` or to `order_lines` \u00d7 `products.category` client-side. Do NOT rewrite the sanctioned SQL.\n\n# Trust and freshness\n\n- **Verified:** VP Finance sign-off on 2026-07-01, against the FY2026 policy.\n- **Stale after 2026-12-31:** Finance re-issues the revenue recognition policy each January. Consumers of this concept after 2027-01-01 MUST re-verify the definition against the new policy before serving.\n\n[^revenue-policy]: Revenue Recognition Policy (FY2026)", "policies/margin-standard": "# Acme Retail Cost Allocation & Margin Standard \u2014 FY2026\n\n**Owner:** VP Finance (jsmith@acme)\n**Effective:** 2026-02-01\n**Supersedes:** the pre-2026 margin definition (see `metrics/gross-margin-legacy.md`)\n\n## COGS composition\n\nFY2026 COGS for a completed order is the sum of:\n\n1. **Product cost** \u2014 from `products.cost` at time of order (locked at order creation)\n2. **Inbound fulfillment cost** \u2014 allocated per-unit from monthly warehouse aggregates\n3. **Outbound shipping cost** \u2014 carrier-billed actuals from `logistics.shipment_cost`\n4. **Payment processing fees** \u2014 Stripe fees from `finance.payment_fees`\n\nThe pre-2026 definition included only (1). Adding (2) \u2014 (4) reduces reported gross margin by ~4-6 percentage points but produces a number Finance can reconcile to the GL.\n\n## Gross margin formula\n\nFor a period P:\n\n```\ngross_margin(P) = SUM(net_amount) - SUM(cogs_full)   over orders recognized in P\n```\n\nWhere `cogs_full` is the sum of the four components above.\n\n## Reporting granularity\n\nThe standard supports gross margin at three levels: portfolio, category, and SKU. Category and SKU cuts require joining `orders` to `products` on `product_id`.\n\n## What this policy authorizes\n\nAny Attested Computation whose `sources` cites this policy MUST use all four COGS components. The legacy formula (product-cost-only) is preserved in `metrics/gross-margin-legacy.md` for historical query reproducibility; do not use it for new analyses.\n\n# Cited by\n\n- [`metrics/gross-margin`](/metrics/gross-margin.md) \u2014 current gross-margin metric implements this standard\n- [`metrics/gross-margin-legacy`](/metrics/gross-margin-legacy.md) \u2014 deprecated metric, superseded by the definition this standard authorizes\n- [`computations/gross-margin-period`](/computations/gross-margin-period.md) \u2014 sanctioned SQL implements the four COGS components defined here", "policies/revenue-recognition": "# Acme Retail Revenue Recognition Policy \u2014 FY2026\n\n**Owner:** VP Finance (jsmith@acme)\n**Effective:** 2026-01-01\n**Next scheduled review:** 2026-12-31\n\n## Recognition trigger\n\nRevenue is recognized when a customer order reaches `order_status = 'delivered'` **and** the return window has closed (delivered date + 30 days). Orders in earlier statuses are backlog, not revenue.\n\n## Recognized amount\n\nThe recognized amount for an order equals `net_amount = gross_amount - discount_amount`. Shipping and tax are excluded from revenue per US GAAP (they are pass-through liabilities).\n\n## Currency\n\nMulti-currency orders are converted at the daily reference rate published in `finance.fx_daily_rates`, using the `order_ts` date. All reporting is in USD.\n\n## Refunds and cancellations\n\nRefunds and post-recognition cancellations are booked as contra-revenue in the period of the refund, not by retroactive adjustment to the original recognition period.\n\n## Fiscal year\n\nAcme Retail operates on the US calendar year (Jan 1 \u2013 Dec 31). All fiscal-year metrics use `fiscal_year = EXTRACT(YEAR FROM order_ts)`.\n\n## What this policy authorizes\n\nAny Attested Computation whose `sources` cites this policy MUST implement the four rules above. Deviations require a policy addendum reviewed by Finance.\n\n# Cited by\n\n- [`tables/orders`](/tables/orders.md) \u2014 `order_status`, `order_ts`, and `net_amount` columns implement the recognition rules\n- [`metrics/revenue`](/metrics/revenue.md) \u2014 the recognized-revenue definition derives from this policy\n- [`metrics/gross-margin`](/metrics/gross-margin.md) \u2014 the revenue side of gross margin follows this policy\n- [`computations/revenue-ytd`](/computations/revenue-ytd.md) \u2014 the sanctioned SQL implements all four rules\n- [`computations/gross-margin-period`](/computations/gross-margin-period.md) \u2014 revenue leg uses these recognition rules", "skills/run-on-bq": "# Skill: run on BigQuery\n\n## When to use\n\nThe `executor.resource` field of an `Attested Computation` points here when the computation's `runtime` is `bigquery`.\n\n## Preconditions\n\n- Caller has a service account with `bigquery.jobs.create` on the concept's `resource` project.\n- Caller has read access on every table referenced by the computation's `# Computation` fence (or the file at `computation:`).\n- The concept declares its `parameters:` list. Every required parameter has been supplied a value by the caller.\n\n## Steps\n\n1. **Load the computation.** Read the `# Computation` fence from the concept body, or the file at `computation:` if the field is set. The result is a SQL string containing `@name`-style bind variables for each declared parameter.\n2. **Bind parameters.** Pass the caller-supplied values as BigQuery [named query parameters](https://cloud.google.com/bigquery/docs/parameterized-queries). Do NOT string-interpolate; the attester will reject a receipt whose `executed_sql` shows literal substitution.\n3. **Submit the job.** Use `jobs.query` (or `jobs.insert` with a `Query` configuration). Set `useLegacySql: false`. Set the job's `labels` to include `okf_concept: <bundle-relative-path>` for auditability.\n4. **Wait for completion.** Poll `jobs.get` until `status.state = 'DONE'`. If `status.errorResult` is present, return the receipt with `result: null` and `error: <errorResult>` so the attester can distinguish \"sanctioned SQL that failed at runtime\" from \"the executor ran the wrong SQL.\"\n5. **Assemble the receipt.** Return exactly the fields declared in `executor.receipt`. For this skill:\n\n    ```json\n    {\n      \"job_id\": \"bq://<project>/us/<jobId>\",\n      \"executed_sql\": \"<queryConfig.query with parameters shown as @name>\",\n      \"result\": \"<the first result row's cell values, in declared select-order>\"\n    }\n    ```\n\n6. **Never modify the computation.** If the caller-supplied parameters cannot be bound (missing required, wrong type), refuse and return an error receipt. Do NOT rewrite the SQL to work around missing parameters.\n\n## Post-conditions\n\nThe receipt is handed to the concept's `attester.resource`. Do not display the value to the user until the attester returns `verdict: ok`.", "tables/orders": "# Schema\n\n| Column | Type | Description |\n|---|---|---|\n| `order_id` | STRING | Globally unique order id. Generated at order creation. [^warehouse-schema] |\n| `customer_id` | STRING | FK into `customers`. Never null for completed orders. [^warehouse-schema] |\n| `order_ts` | TIMESTAMP | Order placement time in UTC. This is the timestamp used for fiscal-year assignment. [^revenue-policy] |\n| `order_status` | STRING | One of `pending`, `paid`, `shipped`, `delivered`, `cancelled`, `refunded`. Revenue is recognized only when `order_status = 'delivered'` and the 30-day return window has closed. [^revenue-policy] |\n| `gross_amount` | NUMERIC(18,4) | Pre-discount subtotal, in `currency`. Excludes tax and shipping. [^warehouse-schema] |\n| `discount_amount` | NUMERIC(18,4) | Total discounts applied (promo codes, loyalty credits, price adjustments). [^warehouse-schema] |\n| `net_amount` | NUMERIC(18,4) | `gross_amount - discount_amount`. This is the recognized-revenue amount per policy. [^revenue-policy] |\n| `shipping_amount` | NUMERIC(18,4) | Carrier charge billed to the customer. Excluded from revenue (pass-through liability). [^revenue-policy] |\n| `tax_amount` | NUMERIC(18,4) | Sales tax collected. Excluded from revenue (pass-through liability). [^revenue-policy] |\n| `currency` | STRING | ISO 4217 currency code. Non-USD orders convert via `finance.fx_daily_rates` on `order_ts` date. [^revenue-policy] |\n| `channel` | STRING | Order origin: `web`, `mobile`, `marketplace`. Marketplace orders (Amazon, eBay) are net-settled and recognized on marketplace payout, not on `order_status = 'delivered'`. |\n\n# Notes for consumers\n\n- The grain assumption trips up new analysts: `SUM(net_amount) GROUP BY order_id` is a no-op because there is exactly one row per order. For per-SKU revenue, join `order_lines`.\n- The `refunded` status is terminal in this table; the refund event itself lives in `finance.refunds`, keyed on `order_id`.\n\n[^warehouse-schema]: Acme Retail warehouse schema \u2014 sales dataset\n[^revenue-policy]: Revenue Recognition Policy (FY2026)"}, "types": ["Attested Computation", "BigQuery Table", "Log", "Metric", "Policy", "Skill"], "palette": {"BigQuery Dataset": "#8b5cf6", "BigQuery Table": "#3b82f6", "Reference": "#10b981"}};
+</script>
+<script>
+(function () {
+  const bundle = window.BUNDLE;
+  const bundleName = window.BUNDLE_NAME;
+  document.title = `${bundleName} — OKF Viewer`;
+  document.getElementById("bundle-name").textContent = bundleName;
+
+  // Populate type filter
+  const typeSelect = document.getElementById("filter-type");
+  for (const t of bundle.types) {
+    const opt = document.createElement("option");
+    opt.value = t;
+    opt.textContent = t;
+    typeSelect.appendChild(opt);
+  }
+
+  // Build reverse-link index for backlinks
+  const backlinks = {};
+  for (const edge of bundle.edges) {
+    const { source, target } = edge.data;
+    (backlinks[target] ||= []).push(source);
+  }
+
+  // Look up node label/type by id
+  const nodeIndex = {};
+  for (const n of bundle.nodes) nodeIndex[n.data.id] = n.data;
+
+  const cy = cytoscape({
+    container: document.getElementById("graph"),
+    elements: [...bundle.nodes, ...bundle.edges],
+    style: [
+      {
+        selector: "node",
+        style: {
+          "background-color": "data(color)",
+          "label": "data(label)",
+          "color": "#0f172a",
+          "font-size": 11,
+          "text-valign": "bottom",
+          "text-margin-y": 4,
+          "text-wrap": "wrap",
+          "text-max-width": 120,
+          "width": "data(size)",
+          "height": "data(size)",
+          "border-width": 1,
+          "border-color": "#0f172a",
+        },
+      },
+      {
+        selector: "node[?stale]",
+        style: {
+          "border-width": 2,
+          "border-color": "#b91c1c",
+          "border-style": "dashed",
+        },
+      },
+      {
+        selector: 'node[status = "deprecated"]',
+        style: {
+          "opacity": 0.55,
+        },
+      },
+      {
+        selector: "node:selected",
+        style: {
+          "border-width": 3,
+          "border-color": "#f59e0b",
+        },
+      },
+      {
+        selector: "edge",
+        style: {
+          "width": 1.5,
+          "line-color": "#cbd5e1",
+          "target-arrow-color": "#cbd5e1",
+          "target-arrow-shape": "triangle",
+          "curve-style": "bezier",
+          "arrow-scale": 0.9,
+        },
+      },
+      {
+        selector: "edge:selected",
+        style: {
+          "line-color": "#f59e0b",
+          "target-arrow-color": "#f59e0b",
+          "width": 2.5,
+        },
+      },
+      {
+        selector: ".dim",
+        style: { "opacity": 0.15 },
+      },
+    ],
+    layout: { name: "cose", animate: false, padding: 30 },
+    wheelSensitivity: 0.2,
+  });
+
+  cy.on("tap", "node", (evt) => showDetail(evt.target.id()));
+  cy.on("tap", (evt) => {
+    if (evt.target === cy) clearSelection();
+  });
+
+  document.getElementById("layout").addEventListener("change", (e) => {
+    cy.layout({ name: e.target.value, animate: false, padding: 30 }).run();
+  });
+
+  document.getElementById("reset").addEventListener("click", () => {
+    cy.fit(null, 30);
+    clearSelection();
+  });
+
+  document.getElementById("search").addEventListener("input", (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    if (!q) {
+      cy.elements().removeClass("dim");
+      return;
+    }
+    cy.nodes().forEach((n) => {
+      const d = n.data();
+      const hay =
+        (d.label || "").toLowerCase() + " " +
+        d.id.toLowerCase() + " " +
+        (d.tags || []).join(" ").toLowerCase();
+      n.toggleClass("dim", !hay.includes(q));
+    });
+    cy.edges().forEach((edge) => {
+      const src = edge.source();
+      const tgt = edge.target();
+      edge.toggleClass("dim", src.hasClass("dim") || tgt.hasClass("dim"));
+    });
+  });
+
+  document.getElementById("filter-type").addEventListener("change", (e) => {
+    const t = e.target.value;
+    if (!t) {
+      cy.elements().removeClass("dim");
+      return;
+    }
+    cy.nodes().forEach((n) => {
+      n.toggleClass("dim", n.data("type") !== t);
+    });
+    cy.edges().forEach((edge) => {
+      edge.toggleClass("dim", edge.source().hasClass("dim") || edge.target().hasClass("dim"));
+    });
+  });
+
+  function clearSelection() {
+    cy.elements().unselect();
+    document.getElementById("detail-empty").hidden = false;
+    document.getElementById("detail-content").hidden = true;
+  }
+
+  function showDetail(conceptId) {
+    const data = nodeIndex[conceptId];
+    if (!data) return;
+    cy.elements().unselect();
+    const node = cy.getElementById(conceptId);
+    if (node) node.select();
+
+    document.getElementById("detail-empty").hidden = true;
+    const content = document.getElementById("detail-content");
+    content.hidden = false;
+
+    const chip = document.getElementById("detail-type");
+    chip.textContent = data.type;
+    chip.style.background = data.color;
+
+    document.getElementById("detail-title").textContent = data.label;
+    document.getElementById("detail-id").textContent = conceptId;
+    document.getElementById("detail-description").textContent = data.description || "—";
+
+    const resourceEl = document.getElementById("detail-resource");
+    resourceEl.innerHTML = "";
+    if (data.resource) {
+      const a = document.createElement("a");
+      a.href = data.resource;
+      a.textContent = data.resource;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.className = "external";
+      resourceEl.appendChild(a);
+    } else {
+      resourceEl.textContent = "—";
+    }
+
+    const tagsEl = document.getElementById("detail-tags");
+    tagsEl.innerHTML = "";
+    if (data.tags && data.tags.length) {
+      for (const t of data.tags) {
+        const span = document.createElement("span");
+        span.className = "tag";
+        span.textContent = t;
+        tagsEl.appendChild(span);
+      }
+    } else {
+      tagsEl.textContent = "—";
+    }
+
+    // v0.2 signal badges: status, trust tier, staleness.
+    const badgesEl = document.getElementById("detail-badges");
+    badgesEl.innerHTML = "";
+    const status = data.status || "stable";
+    badgesEl.appendChild(makeBadge(status, "status-" + status));
+    const tier = data.trust_tier || "unverified";
+    badgesEl.appendChild(makeBadge(tier.replace(/-/g, " "), "trust-" + tier));
+    if (data.stale) {
+      const label = data.stale_after ? `stale (since ${data.stale_after})` : "stale";
+      badgesEl.appendChild(makeBadge(label, "stale"));
+    } else if (data.stale_after) {
+      badgesEl.appendChild(makeBadge(`stale after ${data.stale_after}`, "fresh"));
+    }
+
+    document.getElementById("detail-generated").textContent = formatActorEvent(data.generated);
+
+    const verifiedEl = document.getElementById("detail-verified");
+    const verified = data.verified || [];
+    if (verified.length) {
+      verifiedEl.textContent = verified.map(formatActorEvent).join("; ");
+    } else {
+      verifiedEl.textContent = "—";
+    }
+
+    const sourcesEl = document.getElementById("detail-sources");
+    sourcesEl.innerHTML = "";
+    const sources = data.sources || [];
+    if (sources.length) {
+      const ul = document.createElement("ul");
+      ul.className = "sources-list";
+      for (const s of sources) {
+        const li = document.createElement("li");
+        const label = s.title || s.resource || s.id || "source";
+        if (s.resource && /^https?:\/\//.test(s.resource)) {
+          const a = document.createElement("a");
+          a.href = s.resource;
+          a.textContent = label;
+          a.target = "_blank";
+          a.rel = "noopener";
+          a.className = "external";
+          li.appendChild(a);
+        } else {
+          li.textContent = s.resource ? `${label} (${s.resource})` : label;
+        }
+        ul.appendChild(li);
+      }
+      sourcesEl.appendChild(ul);
+    } else {
+      sourcesEl.textContent = "—";
+    }
+
+    const body = bundle.bodies[conceptId] || "";
+    const html = marked.parse(body, { breaks: false, gfm: true });
+    const bodyEl = document.getElementById("detail-body");
+    bodyEl.innerHTML = html;
+    rewriteInternalLinks(bodyEl);
+
+    const bl = backlinks[conceptId] || [];
+    const blSection = document.getElementById("detail-backlinks");
+    const blList = document.getElementById("backlinks-list");
+    blList.innerHTML = "";
+    if (bl.length) {
+      blSection.hidden = false;
+      for (const src of bl) {
+        const li = document.createElement("li");
+        const a = document.createElement("a");
+        a.textContent = nodeIndex[src]?.label || src;
+        a.dataset.target = src;
+        a.addEventListener("click", () => showDetail(src));
+        li.appendChild(a);
+        const muted = document.createElement("span");
+        muted.className = "muted";
+        muted.textContent = ` (${src})`;
+        li.appendChild(muted);
+        blList.appendChild(li);
+      }
+    } else {
+      blSection.hidden = true;
+    }
+
+    cy.animate({ center: { eles: node }, zoom: Math.max(cy.zoom(), 1.0) }, { duration: 200 });
+  }
+
+  function makeBadge(text, cls) {
+    const span = document.createElement("span");
+    span.className = "badge " + cls;
+    span.textContent = text;
+    return span;
+  }
+
+  function formatActorEvent(event) {
+    if (!event || !event.by) return "—";
+    return event.at ? `${event.by} · ${event.at}` : String(event.by);
+  }
+
+  function rewriteInternalLinks(root) {
+    root.querySelectorAll("a[href]").forEach((a) => {
+      const href = a.getAttribute("href");
+      if (!href) return;
+      if (href.startsWith("/") && href.endsWith(".md")) {
+        const target = href.slice(1, -3);
+        if (nodeIndex[target]) {
+          a.className = "internal";
+          a.setAttribute("href", "javascript:void(0)");
+          a.addEventListener("click", (e) => {
+            e.preventDefault();
+            showDetail(target);
+          });
+          return;
+        }
+      }
+      a.className = "external";
+      a.setAttribute("target", "_blank");
+      a.setAttribute("rel", "noopener");
+    });
+  }
+
+  // Auto-show the first node (a dataset if available, else first concept)
+  const initial =
+    bundle.nodes.find((n) => n.data.type === "BigQuery Dataset") ||
+    bundle.nodes[0];
+  if (initial) showDetail(initial.data.id);
+})();
+
+</script>
+</body>
+</html>
