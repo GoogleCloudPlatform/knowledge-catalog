@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 import yaml
@@ -79,14 +79,54 @@ def normalize_verified(frontmatter: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
-def trust_tier(frontmatter: dict[str, Any]) -> str:
-    """Derive a concept's trust tier from `verified` (OKF v0.2 §5.3).
+def _parse_event_time(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
-    - No `verified` key ⇒ "unverified".
-    - `verified` by non-`human:` actors only ⇒ "machine-confirmed".
-    - `verified` by a `human:<id>` actor ⇒ "human-reviewed".
+
+def current_verified_events(frontmatter: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return verification events that apply to the current content.
+
+    When `generated.at` is present, an event is current only when its valid
+    `at` timestamp is at or after that content-change timestamp. Without a
+    `generated.at`, no later content change is declared, so normalized events
+    retain the v0.2 behavior.
     """
     events = normalize_verified(frontmatter)
+    generated = frontmatter.get("generated")
+    if not isinstance(generated, dict) or "at" not in generated:
+        return events
+
+    generated_at = _parse_event_time(generated.get("at"))
+    if generated_at is None:
+        return []
+
+    current = []
+    for event in events:
+        verified_at = _parse_event_time(event.get("at"))
+        if verified_at is not None and verified_at >= generated_at:
+            current.append(event)
+    return current
+
+
+def trust_tier(frontmatter: dict[str, Any]) -> str:
+    """Derive a concept's trust tier from current verification events.
+
+    - No current verification event ⇒ "unverified".
+    - Current events by non-`human:` actors only ⇒ "machine-confirmed".
+    - A current event by a `human:<id>` actor ⇒ "human-reviewed".
+    """
+    events = current_verified_events(frontmatter)
     if not events:
         return "unverified"
     for event in events:
