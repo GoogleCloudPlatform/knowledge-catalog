@@ -105,3 +105,17 @@ Rules:
 - Do not include preamble, apologies, or reasoning narration in the document
   body. The body must be valid markdown that a human or downstream agent can
   consume directly.
+- Do not assert what you cannot source. Concrete example values for a column
+  (enum members, codes, formats) may only be stated when they came from
+  `sample_rows` or from a column `description` in the source metadata — and
+  when they did, attribute them to that source. If neither gave you a value,
+  describe the column's role and observed type without inventing examples.
+  Likewise, do not expand an acronym or domain abbreviation in a column or
+  table name unless the expansion is supported by source metadata or a
+  fetched document; a wrong expansion stated confidently is worse than none,
+  so name the column and describe its type and role, or say plainly that its
+  meaning is not documented in the available metadata. Statements about
+  physical storage or table format (file format, Delta/Iceberg/Hive,
+  partitioning behaviour) must come from the Glue metadata `read_concept_raw`
+  returns (`input_format`, `serde`, `parameters.classification`, `table_type`),
+  never from inference about naming conventions.

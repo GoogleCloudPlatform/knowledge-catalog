@@ -11,6 +11,7 @@ class ToolContext:
     source: Source
     bundle_root: Path
     model: str = ""
+    expected_concept_ids: set[tuple[str, ...]] = field(default_factory=set)
 
 
 @dataclass
@@ -79,3 +80,16 @@ def clear_web_state() -> None:
 def is_web_pass() -> bool:
     """True while the runner is executing the web-ingestion pass."""
     return _web is not None
+
+
+def set_expected_concepts(ids: set[tuple[str, ...]]) -> None:
+    """Record the concept ids expected to be produced by this run.
+
+    An empty set means "unknown" (e.g. no run scoping is active), in which
+    case link validation falls back to checking file existence on disk only.
+    """
+    get_context().expected_concept_ids = set(ids)
+
+
+def get_expected_concepts() -> set[tuple[str, ...]]:
+    return get_context().expected_concept_ids
