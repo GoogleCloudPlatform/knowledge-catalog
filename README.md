@@ -1,25 +1,39 @@
-# Knowledge Catalog
+# Knowledge Catalog — AWS fork
 
-[Knowledge Catalog](https://cloud.google.com/products/knowledge-catalog) (formerly Dataplex), is an AI-powered data catalog and metadata management platform. It provides a dynamic knowledge graph of all your data, structured and unstructured, to provide semantics and business context to AI agents
+A fork of [GoogleCloudPlatform/knowledge-catalog](https://github.com/GoogleCloudPlatform/knowledge-catalog),
+ported to AWS. The reference agent reads the **AWS Glue Data Catalog**
+and emits [Open Knowledge Format](okf/SPEC.md) bundles — plain markdown
+with YAML frontmatter that describes your data assets.
 
-This repository features tools, agents, and samples that demonstrate Knowledge Catalog features, and building context management, enrichment and retrieval solutions.
+## Contents
 
+- [`okf/`](okf/) — the OKF specification, the AWS reference agent
+  (`aws-reference-agent`), and the bundle visualizer. **This is the
+  ported part**; start at [`okf/README.md`](okf/README.md).
+- [`samples/`](samples/) — Google Knowledge Catalog samples inherited
+  from upstream. Not ported; they still target GCP.
+- [`toolbox/`](toolbox/) — markdown/code utilities inherited from
+  upstream. Source-agnostic, but their demo fixtures are GCP-flavoured.
 
-## Getting Started
+## Quick start
 
-[![Open in Cloud Shell](http://gstatic.com/cloudssh/images/open-btn.svg)](https://console.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https%3A%2F%2Fgithub.com%2FGoogleCloudPlatform%2Fknowledge-catalog.git)
+```
+cd okf
+python3.11 -m venv .venv
+.venv/bin/pip install -e .[dev]
+.venv/bin/aws-reference-agent --help
+```
 
-
-## Contributing
-
-See the contributing [instructions](CONTRIBUTING.md) to get started contributed.
-
+See [`okf/README.md`](okf/README.md) for AWS prerequisites, the IAM
+policy, and how to run the agent against your own Glue database.
 
 ## License
 
-All solutions within this repository are provided under the [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) license. Please see [LICENSE](LICENSE.md) for more detailed terms and conditions.
-
+All solutions within this repository are provided under the
+[Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) license. See
+[LICENSE](LICENSE.md) for terms and conditions.
 
 ## Disclaimer
 
-This repository and its contents are not an official Google product.
+This repository and its contents are not an official Google product, and
+this fork is not affiliated with or endorsed by Google or AWS.

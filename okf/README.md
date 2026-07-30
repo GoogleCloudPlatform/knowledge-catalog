@@ -24,17 +24,14 @@
 > contribution; this agent and the visualizer exist to make the format
 > tangible at both ends — production and consumption.
 >
-> **See OKF in practice** — three ready-to-browse bundles produced by this
-> agent, checked into [`bundles/`](bundles/):
+> **See OKF in practice** — a ready-to-browse bundle checked into
+> [`bundles/`](bundles/):
 >
-> - [`bundles/ga4/`](bundles/ga4/) — GA4 e-commerce dataset
->   ([viz.html](bundles/ga4/viz.html))
-> - [`bundles/stackoverflow/`](bundles/stackoverflow/) — Stack Overflow
->   public dataset ([viz.html](bundles/stackoverflow/viz.html))
-> - [`bundles/crypto_bitcoin/`](bundles/crypto_bitcoin/) — Bitcoin
->   blocks/transactions ([viz.html](bundles/crypto_bitcoin/viz.html))
 > - [`bundles/acme_retail/`](bundles/acme_retail/) — Acme Retail
->   ([viz.html](bundles/acme_retail/viz.html))
+>   ([viz.html](bundles/acme_retail/viz.html)) — a hand-authored bundle
+>   showing the concept types the agent does not generate: Policy,
+>   Metric, Attested Computation, Skill, and Log. It predates the AWS
+>   port and still carries BigQuery-flavoured SQL and executor skill.
 
 ## Why OKF?
 
@@ -84,50 +81,180 @@ on source code.
 ## Install
 
 ```
-python3.13 -m venv .venv
-.venv/bin/pip install --index-url https://pypi.org/simple/ -e .[dev]
+python3.11 -m venv .venv
+.venv/bin/pip install -e .[dev]
 ```
 
-## Credentials
+## Prerequisites
 
-- BigQuery: `gcloud auth application-default login` plus a project for billing
-  (`gcloud config set project <id>`). Public datasets are readable, but the
-  caller's project is billed for query bytes.
-- Gemini: set `GEMINI_API_KEY` (AI Studio) **or** use Vertex AI by setting
-  `GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_CLOUD_PROJECT=<id>`, and
-  `GOOGLE_CLOUD_LOCATION=<region>`.
+- **Python 3.11+**.
+- **AWS credentials** via the standard chain: either `aws sso login
+  --profile <name>` and pass `--profile <name>` to the CLI, or the usual
+  environment variables (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
+  `AWS_SESSION_TOKEN`, or `AWS_PROFILE`). Region can come from `--region`,
+  the profile's configured region, or `AWS_REGION`.
+- **Node.js and the `claude` CLI.** The agent is built on
+  `claude-agent-sdk`, which spawns the Claude Code CLI as a subprocess to
+  drive the tool-use loop — install Node.js and run `npm install -g
+  @anthropic-ai/claude-code` (or otherwise ensure `claude` is on `PATH`)
+  before running `enrich`.
+- **Claude credentials** — either:
+  - an Anthropic API key: `export ANTHROPIC_API_KEY=<key>`, **or**
+  - Amazon Bedrock:
+    ```
+    export CLAUDE_CODE_USE_BEDROCK=1
+    export AWS_REGION=us-east-1
+    export ANTHROPIC_MODEL='us.anthropic.claude-sonnet-4-6'  # optional override
+    ```
 
 ## How the reference agent works
 
-The reference agent runs in two passes. The **BQ pass** writes one OKF
-doc per concept the source advertises, using BigQuery metadata alone.
-The **web pass** then runs the LLM as its own crawler: it receives a
-list of seed URLs (provided via `--web-seed` or `--web-seed-file`),
-fetches the seeds via the `fetch_url` tool, and decides which outbound
-links are worth following based on whether they look like authoritative
-documentation for the existing concepts. For each page it fetches, the
-agent chooses to (a) enrich one or more existing concept docs, (b) mint
-a standalone `references/<slug>` doc, or (c) skip. A hard
-`--web-max-pages` cap and a same-domain allowed-hosts filter
-(configurable via `--web-allowed-host`) are enforced inside the tool,
-so the agent cannot overrun. Use `--no-web` to skip the web pass.
+The reference agent runs in two passes. The **Glue pass** writes one OKF
+doc per concept the source advertises (database + tables), using AWS Glue
+Data Catalog metadata, optionally augmented with a small Athena `LIMIT`
+sample of each table's rows. The **web pass** then runs the LLM as its
+own crawler: it receives a list of seed URLs (provided via `--web-seed`
+or `--web-seed-file`), fetches the seeds via the `fetch_url` tool, and
+decides which outbound links are worth following based on whether they
+look like authoritative documentation for the existing concepts. For
+each page it fetches, the agent chooses to (a) enrich one or more
+existing concept docs, (b) mint a standalone `references/<slug>` doc, or
+(c) skip. A hard `--web-max-pages` cap and a same-domain allowed-hosts
+filter (configurable via `--web-allowed-host`) are enforced inside the
+tool, so the agent cannot overrun. Use `--no-web` to skip the web pass;
+use `--no-sample` to skip Athena row sampling.
+
+## IAM
+
+Least-privilege policy for reading a Glue database and sampling rows via
+Athena:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "GlueCatalogRead",
+      "Effect": "Allow",
+      "Action": [
+        "glue:GetDatabase",
+        "glue:GetTables",
+        "glue:GetTable",
+        "glue:GetPartitions"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "AthenaRowSampling",
+      "Effect": "Allow",
+      "Action": [
+        "athena:StartQueryExecution",
+        "athena:GetQueryExecution",
+        "athena:GetQueryResults",
+        "athena:StopQueryExecution"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadTableData",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:ListBucket"],
+      "Resource": [
+        "arn:aws:s3:::<data-bucket>",
+        "arn:aws:s3:::<data-bucket>/*"
+      ]
+    },
+    {
+      "Sid": "AthenaResultsBucket",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Resource": "arn:aws:s3:::<athena-results-bucket>/*"
+    }
+  ]
+}
+```
+
+Pass `--no-sample` to skip row sampling entirely — that drops the need
+for every `athena:*` permission and both S3 statements above; only
+`GlueCatalogRead` is required.
+
+## Verify access
+
+Before spending tokens, confirm the credentials reach your catalog. This
+hits Glue only — no LLM, no Athena, no cost:
+
+```
+.venv/bin/python -c "
+from aws_reference_agent.sources.glue import GlueSource
+s = GlueSource(database='<glue-database-name>', sampling_enabled=False)
+for c in s.list_concepts(): print(c.id_str, '|', c.type, '|', c.resource)
+"
+```
+
+It should print one `databases/<name>` row and one `tables/<name>` row
+per table, each with a Glue ARN. Add `region='<aws-region>'` if your
+profile has no configured region. To eyeball the parsed schema for one
+table before committing to a full run:
+
+```
+.venv/bin/python -c "
+import json
+from aws_reference_agent.sources.glue import GlueSource
+s = GlueSource(database='<glue-database-name>', sampling_enabled=False)
+ref = s.find(('tables', '<table-name>'))
+print(json.dumps(s.read_concept(ref), indent=2, default=str))
+"
+```
 
 ## Run
 
-Minimum invocation — point at a BigQuery dataset and a bundle output
-directory. Seeds for the web pass are explicit; omit them (or pass
-`--no-web`) to run BQ-only:
+Start with one concept and both optional passes off. This is a single
+LLM turn against a single table — no crawling, no Athena scan:
 
 ```
-.venv/bin/python -m reference_agent enrich \
-    --source bq \
-    --dataset <project>.<dataset> \
+.venv/bin/python -m aws_reference_agent enrich \
+    --source glue \
+    --database <glue-database-name> \
+    --concept tables/<table-name> \
+    --no-web \
+    --no-sample \
+    --out /tmp/okf-smoke \
+    -v
+```
+
+`-v` logs every tool call and its result, which is the fastest way to
+see what the agent is actually doing.
+
+Then widen to the whole database with both passes on:
+
+```
+.venv/bin/python -m aws_reference_agent enrich \
+    --source glue \
+    --database <glue-database-name> \
+    --region <aws-region> \
+    --profile <aws-profile> \
+    --athena-workgroup <workgroup> \
     --web-seed-file <path/to/seeds.txt> \
+    --web-max-pages 40 \
     --out ./bundles/<name>
 ```
 
-Iterate on a single concept by adding `--concept <type>/<name>` (e.g.
-`--concept tables/events_`); repeatable.
+Notes on the optional flags:
+
+- `--region` and `--profile` are only needed when the environment or the
+  active AWS profile doesn't already supply them.
+- `--athena-output-location s3://<bucket>/athena/` is for workgroups that
+  do **not** configure their own results location. Passing it against a
+  workgroup that enforces one causes Athena to reject the query, and row
+  sampling then silently yields no rows — omit it unless you know your
+  workgroup needs it.
+- `--no-sample` skips Athena entirely; `--no-web` skips the crawl.
+- `--concept <type>/<name>` is repeatable, so you can re-run a handful of
+  tables without regenerating the whole bundle.
+
+Row sampling is best-effort by design: if Athena fails for any reason the
+run continues and the affected docs simply carry no sample rows. Run with
+`-v` and look for `sample_rows` in the log to confirm it returned data.
 
 ## Samples
 
@@ -136,23 +263,16 @@ exact `enrich` command) with the **produced bundle** (`bundles/<name>/`)
 that the recipe generated. Open the recipe to reproduce; open the bundle
 to browse the result directly.
 
-- **GA4 Google Merchandise Store** — public e-commerce dataset, seeded
-  with canonical GA4 BigQuery Export documentation URLs.
-  · [recipe](samples/ga4_merch_store/README.md)
-  · [bundle](bundles/ga4/)
-  · [viz.html](bundles/ga4/viz.html)
-- **Stack Overflow** — public dataset (mirror of the Stack Exchange Data
-  Dump), seeded with the community's canonical schema references.
-  Exercises multi-concept enrichment from cross-cutting docs pages.
-  · [recipe](samples/stackoverflow/README.md)
-  · [bundle](bundles/stackoverflow/)
-  · [viz.html](bundles/stackoverflow/viz.html)
-- **Bitcoin (crypto)** — public dataset (blocks, transactions, inputs,
-  outputs) from the `bitcoin-etl` pipeline. Exercises cross-table
-  foreign-key relationships in prose.
-  · [recipe](samples/crypto_bitcoin/README.md)
-  · [bundle](bundles/crypto_bitcoin/)
-  · [viz.html](bundles/crypto_bitcoin/viz.html)
+- **NOAA GHCN-Daily** — public S3 dataset (no public Glue catalog; the
+  recipe registers the Hive-partitioned Parquet data in your own Glue
+  database, then runs the agent against it). Runnable against the current
+  AWS agent, but no bundle is committed yet.
+  · [recipe](samples/noaa_ghcn/README.md)
+
+The pre-fork BigQuery recipes and the bundles they produced (GA4, Stack
+Overflow, Bitcoin) were removed with the AWS port — they could not be
+re-run against the Glue agent, and the table docs they contained are the
+same shape this agent now produces from a real catalog.
 
 ## Visualize
 
@@ -185,7 +305,7 @@ one shape.
 ### Generate
 
 ```
-.venv/bin/python -m reference_agent visualize --bundle ./bundles/<name>
+.venv/bin/python -m aws_reference_agent visualize --bundle ./bundles/<name>
 ```
 
 That writes `bundles/<name>/viz.html`. Flags:
@@ -199,10 +319,10 @@ That writes `bundles/<name>/viz.html`. Flags:
 Example, writing the output somewhere else and overriding the header:
 
 ```
-.venv/bin/python -m reference_agent visualize \
-    --bundle ./bundles/crypto_bitcoin \
-    --out /tmp/btc.html \
-    --name "Bitcoin OKF"
+.venv/bin/python -m aws_reference_agent visualize \
+    --bundle ./bundles/acme_retail \
+    --out /tmp/acme.html \
+    --name "Acme Retail OKF"
 ```
 
 ### How it's built

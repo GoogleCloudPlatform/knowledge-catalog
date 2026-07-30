@@ -7,7 +7,7 @@ from textwrap import dedent
 
 import pytest
 
-from reference_agent.viewer.generator import generate_visualization
+from aws_reference_agent.viewer.generator import generate_visualization
 
 
 def _write(path: Path, body: str) -> None:
@@ -20,12 +20,12 @@ def _make_bundle(root: Path) -> None:
         root / "datasets" / "my_dataset.md",
         """
         ---
-        type: BigQuery Dataset
+        type: Glue Database
         title: My dataset
         description: A test dataset.
         resource: https://example.com/dataset
         tags: [test]
-        generated: {by: 'reference_agent/gemini', at: '2026-05-28T00:00:00+00:00'}
+        generated: {by: 'aws_reference_agent/sonnet', at: '2026-05-28T00:00:00+00:00'}
         ---
         Parent dataset for [users](../tables/users.md).
         """,
@@ -34,13 +34,13 @@ def _make_bundle(root: Path) -> None:
         root / "tables" / "users.md",
         """
         ---
-        type: BigQuery Table
+        type: Glue Table
         title: Users
         description: User profiles.
         resource: https://example.com/users
         tags: [users]
         status: deprecated
-        generated: {by: 'reference_agent/gemini', at: '2026-05-28T00:00:00+00:00'}
+        generated: {by: 'aws_reference_agent/sonnet', at: '2026-05-28T00:00:00+00:00'}
         verified:
           - {by: 'process:finance-nightly', at: '2026-05-29T00:00:00+00:00'}
           - {by: 'human:ahormati', at: '2026-05-30T00:00:00+00:00'}
@@ -55,12 +55,12 @@ def _make_bundle(root: Path) -> None:
         root / "tables" / "events.md",
         """
         ---
-        type: BigQuery Table
+        type: Glue Table
         title: Events
         description: User events.
         resource: https://example.com/events
         tags: [events]
-        generated: {by: 'reference_agent/gemini', at: '2026-05-28T00:00:00+00:00'}
+        generated: {by: 'aws_reference_agent/sonnet', at: '2026-05-28T00:00:00+00:00'}
         ---
         See [users](users.md).
         """,
@@ -74,7 +74,7 @@ def _make_bundle(root: Path) -> None:
         description: DAU metric.
         resource: https://example.com/dau
         tags: [metric]
-        generated: {by: 'reference_agent/gemini', at: '2026-05-28T00:00:00+00:00'}
+        generated: {by: 'aws_reference_agent/sonnet', at: '2026-05-28T00:00:00+00:00'}
         ---
         COUNT(DISTINCT user_id) per day.
         """,
@@ -140,10 +140,10 @@ def test_missing_link_targets_are_skipped(tmp_path: Path):
         bundle / "tables" / "lonely.md",
         """
         ---
-        type: BigQuery Table
+        type: Glue Table
         title: Lonely
         description: Has a dangling link.
-        generated: {by: 'reference_agent/gemini', at: '2026-05-28T00:00:00+00:00'}
+        generated: {by: 'aws_reference_agent/sonnet', at: '2026-05-28T00:00:00+00:00'}
         ---
         Links to [missing](missing.md).
         """,
@@ -179,7 +179,7 @@ def test_v02_signals_appear_in_graph_payload(tmp_path: Path):
     assert users["trust_tier"] == "human-reviewed"
     # stale_after is in the past → stale.
     assert users["stale"] is True
-    assert users["generated"]["by"] == "reference_agent/gemini"
+    assert users["generated"]["by"] == "aws_reference_agent/sonnet"
     assert len(users["verified"]) == 2
     assert users["sources"][0]["id"] == "bq"
 

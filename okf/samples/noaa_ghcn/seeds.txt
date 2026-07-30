@@ -1,0 +1,3 @@
+# NOAA GHCN-Daily documentation seed URLs
+https://www.ncei.noaa.gov/products/land-based-station/global-historical-climatology-network-daily
+https://registry.opendata.aws/noaa-ghcn/

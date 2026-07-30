@@ -4,7 +4,7 @@ from datetime import date
 
 import pytest
 
-from reference_agent.bundle.document import (
+from aws_reference_agent.bundle.document import (
     OKFDocument,
     OKFDocumentError,
     is_stale,

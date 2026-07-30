@@ -1,33 +1,30 @@
 # Contributing
 
-Thanks for your interest in contributing to the Google Cloud Knowledge Catalog
-repo!
+This is a fork of
+[GoogleCloudPlatform/knowledge-catalog](https://github.com/GoogleCloudPlatform/knowledge-catalog)
+that ports the reference agent to AWS Glue and Athena.
 
-To get started contributing:
+**Contributing upstream:** changes to the Open Knowledge Format itself
+belong in the upstream repo, which requires a Google Contributor License
+Agreement — see <https://cla.developers.google.com/>. That CLA does not
+apply to this fork.
 
-1. Sign a Contributor License Agreement (see details below).
-1. Fork the repo, develop and test your code changes.
-1. Ensure that your code adheres to the existing style.
-1. Ensure that your code has an appropriate set of unit tests which all pass.
-1. Ensure that all tests pass (e.g., by running `npm run test` in the TypeScript package directories).
-1. Submit a pull request.
+**Contributing here:** AWS-specific work on `okf/` is welcome by pull
+request.
 
-## Contributor License Agreement
+To get started:
 
-Contributions to this project must be accompanied by a Contributor License
-Agreement. You (or your employer) retain the copyright to your contribution;
-this simply gives us permission to use and redistribute your contributions as
-part of the project. Head over to <https://cla.developers.google.com/> to see
-your current agreements on file or to sign a new one.
-
-You generally only need to submit a CLA once, so if you've already submitted one
-(even if it was for a different project), you probably don't need to do it
-again.
+1. Fork the repo, develop and test your changes.
+2. Match the existing style — the Python code uses
+   `from __future__ import annotations`, full type hints, and no comments
+   restating what the code says.
+3. Add tests. `okf/` follows TDD: write the failing test first. Tests must
+   be deterministic — mock boto3 with stub clients, never call live AWS,
+   and never call the LLM.
+4. Run the suite: `cd okf && .venv/bin/pytest`.
+5. Submit a pull request.
 
 ## Code reviews
 
-All submissions, including submissions by project members, require review. We
-use GitHub pull requests for this purpose. Consult
-[GitHub Help](https://help.github.com/articles/about-pull-requests/) for more
-information on using pull requests.
-
+All submissions, including submissions by project members, require review.
+We use GitHub pull requests for this purpose.
