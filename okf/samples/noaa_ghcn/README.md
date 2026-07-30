@@ -6,8 +6,9 @@ Parquet files in the AWS Open Data bucket `s3://noaa-ghcn-pds` (region
 `us-east-1`, anonymously listable, free to access — storage is sponsored
 by the AWS Open Data program).
 
-Unlike the BigQuery-era samples (see `../legacy-bigquery/`), there is no
-public Glue catalog here — AWS Open Data publishes raw S3 buckets. You
+There is no public Glue catalog to point at — AWS Open Data publishes
+raw S3 buckets, not catalog entries, and a Glue Data Catalog cannot be
+shared across accounts the way a BigQuery public dataset can. You
 register the data as a table in your **own** Glue database first, then run
 the agent against that database. Storage is free; you pay only for Athena
 scan bytes per query (row-sampling in `enrich` runs a small `LIMIT` query
