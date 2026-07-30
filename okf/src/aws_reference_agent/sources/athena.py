@@ -31,6 +31,20 @@ class AthenaSampler:
         self._client = athena_client
         self._sleep = time.sleep
 
+        if output_location is None:
+            response = self.client.get_work_group(WorkGroup=workgroup)
+            configured_location = (
+                response.get("WorkGroup", {})
+                .get("Configuration", {})
+                .get("ResultConfiguration", {})
+                .get("OutputLocation")
+            )
+            if not configured_location:
+                raise ValueError(
+                    f"Athena sampling requires an output location. Pass --athena-output-location"
+                    f" or configure one on the workgroup '{workgroup}'."
+                )
+
     @property
     def client(self) -> Any:
         if self._client is None:

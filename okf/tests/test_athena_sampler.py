@@ -38,6 +38,15 @@ class FakeAthenaClient:
         self.stop_calls.append(kwargs.get("QueryExecutionId", ""))
         return {}
 
+    def get_work_group(self, WorkGroup: str) -> dict[str, Any]:
+        return {
+            "WorkGroup": {
+                "Configuration": {
+                    "ResultConfiguration": {"OutputLocation": "s3://fake-bucket/output/"}
+                }
+            }
+        }
+
 
 def _row(*cells: dict[str, Any] | None) -> dict[str, Any]:
     return {"Data": [c if c is not None else {} for c in cells]}
