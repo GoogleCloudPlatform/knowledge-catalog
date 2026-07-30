@@ -50,12 +50,13 @@ class StubStsClient:
         return {"Account": self._account}
 
 
-def make_source(glue_client, region="us-east-1", sts_client=None, **kwargs):
+def make_source(glue_client, region="us-east-1", sts_client=None, sampling_enabled=False, **kwargs):
     return GlueSource(
         database="mydb",
         region=region,
         glue_client=glue_client,
         sts_client=sts_client or StubStsClient(),
+        sampling_enabled=sampling_enabled,
         **kwargs,
     )
 
@@ -303,3 +304,58 @@ def test_should_return_none_when_sampling_a_database_ref():
     src = make_source(glue_client)
     ref = src.find(("databases", "mydb"))
     assert src.sample_rows(ref) is None
+
+
+class StubAthenaClientNoOutputLocation:
+    """Athena client stub that reports no OutputLocation on the workgroup."""
+
+    def get_work_group(self, WorkGroup):
+        return {"WorkGroup": {"Configuration": {"ResultConfiguration": {}}}}
+
+
+class StubAthenaClientWithOutputLocation:
+    """Athena client stub that reports an OutputLocation on the workgroup."""
+
+    def get_work_group(self, WorkGroup):
+        return {
+            "WorkGroup": {
+                "Configuration": {
+                    "ResultConfiguration": {"OutputLocation": "s3://bucket/output/"}
+                }
+            }
+        }
+
+
+def test_should_raise_when_sampling_enabled_and_no_output_location_available():
+    import pytest
+    from aws_reference_agent.sources.athena import AthenaSampler
+
+    with pytest.raises(ValueError, match="output location"):
+        AthenaSampler(
+            workgroup="primary",
+            output_location=None,
+            athena_client=StubAthenaClientNoOutputLocation(),
+        )
+
+
+def test_should_not_raise_when_output_location_is_explicitly_provided():
+    from aws_reference_agent.sources.athena import AthenaSampler
+
+    # Should succeed without calling get_work_group
+    sampler = AthenaSampler(
+        workgroup="primary",
+        output_location="s3://bucket/output/",
+        athena_client=StubAthenaClientNoOutputLocation(),
+    )
+    assert sampler.output_location == "s3://bucket/output/"
+
+
+def test_should_not_raise_when_workgroup_has_output_location_configured():
+    from aws_reference_agent.sources.athena import AthenaSampler
+
+    sampler = AthenaSampler(
+        workgroup="primary",
+        output_location=None,
+        athena_client=StubAthenaClientWithOutputLocation(),
+    )
+    assert sampler.output_location is None
