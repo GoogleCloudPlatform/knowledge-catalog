@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from reference_agent.bundle.document import OKFDocument
-from reference_agent.bundle.index import regenerate_indexes
+from aws_reference_agent.bundle.document import OKFDocument
+from aws_reference_agent.bundle.index import regenerate_indexes
 
 
 def _stub_synth(rel: str, children: list[tuple[str, str]], *, model: str) -> str:
@@ -17,7 +17,7 @@ def _write_doc(path: Path, type_: str, title: str, description: str) -> None:
             "type": type_,
             "title": title,
             "description": description,
-            "generated": {"by": "reference_agent/stub", "at": "2026-05-27T00:00:00+00:00"},
+            "generated": {"by": "aws_reference_agent/stub", "at": "2026-05-27T00:00:00+00:00"},
         },
         body=f"# {title}\n\n{description}\n",
     )
@@ -28,19 +28,19 @@ def test_regenerate_groups_by_type_and_links_relative(tmp_path: Path):
     root = tmp_path / "bundle"
     _write_doc(
         root / "datasets" / "ga4.md",
-        "BigQuery Dataset",
+        "Glue Database",
         "GA4 Dataset",
         "GA4 obfuscated ecommerce sample.",
     )
     _write_doc(
         root / "tables" / "events_.md",
-        "BigQuery Table",
+        "Glue Table",
         "events_*",
         "Daily-sharded GA4 event tables.",
     )
     _write_doc(
         root / "tables" / "users.md",
-        "BigQuery Table",
+        "Glue Table",
         "users",
         "Per-user dimension.",
     )
@@ -50,7 +50,7 @@ def test_regenerate_groups_by_type_and_links_relative(tmp_path: Path):
     assert {"bundle", "datasets", "tables"} <= written_names | {root.name}
 
     tables_index = (root / "tables" / "index.md").read_text(encoding="utf-8")
-    assert tables_index.startswith("# BigQuery Table")
+    assert tables_index.startswith("# Glue Table")
     assert "[events_*](events_.md)" in tables_index
     assert "[users](users.md)" in tables_index
     assert "Daily-sharded GA4 event tables." in tables_index
@@ -75,7 +75,7 @@ def test_regenerate_single_child_reuses_description(tmp_path: Path):
     root = tmp_path / "bundle"
     _write_doc(
         root / "datasets" / "only.md",
-        "BigQuery Dataset",
+        "Glue Database",
         "Only Dataset",
         "The only dataset in this bundle.",
     )

@@ -5,9 +5,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from reference_agent.bundle.document import OKFDocument
-from reference_agent.tools.bundle_tools import write_concept_doc
-from reference_agent.tools.context import (
+from aws_reference_agent.bundle.document import OKFDocument
+from aws_reference_agent.tools.bundle_tools import write_concept_doc
+from aws_reference_agent.tools.context import (
     clear_web_state,
     set_context,
     set_web_state,
@@ -22,15 +22,15 @@ def _cleanup():
 
 def _set_ctx(tmp_path: Path) -> None:
     src = MagicMock()
-    set_context(src, tmp_path, model="gemini-flash-latest")
+    set_context(src, tmp_path, model="sonnet")
 
 
 def _good_frontmatter(**overrides):
     fm = {
-        "type": "BigQuery Table",
+        "type": "Glue Table",
         "title": "Users",
         "description": "A table of users.",
-        "resource": "https://bigquery.googleapis.com/v2/projects/p/datasets/d/tables/users",
+        "resource": "arn:aws:glue:us-east-1:123456789012:table/d/users",
         "tags": ["users"],
     }
     fm.update(overrides)
@@ -68,7 +68,7 @@ def test_generated_is_auto_filled(tmp_path):
     doc = OKFDocument.parse((tmp_path / "tables" / "users.md").read_text(encoding="utf-8"))
     assert "timestamp" not in doc.frontmatter
     generated = doc.frontmatter["generated"]
-    assert generated["by"] == "reference_agent/gemini-flash-latest"
+    assert generated["by"] == "aws_reference_agent/sonnet"
     assert generated["at"]
 
 
@@ -174,7 +174,7 @@ def test_web_pass_skips_guard_for_non_bigquery_table_types(tmp_path):
     )
     set_web_state(allowed_hosts=set(), max_pages=1)
     # Drop both backticked identifiers and shrink sources — guard should not
-    # fire because the existing doc is not type=BigQuery Table.
+    # fire because the existing doc is not type=Glue Table.
     result = write_concept_doc(
         "references/foo",
         _good_frontmatter(type="Reference", title="Foo", sources=_sources("a")),
