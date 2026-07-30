@@ -81,9 +81,12 @@ on source code.
 ## Install
 
 ```
-python3.11 -m venv .venv
-.venv/bin/pip install -e .[dev]
+uv sync
+uv run aws-reference-agent --help
 ```
+
+Install uv first if needed: `curl -LsSf https://astral.sh/uv/install.sh | sh`.
+`uv sync` provisions Python 3.11 automatically if it is not already present.
 
 ## Prerequisites
 
@@ -184,7 +187,7 @@ Before spending tokens, confirm the credentials reach your catalog. This
 hits Glue only — no LLM, no Athena, no cost:
 
 ```
-.venv/bin/python -c "
+uv run python -c "
 from aws_reference_agent.sources.glue import GlueSource
 s = GlueSource(database='<glue-database-name>', sampling_enabled=False)
 for c in s.list_concepts(): print(c.id_str, '|', c.type, '|', c.resource)
@@ -197,7 +200,7 @@ profile has no configured region. To eyeball the parsed schema for one
 table before committing to a full run:
 
 ```
-.venv/bin/python -c "
+uv run python -c "
 import json
 from aws_reference_agent.sources.glue import GlueSource
 s = GlueSource(database='<glue-database-name>', sampling_enabled=False)
@@ -212,7 +215,7 @@ Start with one concept and both optional passes off. This is a single
 LLM turn against a single table — no crawling, no Athena scan:
 
 ```
-.venv/bin/python -m aws_reference_agent enrich \
+uv run aws-reference-agent enrich \
     --source glue \
     --database <glue-database-name> \
     --concept tables/<table-name> \
@@ -228,7 +231,7 @@ see what the agent is actually doing.
 Then widen to the whole database with both passes on:
 
 ```
-.venv/bin/python -m aws_reference_agent enrich \
+uv run aws-reference-agent enrich \
     --source glue \
     --database <glue-database-name> \
     --region <aws-region> \
@@ -305,7 +308,7 @@ one shape.
 ### Generate
 
 ```
-.venv/bin/python -m aws_reference_agent visualize --bundle ./bundles/<name>
+uv run aws-reference-agent visualize --bundle ./bundles/<name>
 ```
 
 That writes `bundles/<name>/viz.html`. Flags:
@@ -319,7 +322,7 @@ That writes `bundles/<name>/viz.html`. Flags:
 Example, writing the output somewhere else and overriding the header:
 
 ```
-.venv/bin/python -m aws_reference_agent visualize \
+uv run aws-reference-agent visualize \
     --bundle ./bundles/acme_retail \
     --out /tmp/acme.html \
     --name "Acme Retail OKF"
@@ -336,5 +339,5 @@ once at generation time and serialized into the file.
 ## Tests
 
 ```
-.venv/bin/pytest
+uv run pytest
 ```

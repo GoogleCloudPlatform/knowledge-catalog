@@ -19,9 +19,8 @@ with YAML frontmatter that describes your data assets.
 
 ```
 cd okf
-python3.11 -m venv .venv
-.venv/bin/pip install -e .[dev]
-.venv/bin/aws-reference-agent --help
+uv sync
+uv run aws-reference-agent --help
 ```
 
 See [`okf/README.md`](okf/README.md) for AWS prerequisites, the IAM

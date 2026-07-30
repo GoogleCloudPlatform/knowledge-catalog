@@ -21,7 +21,7 @@ To get started:
 3. Add tests. `okf/` follows TDD: write the failing test first. Tests must
    be deterministic — mock boto3 with stub clients, never call live AWS,
    and never call the LLM.
-4. Run the suite: `cd okf && .venv/bin/pytest`.
+4. Run the suite: `cd okf && uv run pytest`.
 5. Submit a pull request.
 
 ## Code reviews

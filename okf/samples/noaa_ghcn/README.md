@@ -107,7 +107,7 @@ the table):
 ## Step 4: run the agent
 
 ```
-.venv/bin/python -m aws_reference_agent enrich \
+uv run aws-reference-agent enrich \
     --source glue \
     --database noaa_ghcn \
     --web-seed-file samples/noaa_ghcn/seeds.txt \
