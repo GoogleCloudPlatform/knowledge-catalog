@@ -27,6 +27,7 @@ from aws_reference_agent.sources.base import ConceptRef, Source
 from aws_reference_agent.tools.context import (
     clear_web_state,
     set_context,
+    set_expected_concepts,
     set_web_state,
 )
 
@@ -287,6 +288,7 @@ class ReferenceRunner:
                 raise ValueError(
                     f"Unknown concept(s): {sorted('/'.join(m) for m in missing)}"
                 )
+        set_expected_concepts({c.id for c in concepts})
 
         count = 0
         for ref in concepts:

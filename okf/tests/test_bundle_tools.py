@@ -10,6 +10,7 @@ from aws_reference_agent.tools.bundle_tools import write_concept_doc
 from aws_reference_agent.tools.context import (
     clear_web_state,
     set_context,
+    set_expected_concepts,
     set_web_state,
 )
 
@@ -144,6 +145,90 @@ def test_web_pass_allows_augmentation_with_new_section(tmp_path):
         augmented,
     )
     assert "error" not in result
+
+
+def test_rejects_link_to_unexpected_concept_when_expected_set_excludes_it(tmp_path):
+    _set_ctx(tmp_path)
+    set_expected_concepts({("tables", "foo")})
+    body = (
+        "Prose that resides in the [temp](../databases/temp.md) database.\n\n"
+        "# Schema\n- `id` STRING: desc\n"
+    )
+    result = write_concept_doc("tables/foo", _good_frontmatter(), body)
+    assert "error" in result
+    assert "../databases/temp.md" in result["error"]
+
+
+def test_allows_link_when_target_concept_id_is_in_expected_set(tmp_path):
+    _set_ctx(tmp_path)
+    set_expected_concepts({("tables", "foo"), ("databases", "temp")})
+    body = (
+        "Prose that resides in the [temp](../databases/temp.md) database.\n\n"
+        "# Schema\n- `id` STRING: desc\n"
+    )
+    result = write_concept_doc("tables/foo", _good_frontmatter(), body)
+    assert "error" not in result
+
+
+def test_allows_link_when_target_file_already_exists_on_disk(tmp_path):
+    _set_ctx(tmp_path)
+    (tmp_path / "databases").mkdir()
+    (tmp_path / "databases" / "temp.md").write_text("dummy", encoding="utf-8")
+    set_expected_concepts({("tables", "foo")})
+    body = (
+        "Prose that resides in the [temp](../databases/temp.md) database.\n\n"
+        "# Schema\n- `id` STRING: desc\n"
+    )
+    result = write_concept_doc("tables/foo", _good_frontmatter(), body)
+    assert "error" not in result
+
+
+def test_allows_non_concept_link_forms(tmp_path):
+    _set_ctx(tmp_path)
+    set_expected_concepts({("tables", "foo")})
+    body = (
+        "See [docs](https://example.com/docs) or [mail](mailto:a@b.com) or "
+        "[anchor](#schema) or [script](run.sh) or [index](../databases/index.md).\n\n"
+        "# Schema\n- `id` STRING: desc\n"
+    )
+    result = write_concept_doc("tables/foo", _good_frontmatter(), body)
+    assert "error" not in result
+
+
+def test_allows_everything_when_expected_set_is_empty(tmp_path):
+    _set_ctx(tmp_path)
+    (tmp_path / "databases").mkdir()
+    (tmp_path / "databases" / "temp.md").write_text("dummy", encoding="utf-8")
+    body = (
+        "Prose that resides in the [temp](../databases/temp.md) database.\n\n"
+        "# Schema\n- `id` STRING: desc\n"
+    )
+    result = write_concept_doc("tables/foo", _good_frontmatter(), body)
+    assert "error" not in result
+
+
+def test_rejects_link_escaping_bundle_root(tmp_path):
+    _set_ctx(tmp_path)
+    set_expected_concepts({("tables", "foo")})
+    body = (
+        "See the [outside](../../outside.md) doc.\n\n"
+        "# Schema\n- `id` STRING: desc\n"
+    )
+    result = write_concept_doc("tables/foo", _good_frontmatter(), body)
+    assert "error" in result
+    assert "escapes the bundle root" in result["error"]
+
+
+def test_resolves_relative_link_from_subdirectory_doc(tmp_path):
+    _set_ctx(tmp_path)
+    set_expected_concepts({("tables", "foo"), ("databases", "temp")})
+    body = (
+        "Prose that resides in the [temp](../databases/temp.md) database.\n\n"
+        "# Schema\n- `id` STRING: desc\n"
+    )
+    result = write_concept_doc("tables/foo", _good_frontmatter(), body)
+    assert "error" not in result
+    assert (tmp_path / "tables" / "foo.md").exists()
 
 
 def test_bq_pass_can_shrink_schema_when_no_web_state(tmp_path):

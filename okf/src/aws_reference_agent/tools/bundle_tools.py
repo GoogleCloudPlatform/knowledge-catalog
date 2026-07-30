@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import posixpath
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -11,7 +12,11 @@ from aws_reference_agent.bundle.document import (
 )
 from aws_reference_agent.bundle.paths import concept_id_to_path, parse_concept_id
 from aws_reference_agent.okf_types import SOURCE_TABLE_TYPE
-from aws_reference_agent.tools.context import get_context, is_web_pass
+from aws_reference_agent.tools.context import (
+    get_context,
+    get_expected_concepts,
+    is_web_pass,
+)
 
 _PREFERRED_KEY_ORDER = (
     "type",
@@ -28,6 +33,47 @@ _PREFERRED_KEY_ORDER = (
 )
 
 _FIELD_NAME_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_.]*)`")
+
+_LINK_TARGET_RE = re.compile(r"\]\(\s*([^)\s]+)")
+
+
+def _dead_links(body: str, cid: tuple[str, ...]) -> list[str]:
+    """Return offending markdown link targets that will not resolve to a
+    document in the bundle.
+
+    Skips absolute URLs, mailto links, anchors, root-relative links (`/...`),
+    non-`.md` targets, and `index.md` targets (generated after all concepts
+    are written). Everything else is resolved relative to the directory the
+    doc being written lives in, then checked against the bundle: either the
+    resolved file already exists on disk, or its bundle-relative path matches
+    a concept id in the run's expected-concept set. When that set is empty
+    (unknown scope), only the file-existence check applies.
+    """
+    ctx = get_context()
+    expected = get_expected_concepts()
+    dir_rel = "/".join(cid[:-1])
+    offenders: list[str] = []
+    for target in _LINK_TARGET_RE.findall(body):
+        if target.startswith(("http://", "https://", "mailto:", "#", "/")):
+            continue
+        if not target.lower().endswith(".md"):
+            continue
+        if posixpath.basename(target) == "index.md":
+            continue
+
+        joined = posixpath.join(dir_rel, target) if dir_rel else target
+        resolved = posixpath.normpath(joined)
+        if resolved == ".." or resolved.startswith("../"):
+            offenders.append(f"{target} (escapes the bundle root)")
+            continue
+
+        if (ctx.bundle_root / resolved).exists():
+            continue
+        candidate_id = tuple(resolved[: -len(".md")].split("/"))
+        if expected and candidate_id in expected:
+            continue
+        offenders.append(target)
+    return offenders
 
 
 def _section_content_lines(body: str, heading: str) -> list[str]:
@@ -133,6 +179,21 @@ def write_concept_doc(
                 f"Refusing to write document with invalid frontmatter: {e}. "
                 f"Required keys: {', '.join(REQUIRED_FRONTMATTER_KEYS)}. "
                 f"Re-call write_concept_doc with the complete frontmatter dict."
+            ),
+            "concept_id": concept_id,
+        }
+
+    dead_links = _dead_links(body or "", cid)
+    if dead_links:
+        shown = "; ".join(dead_links[:10])
+        truncated = " (and more)" if len(dead_links) > 10 else ""
+        return {
+            "error": (
+                f"Refusing to write: the body links to "
+                f"{len(dead_links)} target(s) that will never exist in this "
+                f"bundle: {shown}{truncated}. Either drop the link(s) or "
+                f"rewrite the prose without them; only link to concepts "
+                f"that are part of this run or documents already on disk."
             ),
             "concept_id": concept_id,
         }
