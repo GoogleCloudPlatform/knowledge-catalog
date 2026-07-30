@@ -6,7 +6,7 @@
 | **Pinned to**              | `okf_version: "0.2"`                                                                                    |
 | **Relates to**             | #148 (typed relationships), #158 (maintenance signals), #159 (reliability object), #120 (stable ids), #227 (v0.2) |
 | **Contributor**            | Andrew Crenshaw / Lexenne                                                                               |
-| **Reference implementation** | Lexenne *remember* exporter — ships both keys in production; sample bundle built from public docs    |
+| **Reference implementation** | Lexenne *remember* exporter — ships both keys in production; sample bundle (fixture-driven) published at https://github.com/andrewcrenshaw/remember-okf-sample-bundle |
 
 ## Summary
 
