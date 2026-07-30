@@ -266,6 +266,11 @@ case the link mislinks or 404s. Use this form only when the bundle is
 served at a root that an OKF-aware consumer maps to the bundle root;
 prefer §5.1 for bundles meant to be browsed raw.
 
+Consumers that resolve cross-links MUST resolve a §5.2 absolute link
+against the bundle root, not against their own root. A consumer MUST NOT
+silently drop or ignore a §5.2 link it cannot resolve. It MUST surface it
+the same way it would surface a broken §5.1 link (§5.3).
+
 ### 5.3 Link semantics
 
 A link from concept A to concept B asserts a *relationship*. The
