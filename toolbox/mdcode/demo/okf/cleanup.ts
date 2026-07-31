@@ -13,3 +13,11 @@ function dataplex(cmd: string, data: string|null=null) {
 
 dataplex(`entry-groups delete ${entryGroup}`);
 console.log(`Deleted entry group ${entryGroup}`);
+
+try {
+  dataplex(`aspect-types delete okf`);
+  console.log('Deleted custom aspect type okf');
+}
+catch {
+  // Might not exist, or still referenced
+}

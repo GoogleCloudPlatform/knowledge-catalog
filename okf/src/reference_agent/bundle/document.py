@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 import yaml
 
-REQUIRED_FRONTMATTER_KEYS = ("type", "title", "description", "timestamp")
+# OKF v0.2 §11: `type` is the only always-required frontmatter key.
+REQUIRED_FRONTMATTER_KEYS = ("type",)
 
 _FRONTMATTER_DELIM = "---"
 
@@ -59,3 +61,55 @@ class OKFDocument:
             raise OKFDocumentError(
                 f"Missing required frontmatter keys: {', '.join(missing)}"
             )
+
+
+def normalize_verified(frontmatter: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the `verified` events as a list (OKF v0.2 §5.2).
+
+    A single verifier MAY be written as one `{ by, at }` mapping without the
+    list dash; consumers MUST treat a bare mapping as a one-element list.
+    """
+    verified = frontmatter.get("verified")
+    if verified is None:
+        return []
+    if isinstance(verified, dict):
+        return [verified]
+    if isinstance(verified, list):
+        return [v for v in verified if isinstance(v, dict)]
+    return []
+
+
+def trust_tier(frontmatter: dict[str, Any]) -> str:
+    """Derive a concept's trust tier from `verified` (OKF v0.2 §5.3).
+
+    - No `verified` key ⇒ "unverified".
+    - `verified` by non-`human:` actors only ⇒ "machine-confirmed".
+    - `verified` by a `human:<id>` actor ⇒ "human-reviewed".
+    """
+    events = normalize_verified(frontmatter)
+    if not events:
+        return "unverified"
+    for event in events:
+        by = str(event.get("by") or "")
+        if by.startswith("human:"):
+            return "human-reviewed"
+    return "machine-confirmed"
+
+
+def is_stale(frontmatter: dict[str, Any], today: date | None = None) -> bool:
+    """Whether a concept is stale per `stale_after` (OKF v0.2 §5.5).
+
+    A concept is stale when `today >= stale_after`. Returns False when
+    `stale_after` is absent or unparseable.
+    """
+    raw = frontmatter.get("stale_after")
+    if not raw:
+        return False
+    if isinstance(raw, date):
+        stale_after = raw
+    else:
+        try:
+            stale_after = date.fromisoformat(str(raw)[:10])
+        except ValueError:
+            return False
+    return (today or date.today()) >= stale_after

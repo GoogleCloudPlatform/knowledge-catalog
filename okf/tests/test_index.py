@@ -17,7 +17,7 @@ def _write_doc(path: Path, type_: str, title: str, description: str) -> None:
             "type": type_,
             "title": title,
             "description": description,
-            "timestamp": "2026-05-27T00:00:00+00:00",
+            "generated": {"by": "reference_agent/stub", "at": "2026-05-27T00:00:00+00:00"},
         },
         body=f"# {title}\n\n{description}\n",
     )
