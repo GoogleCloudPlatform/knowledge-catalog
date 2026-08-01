@@ -241,13 +241,13 @@ generated: { by: reference_agent/gemini-2.5-pro, at: 2026-05-28T14:30:00Z }
 | Column        | Type      | Description                              |
 |---------------|-----------|------------------------------------------|
 | `order_id`    | STRING    | Globally unique order identifier.        |
-| `customer_id` | STRING    | Foreign key into [customers](/tables/customers.md). |
+| `customer_id` | STRING    | Foreign key into [customers](./customers.md). |
 | `total_usd`   | NUMERIC   | Order total in US dollars.               |
 | `placed_at`   | TIMESTAMP | When the customer submitted the order.   |
 
 # Joins
 
-Joined with [customers](/tables/customers.md) on `customer_id`.
+Joined with [customers](./customers.md) on `customer_id`.
 ```
 
 ### 4.4 Example: a concept not bound to a resource
@@ -264,7 +264,7 @@ generated: { by: human:ahormati, at: 2026-04-12T09:00:00Z }
 # Trigger
 
 A freshness alert fires when `orders` lags more than 30 minutes behind its
-expected SLA. See the [orders table](/tables/orders.md).
+expected SLA. See the [orders table](../tables/orders.md).
 
 # Steps
 
@@ -438,19 +438,36 @@ concept was read.
 Concepts MAY link to other concepts using standard markdown links. Two
 forms are supported:
 
+- **Relative (recommended):** a standard markdown relative path. This
+  form resolves correctly in standard markdown renderers — including
+  browsers, GitHub, and editor previews — without OKF-aware tooling, which
+  keeps a bundle portable and browsable as raw files. Its drawback is that
+  a link breaks if either document is moved relative to the other.
+
+  ```markdown
+  See the [neighboring concept](./other.md).
+  ```
+
 - **Absolute (bundle-relative):** begins with `/`, interpreted relative to
-  the bundle root. This is the **recommended** form because it is stable
-  when documents are moved within their subdirectory.
+  the bundle root.
 
   ```markdown
   See the [customers table](/tables/customers.md) for the join key.
   ```
 
-- **Relative:** a standard markdown relative path.
+  This form is stable when a document is moved within the bundle, but it
+  **requires an OKF-aware resolver**. A non-OKF renderer resolves a leading
+  `/` against its own root — the host origin in a browser or the repository
+  root on GitHub — which is not the bundle root when the bundle is nested
+  inside a larger repository (§3). In that case the link can mislink or
+  return not found. Use this form only when the consumer maps the bundle
+  root explicitly; prefer relative links for bundles meant to be browsed
+  raw.
 
-  ```markdown
-  See the [neighboring concept](./other.md).
-  ```
+  Consumers that resolve cross-links MUST resolve an absolute link against
+  the bundle root, not against their own root. A consumer MUST NOT silently
+  drop or ignore an absolute link it cannot resolve. It MUST surface the
+  unresolved link in the same way it surfaces a broken relative link.
 
 A link from concept A to concept B asserts a *relationship*. The specific
 kind (parent/child, references, joins-with, depends-on) is conveyed by the
