@@ -2,69 +2,66 @@
 type: BigQuery Table
 resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow/tables/posts_orphaned_tag_wiki
 title: Orphaned Tag Wiki Posts
-description: This table contains Tag Wiki posts that are no longer associated with
-  an active tag on Stack Overflow.
-tags: stackoverflow, posts, tag, wiki, orphaned
-timestamp: '2026-05-28T23:27:56+00:00'
+description: Posts that serve as wiki entries for tags that no longer exist or are
+  orphaned.
+tags:
+- stackoverflow
+- posts
+- wiki
+- tags
+- orphaned
+generated:
+  by: reference_agent/gemini-2.5-flash
+  at: '2026-07-10T22:48:39+00:00'
+sources:
+- id: posts-orphaned-tag-wiki-resource
+  resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow/tables/posts_orphaned_tag_wiki
 ---
 
-This table, part of the public [Stack Overflow dataset](../datasets/stackoverflow.md), contains posts that were originally created as Tag Wikis but are no longer linked to an existing tag within the Stack Overflow platform. These 'orphaned' Tag Wiki entries typically describe the purpose and usage of a specific programming language, technology, or concept. Each row represents a single Tag Wiki post, identified by a unique `id`. The `post_type_id` for these entries is typically `3`. The table includes the body of the wiki, creation dates, and metadata about the last editor and activity. It can be used to analyze historical Tag Wiki content that has become disassociated from its original tag.
+This table contains posts that are considered "tag wiki" entries for tags that have become orphaned or no longer exist on Stack Overflow. These posts typically provide an explanation or definition for a specific tag. The table `posts_orphaned_tag_wiki` is part of the larger [stackoverflow dataset](../datasets/stackoverflow.md).
 
 # Schema
-
+The schema contains fields related to the post itself, such as content, dates, and ownership information.
 - `id`: Unique identifier for the post.
-- `title`: Title of the post (often null for Tag Wikis).
-- `body`: The main content of the Tag Wiki, often including HTML.
-- `accepted_answer_id`: (Always null for this post type).
-- `answer_count`: (Always null for this post type).
+- `title`: The title of the post.
+- `body`: The main content of the post, often in Markdown format.
+- `accepted_answer_id`: (STRING) ID of the accepted answer (if applicable).
+- `answer_count`: (STRING) Number of answers for the post.
 - `comment_count`: Number of comments on the post.
 - `community_owned_date`: Timestamp when the post became community-owned.
 - `creation_date`: Timestamp when the post was created.
-- `favorite_count`: Number of times the post has been favorited.
+- `favorite_count`: (STRING) Number of times the post has been favorited.
 - `last_activity_date`: Timestamp of the last activity on the post.
 - `last_edit_date`: Timestamp of the last edit to the post.
-- `last_editor_display_name`: Display name of the last user to edit the post.
-- `last_editor_user_id`: User ID of the last user to edit the post.
-- `owner_display_name`: Display name of the user who owns the post.
-- `owner_user_id`: User ID of the user who owns the post.
-- `parent_id`: (Always null for this post type).
-- `post_type_id`: Type of the post. For this table, it's typically `3` (Tag Wiki).
+- `last_editor_display_name`: Display name of the last editor.
+- `last_editor_user_id`: User ID of the last editor.
+- `owner_display_name`: Display name of the post owner.
+- `owner_user_id`: User ID of the post owner.
+- `parent_id`: (STRING) ID of the parent post (for answers or comments).
+- `post_type_id`: Type of post (e.g., 1 for question, 2 for answer, 3 for tag wiki entry).
 - `score`: The score of the post.
-- `tags`: Tags associated with the post (often null as these are orphaned).
-- `view_count`: Number of times the post has been viewed.
+- `tags`: (STRING) Tags associated with the post (usually NULL for tag wikis themselves, as they describe the tag).
+- `view_count`: (STRING) Number of views for the post.
 
 # Common query patterns
 
 ```sql
+-- Select all orphaned tag wiki posts
 SELECT
     id,
-    creation_date,
-    body
-  FROM
+    title,
+    creation_date
+FROM
     `bigquery-public-data.stackoverflow.posts_orphaned_tag_wiki`
-  WHERE
-    creation_date < '2015-01-01'
-  LIMIT 100;
+LIMIT 100;
 ```
 
 ```sql
+-- Find the body content of a specific orphaned tag wiki post
 SELECT
-    id,
     body
-  FROM
+FROM
     `bigquery-public-data.stackoverflow.posts_orphaned_tag_wiki`
-  WHERE
+WHERE
     id = 4164933;
 ```
-
-```sql
-SELECT
-    count(id) AS total_orphaned_tag_wikis
-  FROM
-    `bigquery-public-data.stackoverflow.posts_orphaned_tag_wiki`;
-```
-
-# Citations
-
-[1] [BigQuery Public Data: Stack Overflow posts_orphaned_tag_wiki](https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow/tables/posts_orphaned_tag_wiki)
-[2] [Stack Overflow](https://stackoverflow.com/)

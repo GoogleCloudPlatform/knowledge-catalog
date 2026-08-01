@@ -22,6 +22,17 @@ catch {
   // Might already exist
 }
 
+try {
+  dataplex(`aspect-types create okf --metadata-template-file-name=okf-aspect.json`);
+  console.log('Created custom aspect type okf');
+  console.log();
+}
+catch {
+  // Might already exist
+}
+
+const okfAspect = `${project}.${location}.okf`;
+
 await Bun.file(path.join(process.cwd(), 'catalog.yaml')).write(YAML.stringify({
   scope: `kb.${project}.${location}.${entryGroup}`,
   snapshot: {
@@ -30,7 +41,8 @@ await Bun.file(path.join(process.cwd(), 'catalog.yaml')).write(YAML.stringify({
     ],
     aspects: [
       'dataplex-types.global.generic',
-      'dataplex-types.global.overview'
+      'dataplex-types.global.overview',
+      okfAspect
     ]
   },
   publishing: {
@@ -39,7 +51,8 @@ await Bun.file(path.join(process.cwd(), 'catalog.yaml')).write(YAML.stringify({
     ],
     aspects: [
       'dataplex-types.global.generic',
-      'dataplex-types.global.overview'
+      'dataplex-types.global.overview',
+      okfAspect
     ]
   }
 }, null, 2));

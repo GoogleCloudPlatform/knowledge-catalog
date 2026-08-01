@@ -1,41 +1,65 @@
 ---
 type: BigQuery Dataset
 resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/ga4_obfuscated_sample_ecommerce
-title: BigQuery sample dataset for Google Analytics ecommerce web implementation
-description: A sample of obfuscated Google Analytics BigQuery event export data for
-  three months from the Google Merchandise Store is available as a public dataset
-  in BigQuery.
+title: GA4 Obfuscated Sample Ecommerce Dataset
+description: Obfuscated Google Analytics 4 dataset emulating a web ecommerce
+  implementation of the Google Merchandise Store.
 tags:
-- ecommerce
-- web analytics
-- Google Analytics
-- BigQuery
-- public dataset
-timestamp: '2026-05-28T22:49:59+00:00'
+  - ga4
+  - ecommerce
+  - obfuscated
+  - analytics
+  - sample-data
+generated:
+  by: reference_agent/gemini-3.5-flash
+  at: 2026-07-10T21:14:56+00:00
+sources:
+  - id: ga4-metadata
+    resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/ga4_obfuscated_sample_ecommerce
+    title: BigQuery Dataset Metadata for ga4_obfuscated_sample_ecommerce
+  - id: ga4-demo-docs
+    resource: https://developers.google.com/analytics/bigquery/web-ecommerce-demo-dataset
+    title: Google Analytics 4 eCommerce Demo Dataset Documentation
 ---
 
-# Overview
-The `ga4_obfuscated_sample_ecommerce` dataset contains obfuscated Google Analytics BigQuery event export data for three months (November 2020 to January 2021) from the Google Merchandise Store. This public dataset is available in BigQuery and emulates a real-world dataset.
+The `ga4_obfuscated_sample_ecommerce` dataset is an obfuscated, publicly accessible export of Google Analytics 4 (GA4) event data representing a real-world web ecommerce implementation (specifically, from the Google Merchandise Store)[^ga4-demo-docs]. It spans three months of historical activity from November 1, 2020, to January 1, 2021[^ga4-demo-docs], and is designed to allow developers, analysts, and students to experiment with high-volume, granular GA4 event data in BigQuery without provisioning a proprietary dataset.
 
-# Pre-requisites
-To work with this dataset, you need access to a Google Cloud project with the BigQuery API enabled. You can use BigQuery Sandbox mode or the Free usage tier for exploration and sample queries.
+This dataset contains a single sharded table family, [events_](../tables/events_.md), which holds daily export tables containing individual session interactions, user properties, and ecommerce transaction details. Analysts can leverage this dataset to learn how to query GA4 nested schemas, build user acquisition models, reconstruct user journeys, and analyze purchase funnels.
 
-# Limitations
-The dataset contains obfuscated data with placeholder values like `<Other>`, `NULL`, and `''`. Due to obfuscation, the internal consistency of the dataset might be somewhat limited. It cannot be compared to the Google Analytics Demo Account.
+# Schema
 
-# Using the dataset
-You can access the `ga4_obfuscated_sample_ecommerce` dataset via the BigQuery UI in the Cloud Console.
+As a BigQuery Dataset, this resource acts as a namespace containing tables and does not have a flat column schema of its own. It hosts the following tables:
 
-## Sample Query
-The following query shows the number of unique events, users, and days in the dataset:
+*   [events_](../tables/events_.md): A partitioned, sharded table containing daily Google Analytics 4 event export records.
+
+# Common query patterns
+
+### 1. Count total events and distinct users across the entire dataset
+
+This query demonstrates how to query over all sharded tables in the dataset using a wildcard suffix pattern.
 
 ```sql
 SELECT
-  COUNT(*) AS event_count,
-  COUNT(DISTINCT user_pseudo_id) AS user_count,
-  COUNT(DISTINCT event_date) AS day_count
-FROM `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*`
+  COUNT(*) AS total_events,
+  COUNT(DISTINCT user_pseudo_id) AS total_users
+FROM
+  `bigquery-public-data.ga4_obfuscated_sample_ecommerce.events_*`
 ```
 
-# Citations
-- https://developers.google.com/analytics/bigquery/web-ecommerce-demo-dataset
+### 2. Locate tables and confirm data availability
+
+This query retrieves metadata about the individual tables contained within the dataset namespace.
+
+```sql
+SELECT
+  table_id,
+  creation_time,
+  row_count,
+  size_bytes
+FROM
+  `bigquery-public-data.ga4_obfuscated_sample_ecommerce.__TABLES__`
+ORDER BY
+  table_id DESC
+```
+
+[^ga4-demo-docs]: [Google Analytics 4 eCommerce Demo Dataset documentation](https://developers.google.com/analytics/bigquery/web-ecommerce-demo-dataset)

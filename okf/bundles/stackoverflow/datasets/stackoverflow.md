@@ -2,58 +2,58 @@
 type: BigQuery Dataset
 resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow
 title: Stack Overflow Public Dataset
-description: The Stack Overflow public dataset contains a variety of tables related
-  to Stack Overflow user activity, posts, and tags. This dataset is no longer actively
+description: This dataset contains a public archive of Stack Overflow data, including
+  posts, users, and tags. It was last updated on 2022-11-25 and is no longer actively
   updated.
-tags: Stack Overflow, public data, community, Q&A
-timestamp: '2026-05-28T23:25:15+00:00'
+tags: Stack Overflow, Q&A, developer, programming, public dataset
+generated:
+  by: reference_agent/gemini-2.5-flash
+  at: '2026-07-10T22:46:36+00:00'
+sources:
+- title: Stack Overflow Public Dataset
+  resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow
+  id: stackoverflow-dataset-resource
 ---
 
-The Stack Overflow public dataset in BigQuery provides a comprehensive collection of data from the popular question and answer platform. This dataset is a valuable resource for researchers and developers interested in analyzing trends in programming questions, user interactions, and the evolution of technology discussions. It encompasses various aspects of the platform, including user profiles, questions, answers, comments, votes, badges awarded, and associated tags.
-
-This dataset was last updated on 2022-11-25, and it is important to note that it is no longer actively maintained. Despite this, it remains a rich historical archive of Stack Overflow activity. The dataset is hosted in the `US` multi-region.
+The `stackoverflow` dataset, hosted in BigQuery's public data program, provides a comprehensive archive of Stack Overflow's community-generated content. It includes information on questions, answers, comments, users, badges, and tags, offering a rich resource for analyzing developer activity, programming trends, and community dynamics. The data was last updated on 2022-11-25 and is no longer actively updated by its original source. It is located in the `US` multi-region.
 
 # Schema
+This dataset contains the following tables:
 
-As a BigQuery Dataset, `stackoverflow` serves as a container for numerous tables rather than having a schema itself. The tables within this dataset collectively represent the structure of Stack Overflow data. Key tables include:
-
-*   [badges](../tables/badges.md): Information about badges awarded to users.
-*   [comments](../tables/comments.md): User comments on posts.
-*   [post_history](../tables/post_history.md): Historical revisions and events for posts.
-*   [posts_answers](../tables/posts_answers.md): Detailed information about answers.
-*   [posts_questions](../tables/posts_questions.md): Detailed information about questions.
-*   [tags](../tables/tags.md): Information about tags used to categorize posts.
-*   [users](../tables/users.md): User profiles and statistics.
-*   [votes](../tables/votes.md): Records of upvotes and downvotes on posts and comments.
+*   [`badges`](../tables/badges.md): Information about badges awarded to users.
+*   [`comments`](../tables/comments.md): User-submitted comments on posts.
+*   [`post_history`](../tables/post_history.md): Historical revisions and events for posts.
+*   [`post_links`](../tables/post_links.md): Links between posts.
+*   [`posts_answers`](../tables/posts_answers.md): Answers to questions.
+*   [`posts_moderator_nomination`](../tables/posts_moderator_nomination.md): Posts related to moderator nominations.
+*   [`posts_orphaned_tag_wiki`](../tables/posts_orphaned_tag_wiki.md): Orphaned tag wiki posts.
+*   [`posts_privilege_wiki`](../tables/posts_privilege_wiki.md): Privilege wiki posts.
+*   [`posts_questions`](../tables/posts_questions.md): User-submitted questions.
+*   [`posts_tag_wiki`](../tables/posts_tag_wiki.md): Tag wiki entries.
+*   [`posts_tag_wiki_excerpt`](../tables/posts_tag_wiki_excerpt.md): Excerpts from tag wiki entries.
+*   [`posts_wiki_placeholder`](../tables/posts_wiki_placeholder.md): Placeholder posts for wiki content.
+*   [`stackoverflow_posts`](../tables/stackoverflow_posts.md): A consolidated view of all posts (questions and answers).
+*   [`tags`](../tables/tags.md): Information about tags used on Stack Overflow.
+*   [`users`](../tables/users.md): User profiles and statistics.
+*   [`votes`](../tables/votes.md): Records of votes on posts.
 
 # Common query patterns
-
-List all tables within the `stackoverflow` dataset:
+To explore the tables within this dataset:
 
 ```sql
-SELECT table_id
+SELECT table_name
 FROM `bigquery-public-data.stackoverflow.INFORMATION_SCHEMA.TABLES`
 WHERE table_schema = 'stackoverflow';
 ```
 
-Example of querying the `posts_questions` table:
+To query the number of questions posted in a specific year:
 
 ```sql
 SELECT
-  id,
-  title,
-  view_count,
-  creation_date
-FROM
-  `bigquery-public-data.stackoverflow.posts_questions`
-WHERE
-  creation_date BETWEEN '2021-01-01' AND '2021-01-31'
-ORDER BY
-  view_count DESC
-LIMIT 5;
+  EXTRACT(YEAR FROM creation_date) AS year,
+  COUNT(*) AS num_questions
+FROM `bigquery-public-data.stackoverflow.posts_questions`
+GROUP BY 1
+ORDER BY 1 DESC
+LIMIT 100;
 ```
-
-# Citations
-
-[1] [Stack Overflow Public Dataset](https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow)
-[2] [Stack Overflow Official Website](https://stackoverflow.com/)

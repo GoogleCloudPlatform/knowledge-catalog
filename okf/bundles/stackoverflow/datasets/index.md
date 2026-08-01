@@ -1,3 +1,3 @@
 # BigQuery Dataset
 
-* [Stack Overflow Public Dataset](stackoverflow.md) - The Stack Overflow public dataset contains a variety of tables related to Stack Overflow user activity, posts, and tags. This dataset is no longer actively updated.
+* [Stack Overflow Public Dataset](stackoverflow.md) - This dataset contains a public archive of Stack Overflow data, including posts, users, and tags. It was last updated on 2022-11-25 and is no longer actively updated.

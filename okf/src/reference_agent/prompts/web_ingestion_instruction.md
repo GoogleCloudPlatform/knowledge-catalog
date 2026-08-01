@@ -18,13 +18,19 @@ The user message contains:
    bundle already has. You will route web findings against these.
 2. For each seed URL, call `fetch_url(url)`. The result includes the page's
    markdown content and `links` — its outbound URLs.
-3. From those links, pick a small handful that look like they lead to
+3. From those links, pick the ones that look like they lead to
    **authoritative documentation** on topics related to the existing
-   concepts. Skip nav links, site footers, login pages, "About us",
-   marketing pages, cookie/privacy notices, and anything obviously
-   tangential. Call `fetch_url` on each selected link. Their results in
-   turn contain more links, which you can also follow — recursively, with
-   your judgment as the filter.
+   concepts. A seed is usually an index or schema-reference page, so its
+   most valuable outbound links are to **sample-query / cookbook pages,
+   metric-definition pages, and field/enum reference pages** — follow
+   those; they are what produce `references/metrics/` and
+   `references/joins/` docs. Skip nav links, site footers, login pages,
+   "About us", marketing pages, cookie/privacy notices, and anything
+   obviously tangential. Call `fetch_url` on each selected link. Their
+   results in turn contain more links, which you can also follow —
+   recursively, with your judgment as the filter. Do not stop after one
+   page: keep crawling relevant in-domain links until you have covered the
+   material or hit the page budget.
 4. For **each page you fetch**, decide one of:
    - **Enrich existing concept(s)**. If the page describes a topic that an
      existing concept doc covers (e.g. a schema reference for a specific
@@ -72,18 +78,31 @@ The user message contains:
      do nothing. Move on.
 5. Stop when:
    - `fetch_url` returns `"max_pages reached"` — your budget is spent.
-   - You have covered the relevant material on the seed sites and further
-     fetches would have diminishing returns.
+   - You have actually fetched the seed pages **and** followed their
+     high-value links (sample-query/cookbook, metric, and reference pages)
+     until further in-domain fetches would have genuine diminishing
+     returns. Fetching only the seed page and stopping is **not** done —
+     seeds are indexes; the value is one or two hops out.
+   Before you stop, **verify no reference you minted is orphaned**: every
+   `references/metrics/<slug>.md` and `references/joins/<a>__<b>.md` you
+   wrote this session must be linked from at least one primary table doc's
+   `# Metrics` / `# Joins` section. If any is still uncited, go back and
+   augment the contributing table doc(s) now — do not end the session with
+   orphan references.
 
 ## Frontmatter conventions
 
 When you write a doc — primary or reference — frontmatter must include at
-minimum `type`, `title`, `description` (one sentence; used in `index.md`),
-and `timestamp` (leave unset; the tool will fill it). For reference docs:
+minimum `type`. Strongly include `title` and `description` (one sentence; used
+in `index.md`). Leave `generated` unset; the tool fills
+`generated: {by: reference_agent/<model>, at: <now>}`. Record provenance in the
+`sources` frontmatter list (each entry `{id, resource, title}`), never in a
+`# Citations` body section. For reference docs:
 
 - `type`: `Reference`
 - `resource`: the canonical source URL (the page you ingested)
 - `tags`: a YAML list inferred from the page topic
+- `sources`: at least an entry for the page you ingested
 
 ## Augmentation rules
 
@@ -103,11 +122,14 @@ truth and fold the web page into it. These rules are non-negotiable:
      concept's title.
    - Copy `resource` verbatim. For a `BigQuery Table` doc the `resource`
      is the BigQuery REST URI; it must stay that. The web page URL goes
-     in `# Citations`, never in `resource`.
+     in the `sources` list, never in `resource`.
    - For `tags`, pass the union of existing tags plus any new ones
      (merge, don't replace).
-   - Leave `timestamp` unset (omit the key or set it to empty) so the
-     tool refreshes it. This is the *only* key you may legitimately drop.
+   - For `sources`, pass the union of existing entries plus any new ones
+     (merge, don't replace) — the tool refuses a write that shrinks the
+     list. Add an entry for the page you ingested.
+   - Leave `generated` unset (omit the key) so the tool refreshes it.
+     This is the *only* key you may legitimately drop.
    - You may refine `description` if the web page surfaces a more
      accurate one-sentence summary; otherwise copy it verbatim.
 
@@ -118,7 +140,7 @@ truth and fold the web page into it. These rules are non-negotiable:
      not replace the list),
    - add new sub-sections (`##`) under existing top-level headings,
    - add brand-new top-level headings **after** the existing ones,
-   - append the web page's URL to `# Citations`.
+   - add the web page as a new `sources` frontmatter entry.
    You may not:
    - drop or rename any existing `#` heading,
    - replace the body wholesale with a topical rewrite of the web page,
@@ -132,6 +154,21 @@ truth and fold the web page into it. These rules are non-negotiable:
    concept. Either mint a `references/<slug>` doc and cross-link from the
    primary doc's prose, or skip the page.
 
+4. **A rejected write did not happen — fix it and retry, do not give up.**
+   When `write_concept_doc` returns an `error` (for example, the schema
+   guard reporting that your `# Schema` is missing fields the BQ pass
+   populated, or the `sources` guard reporting a shrunken list), the doc
+   was **not** written. Do not abandon the concept and do not move on as
+   if it succeeded. Re-call `read_existing_doc(concept_id)`, copy the
+   **entire** existing `# Schema` (every field) and every existing
+   `sources` entry verbatim into your new call, add only your new content
+   on top, and call `write_concept_doc` again. A `BigQuery Table` schema
+   from the BQ pass is authoritative and complete — never shrink or
+   summarize it; augment field descriptions inline while keeping every
+   field. If after re-reading you still cannot add value without dropping
+   existing content, mint a `references/<slug>` doc instead and skip the
+   augmentation.
+
 ## Required extractions: metrics, dimensions, join paths
 
 When a fetched page contains any of the following content types, you
@@ -144,18 +181,29 @@ shape are non-negotiable:
   *revenue per user*, *retention curve*). Capture the metric's name, a
   one-line definition, and the **concrete SQL expression** (e.g.
   `COUNT(DISTINCT user_pseudo_id)`) — paraphrase is not enough.
-  - **Destination**: one `references/metrics/<slug>.md` file *per
-    metric* (e.g. `references/metrics/daily_active_users.md`). The
-    reference doc owns the SQL. Frontmatter: `type: Reference`, `tags:
-    [metric]`, `resource` set to the page URL, plus the standard
-    `title`/`description`/`timestamp`. Body: one-sentence definition,
-    then a fenced SQL block with the formula, then a `# Citations`
-    section.
-  - Then add a `# Metrics` top-level section to each contributing
-    table's primary doc (augmenting per the rules above) with one
-    bullet per metric, e.g.
-    `- [Daily active users](/references/metrics/daily_active_users.md) — DISTINCT user_pseudo_id per day.`
-    Do **not** duplicate the SQL in the table doc; the reference owns it.
+  - **Step 1 — mint the reference**: one `references/metrics/<slug>.md`
+    file *per metric* (e.g. `references/metrics/daily_active_users.md`).
+    The reference doc owns the SQL. Frontmatter: `type: Reference`, `tags:
+    [metric]`, `resource` set to the page URL, a `sources` entry for the
+    page, plus the standard `title`/`description`. Body: one-sentence
+    definition, then a fenced SQL block with the formula.
+  - **Step 2 — cite it back (MANDATORY, not optional)**: a minted metric
+    reference is **incomplete until a primary table doc links to it**. An
+    orphan `references/metrics/<slug>.md` that no table cites is a bug, not
+    a deliverable. Immediately after Step 1, for **each** contributing
+    table: call `read_existing_doc(<table_id>)`, then
+    `write_concept_doc(<table_id>, ...)` with a `# Metrics` top-level
+    section (added **after** the existing headings, per the augmentation
+    rules) containing one bullet per metric, using a link **relative to
+    the table doc's directory** — from `tables/events_.md` that is
+    `- [Daily active users](../references/metrics/daily_active_users.md) — DISTINCT user_pseudo_id per day.`
+    (never an absolute `/references/...` path). Do **not** duplicate the
+    SQL in the table doc; the reference owns it.
+  - This augmentation **will** trip the `# Schema` guard if you drop
+    fields — that is expected. Do not give up: follow augmentation rule 4
+    (copy the entire existing `# Schema` and every `sources` entry
+    verbatim, append your `# Metrics` section, retry). A metric reference
+    you minted but never linked is worse than not minting it.
   - If the metric spans multiple tables, link it from every
     contributing table's `# Metrics` section.
 
@@ -179,14 +227,20 @@ shape are non-negotiable:
     a double underscore (e.g. `references/joins/events___users.md` for
     the `events_` ↔ `users` pair). One canonical file per pair,
     regardless of which side you came from. Frontmatter:
-    `type: Reference`, `tags: [join]`, `resource` set to the page URL,
-    plus the standard `title`/`description`/`timestamp`. Body: the
-    `ON` clause as a fenced SQL block, then one sentence on when to use
-    this join, then `# Citations`.
-  - Then add a `# Joins` top-level section to **each** side's primary
-    doc (augmenting per the rules above) with a one-line link to the
-    reference, e.g.
-    `- [users](/references/joins/events___users.md) — join on user_pseudo_id to attach user attributes to events.`
+    `type: Reference`, `tags: [join]`, `resource` set to the page URL, a
+    `sources` entry for the page, plus the standard
+    `title`/`description`. Body: the `ON` clause as a fenced SQL block,
+    then one sentence on when to use this join.
+  - **Cite it back (MANDATORY)**: as with metrics, a minted join
+    reference is incomplete until **both** sides link to it. After writing
+    `references/joins/<a>__<b>.md`, augment **each** side's primary doc
+    (`read_existing_doc` then `write_concept_doc`) with a `# Joins`
+    top-level section containing a one-line link written **relative to
+    that doc's directory** — from `tables/events_.md` that is
+    `- [users](../references/joins/events___users.md) — join on user_pseudo_id to attach user attributes to events.`
+    (never an absolute `/references/...` path). If the augmentation trips
+    the `# Schema` guard, follow augmentation rule 4 and retry; do not
+    abandon the back-link.
   - Do not invent join paths. Only capture joins explicitly named in
     documentation or example queries on the fetched page.
 
@@ -204,8 +258,8 @@ one doc.
 
 ## Style and integrity
 
-- Cite **only** URLs you actually fetched (or URLs already present in the
-  doc you're refining). Do not invent URLs.
+- Record in `sources` **only** URLs you actually fetched (or URLs already
+  present in the doc you're refining). Do not invent URLs.
 - Be concrete. Use concrete field names, concrete enum values, concrete
   example queries.
 - Do not include preamble, apologies, or reasoning narration in document
