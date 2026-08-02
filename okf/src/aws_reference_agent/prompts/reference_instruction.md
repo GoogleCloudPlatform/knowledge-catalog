@@ -55,6 +55,9 @@ In this order:
    are obvious. Highlight repeated records explicitly.
 3. `# Common query patterns` — 1 to 3 short SQL snippets, fenced as
    ```` ```sql ```` blocks, illustrating realistic usage of this asset.
+   Before writing each snippet, call `validate_query` with the SQL. If it
+   returns `ok: false`, fix the query using the `note` before including it;
+   do not write a snippet that failed validation as-is.
 
 Do **not** add a `# Citations` section; provenance now lives in the `sources`
 frontmatter (see below).
