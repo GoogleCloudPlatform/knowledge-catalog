@@ -136,6 +136,7 @@ def test_build_source_options():
         "mcp__okf__sample_rows",
         "mcp__okf__read_existing_doc",
         "mcp__okf__write_concept_doc",
+        "mcp__okf__validate_query",
     ]
 
 

@@ -30,6 +30,7 @@ from aws_reference_agent.tools.context import (
     set_expected_concepts,
     set_web_state,
 )
+from aws_reference_agent.verification import VerifyMode
 
 log = logging.getLogger(__name__)
 
@@ -206,13 +207,15 @@ class ReferenceRunner:
         web_denied_path_substrings: list[str] | None = None,
         web_max_depth: int = 2,
         verbose: bool = False,
+        verify_queries: str = VerifyMode.SCHEMA,
     ):
         self.source = source
         self.bundle_root = Path(bundle_root)
         self.model = model
         self.verbose = verbose
+        self.verify_queries = verify_queries
         self.bundle_root.mkdir(parents=True, exist_ok=True)
-        set_context(self.source, self.bundle_root, model=self.model)
+        set_context(self.source, self.bundle_root, model=self.model, verify_queries=self.verify_queries)
 
         self.web_seeds = list(web_seeds or [])
         self.web_max_pages = int(web_max_pages)

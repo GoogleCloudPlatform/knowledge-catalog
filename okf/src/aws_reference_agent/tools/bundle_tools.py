@@ -11,12 +11,19 @@ from aws_reference_agent.bundle.document import (
     OKFDocumentError,
 )
 from aws_reference_agent.bundle.paths import concept_id_to_path, parse_concept_id
+from aws_reference_agent.bundle.sql_check import (
+    extract_sql_blocks,
+    section_content_lines,
+    unknown_identifiers,
+)
 from aws_reference_agent.okf_types import SOURCE_TABLE_TYPE
 from aws_reference_agent.tools.context import (
     get_context,
     get_expected_concepts,
+    get_verify_mode,
     is_web_pass,
 )
+from aws_reference_agent.verification import VerifyMode
 
 _PREFERRED_KEY_ORDER = (
     "type",
@@ -77,17 +84,8 @@ def _dead_links(body: str, cid: tuple[str, ...]) -> list[str]:
 
 
 def _section_content_lines(body: str, heading: str) -> list[str]:
-    """Return non-blank lines under a top-level `# heading` section."""
-    in_section = False
-    out: list[str] = []
-    for line in body.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("# "):
-            in_section = stripped == heading
-            continue
-        if in_section and stripped:
-            out.append(line)
-    return out
+    # Delegate to the canonical implementation in bundle.sql_check.
+    return section_content_lines(body, heading)
 
 
 def _schema_field_names(body: str) -> set[str]:
@@ -197,6 +195,35 @@ def write_concept_doc(
             ),
             "concept_id": concept_id,
         }
+
+    # SQL schema-consistency guard: check that every bare column identifier in
+    # # Common query patterns exists in # Schema. Runs only for source-table
+    # docs with a non-empty schema, and only when verify mode is not OFF.
+    if (
+        get_verify_mode() != VerifyMode.OFF
+        and fm.get("type") == SOURCE_TABLE_TYPE
+    ):
+        known = _schema_field_names(body or "")
+        if known:
+            all_unknown: list[str] = []
+            for sql_block in extract_sql_blocks(body or ""):
+                all_unknown.extend(
+                    t for t in unknown_identifiers(sql_block, known)
+                    if t not in all_unknown
+                )
+            if all_unknown:
+                shown = ", ".join(f"`{u}`" for u in all_unknown[:10])
+                truncated = " (and more)" if len(all_unknown) > 10 else ""
+                return {
+                    "error": (
+                        f"Refusing to write: a # Common query patterns snippet "
+                        f"references {len(all_unknown)} column(s) not present in "
+                        f"# Schema: {shown}{truncated}. Verify column names against "
+                        f"the # Schema section and correct the SQL snippets. "
+                        f"Re-call write_concept_doc with the corrected body."
+                    ),
+                    "concept_id": concept_id,
+                }
 
     # Augmentation guard: during the web pass, refuse writes that shrink
     # an existing source table doc's # Schema field set or its `sources`

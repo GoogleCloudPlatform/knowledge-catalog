@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from aws_reference_agent.sources.base import Source
+from aws_reference_agent.verification import VerifyMode
 
 
 @dataclass
@@ -12,6 +13,7 @@ class ToolContext:
     bundle_root: Path
     model: str = ""
     expected_concept_ids: set[tuple[str, ...]] = field(default_factory=set)
+    verify_queries: str = VerifyMode.SCHEMA
 
 
 @dataclass
@@ -30,9 +32,20 @@ _ctx: ToolContext | None = None
 _web: WebState | None = None
 
 
-def set_context(source: Source, bundle_root: Path, model: str = "") -> None:
+def set_context(
+    source: Source,
+    bundle_root: Path,
+    model: str = "",
+    *,
+    verify_queries: str = VerifyMode.SCHEMA,
+) -> None:
     global _ctx
-    _ctx = ToolContext(source=source, bundle_root=Path(bundle_root), model=model)
+    _ctx = ToolContext(
+        source=source,
+        bundle_root=Path(bundle_root),
+        model=model,
+        verify_queries=verify_queries,
+    )
 
 
 def get_context() -> ToolContext:
@@ -80,6 +93,11 @@ def clear_web_state() -> None:
 def is_web_pass() -> bool:
     """True while the runner is executing the web-ingestion pass."""
     return _web is not None
+
+
+def get_verify_mode() -> str:
+    """Return the current query-verification mode."""
+    return get_context().verify_queries
 
 
 def set_expected_concepts(ids: set[tuple[str, ...]]) -> None:

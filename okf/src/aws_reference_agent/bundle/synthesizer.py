@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import aclosing
 
 log = logging.getLogger(__name__)
 
@@ -56,7 +57,14 @@ async def _ask(prompt: str, model: str) -> str:
     from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 
     options = ClaudeAgentOptions(model=model, tools=[], allowed_tools=[])
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, ResultMessage) and message.subtype == "success":
-            return message.result or ""
+    # `aclosing` is required, not tidiness: returning mid-iteration abandons the
+    # generator while suspended, since `async for` does not close its iterator
+    # (PEP 533 was deferred). The SDK's nested `query` chain would then be left
+    # for loop-shutdown finalization, whose aclose races the chain's own
+    # `finally: await inner.aclose()`, raising
+    # "aclose(): asynchronous generator is already running".
+    async with aclosing(query(prompt=prompt, options=options)) as stream:
+        async for message in stream:
+            if isinstance(message, ResultMessage) and message.subtype == "success":
+                return message.result or ""
     return ""

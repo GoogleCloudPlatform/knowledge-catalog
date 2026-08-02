@@ -127,6 +127,40 @@ filter (configurable via `--web-allowed-host`) are enforced inside the
 tool, so the agent cannot overrun. Use `--no-web` to skip the web pass;
 use `--no-sample` to skip Athena row sampling.
 
+## Query verification
+
+Every table doc carries a `# Common query patterns` section — the SQL a
+reader is most likely to copy and run, and the part an LLM is most likely
+to get subtly wrong by inventing a column. `--verify-queries` controls how
+hard the agent's snippets are checked before they reach the bundle:
+
+| Mode      | Cost               | What it checks                                        |
+|-----------|--------------------|-------------------------------------------------------|
+| `off`     | none               | Nothing. Snippets are written as-is.                  |
+| `schema`  | none (**default**) | Locally, that every column named in a snippet appears in the doc's `# Schema`. |
+| `execute` | Athena queries     | The above, plus each snippet actually runs.           |
+
+Under `schema`, the write is refused when a snippet references a column
+that is not in `# Schema`, and the agent is handed the offending names so
+it can correct the SQL and retry. This is a purely local text check — no
+AWS calls, no cost.
+
+Under `execute`, the agent additionally gets a `validate_query` tool that
+wraps each snippet as `SELECT * FROM (<snippet>) LIMIT 1` and runs it. The
+`LIMIT` keeps it fast and near-free of scanned bytes, since the goal is a
+pass/fail answer rather than data — results are never fetched. On failure
+Athena's own parse or binding error is returned to the agent. Only
+single-statement `SELECT`/`WITH` queries are submitted; anything else is
+rejected before an AWS call is made.
+
+The `schema` check is a conservative heuristic over SQL identifiers. If it
+ever rejects a legitimate query, `--verify-queries off` is the escape
+hatch.
+
+`execute` shares the Athena client with row sampling, so it needs the same
+credentials and cannot work under `--no-sample`. Combining the two is
+rejected at startup rather than silently verifying nothing.
+
 ## IAM
 
 Least-privilege policy for reading a Glue database and sampling rows via
@@ -180,6 +214,10 @@ Athena:
 Pass `--no-sample` to skip row sampling entirely — that drops the need
 for every `athena:*` permission and both S3 statements above; only
 `GlueCatalogRead` is required.
+
+`--verify-queries execute` runs through the same Athena path and needs no
+permissions beyond the ones above. It reads no rows, so
+`athena:GetQueryResults` is not exercised by verification itself.
 
 ## Verify access
 
@@ -252,6 +290,9 @@ Notes on the optional flags:
   sampling then silently yields no rows — omit it unless you know your
   workgroup needs it.
 - `--no-sample` skips Athena entirely; `--no-web` skips the crawl.
+- `--verify-queries {off,schema,execute}` sets how the agent's
+  `# Common query patterns` SQL is checked (default `schema`, which costs
+  nothing). See [Query verification](#query-verification).
 - `--concept <type>/<name>` is repeatable, so you can re-run a handful of
   tables without regenerating the whole bundle.
 

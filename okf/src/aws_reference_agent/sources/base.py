@@ -31,6 +31,9 @@ class Source(ABC):
     def sample_rows(self, ref: ConceptRef, n: int = 5) -> list[dict[str, Any]] | None:
         return None
 
+    def validate_query(self, sql: str) -> str | None:
+        return "Query validation is not supported for this source."
+
     def find(self, concept_id: tuple[str, ...]) -> ConceptRef | None:
         for ref in self.list_concepts():
             if ref.id == concept_id:

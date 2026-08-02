@@ -11,6 +11,7 @@ from aws_reference_agent.tools.source_tools import (
     list_concepts,
     read_concept_raw,
     sample_rows,
+    validate_query,
 )
 from aws_reference_agent.tools.web_tools import fetch_url
 
@@ -68,6 +69,7 @@ _write_concept_doc = _wrap(
     write_concept_doc,
 )
 _fetch_url = _wrap("fetch_url", {"url": str}, fetch_url)
+_validate_query = _wrap("validate_query", {"sql": str}, validate_query)
 
 
 def build_source_options(model: str = DEFAULT_MODEL) -> ClaudeAgentOptions:
@@ -77,6 +79,7 @@ def build_source_options(model: str = DEFAULT_MODEL) -> ClaudeAgentOptions:
         _sample_rows,
         _read_existing_doc,
         _write_concept_doc,
+        _validate_query,
     ]
     server = create_sdk_mcp_server(name=_SERVER_NAME, version="1.0.0", tools=tools)
     allowed = [
@@ -87,6 +90,7 @@ def build_source_options(model: str = DEFAULT_MODEL) -> ClaudeAgentOptions:
             "sample_rows",
             "read_existing_doc",
             "write_concept_doc",
+            "validate_query",
         )
     ]
     return ClaudeAgentOptions(
