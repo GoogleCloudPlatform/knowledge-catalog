@@ -3,15 +3,16 @@ from __future__ import annotations
 from typing import Any
 
 from aws_reference_agent.bundle.paths import parse_concept_id
-from aws_reference_agent.tools.context import get_context
+from aws_reference_agent.tools.context import get_context, get_expected_concepts
 
 
-def _ref_to_dict(ref) -> dict[str, Any]:
+def _ref_to_dict(ref, *, in_scope: bool) -> dict[str, Any]:
     return {
         "id": ref.id_str,
         "type": ref.type,
         "resource": ref.resource,
         "hint": dict(ref.hint),
+        "in_scope": in_scope,
     }
 
 
@@ -20,11 +21,23 @@ def list_concepts() -> list[dict[str, Any]]:
 
     Returns a list of objects with fields: `id` (slash-joined path used as the
     concept_id in other tools), `type` (OKF type, e.g. 'Glue Table'),
-    `resource` (canonical URI of the underlying asset, if any), and `hint`
-    (source-specific extra info such as the database and table names).
+    `resource` (canonical URI of the underlying asset, if any), `hint`
+    (source-specific extra info such as the database and table names), and
+    `in_scope`.
+
+    `in_scope` is false for concepts the catalog advertises but this run is not
+    producing a document for. They are listed so you can recognise them (for
+    example, both sides of a documented join), but a document will never exist
+    for them in this bundle, so you must not link to one: `write_concept_doc`
+    rejects a body that links to an out-of-scope concept. Reference such a
+    concept by name in prose instead of as a markdown link.
     """
     src = get_context().source
-    return [_ref_to_dict(r) for r in src.list_concepts()]
+    expected = get_expected_concepts()
+    return [
+        _ref_to_dict(r, in_scope=not expected or r.id in expected)
+        for r in src.list_concepts()
+    ]
 
 
 def read_concept_raw(concept_id: str) -> dict[str, Any]:

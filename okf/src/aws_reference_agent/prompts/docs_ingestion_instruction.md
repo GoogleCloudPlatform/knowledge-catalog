@@ -73,6 +73,24 @@ The user message contains:
      `references/getting_started` is noise.
    - **Skip**. If the document is irrelevant, low-signal, or already covered,
      do nothing. Move on.
+
+   **You may only create new documents under `references/`.** Every other
+   concept in this bundle was produced by the source pass from real catalog
+   metadata, and you have no way to obtain that metadata for a concept the
+   source pass did not produce. So never call `write_concept_doc` with an id
+   like `tables/<name>` unless `read_existing_doc` on that exact id already
+   returns a document. A document that describes a table the catalog does not
+   have does **not** license you to create that table's doc: the schema and the
+   `resource` identifier would be your invention, indistinguishable to a reader
+   from catalog-derived fact. Instead record what the document says in a
+   `references/<slug>` doc, or note the gap in the prose of a concept that does
+   exist. `write_concept_doc` enforces this and the refusal is final.
+
+   Likewise, `list_concepts` marks each entry `in_scope`. Only in-scope concepts
+   will have documents in this bundle. An out-of-scope entry is listed so you
+   can recognise it — for instance, to know that the other side of a documented
+   join is a real table — but you must not link to it and must not create its
+   doc. Name it in plain prose instead.
 5. Stop when:
    - `read_local_doc` returns `"max_files reached"` — your budget is spent.
    - You have read every document in the listing that plausibly describes this

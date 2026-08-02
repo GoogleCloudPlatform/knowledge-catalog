@@ -76,6 +76,21 @@ The user message contains:
      `references/getting_started` is noise.
    - **Skip**. If the page is irrelevant, low-signal, or already covered,
      do nothing. Move on.
+
+   **You may only create new documents under `references/`.** Every other
+   concept in this bundle was produced by the source pass from real catalog
+   metadata, which you cannot obtain for a concept the source pass did not
+   produce. Never call `write_concept_doc` with an id like `tables/<name>`
+   unless `read_existing_doc` on that exact id already returns a document — its
+   schema and `resource` would otherwise be your invention, indistinguishable to
+   a reader from catalog-derived fact. Record what the page says in a
+   `references/<slug>` doc instead. `write_concept_doc` enforces this and the
+   refusal is final.
+
+   Likewise, `list_concepts` marks each entry `in_scope`. Only in-scope concepts
+   will have documents in this bundle; an out-of-scope entry is listed for
+   recognition only. Do not link to one and do not create its doc — name it in
+   plain prose.
 5. Stop when:
    - `fetch_url` returns `"max_pages reached"` — your budget is spent.
    - You have actually fetched the seed pages **and** followed their

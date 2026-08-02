@@ -146,6 +146,18 @@ into `references/metrics/`, joins into `references/joins/`) rather than
 becoming concepts of their own. Where a document contradicts the catalog,
 the catalog's schema wins and the discrepancy is recorded in prose.
 
+Both augmenting passes are confined to enrichment by `write_concept_doc`,
+not just by prompt wording. They may **create** documents only under
+`references/`; any other id must already exist on disk. Without that
+guard an ingested document describing a table the catalog does not have
+would produce a `type: Glue Table` doc whose schema and `resource` ARN
+were the model's invention, with no way for a reader to tell it from
+catalog-derived fact. They also may not shrink an existing table doc's
+`# Schema` field set or its `sources` list. `list_concepts` marks each
+entry `in_scope`: out-of-scope concepts stay listed so the agent can
+recognise them (both sides of a documented join, say) but they get no
+document and must not be linked.
+
 Use `--no-web` to skip the web pass, `--no-docs` to skip the docs pass,
 and `--no-sample` to skip Athena row sampling.
 

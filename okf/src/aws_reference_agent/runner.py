@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from pathlib import Path
@@ -280,10 +281,24 @@ class ReferenceRunner:
             build_docs_options(model=model) if self.docs_root else None
         )
 
+    async def _drain(self, message: str, options, prefix: str) -> None:
+        """Run one agent turn, logging each message.
+
+        `aclosing` matters: without it the SDK's async generator is left to the
+        interpreter's asyncgen shutdown hook, which finalizes it after the loop
+        is already tearing down and raises "aclose(): asynchronous generator is
+        already running" once per leaked pass.
+        """
+        async with contextlib.aclosing(
+            query(prompt=message, options=options)
+        ) as stream:
+            async for msg in stream:
+                _log_event_parts(msg, prefix, verbose=self.verbose)
+
     async def _enrich_concept_async(self, ref: ConceptRef) -> None:
-        message = _build_source_user_message(ref)
-        async for msg in query(prompt=message, options=self._source_options):
-            _log_event_parts(msg, ref.id_str, verbose=self.verbose)
+        await self._drain(
+            _build_source_user_message(ref), self._source_options, ref.id_str
+        )
 
     def enrich_concept(self, ref: ConceptRef) -> None:
         asyncio.run(self._enrich_concept_async(ref))
@@ -319,8 +334,7 @@ class ReferenceRunner:
                 allowed_path_prefixes=self.web_allowed_path_prefixes,
                 denied_path_substrings=self.web_denied_path_substrings,
             )
-            async for msg in query(prompt=message, options=self._web_options):
-                _log_event_parts(msg, "web", verbose=self.verbose)
+            await self._drain(message, self._web_options, "web")
         finally:
             clear_web_state()
 
@@ -360,8 +374,7 @@ class ReferenceRunner:
                 include=self.docs_include,
                 exclude=self.docs_exclude,
             )
-            async for msg in query(prompt=message, options=self._docs_options):
-                _log_event_parts(msg, "docs", verbose=self.verbose)
+            await self._drain(message, self._docs_options, "docs")
         finally:
             clear_docs_state()
 
