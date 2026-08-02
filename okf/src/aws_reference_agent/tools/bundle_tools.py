@@ -15,7 +15,7 @@ from aws_reference_agent.okf_types import SOURCE_TABLE_TYPE
 from aws_reference_agent.tools.context import (
     get_context,
     get_expected_concepts,
-    is_web_pass,
+    is_augmenting_pass,
 )
 
 _PREFERRED_KEY_ORDER = (
@@ -198,11 +198,11 @@ def write_concept_doc(
             "concept_id": concept_id,
         }
 
-    # Augmentation guard: during the web pass, refuse writes that shrink
+    # Augmentation guard: during any ingestion pass, refuse writes that shrink
     # an existing source table doc's # Schema field set or its `sources`
     # frontmatter list. The source pass populates these from real metadata;
-    # the web pass must augment, not replace.
-    if is_web_pass() and path.exists():
+    # later passes must augment, not replace.
+    if is_augmenting_pass() and path.exists():
         try:
             existing = OKFDocument.parse(path.read_text(encoding="utf-8"))
         except Exception:

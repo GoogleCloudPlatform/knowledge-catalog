@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
+from aws_reference_agent.docs.reader import discover
 from aws_reference_agent.sources.base import Source
 
 
@@ -26,8 +28,20 @@ class WebState:
     url_depth: dict[str, int] = field(default_factory=dict)
 
 
+@dataclass
+class DocsState:
+    root: Path
+    manifest: dict[str, dict[str, object]]
+    max_files: int
+    max_bytes: int
+    truncated_count: int = 0
+    read: set[str] = field(default_factory=set)
+    read_count: int = 0
+
+
 _ctx: ToolContext | None = None
 _web: WebState | None = None
+_docs: DocsState | None = None
 
 
 def set_context(source: Source, bundle_root: Path, model: str = "") -> None:
@@ -80,6 +94,67 @@ def clear_web_state() -> None:
 def is_web_pass() -> bool:
     """True while the runner is executing the web-ingestion pass."""
     return _web is not None
+
+
+def set_docs_state(
+    root: Path | str,
+    *,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+    max_files: int = 200,
+    max_bytes: int = 40 * 1024,
+) -> None:
+    """Enter the docs pass, discovering the readable document set up front.
+
+    The manifest is computed once here rather than per tool call, so the set of
+    paths the agent may read is fixed before the model runs.
+    """
+    global _docs
+    found = discover(root, include=include, exclude=exclude, max_files=max_files)
+    manifest: dict[str, dict[str, object]] = {}
+    for rel in found.paths:
+        stat = (found.root / rel).stat()
+        manifest[rel] = {
+            "bytes": stat.st_size,
+            "modified": datetime.fromtimestamp(
+                stat.st_mtime, tz=timezone.utc
+            ).isoformat(timespec="seconds"),
+        }
+    _docs = DocsState(
+        root=found.root,
+        manifest=manifest,
+        max_files=int(max_files),
+        max_bytes=int(max_bytes),
+        truncated_count=found.truncated_count,
+    )
+
+
+def get_docs_state() -> DocsState:
+    if _docs is None:
+        raise RuntimeError(
+            "Docs state not set. Call set_docs_state() before invoking the docs agent."
+        )
+    return _docs
+
+
+def clear_docs_state() -> None:
+    global _docs
+    _docs = None
+
+
+def is_docs_pass() -> bool:
+    """True while the runner is executing the local-document ingestion pass."""
+    return _docs is not None
+
+
+def is_augmenting_pass() -> bool:
+    """True during any pass that augments docs the source pass already wrote.
+
+    The augmentation guard in `bundle_tools` keys off this rather than off the
+    web pass alone, so a new ingestion pass cannot silently shrink a table
+    doc's schema or provenance.
+    """
+    return is_web_pass() or is_docs_pass()
 
 
 def set_expected_concepts(ids: set[tuple[str, ...]]) -> None:

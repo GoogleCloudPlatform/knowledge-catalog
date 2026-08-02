@@ -8,13 +8,18 @@ from unittest.mock import MagicMock
 import pytest
 
 from aws_reference_agent import agent as agent_mod
-from aws_reference_agent.tools.context import clear_web_state, set_context
+from aws_reference_agent.tools.context import (
+    clear_docs_state,
+    clear_web_state,
+    set_context,
+)
 
 
 @pytest.fixture(autouse=True)
 def _cleanup():
     yield
     clear_web_state()
+    clear_docs_state()
 
 
 def _set_ctx(tmp_path: Path) -> None:
@@ -123,6 +128,28 @@ def test_fetch_url_wrapper_error_no_web_state(tmp_path):
     result = _run(agent_mod._fetch_url.handler, {"url": "https://example.com"})
     assert result["is_error"] is True
     assert "Web state not set" in result["content"][0]["text"]
+
+
+def test_read_local_doc_wrapper_error_no_docs_state(tmp_path):
+    _set_ctx(tmp_path)
+    result = _run(agent_mod._read_local_doc.handler, {"path": "a.md"})
+    assert result["is_error"] is True
+    assert "Docs state not set" in result["content"][0]["text"]
+
+
+def test_build_docs_options():
+    options = agent_mod.build_docs_options()
+    assert options.tools == []
+    assert options.model == agent_mod.DEFAULT_MODEL
+    assert options.system_prompt
+    assert options.allowed_tools == [
+        "mcp__okf__list_concepts",
+        "mcp__okf__read_concept_raw",
+        "mcp__okf__read_existing_doc",
+        "mcp__okf__write_concept_doc",
+        "mcp__okf__list_local_docs",
+        "mcp__okf__read_local_doc",
+    ]
 
 
 def test_build_source_options():

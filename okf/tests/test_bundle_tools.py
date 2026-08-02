@@ -8,8 +8,10 @@ import pytest
 from aws_reference_agent.bundle.document import OKFDocument
 from aws_reference_agent.tools.bundle_tools import write_concept_doc
 from aws_reference_agent.tools.context import (
+    clear_docs_state,
     clear_web_state,
     set_context,
+    set_docs_state,
     set_expected_concepts,
     set_web_state,
 )
@@ -19,11 +21,18 @@ from aws_reference_agent.tools.context import (
 def _cleanup():
     yield
     clear_web_state()
+    clear_docs_state()
 
 
 def _set_ctx(tmp_path: Path) -> None:
     src = MagicMock()
     set_context(src, tmp_path, model="sonnet")
+
+
+def _enter_docs_pass(tmp_path: Path) -> None:
+    docs_root = tmp_path / "_docs_root"
+    docs_root.mkdir(exist_ok=True)
+    set_docs_state(docs_root, max_files=1)
 
 
 def _good_frontmatter(**overrides):
@@ -142,6 +151,65 @@ def test_web_pass_allows_augmentation_with_new_section(tmp_path):
     result = write_concept_doc(
         "tables/users",
         _good_frontmatter(sources=_sources("bq", "web")),
+        augmented,
+    )
+    assert "error" not in result
+
+
+def test_docs_pass_rejects_schema_shrinkage(tmp_path):
+    _set_ctx(tmp_path)
+    write_concept_doc(
+        "tables/users",
+        _good_frontmatter(),
+        _bq_body(["id", "name", "email", "created_at"]),
+    )
+    _enter_docs_pass(tmp_path)
+    result = write_concept_doc(
+        "tables/users",
+        _good_frontmatter(),
+        _bq_body(["id", "name"]),
+    )
+    assert "error" in result
+    # The error must name the missing fields so the prompt's retry rule has
+    # something concrete to act on.
+    assert "missing 2" in result["error"]
+    assert "`email`" in result["error"]
+    assert "`created_at`" in result["error"]
+
+
+def test_docs_pass_rejects_sources_shrinkage(tmp_path):
+    _set_ctx(tmp_path)
+    write_concept_doc(
+        "tables/users",
+        _good_frontmatter(sources=_sources("glue", "other")),
+        _bq_body(["id"]),
+    )
+    _enter_docs_pass(tmp_path)
+    result = write_concept_doc(
+        "tables/users",
+        _good_frontmatter(sources=_sources("local_doc")),
+        _bq_body(["id"]),
+    )
+    assert "error" in result
+    assert "had 2 entr" in result["error"]
+
+
+def test_docs_pass_allows_metrics_section_with_schema_and_sources_preserved(tmp_path):
+    """The augmentation path the metrics extraction depends on must work."""
+    _set_ctx(tmp_path)
+    write_concept_doc(
+        "tables/users",
+        _good_frontmatter(sources=_sources("glue")),
+        _bq_body(["id", "name"]),
+    )
+    _enter_docs_pass(tmp_path)
+    augmented = (
+        "Prose.\n\n# Schema\n- `id` STRING: desc\n- `name` STRING: desc\n\n"
+        "# Metrics\n- [DAU](/references/metrics/dau.md) — count distinct id\n"
+    )
+    result = write_concept_doc(
+        "tables/users",
+        _good_frontmatter(sources=_sources("glue", "local_doc")),
         augmented,
     )
     assert "error" not in result

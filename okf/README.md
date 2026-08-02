@@ -112,7 +112,7 @@ Install uv first if needed: `curl -LsSf https://astral.sh/uv/install.sh | sh`.
 
 ## How the reference agent works
 
-The reference agent runs in two passes. The **Glue pass** writes one OKF
+The reference agent runs in three passes. The **Glue pass** writes one OKF
 doc per concept the source advertises (database + tables), using AWS Glue
 Data Catalog metadata, optionally augmented with a small Athena `LIMIT`
 sample of each table's rows. The **web pass** then runs the LLM as its
@@ -124,8 +124,30 @@ each page it fetches, the agent chooses to (a) enrich one or more
 existing concept docs, (b) mint a standalone `references/<slug>` doc, or
 (c) skip. A hard `--web-max-pages` cap and a same-domain allowed-hosts
 filter (configurable via `--web-allowed-host`) are enforced inside the
-tool, so the agent cannot overrun. Use `--no-web` to skip the web pass;
-use `--no-sample` to skip Athena row sampling.
+tool, so the agent cannot overrun.
+
+The **docs pass** does the same job from local files instead of the web:
+point `--docs-root` at a directory of markdown or plain-text documents (a
+repo's `docs/`, an exported data dictionary, runbooks) and the agent calls
+`list_local_docs()` once to get the complete set of readable paths, then
+reads the ones that look like they describe the bundle's data. There is no
+link graph to crawl, so the readable set is fixed before the model runs:
+`read_local_doc` refuses any path outside that listing, which also rejects
+`../` traversal and symlinks pointing out of the root. `--docs-max-files`
+caps how many documents it may read and `--docs-max-bytes` truncates
+oversized ones; `--docs-include` / `--docs-exclude` take globs against the
+root-relative path. This pass needs **no IAM and no network** — the IAM
+policy below is unchanged by it.
+
+The docs pass runs last, after the web pass, because local documents are
+the most likely to be stale. It is enrichment-first: documents augment
+existing concept docs (field descriptions folded into `# Schema`, metrics
+into `references/metrics/`, joins into `references/joins/`) rather than
+becoming concepts of their own. Where a document contradicts the catalog,
+the catalog's schema wins and the discrepancy is recorded in prose.
+
+Use `--no-web` to skip the web pass, `--no-docs` to skip the docs pass,
+and `--no-sample` to skip Athena row sampling.
 
 ## IAM
 
@@ -228,7 +250,28 @@ uv run aws-reference-agent enrich \
 `-v` logs every tool call and its result, which is the fastest way to
 see what the agent is actually doing.
 
-Then widen to the whole database with both passes on:
+To try the docs pass on its own — no network, no Athena, one table:
+
+```
+uv run aws-reference-agent enrich \
+    --source glue \
+    --database <glue-database-name> \
+    --concept tables/<table-name> \
+    --no-web \
+    --no-sample \
+    --docs-root ./docs \
+    --docs-include '*.md' \
+    --docs-max-files 10 \
+    --out /tmp/okf-docs-smoke \
+    -v
+```
+
+In the `-v` log, expect one `list_local_docs` call followed by
+`read_local_doc` calls for the documents the agent selected. Seeing
+`write_concept_doc` return a schema-guard error and then succeed on retry
+is the healthy trace for an augmentation.
+
+Then widen to the whole database with all passes on:
 
 ```
 uv run aws-reference-agent enrich \
@@ -239,6 +282,7 @@ uv run aws-reference-agent enrich \
     --athena-workgroup <workgroup> \
     --web-seed-file <path/to/seeds.txt> \
     --web-max-pages 40 \
+    --docs-root ./docs \
     --out ./bundles/<name>
 ```
 
@@ -251,7 +295,10 @@ Notes on the optional flags:
   workgroup that enforces one causes Athena to reject the query, and row
   sampling then silently yields no rows — omit it unless you know your
   workgroup needs it.
-- `--no-sample` skips Athena entirely; `--no-web` skips the crawl.
+- `--no-sample` skips Athena entirely; `--no-web` skips the crawl;
+  `--no-docs` skips the docs pass even when `--docs-root` is set.
+- `--docs-root` needs no credentials. A nonexistent or non-directory path
+  is a hard error rather than a silently skipped pass.
 - `--concept <type>/<name>` is repeatable, so you can re-run a handful of
   tables without regenerating the whole bundle.
 

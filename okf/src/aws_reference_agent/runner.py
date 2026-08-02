@@ -19,14 +19,18 @@ from claude_agent_sdk import (
 
 from aws_reference_agent.agent import (
     DEFAULT_MODEL,
+    build_docs_options,
     build_source_options,
     build_web_options,
 )
 from aws_reference_agent.bundle.index import regenerate_indexes
 from aws_reference_agent.sources.base import ConceptRef, Source
 from aws_reference_agent.tools.context import (
+    clear_docs_state,
     clear_web_state,
+    get_docs_state,
     set_context,
+    set_docs_state,
     set_expected_concepts,
     set_web_state,
 )
@@ -193,6 +197,37 @@ def _build_web_user_message(
     )
 
 
+def _build_docs_user_message(
+    root: Path,
+    max_files: int,
+    max_bytes: int,
+    *,
+    include: list[str],
+    exclude: list[str],
+) -> str:
+    includes = ", ".join(include) or "(all text files)"
+    excludes = ", ".join(exclude) or "(none)"
+    return (
+        f"Ingest the local documents under the document root below.\n\n"
+        f"Document root: {root}\n\n"
+        f"Hard limits enforced by the read_local_doc tool — do not retry "
+        f"rejected paths:\n"
+        f"- Max files you may read: {max_files}\n"
+        f"- Max bytes per document (longer documents are truncated): {max_bytes}\n"
+        f"- Include globs: {includes}\n"
+        f"- Exclude globs: {excludes}\n\n"
+        f"Follow the document-ingestion workflow. Call `list_local_docs()` once "
+        f"to get the complete set of readable paths — you cannot read a path "
+        f"that is not in that listing. Then read the documents whose paths and "
+        f"titles suggest they describe this bundle's data (data dictionaries, "
+        f"field tables, metric definitions, query cookbooks) and fold what they "
+        f"say into the existing concept docs. Enrichment is the point of this "
+        f"pass: prefer augmenting an existing concept over minting a new "
+        f"reference, and remember the catalog's schema wins over any document "
+        f"that contradicts it."
+    )
+
+
 class ReferenceRunner:
     def __init__(
         self,
@@ -205,6 +240,11 @@ class ReferenceRunner:
         web_allowed_path_prefixes: list[str] | None = None,
         web_denied_path_substrings: list[str] | None = None,
         web_max_depth: int = 2,
+        docs_root: Path | None = None,
+        docs_include: list[str] | None = None,
+        docs_exclude: list[str] | None = None,
+        docs_max_files: int = 200,
+        docs_max_bytes: int = 40 * 1024,
         verbose: bool = False,
     ):
         self.source = source
@@ -226,9 +266,18 @@ class ReferenceRunner:
                 urlparse(s).netloc for s in self.web_seeds if urlparse(s).netloc
             }
 
+        self.docs_root = Path(docs_root) if docs_root else None
+        self.docs_include = list(docs_include or [])
+        self.docs_exclude = list(docs_exclude or [])
+        self.docs_max_files = int(docs_max_files)
+        self.docs_max_bytes = int(docs_max_bytes)
+
         self._source_options = build_source_options(model=model)
         self._web_options = (
             build_web_options(model=model) if self.web_seeds else None
+        )
+        self._docs_options = (
+            build_docs_options(model=model) if self.docs_root else None
         )
 
     async def _enrich_concept_async(self, ref: ConceptRef) -> None:
@@ -278,6 +327,47 @@ class ReferenceRunner:
     def run_web_pass(self) -> None:
         asyncio.run(self._run_web_pass_async())
 
+    async def _run_docs_pass_async(self) -> None:
+        if not self._docs_options or not self.docs_root:
+            return
+        set_docs_state(
+            self.docs_root,
+            include=self.docs_include or None,
+            exclude=self.docs_exclude or None,
+            max_files=self.docs_max_files,
+            max_bytes=self.docs_max_bytes,
+        )
+        try:
+            state = get_docs_state()
+            # A truncated manifest must be visible: silently capping coverage
+            # reads as "we ingested everything" when we did not.
+            log.info(
+                "Running docs pass: root=%s, %d document(s) discovered "
+                "(%d dropped by max_files=%d), max_bytes=%d, include=%s, "
+                "exclude=%s",
+                state.root,
+                len(state.manifest),
+                state.truncated_count,
+                self.docs_max_files,
+                self.docs_max_bytes,
+                self.docs_include,
+                self.docs_exclude,
+            )
+            message = _build_docs_user_message(
+                state.root,
+                self.docs_max_files,
+                self.docs_max_bytes,
+                include=self.docs_include,
+                exclude=self.docs_exclude,
+            )
+            async for msg in query(prompt=message, options=self._docs_options):
+                _log_event_parts(msg, "docs", verbose=self.verbose)
+        finally:
+            clear_docs_state()
+
+    def run_docs_pass(self) -> None:
+        asyncio.run(self._run_docs_pass_async())
+
     async def _enrich_all_async(self, only: list[tuple[str, ...]] | None) -> int:
         concepts = self.source.list_concepts()
         if only is not None:
@@ -297,6 +387,9 @@ class ReferenceRunner:
             count += 1
 
         await self._run_web_pass_async()
+        # Local docs land last: they are the most likely to be stale and the
+        # most org-specific, so they augment rather than get augmented.
+        await self._run_docs_pass_async()
 
         log.info("Regenerating index.md files in %s", self.bundle_root)
         # regenerate_indexes is sync and its synthesizer opens its own event

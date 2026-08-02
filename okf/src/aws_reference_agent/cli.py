@@ -167,6 +167,46 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip the web pass entirely.",
     )
+    enrich.add_argument(
+        "--docs-root",
+        type=Path,
+        default=None,
+        help="Directory of local markdown/text documents to ingest. Enables "
+        "the docs pass. Needs no IAM and no network.",
+    )
+    enrich.add_argument(
+        "--docs-include",
+        action="append",
+        default=None,
+        help="Only consider documents whose root-relative path matches one of "
+        "these globs (e.g. '*.md'). Repeatable. Default: all text files.",
+    )
+    enrich.add_argument(
+        "--docs-exclude",
+        action="append",
+        default=None,
+        help="Skip documents whose root-relative path matches one of these "
+        "globs (applied after --docs-include). Repeatable.",
+    )
+    enrich.add_argument(
+        "--docs-max-files",
+        type=int,
+        default=200,
+        help="Hard cap on documents the docs agent may read in one run "
+        "(default 200).",
+    )
+    enrich.add_argument(
+        "--docs-max-bytes",
+        type=int,
+        default=40 * 1024,
+        help="Per-document byte cap; longer documents are truncated "
+        "(default 40960).",
+    )
+    enrich.add_argument(
+        "--no-docs",
+        action="store_true",
+        help="Skip the docs pass entirely, even if --docs-root is given.",
+    )
     enrich.add_argument("-v", "--verbose", action="store_true")
 
     viz = sub.add_parser(
@@ -220,6 +260,9 @@ def main(argv: list[str] | None = None) -> int:
             allowed_hosts = {urlparse(s).netloc for s in seeds if urlparse(s).netloc}
             if args.web_allowed_host:
                 allowed_hosts |= set(args.web_allowed_host)
+        docs_root = None if args.no_docs else args.docs_root
+        if docs_root is not None and not docs_root.is_dir():
+            raise SystemExit(f"--docs-root is not an existing directory: {docs_root}")
         runner = ReferenceRunner(
             source=source,
             bundle_root=args.out,
@@ -230,6 +273,11 @@ def main(argv: list[str] | None = None) -> int:
             web_allowed_path_prefixes=args.web_allowed_path_prefix,
             web_denied_path_substrings=args.web_denied_path_substring,
             web_max_depth=args.web_max_depth,
+            docs_root=docs_root,
+            docs_include=args.docs_include,
+            docs_exclude=args.docs_exclude,
+            docs_max_files=args.docs_max_files,
+            docs_max_bytes=args.docs_max_bytes,
             verbose=args.verbose,
         )
         only = (
@@ -237,6 +285,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         n = runner.enrich_all(only=only)
         web_note = f"; web pass used {len(seeds)} seed(s)" if seeds else "; web pass skipped"
-        print(f"Enriched {n} concept(s) into {args.out}{web_note}", file=sys.stderr)
+        docs_note = (
+            f"; docs pass read up to {args.docs_max_files} file(s) from {docs_root}"
+            if docs_root
+            else "; docs pass skipped"
+        )
+        print(
+            f"Enriched {n} concept(s) into {args.out}{web_note}{docs_note}",
+            file=sys.stderr,
+        )
         return 0
     return 1
