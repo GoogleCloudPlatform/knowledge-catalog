@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -77,6 +78,43 @@ def test_docs_state_is_cleared_when_the_pass_raises(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         _runner(tmp_path, docs_root=_docs_root(tmp_path)).run_docs_pass()
     assert is_docs_pass() is False
+
+
+def test_drain_closes_the_query_generator_when_the_loop_body_raises(
+    tmp_path, monkeypatch
+):
+    # `_drain` iterates to exhaustion, so the only way it can abandon the SDK's
+    # generator is by leaving the `async for` early — i.e. an exception from the
+    # loop body. Left unclosed, the generator is finalized by the interpreter's
+    # asyncgen hook after the loop is already tearing down, which raised
+    # "aclose(): asynchronous generator is already running" once per leaked pass.
+    #
+    # Asserted from inside a live loop on purpose: `asyncio.run` finalizes
+    # abandoned generators at shutdown, so a check made after it returns passes
+    # with or without `aclosing`.
+    closed: list[bool] = []
+
+    async def _fake_query(*, prompt, options):
+        try:
+            yield "first"
+            yield "never reached"  # pragma: no cover
+        finally:
+            closed.append(True)
+
+    def _boom(message, prefix, *, verbose):
+        raise RuntimeError("logging blew up")
+
+    monkeypatch.setattr(runner_mod, "query", _fake_query)
+    monkeypatch.setattr(runner_mod, "_log_event_parts", _boom)
+
+    r = _runner(tmp_path, docs_root=_docs_root(tmp_path))
+
+    async def drain_and_report() -> list[bool]:
+        with pytest.raises(RuntimeError, match="logging blew up"):
+            await r._drain("msg", object(), "docs")
+        return list(closed)
+
+    assert asyncio.run(drain_and_report()) == [True]
 
 
 def test_docs_pass_runs_after_the_web_pass_and_before_indexes(tmp_path, monkeypatch):
