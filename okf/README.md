@@ -158,8 +158,8 @@ ever rejects a legitimate query, `--verify-queries off` is the escape
 hatch.
 
 `execute` shares the Athena client with row sampling, so it needs the same
-credentials and is inert under `--no-sample` — combine
-`--verify-queries execute` with sampling left on.
+credentials and cannot work under `--no-sample`. Combining the two is
+rejected at startup rather than silently verifying nothing.
 
 ## IAM
 

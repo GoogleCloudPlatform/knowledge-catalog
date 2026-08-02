@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from aws_reference_agent.agent import DEFAULT_MODEL
 from aws_reference_agent.bundle.paths import parse_concept_id
 from aws_reference_agent.runner import ReferenceRunner
-from aws_reference_agent.verification import VERIFY_MODES
+from aws_reference_agent.verification import VERIFY_MODES, VerifyMode
 
 _SOURCES = ("glue",)
 
@@ -228,6 +228,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "enrich":
+        # Execute-mode verification runs through the Athena sampler, which
+        # --no-sample disables. Fail rather than silently verify nothing.
+        if args.no_sample and args.verify_queries == VerifyMode.EXECUTE:
+            raise SystemExit(
+                "--no-sample disables Athena, which --verify-queries execute "
+                "requires. Drop --no-sample, or use --verify-queries schema."
+            )
         source = _build_source(args.source, args)
         seeds = _collect_seeds(args)
         allowed_hosts: set[str] | None = None
