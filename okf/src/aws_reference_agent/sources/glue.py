@@ -179,6 +179,11 @@ class GlueSource(Source):
             return None
         return self._sampler.sample(ref.hint["database"], ref.hint["table"], n)
 
+    def validate_query(self, sql: str) -> str | None:
+        if self._sampler is None:
+            return "Query validation is not available (Athena sampler is disabled or unavailable)."
+        return self._sampler.validate(sql)
+
 
 def _isoformat(value: Any) -> str | None:
     if value is None:

@@ -15,6 +15,7 @@ from aws_reference_agent.tools.context import (
     set_expected_concepts,
     set_web_state,
 )
+from aws_reference_agent.verification import VerifyMode
 
 
 @pytest.fixture(autouse=True)
@@ -24,9 +25,9 @@ def _cleanup():
     clear_docs_state()
 
 
-def _set_ctx(tmp_path: Path) -> None:
+def _set_ctx(tmp_path: Path, verify_queries: str = VerifyMode.SCHEMA) -> None:
     src = MagicMock()
-    set_context(src, tmp_path, model="sonnet")
+    set_context(src, tmp_path, model="sonnet", verify_queries=verify_queries)
 
 
 def _enter_docs_pass(tmp_path: Path) -> None:
@@ -411,5 +412,72 @@ def test_web_pass_skips_guard_for_non_bigquery_table_types(tmp_path):
         "references/foo",
         _good_frontmatter(type="Reference", title="Foo", sources=_sources("a")),
         "Different prose.\n\n# Definition\nNo more identifiers.\n",
+    )
+    assert "error" not in result
+
+
+# --- SQL query-pattern guard tests ---
+
+
+def _body_with_query(fields: list[str], query_cols: list[str]) -> str:
+    schema_lines = "\n".join(f"- `{f}` STRING: desc" for f in fields)
+    query = "SELECT " + ", ".join(query_cols) + " FROM db.tbl"
+    return (
+        f"Prose.\n\n# Schema\n{schema_lines}\n\n"
+        f"# Common query patterns\n\n```sql\n{query}\n```\n"
+    )
+
+
+def test_should_reject_write_when_query_pattern_references_unknown_column(tmp_path):
+    _set_ctx(tmp_path)
+    result = write_concept_doc(
+        "tables/events",
+        _good_frontmatter(),
+        _body_with_query(["user_id", "event_name"], ["user_id", "fake_col"]),
+    )
+    assert "error" in result
+    assert "fake_col" in result["error"]
+
+
+def test_should_allow_write_when_every_query_column_is_in_schema(tmp_path):
+    _set_ctx(tmp_path)
+    result = write_concept_doc(
+        "tables/events",
+        _good_frontmatter(),
+        _body_with_query(["user_id", "event_name"], ["user_id", "event_name"]),
+    )
+    assert "error" not in result
+
+
+def test_should_skip_sql_check_when_schema_section_is_empty(tmp_path):
+    _set_ctx(tmp_path)
+    body = (
+        "Prose.\n\n# Schema\n\n"
+        "# Common query patterns\n\n```sql\nSELECT ghost_col FROM db.tbl\n```\n"
+    )
+    result = write_concept_doc("tables/events", _good_frontmatter(), body)
+    assert "error" not in result
+
+
+def test_should_skip_sql_check_when_verify_mode_is_off(tmp_path):
+    _set_ctx(tmp_path, verify_queries=VerifyMode.OFF)
+    result = write_concept_doc(
+        "tables/events",
+        _good_frontmatter(),
+        _body_with_query(["user_id"], ["user_id", "totally_fake"]),
+    )
+    assert "error" not in result
+
+
+def test_should_skip_sql_check_when_type_is_not_source_table(tmp_path):
+    _set_ctx(tmp_path)
+    body = (
+        "Prose.\n\n# Schema\n- `user_id` STRING: id\n\n"
+        "# Common query patterns\n\n```sql\nSELECT phantom_col FROM db.tbl\n```\n"
+    )
+    result = write_concept_doc(
+        "references/foo",
+        _good_frontmatter(type="Reference", title="Foo"),
+        body,
     )
     assert "error" not in result

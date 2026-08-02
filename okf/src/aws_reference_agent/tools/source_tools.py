@@ -3,7 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from aws_reference_agent.bundle.paths import parse_concept_id
-from aws_reference_agent.tools.context import get_context, get_expected_concepts
+from aws_reference_agent.tools.context import (
+    get_context,
+    get_expected_concepts,
+    get_verify_mode,
+)
+from aws_reference_agent.verification import VerifyMode
 
 
 def _ref_to_dict(ref, *, in_scope: bool) -> dict[str, Any]:
@@ -77,3 +82,23 @@ def sample_rows(concept_id: str, n: int = 5) -> dict[str, Any]:
         return {"rows": [], "note": "Sampling is not supported for this concept."}
     coerced = [{k: str(v) for k, v in row.items()} for row in rows]
     return {"rows": coerced, "note": ""}
+
+
+def validate_query(sql: str) -> dict[str, Any]:
+    """Validate a SQL snippet by running it against Athena with a small LIMIT.
+
+    Returns an object with `ok` (bool) and `note` (str). When `ok` is False,
+    `note` contains the parse or binding error from Athena and the snippet
+    must be fixed before being written. This tool is a no-op unless
+    --verify-queries execute is active.
+    """
+    if get_verify_mode() != VerifyMode.EXECUTE:
+        return {"ok": True, "note": "Query execution checks are disabled (--verify-queries execute enables them)."}
+    src = get_context().source
+    try:
+        result = src.validate_query(sql)
+    except Exception as exc:
+        return {"ok": False, "note": f"Validation failed: {exc}"}
+    if result is None:
+        return {"ok": True, "note": ""}
+    return {"ok": False, "note": result}

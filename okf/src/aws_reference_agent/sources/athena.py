@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any
 
 log = logging.getLogger(__name__)
+
+_STRING_LITERAL_RE = re.compile(r"'(?:[^']|'')*'")
 
 _TERMINAL_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 _MIN_ROWS = 1
@@ -99,6 +102,56 @@ class AthenaSampler:
                 return None
 
             self._sleep(self.poll_interval)
+
+    def validate(self, sql: str, *, limit: int = 1) -> str | None:
+        """Run a lightweight validation query; return None on success or an error string."""
+        # Strip trailing whitespace and statement terminators in either order,
+        # so "SELECT 1;\n" and "SELECT 1 ;" both reduce to "SELECT 1".
+        stripped = sql.strip()
+        while stripped.endswith(";"):
+            stripped = stripped[:-1].strip()
+        if not stripped:
+            return "SQL is empty."
+
+        # Reject a semicolon that would introduce a second statement. Checked
+        # against a copy with string literals blanked so a legitimate ';'
+        # inside a literal is not mistaken for a terminator.
+        if ";" in _STRING_LITERAL_RE.sub("''", stripped):
+            return "SQL contains an embedded semicolon; only a single statement is allowed."
+
+        first_keyword = stripped.split()[0].upper()
+        if first_keyword not in ("SELECT", "WITH"):
+            return f"SQL must start with SELECT or WITH (got {first_keyword!r}); DDL/DML is not allowed."
+
+        rows_wanted = max(_MIN_ROWS, min(_MAX_ROWS, int(limit)))
+        query = f"SELECT * FROM ({stripped}) LIMIT {rows_wanted}"
+
+        try:
+            client = self.client
+            start_kwargs: dict[str, Any] = {"QueryString": query, "WorkGroup": self.workgroup}
+            if self.output_location:
+                start_kwargs["ResultConfiguration"] = {"OutputLocation": self.output_location}
+            start_response = client.start_query_execution(**start_kwargs)
+            query_execution_id = start_response["QueryExecutionId"]
+
+            state = self._poll_until_terminal(client, query_execution_id)
+            if state == "SUCCEEDED":
+                return None
+            if state is None:
+                return f"Validation query timed out after {self.timeout_seconds}s."
+
+            # FAILED or CANCELLED — try to get Athena's own error message.
+            try:
+                execution = client.get_query_execution(QueryExecutionId=query_execution_id)
+                reason = (
+                    execution["QueryExecution"]["Status"].get("StateChangeReason")
+                )
+            except Exception:
+                reason = None
+            return reason or f"Query {state.lower()} without a reason."
+        except Exception as exc:
+            log.debug("Athena validate failed", exc_info=True)
+            return str(exc)
 
     @staticmethod
     def _parse_rows(results: dict[str, Any]) -> list[dict[str, Any]]:

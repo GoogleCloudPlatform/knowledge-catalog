@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from aws_reference_agent.agent import DEFAULT_MODEL
 from aws_reference_agent.bundle.paths import parse_concept_id
 from aws_reference_agent.runner import ReferenceRunner
+from aws_reference_agent.verification import VERIFY_MODES, VerifyMode
 
 _SOURCES = ("glue",)
 
@@ -207,6 +208,20 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip the docs pass entirely, even if --docs-root is given.",
     )
+    enrich.add_argument(
+        "--verify-queries",
+        choices=VERIFY_MODES,
+        default="schema",
+        dest="verify_queries",
+        help=(
+            "Query-pattern verification level: "
+            "'off' = no checking; "
+            "'schema' = local check that query-pattern columns exist in # Schema "
+            "(free, no AWS calls, default); "
+            "'execute' = also run each snippet against Athena with a small LIMIT "
+            "(costs AWS query executions, requires credentials)."
+        ),
+    )
     enrich.add_argument("-v", "--verbose", action="store_true")
 
     viz = sub.add_parser(
@@ -253,6 +268,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "enrich":
+        # Execute-mode verification runs through the Athena sampler, which
+        # --no-sample disables. Fail rather than silently verify nothing.
+        if args.no_sample and args.verify_queries == VerifyMode.EXECUTE:
+            raise SystemExit(
+                "--no-sample disables Athena, which --verify-queries execute "
+                "requires. Drop --no-sample, or use --verify-queries schema."
+            )
         source = _build_source(args.source, args)
         seeds = _collect_seeds(args)
         allowed_hosts: set[str] | None = None
@@ -279,6 +301,7 @@ def main(argv: list[str] | None = None) -> int:
             docs_max_files=args.docs_max_files,
             docs_max_bytes=args.docs_max_bytes,
             verbose=args.verbose,
+            verify_queries=args.verify_queries,
         )
         only = (
             [parse_concept_id(c) for c in args.concept] if args.concept else None

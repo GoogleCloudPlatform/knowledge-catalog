@@ -11,12 +11,15 @@ class FakeAthenaClient:
         states: list[str] | None = None,
         rows: list[dict[str, Any]] | None = None,
         start_query_error: Exception | None = None,
+        state_change_reason: str | None = None,
     ) -> None:
         self.states = states if states is not None else ["SUCCEEDED"]
         self.rows = rows if rows is not None else []
         self.start_query_error = start_query_error
+        self.state_change_reason = state_change_reason
         self.start_calls: list[dict[str, Any]] = []
         self.stop_calls: list[str] = []
+        self.get_query_results_calls: list[dict[str, Any]] = []
         self._poll_index = 0
 
     def start_query_execution(self, **kwargs: Any) -> dict[str, Any]:
@@ -29,9 +32,13 @@ class FakeAthenaClient:
         idx = min(self._poll_index, len(self.states) - 1)
         state = self.states[idx]
         self._poll_index += 1
-        return {"QueryExecution": {"Status": {"State": state}}}
+        status: dict[str, Any] = {"State": state}
+        if self.state_change_reason is not None:
+            status["StateChangeReason"] = self.state_change_reason
+        return {"QueryExecution": {"Status": status}}
 
     def get_query_results(self, **kwargs: Any) -> dict[str, Any]:
+        self.get_query_results_calls.append(kwargs)
         return {"ResultSet": {"Rows": self.rows}}
 
     def stop_query_execution(self, **kwargs: Any) -> dict[str, Any]:
@@ -168,3 +175,129 @@ def test_should_not_touch_boto3_when_client_is_injected():
     result = sampler.sample("db", "tbl")
 
     assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# AthenaSampler.validate tests
+# ---------------------------------------------------------------------------
+
+
+def test_should_return_none_when_validate_query_succeeds():
+    client = FakeAthenaClient(states=["SUCCEEDED"])
+    sampler = AthenaSampler(athena_client=client)
+
+    assert sampler.validate("SELECT 1") is None
+
+
+def test_should_build_wrapped_query_for_select_without_semicolon():
+    client = FakeAthenaClient(states=["SUCCEEDED"])
+    sampler = AthenaSampler(athena_client=client)
+
+    sampler.validate("SELECT 1")
+
+    assert client.start_calls[0]["QueryString"] == "SELECT * FROM (SELECT 1) LIMIT 1"
+
+
+def test_should_strip_trailing_semicolon_and_build_wrapped_query():
+    client = FakeAthenaClient(states=["SUCCEEDED"])
+    sampler = AthenaSampler(athena_client=client)
+
+    sampler.validate("SELECT 1;")
+
+    assert client.start_calls[0]["QueryString"] == "SELECT * FROM (SELECT 1) LIMIT 1"
+
+
+def test_should_strip_semicolon_when_followed_by_trailing_whitespace():
+    client = FakeAthenaClient(states=["SUCCEEDED"])
+    sampler = AthenaSampler(athena_client=client)
+
+    result = sampler.validate("SELECT 1;  \n")
+
+    assert result is None
+    assert client.start_calls[0]["QueryString"] == "SELECT * FROM (SELECT 1) LIMIT 1"
+
+
+def test_should_accept_query_when_semicolon_appears_inside_a_string_literal():
+    client = FakeAthenaClient(states=["SUCCEEDED"])
+    sampler = AthenaSampler(athena_client=client)
+
+    result = sampler.validate("SELECT split(col, ';') FROM t")
+
+    assert result is None
+    assert client.start_calls != []
+
+
+def test_should_accept_query_when_it_starts_with_a_with_clause():
+    client = FakeAthenaClient(states=["SUCCEEDED"])
+    sampler = AthenaSampler(athena_client=client)
+
+    assert sampler.validate("WITH c AS (SELECT 1) SELECT * FROM c") is None
+
+
+def test_should_return_error_without_aws_call_when_sql_is_only_a_semicolon():
+    client = FakeAthenaClient()
+    sampler = AthenaSampler(athena_client=client)
+
+    result = sampler.validate(";")
+
+    assert result is not None
+    assert client.start_calls == []
+
+
+def test_should_return_state_change_reason_when_query_fails():
+    client = FakeAthenaClient(states=["FAILED"], state_change_reason="SYNTAX_ERROR: unexpected token")
+    sampler = AthenaSampler(athena_client=client)
+
+    result = sampler.validate("SELECT bad syntax")
+
+    assert result == "SYNTAX_ERROR: unexpected token"
+
+
+def test_should_return_error_without_aws_call_when_sql_is_empty():
+    client = FakeAthenaClient()
+    sampler = AthenaSampler(athena_client=client)
+
+    result = sampler.validate("   ")
+
+    assert result is not None
+    assert client.start_calls == []
+
+
+def test_should_return_error_without_aws_call_when_sql_has_embedded_semicolon():
+    client = FakeAthenaClient()
+    sampler = AthenaSampler(athena_client=client)
+
+    result = sampler.validate("SELECT 1; DROP TABLE x")
+
+    assert result is not None
+    assert client.start_calls == []
+
+
+def test_should_return_error_without_aws_call_when_sql_is_non_select():
+    client = FakeAthenaClient()
+    sampler = AthenaSampler(athena_client=client)
+
+    result = sampler.validate("DROP TABLE x")
+
+    assert result is not None
+    assert "DROP" in result
+    assert client.start_calls == []
+
+
+def test_should_never_call_get_query_results_during_validate():
+    client = FakeAthenaClient(states=["SUCCEEDED"])
+    sampler = AthenaSampler(athena_client=client)
+
+    sampler.validate("SELECT 1")
+
+    assert client.get_query_results_calls == []
+
+
+def test_should_return_fallback_message_when_failed_with_no_reason():
+    client = FakeAthenaClient(states=["FAILED"], state_change_reason=None)
+    sampler = AthenaSampler(athena_client=client)
+
+    result = sampler.validate("SELECT 1")
+
+    assert result is not None
+    assert "failed" in result.lower()
