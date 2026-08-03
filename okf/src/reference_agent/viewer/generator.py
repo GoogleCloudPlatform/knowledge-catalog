@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from reference_agent.bundle.document import (
+    RESERVED_FILENAMES,
     OKFDocument,
     OKFDocumentError,
     is_stale,
@@ -14,7 +15,6 @@ from reference_agent.bundle.document import (
     trust_tier,
 )
 
-_INDEX_NAME = "index.md"
 _LINK_RE = re.compile(r"\]\(([^)\s]+\.md)(?:#[A-Za-z0-9_\-]*)?\)")
 _TYPE_PALETTE = {
     "BigQuery Dataset": "#8b5cf6",
@@ -66,15 +66,26 @@ class Concept:
 
 
 def _extract_links(body: str, doc_dir: Path, bundle_root: Path) -> list[str]:
+    """Resolve markdown links to concept ids (OKF v0.2 §6.1).
+
+    Both supported link forms are handled: bundle-absolute targets begin
+    with `/` and resolve against the bundle root, everything else resolves
+    against the linking document's directory. Targets that escape the
+    bundle, and external URLs, are dropped.
+    """
     out: list[str] = []
     seen: set[str] = set()
     bundle_root_resolved = bundle_root.resolve()
     for m in _LINK_RE.finditer(body):
         target = m.group(1)
-        if "://" in target or target.startswith("/"):
+        if "://" in target:
             continue
+        if target.startswith("/"):
+            candidate = bundle_root_resolved.joinpath(target.lstrip("/"))
+        else:
+            candidate = doc_dir / target
         try:
-            resolved = (doc_dir / target).resolve().relative_to(bundle_root_resolved)
+            resolved = candidate.resolve().relative_to(bundle_root_resolved)
         except ValueError:
             continue
         rel = resolved.as_posix()
@@ -89,7 +100,7 @@ def _extract_links(body: str, doc_dir: Path, bundle_root: Path) -> list[str]:
 def _walk_concepts(bundle_root: Path) -> list[Concept]:
     concepts: list[Concept] = []
     for md_path in sorted(bundle_root.rglob("*.md")):
-        if md_path.name == _INDEX_NAME:
+        if md_path.name in RESERVED_FILENAMES:
             continue
         rel = md_path.relative_to(bundle_root).with_suffix("")
         concept_id = "/".join(rel.parts)
@@ -159,6 +170,26 @@ def _build_graph(concepts: list[Concept]) -> dict[str, Any]:
     }
 
 
+def _embed_json(value: Any) -> str:
+    """Serialize a value for embedding inside an inline `<script>` block.
+
+    `json.dumps` leaves `<`, `>` and `&` untouched, so bundle content
+    containing `</script>` would terminate the script element early: the
+    viewer would fail to load and the remainder of the document would be
+    parsed as markup. U+2028/U+2029 are valid in JSON strings but are line
+    terminators in JavaScript, so they are escaped too. The escapes below
+    are all JSON string escapes, so the parsed value is unchanged.
+    """
+    return (
+        json.dumps(value, default=str)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
 def _load_template() -> str:
     template_path = Path(__file__).parent / "templates" / "viz.html"
     return template_path.read_text(encoding="utf-8")
@@ -195,8 +226,8 @@ def generate_visualization(
         template
         .replace("/*__VIZ_CSS__*/", css)
         .replace("/*__VIZ_JS__*/", js)
-        .replace("__BUNDLE_NAME__", json.dumps(name))
-        .replace("__BUNDLE_DATA__", json.dumps(graph, default=str))
+        .replace("__BUNDLE_NAME__", _embed_json(name))
+        .replace("__BUNDLE_DATA__", _embed_json(graph))
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html, encoding="utf-8")

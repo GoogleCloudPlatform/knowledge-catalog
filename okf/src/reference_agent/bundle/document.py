@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 import yaml
 
 # OKF v0.2 §11: `type` is the only always-required frontmatter key.
 REQUIRED_FRONTMATTER_KEYS = ("type",)
+
+# OKF v0.2 §3.1: filenames with defined meaning at any level of the
+# hierarchy, which MUST NOT be used for concept documents.
+RESERVED_FILENAMES = frozenset({"index.md", "log.md"})
 
 _FRONTMATTER_DELIM = "---"
 
@@ -101,11 +105,16 @@ def is_stale(frontmatter: dict[str, Any], today: date | None = None) -> bool:
 
     A concept is stale when `today >= stale_after`. Returns False when
     `stale_after` is absent or unparseable.
+
+    `stale_after` is a date, but YAML parses an unquoted timestamp value
+    into a `datetime`. Normalize to `date` so the comparison never raises.
     """
     raw = frontmatter.get("stale_after")
     if not raw:
         return False
-    if isinstance(raw, date):
+    if isinstance(raw, datetime):
+        stale_after = raw.date()
+    elif isinstance(raw, date):
         stale_after = raw
     else:
         try:

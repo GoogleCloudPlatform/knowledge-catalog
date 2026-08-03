@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
@@ -92,3 +92,13 @@ def test_is_stale():
     assert is_stale({"stale_after": "2026-09-24"}, today=ref) is False
     assert is_stale({}, today=ref) is False
     assert is_stale({"stale_after": "not-a-date"}, today=ref) is False
+
+
+def test_is_stale_accepts_yaml_dates_and_timestamps():
+    ref = date(2026, 9, 23)
+    # YAML parses an unquoted date into `datetime.date`...
+    assert is_stale({"stale_after": date(2026, 9, 23)}, today=ref) is True
+    assert is_stale({"stale_after": date(2026, 9, 24)}, today=ref) is False
+    # ...and an unquoted timestamp into `datetime.datetime`.
+    assert is_stale({"stale_after": datetime(2026, 9, 23, 12, 0)}, today=ref) is True
+    assert is_stale({"stale_after": datetime(2026, 9, 24, 12, 0)}, today=ref) is False
