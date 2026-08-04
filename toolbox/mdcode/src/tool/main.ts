@@ -67,6 +67,18 @@ cli.command('mcp', 'Run the Model Context Protocol (MCP) server')
    });
 
 
+cli.command('reference', 'Pull reference resource entries')
+   .action(async () => {
+      try {
+        await commands.reference();
+      }
+      catch (err: any) {
+        console.error('Error:', err.message || err);
+        process.exit(1);
+      }
+   });
+
+
 cli.parse();
 
 if (!cli.matchedCommand) {
