@@ -1,0 +1,56 @@
+# Test fixture -- AI-first semantics format (v0.2.0.dev0).
+#
+# Line-item model authored in a vendor dialect. Exercises: unique_keys on a
+# dataset with no primary_key, custom_extensions at field / relationship /
+# metric / model level, a COUNT(DISTINCT) metric, and a computed measure
+# (SUM(l_extendedprice * (1 - l_discount))) written with bare, unqualified
+# column references.
+
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: lineitem
+    description: Line item shipping metrics
+    datasets:
+      - name: lineitem
+        source: samples.tpch.lineitem
+        fields:
+          - name: line_number
+            expression:
+              dialects:
+                - dialect: DATABRICKS
+                  expression: l_linenumber
+            custom_extensions:
+              - vendor_name: DATABRICKS
+                data: '{"_v": 1, "format": {"type": "number", "decimal_places": {"type": "exact", "places": 0}}}'
+      - name: orders
+        source: samples.tpch.orders
+        unique_keys:
+          - [o_orderkey]
+    relationships:
+      - name: lineitem_to_orders
+        from: lineitem
+        to: orders
+        from_columns: [l_orderkey]
+        to_columns: [o_orderkey]
+        custom_extensions:
+          - vendor_name: DATABRICKS
+            data: '{"_v": 1, "rely": {"at_most_one_match": true}}'
+    metrics:
+      - name: revenue
+        expression:
+          dialects:
+            - dialect: DATABRICKS
+              expression: SUM(l_extendedprice * (1 - l_discount))
+        description: Net revenue
+        custom_extensions:
+          - vendor_name: DATABRICKS
+            data: '{"_v": 1, "format": {"type": "currency", "currency_code": "USD", "decimal_places": {"type": "exact", "places": 2}}}'
+      - name: order_count
+        expression:
+          dialects:
+            - dialect: DATABRICKS
+              expression: COUNT(DISTINCT l_orderkey)
+    custom_extensions:
+      - vendor_name: DATABRICKS
+        data: '{"_v": 1, "filter": "l_returnflag = ''N''"}'
