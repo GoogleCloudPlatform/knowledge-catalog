@@ -1,0 +1,222 @@
+# Test fixture -- AI-first semantics format (v0.2.0.dev0).
+#
+# TPC-DS model exercising relationship edge cases: a relationship whose
+# from_columns and to_columns share the same column name, and a target
+# dimension (date_dim) that declares no primary_key and no fields (only
+# custom_extensions). Fields carry a second, non-BigQuery dialect variant to
+# exercise dialect selection.
+
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: tpcds_model
+    description: TPC-DS retail model
+
+    datasets:
+      - name: store_sales
+        source: tpcds.public.store_sales
+        primary_key: [ss_item_sk, ss_ticket_number]
+        description: Fact table containing all store sales transactions
+        fields:
+          - name: ss_item_sk
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ss_item_sk
+                - dialect: MAQL
+                  expression: "{label/store_sales.attr.store_sales.ss_item_sk}"
+            dimension:
+              is_time: false
+          - name: ss_ticket_number
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ss_ticket_number
+                - dialect: MAQL
+                  expression: "{label/store_sales.attr.store_sales.ss_ticket_number}"
+            dimension:
+              is_time: false
+          - name: ss_customer_sk
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ss_customer_sk
+                - dialect: MAQL
+                  expression: "{label/store_sales.attr.store_sales.ss_customer_sk}"
+            dimension:
+              is_time: false
+          - name: ss_store_sk
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ss_store_sk
+                - dialect: MAQL
+                  expression: "{label/store_sales.attr.store_sales.ss_store_sk}"
+            dimension:
+              is_time: false
+          - name: ss_quantity
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ss_quantity
+                - dialect: MAQL
+                  expression: "{fact/store_sales.fact.store_sales.ss_quantity}"
+            description: Quantity of items sold
+          - name: ss_sales_price
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ss_sales_price
+                - dialect: MAQL
+                  expression: "{fact/store_sales.fact.store_sales.ss_sales_price}"
+            description: Sales price per unit
+          - name: ss_ext_sales_price
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ss_ext_sales_price
+                - dialect: MAQL
+                  expression: "{fact/store_sales.fact.store_sales.ss_ext_sales_price}"
+            description: Extended sales price (quantity * price)
+          - name: ss_net_profit
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: ss_net_profit
+                - dialect: MAQL
+                  expression: "{fact/store_sales.fact.store_sales.ss_net_profit}"
+            description: Net profit from the sale
+
+      - name: customer
+        source: tpcds.public.customer
+        primary_key: [c_customer_sk]
+        description: Customer dimension with demographic information
+        fields:
+          - name: c_customer_sk
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c_customer_sk
+            dimension:
+              is_time: false
+          - name: c_first_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c_first_name
+            dimension:
+              is_time: false
+            description: Customer first name
+          - name: c_last_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c_last_name
+            dimension:
+              is_time: false
+            description: Customer last name
+
+      - name: item
+        source: tpcds.public.item
+        primary_key: [i_item_sk]
+        description: Item/Product dimension
+        fields:
+          - name: i_item_sk
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: i_item_sk
+            dimension:
+              is_time: false
+          - name: i_brand
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: i_brand
+            dimension:
+              is_time: false
+          - name: i_category
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: i_category
+            dimension:
+              is_time: false
+          - name: i_current_price
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: i_current_price
+            description: Current price of the item
+
+      - name: store
+        source: tpcds.public.store
+        primary_key: [s_store_sk]
+        description: Store dimension with location attributes
+        fields:
+          - name: s_store_sk
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: s_store_sk
+            dimension:
+              is_time: false
+          - name: s_store_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: s_store_name
+            dimension:
+              is_time: false
+          - name: s_city
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: s_city
+            dimension:
+              is_time: false
+          - name: s_state
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: s_state
+            dimension:
+              is_time: false
+          - name: s_number_employees
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: s_number_employees
+            description: Number of employees at the store
+
+      - name: date_dim
+        source: date_dim
+        description: Date dimension with calendar attributes
+        custom_extensions:
+          - vendor_name: GOODDATA
+            data: '{"date_dimension": true, "granularities": ["DAY", "WEEK", "MONTH", "QUARTER", "YEAR"]}'
+
+    relationships:
+      - name: store_sales_to_date_dim
+        from: store_sales
+        to: date_dim
+        from_columns: [ss_sold_date_sk]
+        to_columns: [ss_sold_date_sk]
+
+      - name: store_sales_to_customer
+        from: store_sales
+        to: customer
+        from_columns: [ss_customer_sk]
+        to_columns: [c_customer_sk]
+
+      - name: store_sales_to_item
+        from: store_sales
+        to: item
+        from_columns: [ss_item_sk]
+        to_columns: [i_item_sk]
+
+      - name: store_sales_to_store
+        from: store_sales
+        to: store
+        from_columns: [ss_store_sk]
+        to_columns: [s_store_sk]

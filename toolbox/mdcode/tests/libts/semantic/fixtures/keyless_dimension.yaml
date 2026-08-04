@@ -1,0 +1,36 @@
+# Test fixture -- AI-first semantics format (v0.2.0.dev0).
+#
+# A graph node requires a KEY. A dataset with no primary_key cannot form a valid
+# node, so it is skipped and any edge that references it is omitted -- rather than
+# emitting an invalid `KEY()` and a dangling REFERENCE. Read the golden: the
+# keyed `facts` node survives, the keyless `nokey` node is dropped, the edge
+# between them is gone, and the `-- warnings --` block explains both drops.
+
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: mixed_keys
+    datasets:
+      - name: facts
+        source: facts
+        primary_key: [id]
+        fields:
+          - name: id
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: facts.id }]
+          - name: nokey_id
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: facts.nokey_id }]
+      - name: nokey
+        source: nokey
+        # no primary_key: this dataset cannot become a graph node.
+        fields:
+          - name: nokey_id
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: nokey.nokey_id }]
+    relationships:
+      - name: facts_to_nokey
+        from: facts
+        to: nokey
+        from_columns: [nokey_id]
+        to_columns: [nokey_id]

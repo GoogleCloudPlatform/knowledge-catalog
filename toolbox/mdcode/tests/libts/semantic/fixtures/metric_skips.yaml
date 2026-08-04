@@ -1,0 +1,58 @@
+# Test fixture -- AI-first semantics format (v0.2.0.dev0).
+#
+# A metric that cannot become a single BigQuery graph MEASURE is SKIPPED and
+# reported, never emitted as DDL BigQuery would reject. Read the golden's
+# `-- warnings --` block to see each reason; the graph still emits the one valid
+# measure (`revenue`) and its edge, proving skips are isolated:
+#   - clv     aggregate spans two tables (orders, customers) -> cannot bind to one KEY.
+#   - aov     a ratio of two aggregates -> not a single aggregate over one operand.
+#   - spread  STDDEV -> outside the SUM/AVG/COUNT/MIN/MAX set BigQuery allows in a measure.
+#   - status  metric name collides with an existing field property.
+
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: skips
+    datasets:
+      - name: orders
+        source: orders
+        primary_key: [o_orderkey]
+        fields:
+          - name: o_orderkey
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: orders.o_orderkey }]
+          - name: customer_id
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: orders.customer_id }]
+          - name: status
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: orders.status }]
+      - name: customers
+        source: customers
+        primary_key: [c_custkey]
+        fields:
+          - name: c_custkey
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: customers.c_custkey }]
+    relationships:
+      - name: orders_to_customer
+        from: orders
+        to: customers
+        from_columns: [customer_id]
+        to_columns: [c_custkey]
+    metrics:
+      - name: revenue
+        expression:
+          dialects: [{ dialect: BIGQUERY, expression: SUM(orders.amount) }]
+      - name: clv
+        expression:
+          dialects: [{ dialect: BIGQUERY, expression: "SUM(orders.amount) + SUM(customers.balance)" }]
+      - name: aov
+        expression:
+          dialects: [{ dialect: BIGQUERY, expression: "SUM(orders.amount) / COUNT(orders.o_orderkey)" }]
+      - name: spread
+        expression:
+          dialects: [{ dialect: BIGQUERY, expression: STDDEV(orders.amount) }]
+      - name: status
+        expression:
+          dialects: [{ dialect: BIGQUERY, expression: COUNT(orders.status) }]

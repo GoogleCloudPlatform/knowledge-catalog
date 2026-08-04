@@ -167,6 +167,9 @@ export interface Relationship {
   name: string;
   source: RelationshipEnd;
   destination: RelationshipEnd;
+  // When present, this edge is a many-to-many backed by a junction table rather
+  // than a direct foreign key on the source entity. See Association.
+  association?: Association;
   description?: string;
   aiContext?: AiContext;
   customExtensions?: CustomExtension[];
@@ -179,6 +182,25 @@ export interface Relationship {
 export interface RelationshipEnd {
   entity: string;        // name-reference into SemanticModel.entities
   columns: string[];     // join columns on this endpoint's table
+}
+
+/**
+ * An association (junction) table backing a many-to-many relationship.
+ *
+ * Unlike a direct foreign key -- which the open format expresses and the loader
+ * produces -- a junction edge is backed by its OWN table (`dataSource`) with its
+ * OWN key (`keys`) and may carry edge `fields` (properties of the association
+ * itself, e.g. an enrollment's grade). Each side names the columns ON THE
+ * JUNCTION TABLE that reference the corresponding endpoint entity's declared
+ * `keys`. The open format has no association-table syntax yet, so this is
+ * produced by hand-built IR (or a future format extension), not the loader.
+ */
+export interface Association {
+  dataSource: string;            // the junction table backing the edge
+  keys: string[];                // the edge's own key on the junction table
+  sourceColumns: string[];       // junction columns referencing the source entity's key
+  destinationColumns: string[];  // junction columns referencing the destination entity's key
+  fields?: Field[];              // edge properties (junction non-key columns)
 }
 
 /**
