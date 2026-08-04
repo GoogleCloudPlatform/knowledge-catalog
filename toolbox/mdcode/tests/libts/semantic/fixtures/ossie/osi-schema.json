@@ -1,0 +1,352 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/apache/ossie/core-spec/osi-schema.json",
+  "title": "Apache Ossie Core Metadata Specification",
+  "description": "JSON Schema for validating Apache Ossie semantic model definitions",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "0.2.0.dev0",
+      "description": "Apache Ossie specification version"
+    },
+    "semantic_model": {
+      "type": "array",
+      "description": "Collection of semantic model definitions",
+      "items": {
+        "$ref": "#/$defs/SemanticModel"
+      }
+    }
+  },
+  "required": ["version", "semantic_model"],
+  "additionalProperties": false,
+  "$defs": {
+    "Dialect": {
+      "type": "string",
+      "enum": ["ANSI_SQL", "SNOWFLAKE", "MDX", "TABLEAU", "DATABRICKS", "MAQL", "BIGQUERY"],
+      "description": "Supported SQL and expression language dialects"
+    },
+    "Vendor": {
+      "type": "string",
+      "examples": ["COMMON", "SNOWFLAKE", "SALESFORCE", "DBT", "DATABRICKS", "GOODDATA", "WISDOM"],
+      "description": "Vendor name for custom extensions. Any string value is accepted."
+    },
+    "AIContext": {
+      "description": "Additional context for AI tools",
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "instructions": {
+              "type": "string",
+              "description": "Instructions for AI on how to use this entity"
+            },
+            "synonyms": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Alternative names and terms"
+            },
+            "examples": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Sample questions or use cases"
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "CustomExtension": {
+      "type": "object",
+      "description": "Vendor-specific attributes for extensibility",
+      "properties": {
+        "vendor_name": {
+          "$ref": "#/$defs/Vendor"
+        },
+        "data": {
+          "type": "string",
+          "description": "JSON string containing vendor-specific data"
+        }
+      },
+      "required": ["vendor_name", "data"],
+      "additionalProperties": false
+    },
+    "DialectExpression": {
+      "type": "object",
+      "description": "Expression in a specific dialect",
+      "properties": {
+        "dialect": {
+          "$ref": "#/$defs/Dialect"
+        },
+        "expression": {
+          "type": "string",
+          "description": "SQL or dialect-specific expression"
+        }
+      },
+      "required": ["dialect", "expression"],
+      "additionalProperties": false
+    },
+    "Expression": {
+      "type": "object",
+      "description": "Expression definition with multi-dialect support",
+      "properties": {
+        "dialects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DialectExpression"
+          },
+          "minItems": 1
+        }
+      },
+      "required": ["dialects"],
+      "additionalProperties": false
+    },
+    "DataType": {
+      "type": "string",
+      "enum": [
+        "String",
+        "Integer",
+        "Decimal",
+        "Float",
+        "Boolean",
+        "Date",
+        "Time",
+        "DateTime",
+        "DateTimeTz",
+        "Opaque"
+      ],
+      "description": "Logical data type for fields and metrics, independent of role (e.g. dimension vs fact) and physical representation. `Decimal` is exact base-10 with unspecified precision and scale; `Float` is approximate. `DateTime` has no timezone or offset, while `DateTimeTz` identifies an instant using offset or timezone context but does not guarantee preservation of a named timezone. Omit `datatype` when unknown; use `Opaque` plus `custom_extensions` for a known type outside the portable vocabulary."
+    },
+    "Dimension": {
+      "type": "object",
+      "description": "Dimension metadata",
+      "properties": {
+        "is_time": {
+          "type": "boolean",
+          "description": "Temporal-role marker. When true, consumers that distinguish time dimensions (e.g. for time-series analysis or temporal filtering) should treat this field as a time dimension. This is a *role* flag, independent of the field's data type: a field with `is_time: true` may carry any `datatype` (e.g. `Integer` for a year grain, `String` for a month name, as well as temporal data types). When `is_time` is unset, it defaults to `true` if `datatype` is one of `Date`, `Time`, `DateTime`, or `DateTimeTz`, and `false` otherwise. Set `is_time: false` explicitly to opt a temporal-typed column (such as an audit timestamp) out of time-dimension treatment."
+        }
+      },
+      "additionalProperties": false
+    },
+    "Field": {
+      "type": "object",
+      "description": "Row-level attribute for grouping, filtering, and metric expressions",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique identifier for the field within the dataset"
+        },
+        "expression": {
+          "$ref": "#/$defs/Expression"
+        },
+        "dimension": {
+          "$ref": "#/$defs/Dimension"
+        },
+        "label": {
+          "type": "string",
+          "description": "Label for categorization"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description"
+        },
+        "datatype": {
+          "$ref": "#/$defs/DataType"
+        },
+        "ai_context": {
+          "$ref": "#/$defs/AIContext"
+        },
+        "custom_extensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CustomExtension"
+          }
+        }
+      },
+      "required": ["name", "expression"],
+      "additionalProperties": false
+    },
+    "Dataset": {
+      "type": "object",
+      "description": "Logical dataset representing a business entity (fact or dimension table)",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique identifier for the dataset"
+        },
+        "source": {
+          "type": "string",
+          "description": "Reference to underlying physical table/view (database.schema.table) or query"
+        },
+        "primary_key": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Primary key columns (single or composite)"
+        },
+        "unique_keys": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": "Array of unique key definitions (each can be single or composite)"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description"
+        },
+        "ai_context": {
+          "$ref": "#/$defs/AIContext"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Field"
+          }
+        },
+        "custom_extensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CustomExtension"
+          }
+        }
+      },
+      "required": ["name", "source"],
+      "additionalProperties": false
+    },
+    "Relationship": {
+      "type": "object",
+      "description": "Foreign key relationship between datasets",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique identifier for the relationship"
+        },
+        "from": {
+          "type": "string",
+          "description": "Dataset on the many side of the relationship"
+        },
+        "to": {
+          "type": "string",
+          "description": "Dataset on the one side of the relationship"
+        },
+        "from_columns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "Foreign key columns in the 'from' dataset"
+        },
+        "to_columns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "Primary/unique key columns in the 'to' dataset"
+        },
+        "ai_context": {
+          "$ref": "#/$defs/AIContext"
+        },
+        "custom_extensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CustomExtension"
+          }
+        }
+      },
+      "required": ["name", "from", "to", "from_columns", "to_columns"],
+      "additionalProperties": false
+    },
+    "Metric": {
+      "type": "object",
+      "description": "Quantitative measure defined on business data",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique identifier for the metric"
+        },
+        "expression": {
+          "$ref": "#/$defs/Expression"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of what the metric measures"
+        },
+        "datatype": {
+          "$ref": "#/$defs/DataType"
+        },
+        "ai_context": {
+          "$ref": "#/$defs/AIContext"
+        },
+        "custom_extensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CustomExtension"
+          }
+        }
+      },
+      "required": ["name", "expression"],
+      "additionalProperties": false
+    },
+    "SemanticModel": {
+      "type": "object",
+      "description": "Top-level container representing a complete semantic model",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique identifier for the semantic model"
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description"
+        },
+        "ai_context": {
+          "$ref": "#/$defs/AIContext"
+        },
+        "datasets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Dataset"
+          },
+          "minItems": 1,
+          "description": "Collection of logical datasets"
+        },
+        "relationships": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Relationship"
+          },
+          "description": "Defines how datasets are connected"
+        },
+        "metrics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Metric"
+          },
+          "description": "Quantifiable measures spanning datasets"
+        },
+        "custom_extensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CustomExtension"
+          }
+        }
+      },
+      "required": ["name", "datasets"],
+      "additionalProperties": false
+    }
+  }
+}

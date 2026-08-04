@@ -1,0 +1,81 @@
+# Test fixture -- AI-first semantics format (v0.2.0.dev0).
+#
+# Minimal star schema: orders (fact) -> customer (dimension). Exercises
+# ai_context at model / field / metric level, a time dimension (is_time), a
+# field label, and a COUNT(*) metric that carries no entity qualifier.
+
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: sales
+    description: Sales orders with customer attributes
+    ai_context:
+      instructions: "Use this model for order analysis."
+    datasets:
+      - name: orders
+        source: samples.tpch.orders
+        primary_key: [o_orderkey]
+        description: One row per order
+        fields:
+          - name: o_orderkey
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_orderkey
+            description: Order identifier
+          - name: o_custkey
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_custkey
+          - name: o_orderdate
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_orderdate
+            label: Order Date
+            dimension:
+              is_time: true
+            ai_context:
+              synonyms: [order date, date]
+          - name: o_totalprice
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_totalprice
+      - name: customer
+        source: samples.tpch.customer
+        primary_key: [c_custkey]
+        fields:
+          - name: c_custkey
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c_custkey
+          - name: c_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c_name
+            description: Customer name
+    relationships:
+      - name: orders_to_customer
+        from: orders
+        to: customer
+        from_columns: [o_custkey]
+        to_columns: [c_custkey]
+    metrics:
+      - name: total_revenue
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(orders.o_totalprice)
+        description: Total order revenue
+        ai_context:
+          synonyms: [revenue, sales]
+      - name: order_count
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(*)
+        description: Number of orders
