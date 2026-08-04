@@ -30,6 +30,12 @@ interface TableList {
   nextPageToken?: string;
 }
 
+export interface QueryResponse {
+  jobComplete?: boolean;
+  errors?: { reason?: string; message: string }[];
+  [key: string]: any;
+}
+
 
 export class BigQueryClient extends api.ApiClient {
 
@@ -66,5 +72,11 @@ export class BigQueryClient extends api.ApiClient {
 
       pageToken = res.result?.nextPageToken;
     } while (pageToken);
+  }
+
+  // Executes a SQL statement (including DDL) synchronously via jobs.query.
+  async query(project: string, sql: string): Promise<api.ApiResult<QueryResponse>> {
+    const name = `projects/${project}/queries`;
+    return await this._post<QueryResponse>(name, { query: sql, useLegacySql: false });
   }
 }

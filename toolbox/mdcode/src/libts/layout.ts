@@ -4,10 +4,12 @@
 import * as md from './metadata';
 import { StandardLayout } from './layouts/standard';
 import { DocumentsLayout } from './layouts/documents';
+import { SemanticModelLayout } from './layouts/semantic-model';
 
 export enum Layouts {
   STANDARD = 'standard',
-  DOCUMENTS = 'documents'
+  DOCUMENTS = 'documents',
+  SEMANTIC_MODEL = 'SemanticModel'
 }
 
 
@@ -29,6 +31,8 @@ export function createLayout(layout: Layouts,
       return new StandardLayout(catalogPath);
     case Layouts.DOCUMENTS:
       return new DocumentsLayout(catalogPath);
+    case Layouts.SEMANTIC_MODEL:
+      return new SemanticModelLayout(catalogPath);
     default:
       throw new Error(`Unknown layout type: ${layout}`);
   }

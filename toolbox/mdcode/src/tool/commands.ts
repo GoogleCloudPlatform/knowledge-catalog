@@ -2,16 +2,21 @@
 //
 
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 import * as kcmd from '../libts';
 import * as dataplex from '../libts/gcp/dataplex';
 import * as context from '../libts/gcp/context';
+import { Sources } from '../libts/source';
+import { SemanticModelLayout } from '../libts/layouts/semantic-model';
+import * as deploy from '../libts/semantic/deploy';
 
 
 export interface InitOptions {
   entryGroup?: string;
   bigqueryDataset?: string | string[];
   kb?: string;
+  semanticModel?: string;
   pull?: boolean;
 }
 
@@ -42,13 +47,22 @@ export async function init(options: InitOptions): Promise<number> {
     }
     manifest = await kcmd.CatalogManifest.initWithBigQuery(datasets, ctx);
   }
+  else if (options.semanticModel) {
+    manifest = await kcmd.CatalogManifest.initWithSemanticModel(options.semanticModel, ctx);
+  }
   else {
-    console.error('Error: Must provide either --entry-group or --bigquery-dataset or --kb');
+    console.error('Error: Must provide --entry-group, --bigquery-dataset, --kb, or --semantic-model');
     return 1;
   }
 
   manifest.save('catalog.yaml');
   console.log(fs.readFileSync('catalog.yaml', 'utf8'));
+
+  if (options.semanticModel) {
+    const entryGroup = options.semanticModel.split('.')[2];
+    fs.mkdirSync(path.join('catalog', 'EntryGroups', entryGroup), { recursive: true });
+    fs.mkdirSync(path.join('catalog', 'EntryLinks', entryGroup), { recursive: true });
+  }
 
   if (options.pull) {
     return await pull();
@@ -82,6 +96,21 @@ export async function pull(): Promise<number> {
 export async function push(options: PushOptions): Promise<number> {
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+
+  if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
+    const layout = snapshot.layout;
+    if (!(layout instanceof SemanticModelLayout)) {
+      console.error('Error: semantic-model scope requires the SemanticModel layout.');
+      return 1;
+    }
+    console.log('Pushing semantic model (BigQuery Graph)...');
+    const result = await deploy.deployBigQuery(layout.modelDocuments(), ctx, options);
+    if (result.success) {
+      return 0;
+    }
+    console.error('Error pushing semantic model:', result.details);
+    return 1;
+  }
 
   const catalog = new dataplex.CatalogClient(ctx);
   const sync = new kcmd.CatalogSync(catalog, snapshot);

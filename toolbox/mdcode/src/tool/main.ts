@@ -11,6 +11,7 @@ cli.command('init', 'Initialize a new catalog snapshot')
    .option('--entry-group <id>', 'Identifier of the EntryGroup (project.location.id)')
    .option('--bigquery-dataset <id...>', 'Identifier of the BigQuery dataset(s) (project.datasetId)')
    .option('--kb <id>', 'Identifier of the Knowledge Base EntryGroup (project.location.id)')
+   .option('--semantic-model <id>', 'Identifier of the semantic model EntryGroup (project.location.id)')
    .option('--pull', 'Optionally pull catalog entries during initialization')
    .action(async (options) => {
       try {

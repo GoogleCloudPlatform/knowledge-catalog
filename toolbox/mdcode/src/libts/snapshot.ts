@@ -51,6 +51,10 @@ export class CatalogSnapshot {
     return this._aspectTypes;
   }
 
+  get layout(): CatalogLayout {
+    return this._layout;
+  }
+
   // Retrieves the list of locally (pulled and/or created) managed entries
   async listEntries(): Promise<string[]> {
     return this._layout.listEntries();
