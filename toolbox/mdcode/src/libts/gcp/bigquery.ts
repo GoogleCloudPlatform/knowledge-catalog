@@ -32,6 +32,7 @@ interface TableList {
 
 export interface QueryResponse {
   jobComplete?: boolean;
+  jobReference?: { projectId?: string; jobId?: string; location?: string };
   errors?: { reason?: string; message: string }[];
   [key: string]: any;
 }
@@ -78,5 +79,17 @@ export class BigQueryClient extends api.ApiClient {
   async query(project: string, sql: string): Promise<api.ApiResult<QueryResponse>> {
     const name = `projects/${project}/queries`;
     return await this._post<QueryResponse>(name, { query: sql, useLegacySql: false });
+  }
+
+  // Fetches the status/results of a running query job. Used to poll until the
+  // job reports `jobComplete`, since jobs.query can return before a slow DDL
+  // statement has finished executing.
+  async getQueryResults(project: string, jobId: string, location?: string): Promise<api.ApiResult<QueryResponse>> {
+    const name = `projects/${project}/queries/${jobId}`;
+    const params: Record<string, any> = { maxResults: 0, timeoutMs: 10000 };
+    if (location) {
+      params.location = location;
+    }
+    return await this._get<QueryResponse>(name, params);
   }
 }

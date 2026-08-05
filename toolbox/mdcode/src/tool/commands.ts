@@ -49,6 +49,9 @@ export async function init(options: InitOptions): Promise<number> {
   }
   else if (options.semanticModel) {
     manifest = await kcmd.CatalogManifest.initWithSemanticModel(options.semanticModel, ctx);
+    const entryGroup = options.semanticModel.split('.')[2];
+    fs.mkdirSync(path.join('catalog', 'EntryGroups', entryGroup), { recursive: true });
+    fs.mkdirSync(path.join('catalog', 'EntryLinks', entryGroup), { recursive: true });
   }
   else {
     console.error('Error: Must provide --entry-group, --bigquery-dataset, --kb, or --semantic-model');
@@ -57,12 +60,6 @@ export async function init(options: InitOptions): Promise<number> {
 
   manifest.save('catalog.yaml');
   console.log(fs.readFileSync('catalog.yaml', 'utf8'));
-
-  if (options.semanticModel) {
-    const entryGroup = options.semanticModel.split('.')[2];
-    fs.mkdirSync(path.join('catalog', 'EntryGroups', entryGroup), { recursive: true });
-    fs.mkdirSync(path.join('catalog', 'EntryLinks', entryGroup), { recursive: true });
-  }
 
   if (options.pull) {
     return await pull();
