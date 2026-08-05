@@ -37,6 +37,15 @@ export interface QueryResponse {
   [key: string]: any;
 }
 
+export interface Job {
+  status?: {
+    state?: string;
+    errorResult?: { reason?: string; message: string };
+    errors?: { reason?: string; message: string }[];
+  };
+  [key: string]: any;
+}
+
 
 export class BigQueryClient extends api.ApiClient {
 
@@ -91,5 +100,17 @@ export class BigQueryClient extends api.ApiClient {
       params.location = location;
     }
     return await this._get<QueryResponse>(name, params);
+  }
+
+  // Fetches a job's full status. status.errorResult is the definitive fatal
+  // error for a completed job; the query response's errors[] also includes
+  // non-fatal warnings, so it cannot decide success on its own.
+  async getJob(project: string, jobId: string, location?: string): Promise<api.ApiResult<Job>> {
+    const name = `projects/${project}/jobs/${jobId}`;
+    const params: Record<string, any> = {};
+    if (location) {
+      params.location = location;
+    }
+    return await this._get<Job>(name, params);
   }
 }

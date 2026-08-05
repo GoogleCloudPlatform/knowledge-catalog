@@ -121,8 +121,20 @@ async function awaitQueryDone(
     };
   }
 
+  // errors[] mixes fatal errors and non-fatal warnings. When it is populated,
+  // consult the job's status.errorResult -- the definitive fatal signal -- so a
+  // deploy that only produced warnings is not reported as a failure.
   const errors = result?.errors;
   if (errors && errors.length) {
+    if (jobId) {
+      const job = await bigQuery.getJob(project, jobId, location);
+      if (job.status !== 200) {
+        return {ok: false, error: job.message || String(job.status)};
+      }
+      const fatal = job.result?.status?.errorResult;
+      return fatal ? {ok: false, error: fatal.message} : {ok: true};
+    }
+    // No job reference to disambiguate; treat the errors as fatal.
     return {ok: false, error: errors.map(e => e.message).join('; ')};
   }
 
@@ -137,14 +149,6 @@ export async function deployBigQuery(
   const bigQuery = new BigQueryClient(ctx);
   let deployed = 0;
   let modelsSeen = 0;
-
-  if (!docs.length) {
-    return {
-      success: false,
-      details:
-          'No semantic model documents found under catalog/EntryGroups/*/; nothing to deploy.',
-    };
-  }
 
   for (const doc of docs) {
     const {models, warnings} =
@@ -207,8 +211,9 @@ export async function deployBigQuery(
   if (!modelsSeen) {
     return {
       success: false,
-      details:
-          'No semantic models were parsed from the authored document(s); nothing to deploy.',
+      details: docs.length ?
+          'No semantic models were parsed from the authored document(s); nothing to deploy.' :
+          'No semantic model documents found under catalog/EntryGroups/*/; nothing to deploy.',
     };
   }
 

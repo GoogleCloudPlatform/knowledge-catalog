@@ -27,6 +27,10 @@ const OSSIE =
     fs.readFileSync(path.join(FIXTURES, 'sales_bq_graph_target.yaml'), 'utf8');
 const OSSIE_NO_TARGET =
     fs.readFileSync(path.join(FIXTURES, 'sales_no_target.yaml'), 'utf8');
+// An existing fixture whose only GOOGLE deployment target is a (non-BigQuery)
+// Dataplex URI; exercises the deploy leg's "no BigQuery Graph target" path.
+const OSSIE_DATAPLEX_ONLY =
+    fs.readFileSync(path.join(FIXTURES, 'sales_google_ext.yaml'), 'utf8');
 
 // A model carrying only a single custom_extension.
 function modelWithExtension(data: string, vendor = 'GOOGLE'): SemanticModel {
@@ -160,26 +164,93 @@ describe('deployBigQuery', () => {
     }
   });
 
-  test('fails when the completed job reports errors', async () => {
-    const querySpy =
-        spyOn(bq.BigQueryClient.prototype, 'query')
-            .mockImplementation(async () => ({
-                                  status: 200,
-                                  result: {
-                                    jobComplete: true,
-                                    errors: [{message: 'graph already exists'}],
-                                  },
-                                }));
+  test(
+      'treats errors[] as warnings when the job has no errorResult',
+      async () => {
+        // A completed job whose errors[] holds only a warning must not fail the
+        // deploy: the definitive fatal signal is status.errorResult.
+        const querySpy =
+            spyOn(bq.BigQueryClient.prototype, 'query')
+                .mockImplementation(async () => ({
+                                      status: 200,
+                                      result: {
+                                        jobComplete: true,
+                                        jobReference: {jobId: 'job-1'},
+                                        errors: [{message: 'a warning'}],
+                                      },
+                                    }));
+        const jobSpy =
+            spyOn(bq.BigQueryClient.prototype, 'getJob')
+                .mockImplementation(
+                    async () => ({status: 200, result: {status: {}}}));
+        const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+        try {
+          const res =
+              await deployBigQuery([{name: 'sales', text: OSSIE}], CTX, {});
+          expect(res.success).toBe(true);
+          expect(jobSpy).toHaveBeenCalledTimes(1);
+        } finally {
+          logSpy.mockRestore();
+          jobSpy.mockRestore();
+          querySpy.mockRestore();
+        }
+      });
+
+  test('fails on the job errorResult', async () => {
+    const querySpy = spyOn(bq.BigQueryClient.prototype, 'query')
+                         .mockImplementation(async () => ({
+                                               status: 200,
+                                               result: {
+                                                 jobComplete: true,
+                                                 jobReference: {jobId: 'job-1'},
+                                                 errors: [{message: 'summary'}],
+                                               },
+                                             }));
+    const jobSpy =
+        spyOn(bq.BigQueryClient.prototype, 'getJob')
+            .mockImplementation(
+                async () => ({
+                  status: 200,
+                  result: {
+                    status: {errorResult: {message: 'Not found: table'}},
+                  },
+                }));
     const logSpy = spyOn(console, 'log').mockImplementation(() => {});
     try {
       const res = await deployBigQuery([{name: 'sales', text: OSSIE}], CTX, {});
       expect(res.success).toBe(false);
-      expect(res.details).toContain('graph already exists');
+      expect(res.details).toContain('Not found: table');
     } finally {
       logSpy.mockRestore();
+      jobSpy.mockRestore();
       querySpy.mockRestore();
     }
   });
+
+  test(
+      'fails on errors[] when there is no job reference to disambiguate',
+      async () => {
+        const querySpy =
+            spyOn(bq.BigQueryClient.prototype, 'query')
+                .mockImplementation(
+                    async () => ({
+                      status: 200,
+                      result: {
+                        jobComplete: true,
+                        errors: [{message: 'graph already exists'}],
+                      },
+                    }));
+        const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+        try {
+          const res =
+              await deployBigQuery([{name: 'sales', text: OSSIE}], CTX, {});
+          expect(res.success).toBe(false);
+          expect(res.details).toContain('graph already exists');
+        } finally {
+          logSpy.mockRestore();
+          querySpy.mockRestore();
+        }
+      });
 
   test('fails when BigQuery rejects the DDL', async () => {
     const querySpy = spyOn(bq.BigQueryClient.prototype, 'query')
@@ -200,6 +271,16 @@ describe('deployBigQuery', () => {
       'fails when a model declares no BigQuery deployment target', async () => {
         const res = await deployBigQuery(
             [{name: 'sales', text: OSSIE_NO_TARGET}], CTX,
+            {validateOnly: true});
+        expect(res.success).toBe(false);
+        expect(res.details).toContain('no BigQuery Graph');
+      });
+
+  test(
+      'fails when the only deployment target is a non-BigQuery destination',
+      async () => {
+        const res = await deployBigQuery(
+            [{name: 'sales', text: OSSIE_DATAPLEX_ONLY}], CTX,
             {validateOnly: true});
         expect(res.success).toBe(false);
         expect(res.details).toContain('no BigQuery Graph');
