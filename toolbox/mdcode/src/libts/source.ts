@@ -23,6 +23,9 @@ export interface CatalogSource {
   readonly name: string;
   readonly ingestedEntries: boolean;
   readonly layout: Layouts;
+  // Present only for scopes that carry an EntryGroup (e.g. semantic-model);
+  // used to scope the local catalog layout to that group.
+  readonly entryGroup?: string;
 
   entries(ctx: gcp.ApiContext): AsyncGenerator<gcp.Entry, void, unknown>;
   localName(entry: gcp.Entry): string;

@@ -73,6 +73,13 @@ export async function pull(): Promise<number> {
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
 
+  if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
+    console.log(
+      'Semantic-model scope: nothing to pull. Knowledge Catalog resource ' +
+      'pull for the semantic model is not yet implemented.');
+    return 0;
+  }
+
   const catalog = new dataplex.CatalogClient(ctx);
   const sync = new kcmd.CatalogSync(catalog, snapshot);
 
@@ -102,7 +109,25 @@ export async function push(options: PushOptions): Promise<number> {
     }
     console.log('Pushing semantic model (BigQuery Graph)...');
     const result = await deploy.deployBigQuery(layout.modelDocuments(), ctx, options);
+
+    for (const w of result.warnings) {
+      console.warn(`Warning: ${w}`);
+    }
+    if (options.validateOnly) {
+      for (const block of result.ddl) {
+        console.log(`${block}\n`);
+      }
+    }
+
     if (result.success) {
+      if (options.validateOnly) {
+        console.log('Validation complete; no changes applied.');
+      }
+      else {
+        console.log(
+          `Deployed ${result.deployed} BigQuery Graph(s). ` +
+          `Knowledge Catalog resource emit for the semantic model is not yet implemented.`);
+      }
       return 0;
     }
     console.error('Error pushing semantic model:', result.details);

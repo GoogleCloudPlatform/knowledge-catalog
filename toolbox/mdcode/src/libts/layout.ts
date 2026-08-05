@@ -25,14 +25,15 @@ export interface CatalogLayout {
 
 
 export function createLayout(layout: Layouts,
-                             catalogPath: string): CatalogLayout {
+                             catalogPath: string,
+                             entryGroup?: string): CatalogLayout {
   switch (layout) {
     case Layouts.STANDARD:
       return new StandardLayout(catalogPath);
     case Layouts.DOCUMENTS:
       return new DocumentsLayout(catalogPath);
     case Layouts.SEMANTIC_MODEL:
-      return new SemanticModelLayout(catalogPath);
+      return new SemanticModelLayout(catalogPath, entryGroup);
     default:
       throw new Error(`Unknown layout type: ${layout}`);
   }

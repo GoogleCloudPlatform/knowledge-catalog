@@ -19,12 +19,14 @@ const SIDECAR_SUFFIXES = ['.aspects.yaml', '.overview.yaml'];
 
 export class SemanticModelLayout implements CatalogLayout {
   private readonly _catalogPath: string;
+  private readonly _entryGroup?: string;
 
   // Maps a model handle (the document's file basename) to its absolute path.
   private readonly _index = new Map<string, string>();
 
-  constructor(catalogPath: string) {
+  constructor(catalogPath: string, entryGroup?: string) {
     this._catalogPath = catalogPath;
+    this._entryGroup = entryGroup;
   }
 
   async init(): Promise<void> {
@@ -34,9 +36,16 @@ export class SemanticModelLayout implements CatalogLayout {
       return;
     }
 
-    // A model document is a top-level `<model>.yaml` under an EntryGroup dir,
-    // excluding the `.aspects.yaml` / `.overview.yaml` sidecars.
-    const matches = await glob.glob('EntryGroups/*/*.yaml', {
+    // A model document is a top-level `<model>.yaml` under the configured
+    // EntryGroup dir, excluding the `.aspects.yaml` / `.overview.yaml`
+    // sidecars. Scoping to the manifest's entryGroup keeps unrelated group
+    // directories out of the deploy set and avoids the basename collision that
+    // a cross-group `EntryGroups/*/*.yaml` glob would produce (same file name
+    // in two groups). Fall back to all groups only when no scope was provided.
+    const pattern = this._entryGroup ?
+        `EntryGroups/${this._entryGroup}/*.yaml` :
+        'EntryGroups/*/*.yaml';
+    const matches = await glob.glob(pattern, {
       cwd: this._catalogPath,
       absolute: true,
       nodir: true,
@@ -58,8 +67,13 @@ export class SemanticModelLayout implements CatalogLayout {
     return !!p && fs.existsSync(p);
   }
 
+  // This is a push-only layout: it exposes no per-entry Knowledge Catalog
+  // files, so it lists no entries. Returning model handles here would make
+  // callers that pair listEntries() with loadEntry() -- e.g. the MCP server --
+  // list a model and then throw on read. modelDocuments() is the sole accessor
+  // for the authored model documents.
   listEntries(): string[] {
-    return Array.from(this._index.keys());
+    return [];
   }
 
   // Reads the raw Ossie document text for each discovered model. This is the

@@ -85,9 +85,16 @@ export class BigQueryClient extends api.ApiClient {
   }
 
   // Executes a SQL statement (including DDL) synchronously via jobs.query.
-  async query(project: string, sql: string): Promise<api.ApiResult<QueryResponse>> {
+  // When `location` is set it pins the job's processing location so it agrees
+  // with getQueryResults/getJob; otherwise BigQuery infers it from the
+  // referenced tables.
+  async query(project: string, sql: string, location?: string): Promise<api.ApiResult<QueryResponse>> {
     const name = `projects/${project}/queries`;
-    return await this._post<QueryResponse>(name, { query: sql, useLegacySql: false });
+    const body: Record<string, any> = { query: sql, useLegacySql: false };
+    if (location) {
+      body.location = location;
+    }
+    return await this._post<QueryResponse>(name, body);
   }
 
   // Fetches the status/results of a running query job. Used to poll until the

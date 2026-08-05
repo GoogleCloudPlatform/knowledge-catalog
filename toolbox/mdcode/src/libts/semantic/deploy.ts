@@ -8,6 +8,10 @@
 // The Knowledge Catalog resource emit (entries + entryLinks) for the semantic
 // model is a follow-on; `push` currently deploys only the BigQuery Graph.
 //
+// This is a library module: it emits no console output. The generated DDL and
+// any loader/generator warnings are returned in `DeployResult` for the CLI
+// (src/tool/commands.ts) to print.
+//
 
 import {ApiResult} from '../gcp/api';
 import {BigQueryClient, QueryResponse} from '../gcp/bigquery';
@@ -23,8 +27,12 @@ const GOOGLE_VENDOR = 'GOOGLE';
 
 // A BigQuery Graph deployment target, e.g.
 // //bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>
+// The capture groups are restricted to valid BigQuery identifier characters:
+// the components are interpolated into DDL unescaped (see qualifyGraph), so a
+// permissive `[^/]+` would let backticks or semicolons through. Malformed URIs
+// fail the match and are reported rather than producing broken DDL downstream.
 const BQ_GRAPH_TARGET =
-    /^\/\/bigquery\.googleapis\.com\/projects\/([^/]+)\/datasets\/([^/]+)\/propertyGraphs\/([^/]+)$/;
+    /^\/\/bigquery\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/datasets\/([A-Za-z0-9_-]+)\/propertyGraphs\/([A-Za-z0-9_-]+)$/;
 
 
 export interface BigQueryGraphTarget {
@@ -42,6 +50,14 @@ export interface DeployOptions {
 export interface DeployResult {
   success: boolean;
   details?: string;
+  // Generated DDL, one entry per target (each prefixed with a `-- <uri>`
+  // comment), in deploy order. Populated even for validateOnly, where nothing
+  // is executed, so the caller can print or inspect it.
+  ddl: string[];
+  // Loader and generator warnings collected across all documents.
+  warnings: string[];
+  // Number of graphs actually executed against BigQuery (0 for validateOnly).
+  deployed: number;
 }
 
 
@@ -86,6 +102,15 @@ export function bigQueryGraphTargets(model: SemanticModel):
 // reports completion (each poll long-polls the server for up to 10s).
 const MAX_QUERY_POLLS = 30;
 
+// Pause between polls. getQueryResults long-polls server-side, so this is a
+// backstop for the case where it returns promptly (which would otherwise fire
+// MAX_QUERY_POLLS requests back-to-back with no pause).
+const POLL_BACKOFF_MS = 1000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 
 // Waits for a jobs.query response to reach completion and reports any terminal
 // error. jobs.query can return before a slow DDL statement finishes; in that
@@ -105,6 +130,9 @@ async function awaitQueryDone(
 
   let polls = 0;
   while (result?.jobComplete === false && jobId && polls < MAX_QUERY_POLLS) {
+    if (polls > 0) {
+      await sleep(POLL_BACKOFF_MS);
+    }
     polls++;
     const res = await bigQuery.getQueryResults(project, jobId, location);
     if (res.status !== 200) {
@@ -114,10 +142,14 @@ async function awaitQueryDone(
   }
 
   if (result?.jobComplete === false) {
+    // Distinguish "polled to exhaustion" from "never had a job to poll": with
+    // no jobId the loop above ran zero times, so a "did not complete after N
+    // polls" message would be misleading.
     return {
       ok: false,
-      error: `job ${jobId ?? '(unknown)'} did not complete after ${
-          MAX_QUERY_POLLS} polls`,
+      error: jobId ?
+          `job ${jobId} did not complete after ${MAX_QUERY_POLLS} polls` :
+          'query did not complete and returned no job reference to poll',
     };
   }
 
@@ -142,39 +174,62 @@ async function awaitQueryDone(
 }
 
 
-// Deploys the BigQuery Graph for each authored model document.
+// Best-effort lookup of a dataset's BigQuery location so the query job, its
+// result polls, and the job lookup all agree on a region. jobs.query would
+// otherwise infer the location from the referenced tables, which can pick the
+// wrong region for a non-US dataset. Returns undefined (let BigQuery infer) if
+// the dataset can't be read.
+async function datasetLocation(
+    bigQuery: BigQueryClient,
+    target: BigQueryGraphTarget): Promise<string|undefined> {
+  const res = await bigQuery.getDataset(target.project, target.dataset);
+  return res.status === 200 ? res.result?.location : undefined;
+}
+
+
+// Deploys the BigQuery Graph for each authored model document. Emits no console
+// output; the generated DDL and any warnings are returned for the caller to
+// print.
 export async function deployBigQuery(
     docs: {name: string; text: string}[], ctx: context.ApiContext,
     options: DeployOptions = {}): Promise<DeployResult> {
   const bigQuery = new BigQueryClient(ctx);
+  const ddl: string[] = [];
+  const warnings: string[] = [];
   let deployed = 0;
   let modelsSeen = 0;
 
+  const fail = (details: string): DeployResult =>
+      ({success: false, details, ddl, warnings, deployed});
+
   for (const doc of docs) {
-    const {models, warnings} =
-        loadModels(doc.text, {defaultProject: ctx.project});
-    for (const w of warnings) {
-      console.warn(`Warning [${doc.name}]: ${w}`);
+    // A document that fails to parse (or violates the model schema) is an
+    // authoring error. Report it against the specific document rather than
+    // letting the loader's exception propagate as an uncaught stack trace, and
+    // name the document so a bad file in a multi-document push is identifiable.
+    let loaded;
+    try {
+      loaded = loadModels(doc.text, {defaultProject: ctx.project});
+    } catch (err: any) {
+      return fail(`Model document '${doc.name}': ${err.message || err}`);
+    }
+    for (const w of loaded.warnings) {
+      warnings.push(`[${doc.name}] ${w}`);
     }
 
-    for (const model of models) {
+    for (const model of loaded.models) {
       modelsSeen++;
       let targets: BigQueryGraphTarget[];
       try {
         targets = bigQueryGraphTargets(model);
       } catch (err: any) {
-        return {
-          success: false,
-          details: `Model '${model.name}' (${doc.name}): ${err.message || err}`,
-        };
+        return fail(
+            `Model '${model.name}' (${doc.name}): ${err.message || err}`);
       }
       if (!targets.length) {
-        return {
-          success: false,
-          details: `Model '${model.name}' (${
-                       doc.name}) declares no BigQuery Graph ` +
-              `deploymentTarget in a GOOGLE custom_extension; nothing to deploy.`,
-        };
+        return fail(
+            `Model '${model.name}' (${doc.name}) declares no BigQuery Graph ` +
+            `deploymentTarget in a GOOGLE custom_extension; nothing to deploy.`);
       }
 
       for (const target of targets) {
@@ -184,23 +239,27 @@ export async function deployBigQuery(
           graphName: target.graphName,
         });
         for (const w of gen.warnings) {
-          console.warn(`Warning [${model.name} -> ${target.graphName}]: ${w}`);
+          warnings.push(`[${model.name} -> ${target.graphName}] ${w}`);
         }
+        ddl.push(`-- ${target.uri}\n${gen.ddl}`);
 
         if (options.validateOnly) {
-          console.log(`-- ${target.uri}\n${gen.ddl}\n`);
           continue;
         }
 
-        console.log(`Deploying BigQuery Graph ${target.project}.${
-            target.dataset}.${target.graphName} ...`);
-        const started = await bigQuery.query(target.project, gen.ddl);
+        const location = await datasetLocation(bigQuery, target);
+        const started = await bigQuery.query(target.project, gen.ddl, location);
         const outcome = await awaitQueryDone(bigQuery, target.project, started);
         if (!outcome.ok) {
-          return {
-            success: false,
-            details: `Failed to deploy '${target.graphName}': ${outcome.error}`,
-          };
+          // These are CREATE OR REPLACE statements executed one at a time, so
+          // any graphs already deployed in this run have mutated production and
+          // are not rolled back. Surface that alongside the failing target.
+          const partial = deployed ?
+              ` (${deployed} graph(s) already deployed in this run; ` +
+                  `CREATE OR REPLACE changes are not rolled back)` :
+              '';
+          return fail(`Failed to deploy '${target.graphName}': ${
+              outcome.error}${partial}`);
         }
 
         deployed++;
@@ -208,22 +267,13 @@ export async function deployBigQuery(
     }
   }
 
+  // A parsed document always yields at least one model (the loader enforces
+  // `semantic_model` min 1), so modelsSeen is 0 only when no documents were
+  // found at all.
   if (!modelsSeen) {
-    return {
-      success: false,
-      details: docs.length ?
-          'No semantic models were parsed from the authored document(s); nothing to deploy.' :
-          'No semantic model documents found under catalog/EntryGroups/*/; nothing to deploy.',
-    };
+    return fail(
+        'No semantic model documents found under catalog/EntryGroups/*/; nothing to deploy.');
   }
 
-  if (options.validateOnly) {
-    console.log('Validation complete; no changes applied.');
-  } else {
-    console.log(
-        `Deployed ${deployed} BigQuery Graph(s). ` +
-        `Knowledge Catalog resource emit for the semantic model is not yet implemented.`);
-  }
-
-  return {success: true};
+  return {success: true, ddl, warnings, deployed};
 }

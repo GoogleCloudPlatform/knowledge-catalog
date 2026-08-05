@@ -69,14 +69,26 @@ describe('semantic-model scope wiring', () => {
         fs.writeFileSync(
             path.join(modelDir, 'sales.aspects.yaml'), 'name: sales\n');
 
+        // A second, unrelated EntryGroup directory (with a colliding basename)
+        // that the scoped layout must NOT pick up.
+        const otherDir =
+            path.join(dir, 'catalog', 'EntryGroups', 'other-group');
+        fs.mkdirSync(otherDir, {recursive: true});
+        fs.writeFileSync(
+            path.join(otherDir, 'sales.yaml'),
+            'semantic_model:\n  - name: other\n');
+
         // load: scope -> source -> layout resolves to the SemanticModel layout.
         const snapshot = await CatalogSnapshot.fromPath(dir, CTX);
         expect(snapshot.manifest.source.type).toBe('semantic-model');
         expect(snapshot.layout).toBeInstanceOf(SemanticModelLayout);
 
         const layout = snapshot.layout as SemanticModelLayout;
-        expect(layout.listEntries()).toEqual(['sales']);
+        // Push-only layout: it exposes no per-entry Knowledge Catalog files.
+        expect(layout.listEntries()).toEqual([]);
 
+        // Only the document under the scoped EntryGroup is discovered; the
+        // colliding sales.yaml in other-group is ignored.
         const docs = layout.modelDocuments();
         expect(docs).toHaveLength(1);
         expect(docs[0].name).toBe('sales');
