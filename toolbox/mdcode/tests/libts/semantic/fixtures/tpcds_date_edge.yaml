@@ -5,6 +5,11 @@
 # dimension (date_dim) that declares no primary_key and no fields (only
 # custom_extensions). Fields carry a second, non-BigQuery dialect variant to
 # exercise dialect selection.
+#
+# Not to be confused with fixtures/ossie/tpcds_semantic_model.yaml: that is the
+# Apache Ossie reference example, copied verbatim to test that the loader parses
+# the canonical spec example faithfully. This one is hand-authored to isolate
+# the edge cases above for the loader -> BigQuery DDL goldens.
 
 version: "0.2.0.dev0"
 

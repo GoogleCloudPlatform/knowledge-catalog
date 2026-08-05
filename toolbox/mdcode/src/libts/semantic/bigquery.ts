@@ -51,6 +51,10 @@ const SUPPORTED_AGGREGATES = ['SUM', 'AVG', 'COUNT', 'MIN', 'MAX'];
  * The generated statement references the entities' existing base tables; it
  * does not create them. Returns the DDL plus any warnings collected while
  * mapping the IR (e.g. metrics that could not be placed on a single table).
+ *
+ * Throws when the model yields no valid node table -- it declares no entities,
+ * or every entity lacks a KEY -- since a property graph with an empty NODE
+ * TABLES block is invalid DDL that BigQuery would reject.
  */
 export function generatePropertyGraph(
     model: SemanticModel, opts: GenerateOptions = {}): GenerateResult {
@@ -61,11 +65,6 @@ export function generatePropertyGraph(
   const entities = model.entities ?? [];
   const relationships = model.relationships ?? [];
   const metrics = model.metrics ?? [];
-
-  if (!entities.length) {
-    warnings.push(
-        'model has no entities; the generated NODE TABLES block will be empty and invalid');
-  }
 
   // A graph node table requires a non-empty KEY. An entity whose primary key is
   // empty cannot form a valid node, so skip it (and, below, any edge that
@@ -81,9 +80,21 @@ export function generatePropertyGraph(
     skipped.add(entity.name);
     return false;
   });
-  if (entities.length && !validEntities.length) {
-    warnings.push(
-        'every entity was skipped (empty KEY); the generated graph would be empty and invalid');
+
+  // A property graph must have at least one NODE TABLE; an empty `NODE TABLES
+  // ()` block is invalid DDL under any circumstance. When no entity can form a
+  // node — the model declares none, or every one was skipped for an empty KEY —
+  // fail loudly rather than emit a graph BigQuery would reject. The collected
+  // skip reasons ride along in the error so the caller sees why each entity
+  // dropped.
+  if (!validEntities.length) {
+    const reason = entities.length ?
+        'every entity was skipped because it has no primary key (a graph node requires a KEY)' :
+        'the model declares no entities';
+    throw new Error(
+        `cannot generate a property graph: ${reason}; a graph requires at ` +
+        `least one NODE TABLE` +
+        (warnings.length ? `\n${warnings.join('\n')}` : ''));
   }
 
   // Metrics are model-level; place each on the single entity its aggregate
@@ -94,7 +105,7 @@ export function generatePropertyGraph(
   const loweringByEntity = new Map<string, MeasureLowering>();
   for (const metric of metrics) {
     placeMetric(
-        metric, model, entityByName, metricsByEntity, loweringByEntity,
+        metric, model, entityByName, skipped, metricsByEntity, loweringByEntity,
         warnings);
   }
 
@@ -178,7 +189,7 @@ function newLowering(entity: Entity): MeasureLowering {
 // single supported aggregate over one operand.
 function placeMetric(
     metric: Metric, model: SemanticModel, entityByName: Map<string, Entity>,
-    metricsByEntity: Map<string, string[]>,
+    skipped: Set<string>, metricsByEntity: Map<string, string[]>,
     loweringByEntity: Map<string, MeasureLowering>, warnings: string[]): void {
   // The IR keeps at most two expression forms; a measure is emitted from the
   // target/canonical `expression`, falling back to the imported vendor SQL when
@@ -197,7 +208,10 @@ function placeMetric(
   // A qualifier-free aggregate (e.g. COUNT(*)) names no entity in its
   // expression; fall back to the declared attach entity when the IR provides
   // one, so it can still be placed rather than dropped as "references no
-  // entity".
+  // entity". The loader DERIVES metric.entity from the expression's qualifiers,
+  // so from a loaded model this never fires (no qualifier => no entity). It is
+  // the hand-built-IR path: an author sets metric.entity for a COUNT(*) to
+  // attach it (see the COUNT(*)-lowering tests).
   if (referenced.length === 0 && metric.entity) {
     referenced = [metric.entity];
   }
@@ -231,11 +245,11 @@ function placeMetric(
         entityName}'; skipped (cannot be a single MEASURE)`);
     return;
   }
-  // A metric can only become a MEASURE on a node table, but an entity with no
-  // primary key has no node table (it was skipped upstream). Report that
-  // directly instead of letting it fail later with a misleading
-  // "aggregate not supported" message.
-  if (!entity.keys?.length) {
+  // A metric can only become a MEASURE on a node table, but an entity that was
+  // skipped upstream (empty KEY) has no node table to carry it. Check the skip
+  // set already computed, and report the drop directly, instead of letting it
+  // fail later with a misleading "aggregate not supported" message.
+  if (skipped.has(entityName)) {
     warnings.push(`metric '${metric.name}' targets entity '${
         entityName}', which has no KEY and was skipped; metric dropped`);
     return;
@@ -246,7 +260,7 @@ function placeMetric(
   // A graph measure must be one supported aggregate wrapping a single operand;
   // anything else (a non-aggregate, or a compound of aggregates like a ratio)
   // cannot be a single MEASURE. Flag it rather than emit DDL BigQuery rejects.
-  const agg = splitAggregate(body);
+  const agg = extractAggregate(body);
   if (!agg) {
     warnings.push(
         `metric '${metric.name}' expression '${
@@ -328,12 +342,12 @@ function exposeOperand(
   return name;
 }
 
-// Splits a single-aggregate expression into its function name and operand, or
+// Extracts the function name and operand from a single-aggregate expression, or
 // returns null when the body is not exactly one supported aggregate wrapping
 // one operand (a non-aggregate, a compound like `SUM(x)/SUM(y)`, or a
 // multi-argument call). `COUNT(DISTINCT x)` is recognized, yielding operand `x`
 // with distinct.
-function splitAggregate(body: string):
+function extractAggregate(body: string):
     {fn: string; operand: string; distinct: boolean}|null {
   const s = body.trim();
   const head = s.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\(/);

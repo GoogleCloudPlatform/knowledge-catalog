@@ -34,7 +34,6 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 // Every fixture that gets a golden. New fixtures are added here.
 const CORPUS = [
   'star_orders_customer.yaml',
-  'lineitem_databricks_ext.yaml',
   'tpcds_retail.yaml',
   'tpcds_date_edge.yaml',
   'sales_fanout.yaml',
@@ -44,16 +43,20 @@ const CORPUS = [
   'keyless_dimension.yaml',
 ];
 
+// Loads a fixture file to its IR. Split out from `build` so a test that only
+// cares about load behavior (dialect fallback, vendor escape hatches) does not
+// also run generation — which now throws for a model that yields no node table.
+function loadFixture(fixture: string, load: LoadOptions = {}) {
+  const text = fs.readFileSync(path.join(FIXTURES, fixture), 'utf8');
+  return loadModels(
+      text,
+      {defaultProject: 'sqlgen-testing', defaultDataset: 'demo', ...load});
+}
+
 // Loads a fixture file and generates its property-graph DDL in one step, so a
 // test can assert over both the load warnings and the emitted DDL.
 function build(fixture: string, load: LoadOptions = {}) {
-  const text = fs.readFileSync(path.join(FIXTURES, fixture), 'utf8');
-  const opts = {
-    defaultProject: 'sqlgen-testing',
-    defaultDataset: 'demo',
-    ...load
-  };
-  const {models, warnings: loadWarnings} = loadModels(text, opts);
+  const {models, warnings: loadWarnings} = loadFixture(fixture, load);
   const {ddl, warnings: genWarnings} = generatePropertyGraph(
       models[0], {project: 'sqlgen-testing', dataset: 'demo'});
   return {models, ddl, loadWarnings, genWarnings};
@@ -120,7 +123,8 @@ describe('dialect selection is surfaced by risk when the target dialect is absen
         // DATABRICKS as the imported expression (target `expression` awaits a
         // transpile pass) and warns — a vendor dialect is a genuine
         // transpilation risk.
-        const {loadWarnings} = build('lineitem_databricks_ext.yaml');
+        const {warnings: loadWarnings} =
+            loadFixture('lineitem_databricks_ext.yaml');
         expect(loadWarnings)
             .toContain(
                 'metric \'revenue\': no \'BIGQUERY\' or \'ANSI_SQL\' dialect; keeping the \'DATABRICKS\' expression as imported_expression (needs transpilation to \'BIGQUERY\')');
@@ -143,7 +147,8 @@ describe('vendor escape hatches are accepted and ignored, not fatal', () => {
   // field/relationship/metric/ model level and unique_keys on a dataset with no
   // primary_key. None of these are part of the supported subset; the loader
   // must accept and skip them.
-  const {models, loadWarnings} = build('lineitem_databricks_ext.yaml');
+  const {models, warnings: loadWarnings} =
+      loadFixture('lineitem_databricks_ext.yaml');
 
   test(
       'the model still loads despite custom_extensions and unique_keys', () => {
@@ -258,4 +263,84 @@ describe(
             expect(ordersBlock)
                 .toContain('MEASURE(COUNT(order_id)) AS order_count');
           });
+    });
+
+
+// Splits the NODE TABLES(...) section into one string per node table (its alias
+// plus everything up to the next node or the section close).
+function nodeBlocks(ddl: string): Array<{alias: string; body: string}> {
+  const start = ddl.indexOf('NODE TABLES (');
+  if (start < 0) return [];
+  // The section closes at the first `)` in column 0 after it (PROPERTIES closes
+  // at indent 2, so it never matches).
+  const end = ddl.indexOf('\n)', start);
+  const section = ddl.slice(start, end < 0 ? undefined : end);
+  const re = /^  `[^`]+` AS (\w+)$/gm;
+  const heads: Array<{alias: string; at: number}> = [];
+  for (let m = re.exec(section); m; m = re.exec(section)) {
+    heads.push({alias: m[1], at: m.index});
+  }
+  return heads.map(
+      (h, i) => ({
+        alias: h.alias,
+        body: section.slice(
+            h.at, i + 1 < heads.length ? heads[i + 1].at : undefined),
+      }));
+}
+
+// The property name a PROPERTIES entry declares: the alias after the final
+// top-level `AS` (ignoring a trailing OPTIONS(...) and any inner `CAST(x AS
+// TYPE)`), else the leading bare column.
+function declaredName(entry: string): string|undefined {
+  const noOpts = entry.replace(/\s+OPTIONS\(.*\)\s*$/s, '').trim();
+  const asMatch = noOpts.match(/ AS ([A-Za-z_]\w*)\s*$/);
+  if (asMatch) return asMatch[1];
+  const bare = noOpts.match(/^([A-Za-z_]\w*)\s*$/);
+  return bare ? bare[1] : undefined;
+}
+
+describe(
+    'every MEASURE operand is a property exposed by its own node (the exact rule live BigQuery enforces)',
+    () => {
+      // Reproduces BigQuery\'s DDL-time check -- rejecting a graph with
+      // "Property <x> is not exposed by element type ..." -- so a lowering
+      // regression that pointed a measure at a raw column or an un-exposed
+      // operand is caught offline, without a live instance. Confirmed against a
+      // real property graph: the fixtures below load and their measures
+      // aggregate correctly via GRAPH_EXPAND + AGG().
+      for (const fixture of CORPUS) {
+        test(fixture, () => {
+          const {ddl} = build(fixture);
+          for (const {alias, body} of nodeBlocks(ddl)) {
+            const propsMatch = body.match(/PROPERTIES\(([\s\S]*?)\n {4}\)/);
+            if (!propsMatch) continue;
+            // One entry per property line (indent 6), trailing comma stripped.
+            const entries = propsMatch[1]
+                                .split('\n')
+                                .map(l => l.trim().replace(/,$/, ''))
+                                .filter(Boolean);
+            const exposed = new Set<string>();
+            const measureOperands: string[] = [];
+            for (const e of entries) {
+              const meas = e.match(
+                  /^MEASURE\(\s*\w+\(\s*(?:DISTINCT\s+)?([A-Za-z_]\w*)\)/);
+              if (meas) {
+                measureOperands.push(meas[1]);
+                continue;  // a measure is exposed, but cannot be another\'s
+                           // operand
+              }
+              const name = declaredName(e);
+              if (name) exposed.add(name);
+            }
+            for (const operand of measureOperands) {
+              // Encodes the node + operand so a failure names exactly which
+              // measure points at an un-exposed property.
+              expect(`${fixture} ${alias}: operand '${operand}' exposed=${
+                         exposed.has(operand)}`)
+                  .toBe(
+                      `${fixture} ${alias}: operand '${operand}' exposed=true`);
+            }
+          }
+        });
+      }
     });

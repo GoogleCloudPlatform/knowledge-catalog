@@ -246,14 +246,40 @@ describe('IR-contract metric cases the loader cannot produce', () => {
 
 describe('degenerate inputs and GenerateOptions behavior', () => {
   test(
-      'a model with no entities is reported, not silently emitted as an invalid graph',
+      'a model with no entities throws, rather than emit an empty (invalid) graph',
       () => {
         // The open format requires datasets.min(1), so this state is only
-        // reachable as hand-built IR.
-        const {warnings} = generatePropertyGraph(
-            {name: 'm', entities: [], relationships: [], metrics: []},
-            GEN_OPTS);
-        expect(warnings.some(w => w.includes('no entities'))).toBe(true);
+        // reachable as hand-built IR. A graph with an empty NODE TABLES block
+        // is invalid DDL, so generation fails loudly instead of returning it.
+        expect(
+            () => generatePropertyGraph(
+                {name: 'm', entities: [], relationships: [], metrics: []},
+                GEN_OPTS))
+            .toThrow(
+                /no valid node table|declares no entities|at least one NODE TABLE/);
+      });
+
+  test(
+      'a model whose every entity lacks a KEY throws, naming the skipped entities',
+      () => {
+        // Every entity is keyless, so all are skipped and no node table
+        // remains; the emitted graph would be empty and invalid. The error
+        // carries the per-entity skip reasons so the caller sees why each
+        // dropped out.
+        expect(
+            () => generatePropertyGraph(
+                {
+                  name: 'm',
+                  relationships: [],
+                  metrics: [],
+                  entities: [
+                    {name: 'a', dataSource: 'a', keys: [], fields: []},
+                    {name: 'b', dataSource: 'b', keys: [], fields: []},
+                  ],
+                },
+                GEN_OPTS))
+            .toThrow(
+                /every entity was skipped[\s\S]*entity 'a'[\s\S]*entity 'b'/);
       });
 
   test(

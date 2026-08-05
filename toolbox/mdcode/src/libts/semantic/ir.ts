@@ -187,6 +187,12 @@ export interface RelationshipEnd {
 /**
  * An association (junction) table backing a many-to-many relationship.
  *
+ * A many-to-many link cannot be a foreign key: an FK column holds a single value
+ * and so references at most one row (a to-one direction), which cannot encode a
+ * pairing where each side maps to many of the other. The pairs instead live in a
+ * separate junction table, one row per (source, destination) -- e.g. an
+ * `enrollment` row per (student, course).
+ *
  * Unlike a direct foreign key -- which the open format expresses and the loader
  * produces -- a junction edge is backed by its OWN table (`dataSource`) with its
  * OWN key (`keys`) and may carry edge `fields` (properties of the association
