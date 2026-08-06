@@ -9,7 +9,9 @@ import { describe, test, expect, mock, spyOn } from 'bun:test';
 import { fs as memfs, vol } from 'memfs';
 import * as kcmac from '../../src/libts';
 import * as gcp from '../../src/libts/gcp';
+
 import * as bq from '../../src/libts/gcp/bigquery';
+import { ResourceManagerClient } from '../../src/libts/gcp/crm';
 
 import { CatalogClientMock, BigQueryClientMock, TEST_API_CONTEXT } from './mocks';
 
@@ -46,6 +48,9 @@ function runScenario(scenario: any) {
         for (const at of scenario.setup.catalog.aspectTypes) {
           catalog.addMockAspectType(at);
         }
+      }
+      if (scenario.setup?.catalog?.entryLinks) {
+        catalog.mockEntryLinks = scenario.setup.catalog.entryLinks;
       }
 
       // Setup state - BigQuery Service
@@ -97,12 +102,16 @@ function runScenario(scenario: any) {
       for (const actionStep of actions) {
         const { action, ...params } = actionStep;
         switch (action) {
-          case 'pull':
-            await sync.pull();
+          case 'pull': {
+            const res = await sync.pull();
+            expect(res.success).toBe(true);
             break;
-          case 'push':
-            await sync.push(params.options);
+          }
+          case 'push': {
+            const res = await sync.push(params.options);
+            expect(res.success).toBe(true);
             break;
+          }
           case 'listEntries':
             console.log(await snapshot.listEntries());
             break;
@@ -147,6 +156,9 @@ function runScenario(scenario: any) {
       if (scenario.assert?.catalog?.entries) {
         expect(JSON.parse(JSON.stringify(catalog.mockEntries))).toEqual(JSON.parse(JSON.stringify(scenario.assert.catalog.entries)));
       }
+      if (scenario.assert?.catalog?.entryLinks) {
+        expect(JSON.parse(JSON.stringify(catalog.mockEntryLinks))).toEqual(JSON.parse(JSON.stringify(scenario.assert.catalog.entryLinks)));
+      }
     });
   });
 }
@@ -190,8 +202,26 @@ function main() {
     }
   );
 
+  spyOn(gcp.CatalogClient.prototype, 'getGlossary').mockImplementation(
+    async function(project: string, location: string, glossaryId: string) {
+      if (currentCatalogMock) {
+        return await currentCatalogMock.getGlossary(project, location, glossaryId);
+      }
+      return { status: 404, message: 'Not found' };
+    }
+  );
+
+  spyOn(gcp.CatalogClient.prototype, 'getGlossaryTerm').mockImplementation(
+    async function(project: string, location: string, glossaryId: string, termId: string) {
+      if (currentCatalogMock) {
+        return await currentCatalogMock.getGlossaryTerm(project, location, glossaryId, termId);
+      }
+      return { status: 404, message: 'Not found' };
+    }
+  );
+
   spyOn(gcp.CatalogClient.prototype, 'getEntry').mockImplementation(
-    async function(project: string, location: string, entryGroup: string, entry: string) {
+    async function(this: gcp.CatalogClient, project: string, location: string, entryGroup: string, entry: string) {
       if (currentCatalogMock) {
         return await currentCatalogMock.getEntry(project, location, entryGroup, entry);
       }
@@ -200,7 +230,7 @@ function main() {
   );
 
   spyOn(gcp.CatalogClient.prototype, 'lookupEntry').mockImplementation(
-    async function(project: string, location: string, entry: string) {
+    async function(this: gcp.CatalogClient, project: string, location: string, entry: string) {
       if (currentCatalogMock) {
         return await currentCatalogMock.lookupEntry(project, location, entry);
       }
@@ -209,7 +239,7 @@ function main() {
   );
 
   spyOn(gcp.CatalogClient.prototype, 'modifyEntry').mockImplementation(
-    async function(project: string, location: string, entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[]) {
+    async function(this: gcp.CatalogClient, project: string, location: string, entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[]) {
       if (currentCatalogMock) {
         return await currentCatalogMock.modifyEntry(project, location, entry, updateMask, aspectKeys);
       }
@@ -218,7 +248,7 @@ function main() {
   );
 
   spyOn(gcp.CatalogClient.prototype, 'listEntries').mockImplementation(
-    async function* (project: string, location: string, entryGroup: string) {
+    async function* (this: gcp.CatalogClient, project: string, location: string, entryGroup: string) {
       if (currentCatalogMock) {
         for await (const entry of currentCatalogMock.listEntries(project, location, entryGroup)) {
           yield entry;
@@ -227,8 +257,45 @@ function main() {
     }
   );
 
+  spyOn(gcp.CatalogClient.prototype, 'lookupEntryLinks').mockImplementation(
+    async function(this: gcp.CatalogClient, project: string, location: string, entryName: string, entryLinkTypes?: string[]) {
+      if (currentCatalogMock) {
+        return await currentCatalogMock.lookupEntryLinks(project, location, entryName, entryLinkTypes);
+      }
+      return { status: 200, result: { entryLinks: [] } };
+    }
+  );
+
+  spyOn(gcp.CatalogClient.prototype, 'createEntryLink').mockImplementation(
+    async function(this: gcp.CatalogClient, project: string, location: string, entryGroup: string, entryLink: gcp.EntryLink) {
+      if (currentCatalogMock) {
+        return await currentCatalogMock.createEntryLink(project, location, entryGroup, entryLink);
+      }
+      return { status: 404, message: 'Not found' };
+    }
+  );
+
+  spyOn(gcp.CatalogClient.prototype, 'deleteEntryLink').mockImplementation(
+    async function(this: gcp.CatalogClient, project: string, location: string, entryGroup: string, entryLinkName: string) {
+      if (currentCatalogMock) {
+        return await currentCatalogMock.deleteEntryLink(project, location, entryGroup, entryLinkName);
+      }
+      return { status: 404, message: 'Not found' };
+    }
+  );
+
+  spyOn(gcp.CatalogClient.prototype, 'listEntryLinks').mockImplementation(
+    async function* (this: gcp.CatalogClient, project: string, location: string, entryGroup: string, filter?: string) {
+      if (currentCatalogMock) {
+        for await (const link of currentCatalogMock.listEntryLinks(project, location, entryGroup, filter)) {
+          yield link;
+        }
+      }
+    }
+  );
+
   spyOn(gcp.CatalogClient.prototype, 'updateEntry').mockImplementation(
-    async function(entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[]) {
+    async function(this: gcp.CatalogClient, entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[]) {
       if (currentCatalogMock) {
         return await currentCatalogMock.updateEntry(entry, updateMask, aspectKeys);
       }
@@ -261,6 +328,24 @@ function main() {
           yield table;
         }
       }
+    }
+  );
+
+  spyOn(ResourceManagerClient.prototype, 'getProject').mockImplementation(
+    async function(project: string) {
+      const db: Record<string, { name: string; projectId: string }> = {
+        'test-project': { name: 'projects/123456789', projectId: 'test-project' },
+        '123456789': { name: 'projects/123456789', projectId: 'test-project' },
+        'dc-cuj-staging-playground': { name: 'projects/313634309590', projectId: 'dc-cuj-staging-playground' },
+        '313634309590': { name: 'projects/313634309590', projectId: 'dc-cuj-staging-playground' },
+        'dataplex-types': { name: 'projects/655216118709', projectId: 'dataplex-types' },
+        '655216118709': { name: 'projects/655216118709', projectId: 'dataplex-types' },
+      };
+      const match = db[project];
+      if (match) {
+        return { status: 200, result: match };
+      }
+      return { status: 404, message: 'Project not found' };
     }
   );
 

@@ -9,6 +9,24 @@ import { CatalogLayout } from '../layout';
 import * as md from '../metadata';
 
 
+async function findYamlFiles(dir: string): Promise<string[]> {
+  const files: string[] = [];
+  try {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...(await findYamlFiles(fullPath)));
+      } else if (entry.isFile() && entry.name.endsWith('.yaml')) {
+        files.push(fullPath);
+      }
+    }
+  } catch (err) {
+    // Ignore folder read errors
+  }
+  return files;
+}
+
 export class StandardLayout implements CatalogLayout {
 
   private readonly _catalogPath: string;
@@ -26,11 +44,7 @@ export class StandardLayout implements CatalogLayout {
       return;
     }
 
-    const matches = await glob.glob('**/*.yaml', {
-      cwd: this._catalogPath,
-      absolute: true,
-      nodir: true,
-    });
+    const matches = await findYamlFiles(this._catalogPath);
 
     for (const localPath of matches) {
       try {

@@ -102,4 +102,30 @@ export class BigQueryDatasetSource implements CatalogSource {
     const resource = nameParts.length == 2 ? nameParts[1] : nameParts[2];
     return `${entryName}/${collection}/${resource}`;
   }
+
+  tryGetLocalName(serviceName: string): string | undefined {
+    const match = serviceName.match(/\/projects\/([^/]+)\/datasets\/([^/]+)(\/(tables|models|routines)\/(.+))?$/);
+    if (!match) {
+      return undefined;
+    }
+    const [, project, dataset, , type, id] = match;
+    const datasetKey = `${project}.${dataset}`;
+    if (!this._datasets.has(datasetKey)) {
+      return undefined;
+    }
+    const dsResource = this._datasets.get(datasetKey)!;
+    const location = dsResource.location.toLowerCase();
+    const prefix = `${gcp.catalogContainer(project, location, '@bigquery')}/entries/bigquery.googleapis.com/projects/${project}/datasets/${dataset}`;
+    if (!serviceName.startsWith(prefix)) {
+      return undefined;
+    }
+
+    if (type === 'tables') {
+      return `${datasetKey}/${id}`;
+    }
+    if (type) {
+      return `${type}/${datasetKey}/${id}`;
+    }
+    return datasetKey;
+  }
 }

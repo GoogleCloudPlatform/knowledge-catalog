@@ -48,3 +48,51 @@ export async function fixProject(resource: string, ctx: context.ApiContext): Pro
 
   return resource;
 }
+
+const PROJECT_ID_TO_NUM_CACHE = new Map<string, string>();
+PROJECT_ID_TO_NUM_CACHE.set('dataplex-types', '655216118709');
+
+export function tryGetProjectNumber(projectId: string): string | undefined {
+  return PROJECT_ID_TO_NUM_CACHE.get(projectId);
+}
+
+export async function toProjectNumber(resource: string, ctx: context.ApiContext): Promise<string> {
+  if (!resource.includes('/')) {
+    let num = PROJECT_ID_TO_NUM_CACHE.get(resource);
+    if (!num) {
+      const res = await new ResourceManagerClient(ctx).getProject(resource);
+      if (res.status === 200 && res.result?.name) {
+        const nameParts = res.result.name.split('/');
+        num = nameParts[nameParts.length - 1];
+      }
+    }
+
+    if (num) {
+      PROJECT_ID_TO_NUM_CACHE.set(resource, num);
+      return num;
+    }
+    return resource;
+  }
+
+  const parts = resource.split('/');
+  if (parts.length > 1 && !/^\d+$/.test(parts[1])) {
+    const projectId = parts[1];
+    let num = PROJECT_ID_TO_NUM_CACHE.get(projectId);
+    if (!num) {
+      const res = await new ResourceManagerClient(ctx).getProject(projectId);
+      if (res.status === 200 && res.result?.name) {
+        const nameParts = res.result.name.split('/');
+        num = nameParts[nameParts.length - 1];
+      }
+    }
+
+    if (num) {
+      PROJECT_ID_TO_NUM_CACHE.set(projectId, num);
+      parts[1] = num;
+    }
+    resource = parts.join('/');
+  }
+
+  return resource;
+}
+

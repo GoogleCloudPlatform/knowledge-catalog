@@ -25,6 +25,7 @@ export interface CatalogSource {
   entries(ctx: gcp.ApiContext): AsyncGenerator<gcp.Entry, void, unknown>;
   localName(entry: gcp.Entry): string;
   serviceName(localName: string): string;
+  tryGetLocalName(serviceName: string): string | undefined;
 }
 
 
