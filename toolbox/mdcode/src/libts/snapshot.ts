@@ -9,6 +9,7 @@ import * as dataplex from './gcp/dataplex';
 import * as md from './metadata';
 import { CatalogManifest } from './manifest';
 import { CatalogLayout, createLayout } from './layout';
+import { ResourceAlias, ResourceType } from './resourcealias';
 
 
 export class CatalogSnapshot {
@@ -19,26 +20,39 @@ export class CatalogSnapshot {
   private readonly _entryTypes: Map<string, dataplex.EntryType> = new Map();
   private readonly _aspectTypes: Map<string, dataplex.AspectType> = new Map();
 
+  private readonly _referenceEntryTypes: Map<string, dataplex.EntryType> = new Map();
+  private readonly _referenceAspectTypes: Map<string, dataplex.AspectType> = new Map();
+
   private readonly _layout: CatalogLayout;
 
-  private constructor(basePath: string, manifest: CatalogManifest) {
+  private constructor(basePath: string, manifest: CatalogManifest, isReference: boolean) {
     this.basePath = basePath;
     this.manifest = manifest;
 
-    const catalogPath = path.join(this.basePath, 'catalog');
-    this._layout = createLayout(manifest.source.layout, catalogPath);
+    if (isReference) {
+      const referencePath = path.join(this.basePath, 'reference');
+      this._layout = createLayout(manifest!.referenceManifest!.source.layout, referencePath);
+    } else {
+      const catalogPath = path.join(this.basePath, 'catalog');
+      this._layout = createLayout(manifest.source.layout, catalogPath);
+    }
   }
 
-  static async fromPath(basePath: string, ctx: gcp.ApiContext): Promise<CatalogSnapshot> {
+  static async fromPath(basePath: string, ctx: gcp.ApiContext, isReference: boolean = false): Promise<CatalogSnapshot> {
     const manifestPath = path.join(basePath, 'catalog.yaml');
     if (!fs.existsSync(manifestPath)) {
       throw new Error(`Cannot find catalog manifest at '${manifestPath}'`);
     }
-
+    
     const manifest = await CatalogManifest.load(manifestPath, ctx);
-    const snapshot = new CatalogSnapshot(basePath, manifest);
+    if (isReference && !manifest.referenceManifest) {
+      throw new Error(`Cannot find reference config in manifest`);
+    }
+
+    const snapshot = new CatalogSnapshot(basePath, manifest, isReference);
 
     await snapshot._buildTypes(manifest, ctx);
+    await snapshot._buildReferenceTypes(manifest, ctx);
     await snapshot._layout.init();
     return snapshot;
   }
@@ -49,6 +63,14 @@ export class CatalogSnapshot {
 
   get aspectTypes(): Map<string, dataplex.AspectType> {
     return this._aspectTypes;
+  }
+
+  get referenceEntryTypes(): Map<string, dataplex.EntryType> {
+    return this._referenceEntryTypes;
+  }
+
+  get referenceAspectTypes(): Map<string, dataplex.AspectType> {
+    return this._referenceAspectTypes;
   }
 
   // Retrieves the list of locally (pulled and/or created) managed entries
@@ -161,26 +183,76 @@ export class CatalogSnapshot {
     }
 
     for (const aspectType of manifest.snapshotConfig?.aspects || []) {
-      if (this._aspectTypes.has(aspectType)) {
+      const aspectTypeResourceName = manifest.aliasMap.lookupAlias(aspectType, ResourceType.ASPECT);
+      if (this._aspectTypes.has(aspectTypeResourceName)) {
         continue;
       }
 
-      const parts = aspectType.split('.');
+      const parts = aspectTypeResourceName.split('.');
       const res = await catalog.getAspectType(parts[0], parts[1], parts[2]);
       if (!res.result) {
-        throw new Error(`Unable to load type information for aspect type ${aspectType}`);
+        throw new Error(`Unable to load type information for aspect type ${aspectTypeResourceName}`);
       }
       this._aspectTypes.set(res.result.name, res.result);
-      this._aspectTypes.set(aspectType, res.result);
+      this._aspectTypes.set(aspectTypeResourceName, res.result);
+    }
+  }
+
+  // Build the map of types supported within the locally managed catalog reference snapshot
+  // Types are stored using two keys: the resource name and the 3-part type name.
+  private async _buildReferenceTypes(manifest: CatalogManifest, ctx: gcp.ApiContext): Promise<void> {
+    if (!manifest.referenceManifest) {
+      return;
+    }
+
+    const catalog = new dataplex.CatalogClient(ctx);
+
+    for (const entryType of manifest.referenceManifest!.snapshotConfig?.entries || []) {
+      const parts = entryType.split('.');
+      const res = await catalog.getEntryType(parts[0], parts[1], parts[2]);
+      if (!res.result) {
+        throw new Error(`Unable to load type information for reference entry type ${entryType}`);
+      }
+
+      this._referenceEntryTypes.set(res.result.name, res.result);
+      this._referenceEntryTypes.set(entryType, res.result);
+
+      for (const requiredAspect of res.result.requiredAspects ?? []) {
+        if (!this._referenceAspectTypes.has(requiredAspect.type)) {
+          const parts = requiredAspect.type.split('/');
+          const res = await catalog.getAspectType(parts[1], parts[3], parts[5]);
+          if (!res.result) {
+            throw new Error(`Unable to load type information for reference aspect type ${requiredAspect.type}`);
+          }
+          this._referenceAspectTypes.set(res.result.name, res.result);
+          this._referenceAspectTypes.set(`${parts[0]}.${parts[3]}.${parts[5]}`, res.result);
+        }
+      }
+    }
+
+    for (const aspectType of manifest.referenceManifest!.snapshotConfig?.aspects || []) {
+      const aspectTypeResourceName = manifest.aliasMap.lookupAlias(aspectType, ResourceType.ASPECT);
+      if (this._referenceAspectTypes.has(aspectTypeResourceName)) {
+        continue;
+      }
+
+      const parts = aspectTypeResourceName.split('.');
+      const res = await catalog.getAspectType(parts[0], parts[1], parts[2]);
+      if (!res.result) {
+        throw new Error(`Unable to load type information for reference aspect type ${aspectTypeResourceName}`);
+      }
+      this._referenceAspectTypes.set(res.result.name, res.result);
+      this._referenceAspectTypes.set(aspectTypeResourceName, res.result);
     }
   }
 
   // Stores a Dataplex entry into the locally managed catalog snapshot. This will internally map
   // The service representation into the local metadata representation.
   // This is only meant to be used within the syncing process (as part of pull operations).
-  async _storeEntry(entry: dataplex.Entry): Promise<void> {
-    const localName = this.manifest.source.localName(entry);
-    await this._layout.saveEntry(localName, toLocalEntry(entry, localName));
+  async _storeEntry(entry: dataplex.Entry, isReference: boolean = false): Promise<void> {
+    const source = isReference ? this.manifest.referenceManifest!.source : this.manifest.source;
+    const localName = source.localName(entry);
+    await this._layout.saveEntry(localName, toLocalEntry(entry, localName, this.manifest.aliasMap));
   }
 
   // Fetches a Dataplex entry from its local metadata representation.
@@ -202,17 +274,19 @@ export class CatalogSnapshot {
       serviceName,
       this.manifest,
       this._entryTypes,
-      this._aspectTypes
+      this._aspectTypes,
+      this.manifest.aliasMap,
     );
   }
 }
 
 // Converts a Dataplex entry into the local metadata representation.
-function toLocalEntry(entry: dataplex.Entry, localName: string): md.Entry {
+function toLocalEntry(entry: dataplex.Entry, localName: string, aliasMap: ResourceAlias): md.Entry {
   const aspects: Record<string, md.Aspect> = {};
   if (entry.aspects) {
     for (const key in entry.aspects) {
-      aspects[key] = entry.aspects[key].data ?? {};
+      const keyAlias = aliasMap.lookupResource(key, ResourceType.ASPECT);
+      aspects[keyAlias] = entry.aspects[key].data ?? {};
     }
   }
 
@@ -241,7 +315,8 @@ function toServiceEntry(entry: md.Entry,
                         serviceName: string,
                         manifest: CatalogManifest,
                         entryTypes: Map<string, dataplex.EntryType>,
-                        aspectTypes: Map<string, dataplex.AspectType>): dataplex.Entry {
+                        aspectTypes: Map<string, dataplex.AspectType>,
+                        aliasMap: ResourceAlias): dataplex.Entry {
   const entryType = entryTypes.get(entry.type);
   if (!entryType) {
     throw new Error(`Unknown entry type ${entry.type} in snapshot`);
@@ -250,17 +325,18 @@ function toServiceEntry(entry: md.Entry,
   const aspects: Record<string, dataplex.Aspect> = {};
   if (entry.aspects) {
     for (const key in entry.aspects) {
-      if (manifest.publishingConfig && !manifest.publishingConfig.aspects?.includes(key)) {
+      const keyResourceName = aliasMap.lookupAlias(key, ResourceType.ASPECT);
+      if (manifest.publishingConfig && !manifest.publishingConfig.aspects?.includes(keyResourceName)) {
         continue;
       }
 
-      const aspectType = dataplex._typeRefToName(key, 'aspect');
+      const aspectType = dataplex._typeRefToName(keyResourceName, 'aspect');
       if (manifest.source.ingestedEntries &&
           entryType.requiredAspects?.find((aspectInfo) => aspectInfo.type == aspectType)) {
         continue;
       }
 
-      aspects[key] = { aspectType, data: entry.aspects[key] };
+      aspects[keyResourceName] = { aspectType, data: entry.aspects[key] };
     }
   }
 

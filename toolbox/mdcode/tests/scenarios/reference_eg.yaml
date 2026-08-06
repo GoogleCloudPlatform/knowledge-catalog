@@ -1,0 +1,27 @@
+name: reference_eg
+description: Referencing an EntryGroup entries
+setup:
+  catalog:
+    entryGroups:
+      - name: projects/test/locations/us/entryGroups/g1
+      - name: projects/test/locations/us/entryGroups/r1
+    entryTypes:
+      - name: projects/test/locations/global/entryTypes/rt1
+    entries:
+      - name: projects/test/locations/us/entryGroups/g1/entries/r1
+        entryType: projects/test/locations/global/entryTypes/rt1
+
+  fileSystem:
+    catalog.yaml: |
+      scope: entryGroup.test.us.g1
+      reference:
+        scope: entryGroup.test.us.r1
+
+actions:
+  - action: reference
+
+assert:
+  fileSystem:
+    reference/r1.yaml:
+      - contains: "name: r1"
+      - contains: "type: test.global.rt1"

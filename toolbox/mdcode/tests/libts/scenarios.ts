@@ -115,6 +115,12 @@ function runScenario(scenario: any) {
           case 'deleteEntry':
             await snapshot.deleteEntry(params.name);
             break;
+          case 'reference':
+            const referenceSnapshot = await kcmac.CatalogSnapshot.fromPath('/', TEST_API_CONTEXT, true);
+            const refereneSync = new kcmac.CatalogSync(catalog, referenceSnapshot); 
+            await refereneSync.reference();
+            
+            break;
           default:
             throw new Error(`Unknown action: ${action}`);
         }
