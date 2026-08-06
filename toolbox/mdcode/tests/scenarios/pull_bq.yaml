@@ -37,5 +37,5 @@ assert:
       - contains: "name: p.d"
       - contains: "type: dataplex-types.global.bigquery-dataset"
     catalog/p.d/t1.yaml:
-      - contains: "name: p.d.t1"
+      - contains: "name: p.d/t1"
       - contains: "type: dataplex-types.global.bigquery-table"

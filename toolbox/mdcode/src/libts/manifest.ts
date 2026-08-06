@@ -66,6 +66,15 @@ export class CatalogManifest {
     return new CatalogManifest(source);
   }
 
+  static async initWithBigLakeNamespace(name: string, catalogType: 'iceberg', ctx: gcp.ApiContext): Promise<CatalogManifest> {
+    const source = await createSource(
+      catalogType === 'iceberg' ? Sources.BIGLAKE_ICEBERG_NAMESPACE : Sources.BIGLAKE_NAMESPACE,
+      name,
+      ctx
+    );
+    return new CatalogManifest(source);
+  }
+
   static async load(path: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
     const content = fs.readFileSync(path, 'utf8');
     const parsed = yaml.parse(content);

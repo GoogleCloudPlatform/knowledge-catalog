@@ -177,3 +177,25 @@ export class BigQueryClientMock extends bigquery.BigQueryClient {
     }
   }
 }
+
+
+export class BigLakeClientMock extends gcp.BigLakeClient {
+  public mockTables: Map<string, any> = new Map();
+
+  constructor() {
+    super(TEST_API_CONTEXT, 'iceberg');
+  }
+
+  addMockTable(resource: gcp.BigLakeTable) {
+    this.mockTables.set(resource.name, resource);
+  }
+
+  async *listTables(project: string, location: string, catalog: string, database: string): AsyncGenerator<gcp.BigLakeTable> {
+    const prefix = `projects/${project}/locations/${location}/catalogs/${catalog}/databases/${database}/tables/`;
+    for (const table of this.mockTables.values()) {
+      if (table.name.startsWith(prefix)) {
+        yield table;
+      }
+    }
+  }
+}
