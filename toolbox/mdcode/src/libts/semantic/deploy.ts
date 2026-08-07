@@ -36,10 +36,15 @@ const GOOGLE_VENDOR = 'GOOGLE';
 const BQ_GRAPH_TARGET =
     /^\/\/bigquery\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/datasets\/([A-Za-z0-9_-]+)\/propertyGraphs\/([A-Za-z0-9_-]+)$/;
 
-// Prefix a deployment target must carry to be treated as a (possibly malformed)
-// BigQuery Graph URI rather than an unrelated destination (e.g. a Dataplex
-// URI).
-const BQ_GRAPH_URI_PREFIX = '//bigquery.googleapis.com/';
+// A deployment target that "looks like" a BigQuery Graph URI but fails the
+// strict match above: it carries the bigquery.googleapis host (even under a
+// typo'd scheme such as `https://`, or a truncated host missing `.com`) or the
+// graph-specific `/propertyGraph(s)/` path segment. Such a URI is reported as
+// malformed (see bigQueryGraphTargets) rather than silently dropped, so a
+// host/scheme/segment/identifier typo surfaces instead of being misreported as
+// "no target declared". An unrelated destination (e.g. a Dataplex URI) matches
+// neither this hint nor the strict form and is left alone.
+const BQ_GRAPH_TARGET_HINT = /bigquery\.googleapis|\/propertyGraphs?\//;
 
 
 export interface BigQueryGraphTarget {
@@ -107,9 +112,10 @@ export function bigQueryGraphTargets(model: SemanticModel):
       const m = uri.match(BQ_GRAPH_TARGET);
       if (m) {
         targets.push({project: m[1], dataset: m[2], graphName: m[3], uri});
-      } else if (uri.startsWith(BQ_GRAPH_URI_PREFIX)) {
-        // Looks like a BigQuery Graph target but doesn't parse; a plain
-        // Dataplex/other URI is not our concern and is left alone.
+      } else if (BQ_GRAPH_TARGET_HINT.test(uri)) {
+        // Looks like a BigQuery Graph target but doesn't parse (host, scheme,
+        // path-segment, or identifier-char typo); a plain Dataplex/other URI is
+        // not our concern and is left alone.
         malformed.push(uri);
       }
     }
@@ -147,6 +153,16 @@ async function awaitQueryDone(
   }
 
   let result = started.result;
+  // A 200 with no body is not a verified success: without jobComplete/errors we
+  // cannot confirm the DDL ran, so treat the missing body as a failure rather
+  // than falling through to the `{ok: true}` return below.
+  if (!result) {
+    return {
+      ok: false,
+      error:
+          started.message || 'query returned status 200 with no response body',
+    };
+  }
   const jobId = result?.jobReference?.jobId;
   const location = result?.jobReference?.location;
 
@@ -205,10 +221,12 @@ async function awaitQueryDone(
 // target would otherwise surface later as a murkier DDL error, so we fail fast
 // on it. Other failures (e.g. a 403 when the caller lacks
 // bigquery.datasets.get) are non-fatal: fall back to letting BigQuery infer the
-// location.
+// location, but record a warning so the degraded path is visible -- otherwise a
+// silent fallback can route a non-US CREATE to the wrong region and fail later
+// with an opaque location error.
 async function datasetLocation(
-    bigQuery: BigQueryClient,
-    target: BigQueryGraphTarget): Promise<string|undefined> {
+    bigQuery: BigQueryClient, target: BigQueryGraphTarget,
+    warnings: string[]): Promise<string|undefined> {
   const res = await bigQuery.getDataset(target.project, target.dataset);
   if (res.status === 200) {
     return res.result?.location;
@@ -216,6 +234,10 @@ async function datasetLocation(
   if (res.status === 404) {
     throw new Error(`dataset ${target.project}.${target.dataset} not found`);
   }
+  warnings.push(
+      `could not read location of dataset ${target.project}.${
+          target.dataset} (${res.message || res.status}); ` +
+      `letting BigQuery infer the query location`);
   return undefined;
 }
 
@@ -223,9 +245,17 @@ async function datasetLocation(
 // Deploys the BigQuery Graph for each authored model document. Emits no console
 // output; the generated DDL and any warnings are returned for the caller to
 // print.
+//
+// `defaultProject` qualifies a dataset `source` that omits its project. The
+// caller should pass the scope's declared project (a deterministic,
+// user-authored value) rather than relying on the ambient gcloud project, which
+// can silently drift away from where the model's tables live. It cannot default
+// to each deployment target's own project: a document is parsed once, before
+// its targets are known, and may declare several graphs across projects.
 export async function deployBigQuery(
     docs: {name: string; text: string}[], ctx: context.ApiContext,
-    options: DeployOptions = {}): Promise<DeployResult> {
+    options: DeployOptions = {},
+    defaultProject?: string): Promise<DeployResult> {
   const bigQuery = new BigQueryClient(ctx);
   const ddl: string[] = [];
   const warnings: string[] = [];
@@ -247,7 +277,7 @@ export async function deployBigQuery(
     if (locationCache.has(key)) {
       return locationCache.get(key);
     }
-    const loc = await datasetLocation(bigQuery, target);
+    const loc = await datasetLocation(bigQuery, target, warnings);
     locationCache.set(key, loc);
     return loc;
   };
@@ -259,7 +289,8 @@ export async function deployBigQuery(
     // name the document so a bad file in a multi-document push is identifiable.
     let loaded;
     try {
-      loaded = loadModels(doc.text, {defaultProject: ctx.project});
+      loaded =
+          loadModels(doc.text, {defaultProject: defaultProject ?? ctx.project});
     } catch (err: any) {
       return fail(`Model document '${doc.name}': ${err.message || err}`);
     }
@@ -343,8 +374,14 @@ export async function deployBigQuery(
 
   // A parsed document always yields at least one model (the loader enforces
   // `semantic_model` min 1), so modelsSeen is 0 only when no documents were
-  // found at all.
+  // found at all. validateOnly mutates nothing, so an empty workspace is a
+  // clean no-op there (exit 0); a real push treats "nothing to deploy" as a
+  // configuration error worth flagging.
   if (!modelsSeen) {
+    if (options.validateOnly) {
+      warnings.push('No semantic model documents found; nothing to validate.');
+      return {success: true, ddl, warnings, deployed};
+    }
     return fail('No semantic model documents found; nothing to deploy.');
   }
 

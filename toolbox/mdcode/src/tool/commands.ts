@@ -9,6 +9,7 @@ import * as dataplex from '../libts/gcp/dataplex';
 import * as context from '../libts/gcp/context';
 import { Sources } from '../libts/source';
 import { SemanticModelLayout } from '../libts/layouts/semantic-model';
+import { SemanticModelSource } from '../libts/sources/semantic-model';
 import * as deploy from '../libts/semantic/deploy';
 
 
@@ -104,8 +105,10 @@ export async function push(options: PushOptions): Promise<number> {
     // The semantic-model source always resolves to the SemanticModel layout
     // (see createLayout), so this cast is safe.
     const layout = snapshot.layout as SemanticModelLayout;
+    const source = snapshot.manifest.source as SemanticModelSource;
     console.log('Pushing semantic model (BigQuery Graph)...');
-    const result = await deploy.deployBigQuery(layout.modelDocuments(), ctx, options);
+    const result = await deploy.deployBigQuery(
+      layout.modelDocuments(), ctx, options, source.project);
 
     for (const w of result.warnings) {
       console.warn(`Warning: ${w}`);

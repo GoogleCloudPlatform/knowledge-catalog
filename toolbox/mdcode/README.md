@@ -178,6 +178,10 @@ DDL without executing it. This path additionally reads the target dataset's
 metadata (`bigquery.datasets.get`) to pin the query job's processing location.
 The call degrades gracefully when the permission is absent, so a narrower
 service account still works but falls back to BigQuery's own location inference.
+A dataset `source` that omits its project is qualified with the scope's
+declared project (the `<projectId>` in the init scope), not the ambient
+`gcloud` project; write a fully-qualified `project.dataset.table` source when
+the tables live elsewhere.
 
 NOTE: The CLI uses `gcloud` to obtain authentication tokens, so ensure you are authenticated via `gcloud auth application-default login`.
 

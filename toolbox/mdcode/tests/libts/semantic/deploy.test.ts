@@ -35,6 +35,10 @@ const OSSIE_DATAPLEX_ONLY =
 // strict URI match; exercises the "declared but unparseable" report.
 const OSSIE_BAD_TARGET =
     fs.readFileSync(path.join(FIXTURES, 'sales_bad_target.yaml'), 'utf8');
+// A model whose dataset `source` omits its project, so the loader must qualify
+// it with the caller-supplied defaultProject.
+const OSSIE_UNQUALIFIED_SOURCE = fs.readFileSync(
+    path.join(FIXTURES, 'sales_unqualified_source.yaml'), 'utf8');
 
 // A model carrying only a single custom_extension.
 function modelWithExtension(data: string, vendor = 'GOOGLE'): SemanticModel {
@@ -109,6 +113,21 @@ describe('bigQueryGraphTargets', () => {
         modelWithExtension(JSON.stringify({deploymentTargets: [evil]})));
     expect(targets).toEqual([]);
     expect(malformed).toEqual([evil]);
+  });
+
+  test('reports a host/scheme-typo target as malformed, not silently dropped', () => {
+    // A truncated host (`.co` not `.com`) and an `https://` scheme both
+    // fail the strict match, yet clearly intend a BigQuery Graph target.
+    // They must be reported (via the /propertyGraphs?/ + host hint) rather
+    // than dropped and later misreported as "no target declared".
+    const hostTypo =
+        '//bigquery.googleapis.co/projects/demo/datasets/sales/propertyGraphs/g';
+    const scheme =
+        'https://bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/g';
+    const {targets, malformed} = bigQueryGraphTargets(modelWithExtension(
+        JSON.stringify({deploymentTargets: [hostTypo, scheme]})));
+    expect(targets).toEqual([]);
+    expect(malformed).toEqual([hostTypo, scheme]);
   });
 });
 
@@ -368,7 +387,8 @@ describe('deployBigQuery', () => {
       'proceeds with inferred location when the dataset read is forbidden',
       async () => {
         // A 403 (caller lacks bigquery.datasets.get) is non-fatal: the deploy
-        // proceeds and lets BigQuery infer the location (no location arg).
+        // proceeds and lets BigQuery infer the location (no location arg), but
+        // records a warning so the degraded path is visible.
         const dsSpy =
             spyOn(bq.BigQueryClient.prototype, 'getDataset')
                 .mockImplementation(async () => ({status: 403} as any));
@@ -381,6 +401,9 @@ describe('deployBigQuery', () => {
               await deployBigQuery([{name: 'sales', text: OSSIE}], CTX, {});
           expect(res.success).toBe(true);
           expect(querySpy.mock.calls[0][2]).toBeUndefined();
+          expect(res.warnings.some(
+                     w => w.includes('could not read location of dataset')))
+              .toBe(true);
         } finally {
           dsSpy.mockRestore();
           querySpy.mockRestore();
@@ -483,9 +506,53 @@ describe('deployBigQuery', () => {
         expect(res.details).toContain('no BigQuery Graph');
       });
 
-  test('fails when there are no model documents', async () => {
+  test(
+      'qualifies an under-qualified source with the given defaultProject',
+      async () => {
+        // The loader qualifies `sales.orders` with the passed defaultProject
+        // ('scope-proj'), not the ambient ctx.project ('test-project'): the
+        // scope's declared project is deterministic where gcloud's is not.
+        const res = await deployBigQuery(
+            [{name: 'sales', text: OSSIE_UNQUALIFIED_SOURCE}], CTX,
+            {validateOnly: true}, 'scope-proj');
+        expect(res.success).toBe(true);
+        const ddl = res.ddl.join('\n');
+        expect(ddl).toContain('`scope-proj.sales.orders`');
+        expect(ddl).not.toContain('test-project.sales.orders');
+      });
+
+  test('validateOnly over an empty workspace is a clean no-op', async () => {
+    // validate-only mutates nothing, so no documents is success (exit 0) with a
+    // warning, not an error.
     const res = await deployBigQuery([], CTX, {validateOnly: true});
+    expect(res.success).toBe(true);
+    expect(res.deployed).toBe(0);
+    expect(res.warnings.some(w => w.includes('nothing to validate')))
+        .toBe(true);
+  });
+
+  test('a real push with no model documents fails', async () => {
+    // Outside validate-only, "nothing to deploy" is a configuration error worth
+    // surfacing rather than silently succeeding.
+    const res = await deployBigQuery([], CTX, {});
     expect(res.success).toBe(false);
     expect(res.details).toContain('No semantic model documents');
+  });
+
+  test('fails a 200 response that carries no body', async () => {
+    // A 200 with no result body cannot confirm the DDL ran; it must fail rather
+    // than fall through to success.
+    const dsSpy = mockDataset();
+    const querySpy =
+        spyOn(bq.BigQueryClient.prototype, 'query')
+            .mockImplementation(async () => ({status: 200} as any));
+    try {
+      const res = await deployBigQuery([{name: 'sales', text: OSSIE}], CTX, {});
+      expect(res.success).toBe(false);
+      expect(res.details).toContain('no response body');
+    } finally {
+      dsSpy.mockRestore();
+      querySpy.mockRestore();
+    }
   });
 });
