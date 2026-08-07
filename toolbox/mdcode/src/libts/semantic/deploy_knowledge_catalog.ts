@@ -1,7 +1,7 @@
 // Deploys a semantic model's Knowledge Catalog resources.
 //
 // This is the Knowledge Catalog leg of `kcmd push` for the semantic-model
-// scope, the counterpart to `deploy.ts` (BigQuery). It parses each authored
+// scope, the counterpart to `deploy_bigquery.ts`. It parses each authored
 // Ossie document into the semantic IR (loader), maps it to catalog Entries +
 // Aspects (the pure emitter in knowledge_catalog.ts), and writes them through
 // the Knowledge Catalog client.

@@ -5,8 +5,8 @@
 // Entries, each carrying the `semantic-*` Aspect(s) that describe it. Like
 // `bigquery.ts` it is a PURE function of the IR: no GCP calls, no I/O. The
 // orchestration layer (`deploy_knowledge_catalog.ts`, the counterpart to
-// `deploy.ts`) drives this emitter and writes the resulting resources via the
-// Knowledge Catalog client.
+// `deploy_bigquery.ts`) drives this emitter and writes the resulting resources
+// via the Knowledge Catalog client.
 //
 // Target schema (go/semantic-model-kc-v2): the `semantic-model`,
 // `semantic-entity`, and `semantic-metric` entry/aspect types are built-in
@@ -37,7 +37,7 @@
 
 import type {Aspect, Entry} from '../gcp/dataplex';
 
-import {bigQueryGraphTargets} from './deploy';
+import {bigQueryGraphTargets} from './deploy_bigquery';
 import {DataType, Entity, Metric, SemanticModel} from './ir';
 
 // Where the `semantic-*` and `schema` system types live. The v2 design lands

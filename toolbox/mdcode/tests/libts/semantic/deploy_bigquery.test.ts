@@ -1,5 +1,5 @@
 // Tests for the semantic-model BigQuery deploy leg
-// (src/libts/semantic/deploy.ts).
+// (src/libts/semantic/deploy_bigquery.ts).
 //
 // `bigQueryGraphTargets` is exercised as a pure function; `deployBigQuery` is
 // exercised end to end over an Ossie fixture (loader -> IR -> generator ->
@@ -11,7 +11,7 @@ import * as path from 'node:path';
 
 import * as bq from '../../../src/libts/gcp/bigquery';
 import {ApiContext} from '../../../src/libts/gcp/context';
-import {bigQueryGraphTargets, deployBigQuery} from '../../../src/libts/semantic/deploy';
+import {bigQueryGraphTargets, deployBigQuery} from '../../../src/libts/semantic/deploy_bigquery';
 import {SemanticModel} from '../../../src/libts/semantic/ir';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');

@@ -10,7 +10,7 @@ import * as context from '../libts/gcp/context';
 import { Sources } from '../libts/source';
 import { SemanticModelLayout } from '../libts/layouts/semantic-model';
 import { SemanticModelSource } from '../libts/sources/semantic-model';
-import * as deploy from '../libts/semantic/deploy';
+import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 
 
