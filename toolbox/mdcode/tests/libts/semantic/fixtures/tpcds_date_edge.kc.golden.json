@@ -1,0 +1,357 @@
+{
+  "entries": [
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-model",
+      "entrySource": {
+        "displayName": "tpcds_model",
+        "description": "TPC-DS retail model"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-model": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-model",
+          "data": {}
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.store_sales",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model",
+      "entrySource": {
+        "displayName": "store_sales",
+        "description": "Fact table containing all store sales transactions"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "source": {
+              "resources": [
+                "//bigquery.googleapis.com/projects/tpcds/datasets/public/tables/store_sales"
+              ]
+            }
+          }
+        },
+        "dataplex-types.global.schema": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema",
+          "data": {
+            "fields": [
+              {
+                "name": "ss_item_sk",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "semantics": {
+                  "expression": "ss_item_sk",
+                  "importedExpression": "{label/store_sales.attr.store_sales.ss_item_sk}",
+                  "role": "DIMENSION"
+                }
+              },
+              {
+                "name": "ss_ticket_number",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "semantics": {
+                  "expression": "ss_ticket_number",
+                  "importedExpression": "{label/store_sales.attr.store_sales.ss_ticket_number}",
+                  "role": "DIMENSION"
+                }
+              },
+              {
+                "name": "ss_customer_sk",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "semantics": {
+                  "expression": "ss_customer_sk",
+                  "importedExpression": "{label/store_sales.attr.store_sales.ss_customer_sk}",
+                  "role": "DIMENSION"
+                }
+              },
+              {
+                "name": "ss_store_sk",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "semantics": {
+                  "expression": "ss_store_sk",
+                  "importedExpression": "{label/store_sales.attr.store_sales.ss_store_sk}",
+                  "role": "DIMENSION"
+                }
+              },
+              {
+                "name": "ss_quantity",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "description": "Quantity of items sold",
+                "semantics": {
+                  "expression": "ss_quantity",
+                  "importedExpression": "{fact/store_sales.fact.store_sales.ss_quantity}",
+                  "role": "DEFAULT"
+                }
+              },
+              {
+                "name": "ss_sales_price",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "description": "Sales price per unit",
+                "semantics": {
+                  "expression": "ss_sales_price",
+                  "importedExpression": "{fact/store_sales.fact.store_sales.ss_sales_price}",
+                  "role": "DEFAULT"
+                }
+              },
+              {
+                "name": "ss_ext_sales_price",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "description": "Extended sales price (quantity * price)",
+                "semantics": {
+                  "expression": "ss_ext_sales_price",
+                  "importedExpression": "{fact/store_sales.fact.store_sales.ss_ext_sales_price}",
+                  "role": "DEFAULT"
+                }
+              },
+              {
+                "name": "ss_net_profit",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "description": "Net profit from the sale",
+                "semantics": {
+                  "expression": "ss_net_profit",
+                  "importedExpression": "{fact/store_sales.fact.store_sales.ss_net_profit}",
+                  "role": "DEFAULT"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.customer",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model",
+      "entrySource": {
+        "displayName": "customer",
+        "description": "Customer dimension with demographic information"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "source": {
+              "resources": [
+                "//bigquery.googleapis.com/projects/tpcds/datasets/public/tables/customer"
+              ]
+            }
+          }
+        },
+        "dataplex-types.global.schema": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema",
+          "data": {
+            "fields": [
+              {
+                "name": "c_customer_sk",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "semantics": {
+                  "expression": "c_customer_sk",
+                  "role": "DIMENSION"
+                }
+              },
+              {
+                "name": "c_first_name",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "description": "Customer first name",
+                "semantics": {
+                  "expression": "c_first_name",
+                  "role": "DIMENSION"
+                }
+              },
+              {
+                "name": "c_last_name",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "description": "Customer last name",
+                "semantics": {
+                  "expression": "c_last_name",
+                  "role": "DIMENSION"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.item",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model",
+      "entrySource": {
+        "displayName": "item",
+        "description": "Item/Product dimension"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "source": {
+              "resources": [
+                "//bigquery.googleapis.com/projects/tpcds/datasets/public/tables/item"
+              ]
+            }
+          }
+        },
+        "dataplex-types.global.schema": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema",
+          "data": {
+            "fields": [
+              {
+                "name": "i_item_sk",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "semantics": {
+                  "expression": "i_item_sk",
+                  "role": "DIMENSION"
+                }
+              },
+              {
+                "name": "i_brand",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "semantics": {
+                  "expression": "i_brand",
+                  "role": "DIMENSION"
+                }
+              },
+              {
+                "name": "i_category",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "semantics": {
+                  "expression": "i_category",
+                  "role": "DIMENSION"
+                }
+              },
+              {
+                "name": "i_current_price",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "description": "Current price of the item",
+                "semantics": {
+                  "expression": "i_current_price",
+                  "role": "DEFAULT"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.store",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model",
+      "entrySource": {
+        "displayName": "store",
+        "description": "Store dimension with location attributes"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "source": {
+              "resources": [
+                "//bigquery.googleapis.com/projects/tpcds/datasets/public/tables/store"
+              ]
+            }
+          }
+        },
+        "dataplex-types.global.schema": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema",
+          "data": {
+            "fields": [
+              {
+                "name": "s_store_sk",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "semantics": {
+                  "expression": "s_store_sk",
+                  "role": "DIMENSION"
+                }
+              },
+              {
+                "name": "s_store_name",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "semantics": {
+                  "expression": "s_store_name",
+                  "role": "DIMENSION"
+                }
+              },
+              {
+                "name": "s_city",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "semantics": {
+                  "expression": "s_city",
+                  "role": "DIMENSION"
+                }
+              },
+              {
+                "name": "s_state",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "semantics": {
+                  "expression": "s_state",
+                  "role": "DIMENSION"
+                }
+              },
+              {
+                "name": "s_number_employees",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "description": "Number of employees at the store",
+                "semantics": {
+                  "expression": "s_number_employees",
+                  "role": "DEFAULT"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.date_dim",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model",
+      "entrySource": {
+        "displayName": "date_dim",
+        "description": "Date dimension with calendar attributes"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "source": {
+              "resources": [
+                "//bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/date_dim"
+              ]
+            }
+          }
+        },
+        "dataplex-types.global.schema": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema",
+          "data": {
+            "fields": []
+          }
+        }
+      }
+    }
+  ],
+  "warnings": [
+    "entity 'date_dim': no keys declared in the source model",
+    "4 relationships not published to Knowledge Catalog: no user-writable entry link type is valid over semantic-entity endpoints; the graph edges live in the BigQuery property graph."
+  ]
+}

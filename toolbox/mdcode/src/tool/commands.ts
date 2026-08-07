@@ -11,6 +11,7 @@ import { Sources } from '../libts/source';
 import { SemanticModelLayout } from '../libts/layouts/semantic-model';
 import { SemanticModelSource } from '../libts/sources/semantic-model';
 import * as deploy from '../libts/semantic/deploy';
+import * as kc from '../libts/semantic/kc';
 
 
 export interface InitOptions {
@@ -25,6 +26,28 @@ export interface InitOptions {
 export interface PushOptions {
   force?: boolean;
   validateOnly?: boolean;
+  // Semantic-model push destination: 'bq' (default), 'kc', or 'both'. Ignored
+  // for non-semantic-model scopes.
+  target?: string;
+}
+
+
+export type PushTarget = 'bigquery' | 'kc';
+
+// The push destinations a --target selection resolves to, in run order. 'both'
+// runs BigQuery first so a BigQuery failure fails fast before touching the
+// catalog (fail-fast is encoded by the array order + the caller's early return).
+const TARGET_MAP: Record<string, PushTarget[]> = {
+  bq: ['bigquery'],
+  bigquery: ['bigquery'],
+  kc: ['kc'],
+  both: ['bigquery', 'kc'],
+};
+
+// Resolves a --target flag value (default 'bq') to its ordered destinations, or
+// undefined for an unrecognized value (the caller reports the error).
+export function resolveTargets(target?: string): PushTarget[] | undefined {
+  return TARGET_MAP[(target ?? 'bq').toLowerCase()];
 }
 
 
@@ -106,32 +129,24 @@ export async function push(options: PushOptions): Promise<number> {
     // (see createLayout), so this cast is safe.
     const layout = snapshot.layout as SemanticModelLayout;
     const source = snapshot.manifest.source as SemanticModelSource;
-    console.log('Pushing semantic model (BigQuery Graph)...');
-    const result = await deploy.deployBigQuery(
-      layout.modelDocuments(), ctx, options, source.project);
 
-    for (const w of result.warnings) {
-      console.warn(`Warning: ${w}`);
-    }
-    if (options.validateOnly) {
-      for (const block of result.ddl) {
-        console.log(`${block}\n`);
-      }
+    const targets = resolveTargets(options.target);
+    if (!targets) {
+      console.error(
+        `Error: unknown --target '${options.target}'; expected bq, kc, or both.`);
+      return 1;
     }
 
-    if (result.success) {
-      if (options.validateOnly) {
-        console.log('Validation complete; no changes applied.');
-      }
-      else {
-        console.log(
-          `Deployed ${result.deployed} BigQuery Graph(s). ` +
-          `Knowledge Catalog resource emit for the semantic model is not yet implemented.`);
-      }
-      return 0;
+    const docs = layout.modelDocuments();
+    // Run destinations in order; 'both' is BigQuery-first and fails fast (an
+    // early return below skips the catalog leg when BigQuery fails).
+    for (const target of targets) {
+      const code = target === 'bigquery'
+        ? await pushBigQuery(docs, ctx, options, source)
+        : await pushKnowledgeCatalog(docs, ctx, options, source);
+      if (code !== 0) return code;
     }
-    console.error('Error pushing semantic model:', result.details);
-    return 1;
+    return 0;
   }
 
   const catalog = new dataplex.CatalogClient(ctx);
@@ -148,4 +163,74 @@ export async function push(options: PushOptions): Promise<number> {
     console.error('Error pushing catalog entries:', result.details);
     return 1;
   }
+}
+
+
+// Deploys the semantic model's BigQuery Graph leg and prints the result.
+// Returns a process exit code (0 on success).
+async function pushBigQuery(
+  docs: { name: string; text: string }[], ctx: context.ApiContext,
+  options: PushOptions, source: SemanticModelSource): Promise<number> {
+  console.log(options.validateOnly
+    ? 'Validating semantic model for BigQuery Graph...'
+    : 'Pushing semantic model (BigQuery Graph)...');
+  const result = await deploy.deployBigQuery(docs, ctx, options, source.project);
+
+  for (const w of result.warnings) {
+    console.warn(`Warning: ${w}`);
+  }
+  if (options.validateOnly) {
+    for (const block of result.ddl) {
+      console.log(`${block}\n`);
+    }
+  }
+
+  if (!result.success) {
+    console.error('Error pushing semantic model to BigQuery:', result.details);
+    return 1;
+  }
+  console.log(options.validateOnly
+    ? 'Validation complete; no changes applied.'
+    : `Deployed ${result.deployed} BigQuery Graph(s).`);
+  return 0;
+}
+
+
+// Deploys the semantic model's Knowledge Catalog leg and prints the result. The
+// destination coordinates come from the scope (project.location.entryGroup); the
+// built-in semantic types are nonprod-only, so this targets a nonprod Dataplex.
+// Returns a process exit code (0 on success).
+async function pushKnowledgeCatalog(
+  docs: { name: string; text: string }[], ctx: context.ApiContext,
+  options: PushOptions, source: SemanticModelSource): Promise<number> {
+  console.log(options.validateOnly
+    ? 'Validating semantic model for Knowledge Catalog...'
+    : 'Pushing semantic model (Knowledge Catalog)...');
+  const result = await kc.deployKnowledgeCatalog(docs, ctx, {
+    project: source.project,
+    location: source.location,
+    entryGroup: source.entryGroup,
+    validateOnly: options.validateOnly,
+  }, source.project);
+
+  for (const w of result.warnings) {
+    console.warn(`Warning: ${w}`);
+  }
+  if (options.validateOnly) {
+    for (const line of result.plan) {
+      console.log(line);
+    }
+  }
+
+  if (!result.success) {
+    console.error(
+      'Error pushing semantic model to Knowledge Catalog:', result.details);
+    return 1;
+  }
+  const n = result.created + result.updated;
+  console.log(options.validateOnly
+    ? 'Validation complete; no changes applied.'
+    : `Wrote ${result.created} new and ${result.updated} updated ` +
+        `Knowledge Catalog entr${n === 1 ? 'y' : 'ies'}.`);
+  return 0;
 }
