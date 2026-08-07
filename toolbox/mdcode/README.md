@@ -149,6 +149,12 @@ kcmd init --bigquery-dataset <projectId>.<datasetId> \
 # Initialize a new catalog snapshot for a custom EntryGroup
 kcmd init --entry-group <projectId>.<locationId>.<entryGroupId>
 
+# Initialize a new catalog snapshot for a locally-authored Semantic Model.
+# The scope names the EntryGroup the model belongs to; the model is authored as
+# a single Apache Ossie document at
+# catalog/EntryGroups/<entryGroupId>/<model>.yaml.
+kcmd init --semantic-model <projectId>.<locationId>.<entryGroupId>
+
 # Pull the latest catalog snapshot from the Knowledge Catalog service
 # Reports any conflicts if there are pending changes that have not been
 # pushed to the catalog.
@@ -164,6 +170,14 @@ kcmd status
 # Supports dry run with the --dry-run flag.
 kcmd push
 ```
+
+For the semantic-model scope, `kcmd push` deploys the model's BigQuery Graph
+(`CREATE OR REPLACE PROPERTY GRAPH`) to the project and dataset named by the
+model's GOOGLE deployment target; pass `--validate-only` to print the generated
+DDL without executing it. This path additionally reads the target dataset's
+metadata (`bigquery.datasets.get`) to pin the query job's processing location.
+The call degrades gracefully when the permission is absent, so a narrower
+service account still works but falls back to BigQuery's own location inference.
 
 NOTE: The CLI uses `gcloud` to obtain authentication tokens, so ensure you are authenticated via `gcloud auth application-default login`.
 

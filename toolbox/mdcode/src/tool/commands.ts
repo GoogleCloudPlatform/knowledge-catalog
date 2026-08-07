@@ -49,9 +49,8 @@ export async function init(options: InitOptions): Promise<number> {
   }
   else if (options.semanticModel) {
     manifest = await kcmd.CatalogManifest.initWithSemanticModel(options.semanticModel, ctx);
-    const entryGroup = options.semanticModel.split('.')[2];
+    const entryGroup = manifest.source.entryGroup!;
     fs.mkdirSync(path.join('catalog', 'EntryGroups', entryGroup), { recursive: true });
-    fs.mkdirSync(path.join('catalog', 'EntryLinks', entryGroup), { recursive: true });
   }
   else {
     console.error('Error: Must provide --entry-group, --bigquery-dataset, --kb, or --semantic-model');
@@ -102,11 +101,9 @@ export async function push(options: PushOptions): Promise<number> {
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
 
   if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
-    const layout = snapshot.layout;
-    if (!(layout instanceof SemanticModelLayout)) {
-      console.error('Error: semantic-model scope requires the SemanticModel layout.');
-      return 1;
-    }
+    // The semantic-model source always resolves to the SemanticModel layout
+    // (see createLayout), so this cast is safe.
+    const layout = snapshot.layout as SemanticModelLayout;
     console.log('Pushing semantic model (BigQuery Graph)...');
     const result = await deploy.deployBigQuery(layout.modelDocuments(), ctx, options);
 

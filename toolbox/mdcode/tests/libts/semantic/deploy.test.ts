@@ -31,6 +31,10 @@ const OSSIE_NO_TARGET =
 // Dataplex URI; exercises the deploy leg's "no BigQuery Graph target" path.
 const OSSIE_DATAPLEX_ONLY =
     fs.readFileSync(path.join(FIXTURES, 'sales_google_ext.yaml'), 'utf8');
+// A model whose only GOOGLE target carries the BigQuery prefix but fails the
+// strict URI match; exercises the "declared but unparseable" report.
+const OSSIE_BAD_TARGET =
+    fs.readFileSync(path.join(FIXTURES, 'sales_bad_target.yaml'), 'utf8');
 
 // A model carrying only a single custom_extension.
 function modelWithExtension(data: string, vendor = 'GOOGLE'): SemanticModel {
@@ -46,7 +50,7 @@ function modelWithExtension(data: string, vendor = 'GOOGLE'): SemanticModel {
 
 describe('bigQueryGraphTargets', () => {
   test('parses a BigQuery Graph deployment target', () => {
-    const targets = bigQueryGraphTargets(
+    const {targets, malformed} = bigQueryGraphTargets(
         modelWithExtension(JSON.stringify({deploymentTargets: [BQ_URI]})));
     expect(targets).toEqual([
       {
@@ -56,24 +60,27 @@ describe('bigQueryGraphTargets', () => {
         uri: BQ_URI
       },
     ]);
+    expect(malformed).toEqual([]);
   });
 
   test('ignores non-GOOGLE vendor extensions', () => {
-    const targets = bigQueryGraphTargets(modelWithExtension(
+    const {targets} = bigQueryGraphTargets(modelWithExtension(
         JSON.stringify({deploymentTargets: [BQ_URI]}), 'DATABRICKS'));
     expect(targets).toEqual([]);
   });
 
   test('ignores deployment targets that are not BigQuery Graphs', () => {
+    // A non-BigQuery URI is not our concern: neither a target nor malformed.
     const dataplexUri =
         'projects/demo/locations/us/entryGroups/@bigquery/entries/sales_graph';
-    const targets = bigQueryGraphTargets(
+    const {targets, malformed} = bigQueryGraphTargets(
         modelWithExtension(JSON.stringify({deploymentTargets: [dataplexUri]})));
     expect(targets).toEqual([]);
+    expect(malformed).toEqual([]);
   });
 
   test('returns [] for a model with no custom extensions', () => {
-    const targets = bigQueryGraphTargets(
+    const {targets} = bigQueryGraphTargets(
         {name: 'm', entities: [], relationships: [], metrics: []});
     expect(targets).toEqual([]);
   });
@@ -86,19 +93,22 @@ describe('bigQueryGraphTargets', () => {
   test('collects multiple targets in order', () => {
     const uri2 =
         '//bigquery.googleapis.com/projects/p2/datasets/d2/propertyGraphs/g2';
-    const targets = bigQueryGraphTargets(modelWithExtension(
+    const {targets} = bigQueryGraphTargets(modelWithExtension(
         JSON.stringify({deploymentTargets: [BQ_URI, uri2]})));
     expect(targets.map(t => t.graphName)).toEqual(['sales_graph', 'g2']);
   });
 
-  test('rejects a target whose identifiers contain non-identifier chars', () => {
+  test('collects a prefix-matching URI that fails the strict match', () => {
     // A backtick/semicolon in the graph name would break out of the quoted
     // identifier in the generated DDL; the tightened capture groups reject it.
+    // It carries the BigQuery prefix, so it is surfaced as malformed rather
+    // than silently dropped.
     const evil =
         '//bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/g`;DROP';
-    const targets = bigQueryGraphTargets(
+    const {targets, malformed} = bigQueryGraphTargets(
         modelWithExtension(JSON.stringify({deploymentTargets: [evil]})));
     expect(targets).toEqual([]);
+    expect(malformed).toEqual([evil]);
   });
 });
 
@@ -307,6 +317,111 @@ describe('deployBigQuery', () => {
       querySpy.mockRestore();
     }
   });
+
+  test(
+      'fails when the job never completes after the poll budget is exhausted',
+      async () => {
+        // A job that stays jobComplete:false must eventually be given up on.
+        // Small bounds + zero backoff keep this instant (the real defaults
+        // would burn ~29s of sleeps).
+        const dsSpy = mockDataset();
+        const stuck = {
+          status: 200,
+          result: {jobComplete: false, jobReference: {jobId: 'j'}},
+        };
+        const querySpy = spyOn(bq.BigQueryClient.prototype, 'query')
+                             .mockImplementation(async () => stuck);
+        const pollSpy = spyOn(bq.BigQueryClient.prototype, 'getQueryResults')
+                            .mockImplementation(async () => stuck);
+        try {
+          const res = await deployBigQuery(
+              [{name: 'sales', text: OSSIE}], CTX,
+              {maxQueryPolls: 3, pollBackoffMs: 0});
+          expect(res.success).toBe(false);
+          expect(res.details).toContain('did not complete after 3 polls');
+          expect(pollSpy).toHaveBeenCalledTimes(3);
+        } finally {
+          dsSpy.mockRestore();
+          pollSpy.mockRestore();
+          querySpy.mockRestore();
+        }
+      });
+
+  test('fails fast when the target dataset does not exist', async () => {
+    // A 404 on the location pre-flight is a precise error; the DDL job that
+    // would otherwise fail with a murkier message is never submitted.
+    const dsSpy = spyOn(bq.BigQueryClient.prototype, 'getDataset')
+                      .mockImplementation(async () => ({status: 404} as any));
+    const querySpy = spyOn(bq.BigQueryClient.prototype, 'query');
+    try {
+      const res = await deployBigQuery([{name: 'sales', text: OSSIE}], CTX, {});
+      expect(res.success).toBe(false);
+      expect(res.details).toContain('demo.sales not found');
+      expect(querySpy).not.toHaveBeenCalled();
+    } finally {
+      dsSpy.mockRestore();
+      querySpy.mockRestore();
+    }
+  });
+
+  test(
+      'proceeds with inferred location when the dataset read is forbidden',
+      async () => {
+        // A 403 (caller lacks bigquery.datasets.get) is non-fatal: the deploy
+        // proceeds and lets BigQuery infer the location (no location arg).
+        const dsSpy =
+            spyOn(bq.BigQueryClient.prototype, 'getDataset')
+                .mockImplementation(async () => ({status: 403} as any));
+        const querySpy =
+            spyOn(bq.BigQueryClient.prototype, 'query')
+                .mockImplementation(
+                    async () => ({status: 200, result: {jobComplete: true}}));
+        try {
+          const res =
+              await deployBigQuery([{name: 'sales', text: OSSIE}], CTX, {});
+          expect(res.success).toBe(true);
+          expect(querySpy.mock.calls[0][2]).toBeUndefined();
+        } finally {
+          dsSpy.mockRestore();
+          querySpy.mockRestore();
+        }
+      });
+
+  test(
+      'resolves the dataset location once across targets in one dataset',
+      async () => {
+        // Two documents deploying to demo.sales must trigger a single
+        // datasets.get, not one per graph.
+        const dsSpy = mockDataset();
+        const querySpy =
+            spyOn(bq.BigQueryClient.prototype, 'query')
+                .mockImplementation(
+                    async () => ({status: 200, result: {jobComplete: true}}));
+        try {
+          const res = await deployBigQuery(
+              [{name: 'a', text: OSSIE}, {name: 'b', text: OSSIE}], CTX, {});
+          expect(res.success).toBe(true);
+          expect(res.deployed).toBe(2);
+          expect(dsSpy).toHaveBeenCalledTimes(1);
+        } finally {
+          dsSpy.mockRestore();
+          querySpy.mockRestore();
+        }
+      });
+
+  test(
+      'names an unparseable BigQuery target instead of reporting none',
+      async () => {
+        // A typo'd URI that carries the BigQuery prefix must be reported as
+        // unparseable, not as "declares no deploymentTarget".
+        const res = await deployBigQuery(
+            [{name: 'sales', text: OSSIE_BAD_TARGET}], CTX,
+            {validateOnly: true});
+        expect(res.success).toBe(false);
+        expect(res.details).toContain('could not be parsed');
+        expect(res.details).toContain('propertyGraph/sales_graph');
+        expect(res.details).not.toContain('declares no BigQuery Graph');
+      });
 
   test(
       'reports already-deployed graphs when a later target fails', async () => {

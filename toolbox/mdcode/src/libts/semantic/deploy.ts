@@ -29,10 +29,17 @@ const GOOGLE_VENDOR = 'GOOGLE';
 // //bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>
 // The capture groups are restricted to valid BigQuery identifier characters:
 // the components are interpolated into DDL unescaped (see qualifyGraph), so a
-// permissive `[^/]+` would let backticks or semicolons through. Malformed URIs
-// fail the match and are reported rather than producing broken DDL downstream.
+// permissive `[^/]+` would let backticks or semicolons through. A URI that
+// carries the BigQuery Graph prefix but fails this full match is collected as
+// `malformed` (see bigQueryGraphTargets) and named in the deploy error, rather
+// than being silently skipped and later misreported as "no target declared".
 const BQ_GRAPH_TARGET =
     /^\/\/bigquery\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/datasets\/([A-Za-z0-9_-]+)\/propertyGraphs\/([A-Za-z0-9_-]+)$/;
+
+// Prefix a deployment target must carry to be treated as a (possibly malformed)
+// BigQuery Graph URI rather than an unrelated destination (e.g. a Dataplex
+// URI).
+const BQ_GRAPH_URI_PREFIX = '//bigquery.googleapis.com/';
 
 
 export interface BigQueryGraphTarget {
@@ -43,8 +50,12 @@ export interface BigQueryGraphTarget {
 }
 
 export interface DeployOptions {
-  force?: boolean;
   validateOnly?: boolean;
+  // Poll bounds for a slow query job, overridable so tests can exercise the
+  // exhaustion path without burning wall-clock. Default to the module
+  // constants.
+  maxQueryPolls?: number;
+  pollBackoffMs?: number;
 }
 
 export interface DeployResult {
@@ -65,8 +76,11 @@ export interface DeployResult {
 // custom extension. The extension `data` is an opaque, vendor-serialized JSON
 // string (the loader keeps it verbatim); we own its `deploymentTargets` shape.
 export function bigQueryGraphTargets(model: SemanticModel):
-    BigQueryGraphTarget[] {
+    {targets: BigQueryGraphTarget[]; malformed: string[]} {
   const targets: BigQueryGraphTarget[] = [];
+  // BigQuery-prefixed URIs that failed the strict match (typo, bad identifier
+  // char). Kept so the caller can name them instead of silently skipping.
+  const malformed: string[] = [];
 
   for (const ext of model.customExtensions ?? []) {
     if (ext.vendorName !== GOOGLE_VENDOR) {
@@ -87,14 +101,21 @@ export function bigQueryGraphTargets(model: SemanticModel):
     }
 
     for (const uri of uris) {
-      const m = typeof uri === 'string' ? uri.match(BQ_GRAPH_TARGET) : null;
+      if (typeof uri !== 'string') {
+        continue;
+      }
+      const m = uri.match(BQ_GRAPH_TARGET);
       if (m) {
         targets.push({project: m[1], dataset: m[2], graphName: m[3], uri});
+      } else if (uri.startsWith(BQ_GRAPH_URI_PREFIX)) {
+        // Looks like a BigQuery Graph target but doesn't parse; a plain
+        // Dataplex/other URI is not our concern and is left alone.
+        malformed.push(uri);
       }
     }
   }
 
-  return targets;
+  return {targets, malformed};
 }
 
 
@@ -119,7 +140,8 @@ function sleep(ms: number): Promise<void> {
 // job has actually completed.
 async function awaitQueryDone(
     bigQuery: BigQueryClient, project: string,
-    started: ApiResult<QueryResponse>): Promise<{ok: boolean; error?: string}> {
+    started: ApiResult<QueryResponse>, maxPolls: number,
+    backoffMs: number): Promise<{ok: boolean; error?: string}> {
   if (started.status !== 200) {
     return {ok: false, error: started.message || String(started.status)};
   }
@@ -129,9 +151,9 @@ async function awaitQueryDone(
   const location = result?.jobReference?.location;
 
   let polls = 0;
-  while (result?.jobComplete === false && jobId && polls < MAX_QUERY_POLLS) {
+  while (result?.jobComplete === false && jobId && polls < maxPolls) {
     if (polls > 0) {
-      await sleep(POLL_BACKOFF_MS);
+      await sleep(backoffMs);
     }
     polls++;
     const res = await bigQuery.getQueryResults(project, jobId, location);
@@ -148,7 +170,7 @@ async function awaitQueryDone(
     return {
       ok: false,
       error: jobId ?
-          `job ${jobId} did not complete after ${MAX_QUERY_POLLS} polls` :
+          `job ${jobId} did not complete after ${maxPolls} polls` :
           'query did not complete and returned no job reference to poll',
     };
   }
@@ -174,16 +196,27 @@ async function awaitQueryDone(
 }
 
 
-// Best-effort lookup of a dataset's BigQuery location so the query job, its
-// result polls, and the job lookup all agree on a region. jobs.query would
-// otherwise infer the location from the referenced tables, which can pick the
-// wrong region for a non-US dataset. Returns undefined (let BigQuery infer) if
-// the dataset can't be read.
+// Looks up a dataset's BigQuery location so the query job, its result polls,
+// and the job lookup all agree on a region. jobs.query would otherwise infer
+// the location from the referenced tables, which can pick the wrong region for
+// a non-US dataset.
+//
+// A 404 is a precise, free pre-flight: a typo'd dataset in the deployment
+// target would otherwise surface later as a murkier DDL error, so we fail fast
+// on it. Other failures (e.g. a 403 when the caller lacks
+// bigquery.datasets.get) are non-fatal: fall back to letting BigQuery infer the
+// location.
 async function datasetLocation(
     bigQuery: BigQueryClient,
     target: BigQueryGraphTarget): Promise<string|undefined> {
   const res = await bigQuery.getDataset(target.project, target.dataset);
-  return res.status === 200 ? res.result?.location : undefined;
+  if (res.status === 200) {
+    return res.result?.location;
+  }
+  if (res.status === 404) {
+    throw new Error(`dataset ${target.project}.${target.dataset} not found`);
+  }
+  return undefined;
 }
 
 
@@ -201,6 +234,23 @@ export async function deployBigQuery(
 
   const fail = (details: string): DeployResult =>
       ({success: false, details, ddl, warnings, deployed});
+
+  const maxPolls = options.maxQueryPolls ?? MAX_QUERY_POLLS;
+  const backoffMs = options.pollBackoffMs ?? POLL_BACKOFF_MS;
+
+  // A model can declare several graphs in one dataset; cache the location so we
+  // issue one datasets.get per dataset rather than one per target.
+  const locationCache = new Map<string, string|undefined>();
+  const locationFor =
+      async(target: BigQueryGraphTarget): Promise<string|undefined> => {
+    const key = `${target.project}/${target.dataset}`;
+    if (locationCache.has(key)) {
+      return locationCache.get(key);
+    }
+    const loc = await datasetLocation(bigQuery, target);
+    locationCache.set(key, loc);
+    return loc;
+  };
 
   for (const doc of docs) {
     // A document that fails to parse (or violates the model schema) is an
@@ -220,16 +270,33 @@ export async function deployBigQuery(
     for (const model of loaded.models) {
       modelsSeen++;
       let targets: BigQueryGraphTarget[];
+      let malformed: string[];
       try {
-        targets = bigQueryGraphTargets(model);
+        ({targets, malformed} = bigQueryGraphTargets(model));
       } catch (err: any) {
         return fail(
             `Model '${model.name}' (${doc.name}): ${err.message || err}`);
       }
       if (!targets.length) {
+        // A malformed-but-present target must not be reported as "none
+        // declared" -- that sends the author hunting for an extension they
+        // already wrote. Name the URIs that failed to parse.
+        if (malformed.length) {
+          return fail(
+              `Model '${model.name}' (${doc.name}) declares BigQuery Graph ` +
+              `deploymentTarget(s) that could not be parsed: ` +
+              `${malformed.join(', ')}. Expected //bigquery.googleapis.com/` +
+              `projects/<p>/datasets/<d>/propertyGraphs/<g>.`);
+        }
         return fail(
             `Model '${model.name}' (${doc.name}) declares no BigQuery Graph ` +
             `deploymentTarget in a GOOGLE custom_extension; nothing to deploy.`);
+      }
+      // Malformed targets alongside valid ones: surface them so a typo'd URI is
+      // not silently dropped when the deploy otherwise succeeds.
+      for (const bad of malformed) {
+        warnings.push(`[${
+            model.name}] ignoring unparseable BigQuery Graph target: ${bad}`);
       }
 
       for (const target of targets) {
@@ -247,9 +314,16 @@ export async function deployBigQuery(
           continue;
         }
 
-        const location = await datasetLocation(bigQuery, target);
+        let location: string|undefined;
+        try {
+          location = await locationFor(target);
+        } catch (err: any) {
+          return fail(
+              `Failed to deploy '${target.graphName}': ${err.message || err}`);
+        }
         const started = await bigQuery.query(target.project, gen.ddl, location);
-        const outcome = await awaitQueryDone(bigQuery, target.project, started);
+        const outcome = await awaitQueryDone(
+            bigQuery, target.project, started, maxPolls, backoffMs);
         if (!outcome.ok) {
           // These are CREATE OR REPLACE statements executed one at a time, so
           // any graphs already deployed in this run have mutated production and
@@ -271,8 +345,7 @@ export async function deployBigQuery(
   // `semantic_model` min 1), so modelsSeen is 0 only when no documents were
   // found at all.
   if (!modelsSeen) {
-    return fail(
-        'No semantic model documents found under catalog/EntryGroups/*/; nothing to deploy.');
+    return fail('No semantic model documents found; nothing to deploy.');
   }
 
   return {success: true, ddl, warnings, deployed};

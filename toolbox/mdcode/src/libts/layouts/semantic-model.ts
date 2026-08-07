@@ -9,6 +9,7 @@
 
 import * as glob from 'glob';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 import {CatalogLayout} from '../layout';
 import * as md from '../metadata';
@@ -56,15 +57,18 @@ export class SemanticModelLayout implements CatalogLayout {
         continue;
       }
 
-      const base = localPath.slice(localPath.lastIndexOf('/') + 1);
-      const name = base.slice(0, base.length - '.yaml'.length);
+      const name = path.basename(localPath, '.yaml');
       this._index.set(name, localPath);
     }
   }
 
-  entryExists(name: string): boolean {
-    const p = this._index.get(name);
-    return !!p && fs.existsSync(p);
+  // Consistent with listEntries(): this push-only layout exposes no per-entry
+  // Knowledge Catalog files, so no entry "exists" at the KC layer. Answering
+  // from _index (which holds model-document handles) would report an entry that
+  // listEntries() won't return and that loadEntry()/saveEntry() reject. The
+  // model documents are surfaced via modelDocuments(), not as entries.
+  entryExists(_name: string): boolean {
+    return false;
   }
 
   // This is a push-only layout: it exposes no per-entry Knowledge Catalog

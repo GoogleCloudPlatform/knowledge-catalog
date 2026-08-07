@@ -9,7 +9,7 @@ import { SemanticModelLayout } from './layouts/semantic-model';
 export enum Layouts {
   STANDARD = 'standard',
   DOCUMENTS = 'documents',
-  SEMANTIC_MODEL = 'SemanticModel'
+  SEMANTIC_MODEL = 'semantic-model'
 }
 
 
