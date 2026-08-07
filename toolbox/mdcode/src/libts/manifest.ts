@@ -66,6 +66,11 @@ export class CatalogManifest {
     return new CatalogManifest(source);
   }
 
+  static async initWithSemanticModel(name: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
+    const source = await createSource(Sources.SEMANTIC_MODEL, name, ctx);
+    return new CatalogManifest(source);
+  }
+
   static async load(path: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
     const content = fs.readFileSync(path, 'utf8');
     const parsed = yaml.parse(content);

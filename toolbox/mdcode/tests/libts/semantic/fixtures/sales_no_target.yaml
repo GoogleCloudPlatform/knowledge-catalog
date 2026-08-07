@@ -1,0 +1,20 @@
+# Test fixture -- AI-first semantics format (v0.2.0.dev0).
+#
+# The same shape as sales_bq_graph_target.yaml but with no GOOGLE deployment
+# target, so the deploy leg has nothing to push and must fail loudly rather
+# than silently succeed.
+
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: demo.sales.orders
+        primary_key: [o_orderkey]
+        fields:
+          - name: o_orderkey
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_orderkey
