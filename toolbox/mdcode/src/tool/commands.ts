@@ -26,28 +26,50 @@ export interface InitOptions {
 export interface PushOptions {
   force?: boolean;
   validateOnly?: boolean;
-  // Semantic-model push destination: 'bq' (default), 'kc', or 'both'. Ignored
-  // for non-semantic-model scopes.
+  // Semantic-model push destination(s): 'bq' (default), 'kc', 'all', or a
+  // comma-separated list (e.g. 'bq,kc'). Ignored for non-semantic-model scopes.
   target?: string;
 }
 
 
 export type PushTarget = 'bigquery' | 'kc';
 
-// The push destinations a --target selection resolves to, in run order. 'both'
-// runs BigQuery first so a BigQuery failure fails fast before touching the
-// catalog (fail-fast is encoded by the array order + the caller's early return).
-const TARGET_MAP: Record<string, PushTarget[]> = {
-  bq: ['bigquery'],
-  bigquery: ['bigquery'],
-  kc: ['kc'],
-  both: ['bigquery', 'kc'],
+// All known semantic-model push destinations, in canonical run order. `all`
+// expands to this list, and resolveTargets always emits in this order so the
+// run is deterministic and BigQuery-first fail-fast holds regardless of how the
+// user ordered the flag. Append new destinations here as they land.
+const DESTINATIONS: PushTarget[] = ['bigquery', 'kc'];
+
+// User-typeable aliases for a single destination.
+const TARGET_ALIASES: Record<string, PushTarget> = {
+  bq: 'bigquery',
+  bigquery: 'bigquery',
+  kc: 'kc',
 };
 
-// Resolves a --target flag value (default 'bq') to its ordered destinations, or
-// undefined for an unrecognized value (the caller reports the error).
+// Resolves a --target flag value to its ordered, de-duplicated destinations, or
+// undefined if any token is unrecognized (the caller reports the error).
+// Accepts a comma-separated list ('bq,kc'), the keyword 'all' (every
+// destination), and defaults to 'bq'. The result is always in canonical
+// DESTINATIONS order.
 export function resolveTargets(target?: string): PushTarget[] | undefined {
-  return TARGET_MAP[(target ?? 'bq').toLowerCase()];
+  const tokens = (target ?? 'bq')
+    .toLowerCase()
+    .split(',')
+    .map(t => t.trim())
+    .filter(t => t.length);
+  if (!tokens.length) return undefined;
+  const selected = new Set<PushTarget>();
+  for (const tok of tokens) {
+    if (tok === 'all') {
+      DESTINATIONS.forEach(d => selected.add(d));
+      continue;
+    }
+    const dest = TARGET_ALIASES[tok];
+    if (!dest) return undefined;
+    selected.add(dest);
+  }
+  return DESTINATIONS.filter(d => selected.has(d));
 }
 
 
@@ -133,13 +155,15 @@ export async function push(options: PushOptions): Promise<number> {
     const targets = resolveTargets(options.target);
     if (!targets) {
       console.error(
-        `Error: unknown --target '${options.target}'; expected bq, kc, or both.`);
+        `Error: invalid --target '${options.target}'; expected bq, kc, all, ` +
+        `or a comma-separated list (e.g. bq,kc).`);
       return 1;
     }
 
     const docs = layout.modelDocuments();
-    // Run destinations in order; 'both' is BigQuery-first and fails fast (an
-    // early return below skips the catalog leg when BigQuery fails).
+    // Run the resolved destinations in canonical order (BigQuery first); the
+    // early return below fails fast, skipping later legs when an earlier one
+    // fails.
     for (const target of targets) {
       const code = target === 'bigquery'
         ? await pushBigQuery(docs, ctx, options, source)

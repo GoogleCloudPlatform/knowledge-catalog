@@ -41,7 +41,7 @@ cli.command('pull', 'Pull catalog entries')
 cli.command('push', 'Push catalog entries')
    .option('--force', 'Force push changes')
    .option('--validate-only', 'Only validate changes without applying')
-   .option('--target <target>', 'Semantic-model push destination: bq (default), kc, or both')
+   .option('--target <targets>', 'Semantic-model push destination(s): bq (default), kc, all, or a comma-separated list (e.g. bq,kc)')
    .action(async (options) => {
       let exitCode = 1;
       try {
