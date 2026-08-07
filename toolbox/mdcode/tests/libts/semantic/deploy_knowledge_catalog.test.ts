@@ -26,6 +26,13 @@ const OSSIE =
     fs.readFileSync(path.join(FIXTURES, 'sales_bq_graph_target.yaml'), 'utf8');
 const DOCS = [{name: 'sales.yaml', text: OSSIE}];
 
+// The same loader-valid model, but its GOOGLE custom_extension carries invalid
+// JSON: the doc parses, yet the emitter (via bigQueryGraphTargets) throws while
+// building the semantic-model aspect. Surgically swap only the `data:` value so
+// the rest of the document stays valid.
+const MALFORMED_EXTENSION =
+    OSSIE.replace(/data: '[^\n]*'/, 'data: \'not valid json\'');
+
 // entryCreateTries: 1 keeps the propagation-retry loop from sleeping in tests.
 const OPTS = {
   project: 'dest',
@@ -174,6 +181,43 @@ describe('deployKnowledgeCatalog: failures', () => {
     expect(result.success).toBe(false);
     expect(result.details).toContain('bad.yaml');
   });
+
+  test(
+      'a model that throws during emit fails with the model + document named',
+      async () => {
+        // A parseable doc whose GOOGLE extension is invalid JSON makes the
+        // emitter throw; the publisher must report it, not crash the push.
+        const {create} = stubClient();
+        const docs = [{name: 'broken.yaml', text: MALFORMED_EXTENSION}];
+
+        const result = await deployKnowledgeCatalog(docs, CTX, OPTS);
+
+        expect(result.success).toBe(false);
+        expect(result.details).toContain('broken.yaml');
+        expect(result.details).toContain('sales');  // the model name
+        expect(create).not.toHaveBeenCalled();
+      });
+
+  test(
+      'two models generating the same entry id fail before any write',
+      async () => {
+        // Both docs declare a model named 'sales', so their entry ids collide
+        // within the entry group; the second would silently upsert over the
+        // first. The publisher must catch the collision up front.
+        const {group, create} = stubClient();
+        const docs = [
+          {name: 'a.yaml', text: OSSIE},
+          {name: 'b.yaml', text: OSSIE},
+        ];
+
+        const result = await deployKnowledgeCatalog(docs, CTX, OPTS);
+
+        expect(result.success).toBe(false);
+        expect(result.details).toContain('sales');   // the colliding entry id
+        expect(result.details).toContain('unique');  // the reason
+        expect(group).not.toHaveBeenCalled();
+        expect(create).not.toHaveBeenCalled();
+      });
 
   test('no documents is a hard error for a real push', async () => {
     stubClient();

@@ -115,13 +115,23 @@ export async function deployKnowledgeCatalog(
     }
     for (const model of loaded.models) {
       modelsSeen++;
-      const resources = generateCatalogResources(model, {
-        project: opts.project,
-        location: opts.location,
-        entryGroup: opts.entryGroup,
-        systemTypeProject: opts.systemTypeProject,
-        systemTypeLocation: opts.systemTypeLocation,
-      });
+      // The emitter is pure but not infallible: bigQueryGraphTargets (reached
+      // via the semantic-model aspect) throws on a malformed GOOGLE
+      // custom_extension. Report it against the document -- as the BigQuery leg
+      // does -- rather than letting it escape as an uncaught stack trace.
+      let resources: KcResources;
+      try {
+        resources = generateCatalogResources(model, {
+          project: opts.project,
+          location: opts.location,
+          entryGroup: opts.entryGroup,
+          systemTypeProject: opts.systemTypeProject,
+          systemTypeLocation: opts.systemTypeLocation,
+        });
+      } catch (err: any) {
+        return fail(
+            `Model '${model.name}' (${doc.name}): ${err.message || err}`);
+      }
       for (const w of resources.warnings) {
         warnings.push(`[${model.name}] ${w}`);
       }
@@ -139,6 +149,29 @@ export async function deployKnowledgeCatalog(
       return {success: true, warnings, created, updated, plan};
     }
     return fail('No semantic model documents found; nothing to deploy.');
+  }
+
+  // Entry ids must be unique within the destination entry group. The emitter
+  // dedups within one model, but two models in a single push (two documents, or
+  // two `semantic_model`s in one document) whose names normalize to the same id
+  // generate colliding entry names; on publish the later one would 409 and
+  // silently upsert over the earlier. Catch that across models here and fail
+  // before any write, naming the entry so the author can rename one model. The
+  // owner is tracked by index, not model name, so two same-named models (the
+  // most common collision) are still distinguished.
+  const entryOwner = new Map<string, number>();
+  for (let i = 0; i < emitted.length; i++) {
+    for (const entry of emitted[i].resources.entries) {
+      const prev = entryOwner.get(entry.name);
+      if (prev !== undefined && prev !== i) {
+        return fail(
+            `models '${emitted[prev].model}' and '${emitted[i].model}' both ` +
+            `generate catalog entry '${idOf(entry.name)}'; entry ids must be ` +
+            `unique within entry group '${opts.entryGroup}' -- rename one ` +
+            `model.`);
+      }
+      entryOwner.set(entry.name, i);
+    }
   }
 
   for (const {model, resources} of emitted) {
