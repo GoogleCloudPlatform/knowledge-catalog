@@ -26,9 +26,14 @@ export interface InitOptions {
 export interface PushOptions {
   force?: boolean;
   validateOnly?: boolean;
-  // Semantic-model push destination(s): 'bq' (default), 'kc', 'all', or a
+  // Semantic-model push destination(s): 'bq', 'kc', 'all' (default), or a
   // comma-separated list (e.g. 'bq,kc'). Ignored for non-semantic-model scopes.
   target?: string;
+  // Print each pushed destination's generated artifact in that destination's
+  // native format (BigQuery Graph -> SQL DDL, Knowledge Catalog -> the entry
+  // plan), each block labeled by destination. Scope which destinations run with
+  // --target. Works with or without --validate-only. Semantic-model push only.
+  print?: boolean;
 }
 
 
@@ -39,6 +44,9 @@ export type PushTarget = 'bigquery' | 'kc';
 // run is deterministic and BigQuery-first fail-fast holds regardless of how the
 // user ordered the flag. Append new destinations here as they land.
 const DESTINATIONS: PushTarget[] = ['bigquery', 'kc'];
+
+// The default when --target is omitted: push to every destination.
+const DEFAULT_TARGET = 'all';
 
 // User-typeable aliases for a single destination.
 const TARGET_ALIASES: Record<string, PushTarget> = {
@@ -53,7 +61,7 @@ const TARGET_ALIASES: Record<string, PushTarget> = {
 // destination), and defaults to 'bq'. The result is always in canonical
 // DESTINATIONS order.
 export function resolveTargets(target?: string): PushTarget[] | undefined {
-  const tokens = (target ?? 'bq')
+  const tokens = (target ?? DEFAULT_TARGET)
     .toLowerCase()
     .split(',')
     .map(t => t.trim())
@@ -203,7 +211,8 @@ async function pushBigQuery(
   for (const w of result.warnings) {
     console.warn(`Warning: ${w}`);
   }
-  if (options.validateOnly) {
+  if (options.print) {
+    console.log('-- BigQuery Graph --');
     for (const block of result.ddl) {
       console.log(`${block}\n`);
     }
@@ -241,7 +250,8 @@ async function pushKnowledgeCatalog(
   for (const w of result.warnings) {
     console.warn(`Warning: ${w}`);
   }
-  if (options.validateOnly) {
+  if (options.print) {
+    console.log('-- Knowledge Catalog --');
     for (const line of result.plan) {
       console.log(line);
     }

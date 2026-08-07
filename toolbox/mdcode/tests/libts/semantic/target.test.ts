@@ -10,8 +10,8 @@ import {describe, expect, test} from 'bun:test';
 import {resolveTargets} from '../../../src/tool/commands';
 
 describe('resolveTargets', () => {
-  test('defaults to BigQuery when no target is given', () => {
-    expect(resolveTargets(undefined)).toEqual(['bigquery']);
+  test('defaults to every destination when no target is given', () => {
+    expect(resolveTargets(undefined)).toEqual(['bigquery', 'kc']);
   });
   test('\'bq\' and \'bigquery\' both select BigQuery', () => {
     expect(resolveTargets('bq')).toEqual(['bigquery']);
