@@ -11,7 +11,7 @@ import { Sources } from '../libts/source';
 import { SemanticModelLayout } from '../libts/layouts/semantic-model';
 import { SemanticModelSource } from '../libts/sources/semantic-model';
 import * as deploy from '../libts/semantic/deploy';
-import * as kc from '../libts/semantic/kc';
+import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 
 
 export interface InitOptions {
@@ -198,7 +198,8 @@ async function pushBigQuery(
 
 // Deploys the semantic model's Knowledge Catalog leg and prints the result. The
 // destination coordinates come from the scope (project.location.entryGroup); the
-// built-in semantic types are nonprod-only, so this targets a nonprod Dataplex.
+// built-in semantic types are nonprod-only, so this targets a nonprod
+// Knowledge Catalog.
 // Returns a process exit code (0 on success).
 async function pushKnowledgeCatalog(
   docs: { name: string; text: string }[], ctx: context.ApiContext,

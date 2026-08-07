@@ -3,15 +3,15 @@
 // This is the Knowledge Catalog leg of `kcmd push` for the semantic-model
 // scope, the counterpart to `deploy.ts` (BigQuery). It parses each authored
 // Ossie document into the semantic IR (loader), maps it to catalog Entries +
-// Aspects (the pure emitter in catalog.ts), and writes them through the
-// Dataplex catalog client.
+// Aspects (the pure emitter in knowledge_catalog.ts), and writes them through
+// the Knowledge Catalog client.
 //
 // Types: the `semantic-model`/`semantic-entity`/`semantic-metric` entry and
 // aspect types — and the built-in `schema` aspect — are built-in system types
 // in `dataplex-types/global` (go/semantic-model-kc-v2). Push does NOT provision
 // any type; it only ensures the destination entry group exists and then writes
 // entries. The types are TIER2 `nonprod_only`, so this leg targets a nonprod
-// Dataplex, and the caller needs `dataplex.entryGroups.useSemanticModelAspect`.
+// catalog, and the caller needs `dataplex.entryGroups.useSemanticModelAspect`.
 //
 // Publish sequence (mirrors the BigQuery leg's structure):
 //   * Ensure the destination entry group (idempotent; an "already exists" is
@@ -33,7 +33,7 @@ import {ApiResult} from '../gcp/api';
 import * as context from '../gcp/context';
 import {CatalogClient, Entry} from '../gcp/dataplex';
 
-import {generateCatalogResources, KcResources} from './catalog';
+import {generateCatalogResources, KcResources} from './knowledge_catalog';
 import {loadModels} from './loader';
 
 

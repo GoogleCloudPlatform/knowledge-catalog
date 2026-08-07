@@ -1,9 +1,9 @@
 // Tests for the semantic-model Knowledge Catalog deploy leg
-// (src/libts/semantic/kc.ts).
+// (src/libts/semantic/deploy_knowledge_catalog.ts).
 //
 // `deployKnowledgeCatalog` is exercised end to end over an Ossie fixture
-// (loader -> IR -> emitter -> writes), with the Dataplex catalog client stubbed
-// so no network call is made. The focus is the publish SEQUENCE the emitter
+// (loader -> IR -> emitter -> writes), with the catalog client stubbed so no
+// network call is made. The focus is the publish SEQUENCE the emitter
 // goldens cannot show: entry-group-only provisioning (no type creation),
 // anchor-first entry writes, idempotent upsert on re-push, and the dry-run
 // plan.
@@ -14,8 +14,8 @@ import * as path from 'node:path';
 
 import {ApiResult} from '../../../src/libts/gcp/api';
 import {ApiContext} from '../../../src/libts/gcp/context';
-import * as dataplex from '../../../src/libts/gcp/dataplex';
-import {deployKnowledgeCatalog} from '../../../src/libts/semantic/kc';
+import {CatalogClient} from '../../../src/libts/gcp/dataplex';
+import {deployKnowledgeCatalog} from '../../../src/libts/semantic/deploy_knowledge_catalog';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -54,13 +54,13 @@ function stubClient(opts: {
   create?: (entryId: string) => ApiResult<any>,
   update?: ApiResult<any>,
 } = {}) {
-  const group = spyOn(dataplex.CatalogClient.prototype, 'createEntryGroup')
+  const group = spyOn(CatalogClient.prototype, 'createEntryGroup')
                     .mockImplementation(async () => opts.group ?? ok({}));
-  const create = spyOn(dataplex.CatalogClient.prototype, 'createEntry')
+  const create = spyOn(CatalogClient.prototype, 'createEntry')
                      .mockImplementation(
                          async (_p, _l, _eg, entryId) =>
                              (opts.create ?? (() => ok({})))(entryId));
-  const update = spyOn(dataplex.CatalogClient.prototype, 'updateEntry')
+  const update = spyOn(CatalogClient.prototype, 'updateEntry')
                      .mockImplementation(async () => opts.update ?? ok({}));
   return {group, create, update};
 }

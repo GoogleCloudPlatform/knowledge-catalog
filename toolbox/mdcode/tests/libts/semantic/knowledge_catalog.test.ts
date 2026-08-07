@@ -1,10 +1,12 @@
 // Behavior specification for the Knowledge Catalog emitter
-// (src/libts/semantic/catalog.ts).
+// (src/libts/semantic/knowledge_catalog.ts).
 //
-// The readable "big picture" goldens live in `catalog.e2e.test.ts` (a corpus of
-// `<fixture>.yaml` inputs, each with a committed `<fixture>.kc.golden.json`).
-// This file holds what a loader fixture CANNOT express, because the open
-// AI-first format the loader reads is a subset of the IR:
+// The readable "big picture" goldens live in `knowledge_catalog.e2e.test.ts` (a
+// corpus of `<fixture>.yaml` inputs, each with a committed
+// `<fixture>.knowledge_catalog.golden.json`). This file holds what a loader
+// fixture
+// CANNOT express, because the open AI-first format the loader reads is a subset
+// of the IR:
 //   - the logical DataType -> schema `dataType`/`metadataType` mapping and the
 //     DIMENSION role (the corpus fixtures declare no field `datatype`, so every
 //     field falls back to STRING/DEFAULT);
@@ -14,8 +16,8 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import {generateCatalogResources} from '../../../src/libts/semantic/catalog';
 import {DataType, Entity, SemanticModel} from '../../../src/libts/semantic/ir';
+import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 
 const OPTS = {
   project: 'dest-proj',

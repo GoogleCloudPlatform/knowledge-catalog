@@ -1,12 +1,12 @@
-// Generates Knowledge Catalog (Dataplex) resources from the Semantic Model IR.
+// Generates Knowledge Catalog resources from the Semantic Model IR.
 //
 // The IR (./ir) is pure semantics. This module is its Knowledge Catalog
 // emitter, the counterpart to `bigquery.ts`: it maps the model to catalog
 // Entries, each carrying the `semantic-*` Aspect(s) that describe it. Like
 // `bigquery.ts` it is a PURE function of the IR: no GCP calls, no I/O. The
-// orchestration layer
-// (`kc.ts`, the counterpart to `deploy.ts`) drives this emitter and writes the
-// resulting resources via the Dataplex catalog client.
+// orchestration layer (`deploy_knowledge_catalog.ts`, the counterpart to
+// `deploy.ts`) drives this emitter and writes the resulting resources via the
+// Knowledge Catalog client.
 //
 // Target schema (go/semantic-model-kc-v2): the `semantic-model`,
 // `semantic-entity`, and `semantic-metric` entry/aspect types are built-in
@@ -276,7 +276,7 @@ function columnMetadataType(type: DataType|undefined): string {
   }
 }
 
-// Maps the IR's opaque, canonical `dataSource` to a Dataplex resource string. A
+// Maps the IR's opaque, canonical `dataSource` to a catalog resource string. A
 // clean three-part `project.dataset.table` becomes the BigQuery linked-resource
 // URI; anything else (a query, an under/over-qualified ref) is passed through
 // verbatim so nothing is lost.

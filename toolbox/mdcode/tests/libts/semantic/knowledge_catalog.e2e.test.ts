@@ -4,23 +4,25 @@
 // The primary check is a GOLDEN test: for every fixture in the corpus, the
 // generated Entries (with their `semantic-*` / `schema` aspects) plus the
 // emitter warnings are compared byte-for-byte against a committed
-// `<fixture>.kc.golden.json`. The golden is the reviewable "big picture" — open
-// a `.yaml` next to its `.kc.golden.json` to see the full input and the exact
-// catalog resources it maps to; a changed aspect shape, dropped field, or
-// reordered entry shows up as a diff.
+// `<fixture>.knowledge_catalog.golden.json`. The golden is the reviewable "big
+// picture" — open a `.yaml` next to its `.knowledge_catalog.golden.json` to see
+// the full input and the exact catalog resources it maps to; a changed aspect
+// shape, dropped field, or reordered entry shows up as a diff.
 //
 //   Regenerate goldens after an intentional emitter change:
-//     UPDATE_GOLDENS=1 npx bun test ./tests/libts/semantic/catalog.e2e.test.ts
+//     UPDATE_GOLDENS=1 npx bun test \
+//         ./tests/libts/semantic/knowledge_catalog.e2e.test.ts
 //   then read the diff before committing.
 //
 // Focused behavior (warnings, relationship deferral, metric dataType fallback)
-// is asserted in catalog.test.ts; the publisher's write sequence in kc.test.ts.
+// is asserted in knowledge_catalog.test.ts; the publisher's write sequence in
+// deploy_knowledge_catalog.test.ts.
 
 import {describe, expect, test} from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import {generateCatalogResources} from '../../../src/libts/semantic/catalog';
+import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {loadModels, LoadOptions} from '../../../src/libts/semantic/loader';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -58,8 +60,8 @@ function render(fixture: string): string {
   return JSON.stringify({entries, warnings}, null, 2) + '\n';
 }
 
-const goldenPath = (fixture: string) =>
-    path.join(FIXTURES, fixture.replace(/\.yaml$/, '.kc.golden.json'));
+const goldenPath = (fixture: string) => path.join(
+    FIXTURES, fixture.replace(/\.yaml$/, '.knowledge_catalog.golden.json'));
 
 
 describe(
