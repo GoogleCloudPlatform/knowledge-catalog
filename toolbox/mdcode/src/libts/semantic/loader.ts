@@ -480,11 +480,15 @@ function unquote(part: string): string {
 }
 
 
-// A single model parsed from a named document, tagged with that document name
-// so a consumer (a deploy leg) can attribute warnings and errors back to the
-// file the author wrote.
+// A single model parsed from one authored model file, tagged with that file's
+// name so a consumer (a deploy leg) can attribute warnings and errors back to
+// the file the author wrote.
 export interface LoadedModel {
-  document: string;       // originating document name
+  // The model file this was parsed from: the `.yaml` basename the layout
+  // discovered (e.g. `sales` for `sales.yaml`), not a filesystem path. Used
+  // only to prefix this model's warnings/errors so they point at the author's
+  // file; not part of the deployed IR.
+  document: string;
   model: SemanticModel;
 }
 
