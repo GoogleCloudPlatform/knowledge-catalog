@@ -425,6 +425,14 @@ describe('deployKnowledgeCatalog: link reconciliation', () => {
       'sales-orders-to-customer',
       ['sales.entities.orders', 'sales.entities.customer']);
 
+  // The model's entity entries as the destination already holds them (a
+  // re-push). reconcileLinks looks up links via these server-known entities, so
+  // they must be in the pre-write listing for a link to be discoverable.
+  const STAR_ENTITIES = [
+    {id: 'sales.entities.orders', type: ENTITY_TYPE},
+    {id: 'sales.entities.customer', type: ENTITY_TYPE},
+  ];
+
   test('deletes an owned schema-join link the model no longer emits',
      async () => {
        // The server also still holds a link to a dropped relationship (both
@@ -434,6 +442,7 @@ describe('deployKnowledgeCatalog: link reconciliation', () => {
            'sales-orders-to-supplier',
            ['sales.entities.orders', 'sales.entities.supplier']);
        const {delLink} = stubClient({
+         existing: STAR_ENTITIES,
          links: (entry: string) => entry.endsWith('sales.entities.orders')
              ? ok([orphan, KEPT])
              : ok([KEPT]),
@@ -449,6 +458,7 @@ describe('deployKnowledgeCatalog: link reconciliation', () => {
 
   test('keeps a link the model still emits', async () => {
     const {delLink} = stubClient({
+      existing: STAR_ENTITIES,
       links: (entry: string) =>
           entry.endsWith('sales.entities.orders') ? ok([KEPT]) : ok([KEPT]),
     });
@@ -468,6 +478,7 @@ describe('deployKnowledgeCatalog: link reconciliation', () => {
            'sales-orders-to-external',
            ['sales.entities.orders', 'other.entities.x']);
        const {delLink} = stubClient({
+         existing: STAR_ENTITIES,
          links: (entry: string) =>
              entry.endsWith('sales.entities.orders') ? ok([foreign]) : ok([]),
        });
@@ -484,6 +495,7 @@ describe('deployKnowledgeCatalog: link reconciliation', () => {
         'sales-orders-to-supplier',
         ['sales.entities.orders', 'sales.entities.supplier']);
     const {delLink} = stubClient({
+      existing: STAR_ENTITIES,
       links: (entry: string) =>
           entry.endsWith('sales.entities.orders') ? ok([orphan]) : ok([]),
       delLink: () => err(500, 'boom'),
@@ -505,6 +517,48 @@ describe('deployKnowledgeCatalog: link reconciliation', () => {
 
     const result = await deployKnowledgeCatalog(
         models(STAR_DOCS), CTX, {...OPTS, validateOnly: true});
+
+    expect(result.success).toBe(true);
+    expect(lookupLinks).not.toHaveBeenCalled();
+    expect(delLink).not.toHaveBeenCalled();
+  });
+
+  test('deletes a link whose BOTH endpoints were removed in this push',
+     async () => {
+       // The dropped relationship's two endpoints are both entities removed from
+       // the model, so the orphan link is reachable ONLY via those removed
+       // entries in the pre-write snapshot -- never via a still-emitted entity.
+       // Enumerating the snapshot (not the emitted set) is what finds it.
+       const orphan = linkEntry(
+           'sales-supplier-to-warehouse',
+           ['sales.entities.supplier', 'sales.entities.warehouse']);
+       const {delLink} = stubClient({
+         existing: [
+           ...STAR_ENTITIES,
+           {id: 'sales.entities.supplier', type: ENTITY_TYPE},
+           {id: 'sales.entities.warehouse', type: ENTITY_TYPE},
+         ],
+         links: (entry: string) =>
+             entry.endsWith('sales.entities.supplier') ||
+                 entry.endsWith('sales.entities.warehouse')
+             ? ok([orphan])
+             : ok([]),
+       });
+
+       const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+       expect(result.success).toBe(true);
+       expect(result.unlinked).toBe(1);
+       expect(delLink.mock.calls.map(c => c[3]))
+           .toEqual(['sales-supplier-to-warehouse']);
+     });
+
+  test('a first push (empty group) issues no link lookups', async () => {
+    // No entity of the model exists on the server yet, so there is nothing to
+    // reconcile and reconcileLinks makes no lookupEntryLinks call.
+    const {lookupLinks, delLink} = stubClient();
+
+    const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
 
     expect(result.success).toBe(true);
     expect(lookupLinks).not.toHaveBeenCalled();

@@ -250,7 +250,7 @@ export async function deployKnowledgeCatalog(
     // Then drop any schema-join link this model owns but no longer emits (a
     // relationship dropped or renamed). Runs after its current links are
     // written, so a rename never leaves the pair with no link between them.
-    const relLinks = await reconcileLinks(cat, opts, resources);
+    const relLinks = await reconcileLinks(cat, opts, resources, existing);
     if (relLinks.error) {
       return fail(`Model '${model}': ${relLinks.error}`);
     }
@@ -345,10 +345,11 @@ function schemaJoinLinkType(opts: KcDeployOptions): string {
 
 // Snapshots the destination entry group's entries once, before any write. A
 // brand-new entry group can briefly fail to list its entries collection (the
-// same propagation window createEntryWithRetry rides out); treat an unlistable
-// group as empty -- there is nothing to guard against or reconcile, and the
-// create path retries the window. Any other listing failure is real and
-// surfaced.
+// same propagation window createEntryWithRetry rides out); treat only that
+// not-yet-visible error as empty -- there is nothing to guard against or
+// reconcile, and the create path retries the window. The match mirrors
+// isPropagating (entry-group-scoped) so any OTHER listing failure -- a real
+// backend error, a permission problem -- is surfaced rather than masked.
 async function listEntryGroup(
     cat: CatalogClient,
     opts: KcDeployOptions): Promise<{entries: Entry[]; error?: string}> {
@@ -360,7 +361,8 @@ async function listEntryGroup(
     }
   } catch (err: any) {
     const msg = err.message || String(err);
-    if (/not found|does not exist|may not exist/i.test(msg)) {
+    if (/may not exist/i.test(msg) ||
+        /entry group .*(not found|does not exist)/i.test(msg)) {
       return {entries: []};
     }
     return {entries: [], error: `listing entries in entry group '${
@@ -418,13 +420,19 @@ async function deleteOwnedLinks(
 // push. A link touching an entry outside this model is never treated as owned,
 // so a shared entry group is safe.
 function reconcileLinks(
-    cat: CatalogClient, opts: KcDeployOptions,
-    resources: KcResources): Promise<LinkReconcileOutcome> {
+    cat: CatalogClient, opts: KcDeployOptions, resources: KcResources,
+    existing: Entry[]): Promise<LinkReconcileOutcome> {
   const anchorId = idOf(resources.entries[0].name);
   const entityPrefix = `${anchorId}.entities.`;
-  const entityNames = resources.entries
-      .filter(e => (e.entryType ?? '').endsWith('/semantic-entity'))
-      .map(e => e.name);
+  // Look up links via the model's entity entries KNOWN TO THE SERVER (the
+  // pre-write snapshot), not the ones this push emits. Only a server-side entry
+  // can already carry a link, and enumerating the snapshot also reaches a link
+  // both of whose endpoints were removed in this push -- neither is re-emitted,
+  // but both entries are still present in `existing` until reconcileDeletions
+  // deletes them at the end. A brand-new model has no such entries, so it issues
+  // no lookups at all.
+  const entityNames = existing.map(e => e.name)
+      .filter(name => idOf(name).startsWith(entityPrefix));
   if (!entityNames.length) return Promise.resolve({unlinked: 0});
 
   const emittedLinkIds =

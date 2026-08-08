@@ -8,7 +8,7 @@
 // schema -- because these are deployment requirements, not schema rules, and
 // they read the GOOGLE deployment-target extension the BigQuery leg owns.
 
-import {bigQueryGraphTargets, deploymentTargetUris} from './deploy_bigquery';
+import {googleDeploymentTargets} from './deploy_bigquery';
 import {LoadedModel} from './loader';
 
 // Checks every model against the push requirements and returns the collected
@@ -17,11 +17,11 @@ import {LoadedModel} from './loader';
 export function validatePushRequirements(models: LoadedModel[]): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
-    let uris: string[];
-    let bqTargetCount: number;
+    let deployInfo: ReturnType<typeof googleDeploymentTargets>;
     try {
-      uris = deploymentTargetUris(model);
-      bqTargetCount = bigQueryGraphTargets(model).targets.length;
+      // One pass over the model's GOOGLE extension(s): both checks below read
+      // the same parse rather than re-parsing the JSON per reader.
+      deployInfo = googleDeploymentTargets(model);
     } catch (err: any) {
       // Malformed GOOGLE extension JSON: surface it as a validation error here
       // rather than letting it throw out of a later leg as an uncaught stack.
@@ -30,7 +30,7 @@ export function validatePushRequirements(models: LoadedModel[]): string[] {
     }
 
     // Every model must declare at least one deployment target.
-    if (!uris.length) {
+    if (!deployInfo.uris.length) {
       errors.push(
           `model '${model.name}' (${document}) declares no deploymentTargets; ` +
           `add at least one under its GOOGLE custom_extension.`);
@@ -41,7 +41,7 @@ export function validatePushRequirements(models: LoadedModel[]): string[] {
     // silently dropped from the graph. The loader sets metric.entity only when
     // the expression resolves to exactly one entity, so an unset entity is the
     // "references zero or multiple entities" case.
-    if (bqTargetCount > 0) {
+    if (deployInfo.targets.length > 0) {
       for (const metric of model.metrics ?? []) {
         if (!metric.entity) {
           errors.push(
