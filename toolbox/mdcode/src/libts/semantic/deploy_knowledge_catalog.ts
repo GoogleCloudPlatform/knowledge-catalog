@@ -9,16 +9,15 @@
 //
 // Types: the `semantic-model`/`semantic-entity`/`semantic-metric` entry and
 // aspect types — and the built-in `schema` aspect — are built-in system types
-// in `dataplex-types/global`. Push does NOT provision any type; it only ensures
-// the destination entry group exists and then writes entries. The caller needs
+// in `dataplex-types/global`. Push does NOT provision any type, nor the entry
+// group (that is created at `init`); it only writes entries. The caller needs
 // `dataplex.entryGroups.useSemanticModelAspect` on the destination entry group.
 //
 // Publish sequence (mirrors the BigQuery leg's structure):
-//   * Ensure the destination entry group (idempotent; an "already exists" is
-//     success). No aspect/entry type creation — the system types are built-in.
 //   * Create each model's entries in array order: the semantic-model anchor
 //     first (it is the parentEntry of every entity/metric entry), then the
-//     children concurrently.
+//     children concurrently. No entry-group or type creation -- the entry
+//     group is provisioned at `init` and the system types are built-in.
 //   * A re-push upserts: an entry that already exists is updated in place.
 //   * Reconcile deletions: an entity or metric removed from a still-present
 //     model leaves an orphaned entry under its anchor; after writing, delete
@@ -170,14 +169,12 @@ export async function deployKnowledgeCatalog(
     return {success: true, warnings, created, updated, deleted, plan};
   }
 
+  // The destination entry group is provisioned at `init`, not here: push writes
+  // only entries, matching how the standard layout's push operates (it creates
+  // entries, never the entry group). A missing group surfaces as a clear entry
+  // creation error, and createEntryWithRetry rides out the brief post-init
+  // propagation window.
   const cat = new CatalogClient(ctx);
-
-  // Ensure the destination entry group once (idempotent). A failure dooms every
-  // entry write, so stop here.
-  const group = await ensureEntryGroup(cat, opts);
-  if (group) {
-    return fail(group);
-  }
 
   for (const {model, resources} of emitted) {
     const outcome = await createEntries(cat, opts, resources.entries);
@@ -260,19 +257,6 @@ async function reconcileDeletions(
     return {deleted, error: `deleting orphaned entry '${id}': ${errText(res)}`};
   }
   return {deleted};
-}
-
-
-// Ensures the destination entry group exists. Returns an error message on a
-// non-idempotent failure, or undefined on success (created or already existed).
-// TODO: consider provisioning the entry group at `init` time instead of on
-// every push, so push writes only entries (follow-up).
-async function ensureEntryGroup(
-    cat: CatalogClient, opts: KcDeployOptions): Promise<string|undefined> {
-  const res = await cat.createEntryGroup(
-      opts.project, opts.location, opts.entryGroup, {} as any);
-  if (isOk(res) || isExists(res)) return undefined;
-  return `entry group '${opts.entryGroup}': ${errText(res)}`;
 }
 
 

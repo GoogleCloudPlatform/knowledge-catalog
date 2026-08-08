@@ -4,9 +4,9 @@
 // `deployKnowledgeCatalog` is exercised end to end over an Ossie fixture
 // (loader -> IR -> emitter -> writes), with the catalog client stubbed so no
 // network call is made. The focus is the publish SEQUENCE the emitter
-// goldens cannot show: entry-group-only provisioning (no type creation),
-// anchor-first entry writes, idempotent upsert on re-push, and the dry-run
-// plan.
+// goldens cannot show: anchor-first entry writes (the entry group is
+// provisioned at `init`, not here), idempotent upsert on re-push, delete
+// reconciliation, and the dry-run plan.
 
 import {afterEach, describe, expect, mock, spyOn, test} from 'bun:test';
 import * as fs from 'node:fs';
@@ -104,28 +104,25 @@ function stubClient(opts: {
 
 
 describe('deployKnowledgeCatalog: happy path', () => {
-  test(
-      'provisions only the entry group, then writes entries anchor-first',
-      async () => {
-        const {group, create, update} = stubClient();
+  test('writes entries anchor-first, provisioning nothing', async () => {
+    const {group, create, update} = stubClient();
 
-        const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
-        expect(result.success).toBe(true);
-        expect(result.created).toBe(3);
-        expect(result.updated).toBe(0);
+    expect(result.success).toBe(true);
+    expect(result.created).toBe(3);
+    expect(result.updated).toBe(0);
 
-        // Entry group ensured exactly once; no aspect/entry TYPE creation
-        // exists on the client at all (the semantic types are built-in) —
-        // nothing to provision.
-        expect(group).toHaveBeenCalledTimes(1);
-        expect(create).toHaveBeenCalledTimes(3);
-        expect(update).not.toHaveBeenCalled();
+    // Push provisions neither the entry group (created at `init`) nor any type
+    // (the semantic types are built-in): it only writes the three entries.
+    expect(group).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledTimes(3);
+    expect(update).not.toHaveBeenCalled();
 
-        // The model anchor is written before its children.
-        const firstEntryId = create.mock.calls[0][3];
-        expect(firstEntryId).toBe('sales');
-      });
+    // The model anchor is written before its children.
+    const firstEntryId = create.mock.calls[0][3];
+    expect(firstEntryId).toBe('sales');
+  });
 });
 
 
@@ -164,32 +161,7 @@ describe('deployKnowledgeCatalog: validateOnly', () => {
 });
 
 
-describe('deployKnowledgeCatalog: idempotent provisioning', () => {
-  test('an already-existing entry group is not an error', async () => {
-    const {create} =
-        stubClient({group: err(409, 'Entry group already exists')});
-
-    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
-
-    expect(result.success).toBe(true);
-    expect(create).toHaveBeenCalledTimes(3);
-  });
-});
-
-
 describe('deployKnowledgeCatalog: failures', () => {
-  test(
-      'a fatal entry-group error stops before any entry is written',
-      async () => {
-        const {create} = stubClient({group: err(403, 'permission denied')});
-
-        const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
-
-        expect(result.success).toBe(false);
-        expect(result.details).toContain('entry group');
-        expect(create).not.toHaveBeenCalled();
-      });
-
   test('a failed anchor write stops before its children', async () => {
     const {create} = stubClient({
       create: (id) => id === 'sales' ? err(500, 'boom') : ok({}),

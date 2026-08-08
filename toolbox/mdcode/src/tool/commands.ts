@@ -104,8 +104,23 @@ export async function init(options: InitOptions): Promise<number> {
   }
   else if (options.semanticModel) {
     manifest = await kcmd.CatalogManifest.initWithSemanticModel(options.semanticModel, ctx);
-    const entryGroup = manifest.source.entryGroup!;
-    fs.mkdirSync(path.join('catalog', 'EntryGroups', entryGroup), { recursive: true });
+    const source = manifest.source as SemanticModelSource;
+    // Provision the destination entry group now, at init, so push writes only
+    // entries -- matching how the standard layout operates (its push creates
+    // entries, never the entry group). Idempotent: an already-existing group
+    // (409) is success.
+    const catalog = new dataplex.CatalogClient(ctx);
+    const res = await catalog.createEntryGroup(
+      source.project, source.location, source.entryGroup);
+    if (res.status !== 200 && res.status !== 409) {
+      console.error(
+        `Error: failed to create entry group '${source.name}': ` +
+        `${res.message || res.status}`);
+      return 1;
+    }
+    fs.mkdirSync(
+      path.join('catalog', 'EntryGroups', source.entryGroup),
+      { recursive: true });
   }
   else {
     console.error('Error: Must provide --entry-group, --bigquery-dataset, --kb, or --semantic-model');
