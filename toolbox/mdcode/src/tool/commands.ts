@@ -28,6 +28,10 @@ export interface InitOptions {
 export interface PushOptions {
   force?: boolean;
   validateOnly?: boolean;
+  // Delete Knowledge Catalog models already in the entry group that this push
+  // does not include (a removed or renamed model). Without it, an unrecognized
+  // model in the group fails the push. Semantic-model KC push only.
+  forceRemove?: boolean;
   // Semantic-model push destination(s): 'bq', 'kc', 'all' (default), or a
   // comma-separated list (e.g. 'bq,kc'). Ignored for non-semantic-model scopes.
   target?: string;
@@ -290,6 +294,7 @@ async function pushKnowledgeCatalog(
     location: source.location,
     entryGroup: source.entryGroup,
     validateOnly: options.validateOnly,
+    forceRemove: options.forceRemove,
   });
 
   for (const w of result.warnings) {
@@ -308,14 +313,21 @@ async function pushKnowledgeCatalog(
     return 1;
   }
   const n = result.created + result.updated;
-  const removed =
-      result.deleted ? `; removed ${result.deleted} orphaned` : '';
+  const removed = result.deleted
+    ? `; removed ${result.deleted} orphaned entr${
+        result.deleted === 1 ? 'y' : 'ies'}`
+    : '';
   const linked = result.linked
     ? `; linked ${result.linked} relationship${result.linked === 1 ? '' : 's'}`
+    : '';
+  const unlinked = result.unlinked
+    ? `; unlinked ${result.unlinked} orphaned link${
+        result.unlinked === 1 ? '' : 's'}`
     : '';
   console.log(options.validateOnly
     ? 'Validation complete; no changes applied.'
     : `Wrote ${result.created} new and ${result.updated} updated ` +
-        `Knowledge Catalog entr${n === 1 ? 'y' : 'ies'}${removed}${linked}.`);
+        `Knowledge Catalog entr${n === 1 ? 'y' : 'ies'}${removed}${linked}${
+            unlinked}.`);
   return 0;
 }
