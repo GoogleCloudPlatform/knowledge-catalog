@@ -55,6 +55,10 @@ export interface KcDeployOptions {
   systemTypeLocation?: string;
   // Compile + report only; never writes.
   validateOnly?: boolean;
+  // Delete models already in the entry group that this push does not re-emit --
+  // a removed or renamed model's entries and links. Without it, an unrecognized
+  // model in the group is a hard error rather than a silent orphan.
+  forceRemove?: boolean;
   // entries.create can briefly 404 on a just-created entry group; retry that
   // window. Overridable so tests can exercise the path without burning
   // wall-clock.
@@ -74,6 +78,9 @@ export interface KcDeployResult {
   // Relationship (schema-join) entry links written -- created or upserted (0 for
   // validateOnly).
   linked: number;
+  // Orphaned schema-join links deleted -- from relationships dropped/renamed on a
+  // still-present model and from force-removed models (0 for validateOnly).
+  unlinked: number;
   // A human-readable plan of what would be written; populated for validateOnly.
   plan: string[];
 }
@@ -101,11 +108,12 @@ export async function deployKnowledgeCatalog(
   let updated = 0;
   let deleted = 0;
   let linked = 0;
+  let unlinked = 0;
   let modelsSeen = 0;
 
   const fail = (details: string): KcDeployResult =>
       ({success: false, details, warnings, created, updated, deleted, linked,
-        plan});
+        unlinked, plan});
 
   // Emit every model up front (pure): dry-run and warnings need no network, and
   // a generation warning surfaces even if a later write fails.
@@ -142,7 +150,8 @@ export async function deployKnowledgeCatalog(
   if (!modelsSeen) {
     if (opts.validateOnly) {
       warnings.push('No semantic model documents found; nothing to validate.');
-      return {success: true, warnings, created, updated, deleted, linked, plan};
+      return {success: true, warnings, created, updated, deleted, linked,
+              unlinked, plan};
     }
     return fail('No semantic model documents found; nothing to deploy.');
   }
@@ -174,7 +183,8 @@ export async function deployKnowledgeCatalog(
     plan.push(...planSummary(model, resources, opts));
   }
   if (opts.validateOnly) {
-    return {success: true, warnings, created, updated, deleted, linked, plan};
+    return {success: true, warnings, created, updated, deleted, linked, unlinked,
+            plan};
   }
 
   // The destination entry group is provisioned at `init`, not here: push writes
@@ -183,6 +193,43 @@ export async function deployKnowledgeCatalog(
   // creation error, and createEntryWithRetry rides out the brief post-init
   // propagation window.
   const cat = new CatalogClient(ctx);
+
+  // Snapshot the destination entry group once, before any write. The same
+  // listing feeds the foreign-model guard below and deletion reconciliation at
+  // the end; a re-emitted entry is never a deletion candidate, so a pre-write
+  // snapshot stays correct there.
+  const listing = await listEntryGroup(cat, opts);
+  if (listing.error) {
+    return fail(listing.error);
+  }
+  const existing = listing.entries;
+
+  // Whole-model lifecycle: a `semantic-model` anchor already in the group whose
+  // id this push does not re-emit belongs to a model whose document is gone -- a
+  // removed or renamed model. Leaving it silently accumulates stale models in
+  // the group, so refuse the push, unless --force-remove authorizes deleting
+  // each such model's links and entries first.
+  const pushedAnchors =
+      new Set(emitted.map(e => idOf(e.resources.entries[0].name)));
+  const foreignAnchors = existing
+      .filter(e => (e.entryType ?? '').endsWith('/semantic-model'))
+      .map(e => idOf(e.name))
+      .filter(id => !pushedAnchors.has(id));
+  if (foreignAnchors.length && !opts.forceRemove) {
+    return fail(
+        `entry group '${opts.entryGroup}' already contains model(s) this push ` +
+        `does not include: ${foreignAnchors.join(', ')}. Re-run with ` +
+        `--force-remove to delete them, or add their documents to this push.`);
+  }
+  if (foreignAnchors.length) {
+    const removed =
+        await removeForeignModels(cat, opts, existing, foreignAnchors);
+    if (removed.error) {
+      return fail(removed.error);
+    }
+    deleted += removed.deleted;
+    unlinked += removed.unlinked;
+  }
 
   for (const {model, resources} of emitted) {
     const outcome = await createEntries(cat, opts, resources.entries);
@@ -199,20 +246,30 @@ export async function deployKnowledgeCatalog(
       return fail(`Model '${model}': ${links.error}`);
     }
     linked += links.linked;
+
+    // Then drop any schema-join link this model owns but no longer emits (a
+    // relationship dropped or renamed). Runs after its current links are
+    // written, so a rename never leaves the pair with no link between them.
+    const relLinks = await reconcileLinks(cat, opts, resources);
+    if (relLinks.error) {
+      return fail(`Model '${model}': ${relLinks.error}`);
+    }
+    unlinked += relLinks.unlinked;
   }
 
   // Reconcile deletions: an entity or metric removed from a still-present model
   // since the last push leaves an orphaned entry under the model's anchor.
-  // Delete any entry this push owns that was not re-emitted (see
-  // reconcileDeletions). Runs only on a real push -- validateOnly returned
-  // above and never lists remote state.
-  const recon = await reconcileDeletions(cat, opts, emitted);
+  // Delete any entry this push owns that was not re-emitted, from the pre-write
+  // listing (see reconcileDeletions). Runs only on a real push -- validateOnly
+  // returned above and never lists remote state.
+  const recon = await reconcileDeletions(cat, opts, emitted, existing);
   if (recon.error) {
     return fail(recon.error);
   }
-  deleted = recon.deleted;
+  deleted += recon.deleted;
 
-  return {success: true, warnings, created, updated, deleted, linked, plan};
+  return {success: true, warnings, created, updated, deleted, linked, unlinked,
+          plan};
 }
 
 
@@ -229,18 +286,16 @@ interface ReconcileOutcome {
 // `<model>.entities.` / `<model>.metrics.` child namespace. An anchor is always
 // re-emitted, so it is never deleted here.
 //
-// TODO: reconcile whole-model removals too. Deleting a model's document drops
-// its anchor from this push, so its anchor + children are no longer owned and
-// survive. Removing them safely needs a scope-level record of which models this
-// entry group manages (follow-up).
-//
-// TODO: reconcile removed relationship links. There is no list API for entry
-// links (only LookupEntryLinks, per referenced entry), so an orphaned link left
-// by a dropped relationship is not deleted yet; it needs a lookup-per-entity
-// sweep (follow-up).
-async function reconcileDeletions(
+// Whole-model removal (an anchor no longer in this push) is handled separately by
+// the --force-remove guard in deployKnowledgeCatalog; orphaned relationship links
+// are handled by reconcileLinks. This step operates on `existing` -- the
+// entry-group listing captured once before writes -- so it never issues its own
+// list call; a re-emitted entry is never a deletion candidate, so the pre-write
+// snapshot stays correct.
+function reconcileDeletions(
     cat: CatalogClient, opts: KcDeployOptions,
-    emitted: {resources: KcResources}[]): Promise<ReconcileOutcome> {
+    emitted: {resources: KcResources}[],
+    existing: Entry[]): Promise<ReconcileOutcome> {
   const emittedIds = new Set<string>();
   const anchorIds = new Set<string>();
   const childPrefixes: string[] = [];
@@ -254,18 +309,15 @@ async function reconcileDeletions(
   const owned = (id: string) =>
       anchorIds.has(id) || childPrefixes.some(p => id.startsWith(p));
 
-  const orphans: string[] = [];
-  try {
-    for await (const entry of cat.listEntries(
-        opts.project, opts.location, opts.entryGroup)) {
-      const id = idOf(entry.name);
-      if (owned(id) && !emittedIds.has(id)) orphans.push(id);
-    }
-  } catch (err: any) {
-    return {deleted: 0, error: `listing entries to reconcile deletions: ${
-                                   err.message || err}`};
-  }
+  const orphans = existing.map(e => idOf(e.name))
+                      .filter(id => owned(id) && !emittedIds.has(id));
 
+  return deleteOrphanEntries(cat, opts, orphans);
+}
+
+async function deleteOrphanEntries(
+    cat: CatalogClient, opts: KcDeployOptions,
+    orphans: string[]): Promise<ReconcileOutcome> {
   let deleted = 0;
   for (const id of orphans) {
     const res =
@@ -278,6 +330,159 @@ async function reconcileDeletions(
     return {deleted, error: `deleting orphaned entry '${id}': ${errText(res)}`};
   }
   return {deleted};
+}
+
+
+// The schema-join entry-link type name, matching what the emitter stamps on each
+// link (Namer.typeName('entryLink', 'schema-join')). Used to filter
+// lookupEntryLinks to the links this leg owns.
+function schemaJoinLinkType(opts: KcDeployOptions): string {
+  const proj = opts.systemTypeProject ?? 'dataplex-types';
+  const loc = opts.systemTypeLocation ?? 'global';
+  return `projects/${proj}/locations/${loc}/entryLinkTypes/schema-join`;
+}
+
+
+// Snapshots the destination entry group's entries once, before any write. A
+// brand-new entry group can briefly fail to list its entries collection (the
+// same propagation window createEntryWithRetry rides out); treat an unlistable
+// group as empty -- there is nothing to guard against or reconcile, and the
+// create path retries the window. Any other listing failure is real and
+// surfaced.
+async function listEntryGroup(
+    cat: CatalogClient,
+    opts: KcDeployOptions): Promise<{entries: Entry[]; error?: string}> {
+  const entries: Entry[] = [];
+  try {
+    for await (const entry of cat.listEntries(
+        opts.project, opts.location, opts.entryGroup)) {
+      entries.push(entry);
+    }
+  } catch (err: any) {
+    const msg = err.message || String(err);
+    if (/not found|does not exist|may not exist/i.test(msg)) {
+      return {entries: []};
+    }
+    return {entries: [], error: `listing entries in entry group '${
+                                    opts.entryGroup}': ${msg}`};
+  }
+  return {entries};
+}
+
+
+interface LinkReconcileOutcome {
+  unlinked: number;
+  error?: string;
+}
+
+// Deletes the schema-join links referencing any of `entityNames` (full entry
+// resource names) for which `shouldDelete` returns true. Links are looked up per
+// referenced entry -- the only server-side access path -- so a link between two
+// of the entities is returned twice; a `seen` set dedups it. A 404 on delete
+// counts as success (already gone).
+async function deleteOwnedLinks(
+    cat: CatalogClient, opts: KcDeployOptions, entityNames: string[],
+    shouldDelete: (link: EntryLink) => boolean):
+    Promise<LinkReconcileOutcome> {
+  const linkType = schemaJoinLinkType(opts);
+  const seen = new Set<string>();
+  let unlinked = 0;
+  for (const entry of entityNames) {
+    const res = await cat.lookupEntryLinks(
+        opts.project, opts.location, {entry, entryLinkTypes: [linkType]});
+    if (!isOk(res)) {
+      return {unlinked, error: `looking up entry links for '${idOf(entry)}': ${
+                                   errText(res)}`};
+    }
+    for (const link of res.result ?? []) {
+      const id = idOf(link.name ?? '');
+      if (seen.has(id)) continue;
+      seen.add(id);
+      if (!shouldDelete(link)) continue;
+      const del = await cat.deleteEntryLink(
+          opts.project, opts.location, opts.entryGroup, id);
+      if (isOk(del) || del.status === 404) {
+        unlinked++;
+        continue;
+      }
+      return {unlinked, error: `deleting entry link '${id}': ${errText(del)}`};
+    }
+  }
+  return {unlinked};
+}
+
+
+// Reconciles a still-present model's schema-join links: deletes any link this
+// model OWNS (both endpoints under its `<anchor>.entities.` namespace) that the
+// model no longer emits -- a relationship dropped or renamed since the last
+// push. A link touching an entry outside this model is never treated as owned,
+// so a shared entry group is safe.
+function reconcileLinks(
+    cat: CatalogClient, opts: KcDeployOptions,
+    resources: KcResources): Promise<LinkReconcileOutcome> {
+  const anchorId = idOf(resources.entries[0].name);
+  const entityPrefix = `${anchorId}.entities.`;
+  const entityNames = resources.entries
+      .filter(e => (e.entryType ?? '').endsWith('/semantic-entity'))
+      .map(e => e.name);
+  if (!entityNames.length) return Promise.resolve({unlinked: 0});
+
+  const emittedLinkIds =
+      new Set(resources.entryLinks.map(l => idOf(l.name ?? '')));
+  const ownedByModel = (link: EntryLink) =>
+      link.entryReferences.length === 2 &&
+      link.entryReferences.every(r => idOf(r.name).startsWith(entityPrefix));
+
+  return deleteOwnedLinks(
+      cat, opts, entityNames,
+      link =>
+          ownedByModel(link) && !emittedLinkIds.has(idOf(link.name ?? '')));
+}
+
+
+// Deletes models already in the entry group that this push does not re-emit
+// (--force-remove). For each foreign anchor: remove its schema-join links first
+// (they reference entries about to be deleted), then its entries -- the anchor
+// and its `<anchor>.entities.` / `<anchor>.metrics.` children present in the
+// pre-write listing `existing`.
+async function removeForeignModels(
+    cat: CatalogClient, opts: KcDeployOptions, existing: Entry[],
+    foreignAnchors: string[]):
+    Promise<{deleted: number; unlinked: number; error?: string}> {
+  let deleted = 0;
+  let unlinked = 0;
+  for (const anchor of foreignAnchors) {
+    const entityPrefix = `${anchor}.entities.`;
+    const metricPrefix = `${anchor}.metrics.`;
+    const owned = existing.filter(e => {
+      const id = idOf(e.name);
+      return id === anchor || id.startsWith(entityPrefix) ||
+          id.startsWith(metricPrefix);
+    });
+    const entityNames = owned
+        .filter(e => (e.entryType ?? '').endsWith('/semantic-entity'))
+        .map(e => e.name);
+
+    // The whole model is going away, so every schema-join link referencing one
+    // of its entities is orphaned -- delete them all.
+    const links = await deleteOwnedLinks(cat, opts, entityNames, () => true);
+    if (links.error) return {deleted, unlinked, error: links.error};
+    unlinked += links.unlinked;
+
+    for (const e of owned) {
+      const id = idOf(e.name);
+      const res = await cat.deleteEntry(
+          opts.project, opts.location, opts.entryGroup, id);
+      if (isOk(res) || res.status === 404) {
+        deleted++;
+        continue;
+      }
+      return {deleted, unlinked,
+              error: `deleting entry '${id}' of removed model '${anchor}': ${
+                         errText(res)}`};
+    }
+  }
+  return {deleted, unlinked};
 }
 
 
@@ -345,9 +550,9 @@ async function createEntryLinks(
 
 // Writes one entry link: create, then fall back to an in-place aspect update if
 // it already exists. A link's entry references and type are immutable, so a
-// re-push only refreshes the aspect (the join detail); a relationship whose
-// endpoints changed keeps its stale link -- an accepted limitation until link
-// reconciliation lands (see reconcileDeletions TODO).
+// re-push only refreshes the aspect (the join detail). A relationship whose id
+// changed writes a new link and leaves the old one; reconcileLinks deletes such
+// orphaned links after this model's links are written.
 async function writeEntryLink(
     cat: CatalogClient, opts: KcDeployOptions,
     link: EntryLink): Promise<{error?: string}> {
