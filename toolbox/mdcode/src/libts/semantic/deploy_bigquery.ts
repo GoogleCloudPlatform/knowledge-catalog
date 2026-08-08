@@ -76,14 +76,20 @@ export interface DeployResult {
 }
 
 
-// Extracts the BigQuery Graph deployment targets from a model's GOOGLE
-// custom extension. The extension `data` is an opaque, vendor-serialized JSON
-// string (the loader keeps it verbatim); we own its `deploymentTargets` shape.
-export function bigQueryGraphTargets(model: SemanticModel):
-    {targets: BigQueryGraphTarget[]; malformed: string[]} {
+// Reads a model's GOOGLE custom_extension(s) in a single pass and returns the
+// deployment-target facts every caller derives from them: every declared
+// deploymentTarget URI (`uris`), the subset that parse as BigQuery Graph targets
+// (`targets`), and the BigQuery-prefixed URIs that failed the strict match
+// (`malformed`, kept so a caller can name a typo instead of silently skipping).
+// The extension `data` is an opaque, vendor-serialized JSON string (the loader
+// keeps it verbatim); we own its `deploymentTargets` shape. Throws on malformed
+// extension JSON. bigQueryGraphTargets and deploymentTargetUris are thin views
+// over this, and validation calls it directly so a push parses each extension
+// once rather than once per reader.
+export function googleDeploymentTargets(model: SemanticModel):
+    {uris: string[]; targets: BigQueryGraphTarget[]; malformed: string[]} {
+  const uris: string[] = [];
   const targets: BigQueryGraphTarget[] = [];
-  // BigQuery-prefixed URIs that failed the strict match (typo, bad identifier
-  // char). Kept so the caller can name them instead of silently skipping.
   const malformed: string[] = [];
 
   for (const ext of model.customExtensions ?? []) {
@@ -99,15 +105,16 @@ export function bigQueryGraphTargets(model: SemanticModel):
           model.name}': GOOGLE custom_extension 'data' is not valid JSON.`);
     }
 
-    const uris = data?.deploymentTargets;
-    if (!Array.isArray(uris)) {
+    const list = data?.deploymentTargets;
+    if (!Array.isArray(list)) {
       continue;
     }
 
-    for (const uri of uris) {
+    for (const uri of list) {
       if (typeof uri !== 'string') {
         continue;
       }
+      uris.push(uri);
       const m = uri.match(BQ_GRAPH_TARGET);
       if (m) {
         targets.push({project: m[1], dataset: m[2], graphName: m[3], uri});
@@ -120,40 +127,26 @@ export function bigQueryGraphTargets(model: SemanticModel):
     }
   }
 
+  return {uris, targets, malformed};
+}
+
+
+// The BigQuery Graph deployment targets a model declares in its GOOGLE custom
+// extension, plus any BigQuery-prefixed URIs that failed to parse. A view over
+// googleDeploymentTargets.
+export function bigQueryGraphTargets(model: SemanticModel):
+    {targets: BigQueryGraphTarget[]; malformed: string[]} {
+  const {targets, malformed} = googleDeploymentTargets(model);
   return {targets, malformed};
 }
 
 
-// Every deploymentTarget URI a model declares in its GOOGLE custom extension(s),
-// across all of them, regardless of whether each parses as a BigQuery Graph
-// target. Validation uses this to require that a model declares at least one
-// deployment target; bigQueryGraphTargets narrows to the ones that are BigQuery
-// graphs. Throws on malformed extension JSON (same contract as
-// bigQueryGraphTargets).
+// Every deploymentTarget URI a model declares, regardless of whether each parses
+// as a BigQuery Graph target. Validation uses this to require that a model
+// declares at least one deployment target; bigQueryGraphTargets narrows to the
+// BigQuery graphs. Throws on malformed extension JSON.
 export function deploymentTargetUris(model: SemanticModel): string[] {
-  const uris: string[] = [];
-  for (const ext of model.customExtensions ?? []) {
-    if (ext.vendorName !== GOOGLE_VENDOR) {
-      continue;
-    }
-    let data: any;
-    try {
-      data = JSON.parse(ext.data);
-    } catch {
-      throw new Error(`Model '${
-          model.name}': GOOGLE custom_extension 'data' is not valid JSON.`);
-    }
-    const list = data?.deploymentTargets;
-    if (!Array.isArray(list)) {
-      continue;
-    }
-    for (const uri of list) {
-      if (typeof uri === 'string') {
-        uris.push(uri);
-      }
-    }
-  }
-  return uris;
+  return googleDeploymentTargets(model).uris;
 }
 
 
