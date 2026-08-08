@@ -96,8 +96,8 @@ describe(
     });
 
 
-describe('the schema aspect carries expression fidelity in semantics', () => {
-  test('both target and imported expressions are preserved', () => {
+describe('the schema aspect carries the target expression in semantics', () => {
+  test('the target expression is kept; imported vendor SQL is not emitted', () => {
     const model: SemanticModel = {
       name: 'm',
       relationships: [],
@@ -116,7 +116,8 @@ describe('the schema aspect carries expression fidelity in semantics', () => {
     };
     const f = schemaField(model);
     expect(f.semantics.expression).toBe('CAST(e.f AS INT64)');
-    expect(f.semantics.importedExpression).toBe('e.f::int');
+    // importedExpression is the vendor/MAQL form; KC has no consumer for it.
+    expect(f.semantics.importedExpression).toBeUndefined();
   });
 });
 
