@@ -294,10 +294,10 @@ function schemaAspectData(entity: Entity): Record<string, any> {
 }
 
 // semantic-metric: the model-level aggregate. `dataType` is required by the
-// aspect type; when the model does not declare one, fall back to a numeric type
-// and warn (metrics are aggregates, so a number is the sensible default;
-// dimensions, in schemaAspectData, default to STRING) rather than emit an
-// invalid aspect.
+// aspect type; when the model does not declare one, fall back to NUMERIC
+// (decimal) and warn (metrics are aggregates, so an exact numeric is the
+// sensible default; dimensions, in schemaAspectData, default to STRING) rather
+// than emit an invalid aspect.
 function metricAspectData(
     metric: Metric, warnings: string[]): Record<string, any> {
   let dataType = metric.type ? columnDataType(metric.type) : undefined;
@@ -305,8 +305,8 @@ function metricAspectData(
     warnings.push(
         `metric '${
             metric.name}': no datatype in the source model; defaulting the ` +
-        `required semantic-metric.dataType to 'FLOAT64'`);
-    dataType = 'FLOAT64';
+        `required semantic-metric.dataType to 'NUMERIC'`);
+    dataType = 'NUMERIC';
   }
   return compact({
     entity: metric.entity,

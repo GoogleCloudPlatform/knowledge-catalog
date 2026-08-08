@@ -74,7 +74,7 @@
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-metric",
           "data": {
             "entity": "orders",
-            "dataType": "FLOAT64",
+            "dataType": "NUMERIC",
             "expression": "SUM(orders.o_totalprice)"
           }
         }
@@ -83,6 +83,6 @@
   ],
   "entryLinks": [],
   "warnings": [
-    "metric 'total_revenue': no datatype in the source model; defaulting the required semantic-metric.dataType to 'FLOAT64'"
+    "metric 'total_revenue': no datatype in the source model; defaulting the required semantic-metric.dataType to 'NUMERIC'"
   ]
 }
