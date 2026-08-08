@@ -43,7 +43,6 @@
                 "metadataType": "STRING",
                 "semantics": {
                   "expression": "ss_item_sk",
-                  "importedExpression": "{label/store_sales.attr.store_sales.ss_item_sk}",
                   "role": "DIMENSION"
                 }
               },
@@ -53,7 +52,6 @@
                 "metadataType": "STRING",
                 "semantics": {
                   "expression": "ss_ticket_number",
-                  "importedExpression": "{label/store_sales.attr.store_sales.ss_ticket_number}",
                   "role": "DIMENSION"
                 }
               },
@@ -63,7 +61,6 @@
                 "metadataType": "STRING",
                 "semantics": {
                   "expression": "ss_customer_sk",
-                  "importedExpression": "{label/store_sales.attr.store_sales.ss_customer_sk}",
                   "role": "DIMENSION"
                 }
               },
@@ -73,7 +70,6 @@
                 "metadataType": "STRING",
                 "semantics": {
                   "expression": "ss_store_sk",
-                  "importedExpression": "{label/store_sales.attr.store_sales.ss_store_sk}",
                   "role": "DIMENSION"
                 }
               },
@@ -84,7 +80,6 @@
                 "description": "Quantity of items sold",
                 "semantics": {
                   "expression": "ss_quantity",
-                  "importedExpression": "{fact/store_sales.fact.store_sales.ss_quantity}",
                   "role": "DEFAULT"
                 }
               },
@@ -95,7 +90,6 @@
                 "description": "Sales price per unit",
                 "semantics": {
                   "expression": "ss_sales_price",
-                  "importedExpression": "{fact/store_sales.fact.store_sales.ss_sales_price}",
                   "role": "DEFAULT"
                 }
               },
@@ -106,7 +100,6 @@
                 "description": "Extended sales price (quantity * price)",
                 "semantics": {
                   "expression": "ss_ext_sales_price",
-                  "importedExpression": "{fact/store_sales.fact.store_sales.ss_ext_sales_price}",
                   "role": "DEFAULT"
                 }
               },
@@ -117,7 +110,6 @@
                 "description": "Net profit from the sale",
                 "semantics": {
                   "expression": "ss_net_profit",
-                  "importedExpression": "{fact/store_sales.fact.store_sales.ss_net_profit}",
                   "role": "DEFAULT"
                 }
               }

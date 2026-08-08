@@ -22,11 +22,10 @@
 //   * semantic-model  = { deploymentTargets: string[] }
 //   * semantic-entity = { source: { resources: string[], importedSystem?,
 //                                    importedResource? } }
-//   * semantic-metric = { entity?, dataType (required), expression?,
-//                         importedExpression? }
+//   * semantic-metric = { entity?, dataType (required), expression? }
 //   * schema          = { fields: [{ name, dataType, metadataType,
 //                                    description?, semantics: { expression?,
-//                                    importedExpression?, role } }] }
+//                                    role } }] }
 //
 // Relationships become `schema-join` entry links between the two entity entries.
 // schema-join is a built-in, undirected entry link type in `dataplex-types/global`
@@ -272,7 +271,7 @@ function entityAspectData(entity: Entity): Record<string, any> {
 }
 
 // The built-in schema aspect, carrying each field's column type plus the new
-// per-field `semantics` block (expression / importedExpression / role). name,
+// per-field `semantics` block (expression / role). name,
 // dataType, and metadataType are required per column.
 function schemaAspectData(entity: Entity): Record<string, any> {
   return {
@@ -284,7 +283,6 @@ function schemaAspectData(entity: Entity): Record<string, any> {
                        description: f.description,
                        semantics: compact({
                          expression: f.expression,
-                         importedExpression: f.importedExpression,
                          // A field with any dimension metadata is a dimension;
                          // otherwise DEFAULT.
                          role: f.dimension ? 'DIMENSION' : 'DEFAULT',
@@ -312,7 +310,6 @@ function metricAspectData(
     entity: metric.entity,
     dataType,
     expression: metric.expression,
-    importedExpression: metric.importedExpression,
   });
 }
 
