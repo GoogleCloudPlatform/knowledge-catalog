@@ -188,6 +188,10 @@ export async function deployKnowledgeCatalog(
     return fail(group);
   }
 
+  // TODO: reconcile deletions. Push only creates/upserts today; an entity or
+  // metric removed from the local model is left orphaned in the catalog. Add a
+  // pass that deletes entries under this model's anchor that are no longer
+  // emitted (follow-up).
   for (const {model, resources} of emitted) {
     const outcome = await createEntries(cat, opts, resources.entries);
     if (outcome.error) {
@@ -203,6 +207,8 @@ export async function deployKnowledgeCatalog(
 
 // Ensures the destination entry group exists. Returns an error message on a
 // non-idempotent failure, or undefined on success (created or already existed).
+// TODO: consider provisioning the entry group at `init` time instead of on
+// every push, so push writes only entries (follow-up).
 async function ensureEntryGroup(
     cat: CatalogClient, opts: KcDeployOptions): Promise<string|undefined> {
   const res = await cat.createEntryGroup(

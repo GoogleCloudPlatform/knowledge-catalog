@@ -169,6 +169,10 @@ export async function push(options: PushOptions): Promise<number> {
     }
 
     const docs = layout.modelDocuments();
+    // TODO: load + emit each model once and fan out to both legs. Each leg
+    // re-parses the documents today (deployBigQuery and deployKnowledgeCatalog
+    // both call loadModels), so a `--target all` push loads the models twice
+    // (follow-up).
     // Run the resolved destinations in canonical order (BigQuery first); the
     // early return below fails fast, skipping later legs when an earlier one
     // fails.
