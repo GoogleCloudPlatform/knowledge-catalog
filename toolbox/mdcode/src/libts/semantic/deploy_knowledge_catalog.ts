@@ -22,9 +22,12 @@
 //   * Reconcile deletions: an entity or metric removed from a still-present
 //     model leaves an orphaned entry under its anchor; after writing, delete
 //     any entry this push owns (by entry-id prefix) that was not re-emitted.
-//   * Relationship edges are not published (no writable directed link type over
-//     semantic-entity endpoints); the emitter warns and the edges live in the
-//     BigQuery property graph.
+//   * Relationship edges are published as schema-join entry links between the
+//     two entity entries, written after that model's entries (both endpoints
+//     must exist first). A re-push upserts the link's aspect; a many-to-many
+//     (association) edge is not published yet (the emitter warns and skips it).
+//     The caller additionally needs `dataplex.entryGroups.useSchemaJoinEntryLink`
+//     and `useSchemaJoinAspect` on the destination entry group.
 //
 // This is a library module: it emits no console output. Warnings and the
 // dry-run plan are returned in `KcDeployResult` for the CLI (commands.ts) to
@@ -33,7 +36,7 @@
 
 import {ApiResult} from '../gcp/api';
 import * as context from '../gcp/context';
-import {CatalogClient, Entry} from '../gcp/dataplex';
+import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 
 import {generateCatalogResources, KcResources} from './knowledge_catalog';
 import {LoadedModel} from './loader';
@@ -68,6 +71,9 @@ export interface KcDeployResult {
   created: number;
   updated: number;
   deleted: number;
+  // Relationship (schema-join) entry links written -- created or upserted (0 for
+  // validateOnly).
+  linked: number;
   // A human-readable plan of what would be written; populated for validateOnly.
   plan: string[];
 }
@@ -94,10 +100,12 @@ export async function deployKnowledgeCatalog(
   let created = 0;
   let updated = 0;
   let deleted = 0;
+  let linked = 0;
   let modelsSeen = 0;
 
   const fail = (details: string): KcDeployResult =>
-      ({success: false, details, warnings, created, updated, deleted, plan});
+      ({success: false, details, warnings, created, updated, deleted, linked,
+        plan});
 
   // Emit every model up front (pure): dry-run and warnings need no network, and
   // a generation warning surfaces even if a later write fails.
@@ -134,7 +142,7 @@ export async function deployKnowledgeCatalog(
   if (!modelsSeen) {
     if (opts.validateOnly) {
       warnings.push('No semantic model documents found; nothing to validate.');
-      return {success: true, warnings, created, updated, deleted, plan};
+      return {success: true, warnings, created, updated, deleted, linked, plan};
     }
     return fail('No semantic model documents found; nothing to deploy.');
   }
@@ -166,7 +174,7 @@ export async function deployKnowledgeCatalog(
     plan.push(...planSummary(model, resources, opts));
   }
   if (opts.validateOnly) {
-    return {success: true, warnings, created, updated, deleted, plan};
+    return {success: true, warnings, created, updated, deleted, linked, plan};
   }
 
   // The destination entry group is provisioned at `init`, not here: push writes
@@ -183,6 +191,14 @@ export async function deployKnowledgeCatalog(
     }
     created += outcome.created;
     updated += outcome.updated;
+
+    // Links reference this model's entity entries, so they are written after the
+    // entries above (both endpoints must exist first).
+    const links = await createEntryLinks(cat, opts, resources.entryLinks);
+    if (links.error) {
+      return fail(`Model '${model}': ${links.error}`);
+    }
+    linked += links.linked;
   }
 
   // Reconcile deletions: an entity or metric removed from a still-present model
@@ -196,7 +212,7 @@ export async function deployKnowledgeCatalog(
   }
   deleted = recon.deleted;
 
-  return {success: true, warnings, created, updated, deleted, plan};
+  return {success: true, warnings, created, updated, deleted, linked, plan};
 }
 
 
@@ -217,6 +233,11 @@ interface ReconcileOutcome {
 // its anchor from this push, so its anchor + children are no longer owned and
 // survive. Removing them safely needs a scope-level record of which models this
 // entry group manages (follow-up).
+//
+// TODO: reconcile removed relationship links. There is no list API for entry
+// links (only LookupEntryLinks, per referenced entry), so an orphaned link left
+// by a dropped relationship is not deleted yet; it needs a lookup-per-entity
+// sweep (follow-up).
 async function reconcileDeletions(
     cat: CatalogClient, opts: KcDeployOptions,
     emitted: {resources: KcResources}[]): Promise<ReconcileOutcome> {
@@ -303,6 +324,49 @@ async function createEntries(
 }
 
 
+interface LinksOutcome {
+  linked: number;
+  error?: string;
+}
+
+// Writes a model's schema-join entry links. Both endpoint entries already exist
+// (createEntries ran first for this model), and links are independent of each
+// other, so they are written concurrently. A link that already exists is upserted
+// (its aspect refreshed).
+async function createEntryLinks(
+    cat: CatalogClient, opts: KcDeployOptions,
+    links: EntryLink[]): Promise<LinksOutcome> {
+  if (!links.length) return {linked: 0};
+  const res = await Promise.all(links.map(l => writeEntryLink(cat, opts, l)));
+  const firstErr = res.find(r => r.error);
+  if (firstErr) return {linked: 0, error: firstErr.error};
+  return {linked: links.length};
+}
+
+// Writes one entry link: create, then fall back to an in-place aspect update if
+// it already exists. A link's entry references and type are immutable, so a
+// re-push only refreshes the aspect (the join detail); a relationship whose
+// endpoints changed keeps its stale link -- an accepted limitation until link
+// reconciliation lands (see reconcileDeletions TODO).
+async function writeEntryLink(
+    cat: CatalogClient, opts: KcDeployOptions,
+    link: EntryLink): Promise<{error?: string}> {
+  const linkId = idOf(link.name ?? '');
+  const res = await cat.createEntryLink(
+      opts.project, opts.location, opts.entryGroup, linkId, link);
+  if (isExists(res)) {
+    const upd =
+        await cat.updateEntryLink({name: link.name, aspects: link.aspects} as
+                                      EntryLink,
+                                  ['aspects']);
+    if (!isOk(upd)) return {error: `entry link '${linkId}': ${errText(upd)}`};
+    return {};
+  }
+  if (!isOk(res)) return {error: `entry link '${linkId}': ${errText(res)}`};
+  return {};
+}
+
+
 interface WriteOutcome {
   updated?: boolean;  // true when the entry already existed and was updated
   error?: string;
@@ -356,6 +420,13 @@ function planSummary(
     ...resources.entries.map(
         e => `    - ${idOf(e.name)} (${idOf(e.entryType)})`),
   ];
+  if (resources.entryLinks.length) {
+    lines.push(
+        `  ${resources.entryLinks.length} schema-join link${
+            resources.entryLinks.length === 1 ? '' : 's'}:`,
+        ...resources.entryLinks.map(
+            l => `    - ${idOf(l.name ?? '')}`));
+  }
   return lines;
 }
 

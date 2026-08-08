@@ -81,6 +81,7 @@
       }
     }
   ],
+  "entryLinks": [],
   "warnings": [
     "metric 'total_revenue': no datatype in the source model; defaulting the required semantic-metric.dataType to 'FLOAT64'"
   ]

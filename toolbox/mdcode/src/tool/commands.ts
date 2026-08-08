@@ -296,9 +296,12 @@ async function pushKnowledgeCatalog(
   const n = result.created + result.updated;
   const removed =
       result.deleted ? `; removed ${result.deleted} orphaned` : '';
+  const linked = result.linked
+    ? `; linked ${result.linked} relationship${result.linked === 1 ? '' : 's'}`
+    : '';
   console.log(options.validateOnly
     ? 'Validation complete; no changes applied.'
     : `Wrote ${result.created} new and ${result.updated} updated ` +
-        `Knowledge Catalog entr${n === 1 ? 'y' : 'ies'}${removed}.`);
+        `Knowledge Catalog entr${n === 1 ? 'y' : 'ies'}${removed}${linked}.`);
   return 0;
 }

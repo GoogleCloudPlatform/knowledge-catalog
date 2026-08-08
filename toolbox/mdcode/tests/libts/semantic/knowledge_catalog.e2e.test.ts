@@ -14,9 +14,9 @@
 //         ./tests/libts/semantic/knowledge_catalog.e2e.test.ts
 //   then read the diff before committing.
 //
-// Focused behavior (warnings, relationship deferral, metric dataType fallback)
-// is asserted in knowledge_catalog.test.ts; the publisher's write sequence in
-// deploy_knowledge_catalog.test.ts.
+// Focused behavior (warnings, schema-join link emission, metric dataType
+// fallback) is asserted in knowledge_catalog.test.ts; the publisher's write
+// sequence in deploy_knowledge_catalog.test.ts.
 
 import {describe, expect, test} from 'bun:test';
 import * as fs from 'fs';
@@ -29,8 +29,9 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 
 // Fixtures that get a KC golden. Chosen to exercise the distinct mappings:
 //   sales_bq_graph_target -> model aspect deploymentTargets + un-typed metric
-//     (dataType fallback); star_orders_customer -> relationships (deferred) +
-//     multiple entities/metrics; tpcds_date_edge -> temporal field types.
+//     (dataType fallback); star_orders_customer -> a direct-FK relationship
+//     (schema-join link) + multiple entities/metrics; tpcds_date_edge ->
+//     temporal field types.
 const CORPUS = [
   'sales_bq_graph_target.yaml',
   'star_orders_customer.yaml',
@@ -52,12 +53,14 @@ function loadFixture(fixture: string, load: LoadOptions = {}) {
       {defaultProject: 'sqlgen-testing', defaultDataset: 'demo', ...load});
 }
 
-// The exact artifact a golden captures: the generated entries, then the emitter
-// warnings, as pretty JSON so a reviewer sees the full resource shapes.
+// The exact artifact a golden captures: the generated entries, then the
+// relationship entry links, then the emitter warnings, as pretty JSON so a
+// reviewer sees the full resource shapes.
 function render(fixture: string): string {
   const {models} = loadFixture(fixture);
-  const {entries, warnings} = generateCatalogResources(models[0], GEN_OPTS);
-  return JSON.stringify({entries, warnings}, null, 2) + '\n';
+  const {entries, entryLinks, warnings} =
+      generateCatalogResources(models[0], GEN_OPTS);
+  return JSON.stringify({entries, entryLinks, warnings}, null, 2) + '\n';
 }
 
 const goldenPath = (fixture: string) => path.join(

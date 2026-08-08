@@ -168,9 +168,50 @@
       }
     }
   ],
+  "entryLinks": [
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/sales-orders-to-customer",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/schema-join",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.entities.orders",
+          "type": "UNSPECIFIED"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.entities.customer",
+          "type": "UNSPECIFIED"
+        }
+      ],
+      "aspects": {
+        "dataplex-types.global.schema-join": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema-join",
+          "data": {
+            "joins": [
+              {
+                "source": {
+                  "name": "samples.tpch.orders",
+                  "fields": [
+                    "o_custkey"
+                  ]
+                },
+                "target": {
+                  "name": "samples.tpch.customer",
+                  "fields": [
+                    "c_custkey"
+                  ]
+                },
+                "type": "FOREIGN_KEY",
+                "inferenceSource": "USER"
+              }
+            ],
+            "userManaged": true
+          }
+        }
+      }
+    }
+  ],
   "warnings": [
     "metric 'total_revenue': no datatype in the source model; defaulting the required semantic-metric.dataType to 'FLOAT64'",
-    "metric 'order_count': no datatype in the source model; defaulting the required semantic-metric.dataType to 'FLOAT64'",
-    "1 relationship not published to Knowledge Catalog: no user-writable entry link type is valid over semantic-entity endpoints; the graph edges live in the BigQuery property graph."
+    "metric 'order_count': no datatype in the source model; defaulting the required semantic-metric.dataType to 'FLOAT64'"
   ]
 }

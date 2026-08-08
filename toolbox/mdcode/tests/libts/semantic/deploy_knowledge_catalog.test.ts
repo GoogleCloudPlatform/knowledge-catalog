@@ -27,6 +27,13 @@ const OSSIE =
     fs.readFileSync(path.join(FIXTURES, 'sales_bq_graph_target.yaml'), 'utf8');
 const DOCS = [{name: 'sales.yaml', text: OSSIE}];
 
+// A model with a direct-FK relationship: 5 entries (anchor + 2 entities + 2
+// metrics) plus 1 schema-join entry link (orders -> customer). Used to exercise
+// the link write path the OSSIE fixture (no relationship) cannot.
+const STAR =
+    fs.readFileSync(path.join(FIXTURES, 'star_orders_customer.yaml'), 'utf8');
+const STAR_DOCS = [{name: 'star.yaml', text: STAR}];
+
 // The deploy leg now consumes models already parsed by loadSemanticModels
 // (shared with the BigQuery leg). These tests author documents, so this helper
 // parses them the way commands.ts does.
@@ -70,8 +77,9 @@ function err(status: number, message: string): ApiResult<any> {
   return {status, message};
 }
 
-// Stubs createEntryGroup + createEntry (+ optionally updateEntry) and returns
-// the spies so a test can assert call counts and ordering.
+// Stubs createEntryGroup + createEntry (+ optionally updateEntry) and the entry-
+// link writes, returning the spies so a test can assert call counts and
+// ordering.
 function stubClient(opts: {
   group?: ApiResult<any>,
   create?: (entryId: string) => ApiResult<any>,
@@ -80,6 +88,9 @@ function stubClient(opts: {
   // listEntries during delete reconciliation). Default: none.
   existing?: string[],
   del?: (entryId: string) => ApiResult<any>,
+  // Result of createEntryLink, keyed by the entry-link id. Default: 200.
+  createLink?: (linkId: string) => ApiResult<any>,
+  updateLink?: ApiResult<any>,
 } = {}) {
   const group = spyOn(CatalogClient.prototype, 'createEntryGroup')
                     .mockImplementation(async () => opts.group ?? ok({}));
@@ -99,7 +110,14 @@ function stubClient(opts: {
                   .mockImplementation(
                       async (_p, _l, _eg, entryId) =>
                           (opts.del ?? (() => ok({})))(entryId));
-  return {group, create, update, list, del};
+  const createLink = spyOn(CatalogClient.prototype, 'createEntryLink')
+                         .mockImplementation(
+                             async (_p, _l, _eg, linkId) =>
+                                 (opts.createLink ?? (() => ok({})))(linkId));
+  const updateLink = spyOn(CatalogClient.prototype, 'updateEntryLink')
+                         .mockImplementation(
+                             async () => opts.updateLink ?? ok({}));
+  return {group, create, update, list, del, createLink, updateLink};
 }
 
 
@@ -140,6 +158,63 @@ describe('deployKnowledgeCatalog: re-push upserts', () => {
     expect(result.updated).toBe(3);
     expect(create).toHaveBeenCalledTimes(3);
     expect(update).toHaveBeenCalledTimes(3);
+  });
+});
+
+
+describe('deployKnowledgeCatalog: relationship entry links', () => {
+  test('a direct-FK relationship is written as one schema-join link', async () => {
+    const {create, createLink, updateLink} = stubClient();
+
+    const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(true);
+    expect(result.created).toBe(5);  // anchor + 2 entities + 2 metrics
+    expect(result.linked).toBe(1);
+    expect(create).toHaveBeenCalledTimes(5);
+    expect(createLink).toHaveBeenCalledTimes(1);
+    expect(updateLink).not.toHaveBeenCalled();
+    // Links are written to the same destination the entries are.
+    const [project, location, entryGroup, linkId] = createLink.mock.calls[0];
+    expect(project).toBe('dest');
+    expect(location).toBe('us');
+    expect(entryGroup).toBe('eg');
+    expect(linkId).toBe('sales-orders-to-customer');
+  });
+
+  test('a link that already exists is upserted via updateEntryLink', async () => {
+    const {createLink, updateLink} = stubClient({
+      createLink: () => err(409, 'entry link already exists'),
+      updateLink: ok({}),
+    });
+
+    const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(true);
+    expect(result.linked).toBe(1);
+    expect(createLink).toHaveBeenCalledTimes(1);
+    expect(updateLink).toHaveBeenCalledTimes(1);
+  });
+
+  test('a failed link write fails the push, naming the link', async () => {
+    stubClient({
+      createLink: () => err(500, 'boom'),
+    });
+
+    const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(false);
+    expect(result.details).toContain('sales-orders-to-customer');
+  });
+
+  test('a model with no relationships writes no links', async () => {
+    const {createLink} = stubClient();
+
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(true);
+    expect(result.linked).toBe(0);
+    expect(createLink).not.toHaveBeenCalled();
   });
 });
 

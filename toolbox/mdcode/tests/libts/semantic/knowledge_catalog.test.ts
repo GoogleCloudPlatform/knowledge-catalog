@@ -249,3 +249,95 @@ describe('model-level structure', () => {
             .toBe(true);
       });
 });
+
+
+describe('relationships map to schema-join entry links', () => {
+  // A two-entity model joined by a direct foreign key (orders.custkey ->
+  // customer.custkey), the common case the loader produces from
+  // `relationships`.
+  function directFkModel(): SemanticModel {
+    return {
+      name: 'm',
+      metrics: [],
+      entities: [
+        {name: 'orders', dataSource: 'p.d.orders', keys: ['o_key'], fields: []},
+        {
+          name: 'customer',
+          dataSource: 'p.d.customer',
+          keys: ['c_key'],
+          fields: []
+        },
+      ],
+      relationships: [{
+        name: 'orders_to_customer',
+        source: {entity: 'orders', columns: ['custkey']},
+        destination: {entity: 'customer', columns: ['c_key']},
+        description: 'each order belongs to a customer',
+      }],
+    };
+  }
+
+  test('a direct FK becomes one FOREIGN_KEY schema-join link', () => {
+    const {entryLinks, warnings} =
+        generateCatalogResources(directFkModel(), OPTS);
+    expect(entryLinks.length).toBe(1);
+    const link = entryLinks[0];
+
+    // Link id is slugged and undirected: two UNSPECIFIED references naming the
+    // endpoint entities' entries, typed schema-join.
+    expect(link.name!.endsWith('/entryLinks/m-orders-to-customer')).toBe(true);
+    expect(link.entryLinkType.endsWith('/entryLinkTypes/schema-join'))
+        .toBe(true);
+    expect(link.entryReferences.map(r => r.type)).toEqual([
+      'UNSPECIFIED', 'UNSPECIFIED'
+    ]);
+    expect(link.entryReferences[0].name.endsWith('/entries/m.entities.orders'))
+        .toBe(true);
+    expect(
+        link.entryReferences[1].name.endsWith('/entries/m.entities.customer'))
+        .toBe(true);
+
+    // The join direction + column pairing live in the aspect: source is the FK
+    // side, each side's `name` is the entity's dataSource, type is FOREIGN_KEY.
+    const aspect = link.aspects!['dataplex-types.global.schema-join'].data!;
+    expect(aspect.userManaged).toBe(true);
+    expect(aspect.joins.length).toBe(1);
+    const join = aspect.joins[0];
+    expect(join.type).toBe('FOREIGN_KEY');
+    expect(join.inferenceSource).toBe('USER');
+    expect(join.source).toEqual({name: 'p.d.orders', fields: ['custkey']});
+    expect(join.target).toEqual({name: 'p.d.customer', fields: ['c_key']});
+    expect(join.description).toBe('each order belongs to a customer');
+    expect(warnings.length).toBe(0);
+  });
+
+  test(
+      'a many-to-many (association) edge is skipped and warned, no link',
+      () => {
+        const model = directFkModel();
+        model.relationships[0].association = {
+          dataSource: 'p.d.order_customer',
+          keys: ['id'],
+          sourceColumns: ['o_key'],
+          destinationColumns: ['c_key'],
+        };
+        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+        expect(entryLinks.length).toBe(0);
+        expect(warnings.some(
+                   w => w.includes('orders_to_customer') &&
+                       w.includes('many-to-many')))
+            .toBe(true);
+      });
+
+  test('an edge to an unpublished entity is skipped and warned', () => {
+    const model = directFkModel();
+    // Point the destination at an entity the model does not declare, so it is
+    // never emitted and the link has no endpoint entry to reference.
+    model.relationships[0].destination.entity = 'ghost';
+    const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+    expect(entryLinks.length).toBe(0);
+    expect(warnings.some(
+               w => w.includes('orders_to_customer') && w.includes('ghost')))
+        .toBe(true);
+  });
+});

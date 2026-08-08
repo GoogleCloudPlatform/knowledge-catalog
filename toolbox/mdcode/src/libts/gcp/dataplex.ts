@@ -49,6 +49,27 @@ export interface Entry {
   aspects?: Record<string, Aspect>;
 }
 
+export interface EntryReference {
+  // Full resource name of the referenced entry.
+  name: string;
+  // Path within the entry that is referenced; empty means the entry itself.
+  path?: string;
+  // SOURCE / TARGET for a directed link; UNSPECIFIED for an undirected one.
+  type: 'UNSPECIFIED' | 'SOURCE' | 'TARGET';
+}
+
+export interface EntryLink {
+  // Server-assigned (output only); set by the emitter to the destination name so
+  // the publisher can address it for an in-place update.
+  name?: string;
+  entryLinkType: string;
+  // Exactly two references.
+  entryReferences: EntryReference[];
+  // At most one Dataplex-owned aspect (e.g. schema-join), keyed as
+  // `project.location.aspectType`.
+  aspects?: Record<string, Aspect>;
+}
+
 interface EntryList {
   entries: Entry[];
   nextPageToken?: string;
@@ -209,6 +230,29 @@ export class CatalogClient extends api.ApiClient {
     const res = await this._post<EntryGroup>(resourceName, entryGroup, params);
 
     return res;
+  }
+
+  async createEntryLink(project: string, location: string, entryGroup: string,
+                        entryLinkId: string,
+                        entryLink: EntryLink): Promise<api.ApiResult<EntryLink>> {
+    const parent = catalogContainer(project, location, entryGroup);
+    const resourceName = `${parent}/entryLinks`;
+
+    const params: Record<string, any> = { entryLinkId };
+
+    return await this._post<EntryLink>(resourceName, entryLink, params);
+  }
+
+  // Patches an existing entry link. Only the aspects are mutable (the entry
+  // references and link type are immutable server-side), so callers pass the
+  // link name + aspects with updateMask ['aspects'].
+  async updateEntryLink(entryLink: EntryLink,
+                        updateMask?: string[]): Promise<api.ApiResult<EntryLink>> {
+    const params: Record<string, any> = {};
+    if (updateMask && updateMask.length) {
+      params.updateMask = updateMask.join(',');
+    }
+    return await this._patch<EntryLink>(entryLink.name!, entryLink, params);
   }
 
 }

@@ -350,8 +350,169 @@
       }
     }
   ],
+  "entryLinks": [
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/tpcds-model-store-sales-to-date-dim",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/schema-join",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.store_sales",
+          "type": "UNSPECIFIED"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.date_dim",
+          "type": "UNSPECIFIED"
+        }
+      ],
+      "aspects": {
+        "dataplex-types.global.schema-join": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema-join",
+          "data": {
+            "joins": [
+              {
+                "source": {
+                  "name": "tpcds.public.store_sales",
+                  "fields": [
+                    "ss_sold_date_sk"
+                  ]
+                },
+                "target": {
+                  "name": "sqlgen-testing.demo.date_dim",
+                  "fields": [
+                    "ss_sold_date_sk"
+                  ]
+                },
+                "type": "FOREIGN_KEY",
+                "inferenceSource": "USER"
+              }
+            ],
+            "userManaged": true
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/tpcds-model-store-sales-to-customer",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/schema-join",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.store_sales",
+          "type": "UNSPECIFIED"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.customer",
+          "type": "UNSPECIFIED"
+        }
+      ],
+      "aspects": {
+        "dataplex-types.global.schema-join": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema-join",
+          "data": {
+            "joins": [
+              {
+                "source": {
+                  "name": "tpcds.public.store_sales",
+                  "fields": [
+                    "ss_customer_sk"
+                  ]
+                },
+                "target": {
+                  "name": "tpcds.public.customer",
+                  "fields": [
+                    "c_customer_sk"
+                  ]
+                },
+                "type": "FOREIGN_KEY",
+                "inferenceSource": "USER"
+              }
+            ],
+            "userManaged": true
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/tpcds-model-store-sales-to-item",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/schema-join",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.store_sales",
+          "type": "UNSPECIFIED"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.item",
+          "type": "UNSPECIFIED"
+        }
+      ],
+      "aspects": {
+        "dataplex-types.global.schema-join": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema-join",
+          "data": {
+            "joins": [
+              {
+                "source": {
+                  "name": "tpcds.public.store_sales",
+                  "fields": [
+                    "ss_item_sk"
+                  ]
+                },
+                "target": {
+                  "name": "tpcds.public.item",
+                  "fields": [
+                    "i_item_sk"
+                  ]
+                },
+                "type": "FOREIGN_KEY",
+                "inferenceSource": "USER"
+              }
+            ],
+            "userManaged": true
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/tpcds-model-store-sales-to-store",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/schema-join",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.store_sales",
+          "type": "UNSPECIFIED"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.entities.store",
+          "type": "UNSPECIFIED"
+        }
+      ],
+      "aspects": {
+        "dataplex-types.global.schema-join": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema-join",
+          "data": {
+            "joins": [
+              {
+                "source": {
+                  "name": "tpcds.public.store_sales",
+                  "fields": [
+                    "ss_store_sk"
+                  ]
+                },
+                "target": {
+                  "name": "tpcds.public.store",
+                  "fields": [
+                    "s_store_sk"
+                  ]
+                },
+                "type": "FOREIGN_KEY",
+                "inferenceSource": "USER"
+              }
+            ],
+            "userManaged": true
+          }
+        }
+      }
+    }
+  ],
   "warnings": [
-    "entity 'date_dim': no keys declared in the source model",
-    "4 relationships not published to Knowledge Catalog: no user-writable entry link type is valid over semantic-entity endpoints; the graph edges live in the BigQuery property graph."
+    "entity 'date_dim': no keys declared in the source model"
   ]
 }

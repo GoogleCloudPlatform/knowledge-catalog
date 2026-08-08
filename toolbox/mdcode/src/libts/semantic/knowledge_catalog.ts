@@ -28,16 +28,21 @@
 //                                    description?, semantics: { expression?,
 //                                    importedExpression?, role } }] }
 //
-// Relationships are NOT emitted: there is no user-writable, directed entry link
-// type valid over `semantic-entity` endpoints, and no relationship aspect. The
-// graph edges are carried by the BigQuery property graph (see bigquery.ts);
-// this emitter warns that they are not published to the catalog.
+// Relationships become `schema-join` entry links between the two entity entries.
+// schema-join is a built-in, undirected entry link type in `dataplex-types/global`
+// whose required `schema-join` aspect carries the join detail (the paired join
+// columns, JOIN vs FOREIGN_KEY, USER inference). The join's direction -- which
+// side holds the foreign key -- is preserved inside that aspect, not by the link.
+// Many-to-many (association / junction-table) edges are not emitted yet: a
+// junction is two joins through a third table, which schema-join's single
+// source/target pair does not model; the emitter warns and skips them (the edge
+// still lives in the BigQuery property graph, see bigquery.ts).
 //
 
-import type {Aspect, Entry} from '../gcp/dataplex';
+import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
 import {bigQueryGraphTargets} from './deploy_bigquery';
-import {DataType, Entity, Metric, SemanticModel} from './ir';
+import {DataType, Entity, Metric, Relationship, SemanticModel} from './ir';
 
 // Where the `semantic-*` and `schema` system types live: built-in types in
 // project `dataplex-types`, location `global`. Callers may override to reference
@@ -55,16 +60,18 @@ export interface KcGenerateOptions {
 
 export interface KcResources {
   entries: Entry[];
+  entryLinks: EntryLink[];
   warnings: string[];
 }
 
 /**
  * Generates the Knowledge Catalog resources for a semantic model.
  *
- * Returns the entries (model anchor first, then entities and metrics) and any
- * warnings collected while mapping the IR (missing keys, un-typed metrics,
- * deferred relationships). The resources reference the built-in system types;
- * they do not create them.
+ * Returns the entries (model anchor first, then entities and metrics), the
+ * schema-join entry links for the model's relationships, and any warnings
+ * collected while mapping the IR (missing keys, un-typed metrics, skipped M:N
+ * relationships). The resources reference the built-in system types; they do not
+ * create them.
  */
 export function generateCatalogResources(
     model: SemanticModel, opts: KcGenerateOptions): KcResources {
@@ -102,10 +109,15 @@ export function generateCatalogResources(
     }),
   }];
 
+  // Maps an entity's model name to its published entry name, so a relationship
+  // can resolve its endpoints to the entries the link references. Only entities
+  // actually emitted (not skipped for a duplicate id) are recorded.
+  const entityEntryName = new Map<string, string>();
   for (const entity of entities) {
     const entityId = names.entityId(model, entity);
     if (!claim(seen, entityId, 'entry', `entity '${entity.name}'`, warnings))
       continue;
+    entityEntryName.set(entity.name, names.entry(entityId));
     if (!entity.keys || !entity.keys.length) {
       warnings.push(
           `entity '${entity.name}': no keys declared in the source model`);
@@ -138,15 +150,97 @@ export function generateCatalogResources(
     });
   }
 
-  if (relationships.length) {
-    warnings.push(
-        `${relationships.length} relationship${
-            relationships.length === 1 ? '' : 's'} not ` +
-        `published to Knowledge Catalog: no user-writable entry link type is valid over ` +
-        `semantic-entity endpoints; the graph edges live in the BigQuery property graph.`);
+  // Relationships map to schema-join entry links between their endpoint entries.
+  const entryLinks: EntryLink[] = [];
+  const seenLinks = new Set<string>();
+  for (const rel of relationships) {
+    const link = relationshipLink(
+        names, model, rel, entityEntryName, seenLinks, warnings);
+    if (link) entryLinks.push(link);
   }
 
-  return {entries, warnings: [...new Set(warnings)]};
+  return {entries, entryLinks, warnings: [...new Set(warnings)]};
+}
+
+
+// Builds the schema-join entry link for one relationship, or undefined when it
+// cannot be published. A many-to-many (association) edge is skipped -- a junction
+// is two joins, which the single source/target schema-join does not model -- and
+// so is an edge whose endpoint entity was not emitted (e.g. skipped for a
+// duplicate id). Both cases warn; the BigQuery property graph still carries the
+// edge.
+function relationshipLink(
+    names: Namer, model: SemanticModel, rel: Relationship,
+    entityEntryName: Map<string, string>, seenLinks: Set<string>,
+    warnings: string[]): EntryLink|undefined {
+  if (rel.association) {
+    warnings.push(
+        `relationship '${rel.name}': many-to-many (association) edges are not ` +
+        `published to Knowledge Catalog yet; the edge lives in the BigQuery ` +
+        `property graph.`);
+    return undefined;
+  }
+  const src = entityEntryName.get(rel.source.entity);
+  const dst = entityEntryName.get(rel.destination.entity);
+  if (!src || !dst) {
+    const missing = !src ? rel.source.entity : rel.destination.entity;
+    warnings.push(
+        `relationship '${rel.name}': endpoint entity '${missing}' is not a ` +
+        `published entity; the relationship link is skipped.`);
+    return undefined;
+  }
+  const linkId = names.linkId(model, rel);
+  if (!claim(
+          seenLinks, linkId, 'entry link', `relationship '${rel.name}'`,
+          warnings))
+    return undefined;
+
+  return {
+    name: names.entryLink(linkId),
+    entryLinkType: names.typeName('entryLink', 'schema-join'),
+    // schema-join is undirected: both endpoints are UNSPECIFIED references. The
+    // join direction lives in the aspect (source is the foreign-key side).
+    entryReferences: [
+      {name: src, type: 'UNSPECIFIED'},
+      {name: dst, type: 'UNSPECIFIED'},
+    ],
+    aspects: aspectMap(names, {
+      'schema-join': schemaJoinAspectData(model, rel),
+    }),
+  };
+}
+
+// The schema-join aspect for a direct foreign key: a single join pairing the
+// source (FK) columns to the destination (key) columns positionally. Each side's
+// `name` is the entity's SQL table representation (its dataSource). `type` is
+// FOREIGN_KEY (only direct FKs are emitted today); `inferenceSource` is USER
+// because the join is author-declared, and `userManaged` stops Dataplex from
+// overwriting it. Field names/nesting mirror the schema-join aspect type's
+// metadataTemplate.
+function schemaJoinAspectData(
+    model: SemanticModel, rel: Relationship): Record<string, any> {
+  const srcEntity = entityByName(model, rel.source.entity);
+  const dstEntity = entityByName(model, rel.destination.entity);
+  return {
+    joins: [compact({
+      source: {
+        name: srcEntity ? srcEntity.dataSource : rel.source.entity,
+        fields: rel.source.columns,
+      },
+      target: {
+        name: dstEntity ? dstEntity.dataSource : rel.destination.entity,
+        fields: rel.destination.columns,
+      },
+      description: rel.description,
+      type: 'FOREIGN_KEY',
+      inferenceSource: 'USER',
+    })],
+    userManaged: true,
+  };
+}
+
+function entityByName(model: SemanticModel, name: string): Entity|undefined {
+  return (model.entities ?? []).find(e => e.name === name);
 }
 
 
@@ -311,7 +405,7 @@ class Namer {
   }
 
   // Full resource name of a system type. `kind` selects the collection.
-  typeName(kind: 'entry'|'aspect', name: string): string {
+  typeName(kind: 'entry'|'aspect'|'entryLink', name: string): string {
     return `projects/${this.typeProj}/locations/${this.typeLoc}/${kind}Types/${
         name}`;
   }
@@ -324,6 +418,10 @@ class Namer {
 
   entry(entryId: string): string {
     return `${this.container()}/entries/${entryId}`;
+  }
+
+  entryLink(linkId: string): string {
+    return `${this.container()}/entryLinks/${linkId}`;
   }
 
   private container(): string {
@@ -339,6 +437,11 @@ class Namer {
   }
   metricId(model: SemanticModel, metric: Metric): string {
     return `${slug(model.name)}.metrics.${slug(metric.name)}`;
+  }
+  // Entry link ids are more restricted than entry ids: lowercase letters,
+  // numbers and hyphens only, starting with a letter (see linkSlug).
+  linkId(model: SemanticModel, rel: Relationship): string {
+    return linkSlug(`${model.name}-${rel.name}`);
   }
 }
 
@@ -398,6 +501,21 @@ function claim(
 // characters still yields a valid, stable ID.
 function slug(s: string): string {
   return s.replace(/[^A-Za-z0-9_.-]/g, '_');
+}
+
+// Entry link ids allow only lowercase letters, numbers and hyphens, must start
+// with a letter, must end with a letter or number, and are capped at 63 chars.
+// Lowercase, map any other character to a hyphen, collapse runs, then trim
+// leading non-letters and edge hyphens so the id satisfies the API contract.
+function linkSlug(s: string): string {
+  let out = s.toLowerCase()
+                .replace(/[^a-z0-9-]+/g, '-')
+                .replace(/-+/g, '-')
+                .replace(/^[^a-z]+/, '')
+                .replace(/^-+|-+$/g, '')
+                .slice(0, 63)
+                .replace(/-+$/, '');
+  return out || 'link';
 }
 
 function unquote(part: string): string {
