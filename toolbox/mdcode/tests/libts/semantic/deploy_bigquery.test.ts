@@ -1,5 +1,5 @@
 // Tests for the semantic-model BigQuery deploy leg
-// (src/libts/semantic/deploy.ts).
+// (src/libts/semantic/deploy_bigquery.ts).
 //
 // `bigQueryGraphTargets` is exercised as a pure function; `deployBigQuery` is
 // exercised end to end over an Ossie fixture (loader -> IR -> generator ->
@@ -11,10 +11,21 @@ import * as path from 'node:path';
 
 import * as bq from '../../../src/libts/gcp/bigquery';
 import {ApiContext} from '../../../src/libts/gcp/context';
-import {bigQueryGraphTargets, deployBigQuery} from '../../../src/libts/semantic/deploy';
+import {bigQueryGraphTargets, deployBigQuery} from '../../../src/libts/semantic/deploy_bigquery';
 import {SemanticModel} from '../../../src/libts/semantic/ir';
+import {loadSemanticModels} from '../../../src/libts/semantic/loader';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
+
+// The deploy leg now consumes models already parsed by loadSemanticModels
+// (shared with the Knowledge Catalog leg). These tests still author documents,
+// so this helper parses them the way commands.ts does. defaultProject mirrors
+// the scope's declared project.
+function models(docs: {name: string; text: string}[], defaultProject = 'test-project') {
+  const r = loadSemanticModels(docs, {defaultProject});
+  if (r.error) throw new Error(r.error);
+  return r.models;
+}
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
@@ -146,7 +157,7 @@ describe('deployBigQuery', () => {
     const querySpy = spyOn(bq.BigQueryClient.prototype, 'query');
     try {
       const res = await deployBigQuery(
-          [{name: 'sales', text: OSSIE}], CTX, {validateOnly: true});
+          models([{name: 'sales', text: OSSIE}]), CTX, {validateOnly: true});
       expect(res.success).toBe(true);
       expect(res.deployed).toBe(0);
       expect(querySpy).not.toHaveBeenCalled();
@@ -169,7 +180,7 @@ describe('deployBigQuery', () => {
             .mockImplementation(
                 async () => ({status: 200, result: {jobComplete: true}}));
     try {
-      const res = await deployBigQuery([{name: 'sales', text: OSSIE}], CTX, {});
+      const res = await deployBigQuery(models([{name: 'sales', text: OSSIE}]), CTX, {});
       expect(res.success).toBe(true);
       expect(res.deployed).toBe(1);
       expect(querySpy).toHaveBeenCalledTimes(1);
@@ -201,7 +212,7 @@ describe('deployBigQuery', () => {
             .mockImplementation(
                 async () => ({status: 200, result: {jobComplete: true}}));
     try {
-      const res = await deployBigQuery([{name: 'sales', text: OSSIE}], CTX, {});
+      const res = await deployBigQuery(models([{name: 'sales', text: OSSIE}]), CTX, {});
       expect(res.success).toBe(true);
       expect(pollSpy).toHaveBeenCalledTimes(1);
       // getQueryResults(project, jobId, location) -- jobId is the second arg.
@@ -225,7 +236,7 @@ describe('deployBigQuery', () => {
                     async () => ({status: 200, result: {jobComplete: false}}));
         try {
           const res =
-              await deployBigQuery([{name: 'sales', text: OSSIE}], CTX, {});
+              await deployBigQuery(models([{name: 'sales', text: OSSIE}]), CTX, {});
           expect(res.success).toBe(false);
           expect(res.details).toContain('no job reference to poll');
         } finally {
@@ -256,7 +267,7 @@ describe('deployBigQuery', () => {
                     async () => ({status: 200, result: {status: {}}}));
         try {
           const res =
-              await deployBigQuery([{name: 'sales', text: OSSIE}], CTX, {});
+              await deployBigQuery(models([{name: 'sales', text: OSSIE}]), CTX, {});
           expect(res.success).toBe(true);
           expect(jobSpy).toHaveBeenCalledTimes(1);
         } finally {
@@ -287,7 +298,7 @@ describe('deployBigQuery', () => {
                   },
                 }));
     try {
-      const res = await deployBigQuery([{name: 'sales', text: OSSIE}], CTX, {});
+      const res = await deployBigQuery(models([{name: 'sales', text: OSSIE}]), CTX, {});
       expect(res.success).toBe(false);
       expect(res.details).toContain('Not found: table');
     } finally {
@@ -313,7 +324,7 @@ describe('deployBigQuery', () => {
                     }));
         try {
           const res =
-              await deployBigQuery([{name: 'sales', text: OSSIE}], CTX, {});
+              await deployBigQuery(models([{name: 'sales', text: OSSIE}]), CTX, {});
           expect(res.success).toBe(false);
           expect(res.details).toContain('graph already exists');
         } finally {
@@ -328,7 +339,7 @@ describe('deployBigQuery', () => {
                          .mockImplementation(
                              async () => ({status: 400, message: 'bad DDL'}));
     try {
-      const res = await deployBigQuery([{name: 'sales', text: OSSIE}], CTX, {});
+      const res = await deployBigQuery(models([{name: 'sales', text: OSSIE}]), CTX, {});
       expect(res.success).toBe(false);
       expect(res.details).toContain('bad DDL');
     } finally {
@@ -354,7 +365,7 @@ describe('deployBigQuery', () => {
                             .mockImplementation(async () => stuck);
         try {
           const res = await deployBigQuery(
-              [{name: 'sales', text: OSSIE}], CTX,
+              models([{name: 'sales', text: OSSIE}]), CTX,
               {maxQueryPolls: 3, pollBackoffMs: 0});
           expect(res.success).toBe(false);
           expect(res.details).toContain('did not complete after 3 polls');
@@ -373,7 +384,7 @@ describe('deployBigQuery', () => {
                       .mockImplementation(async () => ({status: 404} as any));
     const querySpy = spyOn(bq.BigQueryClient.prototype, 'query');
     try {
-      const res = await deployBigQuery([{name: 'sales', text: OSSIE}], CTX, {});
+      const res = await deployBigQuery(models([{name: 'sales', text: OSSIE}]), CTX, {});
       expect(res.success).toBe(false);
       expect(res.details).toContain('demo.sales not found');
       expect(querySpy).not.toHaveBeenCalled();
@@ -398,7 +409,7 @@ describe('deployBigQuery', () => {
                     async () => ({status: 200, result: {jobComplete: true}}));
         try {
           const res =
-              await deployBigQuery([{name: 'sales', text: OSSIE}], CTX, {});
+              await deployBigQuery(models([{name: 'sales', text: OSSIE}]), CTX, {});
           expect(res.success).toBe(true);
           expect(querySpy.mock.calls[0][2]).toBeUndefined();
           expect(res.warnings.some(
@@ -422,7 +433,7 @@ describe('deployBigQuery', () => {
                     async () => ({status: 200, result: {jobComplete: true}}));
         try {
           const res = await deployBigQuery(
-              [{name: 'a', text: OSSIE}, {name: 'b', text: OSSIE}], CTX, {});
+              models([{name: 'a', text: OSSIE}, {name: 'b', text: OSSIE}]), CTX, {});
           expect(res.success).toBe(true);
           expect(res.deployed).toBe(2);
           expect(dsSpy).toHaveBeenCalledTimes(1);
@@ -438,7 +449,7 @@ describe('deployBigQuery', () => {
         // A typo'd URI that carries the BigQuery prefix must be reported as
         // unparseable, not as "declares no deploymentTarget".
         const res = await deployBigQuery(
-            [{name: 'sales', text: OSSIE_BAD_TARGET}], CTX,
+            models([{name: 'sales', text: OSSIE_BAD_TARGET}]), CTX,
             {validateOnly: true});
         expect(res.success).toBe(false);
         expect(res.details).toContain('could not be parsed');
@@ -462,7 +473,7 @@ describe('deployBigQuery', () => {
                              });
         try {
           const res = await deployBigQuery(
-              [{name: 'a', text: OSSIE}, {name: 'b', text: OSSIE}], CTX, {});
+              models([{name: 'a', text: OSSIE}, {name: 'b', text: OSSIE}]), CTX, {});
           expect(res.success).toBe(false);
           expect(res.deployed).toBe(1);
           expect(res.details).toContain('boom');
@@ -474,23 +485,9 @@ describe('deployBigQuery', () => {
       });
 
   test(
-      'fails with the document name when a document cannot be parsed',
-      async () => {
-        // A malformed doc must produce a clean, document-scoped failure rather
-        // than an uncaught loader exception.
-        const res = await deployBigQuery(
-            [
-              {name: 'sales', text: OSSIE}, {name: 'broken', text: 'other: 1\n'}
-            ],
-            CTX, {validateOnly: true});
-        expect(res.success).toBe(false);
-        expect(res.details).toContain('Model document \'broken\'');
-      });
-
-  test(
       'fails when a model declares no BigQuery deployment target', async () => {
         const res = await deployBigQuery(
-            [{name: 'sales', text: OSSIE_NO_TARGET}], CTX,
+            models([{name: 'sales', text: OSSIE_NO_TARGET}]), CTX,
             {validateOnly: true});
         expect(res.success).toBe(false);
         expect(res.details).toContain('no BigQuery Graph');
@@ -500,7 +497,7 @@ describe('deployBigQuery', () => {
       'fails when the only deployment target is a non-BigQuery destination',
       async () => {
         const res = await deployBigQuery(
-            [{name: 'sales', text: OSSIE_DATAPLEX_ONLY}], CTX,
+            models([{name: 'sales', text: OSSIE_DATAPLEX_ONLY}]), CTX,
             {validateOnly: true});
         expect(res.success).toBe(false);
         expect(res.details).toContain('no BigQuery Graph');
@@ -513,8 +510,8 @@ describe('deployBigQuery', () => {
         // ('scope-proj'), not the ambient ctx.project ('test-project'): the
         // scope's declared project is deterministic where gcloud's is not.
         const res = await deployBigQuery(
-            [{name: 'sales', text: OSSIE_UNQUALIFIED_SOURCE}], CTX,
-            {validateOnly: true}, 'scope-proj');
+            models([{name: 'sales', text: OSSIE_UNQUALIFIED_SOURCE}], 'scope-proj'),
+            CTX, {validateOnly: true});
         expect(res.success).toBe(true);
         const ddl = res.ddl.join('\n');
         expect(ddl).toContain('`scope-proj.sales.orders`');
@@ -547,7 +544,7 @@ describe('deployBigQuery', () => {
         spyOn(bq.BigQueryClient.prototype, 'query')
             .mockImplementation(async () => ({status: 200} as any));
     try {
-      const res = await deployBigQuery([{name: 'sales', text: OSSIE}], CTX, {});
+      const res = await deployBigQuery(models([{name: 'sales', text: OSSIE}]), CTX, {});
       expect(res.success).toBe(false);
       expect(res.details).toContain('no response body');
     } finally {

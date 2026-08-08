@@ -720,7 +720,7 @@ function fixture(name: string): string {
 
 describe('gold fixtures parse from disk (real YAML files)', () => {
   test('star_orders_customer.yaml: happy path (ai_context, time dimension, metrics)', () => {
-    const { models, warnings } = loadModels(fixture('star_orders_customer.yaml'));
+    const { models } = loadModels(fixture('star_orders_customer.yaml'));
     expect(models).toHaveLength(1);
     const m = models[0];
     expect(m.name).toBe('sales');
@@ -741,10 +741,11 @@ describe('gold fixtures parse from disk (real YAML files)', () => {
     expect(revenue.expression).toBe('SUM(orders.o_totalprice)');
     expect(revenue.entity).toBe('orders');
     expect(revenue.aiContext?.synonyms).toEqual(['revenue', 'sales']);
-    // COUNT(*) references no entity -> warned, attach entity omitted.
+    // order_count is entity-scoped (COUNT(orders.o_orderkey)) -> attach entity
+    // inferred from the qualifier, so it is a valid single-entity measure.
     const count = m.metrics.find(mt => mt.name === 'order_count')!;
-    expect(count.entity).toBeUndefined();
-    expect(warnings.some(w => w.includes("metric 'order_count'"))).toBe(true);
+    expect(count.entity).toBe('orders');
+    expect(count.expression).toBe('COUNT(orders.o_orderkey)');
   });
 
   test('vendor_dialects.yaml: non-target dialects kept as imported_expression', () => {

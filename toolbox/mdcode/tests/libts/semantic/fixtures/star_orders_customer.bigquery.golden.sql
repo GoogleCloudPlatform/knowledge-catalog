@@ -8,7 +8,8 @@ NODE TABLES (
       o_custkey,
       o_orderdate OPTIONS(description="Order Date\n\nTime dimension.\n\nSynonyms: order date, date"),
       o_totalprice,
-      MEASURE(SUM(o_totalprice)) AS total_revenue OPTIONS(description="Total order revenue\n\nSynonyms: revenue, sales")
+      MEASURE(SUM(o_totalprice)) AS total_revenue OPTIONS(description="Total order revenue\n\nSynonyms: revenue, sales"),
+      MEASURE(COUNT(o_orderkey)) AS order_count OPTIONS(description="Number of orders")
     ),
   `samples.tpch.customer` AS customer
     KEY(c_custkey)
@@ -27,5 +28,3 @@ OPTIONS(description="Sales orders with customer attributes\n\nUse this model for
 
 -- warnings --
 -- note: no 'BIGQUERY' dialect for one or more expressions; using the portable 'ANSI_SQL' dialect verbatim ('BIGQUERY' accepts the ANSI core subset — supply 'BIGQUERY' variants only for BIGQUERY-specific SQL)
--- metric 'order_count': expression references no known entity; it may not be placeable downstream
--- metric 'order_count' references no known entity; skipped (cannot be a single MEASURE)

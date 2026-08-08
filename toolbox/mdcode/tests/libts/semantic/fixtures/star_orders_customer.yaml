@@ -1,14 +1,18 @@
 # Test fixture -- AI-first semantics format (v0.2.0.dev0).
 #
-# Minimal star schema: orders (fact) -> customer (dimension). Exercises
+# Minimal star schema: orders (fact) -> customer (dimension), with a GOOGLE
+# BigQuery Graph deployment target so the model is executable. Exercises
 # ai_context at model / field / metric level, a time dimension (is_time), a
-# field label, and a COUNT(*) metric that carries no entity qualifier.
+# field label, and an entity-scoped COUNT metric.
 
 version: "0.2.0.dev0"
 
 semantic_model:
   - name: sales
     description: Sales orders with customer attributes
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{"deploymentTargets": ["//bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales"]}'
     ai_context:
       instructions: "Use this model for order analysis."
     datasets:
@@ -77,5 +81,5 @@ semantic_model:
         expression:
           dialects:
             - dialect: ANSI_SQL
-              expression: COUNT(*)
+              expression: COUNT(orders.o_orderkey)
         description: Number of orders
