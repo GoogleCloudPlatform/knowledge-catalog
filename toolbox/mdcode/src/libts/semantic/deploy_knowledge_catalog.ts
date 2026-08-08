@@ -8,10 +8,9 @@
 //
 // Types: the `semantic-model`/`semantic-entity`/`semantic-metric` entry and
 // aspect types — and the built-in `schema` aspect — are built-in system types
-// in `dataplex-types/global` (go/semantic-model-kc-v2). Push does NOT provision
-// any type; it only ensures the destination entry group exists and then writes
-// entries. The types are TIER2 `nonprod_only`, so this leg targets a nonprod
-// catalog, and the caller needs `dataplex.entryGroups.useSemanticModelAspect`.
+// in `dataplex-types/global`. Push does NOT provision any type; it only ensures
+// the destination entry group exists and then writes entries. The caller needs
+// `dataplex.entryGroups.useSemanticModelAspect` on the destination entry group.
 //
 // Publish sequence (mirrors the BigQuery leg's structure):
 //   * Ensure the destination entry group (idempotent; an "already exists" is
@@ -44,9 +43,8 @@ export interface KcDeployOptions {
   location: string;
   entryGroup: string;
   // Where the built-in `semantic-*` / `schema` system types are referenced.
-  // Default: `dataplex-types` / `global`. Overridable for a staging project
-  // during the nonprod-only window; the emitted entries are otherwise
-  // unchanged.
+  // Default: `dataplex-types` / `global`. Overridable to reference them from a
+  // staging project; the emitted entries are otherwise unchanged.
   systemTypeProject?: string;
   systemTypeLocation?: string;
   // Compile + report only; never writes.
@@ -221,8 +219,10 @@ interface EntriesOutcome {
 }
 
 // Creates a model's entries. The anchor (entries[0]) is the parent of every
-// child, so it is written first; the remaining entries are independent and are
-// written concurrently. An entry that already exists is updated in place
+// child and is written first. Entity entries are then written before metric
+// entries -- a metric's aspect references its entity by name, so the entity must
+// exist first -- and within each of those two waves the entries are independent
+// and written concurrently. An entry that already exists is updated in place
 // (idempotent re-push).
 async function createEntries(
     cat: CatalogClient, opts: KcDeployOptions,
@@ -233,18 +233,23 @@ async function createEntries(
   const anchorRes = await writeEntry(cat, opts, anchor);
   if (anchorRes.error) return {created: 0, updated: 0, error: anchorRes.error};
 
-  const childRes =
-      await Promise.all(children.map(e => writeEntry(cat, opts, e)));
-  const firstErr = childRes.find(r => r.error);
-  if (firstErr) return {created: 0, updated: 0, error: firstErr.error};
-
   let created = anchorRes.updated ? 0 : 1;
   let updated = anchorRes.updated ? 1 : 0;
-  for (const r of childRes) {
-    if (r.updated)
-      updated++;
-    else
-      created++;
+
+  // Entities first, then metrics (a metric references its entity); each wave is
+  // written concurrently.
+  const isMetric = (e: Entry) => (e.entryType ?? '').endsWith('/semantic-metric');
+  for (const wave of [children.filter(e => !isMetric(e)),
+                      children.filter(isMetric)]) {
+    const res = await Promise.all(wave.map(e => writeEntry(cat, opts, e)));
+    const firstErr = res.find(r => r.error);
+    if (firstErr) return {created, updated, error: firstErr.error};
+    for (const r of res) {
+      if (r.updated)
+        updated++;
+      else
+        created++;
+    }
   }
   return {created, updated};
 }
@@ -317,10 +322,11 @@ function isOk(res: {status: number}): boolean {
 }
 
 // A create that failed because the resource already exists — treated as success
-// for idempotent provisioning and re-push.
-function isExists(res: {status: number; message?: string}): boolean {
-  return res.status === 409 ||
-      /already exists|alreadyexists/i.test(res.message ?? '');
+// for idempotent provisioning and re-push. The API layer preserves the HTTP
+// status (gcp/api.ts), so the 409 ALREADY_EXISTS status is authoritative; no
+// need to match the error text.
+function isExists(res: {status: number}): boolean {
+  return res.status === 409;
 }
 
 // A transient "not visible yet" error worth retrying, matching the propagation

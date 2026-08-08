@@ -178,7 +178,7 @@ describe('semantic-metric aspect', () => {
         expect(warnings.some(w => w.includes('dataType'))).toBe(false);
       });
 
-  test('an un-typed metric falls back to STRING dataType and warns', () => {
+  test('an un-typed metric falls back to FLOAT64 dataType and warns', () => {
     const model: SemanticModel = {
       name: 'm',
       entities: [],
@@ -186,10 +186,10 @@ describe('semantic-metric aspect', () => {
       metrics: [{name: 'rev', expression: 'COUNT(*)'}],
     };
     const {data, warnings} = metricData(model);
-    expect(data.dataType).toBe('STRING');
+    expect(data.dataType).toBe('FLOAT64');
     expect(data.entity).toBeUndefined();  // cross-entity / unattached
     expect(warnings.some(
-               w => w.includes('metric \'rev\'') && w.includes('STRING')))
+               w => w.includes('metric \'rev\'') && w.includes('FLOAT64')))
         .toBe(true);
   });
 });

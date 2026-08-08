@@ -8,11 +8,10 @@
 // `deploy_bigquery.ts`) drives this emitter and writes the resulting resources
 // via the Knowledge Catalog client.
 //
-// Target schema (go/semantic-model-kc-v2): the `semantic-model`,
-// `semantic-entity`, and `semantic-metric` entry/aspect types are built-in
-// system types under `dataplex-types/global` (nonprod for now), alongside the
-// built-in `schema` aspect. This emitter references them; it never provisions
-// them. Each entry type declares `required_aspects`, so the emitted aspect set
+// Target schema: the `semantic-model`, `semantic-entity`, and `semantic-metric`
+// entry/aspect types are built-in system types under `dataplex-types/global`,
+// alongside the built-in `schema` aspect. This emitter references them; it never
+// provisions them. Each entry type declares `required_aspects`, so the emitted aspect set
 // per entry is a hard contract:
 //   * semantic-model entry -> { semantic-model }
 //   * semantic-entity entry -> { semantic-entity, schema }
@@ -40,9 +39,9 @@ import type {Aspect, Entry} from '../gcp/dataplex';
 import {bigQueryGraphTargets} from './deploy_bigquery';
 import {DataType, Entity, Metric, SemanticModel} from './ir';
 
-// Where the `semantic-*` and `schema` system types live. The v2 design lands
-// them as built-in types in project `dataplex-types`, location `global`;
-// callers may override for a staging project during the nonprod-only window.
+// Where the `semantic-*` and `schema` system types live: built-in types in
+// project `dataplex-types`, location `global`. Callers may override to reference
+// them from a staging project.
 const DEFAULT_TYPE_PROJECT = 'dataplex-types';
 const DEFAULT_TYPE_LOCATION = 'global';
 
@@ -201,8 +200,10 @@ function schemaAspectData(entity: Entity): Record<string, any> {
 }
 
 // semantic-metric: the model-level aggregate. `dataType` is required by the
-// aspect type; when the model does not declare one, fall back to STRING and
-// warn rather than emit an invalid aspect.
+// aspect type; when the model does not declare one, fall back to a numeric type
+// and warn (metrics are aggregates, so a number is the sensible default;
+// dimensions, in schemaAspectData, default to STRING) rather than emit an
+// invalid aspect.
 function metricAspectData(
     metric: Metric, warnings: string[]): Record<string, any> {
   let dataType = metric.type ? columnDataType(metric.type) : undefined;
@@ -210,8 +211,8 @@ function metricAspectData(
     warnings.push(
         `metric '${
             metric.name}': no datatype in the source model; defaulting the ` +
-        `required semantic-metric.dataType to 'STRING'`);
-    dataType = 'STRING';
+        `required semantic-metric.dataType to 'FLOAT64'`);
+    dataType = 'FLOAT64';
   }
   return compact({
     entity: metric.entity,
@@ -280,6 +281,8 @@ function columnMetadataType(type: DataType|undefined): string {
 // clean three-part `project.dataset.table` becomes the BigQuery linked-resource
 // URI; anything else (a query, an under/over-qualified ref) is passed through
 // verbatim so nothing is lost.
+// TODO: settle the linked-resource form for Iceberg / BigLake tables, which may
+// need a different URI shape than the BigQuery managed-table one below.
 function resourcePath(dataSource: string): string {
   const trimmed = (dataSource ?? '').trim();
   if (!trimmed || /\s/.test(trimmed)) return trimmed;

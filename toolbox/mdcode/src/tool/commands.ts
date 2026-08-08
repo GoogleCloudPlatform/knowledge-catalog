@@ -230,9 +230,7 @@ async function pushBigQuery(
 
 
 // Deploys the semantic model's Knowledge Catalog leg and prints the result. The
-// destination coordinates come from the scope (project.location.entryGroup); the
-// built-in semantic types are nonprod-only, so this targets a nonprod
-// Knowledge Catalog.
+// destination coordinates come from the scope (project.location.entryGroup).
 // Returns a process exit code (0 on success).
 async function pushKnowledgeCatalog(
   docs: { name: string; text: string }[], ctx: context.ApiContext,

@@ -10,7 +10,11 @@
       "aspects": {
         "dataplex-types.global.semantic-model": {
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-model",
-          "data": {}
+          "data": {
+            "deploymentTargets": [
+              "//bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales"
+            ]
+          }
         }
       }
     },
@@ -138,7 +142,7 @@
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-metric",
           "data": {
             "entity": "orders",
-            "dataType": "STRING",
+            "dataType": "FLOAT64",
             "expression": "SUM(orders.o_totalprice)"
           }
         }
@@ -156,16 +160,17 @@
         "dataplex-types.global.semantic-metric": {
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-metric",
           "data": {
-            "dataType": "STRING",
-            "expression": "COUNT(*)"
+            "entity": "orders",
+            "dataType": "FLOAT64",
+            "expression": "COUNT(orders.o_orderkey)"
           }
         }
       }
     }
   ],
   "warnings": [
-    "metric 'total_revenue': no datatype in the source model; defaulting the required semantic-metric.dataType to 'STRING'",
-    "metric 'order_count': no datatype in the source model; defaulting the required semantic-metric.dataType to 'STRING'",
+    "metric 'total_revenue': no datatype in the source model; defaulting the required semantic-metric.dataType to 'FLOAT64'",
+    "metric 'order_count': no datatype in the source model; defaulting the required semantic-metric.dataType to 'FLOAT64'",
     "1 relationship not published to Knowledge Catalog: no user-writable entry link type is valid over semantic-entity endpoints; the graph edges live in the BigQuery property graph."
   ]
 }
