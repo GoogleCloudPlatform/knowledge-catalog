@@ -13,6 +13,7 @@ import { SemanticModelSource } from '../libts/sources/semantic-model';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
+import {validatePushRequirements} from '../libts/semantic/validate';
 
 
 export interface InitOptions {
@@ -199,6 +200,19 @@ export async function push(options: PushOptions): Promise<number> {
     }
     for (const w of loaded.warnings) {
       console.warn(`Warning: ${w}`);
+    }
+
+    // Enforce push-time requirements once over the shared models, before any
+    // destination runs: every model must declare a deployment target, and a
+    // BigQuery-graph-targeting model's metrics must each resolve to one entity.
+    // This is also the --validate-only path, so a dry run reports the same
+    // failures.
+    const validationErrors = validatePushRequirements(loaded.models);
+    if (validationErrors.length) {
+      for (const e of validationErrors) {
+        console.error(`Error: ${e}`);
+      }
+      return 1;
     }
 
     // Run the resolved destinations in canonical order (BigQuery first); the

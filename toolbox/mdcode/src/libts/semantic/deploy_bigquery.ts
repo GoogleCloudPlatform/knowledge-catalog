@@ -124,6 +124,39 @@ export function bigQueryGraphTargets(model: SemanticModel):
 }
 
 
+// Every deploymentTarget URI a model declares in its GOOGLE custom extension(s),
+// across all of them, regardless of whether each parses as a BigQuery Graph
+// target. Validation uses this to require that a model declares at least one
+// deployment target; bigQueryGraphTargets narrows to the ones that are BigQuery
+// graphs. Throws on malformed extension JSON (same contract as
+// bigQueryGraphTargets).
+export function deploymentTargetUris(model: SemanticModel): string[] {
+  const uris: string[] = [];
+  for (const ext of model.customExtensions ?? []) {
+    if (ext.vendorName !== GOOGLE_VENDOR) {
+      continue;
+    }
+    let data: any;
+    try {
+      data = JSON.parse(ext.data);
+    } catch {
+      throw new Error(`Model '${
+          model.name}': GOOGLE custom_extension 'data' is not valid JSON.`);
+    }
+    const list = data?.deploymentTargets;
+    if (!Array.isArray(list)) {
+      continue;
+    }
+    for (const uri of list) {
+      if (typeof uri === 'string') {
+        uris.push(uri);
+      }
+    }
+  }
+  return uris;
+}
+
+
 // Upper bound on getQueryResults polls before we give up on a job that never
 // reports completion (each poll long-polls the server for up to 10s).
 const MAX_QUERY_POLLS = 30;
