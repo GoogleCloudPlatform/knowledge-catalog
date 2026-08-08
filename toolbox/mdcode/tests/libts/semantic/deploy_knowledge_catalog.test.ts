@@ -16,6 +16,7 @@ import {ApiResult} from '../../../src/libts/gcp/api';
 import {ApiContext} from '../../../src/libts/gcp/context';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
 import {deployKnowledgeCatalog} from '../../../src/libts/semantic/deploy_knowledge_catalog';
+import {loadSemanticModels} from '../../../src/libts/semantic/loader';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -25,6 +26,21 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 const OSSIE =
     fs.readFileSync(path.join(FIXTURES, 'sales_bq_graph_target.yaml'), 'utf8');
 const DOCS = [{name: 'sales.yaml', text: OSSIE}];
+
+// The deploy leg now consumes models already parsed by loadSemanticModels
+// (shared with the BigQuery leg). These tests author documents, so this helper
+// parses them the way commands.ts does.
+function models(docs: {name: string; text: string}[]) {
+  const r = loadSemanticModels(docs, {defaultProject: 'test-project'});
+  if (r.error) throw new Error(r.error);
+  return r.models;
+}
+
+// A destination entry name for a given entry id, as the catalog returns it from
+// listEntries; reconciliation keys off the id (the last path segment).
+function entryName(id: string): string {
+  return `projects/dest/locations/us/entryGroups/eg/entries/${id}`;
+}
 
 // The same loader-valid model, but its GOOGLE custom_extension carries invalid
 // JSON: the doc parses, yet the emitter (via bigQueryGraphTargets) throws while
@@ -60,6 +76,10 @@ function stubClient(opts: {
   group?: ApiResult<any>,
   create?: (entryId: string) => ApiResult<any>,
   update?: ApiResult<any>,
+  // Entry ids the destination entry group already holds (yielded by
+  // listEntries during delete reconciliation). Default: none.
+  existing?: string[],
+  del?: (entryId: string) => ApiResult<any>,
 } = {}) {
   const group = spyOn(CatalogClient.prototype, 'createEntryGroup')
                     .mockImplementation(async () => opts.group ?? ok({}));
@@ -69,7 +89,17 @@ function stubClient(opts: {
                              (opts.create ?? (() => ok({})))(entryId));
   const update = spyOn(CatalogClient.prototype, 'updateEntry')
                      .mockImplementation(async () => opts.update ?? ok({}));
-  return {group, create, update};
+  const list = spyOn(CatalogClient.prototype, 'listEntries')
+                   .mockImplementation(async function*() {
+                     for (const id of opts.existing ?? []) {
+                       yield {name: entryName(id), entryType: 'semantic'} as any;
+                     }
+                   });
+  const del = spyOn(CatalogClient.prototype, 'deleteEntry')
+                  .mockImplementation(
+                      async (_p, _l, _eg, entryId) =>
+                          (opts.del ?? (() => ok({})))(entryId));
+  return {group, create, update, list, del};
 }
 
 
@@ -79,7 +109,7 @@ describe('deployKnowledgeCatalog: happy path', () => {
       async () => {
         const {group, create, update} = stubClient();
 
-        const result = await deployKnowledgeCatalog(DOCS, CTX, OPTS);
+        const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
         expect(result.success).toBe(true);
         expect(result.created).toBe(3);
@@ -106,7 +136,7 @@ describe('deployKnowledgeCatalog: re-push upserts', () => {
       update: ok({}),
     });
 
-    const result = await deployKnowledgeCatalog(DOCS, CTX, OPTS);
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
     expect(result.success).toBe(true);
     expect(result.created).toBe(0);
@@ -122,7 +152,7 @@ describe('deployKnowledgeCatalog: validateOnly', () => {
     const {group, create} = stubClient();
 
     const result =
-        await deployKnowledgeCatalog(DOCS, CTX, {...OPTS, validateOnly: true});
+        await deployKnowledgeCatalog(models(DOCS), CTX, {...OPTS, validateOnly: true});
 
     expect(result.success).toBe(true);
     expect(result.created).toBe(0);
@@ -139,7 +169,7 @@ describe('deployKnowledgeCatalog: idempotent provisioning', () => {
     const {create} =
         stubClient({group: err(409, 'Entry group already exists')});
 
-    const result = await deployKnowledgeCatalog(DOCS, CTX, OPTS);
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
     expect(result.success).toBe(true);
     expect(create).toHaveBeenCalledTimes(3);
@@ -153,7 +183,7 @@ describe('deployKnowledgeCatalog: failures', () => {
       async () => {
         const {create} = stubClient({group: err(403, 'permission denied')});
 
-        const result = await deployKnowledgeCatalog(DOCS, CTX, OPTS);
+        const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
         expect(result.success).toBe(false);
         expect(result.details).toContain('entry group');
@@ -165,21 +195,10 @@ describe('deployKnowledgeCatalog: failures', () => {
       create: (id) => id === 'sales' ? err(500, 'boom') : ok({}),
     });
 
-    const result = await deployKnowledgeCatalog(DOCS, CTX, OPTS);
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
     expect(result.success).toBe(false);
     expect(create).toHaveBeenCalledTimes(1);  // anchor only; children skipped
-  });
-
-  test('a malformed document fails with the document named', async () => {
-    stubClient();
-    const bad =
-        [{name: 'bad.yaml', text: 'semantic_model: [ this is: not valid'}];
-
-    const result = await deployKnowledgeCatalog(bad, CTX, OPTS);
-
-    expect(result.success).toBe(false);
-    expect(result.details).toContain('bad.yaml');
   });
 
   test(
@@ -190,7 +209,7 @@ describe('deployKnowledgeCatalog: failures', () => {
         const {create} = stubClient();
         const docs = [{name: 'broken.yaml', text: MALFORMED_EXTENSION}];
 
-        const result = await deployKnowledgeCatalog(docs, CTX, OPTS);
+        const result = await deployKnowledgeCatalog(models(docs), CTX, OPTS);
 
         expect(result.success).toBe(false);
         expect(result.details).toContain('broken.yaml');
@@ -210,7 +229,7 @@ describe('deployKnowledgeCatalog: failures', () => {
           {name: 'b.yaml', text: OSSIE},
         ];
 
-        const result = await deployKnowledgeCatalog(docs, CTX, OPTS);
+        const result = await deployKnowledgeCatalog(models(docs), CTX, OPTS);
 
         expect(result.success).toBe(false);
         expect(result.details).toContain('sales');   // the colliding entry id
@@ -231,5 +250,83 @@ describe('deployKnowledgeCatalog: failures', () => {
     const result =
         await deployKnowledgeCatalog([], CTX, {...OPTS, validateOnly: true});
     expect(result.success).toBe(true);
+  });
+});
+
+
+describe('deployKnowledgeCatalog: delete reconciliation', () => {
+  // The fixture model 'sales' emits exactly three ids: the anchor 'sales', the
+  // entity 'sales.entities.orders', and the metric 'sales.metrics.total_revenue'.
+  const EMITTED = ['sales', 'sales.entities.orders', 'sales.metrics.total_revenue'];
+
+  test('deletes entities/metrics removed from the model, scoped by owner', async () => {
+    // The group also holds two orphans owned by the 'sales' anchor (an entity
+    // and a metric no longer in the model) plus two entries owned by a
+    // different model. Only the two orphans under 'sales' must be deleted.
+    const {del, list} = stubClient({
+      existing: [
+        ...EMITTED,
+        'sales.entities.removed',
+        'sales.metrics.removed',
+        'other',
+        'other.entities.x',
+      ],
+    });
+
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(true);
+    expect(result.deleted).toBe(2);
+    expect(list).toHaveBeenCalledTimes(1);
+    const deletedIds = del.mock.calls.map(c => c[3]).sort();
+    expect(deletedIds).toEqual(['sales.entities.removed', 'sales.metrics.removed']);
+  });
+
+  test('deletes nothing when the model still emits every entry', async () => {
+    const {del} = stubClient({existing: EMITTED});
+
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(true);
+    expect(result.deleted).toBe(0);
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  test('a 404 on an orphan is tolerated (already gone)', async () => {
+    const {del} = stubClient({
+      existing: [...EMITTED, 'sales.entities.removed'],
+      del: () => err(404, 'not found'),
+    });
+
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(true);
+    expect(result.deleted).toBe(1);
+    expect(del).toHaveBeenCalledTimes(1);
+  });
+
+  test('a failed delete fails the push, naming the entry', async () => {
+    const {del} = stubClient({
+      existing: [...EMITTED, 'sales.metrics.removed'],
+      del: () => err(500, 'boom'),
+    });
+
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(false);
+    expect(result.details).toContain('sales.metrics.removed');
+    expect(del).toHaveBeenCalledTimes(1);
+  });
+
+  test('validateOnly never lists or deletes (offline)', async () => {
+    const {list, del} = stubClient({existing: ['sales.entities.removed']});
+
+    const result =
+        await deployKnowledgeCatalog(models(DOCS), CTX, {...OPTS, validateOnly: true});
+
+    expect(result.success).toBe(true);
+    expect(result.deleted).toBe(0);
+    expect(list).not.toHaveBeenCalled();
+    expect(del).not.toHaveBeenCalled();
   });
 });

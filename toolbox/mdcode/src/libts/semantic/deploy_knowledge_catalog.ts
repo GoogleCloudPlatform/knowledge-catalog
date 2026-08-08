@@ -1,10 +1,11 @@
 // Deploys a semantic model's Knowledge Catalog resources.
 //
 // This is the Knowledge Catalog leg of `kcmd push` for the semantic-model
-// scope, the counterpart to `deploy_bigquery.ts`. It parses each authored
-// Ossie document into the semantic IR (loader), maps it to catalog Entries +
-// Aspects (the pure emitter in knowledge_catalog.ts), and writes them through
-// the Knowledge Catalog client.
+// scope, the counterpart to `deploy_bigquery.ts`. It consumes models already
+// parsed into the semantic IR (see loadSemanticModels, shared with the BigQuery
+// leg so a `--target all` push parses each document once), maps each to catalog
+// Entries + Aspects (the pure emitter in knowledge_catalog.ts), and writes them
+// through the Knowledge Catalog client.
 //
 // Types: the `semantic-model`/`semantic-entity`/`semantic-metric` entry and
 // aspect types — and the built-in `schema` aspect — are built-in system types
@@ -19,6 +20,9 @@
 //     first (it is the parentEntry of every entity/metric entry), then the
 //     children concurrently.
 //   * A re-push upserts: an entry that already exists is updated in place.
+//   * Reconcile deletions: an entity or metric removed from a still-present
+//     model leaves an orphaned entry under its anchor; after writing, delete
+//     any entry this push owns (by entry-id prefix) that was not re-emitted.
 //   * Relationship edges are not published (no writable directed link type over
 //     semantic-entity endpoints); the emitter warns and the edges live in the
 //     BigQuery property graph.
@@ -33,7 +37,7 @@ import * as context from '../gcp/context';
 import {CatalogClient, Entry} from '../gcp/dataplex';
 
 import {generateCatalogResources, KcResources} from './knowledge_catalog';
-import {loadModels} from './loader';
+import {LoadedModel} from './loader';
 
 
 export interface KcDeployOptions {
@@ -61,9 +65,10 @@ export interface KcDeployResult {
   details?: string;
   // Loader and emitter warnings collected across all documents.
   warnings: string[];
-  // Entries created / updated-in-place (0 for validateOnly).
+  // Entries created / updated-in-place / deleted (all 0 for validateOnly).
   created: number;
   updated: number;
+  deleted: number;
   // A human-readable plan of what would be written; populated for validateOnly.
   plan: string[];
 }
@@ -83,58 +88,44 @@ function sleep(ms: number): Promise<void> {
 // caller to print. `defaultProject` qualifies a dataset `source` that omits its
 // project (the scope's declared project, a deterministic user-authored value).
 export async function deployKnowledgeCatalog(
-    docs: {name: string; text: string}[], ctx: context.ApiContext,
-    opts: KcDeployOptions, defaultProject?: string): Promise<KcDeployResult> {
+    models: LoadedModel[], ctx: context.ApiContext,
+    opts: KcDeployOptions): Promise<KcDeployResult> {
   const warnings: string[] = [];
   const plan: string[] = [];
   let created = 0;
   let updated = 0;
+  let deleted = 0;
   let modelsSeen = 0;
 
   const fail = (details: string): KcDeployResult =>
-      ({success: false, details, warnings, created, updated, plan});
+      ({success: false, details, warnings, created, updated, deleted, plan});
 
   // Emit every model up front (pure): dry-run and warnings need no network, and
   // a generation warning surfaces even if a later write fails.
   const emitted: {model: string; resources: KcResources}[] = [];
-  for (const doc of docs) {
-    // A document that fails to parse (or violates the model schema) is an
-    // authoring error; report it against the specific document rather than
-    // letting the loader's exception propagate as an uncaught stack trace.
-    let loaded;
+  for (const {document, model} of models) {
+    modelsSeen++;
+    // The emitter is pure but not infallible: bigQueryGraphTargets (reached
+    // via the semantic-model aspect) throws on a malformed GOOGLE
+    // custom_extension. Report it against the document -- as the BigQuery leg
+    // does -- rather than letting it escape as an uncaught stack trace.
+    let resources: KcResources;
     try {
-      loaded =
-          loadModels(doc.text, {defaultProject: defaultProject ?? ctx.project});
+      resources = generateCatalogResources(model, {
+        project: opts.project,
+        location: opts.location,
+        entryGroup: opts.entryGroup,
+        systemTypeProject: opts.systemTypeProject,
+        systemTypeLocation: opts.systemTypeLocation,
+      });
     } catch (err: any) {
-      return fail(`Model document '${doc.name}': ${err.message || err}`);
+      return fail(
+          `Model '${model.name}' (${document}): ${err.message || err}`);
     }
-    for (const w of loaded.warnings) {
-      warnings.push(`[${doc.name}] ${w}`);
+    for (const w of resources.warnings) {
+      warnings.push(`[${model.name}] ${w}`);
     }
-    for (const model of loaded.models) {
-      modelsSeen++;
-      // The emitter is pure but not infallible: bigQueryGraphTargets (reached
-      // via the semantic-model aspect) throws on a malformed GOOGLE
-      // custom_extension. Report it against the document -- as the BigQuery leg
-      // does -- rather than letting it escape as an uncaught stack trace.
-      let resources: KcResources;
-      try {
-        resources = generateCatalogResources(model, {
-          project: opts.project,
-          location: opts.location,
-          entryGroup: opts.entryGroup,
-          systemTypeProject: opts.systemTypeProject,
-          systemTypeLocation: opts.systemTypeLocation,
-        });
-      } catch (err: any) {
-        return fail(
-            `Model '${model.name}' (${doc.name}): ${err.message || err}`);
-      }
-      for (const w of resources.warnings) {
-        warnings.push(`[${model.name}] ${w}`);
-      }
-      emitted.push({model: model.name, resources});
-    }
+    emitted.push({model: model.name, resources});
   }
 
   // A parsed document always yields at least one model (the loader enforces
@@ -144,7 +135,7 @@ export async function deployKnowledgeCatalog(
   if (!modelsSeen) {
     if (opts.validateOnly) {
       warnings.push('No semantic model documents found; nothing to validate.');
-      return {success: true, warnings, created, updated, plan};
+      return {success: true, warnings, created, updated, deleted, plan};
     }
     return fail('No semantic model documents found; nothing to deploy.');
   }
@@ -176,7 +167,7 @@ export async function deployKnowledgeCatalog(
     plan.push(...planSummary(model, resources, opts));
   }
   if (opts.validateOnly) {
-    return {success: true, warnings, created, updated, plan};
+    return {success: true, warnings, created, updated, deleted, plan};
   }
 
   const cat = new CatalogClient(ctx);
@@ -188,10 +179,6 @@ export async function deployKnowledgeCatalog(
     return fail(group);
   }
 
-  // TODO: reconcile deletions. Push only creates/upserts today; an entity or
-  // metric removed from the local model is left orphaned in the catalog. Add a
-  // pass that deletes entries under this model's anchor that are no longer
-  // emitted (follow-up).
   for (const {model, resources} of emitted) {
     const outcome = await createEntries(cat, opts, resources.entries);
     if (outcome.error) {
@@ -201,7 +188,78 @@ export async function deployKnowledgeCatalog(
     updated += outcome.updated;
   }
 
-  return {success: true, warnings, created, updated, plan};
+  // Reconcile deletions: an entity or metric removed from a still-present model
+  // since the last push leaves an orphaned entry under the model's anchor.
+  // Delete any entry this push owns that was not re-emitted (see
+  // reconcileDeletions). Runs only on a real push -- validateOnly returned
+  // above and never lists remote state.
+  const recon = await reconcileDeletions(cat, opts, emitted);
+  if (recon.error) {
+    return fail(recon.error);
+  }
+  deleted = recon.deleted;
+
+  return {success: true, warnings, created, updated, deleted, plan};
+}
+
+
+interface ReconcileOutcome {
+  deleted: number;
+  error?: string;
+}
+
+// Deletes entries this push OWNS but did not re-emit -- the entities/metrics
+// removed from a model since its last push. Ownership is scoped by entry id so
+// reconciliation never touches entries outside the models in this push (a
+// shared entry group may legitimately hold others): an existing entry is owned
+// when its id is a pushed model's anchor id or is prefixed by that anchor's
+// `<model>.entities.` / `<model>.metrics.` child namespace. An anchor is always
+// re-emitted, so it is never deleted here.
+//
+// TODO: reconcile whole-model removals too. Deleting a model's document drops
+// its anchor from this push, so its anchor + children are no longer owned and
+// survive. Removing them safely needs a scope-level record of which models this
+// entry group manages (follow-up).
+async function reconcileDeletions(
+    cat: CatalogClient, opts: KcDeployOptions,
+    emitted: {resources: KcResources}[]): Promise<ReconcileOutcome> {
+  const emittedIds = new Set<string>();
+  const anchorIds = new Set<string>();
+  const childPrefixes: string[] = [];
+  for (const {resources} of emitted) {
+    for (const e of resources.entries) emittedIds.add(idOf(e.name));
+    // entries[0] is the model anchor (the emitter writes it first).
+    const anchorId = idOf(resources.entries[0].name);
+    anchorIds.add(anchorId);
+    childPrefixes.push(`${anchorId}.entities.`, `${anchorId}.metrics.`);
+  }
+  const owned = (id: string) =>
+      anchorIds.has(id) || childPrefixes.some(p => id.startsWith(p));
+
+  const orphans: string[] = [];
+  try {
+    for await (const entry of cat.listEntries(
+        opts.project, opts.location, opts.entryGroup)) {
+      const id = idOf(entry.name);
+      if (owned(id) && !emittedIds.has(id)) orphans.push(id);
+    }
+  } catch (err: any) {
+    return {deleted: 0, error: `listing entries to reconcile deletions: ${
+                                   err.message || err}`};
+  }
+
+  let deleted = 0;
+  for (const id of orphans) {
+    const res =
+        await cat.deleteEntry(opts.project, opts.location, opts.entryGroup, id);
+    // A 404 means it is already gone -- reconciliation's goal is met either way.
+    if (isOk(res) || res.status === 404) {
+      deleted++;
+      continue;
+    }
+    return {deleted, error: `deleting orphaned entry '${id}': ${errText(res)}`};
+  }
+  return {deleted};
 }
 
 

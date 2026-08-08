@@ -193,6 +193,12 @@ export class CatalogClient extends api.ApiClient {
     return res;
   }
 
+  async deleteEntry(project: string, location: string, entryGroup: string,
+                    entry: string): Promise<api.ApiResult<Entry>> {
+    const name = `${catalogContainer(project, location, entryGroup)}/entries/${entry}`;
+    return await this._delete<Entry>(name);
+  }
+
   async createEntryGroup(project: string, location: string, 
                          entryGroupId: string, entryGroup?: EntryGroup): Promise<api.ApiResult<EntryGroup>> {
     const parent = catalogContainer(project, location);

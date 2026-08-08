@@ -1,12 +1,11 @@
 // Deploys a semantic model's BigQuery Graph.
 //
 // This is the BigQuery leg of `kcmd push` for the semantic-model scope: it
-// parses each authored Ossie document into the semantic IR (loader), lowers it
-// to `CREATE OR REPLACE PROPERTY GRAPH` DDL (generator), and executes that DDL
-// against the BigQuery project named by the model's GOOGLE deployment target.
-//
-// The Knowledge Catalog resource emit (entries + entryLinks) for the semantic
-// model is a follow-on; `push` currently deploys only the BigQuery Graph.
+// consumes models already parsed into the semantic IR (see loadSemanticModels,
+// shared with the Knowledge Catalog leg so a `--target all` push parses each
+// document once), lowers each to `CREATE OR REPLACE PROPERTY GRAPH` DDL
+// (generator), and executes that DDL against the BigQuery project named by the
+// model's GOOGLE deployment target.
 //
 // This is a library module: it emits no console output. The generated DDL and
 // any loader/generator warnings are returned in `DeployResult` for the CLI
@@ -19,7 +18,7 @@ import * as context from '../gcp/context';
 
 import {generatePropertyGraph} from './bigquery';
 import {SemanticModel} from './ir';
-import {loadModels} from './loader';
+import {LoadedModel} from './loader';
 
 
 // Our own vendor tag in the Ossie `custom_extensions` list.
@@ -242,20 +241,14 @@ async function datasetLocation(
 }
 
 
-// Deploys the BigQuery Graph for each authored model document. Emits no console
-// output; the generated DDL and any warnings are returned for the caller to
-// print.
-//
-// `defaultProject` qualifies a dataset `source` that omits its project. The
-// caller should pass the scope's declared project (a deterministic,
-// user-authored value) rather than relying on the ambient gcloud project, which
-// can silently drift away from where the model's tables live. It cannot default
-// to each deployment target's own project: a document is parsed once, before
-// its targets are known, and may declare several graphs across projects.
+// Deploys the BigQuery Graph for each pre-loaded model. Emits no console output;
+// the generated DDL and any warnings are returned for the caller to print. The
+// models are parsed once by the caller (loadSemanticModels) and shared with the
+// Knowledge Catalog leg; each carries its originating document name for
+// diagnostics.
 export async function deployBigQuery(
-    docs: {name: string; text: string}[], ctx: context.ApiContext,
-    options: DeployOptions = {},
-    defaultProject?: string): Promise<DeployResult> {
+    models: LoadedModel[], ctx: context.ApiContext,
+    options: DeployOptions = {}): Promise<DeployResult> {
   const bigQuery = new BigQueryClient(ctx);
   const ddl: string[] = [];
   const warnings: string[] = [];
@@ -282,93 +275,76 @@ export async function deployBigQuery(
     return loc;
   };
 
-  for (const doc of docs) {
-    // A document that fails to parse (or violates the model schema) is an
-    // authoring error. Report it against the specific document rather than
-    // letting the loader's exception propagate as an uncaught stack trace, and
-    // name the document so a bad file in a multi-document push is identifiable.
-    let loaded;
+  for (const {document, model} of models) {
+    modelsSeen++;
+    let targets: BigQueryGraphTarget[];
+    let malformed: string[];
     try {
-      loaded =
-          loadModels(doc.text, {defaultProject: defaultProject ?? ctx.project});
+      ({targets, malformed} = bigQueryGraphTargets(model));
     } catch (err: any) {
-      return fail(`Model document '${doc.name}': ${err.message || err}`);
+      return fail(
+          `Model '${model.name}' (${document}): ${err.message || err}`);
     }
-    for (const w of loaded.warnings) {
-      warnings.push(`[${doc.name}] ${w}`);
+    if (!targets.length) {
+      // A malformed-but-present target must not be reported as "none
+      // declared" -- that sends the author hunting for an extension they
+      // already wrote. Name the URIs that failed to parse.
+      if (malformed.length) {
+        return fail(
+            `Model '${model.name}' (${document}) declares BigQuery Graph ` +
+            `deploymentTarget(s) that could not be parsed: ` +
+            `${malformed.join(', ')}. Expected //bigquery.googleapis.com/` +
+            `projects/<p>/datasets/<d>/propertyGraphs/<g>.`);
+      }
+      return fail(
+          `Model '${model.name}' (${document}) declares no BigQuery Graph ` +
+          `deploymentTarget in a GOOGLE custom_extension; nothing to deploy.`);
+    }
+    // Malformed targets alongside valid ones: surface them so a typo'd URI is
+    // not silently dropped when the deploy otherwise succeeds.
+    for (const bad of malformed) {
+      warnings.push(`[${
+          model.name}] ignoring unparseable BigQuery Graph target: ${bad}`);
     }
 
-    for (const model of loaded.models) {
-      modelsSeen++;
-      let targets: BigQueryGraphTarget[];
-      let malformed: string[];
+    for (const target of targets) {
+      const gen = generatePropertyGraph(model, {
+        project: target.project,
+        dataset: target.dataset,
+        graphName: target.graphName,
+      });
+      for (const w of gen.warnings) {
+        warnings.push(`[${model.name} -> ${target.graphName}] ${w}`);
+      }
+      ddl.push(`-- ${target.uri}\n${gen.ddl}`);
+
+      if (options.validateOnly) {
+        continue;
+      }
+
+      let location: string|undefined;
       try {
-        ({targets, malformed} = bigQueryGraphTargets(model));
+        location = await locationFor(target);
       } catch (err: any) {
         return fail(
-            `Model '${model.name}' (${doc.name}): ${err.message || err}`);
+            `Failed to deploy '${target.graphName}': ${err.message || err}`);
       }
-      if (!targets.length) {
-        // A malformed-but-present target must not be reported as "none
-        // declared" -- that sends the author hunting for an extension they
-        // already wrote. Name the URIs that failed to parse.
-        if (malformed.length) {
-          return fail(
-              `Model '${model.name}' (${doc.name}) declares BigQuery Graph ` +
-              `deploymentTarget(s) that could not be parsed: ` +
-              `${malformed.join(', ')}. Expected //bigquery.googleapis.com/` +
-              `projects/<p>/datasets/<d>/propertyGraphs/<g>.`);
-        }
-        return fail(
-            `Model '${model.name}' (${doc.name}) declares no BigQuery Graph ` +
-            `deploymentTarget in a GOOGLE custom_extension; nothing to deploy.`);
-      }
-      // Malformed targets alongside valid ones: surface them so a typo'd URI is
-      // not silently dropped when the deploy otherwise succeeds.
-      for (const bad of malformed) {
-        warnings.push(`[${
-            model.name}] ignoring unparseable BigQuery Graph target: ${bad}`);
+      const started = await bigQuery.query(target.project, gen.ddl, location);
+      const outcome = await awaitQueryDone(
+          bigQuery, target.project, started, maxPolls, backoffMs);
+      if (!outcome.ok) {
+        // These are CREATE OR REPLACE statements executed one at a time, so
+        // any graphs already deployed in this run have mutated production and
+        // are not rolled back. Surface that alongside the failing target.
+        const partial = deployed ?
+            ` (${deployed} graph(s) already deployed in this run; ` +
+                `CREATE OR REPLACE changes are not rolled back)` :
+            '';
+        return fail(`Failed to deploy '${target.graphName}': ${
+            outcome.error}${partial}`);
       }
 
-      for (const target of targets) {
-        const gen = generatePropertyGraph(model, {
-          project: target.project,
-          dataset: target.dataset,
-          graphName: target.graphName,
-        });
-        for (const w of gen.warnings) {
-          warnings.push(`[${model.name} -> ${target.graphName}] ${w}`);
-        }
-        ddl.push(`-- ${target.uri}\n${gen.ddl}`);
-
-        if (options.validateOnly) {
-          continue;
-        }
-
-        let location: string|undefined;
-        try {
-          location = await locationFor(target);
-        } catch (err: any) {
-          return fail(
-              `Failed to deploy '${target.graphName}': ${err.message || err}`);
-        }
-        const started = await bigQuery.query(target.project, gen.ddl, location);
-        const outcome = await awaitQueryDone(
-            bigQuery, target.project, started, maxPolls, backoffMs);
-        if (!outcome.ok) {
-          // These are CREATE OR REPLACE statements executed one at a time, so
-          // any graphs already deployed in this run have mutated production and
-          // are not rolled back. Surface that alongside the failing target.
-          const partial = deployed ?
-              ` (${deployed} graph(s) already deployed in this run; ` +
-                  `CREATE OR REPLACE changes are not rolled back)` :
-              '';
-          return fail(`Failed to deploy '${target.graphName}': ${
-              outcome.error}${partial}`);
-        }
-
-        deployed++;
-      }
+      deployed++;
     }
   }
 

@@ -478,3 +478,53 @@ function parseSource(source: string, opts: LoadOptions,
 function unquote(part: string): string {
   return part.replace(/^[`"]/, '').replace(/[`"]$/, '');
 }
+
+
+// A single model parsed from a named document, tagged with that document name
+// so a consumer (a deploy leg) can attribute warnings and errors back to the
+// file the author wrote.
+export interface LoadedModel {
+  document: string;       // originating document name
+  model: SemanticModel;
+}
+
+export interface LoadedModels {
+  models: LoadedModel[];
+  // Loader warnings across all documents, each prefixed with its document name.
+  warnings: string[];
+  // Set when a document failed to parse or violated the schema, naming the
+  // document. `models` then holds whatever parsed before the failure; callers
+  // should treat a set `error` as fatal and not deploy.
+  error?: string;
+}
+
+/**
+ * Loads every authored document into the IR once, so a multi-destination push
+ * parses and validates each model a single time and fans the result out to each
+ * deploy leg (BigQuery, Knowledge Catalog) rather than re-parsing per leg.
+ *
+ * A parse/schema error is returned as `error` (naming the document) rather than
+ * thrown, mirroring how the deploy legs previously reported it; loader warnings
+ * are prefixed with their document name.
+ */
+export function loadSemanticModels(
+    docs: {name: string; text: string}[],
+    opts: LoadOptions = {}): LoadedModels {
+  const models: LoadedModel[] = [];
+  const warnings: string[] = [];
+  for (const doc of docs) {
+    let loaded: LoadResult;
+    try {
+      loaded = loadModels(doc.text, opts);
+    } catch (err: any) {
+      return {
+        models,
+        warnings,
+        error: `Model document '${doc.name}': ${err.message || err}`,
+      };
+    }
+    for (const w of loaded.warnings) warnings.push(`[${doc.name}] ${w}`);
+    for (const model of loaded.models) models.push({document: doc.name, model});
+  }
+  return {models, warnings};
+}

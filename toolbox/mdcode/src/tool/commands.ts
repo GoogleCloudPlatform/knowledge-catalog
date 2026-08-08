@@ -12,6 +12,7 @@ import { SemanticModelLayout } from '../libts/layouts/semantic-model';
 import { SemanticModelSource } from '../libts/sources/semantic-model';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
+import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 
 
 export interface InitOptions {
@@ -168,18 +169,30 @@ export async function push(options: PushOptions): Promise<number> {
       return 1;
     }
 
+    // Load + validate every model ONCE, then fan the parsed models out to each
+    // destination leg. Both legs consume the same IR, so a `--target all` push
+    // parses each document a single time instead of once per leg. A parse error
+    // fails the whole push before any destination runs. defaultProject is the
+    // scope's declared project (deterministic) rather than the ambient gcloud
+    // project, which can drift from where the model's tables live.
     const docs = layout.modelDocuments();
-    // TODO: load + emit each model once and fan out to both legs. Each leg
-    // re-parses the documents today (deployBigQuery and deployKnowledgeCatalog
-    // both call loadModels), so a `--target all` push loads the models twice
-    // (follow-up).
+    const loaded = loadSemanticModels(
+        docs, {defaultProject: source.project ?? ctx.project});
+    if (loaded.error) {
+      console.error('Error:', loaded.error);
+      return 1;
+    }
+    for (const w of loaded.warnings) {
+      console.warn(`Warning: ${w}`);
+    }
+
     // Run the resolved destinations in canonical order (BigQuery first); the
     // early return below fails fast, skipping later legs when an earlier one
     // fails.
     for (const target of targets) {
       const code = target === 'bigquery'
-        ? await pushBigQuery(docs, ctx, options, source)
-        : await pushKnowledgeCatalog(docs, ctx, options, source);
+        ? await pushBigQuery(loaded.models, ctx, options)
+        : await pushKnowledgeCatalog(loaded.models, ctx, options, source);
       if (code !== 0) return code;
     }
     return 0;
@@ -202,15 +215,15 @@ export async function push(options: PushOptions): Promise<number> {
 }
 
 
-// Deploys the semantic model's BigQuery Graph leg and prints the result.
-// Returns a process exit code (0 on success).
+// Deploys the semantic model's BigQuery Graph leg (over the pre-loaded models)
+// and prints the result. Returns a process exit code (0 on success).
 async function pushBigQuery(
-  docs: { name: string; text: string }[], ctx: context.ApiContext,
-  options: PushOptions, source: SemanticModelSource): Promise<number> {
+  models: LoadedModel[], ctx: context.ApiContext,
+  options: PushOptions): Promise<number> {
   console.log(options.validateOnly
     ? 'Validating semantic model for BigQuery Graph...'
     : 'Pushing semantic model (BigQuery Graph)...');
-  const result = await deploy.deployBigQuery(docs, ctx, options, source.project);
+  const result = await deploy.deployBigQuery(models, ctx, options);
 
   for (const w of result.warnings) {
     console.warn(`Warning: ${w}`);
@@ -233,21 +246,22 @@ async function pushBigQuery(
 }
 
 
-// Deploys the semantic model's Knowledge Catalog leg and prints the result. The
-// destination coordinates come from the scope (project.location.entryGroup).
-// Returns a process exit code (0 on success).
+// Deploys the semantic model's Knowledge Catalog leg (over the pre-loaded
+// models) and prints the result. The destination coordinates come from the
+// scope (project.location.entryGroup). Returns a process exit code (0 on
+// success).
 async function pushKnowledgeCatalog(
-  docs: { name: string; text: string }[], ctx: context.ApiContext,
+  models: LoadedModel[], ctx: context.ApiContext,
   options: PushOptions, source: SemanticModelSource): Promise<number> {
   console.log(options.validateOnly
     ? 'Validating semantic model for Knowledge Catalog...'
     : 'Pushing semantic model (Knowledge Catalog)...');
-  const result = await kc.deployKnowledgeCatalog(docs, ctx, {
+  const result = await kc.deployKnowledgeCatalog(models, ctx, {
     project: source.project,
     location: source.location,
     entryGroup: source.entryGroup,
     validateOnly: options.validateOnly,
-  }, source.project);
+  });
 
   for (const w of result.warnings) {
     console.warn(`Warning: ${w}`);
@@ -265,9 +279,11 @@ async function pushKnowledgeCatalog(
     return 1;
   }
   const n = result.created + result.updated;
+  const removed =
+      result.deleted ? `; removed ${result.deleted} orphaned` : '';
   console.log(options.validateOnly
     ? 'Validation complete; no changes applied.'
     : `Wrote ${result.created} new and ${result.updated} updated ` +
-        `Knowledge Catalog entr${n === 1 ? 'y' : 'ies'}.`);
+        `Knowledge Catalog entr${n === 1 ? 'y' : 'ies'}${removed}.`);
   return 0;
 }
