@@ -28,14 +28,18 @@
 // inverse of the WRITE, not of the authored document. It recovers names,
 // descriptions, data sources, field datatypes (via the schema aspect) and
 // DIMENSION roles, field/metric expressions, each metric's attach entity
-// (re-derived from its expression, as the loader does), the model's deployment
-// targets (from the semantic-model aspect, back into the GOOGLE
-// `custom_extensions` block), and 1:1 / 1:N relationships (from the
-// `schema-join` entry links a pull fetched -- see
+// (re-derived from its expression, as the loader does, else the value the
+// emitter persisted), the model's deployment targets (from the semantic-model
+// aspect, back into the GOOGLE `custom_extensions` block), and 1:1 / 1:N
+// relationships (from the `schema-join` entry links a pull fetched -- see
 // `modelsFromCatalogResources`'s `entryLinks` argument). It cannot recover what
 // the emitter does not write: entity keys/unique keys, `ai_context`, field
-// labels, `importedDialect`, and many-to-many (association) relationships
-// (whose edge lives only in the BigQuery property graph). Relationship NAMES
+// labels, `importedExpression`/`importedDialect` (the vendor-dialect SQL), and
+// many-to-many (association) relationships (whose edge lives only in the
+// BigQuery property graph). A `String`- or `Opaque`-typed METRIC also reads
+// back un-typed: the metric aspect persists only `dataType` (both collapse to
+// `STRING`, with no metadataType to disambiguate), so -- as with a plain STRING
+// field -- the reader leaves it un-typed rather than guess. Relationship NAMES
 // come back normalized (lowercased/hyphenated), since the emitter encodes the
 // name only in the link id (via `linkSlug`), not in the join aspect.
 
@@ -158,7 +162,9 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
     name,
     dataSource,
     keys: [],  // not persisted by the emitter; unrecoverable on read
-    fields: asArray(schema.fields).map(fd => readField(fd, name, warnings)),
+    fields: asArray(schema.fields)
+                .map(fd => readField(fd, name, warnings))
+                .filter((f): f is Field => f !== undefined),
   };
   const description = entry.entrySource?.description;
   if (description !== undefined) entity.description = description;
@@ -170,12 +176,14 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
 // schemaAspectData: the datatype from dataType/metadataType, expressions from
 // the nested `semantics` block, and the DIMENSION role back to a dimension
 // marker.
-function readField(fd: any, entityName: string, warnings: string[]): Field {
+function readField(fd: any, entityName: string, warnings: string[]): Field|
+    undefined {
   const name = fd?.name;
   if (name === undefined || name === '') {
     warnings.push(
         `entity '${entityName}': a schema field is missing its name; the ` +
-        `field may not load`);
+        `field is skipped`);
+    return undefined;
   }
   const field: Field = {name};
   const sem = fd?.semantics ?? {};
@@ -203,8 +211,18 @@ function readMetric(
   if (data.expression !== undefined) metric.expression = data.expression;
   const exprForRefs = data.expression ?? '';
   const referenced = referencedEntityNames(exprForRefs, entityNames);
+  const persistedEntity =
+      typeof data.entity === 'string' && data.entity !== '' ? data.entity :
+                                                              undefined;
   if (referenced.length === 1) {
+    // The expression pins exactly one known entity; re-derive it (as the loader
+    // does) so the attach entity stays consistent with the reconstructed set.
     metric.entity = referenced[0];
+  } else if (persistedEntity !== undefined) {
+    // The expression does not pin a single known entity (none, or several), so
+    // fall back to the attach entity the emitter persisted (metricAspectData)
+    // rather than dropping it.
+    metric.entity = persistedEntity;
   } else if (exprForRefs && !referenced.length) {
     // Parity with the loader's convertMetric: an expression that qualifies no
     // known entity is flagged as potentially unplaceable downstream.
@@ -428,12 +446,22 @@ function relationshipName(
 // read-side module must not depend on the write-side emitter. Exported for the
 // symmetry test, which reuses it to reproduce the normalized relationship name
 // rather than reimplementing the slug rule.
+//
+// It reproduces linkSlug's normalization AND its 63-char cap + trailing-hyphen
+// re-strip, so the prefix stays aligned with the id even when the combined
+// `<model>-<name>` slug was truncated. (linkSlug's `|| 'link'` empty-slug
+// fallback is intentionally omitted: an empty prefix strips nothing and
+// relationshipName then returns the id verbatim, which is already correct. When
+// the cap truncates into the model slug itself the relationship name is
+// unrecoverable regardless -- relationshipName returns the truncated id.)
 export function linkNamePrefix(modelName: string): string {
   return modelName.toLowerCase()
       .replace(/[^a-z0-9-]+/g, '-')
       .replace(/-+/g, '-')
       .replace(/^[^a-z]+/, '')
-      .replace(/^-+|-+$/g, '');
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 63)
+      .replace(/-+$/, '');
 }
 
 

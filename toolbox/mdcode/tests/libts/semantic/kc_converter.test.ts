@@ -392,6 +392,35 @@ describe('field mapping details', () => {
         expect(back.importedExpression).toBeUndefined();
         expect(back.importedDialect).toBeUndefined();
       });
+
+  test('a schema field missing its name is skipped with a warning', () => {
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [{
+        name: 'e',
+        dataSource: 'p.d.t',
+        keys: [],
+        fields: [{name: 'f', expression: 'e.f'}],
+      }],
+      relationships: [],
+      metrics: [],
+    };
+    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
+    // Inject a nameless field record into the entity's schema aspect, as a
+    // malformed catalog could return; the reader must drop it, not emit a field
+    // with an undefined name.
+    for (const entry of entries) {
+      for (const aspect of Object.values(entry.aspects ?? {})) {
+        const fields = (aspect as {data?: {fields?: unknown[]}}).data?.fields;
+        if (Array.isArray(fields)) fields.push({dataType: 'INT64'});
+      }
+    }
+    const {models, warnings} = modelsFromCatalogResources(entries, entryLinks);
+    expect(models[0].entities[0].fields.map(f => f.name)).toEqual(['f']);
+    expect(
+        warnings.some(w => /missing its name; the field is skipped/i.test(w)))
+        .toBe(true);
+  });
 });
 
 
@@ -451,6 +480,37 @@ describe('metric attach entity is re-derived from the expression', () => {
         const byName = new Map(models[0].metrics.map(m => [m.name, m]));
         expect(byName.get('revenue')!.entity).toBe('orders');
         expect(byName.get('mix')!.entity).toBeUndefined();
+      });
+
+  test(
+      'a cross-entity metric falls back to the persisted attach entity', () => {
+        const model: SemanticModel = {
+          name: 'm',
+          entities: [
+            {
+              name: 'orders',
+              dataSource: 'p.d.orders',
+              keys: [],
+              fields: [{name: 'amt', expression: 'orders.amt'}]
+            },
+            {
+              name: 'customer',
+              dataSource: 'p.d.customer',
+              keys: [],
+              fields: [{name: 'region', expression: 'customer.region'}]
+            },
+          ],
+          relationships: [],
+          // Two entities in the expression, so it cannot be re-derived; the
+          // authored attach entity must ride back on the persisted aspect.
+          metrics: [{
+            name: 'mix',
+            expression: 'SUM(orders.amt) / COUNT(customer.region)',
+            entity: 'orders',
+          }],
+        };
+        const {models} = roundTrip(model);
+        expect(models[0].metrics[0].entity).toBe('orders');
       });
 });
 
