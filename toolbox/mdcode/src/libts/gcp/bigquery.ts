@@ -98,12 +98,17 @@ export class BigQueryClient extends api.ApiClient {
   // Executes a SQL statement (including DDL) synchronously via jobs.query.
   // When `location` is set it pins the job's processing location so it agrees
   // with getQueryResults/getJob; otherwise BigQuery infers it from the
-  // referenced tables.
-  async query(project: string, sql: string, location?: string): Promise<api.ApiResult<QueryResponse>> {
+  // referenced tables. With `dryRun` the statement is validated -- name
+  // resolution, table existence and access -- but not executed, so it serves as
+  // a cheap pre-flight probe over any reference form BigQuery can resolve.
+  async query(project: string, sql: string, location?: string, dryRun?: boolean): Promise<api.ApiResult<QueryResponse>> {
     const name = `projects/${project}/queries`;
     const body: Record<string, any> = { query: sql, useLegacySql: false };
     if (location) {
       body.location = location;
+    }
+    if (dryRun) {
+      body.dryRun = true;
     }
     return await this._post<QueryResponse>(name, body);
   }

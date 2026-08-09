@@ -102,7 +102,7 @@ describe('validateBigQueryDataSources', () => {
     const m = model(
         {entities: [entity('orders', 'p.d.orders'),
                     entity('customer', 'p.d.customer')]});
-    expect(await validateBigQueryDataSources([loaded(m)], bq)).toEqual([]);
+    expect(await validateBigQueryDataSources([loaded(m)], bq, 'p')).toEqual([]);
   });
 
   test('reports a missing source table, naming the entity/model/document',
@@ -113,7 +113,7 @@ describe('validateBigQueryDataSources', () => {
          entities: [entity('orders', 'p.d.orders'),
                     entity('gone', 'p.d.ghost')],
        });
-       const errs = await validateBigQueryDataSources([loaded(m)], bq);
+       const errs = await validateBigQueryDataSources([loaded(m)], bq, 'p');
        expect(errs.length).toBe(1);
        expect(errs[0]).toContain('p.d.ghost');
        expect(errs[0]).toContain('does not exist');
@@ -121,41 +121,56 @@ describe('validateBigQueryDataSources', () => {
        expect(errs[0]).toContain('doc');
      });
 
-  test('reports a permission-denied (403) source table', async () => {
+  test('covers a four-part REST-catalog / Iceberg source', async () => {
+    // A federated REST-catalog table (e.g. Iceberg via BigLake) is a four-part
+    // name that tables.get cannot address; the dry-run resolves it as the deploy
+    // will. A reachable one passes; a missing one is reported by name.
     const bq = new BigQueryClientMock();
-    bq.getTable = (async () => ({status: 403, message: 'denied'})) as any;
+    bq.addMockSource('ice_cat.db.sales.orders');
+    const ok = model({entities: [entity('orders', 'ice_cat.db.sales.orders')]});
+    expect(await validateBigQueryDataSources([loaded(ok)], bq, 'p')).toEqual([]);
+
+    const missing =
+        model({entities: [entity('lost', 'ice_cat.db.sales.ghost')]});
+    const errs = await validateBigQueryDataSources([loaded(missing)], bq, 'p');
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain('ice_cat.db.sales.ghost');
+    expect(errs[0]).toContain('does not exist');
+  });
+
+  test('reports a permission-denied source table', async () => {
+    const bq = new BigQueryClientMock();
+    bq.query =
+        (async () => ({status: 403, message: 'Access Denied: no permission'})) as
+        any;
     const m = model({entities: [entity('o', 'p.d.o')]});
-    const errs = await validateBigQueryDataSources([loaded(m)], bq);
+    const errs = await validateBigQueryDataSources([loaded(m)], bq, 'p');
     expect(errs.length).toBe(1);
     expect(errs[0]).toContain('permission denied');
   });
 
-  test('skips sources that are not a plain three-part table reference',
-     async () => {
-       // A query source and an under-qualified ref cannot be probed with
-       // tables.get, so neither is checked (and no table is mocked).
-       const bq = new BigQueryClientMock();
-       const m = model({
-         entities: [entity('q', 'SELECT * FROM x'),
-                    entity('short', 'd.t')],
-       });
-       expect(await validateBigQueryDataSources([loaded(m)], bq)).toEqual([]);
-     });
+  test('skips a source that is a query, not a table', async () => {
+    // A query source (contains whitespace) is not a table and cannot be probed,
+    // so it is not checked (nothing is mocked for it).
+    const bq = new BigQueryClientMock();
+    const m = model({entities: [entity('q', 'SELECT * FROM x')]});
+    expect(await validateBigQueryDataSources([loaded(m)], bq, 'p')).toEqual([]);
+  });
 
   test('probes each distinct table once across entities and models',
      async () => {
        const bq = new BigQueryClientMock();
        bq.addMockTable(mockTable('p', 'd', 'shared'));
        let calls = 0;
-       const orig = bq.getTable.bind(bq);
-       bq.getTable = ((p: string, d: string, t: string) => {
+       const orig = bq.query.bind(bq);
+       bq.query = ((p: string, sql: string, loc?: string, dry?: boolean) => {
          calls++;
-         return orig(p, d, t);
+         return orig(p, sql, loc, dry);
        }) as any;
        const m1 = model({name: 'm1', entities: [entity('a', 'p.d.shared')]});
        const m2 = model({name: 'm2', entities: [entity('b', 'p.d.shared')]});
        const errs = await validateBigQueryDataSources(
-           [loaded(m1, 'd1'), loaded(m2, 'd2')], bq);
+           [loaded(m1, 'd1'), loaded(m2, 'd2')], bq, 'p');
        expect(errs).toEqual([]);
        expect(calls).toBe(1);
      });
