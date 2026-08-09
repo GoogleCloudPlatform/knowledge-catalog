@@ -60,6 +60,17 @@ export class BigQueryClient extends api.ApiClient {
     return await this._get(name, params);
   }
 
+  // Fetches a single table's metadata. Used as a cheap existence/access probe
+  // before deploy: a 200 means the table is reachable, a 404 that it does not
+  // exist, a 403 that the caller cannot see it. `selectedFields` trims the
+  // response to the reference alone, since only the status is consulted.
+  async getTable(project: string, dataset: string, table: string): Promise<api.ApiResult<Table>> {
+    const name = `projects/${project}/datasets/${dataset}/tables/${table}`;
+    const params: Record<string, any> = { selectedFields: 'tableReference' };
+
+    return await this._get<Table>(name, params);
+  }
+
   async *listTables(project: string, dataset: string): AsyncGenerator<Table> {
     const name = `projects/${project}/datasets/${dataset}/tables`;
 

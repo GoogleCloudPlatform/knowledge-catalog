@@ -3,9 +3,10 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import {CustomExtension, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
+import {CustomExtension, Entity, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
 import {LoadedModel} from '../../../src/libts/semantic/loader';
-import {validatePushRequirements} from '../../../src/libts/semantic/validate';
+import {validateBigQueryDataSources, validatePushRequirements} from '../../../src/libts/semantic/validate';
+import {BigQueryClientMock} from '../mocks';
 
 // A parsed BigQuery Graph deployment target the strict matcher accepts.
 const BQ_TARGET =
@@ -81,4 +82,81 @@ describe('validatePushRequirements', () => {
     const errs = validatePushRequirements([a, b]);
     expect(errs.length).toBe(2);
   });
+});
+
+
+// Helpers for the live data-source check.
+function entity(name: string, dataSource: string): Entity {
+  return {name, dataSource, keys: [], fields: []} as Entity;
+}
+
+function mockTable(project: string, dataset: string, tableId: string) {
+  return {id: tableId, tableReference: {projectId: project, datasetId: dataset, tableId}};
+}
+
+describe('validateBigQueryDataSources', () => {
+  test('passes when every entity source table is reachable', async () => {
+    const bq = new BigQueryClientMock();
+    bq.addMockTable(mockTable('p', 'd', 'orders'));
+    bq.addMockTable(mockTable('p', 'd', 'customer'));
+    const m = model(
+        {entities: [entity('orders', 'p.d.orders'),
+                    entity('customer', 'p.d.customer')]});
+    expect(await validateBigQueryDataSources([loaded(m)], bq)).toEqual([]);
+  });
+
+  test('reports a missing source table, naming the entity/model/document',
+     async () => {
+       const bq = new BigQueryClientMock();
+       bq.addMockTable(mockTable('p', 'd', 'orders'));
+       const m = model({
+         entities: [entity('orders', 'p.d.orders'),
+                    entity('gone', 'p.d.ghost')],
+       });
+       const errs = await validateBigQueryDataSources([loaded(m)], bq);
+       expect(errs.length).toBe(1);
+       expect(errs[0]).toContain('p.d.ghost');
+       expect(errs[0]).toContain('does not exist');
+       expect(errs[0]).toContain("entity 'gone'");
+       expect(errs[0]).toContain('doc');
+     });
+
+  test('reports a permission-denied (403) source table', async () => {
+    const bq = new BigQueryClientMock();
+    bq.getTable = (async () => ({status: 403, message: 'denied'})) as any;
+    const m = model({entities: [entity('o', 'p.d.o')]});
+    const errs = await validateBigQueryDataSources([loaded(m)], bq);
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain('permission denied');
+  });
+
+  test('skips sources that are not a plain three-part table reference',
+     async () => {
+       // A query source and an under-qualified ref cannot be probed with
+       // tables.get, so neither is checked (and no table is mocked).
+       const bq = new BigQueryClientMock();
+       const m = model({
+         entities: [entity('q', 'SELECT * FROM x'),
+                    entity('short', 'd.t')],
+       });
+       expect(await validateBigQueryDataSources([loaded(m)], bq)).toEqual([]);
+     });
+
+  test('probes each distinct table once across entities and models',
+     async () => {
+       const bq = new BigQueryClientMock();
+       bq.addMockTable(mockTable('p', 'd', 'shared'));
+       let calls = 0;
+       const orig = bq.getTable.bind(bq);
+       bq.getTable = ((p: string, d: string, t: string) => {
+         calls++;
+         return orig(p, d, t);
+       }) as any;
+       const m1 = model({name: 'm1', entities: [entity('a', 'p.d.shared')]});
+       const m2 = model({name: 'm2', entities: [entity('b', 'p.d.shared')]});
+       const errs = await validateBigQueryDataSources(
+           [loaded(m1, 'd1'), loaded(m2, 'd2')], bq);
+       expect(errs).toEqual([]);
+       expect(calls).toBe(1);
+     });
 });

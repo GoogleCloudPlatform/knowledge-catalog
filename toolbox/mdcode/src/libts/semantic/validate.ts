@@ -8,6 +8,7 @@
 // schema -- because these are deployment requirements, not schema rules, and
 // they read the GOOGLE deployment-target extension the BigQuery leg owns.
 
+import {BigQueryClient} from '../gcp/bigquery';
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {LoadedModel} from './loader';
 
@@ -54,4 +55,68 @@ export function validatePushRequirements(models: LoadedModel[]): string[] {
     }
   }
   return errors;
+}
+
+
+// Live pre-flight over the same models: confirms every entity's BigQuery source
+// table is reachable BEFORE any destination leg runs, so a push -- to BigQuery
+// or to Knowledge Catalog -- fails fast when the model could not deploy, rather
+// than surfacing a missing table only once the BigQuery leg executes its DDL.
+// The entity sources are BigQuery tables regardless of --target, so this runs
+// for every destination and for --validate-only.
+//
+// Only a clean three-part `project.dataset.table` source is probed; a source
+// the loader kept verbatim because it is a query or is not a plain table
+// reference cannot be resolved to a tables.get and is skipped. Each distinct
+// table is checked once. Returns one message per unreachable table (empty when
+// all pass).
+export async function validateBigQueryDataSources(
+    models: LoadedModel[], bq: BigQueryClient): Promise<string[]> {
+  // Dedup by fully-qualified table so a table shared across entities/models is
+  // probed once; keep the first reference for a locatable error message.
+  const refs =
+      new Map<string, {document: string; model: string; entity: string}>();
+  for (const {document, model} of models) {
+    for (const entity of model.entities ?? []) {
+      const parsed = parseTableRef(entity.dataSource);
+      if (!parsed) continue;
+      const key = `${parsed.project}.${parsed.dataset}.${parsed.table}`;
+      if (!refs.has(key)) {
+        refs.set(key, {document, model: model.name, entity: entity.name});
+      }
+    }
+  }
+
+  const errors: string[] = [];
+  for (const [key, where] of refs) {
+    const {project, dataset, table} = parseTableRef(key)!;
+    const res = await bq.getTable(project, dataset, table);
+    if (res.status === 200) continue;
+    const why = res.status === 404 ?
+        'does not exist' :
+        res.status === 403 ?
+        'is not accessible (permission denied)' :
+        `could not be verified (${res.message?.trim() || `HTTP ${res.status}`})`;
+    errors.push(
+        `entity '${where.entity}' in model '${where.model}' (${
+            where.document}) references BigQuery table '${key}', which ${why}; ` +
+        `the model cannot be deployed. Create the table or grant access to it, ` +
+        `or fix the entity's source.`);
+  }
+  return errors;
+}
+
+
+// Parses a canonical entity dataSource into a BigQuery table reference, or null
+// when it is not a plain three-part `project.dataset.table` name -- a query
+// (contains whitespace) or an under/over-qualified reference the loader passed
+// through verbatim -- and so cannot be probed with tables.get.
+function parseTableRef(dataSource: string|undefined):
+    {project: string; dataset: string; table: string}|null {
+  const trimmed = (dataSource ?? '').trim();
+  if (!trimmed || /\s/.test(trimmed)) return null;
+  const parts = trimmed.split('.').map(
+      p => p.replace(/^[`"]/, '').replace(/[`"]$/, ''));
+  if (parts.length !== 3 || parts.some(p => !p.length)) return null;
+  return {project: parts[0], dataset: parts[1], table: parts[2]};
 }
