@@ -224,8 +224,8 @@ export async function push(options: PushOptions): Promise<number> {
     // entity's BigQuery source table must be reachable, so a push to either
     // BigQuery or Knowledge Catalog fails fast when the model could not deploy.
     // Runs for every --target and for --validate-only.
-    const accessErrors =
-        await validateBigQueryDataSources(loaded.models, new BigQueryClient(ctx));
+    const accessErrors = await validateBigQueryDataSources(
+        loaded.models, new BigQueryClient(ctx), source.project ?? ctx.project);
     if (accessErrors.length) {
       for (const e of accessErrors) {
         console.error(`Error: ${e}`);

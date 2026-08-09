@@ -10,6 +10,7 @@
 
 import {BigQueryClient} from '../gcp/bigquery';
 import {googleDeploymentTargets} from './deploy_bigquery';
+import {SemanticModel} from './ir';
 import {LoadedModel} from './loader';
 
 // Checks every model against the push requirements and returns the collected
@@ -65,58 +66,85 @@ export function validatePushRequirements(models: LoadedModel[]): string[] {
 // The entity sources are BigQuery tables regardless of --target, so this runs
 // for every destination and for --validate-only.
 //
-// Only a clean three-part `project.dataset.table` source is probed; a source
-// the loader kept verbatim because it is a query or is not a plain table
-// reference cannot be resolved to a tables.get and is skipped. Each distinct
-// table is checked once. Returns one message per unreachable table (empty when
-// all pass).
+// Each distinct source is probed with a dry-run query (`SELECT 1 FROM <ref>`),
+// so BigQuery resolves the reference exactly as the generated DDL will. That
+// covers every reference form the generator emits -- a three-part
+// `project.dataset.table`, a four-part federated REST-catalog / Lakehouse name
+// (e.g. an Apache Iceberg table via BigLake), and quoted identifiers -- rather
+// than only a three-part name. A source the loader kept verbatim because it is a
+// query (contains whitespace) is not a table and is skipped. The dry-run is
+// billed to the model's BigQuery deployment-target project (the same project the
+// deploy runs against), falling back to `defaultProject`. Each distinct (billing
+// project, reference) pair is probed once. Returns one message per unreachable
+// table (empty when all pass).
 export async function validateBigQueryDataSources(
-    models: LoadedModel[], bq: BigQueryClient): Promise<string[]> {
-  // Dedup by fully-qualified table so a table shared across entities/models is
-  // probed once; keep the first reference for a locatable error message.
-  const refs =
-      new Map<string, {document: string; model: string; entity: string}>();
+    models: LoadedModel[], bq: BigQueryClient,
+    defaultProject: string): Promise<string[]> {
+  // Dedup by billing project + reference so a table shared across
+  // entities/models is probed once; keep the first reference for a locatable
+  // error message.
+  const refs = new Map<string, {
+    project: string; ref: string; document: string; model: string;
+    entity: string;
+  }>();
   for (const {document, model} of models) {
+    const project = billingProject(model, defaultProject);
     for (const entity of model.entities ?? []) {
-      const parsed = parseTableRef(entity.dataSource);
-      if (!parsed) continue;
-      const key = `${parsed.project}.${parsed.dataset}.${parsed.table}`;
+      const ref = probeableRef(entity.dataSource);
+      if (!ref) continue;
+      const key = `${project}\u0000${ref}`;
       if (!refs.has(key)) {
-        refs.set(key, {document, model: model.name, entity: entity.name});
+        refs.set(key, {
+          project, ref, document, model: model.name, entity: entity.name,
+        });
       }
     }
   }
 
   const errors: string[] = [];
-  for (const [key, where] of refs) {
-    const {project, dataset, table} = parseTableRef(key)!;
-    const res = await bq.getTable(project, dataset, table);
+  for (const {project, ref, document, model, entity} of refs.values()) {
+    const res =
+        await bq.query(project, `SELECT 1 FROM \`${ref}\``, undefined, true);
     if (res.status === 200) continue;
-    const why = res.status === 404 ?
+    const msg = res.message?.trim() || `HTTP ${res.status}`;
+    const why = /not found/i.test(msg) ?
         'does not exist' :
-        res.status === 403 ?
+        /access denied|permission denied|not authorized|does not have permission/i
+                .test(msg) ?
         'is not accessible (permission denied)' :
-        `could not be verified (${res.message?.trim() || `HTTP ${res.status}`})`;
+        `could not be verified (${msg})`;
     errors.push(
-        `entity '${where.entity}' in model '${where.model}' (${
-            where.document}) references BigQuery table '${key}', which ${why}; ` +
-        `the model cannot be deployed. Create the table or grant access to it, ` +
-        `or fix the entity's source.`);
+        `entity '${entity}' in model '${model}' (${document}) references ` +
+        `BigQuery table '${ref}', which ${why}; the model cannot be deployed. ` +
+        `Create the table or grant access to it, or fix the entity's source.`);
   }
   return errors;
 }
 
 
-// Parses a canonical entity dataSource into a BigQuery table reference, or null
-// when it is not a plain three-part `project.dataset.table` name -- a query
-// (contains whitespace) or an under/over-qualified reference the loader passed
-// through verbatim -- and so cannot be probed with tables.get.
-function parseTableRef(dataSource: string|undefined):
-    {project: string; dataset: string; table: string}|null {
+// The BigQuery project a model's deploy -- and thus its dry-run pre-flight --
+// bills to: the project of the model's first BigQuery Graph deployment target
+// (where the CREATE PROPERTY GRAPH runs), falling back to the scope's default
+// project when the model declares no parseable BigQuery Graph target.
+// googleDeploymentTargets is safe here: validatePushRequirements ran first and
+// already rejected a malformed GOOGLE extension.
+function billingProject(model: SemanticModel, defaultProject: string): string {
+  try {
+    return googleDeploymentTargets(model).targets[0]?.project ?? defaultProject;
+  } catch {
+    return defaultProject;
+  }
+}
+
+
+// A source that can be probed as a BigQuery table: the canonical `dataSource`,
+// trimmed, or null when it is not a table reference -- empty, or a query the
+// loader kept verbatim (contains whitespace). Unlike a tables.get probe this
+// imposes no part-count limit, so a three-part `project.dataset.table` and a
+// four-part REST-catalog / Lakehouse name are both returned for the dry-run to
+// resolve.
+function probeableRef(dataSource: string|undefined): string|null {
   const trimmed = (dataSource ?? '').trim();
   if (!trimmed || /\s/.test(trimmed)) return null;
-  const parts = trimmed.split('.').map(
-      p => p.replace(/^[`"]/, '').replace(/[`"]$/, ''));
-  if (parts.length !== 3 || parts.some(p => !p.length)) return null;
-  return {project: parts[0], dataset: parts[1], table: parts[2]};
+  return trimmed;
 }
