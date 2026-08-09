@@ -1,5 +1,5 @@
-// Behavior specification for the Knowledge Catalog reader
-// (modelsFromCatalogResources in src/libts/semantic/knowledge_catalog.ts).
+// Behavior specification for the KC converter's read direction
+// (modelsFromCatalogResources in src/libts/semantic/kc_converter.ts).
 //
 // The reader is the inverse of the emitter (generateCatalogResources). The
 // central guarantee is an emitter -> reader round trip: emit a model's entries,
@@ -12,9 +12,15 @@
 // re-derivation, and parent/anchor grouping).
 
 import {describe, expect, test} from 'bun:test';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 import {Entity, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
-import {generateCatalogResources, modelsFromCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
+import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
+import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
+import {serializeModel} from '../../../src/libts/semantic/osi_converter';
+
+const FIXTURES = path.join(__dirname, 'fixtures');
 
 const OPTS = {
   project: 'dest',
@@ -256,3 +262,54 @@ describe('metric expression referencing no known entity', () => {
              .toBe(true);
        });
 });
+
+
+// -- Golden pull: the whole KC entries -> IR -> OSI YAML output. --
+//
+// The round trip above proves the reader inverts the emitter in memory; this
+// pins the reviewable artifact. For each corpus fixture it reads the committed
+// emitter golden (`<fixture>.knowledge_catalog.golden.json` -- the exact entries
+// a push produced) back through the reader and serializes the reconstructed IR
+// to `<fixture>.pull.golden.yaml`. Open that next to the fixture's
+// `.osi.golden.yaml` to see, as whole files, what a Knowledge Catalog round trip
+// preserves and what it drops (keys, ai_context, labels, relationships).
+//
+//   Regenerate after an intentional reader/serializer change:
+//     UPDATE_GOLDENS=1 npx bun test ./tests/libts/semantic/kc_converter.test.ts
+describe('golden pull: each corpus KC golden reconstructs to its exact YAML',
+         () => {
+           const CORPUS = [
+             'sales_bq_graph_target.yaml',
+             'star_orders_customer.yaml',
+             'tpcds_date_edge.yaml',
+           ];
+           const kcGoldenPath = (fixture: string) => path.join(
+               FIXTURES,
+               fixture.replace(/\.yaml$/, '.knowledge_catalog.golden.json'));
+           const pullGoldenPath = (fixture: string) =>
+               path.join(FIXTURES, fixture.replace(/\.yaml$/, '.pull.golden.yaml'));
+
+           for (const fixture of CORPUS) {
+             test(fixture, () => {
+               const kc = JSON.parse(fs.readFileSync(kcGoldenPath(fixture), 'utf8'));
+               const {models, warnings} = modelsFromCatalogResources(kc.entries);
+               // Reader warnings ride along as YAML comments so the golden shows
+               // the full outcome, not just the recovered document.
+               const header = warnings.length ?
+                   warnings.map((w: string) => `# warning: ${w}`).join('\n') + '\n' :
+                   '# (no warnings)\n';
+               const actual =
+                   header + models.map(m => serializeModel(m).yaml).join('---\n');
+               const golden = pullGoldenPath(fixture);
+               if (process.env.UPDATE_GOLDENS) {
+                 fs.writeFileSync(golden, actual);
+                 return;
+               }
+               if (!fs.existsSync(golden)) {
+                 throw new Error(`missing golden ${
+                     path.basename(golden)} \u2014 run UPDATE_GOLDENS=1 to create it`);
+               }
+               expect(actual).toBe(fs.readFileSync(golden, 'utf8'));
+             });
+           }
+         });

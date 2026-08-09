@@ -13,8 +13,9 @@ model to two destinations at once:
 Both are generated from the same source document — you never author them
 separately, and a single `push` keeps them in sync.
 
-This guide covers authoring, deploying, and updating a model. For the Ossie
-document format itself, see [ossie.apache.org](https://ossie.apache.org/).
+This guide covers authoring, deploying, pulling back, and updating a model.
+For the Ossie document format itself, see
+[ossie.apache.org](https://ossie.apache.org/).
 
 ## Prerequisites
 
@@ -220,3 +221,63 @@ Every push prints one line per destination summarizing what it did. For a
 Deployed 1 BigQuery Graph(s).
 Wrote 5 new and 2 updated Knowledge Catalog entries; removed 1 orphaned entry; linked 2 relationships; unlinked 1 orphaned link.
 ```
+
+## Pull
+
+`kcmd pull` is the inverse of push's Knowledge Catalog leg: it reads the
+`semantic-*` entries back from the catalog and reconstructs local model
+documents at `catalog/EntryGroups/<entryGroupId>/<model>.yaml`. Use it to
+recover a workspace from a catalog someone else deployed, or to see what the
+catalog actually holds.
+
+```bash
+kcmd pull
+```
+
+Pull reads only from Knowledge Catalog (never BigQuery). Its coordinates come
+from the same scope you authored under (`<projectId>.<locationId>.<entryGroupId>`).
+
+| Flag | Effect |
+|------|--------|
+| `--dry-run` | Reconstruct from the catalog and report what would be written, but write no files. |
+| `--model <name>` | Pull a single model by name; other models in the entry group are left alone. |
+
+One entry group can hold **many models** — each `semantic-model` entry is a
+separate anchor, and pull reconstructs one document per anchor. `--model`
+narrows both the fetch and the write to a single anchor.
+
+Pull writes with the same last-write-wins policy as the core pull: a model that
+already exists locally is overwritten in place, and a local-only document (one
+with no matching catalog entry) is left untouched — pull never deletes.
+
+> **Note — pull recovers the catalog, not your authored document.** The catalog
+> stores only what push wrote to it (see the note under [What gets created in
+> Knowledge Catalog](#what-gets-created-in-knowledge-catalog)), so a pulled
+> document comes back without the content the catalog never held: entity keys,
+> `ai_context`, field labels, the original vendor SQL (`importedExpression`),
+> and relationships (the graph edges live in the BigQuery property graph, not
+> the catalog). A field's *role* survives as a bare `dimension: {}` marker, but
+> its detail (`is_time`, and so on) does not. Keep your authored document as the
+> source of truth; treat a pulled document as a faithful copy of the catalog
+> metadata, not of the original model.
+
+## Permissions
+
+`push` needs access to whichever destinations you deploy to.
+
+**BigQuery** — for `--target bq` or `all`, and for the validation pre-flight:
+
+* `bigquery.jobs.create` in the deployment-target project — to run the deploy's
+  `CREATE OR REPLACE PROPERTY GRAPH` and the validation dry-run query
+* read access on each entity's source table, so the dry-run can resolve it
+* `bigquery.datasets.get` on the target dataset (region detection; optional —
+  push degrades gracefully without it)
+
+**Knowledge Catalog / Dataplex** — for `--target kc` or `all`:
+
+* `dataplex.entryGroups.useSemanticModelAspect` on the destination entry group
+* `dataplex.entryGroups.useSchemaJoinEntryLink` and
+  `dataplex.entryGroups.useSchemaJoinAspect` when the model has relationships
+
+`kcmd pull` needs read access to the same entry group instead — to list its
+entries and fetch each `semantic-*` entry with its aspects.

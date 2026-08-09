@@ -1,5 +1,5 @@
 // Tests for the semantic-model Knowledge Catalog pull leg
-// (pullKnowledgeCatalog in src/libts/semantic/deploy_knowledge_catalog.ts).
+// (pullKnowledgeCatalog in src/libts/semantic/pull_kc.ts).
 //
 // pullKnowledgeCatalog is the orchestration around the pure reader: enumerate
 // the entry group, hydrate each semantic entry's aspect data, and reconstruct
@@ -7,7 +7,7 @@
 // the fake serves are produced by the real emitter, so this exercises the true
 // list -> hydrate -> read path end to end (an entity is re-fetched with BOTH
 // its semantic-entity and schema aspects). The reader's own mapping is covered
-// in knowledge_catalog.read.test.ts; the focus here is the fetch SEQUENCE:
+// in kc_converter.test.ts; the focus here is the fetch SEQUENCE:
 // aspect hydration, the --model filter, skipped entries, and ignoring foreign
 // entries.
 
@@ -15,7 +15,7 @@ import {afterEach, describe, expect, mock, spyOn, test} from 'bun:test';
 
 import {ApiResult} from '../../../src/libts/gcp/api';
 import {CatalogClient, Entry} from '../../../src/libts/gcp/dataplex';
-import {pullKnowledgeCatalog} from '../../../src/libts/semantic/deploy_knowledge_catalog';
+import {pullKnowledgeCatalog} from '../../../src/libts/semantic/pull_kc';
 import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 

@@ -14,7 +14,8 @@ import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import {BigQueryClient} from '../libts/gcp/bigquery';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
-import { serializeModel } from '../libts/semantic/serialize';
+import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
+import {serializeModel} from '../libts/semantic/osi_converter';
 import {validateBigQueryDataSources, validatePushRequirements} from '../libts/semantic/validate';
 
 
@@ -387,7 +388,7 @@ async function pullSemanticModel(
     : 'Pulling semantic model from Knowledge Catalog...');
 
   const catalog = new dataplex.CatalogClient(ctx);
-  const result = await kc.pullKnowledgeCatalog(catalog, {
+  const result = await pullKnowledgeCatalog(catalog, {
     project: source.project,
     location: source.location,
     entryGroup: source.entryGroup,

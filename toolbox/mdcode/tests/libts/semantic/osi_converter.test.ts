@@ -1,7 +1,7 @@
-// Behavior specification for the semantic-model serializer
-// (src/libts/semantic/serialize.ts).
+// Behavior specification for the OSI converter's serialize direction
+// (serializeModel in src/libts/semantic/osi_converter.ts).
 //
-// serialize.ts is the inverse of loader.ts: IR -> open-format YAML. The
+// The serializer is the inverse of loader.ts: IR -> open-format YAML. The
 // strongest guarantee is a round trip through the loader -- load a fixture to
 // the IR, serialize it, load the serialized text again, and assert the two IRs
 // are identical. That pins IR-level fidelity across every feature the loader
@@ -17,7 +17,7 @@ import * as yaml from 'yaml';
 
 import {Field, Metric, Relationship, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
-import {modelDocument, serializeModel} from '../../../src/libts/semantic/serialize';
+import {modelDocument, serializeModel} from '../../../src/libts/semantic/osi_converter';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
@@ -288,3 +288,47 @@ describe('serialize flags loader-invalid reconstructions', () => {
         expect(labels).toContain('BIGQUERY');
       });
 });
+
+
+// -- Golden corpus: the whole IR -> OSI YAML output, reviewable as a file. --
+//
+// The round-trip tests above prove IR-level stability but never pin the exact
+// YAML text. These goldens capture the full serialized document for a small
+// corpus so a reviewer can open a `.yaml` next to its `.osi.golden.yaml` and see
+// exactly what the serializer emits. The same corpus backs kc_converter's
+// `.pull.golden.yaml`, so diffing the two shows what a Knowledge Catalog round
+// trip loses relative to the authored source.
+//
+//   Regenerate after an intentional serializer change:
+//     UPDATE_GOLDENS=1 npx bun test ./tests/libts/semantic/osi_converter.test.ts
+describe('golden OSI document: each corpus fixture serializes to its exact YAML',
+         () => {
+           const CORPUS = [
+             'sales_bq_graph_target.yaml',
+             'star_orders_customer.yaml',
+             'tpcds_date_edge.yaml',
+           ];
+           // Same load defaults as the KC e2e/pull goldens, so the OSI golden
+           // and the pull golden are directly comparable.
+           const LOAD = {defaultProject: 'sqlgen-testing', defaultDataset: 'demo'};
+           const osiGoldenPath = (fixture: string) =>
+               path.join(FIXTURES, fixture.replace(/\.yaml$/, '.osi.golden.yaml'));
+
+           for (const fixture of CORPUS) {
+             test(fixture, () => {
+               const text = fs.readFileSync(path.join(FIXTURES, fixture), 'utf8');
+               const models = loadModels(text, LOAD).models;
+               const actual = models.map(m => serializeModel(m).yaml).join('---\n');
+               const golden = osiGoldenPath(fixture);
+               if (process.env.UPDATE_GOLDENS) {
+                 fs.writeFileSync(golden, actual);
+                 return;
+               }
+               if (!fs.existsSync(golden)) {
+                 throw new Error(`missing golden ${
+                     path.basename(golden)} \u2014 run UPDATE_GOLDENS=1 to create it`);
+               }
+               expect(actual).toBe(fs.readFileSync(golden, 'utf8'));
+             });
+           }
+         });

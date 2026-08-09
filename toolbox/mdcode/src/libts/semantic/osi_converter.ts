@@ -1,9 +1,16 @@
-// Serializes the Semantic Model IR (./ir) back to the open AI-first semantics
-// format (YAML). This is the inverse of `loader.ts`: `loader` reads authored
-// YAML into the IR; this module writes the IR out as a YAML document the loader
-// can read back. It is the local-workspace sink for `pull` (Knowledge Catalog
-// -> IR -> YAML), the counterpart to how `push` compiles YAML -> IR -> a
-// destination.
+// OSI (open, AI-first semantics) <-> Semantic Model IR converter.
+//
+// SCAFFOLD (naming for the end state): this file currently holds only the
+// WRITE direction -- IR -> OSI YAML (`serializeModel`). The READ direction
+// (OSI YAML -> IR) still lives in `loader.ts` and moves here once PR4 (the
+// KC push line) merges, at which point this becomes the full two-way
+// converter. Until then, "where is the OSI parser?" -> `loader.ts`.
+//
+// Serializing is the inverse of `loader.ts`: `loader` reads authored YAML
+// into the IR; this module writes the IR out as a YAML document the loader
+// can read back. It is the local-workspace sink for `pull` (Knowledge
+// Catalog -> IR -> YAML), the counterpart to how `push` compiles YAML -> IR
+// -> a destination.
 //
 // Fidelity is at the IR level, not byte-for-byte with a hand-authored file. The
 // loader normalizes several authoring conveniences into the IR at load time, so
