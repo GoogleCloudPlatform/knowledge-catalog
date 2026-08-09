@@ -95,12 +95,21 @@ export function modelsFromCatalogResources(
     const metrics = childrenOf(anchor.name, metricEntries)
                         .map(e => readMetric(e, entityNames, warnings));
 
+    // Index this model's entities by their entry id, so a schema-join link can
+    // resolve its endpoints from the link's entryReferences. The id segment is
+    // stable across the project-number/id normalization that lookupEntry
+    // applies to entries but lookupEntryLinks does not apply to link
+    // references, so matching on it (not the full resource name) keeps
+    // live-fetched links resolvable.
+    const entityByEntryId = new Map<string, Entity>();
+    entityEntriesForModel.forEach(
+        (e, i) => entityByEntryId.set(idOf(e.name), entities[i]));
+
     // Relationships come from the schema-join entry links whose two endpoints
     // are both this model's entity entries (M:N edges were never published --
     // they live only in the BigQuery property graph -- so stay absent here).
-    const relationships = readRelationships(
-        entryLinks, name, new Set(entityEntriesForModel.map(e => e.name)),
-        dataSourceIndex(entities), warnings);
+    const relationships =
+        readRelationships(entryLinks, name, entityByEntryId, warnings);
 
     const model: SemanticModel = {name, entities, relationships, metrics};
     const description = anchor.entrySource?.description;
@@ -310,28 +319,22 @@ function readDeploymentTargets(anchor: Entry): CustomExtension|undefined {
 }
 
 
-// Indexes reconstructed entities by their SQL data source, so a schema-join
-// aspect (which names each side by its table, not the entity) can resolve its
-// endpoints back to entity names.
-function dataSourceIndex(entities: Entity[]): Map<string, string> {
-  const index = new Map<string, string>();
-  for (const entity of entities) {
-    const dataSource = (entity.dataSource ?? '').trim();
-    if (dataSource) index.set(dataSource, entity.name);
-  }
-  return index;
-}
-
-
 // Inverts schemaJoinAspectData (knowledge_catalog.ts): each schema-join link
 // whose two endpoints are both this model's entity entries becomes one
-// direct-FK relationship. The aspect encodes direction (`source` is the
-// foreign-key side) and the paired join columns; the link id encodes the
-// (normalized) name. Links are deduped by name -- schema-join is undirected, so
-// a per-entry lookup can return the same link once from each endpoint.
+// direct-FK relationship.
+//
+// Endpoint identity comes from the link's entryReferences (matched by entry id
+// via `entityByEntryId`), NOT from the aspect's table names: the id is unique
+// per entity (two entities can share a table) and survives the
+// project-number/id normalization lookupEntry applies to entries but
+// lookupEntryLinks does not apply to link references. The aspect then supplies
+// the join columns and the direction -- its `source` side is the foreign-key
+// side, named by its data source -- used only to orient the two endpoints. The
+// link id encodes the (normalized) relationship name. Links are deduped --
+// schema-join is undirected, so a per-entry lookup can return the same link
+// once from each endpoint.
 function readRelationships(
-    links: EntryLink[], modelName: string, entityEntryNames: Set<string>,
-    dataSourceToEntity: Map<string, string>,
+    links: EntryLink[], modelName: string, entityByEntryId: Map<string, Entity>,
     warnings: string[]): Relationship[] {
   const prefix = linkNamePrefix(modelName);
   const seen = new Set<string>();
@@ -339,14 +342,18 @@ function readRelationships(
   for (const link of links) {
     if (!link.entryLinkType?.endsWith('/entryLinkTypes/schema-join')) continue;
     const refs = link.entryReferences ?? [];
-    // Only a link whose BOTH endpoints are this model's entities belongs here.
-    if (refs.length !== 2 || !refs.every(r => entityEntryNames.has(r.name))) {
-      continue;
-    }
-    if (link.name) {
-      if (seen.has(link.name)) continue;
-      seen.add(link.name);
-    }
+    if (refs.length !== 2) continue;
+    // Resolve both endpoints from the link's references. A reference that is
+    // not one of this model's entities (another model, or a non-entity) means
+    // the link does not belong here -- skip it quietly, as with M:N edges.
+    const endA = entityByEntryId.get(idOf(refs[0].name));
+    const endB = entityByEntryId.get(idOf(refs[1].name));
+    if (!endA || !endB) continue;
+
+    const key = linkDedupKey(link);
+    if (seen.has(key)) continue;
+    seen.add(key);
+
     const join = asArray(aspectDataOf(link.aspects, 'schema-join').joins)[0];
     if (!join) {
       warnings.push(
@@ -354,24 +361,50 @@ function readRelationships(
           `relationship is skipped`);
       continue;
     }
-    const source = dataSourceToEntity.get((join.source?.name ?? '').trim());
-    const destination =
-        dataSourceToEntity.get((join.target?.name ?? '').trim());
-    if (!source || !destination) {
+    // Direction lives in the aspect: `source` is the foreign-key side, named by
+    // its data source. Orient the two endpoints by matching that name, keeping
+    // join.source.fields paired with the source side. When neither orientation
+    // matches -- or both do, because the endpoints share a data source -- the
+    // direction is undecidable, so keep the reference order and warn rather
+    // than drop the edge.
+    const srcName = (join.source?.name ?? '').trim();
+    const tgtName = (join.target?.name ?? '').trim();
+    const aSrc = (endA.dataSource ?? '').trim();
+    const bSrc = (endB.dataSource ?? '').trim();
+    const endAIsSource = aSrc === srcName && bSrc === tgtName;
+    const endBIsSource = bSrc === srcName && aSrc === tgtName;
+    let [source, destination] = [endA, endB];
+    if (endBIsSource && !endAIsSource) {
+      [source, destination] = [endB, endA];
+    } else if (!endAIsSource && !endBIsSource) {
       warnings.push(
-          `entry link '${link.name}': a join endpoint table does not match a ` +
-          `reconstructed entity; the relationship is skipped`);
-      continue;
+          `entry link '${link.name}': join direction does not match either ` +
+          `endpoint's data source; using the reference order`);
+    } else if (endAIsSource && endBIsSource) {
+      warnings.push(
+          `entry link '${link.name}': join direction is ambiguous (endpoints ` +
+          `share a data source); using the reference order`);
     }
     const rel: Relationship = {
       name: relationshipName(link.name, prefix),
-      source: {entity: source, columns: asArray(join.source?.fields)},
-      destination: {entity: destination, columns: asArray(join.target?.fields)},
+      source: {entity: source.name, columns: asArray(join.source?.fields)},
+      destination:
+          {entity: destination.name, columns: asArray(join.target?.fields)},
     };
     if (join.description !== undefined) rel.description = join.description;
     out.push(rel);
   }
   return out;
+}
+
+
+// A stable dedup key for an entry link: its name when present, else its
+// (order-independent) endpoint pair and type. Guards against a per-endpoint
+// lookup returning an unnamed link once from each of its two endpoints.
+export function linkDedupKey(link: EntryLink): string {
+  if (link.name) return link.name;
+  const refs = (link.entryReferences ?? []).map(r => r.name).sort();
+  return `${refs.join(' ')} ${link.entryLinkType ?? ''}`;
 }
 
 

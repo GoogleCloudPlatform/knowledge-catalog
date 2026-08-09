@@ -19,7 +19,7 @@
 import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 
 import {SemanticModel} from './ir';
-import {idOf, modelsFromCatalogResources} from './kc_converter';
+import {idOf, linkDedupKey, modelsFromCatalogResources} from './kc_converter';
 
 export interface KcPullOptions {
   project: string;
@@ -96,7 +96,7 @@ export async function pullKnowledgeCatalog(
   // Second fetch pass: relationships are schema-join entry links, which the
   // entry list/lookup does not return. The catalog exposes links only per
   // referenced entry (:lookupEntryLinks), so fan out over the entity entries
-  // and dedup by link name -- schema-join is undirected, so each link comes
+  // and dedup (linkDedupKey) -- schema-join is undirected, so each link comes
   // back once from each of its two endpoints.
   const entityEntries = hydrated.filter(
       e => e.entryType?.endsWith('/entryTypes/semantic-entity'));
@@ -124,9 +124,9 @@ export async function pullKnowledgeCatalog(
       continue;
     }
     for (const link of r.links ?? []) {
-      const key = link.name ?? '';
-      if (key && seenLinks.has(key)) continue;
-      if (key) seenLinks.add(key);
+      const key = linkDedupKey(link);
+      if (seenLinks.has(key)) continue;
+      seenLinks.add(key);
       entryLinks.push(link);
     }
   }

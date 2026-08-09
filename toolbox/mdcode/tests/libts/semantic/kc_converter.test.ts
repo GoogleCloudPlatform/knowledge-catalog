@@ -156,6 +156,129 @@ describe('relationship recovery (schema-join links -> IR)', () => {
     // The emitter never publishes M:N, so no schema-join link exists to read.
     expect(roundTrip(model).models[0].relationships).toEqual([]);
   });
+
+  test(
+      'endpoints resolve from the link references, not the shared table name',
+      () => {
+        // Two entities over the SAME table: a data-source index would collapse
+        // them (last write wins), so both endpoints must come from the link's
+        // entryReferences instead. Direction can't be told from the shared
+        // table, so the reader keeps the reference order and warns.
+        const sameTable: Entity[] = [
+          {
+            name: 'parent_order',
+            dataSource: 'p.d.orders',
+            keys: [],
+            fields: [{name: 'id', expression: 'parent_order.id'}],
+          },
+          {
+            name: 'child_order',
+            dataSource: 'p.d.orders',
+            keys: [],
+            fields: [{name: 'parent_id', expression: 'child_order.parent_id'}],
+          },
+        ];
+        const model: SemanticModel = {
+          name: 'sales',
+          entities: sameTable,
+          relationships: [{
+            name: 'parents',
+            source: {entity: 'child_order', columns: ['parent_id']},
+            destination: {entity: 'parent_order', columns: ['id']},
+          }],
+          metrics: [],
+        };
+        const {models, warnings} = roundTrip(model);
+        expect(models[0].relationships).toEqual([{
+          name: 'parents',
+          source: {entity: 'child_order', columns: ['parent_id']},
+          destination: {entity: 'parent_order', columns: ['id']},
+        }]);
+        expect(warnings.some(w => /join direction is ambiguous/i.test(w)))
+            .toBe(true);
+      });
+
+  test(
+      'endpoints resolve when link references carry an un-normalized project ' +
+          'number',
+      () => {
+        // The live path is asymmetric: lookupEntry normalizes entry names to
+        // project IDs, but lookupEntryLinks returns references still carrying
+        // the numeric project. Matching on the (stable) entry id keeps the
+        // relationship resolvable rather than silently dropping it.
+        const model: SemanticModel = {
+          name: 'sales',
+          entities: twoEntities,
+          relationships: [{
+            name: 'places',
+            source: {entity: 'orders', columns: ['o_custkey']},
+            destination: {entity: 'customer', columns: ['c_custkey']},
+          }],
+          metrics: [],
+        };
+        const {entries, entryLinks} = generateCatalogResources(model, OPTS);
+        const numeric = entryLinks.map(
+            l => ({
+              ...l,
+              entryReferences:
+                  (l.entryReferences ??
+                   []).map(r => ({
+                             ...r,
+                             name: r.name.replace(
+                                 'projects/dest/', 'projects/000000000000/'),
+                           })),
+            }));
+        const {models} = modelsFromCatalogResources(entries, numeric);
+        expect(models[0].relationships).toEqual([{
+          name: 'places',
+          source: {entity: 'orders', columns: ['o_custkey']},
+          destination: {entity: 'customer', columns: ['c_custkey']},
+        }]);
+      });
+
+  test(
+      'the model prefix is stripped across tricky model names ' +
+          '(linkNamePrefix tracks the emitter slug)',
+      () => {
+        // Pins the read-side prefix reproduction to the emitter's linkSlug: if
+        // it drifts, the model prefix would survive and the recovered name
+        // would not equal the bare, normalized relationship name.
+        for (const modelName of ['Sales', 'Sales Analytics', '123 Sales!']) {
+          const model: SemanticModel = {
+            name: modelName,
+            entities: twoEntities,
+            relationships: [{
+              name: 'rel_one',
+              source: {entity: 'orders', columns: ['o_custkey']},
+              destination: {entity: 'customer', columns: ['c_custkey']},
+            }],
+            metrics: [],
+          };
+          expect(roundTrip(model).models[0].relationships[0].name)
+              .toBe('rel-one');
+        }
+      });
+
+  test('an unnamed link returned from both endpoints is deduped', () => {
+    // Defense in depth: if the catalog ever returns a nameless schema-join
+    // link, the per-endpoint fan-out yields it twice; dedup falls back to the
+    // endpoint pair so it becomes one relationship, not two.
+    const model: SemanticModel = {
+      name: 'sales',
+      entities: twoEntities,
+      relationships: [{
+        name: 'places',
+        source: {entity: 'orders', columns: ['o_custkey']},
+        destination: {entity: 'customer', columns: ['c_custkey']},
+      }],
+      metrics: [],
+    };
+    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
+    const nameless = entryLinks.map(l => ({...l, name: undefined}));
+    const {models} = modelsFromCatalogResources(
+        entries, [...nameless, ...nameless.map(l => ({...l}))]);
+    expect(models[0].relationships).toHaveLength(1);
+  });
 });
 
 

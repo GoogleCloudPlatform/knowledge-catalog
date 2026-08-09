@@ -184,6 +184,25 @@ describe('pullKnowledgeCatalog: relationship links', () => {
       });
 
   test(
+      'an unnamed link returned from both endpoints is deduped to one edge',
+      async () => {
+        const {entries, entryLinks} = generateCatalogResources(SALES_REL, OPTS);
+        // A nameless link can't dedup by name; the puller must fall back to the
+        // endpoint pair, or the per-endpoint fan-out would yield it twice.
+        const nameless = entryLinks.map(l => ({...l, name: undefined}));
+        const {lookupLinks} = stubClient(entries, entries, undefined, nameless);
+
+        const cat = new CatalogClient({} as any);
+        const {models} = await pullKnowledgeCatalog(cat, OPTS);
+
+        // Deduped to a single edge (a nameless link has no id, so the name
+        // itself can't be recovered -- but it must not be counted twice).
+        expect(models[0].relationships).toHaveLength(1);
+        expect(models[0].relationships[0].source.entity).toBe('orders');
+        expect(lookupLinks).toHaveBeenCalledTimes(2);
+      });
+
+  test(
       'a failed link lookup on one endpoint still recovers the edge from the ' +
           'other, and warns',
       async () => {

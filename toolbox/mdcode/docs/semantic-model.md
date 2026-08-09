@@ -259,22 +259,37 @@ Pull writes with the same last-write-wins policy as the core pull: a model that
 already exists locally is overwritten in place, and a local-only document (one
 with no matching catalog entry) is left untouched — pull never deletes.
 
-> **Note — pull is lossy.** It reconstructs a model from what push wrote to the
-> catalog (see the note under [What gets created in Knowledge
-> Catalog](#what-gets-created-in-knowledge-catalog)), so it recovers the model
-> structure — entities and fields, metrics, 1:1 / 1:N relationships (from the
-> `schema-join` links), and the deployment targets. It does **not** recover the
-> content the catalog never held: entity keys, `ai_context`, field labels, the
-> original vendor SQL (`importedExpression`), and M:N relationships (whose edge
-> lives only in the BigQuery property graph). Some recovered content also comes
-> back normalized rather than verbatim: relationship names are
-> lowercased/hyphenated (the catalog stores the name only in the link id), a
-> field's *role* survives as a bare `dimension: {}` marker without its detail
-> (`is_time`, and so on), and a metric authored without a datatype comes back as
-> an explicit `Decimal`. **A push followed by a pull does not return your original
-> file** — treat a pulled document as a faithful copy of the catalog metadata,
-> not of the authored model, and keep the authored document as the source of
-> truth.
+> **Note — pull reconstructs what the catalog holds, not your original file.**
+> Pull can only recover what push wrote (see the note under [What gets created in
+> Knowledge Catalog](#what-gets-created-in-knowledge-catalog)). What that means in
+> practice:
+>
+> **Recovered exactly** — these come back as authored:
+> - Model structure: the model, its entities, and each entity's fields.
+> - Field data source and data type; the field expression.
+> - Metrics: name, expression, data type, and attach entity.
+> - 1:1 / 1:N relationships: endpoints, foreign-key direction, and join columns
+>   (from the `schema-join` links).
+> - Deployment targets.
+>
+> **Recovered, but normalized** — the content survives, the form changes:
+> - Relationship *names* come back lowercased/hyphenated (the catalog stores the
+>   name only in the link id, e.g. `Places Order` → `places-order`).
+> - A field marked as a dimension comes back as a bare `dimension: {}` marker,
+>   without its detail (`is_time`, and so on).
+> - A metric authored with no data type comes back as an explicit `Decimal`
+>   (push must write a type, and defaults it to `NUMERIC`).
+>
+> **Not recovered** — push never wrote these, so pull cannot return them:
+> - Entity keys / unique keys.
+> - `ai_context`.
+> - Field labels.
+> - The original vendor SQL (`importedExpression`).
+> - M:N relationships (the edge lives only in the BigQuery property graph).
+>
+> **So: a push followed by a pull does not return your original file.** Treat a
+> pulled document as a faithful copy of the catalog metadata, not of the authored
+> model, and keep the authored document as the source of truth.
 
 ## Permissions
 
