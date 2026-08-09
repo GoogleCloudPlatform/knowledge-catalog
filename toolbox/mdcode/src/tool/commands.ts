@@ -27,11 +27,20 @@ export interface InitOptions {
 
 
 export interface PushOptions {
+  // Generic push flag for non-semantic-model (CatalogSync) scopes;
+  // forwarded to CatalogSync.push. The semantic-model legs ignore it.
+  // The catch-all "force the push" toggle -- distinct from
+  // `forceRemove` below, which specifically authorizes deleting models
+  // this push no longer includes.
   force?: boolean;
+  // Run every validation check and report pass/fail, but write nothing
+  // to any destination (a dry run). Applies to both push paths.
   validateOnly?: boolean;
   // Delete Knowledge Catalog models already in the entry group that this push
   // does not include (a removed or renamed model). Without it, an unrecognized
   // model in the group fails the push. Semantic-model KC push only.
+  // Unlike `force` above, this authorizes a destructive delete rather
+  // than overriding a conflict.
   forceRemove?: boolean;
   // Semantic-model push destination(s): 'bq', 'kc', 'all' (default), or a
   // comma-separated list (e.g. 'bq,kc'). Ignored for non-semantic-model scopes.

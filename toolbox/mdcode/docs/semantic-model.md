@@ -120,11 +120,21 @@ never half-deploys.
 
 ### What gets created in BigQuery
 
-`push` executes `CREATE OR REPLACE PROPERTY GRAPH` in the project and dataset
-named by each deployment target. It reads the target dataset's location
-(`bigquery.datasets.get`) so the statement runs in the right region; if it can't
-(missing permission), it falls back to BigQuery's own location inference and
-warns. Nothing runs under `--validate-only`; add `--print` to see the DDL.
+`push` executes a single `CREATE OR REPLACE PROPERTY GRAPH` per deployment
+target, in the project and dataset the target names. Each part of your model
+becomes one part of that graph:
+
+| Model element | BigQuery construct | Notes |
+|---|---|---|
+| Model | one `PROPERTY GRAPH` | named by the deployment-target URI |
+| Entity | a `NODE TABLE` | backed by the entity's `source` table, keyed by its primary key |
+| Relationship | an `EDGE TABLE` | connects the two entities' node tables |
+| Metric | a `MEASURE` on a node table | must reduce to one aggregate over one entity, or it is skipped with a warning |
+
+`push` reads the target dataset's location (`bigquery.datasets.get`) so the
+statement runs in the right region; without that permission it falls back to
+BigQuery's own location inference and warns. Nothing runs under
+`--validate-only`; add `--print` to see the DDL.
 
 ### What gets created in Knowledge Catalog
 
@@ -134,11 +144,11 @@ them, it never creates them.
 
 | Model element | Catalog resource | Kind | Id |
 |---|---|---|---|
-| the model | `semantic-model` | entry — anchor / parent of the rest | `<model>` |
-| an entity | `semantic-entity` (+ built-in `schema` aspect) | entry | `<model>.entities.<entity>` |
-| a metric | `semantic-metric` | entry | `<model>.metrics.<metric>` |
-| a relationship (1:1, 1:N) | `schema-join` | entry link between the two entity entries | derived from the relationship name |
-| a relationship (M:N) | *(none yet)* | not published — push warns and skips | — |
+| Model | `semantic-model` | entry — anchor / parent of the rest | `<model>` |
+| Entity | `semantic-entity` (+ built-in `schema` aspect) | entry | `<model>.entities.<entity>` |
+| Metric | `semantic-metric` | entry | `<model>.metrics.<metric>` |
+| Relationship (1:1, 1:N) | `schema-join` | entry link between the two entity entries | derived from the relationship name |
+| Relationship (M:N) | *(none yet)* | not published — push warns and skips | — |
 
 An entity entry carries its columns and per-field semantics in the `schema`
 aspect; a `schema-join` link carries the join detail — the paired columns and
@@ -146,10 +156,13 @@ foreign-key direction — in its aspect. A many-to-many (association /
 junction-table) relationship is not published to the catalog yet, but the edge
 still exists in the BigQuery property graph.
 
-> **Note:** only the canonical `expression` (GoogleSQL/ANSI) is written to the
-> catalog. The original vendor SQL (`importedExpression`) stays in your source
-> model — it is still used as a fallback when generating BigQuery SQL — but the
-> catalog has no consumer for it.
+> **Note — the catalog is not a full copy of your model.** Only the canonical
+> `expression` (GoogleSQL/ANSI) is written to Knowledge Catalog; the original
+> vendor SQL (`importedExpression` — e.g. the MAQL or Snowflake form a metric
+> was imported from) is **not**. It stays in your authored document, and is still
+> used when generating BigQuery SQL, but nothing in the catalog stores it. Keep
+> your model document as the source of truth: a model reconstructed only from
+> the catalog would come back without its vendor SQL.
 
 ## Validation
 
@@ -175,22 +188,33 @@ could deploy to BigQuery.
 
 ## Updating and removing models
 
-`push` is idempotent: re-running reconciles each destination to match your
-current model.
+Your model document is the source of truth. To change what is deployed, edit
+the document and run `kcmd push` again — you never edit the catalog or the
+BigQuery graph by hand. Re-running is safe: each push makes the destinations
+match the document as it stands now.
 
-* **Re-push updates in place.** An existing entry or link is upserted.
-* **Removed entity or metric** — its now-orphaned catalog entry is deleted.
-  (`removed N orphaned entr(y|ies)`)
-* **Removed or renamed relationship** — the stale `schema-join` link is deleted
-  after the current links are written, so a rename never leaves the pair
-  unlinked. (`unlinked N orphaned link(s)`) Links owned by other models in a
-  shared entry group are never touched.
-* **Removed or renamed whole model** — if the entry group still contains a model
-  your push no longer includes, push **refuses** and names it, rather than
-  leaving a stale model or silently deleting one. Re-run with **`--force-remove`**
-  to delete that model's entries and links first.
+**When you edit an entity, metric, or relationship** — push overwrites the
+existing one in place; you don't get duplicates.
 
-Each destination prints a one-line summary. For a `--target all` push:
+**When you delete an entity or metric** — remove it from the document and
+push. Push deletes the leftover catalog entry for you (the summary shows
+`removed N orphaned entries`).
+
+**When you rename or delete a relationship** — push removes the old
+`schema-join` link after writing the new ones, so a rename never leaves the
+two entities disconnected (the summary shows `unlinked N orphaned links`).
+Relationships owned by other models that share the entry group are left
+untouched.
+
+**When you remove a whole model** — deleting its document does *not* remove it
+from the catalog on the next push. Instead, push stops and names the model the
+catalog still has that you no longer push, so you can't wipe out a model by
+accident or by pushing from the wrong directory. When you do mean to remove it,
+run push again with `--force-remove` and its entries and links are deleted
+first.
+
+Every push prints one line per destination summarizing what it did. For a
+`--target all` push:
 
 ```
 Deployed 1 BigQuery Graph(s).
