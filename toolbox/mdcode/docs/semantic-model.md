@@ -55,7 +55,9 @@ kcmd push --target bq
 kcmd push --target kc
 kcmd push --target bq,kc
 
-# Dry run: validate and show what would be written, without touching anything.
+# Dry run: run every validation check and report pass/fail, touching
+# nothing. This does NOT print the generated artifacts on its own -- add
+# --print to also see what would be written.
 kcmd push --validate-only
 
 # Print each destination's generated artifact in its native format
@@ -74,7 +76,8 @@ It executes `CREATE OR REPLACE PROPERTY GRAPH` against the project and dataset
 named by each BigQuery deployment target. It also reads the target dataset's
 metadata (`bigquery.datasets.get`) to pin the query's processing location; this
 degrades gracefully when the permission is absent, falling back to BigQuery's own
-location inference. `--validate-only` prints the DDL without executing it.
+location inference. `--validate-only` generates and checks the DDL but does not
+execute it; add `--print` (with or without `--validate-only`) to see the DDL.
 
 ### What the Knowledge Catalog leg writes
 
@@ -141,10 +144,11 @@ Push is idempotent and reconciles the catalog to match your model:
   **`--force-remove`** to delete that model's links and entries first, then write
   your current models.
 
-A typical push summary reads:
+A `--target all` push logs one summary line per destination, for example:
 
 ```
-Pushed 7 Knowledge Catalog entries; removed 1 orphaned entry; linked 2 relationships; unlinked 1 orphaned link.
+Deployed 1 BigQuery Graph(s).
+Wrote 5 new and 2 updated Knowledge Catalog entries; removed 1 orphaned entry; linked 2 relationships; unlinked 1 orphaned link.
 ```
 
 ## Authentication
