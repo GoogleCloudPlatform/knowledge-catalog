@@ -16,7 +16,8 @@
 // the orchestration layer reads as `push_kc` / `pull_kc`. Rename only -- no
 // logic moves.
 
-import {CatalogClient, Entry} from '../gcp/dataplex';
+import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
+
 import {SemanticModel} from './ir';
 import {idOf, modelsFromCatalogResources} from './kc_converter';
 
@@ -65,9 +66,8 @@ export async function pullKnowledgeCatalog(
     if (!scoped.length) {
       return {
         models: [],
-        warnings: [
-          `no semantic model named '${opts.model}' found in ${destination}`
-        ],
+        warnings:
+            [`no semantic model named '${opts.model}' found in ${destination}`],
       };
     }
   }
@@ -93,7 +93,45 @@ export async function pullKnowledgeCatalog(
       warnings.push(r.warning);
   }
 
-  const read = modelsFromCatalogResources(hydrated);
+  // Second fetch pass: relationships are schema-join entry links, which the
+  // entry list/lookup does not return. The catalog exposes links only per
+  // referenced entry (:lookupEntryLinks), so fan out over the entity entries
+  // and dedup by link name -- schema-join is undirected, so each link comes
+  // back once from each of its two endpoints.
+  const entityEntries = hydrated.filter(
+      e => e.entryType?.endsWith('/entryTypes/semantic-entity'));
+  const linkResults =
+      await mapConcurrent(entityEntries, HYDRATE_CONCURRENCY, async entry => {
+        const linkType = schemaJoinLinkType(entry.entryType);
+        const res = await cat.lookupEntryLinks(opts.project, opts.location, {
+          entry: entry.name,
+          entryLinkTypes: linkType ? [linkType] : undefined,
+        });
+        if (res.status !== 200 || !res.result) {
+          return {
+            warning: `failed to fetch entry links for '${entry.name}' (status ${
+                res.status}); relationships may be incomplete`,
+          };
+        }
+        return {links: res.result};
+      });
+
+  const seenLinks = new Set<string>();
+  const entryLinks: EntryLink[] = [];
+  for (const r of linkResults) {
+    if (r.warning) {
+      warnings.push(r.warning);
+      continue;
+    }
+    for (const link of r.links ?? []) {
+      const key = link.name ?? '';
+      if (key && seenLinks.has(key)) continue;
+      if (key) seenLinks.add(key);
+      entryLinks.push(link);
+    }
+  }
+
+  const read = modelsFromCatalogResources(hydrated, entryLinks);
   warnings.push(...read.warnings);
 
   // Defense in depth: keep only the requested model even if the reader surfaced
@@ -136,6 +174,19 @@ function semanticAspectTypes(entryType: string): string[]|undefined {
 }
 
 
+// The schema-join entry link type resource, derived from an entity's entryType
+// base (the link type is the parallel resource in the same project/location the
+// emitter referenced). Used to filter :lookupEntryLinks to just the
+// relationship links. Returns undefined for an entryType with no recognizable
+// base.
+function schemaJoinLinkType(entryType: string): string|undefined {
+  const marker = '/entryTypes/';
+  const idx = entryType?.indexOf(marker) ?? -1;
+  if (idx < 0) return undefined;
+  return `${entryType.slice(0, idx)}/entryLinkTypes/schema-join`;
+}
+
+
 // Restricts hydration targets to a single model: the semantic-model anchor
 // whose name (entrySource.displayName, else the entry id) matches `model`, plus
 // every child entry whose parentEntry is that anchor. Uses only list-level
@@ -146,13 +197,14 @@ function scopeToModel(
     model: string): {entry: Entry; aspectTypes: string[]}[] {
   const isAnchor = (t: {entry: Entry}) =>
       !!t.entry.entryType?.endsWith('/entryTypes/semantic-model');
-  const allAnchorNames = new Set(targets.filter(isAnchor).map(t => t.entry.name));
-  const matchedAnchorNames = new Set(
-      targets.filter(isAnchor)
-          .filter(
-              t => (t.entry.entrySource?.displayName ?? idOf(t.entry.name)) ===
-                  model)
-          .map(t => t.entry.name));
+  const allAnchorNames =
+      new Set(targets.filter(isAnchor).map(t => t.entry.name));
+  const matchedAnchorNames =
+      new Set(targets.filter(isAnchor)
+                  .filter(
+                      t => (t.entry.entrySource?.displayName ??
+                            idOf(t.entry.name)) === model)
+                  .map(t => t.entry.name));
   if (!matchedAnchorNames.size) return [];
   // Mirror the reader's childrenOf (knowledge_catalog.ts): when the group holds
   // exactly one anchor, a child whose parentEntry resolves to no anchor (e.g. a

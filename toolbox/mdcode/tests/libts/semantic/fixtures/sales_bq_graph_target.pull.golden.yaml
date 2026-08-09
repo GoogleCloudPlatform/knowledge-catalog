@@ -2,6 +2,9 @@
 version: 0.2.0.dev0
 semantic_model:
   - name: sales
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{"deploymentTargets":["//bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph"]}'
     datasets:
       - name: orders
         source: demo.sales.orders

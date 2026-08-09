@@ -6,18 +6,19 @@
 // the IR. The catalog client is stubbed so no network call is made. The entries
 // the fake serves are produced by the real emitter, so this exercises the true
 // list -> hydrate -> read path end to end (an entity is re-fetched with BOTH
-// its semantic-entity and schema aspects). The reader's own mapping is covered
-// in kc_converter.test.ts; the focus here is the fetch SEQUENCE:
-// aspect hydration, the --model filter, skipped entries, and ignoring foreign
-// entries.
+// its semantic-entity and schema aspects, and a second pass fetches each
+// entity's schema-join links). The reader's own mapping is covered in
+// kc_converter.test.ts; the focus here is the fetch SEQUENCE: aspect hydration,
+// the relationship-link fetch (per-entry, deduped across endpoints), the
+// --model filter, skipped entries, and ignoring foreign entries.
 
 import {afterEach, describe, expect, mock, spyOn, test} from 'bun:test';
 
 import {ApiResult} from '../../../src/libts/gcp/api';
-import {CatalogClient, Entry} from '../../../src/libts/gcp/dataplex';
-import {pullKnowledgeCatalog} from '../../../src/libts/semantic/pull_kc';
+import {CatalogClient, Entry, EntryLink} from '../../../src/libts/gcp/dataplex';
 import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
+import {pullKnowledgeCatalog} from '../../../src/libts/semantic/pull_kc';
 
 const OPTS = {
   project: 'dest',
@@ -60,8 +61,13 @@ function err(status: number, message: string): ApiResult<any> {
 
 // Stubs listEntries (yields `listed`) and lookupEntry (serves `served` by name,
 // or 404s an unknown name). `lookupFail` forces a failure for one entry name.
-function stubClient(listed: Entry[], served: Entry[], lookupFail?: string):
-    {list: any; lookup: any} {
+// `links` are served by lookupEntryLinks per referenced entry (so an undirected
+// link comes back once from each endpoint, exercising the puller's dedup);
+// `linkFail` forces a link-lookup failure for one entry name.
+function stubClient(
+    listed: Entry[], served: Entry[], lookupFail?: string,
+    links: EntryLink[] = [],
+    linkFail?: string): {list: any; lookup: any; lookupLinks: any} {
   const byName = new Map(served.map(e => [e.name, e]));
   const list = spyOn(CatalogClient.prototype, 'listEntries')
                    .mockImplementation(async function*() {
@@ -73,7 +79,16 @@ function stubClient(listed: Entry[], served: Entry[], lookupFail?: string):
                        const e = byName.get(name);
                        return e ? ok(e) : err(404, 'not found');
                      });
-  return {list, lookup};
+  const lookupLinks =
+      spyOn(CatalogClient.prototype, 'lookupEntryLinks')
+          .mockImplementation(async (_p: any, _l: any, opts: any) => {
+            if (opts.entry === linkFail) return err(500, 'boom');
+            const forEntry = links.filter(
+                l =>
+                    (l.entryReferences ?? []).some(r => r.name === opts.entry));
+            return ok(forEntry);
+          });
+  return {list, lookup, lookupLinks};
 }
 
 afterEach(() => {
@@ -116,6 +131,76 @@ describe('pullKnowledgeCatalog: happy path', () => {
             aspectTypes.some(t => t.endsWith('/aspectTypes/semantic-entity')))
             .toBe(true);
         expect(aspectTypes.some(t => t.endsWith('/aspectTypes/schema')))
+            .toBe(true);
+      });
+});
+
+
+describe('pullKnowledgeCatalog: relationship links', () => {
+  // A 1:N model: orders.o_custkey (the FK side) references customer.c_custkey.
+  const SALES_REL: SemanticModel = {
+    name: 'sales',
+    entities: [
+      {
+        name: 'orders',
+        dataSource: 'demo.sales.orders',
+        keys: [],
+        fields: [{name: 'o_custkey', expression: 'orders.o_custkey'}],
+      },
+      {
+        name: 'customer',
+        dataSource: 'demo.sales.customer',
+        keys: [],
+        fields: [{name: 'c_custkey', expression: 'customer.c_custkey'}],
+      },
+    ],
+    relationships: [{
+      name: 'places',
+      source: {entity: 'orders', columns: ['o_custkey']},
+      destination: {entity: 'customer', columns: ['c_custkey']},
+    }],
+    metrics: [],
+  };
+
+  test(
+      'a schema-join link reconstructs into a relationship exactly once',
+      async () => {
+        const {entries, entryLinks} = generateCatalogResources(SALES_REL, OPTS);
+        const {lookupLinks} =
+            stubClient(entries, entries, undefined, entryLinks);
+
+        const cat = new CatalogClient({} as any);
+        const {models, warnings} = await pullKnowledgeCatalog(cat, OPTS);
+
+        expect(models[0].relationships).toEqual([{
+          name: 'places',
+          source: {entity: 'orders', columns: ['o_custkey']},
+          destination: {entity: 'customer', columns: ['c_custkey']},
+        }]);
+        expect(warnings).toHaveLength(0);
+        // Links are fetched per entity (2 entities), and the single undirected
+        // link -- returned from both endpoints -- is deduped to one edge.
+        expect(lookupLinks).toHaveBeenCalledTimes(2);
+      });
+
+  test(
+      'a failed link lookup on one endpoint still recovers the edge from the ' +
+          'other, and warns',
+      async () => {
+        const {entries, entryLinks} = generateCatalogResources(SALES_REL, OPTS);
+        const ordersEntry =
+            entries.find(e => (e.entrySource?.displayName) === 'orders')!;
+        // Fail the link lookup for the orders entity; the link still comes back
+        // from the customer endpoint.
+        stubClient(entries, entries, undefined, entryLinks, ordersEntry.name);
+
+        const cat = new CatalogClient({} as any);
+        const {models, warnings} = await pullKnowledgeCatalog(cat, OPTS);
+
+        expect(models[0].relationships.map(r => r.name)).toEqual(['places']);
+        expect(warnings.some(
+                   w => /failed to fetch entry links/i.test(w) &&
+                       w.includes(ordersEntry.name)))
             .toBe(true);
       });
 });
@@ -215,8 +300,8 @@ describe('pullKnowledgeCatalog: filtering and robustness', () => {
         // drops a child a full pull returns).
         const metricEntry =
             entries.find(e => e.entryType.endsWith('/semantic-metric'))!;
-        metricEntry.parentEntry =
-            metricEntry.parentEntry!.replace('projects/dest/', 'projects/12345/');
+        metricEntry.parentEntry = metricEntry.parentEntry!.replace(
+            'projects/dest/', 'projects/12345/');
         const {lookup} = stubClient(entries, entries);
 
         const cat = new CatalogClient({} as any);
