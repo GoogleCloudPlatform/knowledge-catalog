@@ -85,6 +85,14 @@ Each entity's `source` is its backing BigQuery table. A `source` written as
 `<projectId>` from `init`, *not* your ambient `gcloud` project. Write the full
 `project.dataset.table` when a table lives in another project.
 
+Sources are not limited to native BigQuery tables. A name with more than
+three parts — for example a four-part `catalog.database.schema.table`
+reference — points at a table in a **federated REST catalog**, such as an
+Apache Iceberg table exposed through BigLake. Write it exactly as BigQuery
+resolves the name; it is emitted into the property graph verbatim, and
+validation resolves it the same way the deploy does (see
+[Validation](#validation)).
+
 ## 2. Push
 
 ```bash
@@ -120,22 +128,22 @@ warns. Nothing runs under `--validate-only`; add `--print` to see the DDL.
 
 ### What gets created in Knowledge Catalog
 
-The model becomes catalog **entries** of the built-in system types under
-`dataplex-types/global` (push references these types; it never creates them):
+Each element of your model maps to one catalog resource. Every resource type
+below is a built-in system type under `dataplex-types/global` — push references
+them, it never creates them.
 
-| Entry | Represents |
-|-------|-----------|
-| `semantic-model` | the model — the anchor / parent of the others |
-| `semantic-entity` | one entity — carries its `schema` (fields + semantics) |
-| `semantic-metric` | one metric — its data type and expression |
+| Model element | Catalog resource | Kind | Id |
+|---|---|---|---|
+| the model | `semantic-model` | entry — anchor / parent of the rest | `<model>` |
+| an entity | `semantic-entity` (+ built-in `schema` aspect) | entry | `<model>.entities.<entity>` |
+| a metric | `semantic-metric` | entry | `<model>.metrics.<metric>` |
+| a relationship (1:1, 1:N) | `schema-join` | entry link between the two entity entries | derived from the relationship name |
+| a relationship (M:N) | *(none yet)* | not published — push warns and skips | — |
 
-Entry ids are derived from names: `<model>`, `<model>.entities.<entity>`, and
-`<model>.metrics.<metric>`.
-
-Each **relationship** becomes a `schema-join` **entry link** between the two
-entity entries; the join detail (paired columns, foreign-key direction) lives in
-the link's aspect. Many-to-many (association / junction-table) relationships are
-**not** published to the catalog yet — push warns and skips them, though the edge
+An entity entry carries its columns and per-field semantics in the `schema`
+aspect; a `schema-join` link carries the join detail — the paired columns and
+foreign-key direction — in its aspect. A many-to-many (association /
+junction-table) relationship is not published to the catalog yet, but the edge
 still exists in the BigQuery property graph.
 
 > **Note:** only the canonical `expression` (GoogleSQL/ANSI) is written to the
@@ -153,11 +161,13 @@ touched**, so a model that cannot deploy fails fast instead of half-deploying:
   otherwise it cannot lower to a MEASURE and would be dropped from the graph. Set
   the metric's attach entity, or scope its expression to a single entity.
   *(static)*
-* **Every entity's source table is reachable.** Each `source` that is a plain
-  `project.dataset.table` is probed against BigQuery; a table that does not exist
-  or that you cannot access fails the push, naming the table and the entity.
-  Sources that are queries or non-table references are skipped. *(live — needs
-  BigQuery read access; see [Permissions](#permissions))*
+* **Every entity's source table is reachable.** Each `source` is probed with a
+  dry-run query, so BigQuery resolves it exactly as the deploy will — a
+  three-part `project.dataset.table`, a four-part federated REST-catalog name
+  (e.g. an Iceberg table via BigLake), or a quoted identifier all work. A table
+  that does not exist or that you cannot access fails the push, naming the table
+  and the entity; a `source` that is a query (not a table) is skipped. *(live —
+  needs BigQuery access; see [Permissions](#permissions))*
 
 The live table check runs for **every** `--target`, because the same tables back
 both destinations — so even a Knowledge-Catalog-only push confirms the model
@@ -191,11 +201,11 @@ Wrote 5 new and 2 updated Knowledge Catalog entries; removed 1 orphaned entry; l
 
 `push` needs access to whichever destinations you deploy to.
 
-**BigQuery** — for `--target bq` or `all`, and for the validation table check:
+**BigQuery** — for `--target bq` or `all`, and for the validation pre-flight:
 
-* permission to run `CREATE OR REPLACE PROPERTY GRAPH` in the target dataset
-  (create/replace tables and run jobs)
-* `bigquery.tables.get` on each entity's source table (validation pre-flight)
+* `bigquery.jobs.create` in the deployment-target project — to run the deploy's
+  `CREATE OR REPLACE PROPERTY GRAPH` and the validation dry-run query
+* read access on each entity's source table, so the dry-run can resolve it
 * `bigquery.datasets.get` on the target dataset (region detection; optional —
   push degrades gracefully without it)
 
