@@ -41,7 +41,6 @@ const CORPUS = [
   'measure_lowering.yaml',
   'metric_skips.yaml',
   'keyless_dimension.yaml',
-  'sales_bq_graph_target.yaml',
 ];
 
 // Loads a fixture file to its IR. Split out from `build` so a test that only
