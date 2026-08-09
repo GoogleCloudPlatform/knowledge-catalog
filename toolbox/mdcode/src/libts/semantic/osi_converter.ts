@@ -6,6 +6,13 @@
 // KC push line) merges, at which point this becomes the full two-way
 // converter. Until then, "where is the OSI parser?" -> `loader.ts`.
 //
+// TODO(#278): fold the OSI READ direction in and drop the scaffold. Once
+// #278 merges, move `loadModels` / `fromDocument` / `loadSemanticModels`
+// (and their Load* types) out of `loader.ts` into this file, delete
+// `loader.ts`, and repoint its importers (`src/tool/commands.ts` and the
+// load / validate / bigquery tests). Then this is the sole OSI<->IR codec
+// and the SCAFFOLD note above comes out.
+//
 // Serializing is the inverse of `loader.ts`: `loader` reads authored YAML
 // into the IR; this module writes the IR out as a YAML document the loader
 // can read back. It is the local-workspace sink for `pull` (Knowledge

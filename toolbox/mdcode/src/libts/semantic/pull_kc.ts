@@ -8,6 +8,13 @@
 // types -- an entity needs BOTH its `semantic-entity` aspect and the built-in
 // `schema` aspect), and hands the hydrated entries to the pure reader
 // (`kc_converter.modelsFromCatalogResources`).
+//
+// TODO(#278): Layer 2 push/pull symmetry. This is the pull half over the
+// pure `kc_converter` codec; the push half (`deployKnowledgeCatalog`) still
+// lives in `deploy_knowledge_catalog.ts`. Once #278 merges, rename that
+// file to `push_kc.ts` (repointing `src/tool/commands.ts` and its test) so
+// the orchestration layer reads as `push_kc` / `pull_kc`. Rename only -- no
+// logic moves.
 
 import {CatalogClient, Entry} from '../gcp/dataplex';
 import {SemanticModel} from './ir';

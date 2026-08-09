@@ -8,6 +8,14 @@
 // two-way converter and `knowledge_catalog.ts` goes away. Until then, "where is
 // the KC emit code?" -> `knowledge_catalog.ts`.
 //
+// TODO(#278): fold the KC WRITE direction in and drop the scaffold. Once
+// #278 merges, move `generateCatalogResources` (and the `KcResources` type
+// + emit helpers) out of `knowledge_catalog.ts` into this file, delete
+// `knowledge_catalog.ts`, and repoint its importers (`deploy_knowledge_catalog.ts`
+// and the emitter tests). `idOf` -- shared by both directions and re-exported
+// from here only for `pull_kc` today -- becomes a plain local. Then this is
+// the sole KC<->IR codec and the SCAFFOLD note above comes out.
+//
 // The reader is the inverse of `generateCatalogResources`: it reconstructs the
 // IR from the entries a pull hydrated (see `pull_kc.pullKnowledgeCatalog`).
 // `semantic-entity` / `semantic-metric` entries are grouped under their
