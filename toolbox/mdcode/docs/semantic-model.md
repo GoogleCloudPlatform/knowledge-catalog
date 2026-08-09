@@ -1,157 +1,206 @@
-# Semantic model push
+# Deploying a semantic model
 
-A *semantic model* describes entities (tables), the metrics computed over them,
-and the relationships between them, authored as a single
-[Apache Ossie](https://ossie.dev) document in your catalog snapshot. `kcmd push`
-deploys that model to two destinations:
+A *semantic model* describes your entities (tables), the metrics computed over
+them, and the relationships between them, authored as a single
+[Apache Ossie](https://ossie.dev) document. `kcmd push` deploys one model to two
+destinations at once:
 
-* **BigQuery** — a `CREATE OR REPLACE PROPERTY GRAPH` over the model's tables.
-* **Knowledge Catalog (Dataplex)** — catalog entries and links that describe the
-  model as metadata.
+* **BigQuery** — a queryable `CREATE OR REPLACE PROPERTY GRAPH` over the model's
+  tables, so the model can be traversed and its metrics computed in SQL.
+* **Knowledge Catalog (Dataplex)** — catalog entries and links that make the
+  model discoverable as metadata.
 
-Both destinations are generated from the same model; you never author them
-separately.
+Both are generated from the same source document — you never author them
+separately, and a single `push` keeps them in sync.
 
-## Author a model
+This guide covers authoring, deploying, and updating a model. For the Ossie
+document format itself, see [ossie.dev](https://ossie.dev).
 
-Create the local layout for a model. The scope names the Dataplex EntryGroup the
-model belongs to:
+## Prerequisites
+
+`kcmd` authenticates with your `gcloud` credentials. Log in once before pushing:
 
 ```bash
-kcmd init --semantic-model <projectId>.<locationId>.<entryGroupId>
+gcloud auth application-default login
 ```
 
-The model is authored at
-`catalog/EntryGroups/<entryGroupId>/<model>.yaml`. `init` also provisions the
-destination EntryGroup (idempotent — an existing group is fine); `push` only ever
-writes entries into it.
+You also need read/write access to whichever destinations you deploy to — see
+[Permissions](#permissions).
+
+## 1. Author a model
+
+Create the local layout. The scope is the Dataplex EntryGroup the model will be
+published to, written as `<projectId>.<locationId>.<entryGroupId>`:
+
+```bash
+kcmd init --semantic-model my-project.us.my_models
+```
+
+`init` provisions that EntryGroup (idempotent — an existing group is fine) and
+creates its local directory. Author the model at
+`catalog/EntryGroups/<entryGroupId>/<model>.yaml`:
+
+```yaml
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: sales
+    # Required: at least one deployment target, in a GOOGLE custom extension.
+    # `data` is a JSON string whose deploymentTargets is a list of graph URIs.
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{"deploymentTargets": ["//bigquery.googleapis.com/projects/my-project/datasets/sales/propertyGraphs/sales_graph"]}'
+    datasets:                                # each dataset becomes an entity
+      - name: orders
+        source: my-project.sales.orders      # the backing BigQuery table
+        primary_key: [o_orderkey]
+        fields:
+          - name: o_orderkey
+            expression: {dialects: [{dialect: ANSI_SQL, expression: o_orderkey}]}
+          - name: o_totalprice
+            expression: {dialects: [{dialect: ANSI_SQL, expression: o_totalprice}]}
+    metrics:
+      - name: total_revenue
+        expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(orders.o_totalprice)}]}
+```
 
 ### Deployment targets (required)
 
-Every model must declare at least one **deployment target** in its GOOGLE
-`custom_extension`. A BigQuery Graph target is a URI of the form:
+Every model must declare at least one **deployment target** — the BigQuery
+property graph it deploys to — in a `GOOGLE` custom extension, as shown above. A
+target is a URI of the form:
 
 ```
 //bigquery.googleapis.com/projects/<project>/datasets/<dataset>/propertyGraphs/<graphName>
 ```
 
-The target's project and dataset are where the property graph is created, and the
-same URIs are recorded on the Knowledge Catalog `semantic-model` entry. A model
-with no deployment target is rejected at push time (see **Validation** below).
+The target's project and dataset are where the property graph is created; the
+same URIs are also recorded on the model's Knowledge Catalog entry. A model with
+no deployment target is rejected at push time (see [Validation](#validation)).
 
-A table `dataSource` that omits its project is qualified with the scope's
-declared project (the `<projectId>` in the `init` scope), not your ambient
-`gcloud` project. Write a fully-qualified `project.dataset.table` when the tables
-live elsewhere.
+### Table sources
 
-## Push
+Each entity's `source` is its backing BigQuery table. A `source` written as
+`dataset.table` (two parts) is qualified with the scope's project — the
+`<projectId>` from `init`, *not* your ambient `gcloud` project. Write the full
+`project.dataset.table` when a table lives in another project.
+
+## 2. Push
 
 ```bash
-# Deploy to every destination (the default).
 kcmd push
-
-# Deploy to one or a subset.
-kcmd push --target bq
-kcmd push --target kc
-kcmd push --target bq,kc
-
-# Dry run: run every validation check and report pass/fail, touching
-# nothing. This does NOT print the generated artifacts on its own -- add
-# --print to also see what would be written.
-kcmd push --validate-only
-
-# Print each destination's generated artifact in its native format
-# (BigQuery Graph SQL DDL, Knowledge Catalog entry plan). Scoped by --target;
-# works with or without --validate-only.
-kcmd push --print
 ```
 
-`--target` is the single control for destination selection; its default is `all`.
-Targets are always deployed BigQuery-first and fail fast, so a bad model never
-half-deploys.
+With no flags this deploys to **every** destination, BigQuery first. The flags
+below select destinations, dry-run, and preview:
 
-### What the BigQuery leg does
+```bash
+kcmd push --target bq          # BigQuery only
+kcmd push --validate-only      # run all checks, write nothing
+kcmd push --print              # also print the generated DDL / entry plan
+```
 
-It executes `CREATE OR REPLACE PROPERTY GRAPH` against the project and dataset
-named by each BigQuery deployment target. It also reads the target dataset's
-metadata (`bigquery.datasets.get`) to pin the query's processing location; this
-degrades gracefully when the permission is absent, falling back to BigQuery's own
-location inference. `--validate-only` generates and checks the DDL but does not
-execute it; add `--print` (with or without `--validate-only`) to see the DDL.
+| Flag | Effect |
+|------|--------|
+| `--target <bq\|kc\|all>` | Which destination(s) to deploy to; accepts a comma-separated list (`bq,kc`). Default `all`. |
+| `--validate-only` | Run every validation check and report pass/fail, but write nothing. |
+| `--print` | Print each destination's generated artifact (BigQuery DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
+| `--force-remove` | Delete models in the entry group that this push no longer includes (see [Updating and removing models](#updating-and-removing-models)). |
 
-### What the Knowledge Catalog leg writes
+Destinations always deploy BigQuery-first and fail fast, so a rejected model
+never half-deploys.
 
-The model becomes catalog **entries**, all built-in system types under
-`dataplex-types/global` (push references them; it never creates types):
+### What gets created in BigQuery
 
-| Entry             | Represents                                             |
-|-------------------|-------------------------------------------------------|
-| `semantic-model`  | the model (the anchor / parent of the others)         |
+`push` executes `CREATE OR REPLACE PROPERTY GRAPH` in the project and dataset
+named by each deployment target. It reads the target dataset's location
+(`bigquery.datasets.get`) so the statement runs in the right region; if it can't
+(missing permission), it falls back to BigQuery's own location inference and
+warns. Nothing runs under `--validate-only`; add `--print` to see the DDL.
+
+### What gets created in Knowledge Catalog
+
+The model becomes catalog **entries** of the built-in system types under
+`dataplex-types/global` (push references these types; it never creates them):
+
+| Entry | Represents |
+|-------|-----------|
+| `semantic-model` | the model — the anchor / parent of the others |
 | `semantic-entity` | one entity — carries its `schema` (fields + semantics) |
-| `semantic-metric` | one metric — its data type and expression             |
+| `semantic-metric` | one metric — its data type and expression |
 
-Entry ids are derived from names: `<model>`, `<model>.entities.<entity>`,
+Entry ids are derived from names: `<model>`, `<model>.entities.<entity>`, and
 `<model>.metrics.<metric>`.
 
 Each **relationship** becomes a `schema-join` **entry link** between the two
-entity entries. The join detail (paired columns, foreign-key direction) lives in
+entity entries; the join detail (paired columns, foreign-key direction) lives in
 the link's aspect. Many-to-many (association / junction-table) relationships are
-**not** published to the catalog yet — the push warns and skips them; the edge
+**not** published to the catalog yet — push warns and skips them, though the edge
 still exists in the BigQuery property graph.
 
-Only the canonical `expression` (GoogleSQL/ANSI) is published to the catalog. The
-original vendor SQL (`importedExpression`) is kept in your source model and used
-as a fallback when generating BigQuery SQL, but it is not written to the catalog,
-which has no consumer for it.
-
-Push requires `dataplex.entryGroups.useSemanticModelAspect` on the destination
-entry group, plus `useSchemaJoinEntryLink` / `useSchemaJoinAspect` when the model
-has relationships.
+> **Note:** only the canonical `expression` (GoogleSQL/ANSI) is written to the
+> catalog. The original vendor SQL (`importedExpression`) stays in your source
+> model — it is still used as a fallback when generating BigQuery SQL — but the
+> catalog has no consumer for it.
 
 ## Validation
 
-The same checks gate a real push and `--validate-only`, and run **before** either
-destination is touched, so a model that cannot deploy fails fast:
+`push` and `--validate-only` run the same checks, **before either destination is
+touched**, so a model that cannot deploy fails fast instead of half-deploying:
 
-* **Every model must declare at least one deployment target.** (static)
-* **On a BigQuery-graph model, every metric must resolve to exactly one entity**
-  — otherwise it cannot lower to a MEASURE and would be dropped from the graph.
-  Set the metric's attach entity, or scope its expression to a single entity.
-  (static)
-* **Every entity's BigQuery source table must be reachable.** Each entity's
-  `dataSource` that is a plain `project.dataset.table` is probed against BigQuery;
-  a table that does not exist or that you cannot access fails the push, naming the
-  table and the entity. This runs for every `--target` (the entity tables back
-  both legs) and confirms the model can deploy before any write to BigQuery *or*
-  Knowledge Catalog. Sources that are queries or are not plain table references
-  are skipped. (live — needs BigQuery read access)
+* **At least one deployment target per model.** *(static)*
+* **Every metric on a BigQuery-graph model resolves to exactly one entity** —
+  otherwise it cannot lower to a MEASURE and would be dropped from the graph. Set
+  the metric's attach entity, or scope its expression to a single entity.
+  *(static)*
+* **Every entity's source table is reachable.** Each `source` that is a plain
+  `project.dataset.table` is probed against BigQuery; a table that does not exist
+  or that you cannot access fails the push, naming the table and the entity.
+  Sources that are queries or non-table references are skipped. *(live — needs
+  BigQuery read access; see [Permissions](#permissions))*
 
-## Re-push, updates, and cleanup
+The live table check runs for **every** `--target`, because the same tables back
+both destinations — so even a Knowledge-Catalog-only push confirms the model
+could deploy to BigQuery.
 
-Push is idempotent and reconciles the catalog to match your model:
+## Updating and removing models
 
-* **Re-push upserts.** An entry or link that already exists is updated in place.
-* **Removed entity or metric.** If you delete an entity or metric from a model
-  and push again, its orphaned entry is deleted. Reported as
-  `removed N orphaned entr(y|ies)`.
-* **Removed or renamed relationship.** The stale `schema-join` link is deleted
-  after the current links are written (a rename never leaves the pair with no
-  link). Reported as `unlinked N orphaned link(s)`. Links belonging to other
-  models in a shared entry group are never touched.
-* **Removed or renamed whole model.** If the entry group already contains a model
-  your push does not include, push **refuses** with an error naming it, rather
-  than leaving a stale model or silently deleting one. Re-run with
-  **`--force-remove`** to delete that model's links and entries first, then write
-  your current models.
+`push` is idempotent: re-running reconciles each destination to match your
+current model.
 
-A `--target all` push logs one summary line per destination, for example:
+* **Re-push updates in place.** An existing entry or link is upserted.
+* **Removed entity or metric** — its now-orphaned catalog entry is deleted.
+  (`removed N orphaned entr(y|ies)`)
+* **Removed or renamed relationship** — the stale `schema-join` link is deleted
+  after the current links are written, so a rename never leaves the pair
+  unlinked. (`unlinked N orphaned link(s)`) Links owned by other models in a
+  shared entry group are never touched.
+* **Removed or renamed whole model** — if the entry group still contains a model
+  your push no longer includes, push **refuses** and names it, rather than
+  leaving a stale model or silently deleting one. Re-run with **`--force-remove`**
+  to delete that model's entries and links first.
+
+Each destination prints a one-line summary. For a `--target all` push:
 
 ```
 Deployed 1 BigQuery Graph(s).
 Wrote 5 new and 2 updated Knowledge Catalog entries; removed 1 orphaned entry; linked 2 relationships; unlinked 1 orphaned link.
 ```
 
-## Authentication
+## Permissions
 
-The CLI uses `gcloud` for auth tokens; run
-`gcloud auth application-default login` first.
+`push` needs access to whichever destinations you deploy to.
+
+**BigQuery** — for `--target bq` or `all`, and for the validation table check:
+
+* permission to run `CREATE OR REPLACE PROPERTY GRAPH` in the target dataset
+  (create/replace tables and run jobs)
+* `bigquery.tables.get` on each entity's source table (validation pre-flight)
+* `bigquery.datasets.get` on the target dataset (region detection; optional —
+  push degrades gracefully without it)
+
+**Knowledge Catalog / Dataplex** — for `--target kc` or `all`:
+
+* `dataplex.entryGroups.useSemanticModelAspect` on the destination entry group
+* `dataplex.entryGroups.useSchemaJoinEntryLink` and
+  `dataplex.entryGroups.useSchemaJoinAspect` when the model has relationships
