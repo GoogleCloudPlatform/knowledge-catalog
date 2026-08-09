@@ -43,47 +43,75 @@ import {LoadedModel} from './loader';
 
 
 export interface KcDeployOptions {
-  // The resolved Knowledge Catalog destination (flag overrides applied over the
-  // catalog.yaml scope defaults).
+  // Project that owns the destination entry group. Flag overrides are applied
+  // over the catalog.yaml scope defaults before this is set.
   project: string;
+  // Location (region) of the destination entry group, e.g. `global` or `us`.
   location: string;
+  // Id of the destination entry group (provisioned at `init`, not by push).
   entryGroup: string;
-  // Where the built-in `semantic-*` / `schema` system types are referenced.
-  // Default: `dataplex-types` / `global`. Overridable to reference them from a
-  // staging project; the emitted entries are otherwise unchanged.
+  // Project the built-in `semantic-*` / `schema` system types are referenced
+  // from. Default `dataplex-types`. Override to reference them from a staging
+  // project; the emitted entries are otherwise unchanged.
   systemTypeProject?: string;
+  // Location the built-in system types are referenced from. Default `global`.
   systemTypeLocation?: string;
-  // Compile + report only; never writes.
+  // Compile and report only; never writes to the catalog (a dry run).
   validateOnly?: boolean;
   // Delete models already in the entry group that this push does not re-emit --
   // a removed or renamed model's entries and links. Without it, an unrecognized
   // model in the group is a hard error rather than a silent orphan.
   forceRemove?: boolean;
-  // entries.create can briefly 404 on a just-created entry group; retry that
-  // window. Overridable so tests can exercise the path without burning
-  // wall-clock.
+  // How many times to try entries.create before giving up: a just-created entry
+  // group can briefly 404, and the create path retries that window. Overridable
+  // so tests exercise the retry without burning wall-clock. Default
+  // ENTRY_CREATE_TRIES.
   entryCreateTries?: number;
+  // Delay between entries.create retries, in ms. Default ENTRY_CREATE_RETRY_MS.
   entryCreateRetryMs?: number;
 }
 
 export interface KcDeployResult {
+  // Whether the push (or --validate-only run) completed without error.
   success: boolean;
+  // On failure, a human-readable reason; unset on success.
   details?: string;
-  // Loader and emitter warnings collected across all documents.
+  // Loader and emitter warnings collected across all documents (e.g. a skipped
+  // many-to-many relationship, or a metric that could not be lowered).
   warnings: string[];
-  // Entries created / updated-in-place / deleted (all 0 for validateOnly).
+  // New entries created in the entry group (0 for validateOnly).
   created: number;
+  // Existing entries updated in place by an idempotent re-push (0 for
+  // validateOnly).
   updated: number;
+  // Entries deleted: those orphaned by removed entities/metrics, plus every
+  // entry of a --force-remove'd model (0 for validateOnly).
   deleted: number;
   // Relationship (schema-join) entry links written -- created or upserted (0 for
   // validateOnly).
   linked: number;
-  // Orphaned schema-join links deleted -- from relationships dropped/renamed on a
-  // still-present model and from force-removed models (0 for validateOnly).
+  // Orphaned schema-join links deleted -- from relationships dropped or renamed
+  // on a still-present model, and from force-removed models (0 for validateOnly).
   unlinked: number;
-  // A human-readable plan of what would be written; populated for validateOnly.
+  // A human-readable plan of what would be written: the sole output of a
+  // validateOnly run, and also returned (for --print) on a real push.
   plan: string[];
 }
+
+
+// Running tallies threaded through the write phase so a partial failure still
+// reports what had been done. Field names match KcDeployResult so this spreads
+// straight into the result.
+interface Counts {
+  created: number;
+  updated: number;
+  deleted: number;
+  linked: number;
+  unlinked: number;
+}
+
+// One authored model paired with the catalog resources it emitted.
+type EmittedModel = {model: string; resources: KcResources};
 
 
 // entries.create propagation retry: a just-created entry group can briefly 404.
@@ -95,35 +123,99 @@ function sleep(ms: number): Promise<void> {
 }
 
 
-// Deploys the Knowledge Catalog resources for each authored model document.
-// Emits no console output; warnings and the dry-run plan are returned for the
-// caller to print. `defaultProject` qualifies a dataset `source` that omits its
-// project (the scope's declared project, a deterministic user-authored value).
+// Deploys every authored model's Knowledge Catalog resources. The body is the
+// sequence of phases, each a helper below:
+//   emitModels           -- turn every model into catalog resources (pure)
+//   checkEntryIdCollisions -- fail if two models want the same entry id
+//   buildPlan            -- the dry-run plan (and stop here for --validate-only)
+//   listEntryGroup       -- snapshot the group once, before any write
+//   guardForeignModels   -- refuse (or --force-remove) models no longer pushed
+//   writeModels          -- create/upsert each model's entries and links
+//   reconcileDeletions   -- delete entries orphaned by removed entities/metrics
+// Emits no console output; warnings and the plan are returned in KcDeployResult
+// for the caller (commands.ts) to print.
 export async function deployKnowledgeCatalog(
     models: LoadedModel[], ctx: context.ApiContext,
     opts: KcDeployOptions): Promise<KcDeployResult> {
   const warnings: string[] = [];
-  const plan: string[] = [];
-  let created = 0;
-  let updated = 0;
-  let deleted = 0;
-  let linked = 0;
-  let unlinked = 0;
-  let modelsSeen = 0;
+  const counts: Counts =
+      {created: 0, updated: 0, deleted: 0, linked: 0, unlinked: 0};
+  let plan: string[] = [];
+  // Builds the return value from the running state; details is set only on a
+  // failure, and counts/plan reflect whatever had been done when called.
+  const result = (success: boolean, details?: string): KcDeployResult =>
+      ({success, warnings, ...counts, plan, ...(details ? {details} : {})});
 
-  const fail = (details: string): KcDeployResult =>
-      ({success: false, details, warnings, created, updated, deleted, linked,
-        unlinked, plan});
+  // Emit every model to catalog resources up front (pure -- no network).
+  const emit = emitModels(models, opts);
+  warnings.push(...emit.warnings);
+  if (emit.error) return result(false, emit.error);
+  const emitted = emit.emitted;
 
-  // Emit every model up front (pure): dry-run and warnings need no network, and
-  // a generation warning surfaces even if a later write fails.
-  const emitted: {model: string; resources: KcResources}[] = [];
+  // A parsed document always yields at least one model (the loader enforces
+  // `semantic_model` min 1), so an empty `emitted` means no documents were
+  // found. validateOnly mutates nothing, so that is a clean no-op; a real push
+  // treats an empty workspace as a configuration error worth flagging.
+  if (!emitted.length) {
+    if (opts.validateOnly) {
+      warnings.push('No semantic model documents found; nothing to validate.');
+      return result(true);
+    }
+    return result(
+        false, 'No semantic model documents found; nothing to deploy.');
+  }
+
+  // Fail before any write if two models generate the same entry id.
+  const collision = checkEntryIdCollisions(emitted, opts);
+  if (collision) return result(false, collision);
+
+  // The plan is built for every push (printed with --print) and is the only
+  // output of a --validate-only run, which writes nothing.
+  plan = buildPlan(emitted, opts);
+  if (opts.validateOnly) return result(true);
+
+  // From here on we write. The entry group is provisioned at `init`, not here;
+  // a missing group surfaces as a clear entry-creation error, and createEntries
+  // rides out the brief post-init propagation window.
+  const cat = new CatalogClient(ctx);
+
+  // Snapshot the entry group once, before any write: the same listing feeds the
+  // foreign-model guard, link reconciliation, and deletion reconciliation. A
+  // re-emitted entry is never a deletion candidate, so a pre-write snapshot is
+  // correct for all three.
+  const listing = await listEntryGroup(cat, opts);
+  if (listing.error) return result(false, listing.error);
+  const existing = listing.entries;
+
+  // Whole-model lifecycle: refuse (or, with --force-remove, delete) any model
+  // the group still holds that this push no longer includes.
+  const guard = await guardForeignModels(cat, opts, emitted, existing, counts);
+  if (guard.error) return result(false, guard.error);
+
+  // Write each model's entries and relationship links.
+  const written = await writeModels(cat, opts, emitted, existing, counts);
+  if (written.error) return result(false, written.error);
+
+  // Finally, delete entries orphaned by entities/metrics removed from a
+  // still-present model since its last push.
+  const recon = await reconcileDeletions(cat, opts, emitted, existing);
+  if (recon.error) return result(false, recon.error);
+  counts.deleted += recon.deleted;
+
+  return result(true);
+}
+
+
+// Turns every authored model into its catalog resources. Pure -- no network I/O
+// -- so the dry-run plan and any generation warnings are produced even when a
+// later write fails. A malformed GOOGLE custom_extension (reached via the
+// semantic-model aspect) throws; report it against its document, as the BigQuery
+// leg does, rather than letting it escape as an uncaught stack trace.
+function emitModels(models: LoadedModel[], opts: KcDeployOptions):
+    {emitted: EmittedModel[]; warnings: string[]; error?: string} {
+  const emitted: EmittedModel[] = [];
+  const warnings: string[] = [];
   for (const {document, model} of models) {
-    modelsSeen++;
-    // The emitter is pure but not infallible: bigQueryGraphTargets (reached
-    // via the semantic-model aspect) throws on a malformed GOOGLE
-    // custom_extension. Report it against the document -- as the BigQuery leg
-    // does -- rather than letting it escape as an uncaught stack trace.
     let resources: KcResources;
     try {
       resources = generateCatalogResources(model, {
@@ -134,142 +226,113 @@ export async function deployKnowledgeCatalog(
         systemTypeLocation: opts.systemTypeLocation,
       });
     } catch (err: any) {
-      return fail(
-          `Model '${model.name}' (${document}): ${err.message || err}`);
+      return {
+        emitted, warnings,
+        error: `Model '${model.name}' (${document}): ${err.message || err}`,
+      };
     }
-    for (const w of resources.warnings) {
-      warnings.push(`[${model.name}] ${w}`);
-    }
+    for (const w of resources.warnings) warnings.push(`[${model.name}] ${w}`);
     emitted.push({model: model.name, resources});
   }
+  return {emitted, warnings};
+}
 
-  // A parsed document always yields at least one model (the loader enforces
-  // `semantic_model` min 1), so modelsSeen is 0 only when no documents were
-  // found. validateOnly mutates nothing, so an empty workspace is a clean no-op
-  // there; a real push treats it as a configuration error worth flagging.
-  if (!modelsSeen) {
-    if (opts.validateOnly) {
-      warnings.push('No semantic model documents found; nothing to validate.');
-      return {success: true, warnings, created, updated, deleted, linked,
-              unlinked, plan};
-    }
-    return fail('No semantic model documents found; nothing to deploy.');
-  }
 
-  // Entry ids must be unique within the destination entry group. The emitter
-  // dedups within one model, but two models in a single push (two documents, or
-  // two `semantic_model`s in one document) whose names normalize to the same id
-  // generate colliding entry names; on publish the later one would 409 and
-  // silently upsert over the earlier. Catch that across models here and fail
-  // before any write, naming the entry so the author can rename one model. The
-  // owner is tracked by index, not model name, so two same-named models (the
-  // most common collision) are still distinguished.
+// Fails (returns the error message) if two models in this push generate the same
+// catalog entry id. Entry ids must be unique within the entry group; the emitter
+// dedups within one model, but two models (two documents, or two `semantic_model`s
+// in one document) whose names normalize to the same id would collide -- on
+// publish the later one 409s and silently upserts over the earlier. Catch it here
+// and name the entry so the author can rename a model. Ownership is tracked by
+// index, not model name, so two same-named models (the common collision) are
+// still distinguished.
+function checkEntryIdCollisions(
+    emitted: EmittedModel[], opts: KcDeployOptions): string|undefined {
   const entryOwner = new Map<string, number>();
   for (let i = 0; i < emitted.length; i++) {
     for (const entry of emitted[i].resources.entries) {
       const prev = entryOwner.get(entry.name);
       if (prev !== undefined && prev !== i) {
-        return fail(
-            `models '${emitted[prev].model}' and '${emitted[i].model}' both ` +
-            `generate catalog entry '${idOf(entry.name)}'; entry ids must be ` +
-            `unique within entry group '${opts.entryGroup}' -- rename one ` +
-            `model.`);
+        return `models '${emitted[prev].model}' and '${emitted[i].model}' ` +
+            `both generate catalog entry '${idOf(entry.name)}'; entry ids must ` +
+            `be unique within entry group '${opts.entryGroup}' -- rename one ` +
+            `model.`;
       }
       entryOwner.set(entry.name, i);
     }
   }
+  return undefined;
+}
 
+
+// The full dry-run plan across all models (one block per model; see planSummary).
+function buildPlan(emitted: EmittedModel[], opts: KcDeployOptions): string[] {
+  const plan: string[] = [];
   for (const {model, resources} of emitted) {
     plan.push(...planSummary(model, resources, opts));
   }
-  if (opts.validateOnly) {
-    return {success: true, warnings, created, updated, deleted, linked, unlinked,
-            plan};
-  }
+  return plan;
+}
 
-  // The destination entry group is provisioned at `init`, not here: push writes
-  // only entries, matching how the standard layout's push operates (it creates
-  // entries, never the entry group). A missing group surfaces as a clear entry
-  // creation error, and createEntryWithRetry rides out the brief post-init
-  // propagation window.
-  const cat = new CatalogClient(ctx);
 
-  // Snapshot the destination entry group once, before any write. The same
-  // listing feeds the foreign-model guard below and deletion reconciliation at
-  // the end; a re-emitted entry is never a deletion candidate, so a pre-write
-  // snapshot stays correct there.
-  const listing = await listEntryGroup(cat, opts);
-  if (listing.error) {
-    return fail(listing.error);
-  }
-  const existing = listing.entries;
-
-  // Whole-model lifecycle: a `semantic-model` anchor already in the group whose
-  // id this push does not re-emit belongs to a model whose document is gone -- a
-  // removed or renamed model. Leaving it silently accumulates stale models in
-  // the group, so refuse the push, unless --force-remove authorizes deleting
-  // each such model's links and entries first.
+// Whole-model lifecycle guard. A `semantic-model` anchor already in the group
+// whose id this push does not re-emit belongs to a model whose document is gone
+// (removed or renamed). Refuse the push and name them -- unless --force-remove,
+// which deletes each such model's links and entries first (tallied into counts).
+async function guardForeignModels(
+    cat: CatalogClient, opts: KcDeployOptions, emitted: EmittedModel[],
+    existing: Entry[], counts: Counts): Promise<{error?: string}> {
   const pushedAnchors =
       new Set(emitted.map(e => idOf(e.resources.entries[0].name)));
   const foreignAnchors = existing
       .filter(e => (e.entryType ?? '').endsWith('/semantic-model'))
       .map(e => idOf(e.name))
       .filter(id => !pushedAnchors.has(id));
-  if (foreignAnchors.length && !opts.forceRemove) {
-    return fail(
-        `entry group '${opts.entryGroup}' already contains model(s) this push ` +
-        `does not include: ${foreignAnchors.join(', ')}. Re-run with ` +
-        `--force-remove to delete them, or add their documents to this push.`);
+  if (!foreignAnchors.length) return {};
+  if (!opts.forceRemove) {
+    return {
+      error:
+          `entry group '${opts.entryGroup}' already contains model(s) this ` +
+          `push does not include: ${foreignAnchors.join(', ')}. Re-run with ` +
+          `--force-remove to delete them, or add their documents to this push.`,
+    };
   }
-  if (foreignAnchors.length) {
-    const removed =
-        await removeForeignModels(cat, opts, existing, foreignAnchors);
-    if (removed.error) {
-      return fail(removed.error);
-    }
-    deleted += removed.deleted;
-    unlinked += removed.unlinked;
-  }
+  const removed = await removeForeignModels(cat, opts, existing, foreignAnchors);
+  if (removed.error) return {error: removed.error};
+  counts.deleted += removed.deleted;
+  counts.unlinked += removed.unlinked;
+  return {};
+}
 
+
+// Writes every model's entries and relationship links, in model order. For each
+// model: create/upsert its entries (anchor first), write its schema-join links
+// (both endpoints must exist first), then drop any link it owns but no longer
+// emits (a dropped or renamed relationship). Progress accumulates into counts, so
+// a mid-way failure still reports what had been written.
+async function writeModels(
+    cat: CatalogClient, opts: KcDeployOptions, emitted: EmittedModel[],
+    existing: Entry[], counts: Counts): Promise<{error?: string}> {
   for (const {model, resources} of emitted) {
-    const outcome = await createEntries(cat, opts, resources.entries);
-    if (outcome.error) {
-      return fail(`Model '${model}': ${outcome.error}`);
-    }
-    created += outcome.created;
-    updated += outcome.updated;
+    const entries = await createEntries(cat, opts, resources.entries);
+    if (entries.error) return {error: `Model '${model}': ${entries.error}`};
+    counts.created += entries.created;
+    counts.updated += entries.updated;
 
-    // Links reference this model's entity entries, so they are written after the
-    // entries above (both endpoints must exist first).
+    // Links reference this model's entity entries, so they follow the entries
+    // above (both endpoints must exist first).
     const links = await createEntryLinks(cat, opts, resources.entryLinks);
-    if (links.error) {
-      return fail(`Model '${model}': ${links.error}`);
-    }
-    linked += links.linked;
+    if (links.error) return {error: `Model '${model}': ${links.error}`};
+    counts.linked += links.linked;
 
     // Then drop any schema-join link this model owns but no longer emits (a
-    // relationship dropped or renamed). Runs after its current links are
-    // written, so a rename never leaves the pair with no link between them.
+    // relationship dropped or renamed), after its current links are written so a
+    // rename never leaves the pair with no link between them.
     const relLinks = await reconcileLinks(cat, opts, resources, existing);
-    if (relLinks.error) {
-      return fail(`Model '${model}': ${relLinks.error}`);
-    }
-    unlinked += relLinks.unlinked;
+    if (relLinks.error) return {error: `Model '${model}': ${relLinks.error}`};
+    counts.unlinked += relLinks.unlinked;
   }
-
-  // Reconcile deletions: an entity or metric removed from a still-present model
-  // since the last push leaves an orphaned entry under the model's anchor.
-  // Delete any entry this push owns that was not re-emitted, from the pre-write
-  // listing (see reconcileDeletions). Runs only on a real push -- validateOnly
-  // returned above and never lists remote state.
-  const recon = await reconcileDeletions(cat, opts, emitted, existing);
-  if (recon.error) {
-    return fail(recon.error);
-  }
-  deleted += recon.deleted;
-
-  return {success: true, warnings, created, updated, deleted, linked, unlinked,
-          plan};
+  return {};
 }
 
 
@@ -278,23 +341,20 @@ interface ReconcileOutcome {
   error?: string;
 }
 
-// Deletes entries this push OWNS but did not re-emit -- the entities/metrics
-// removed from a model since its last push. Ownership is scoped by entry id so
-// reconciliation never touches entries outside the models in this push (a
-// shared entry group may legitimately hold others): an existing entry is owned
-// when its id is a pushed model's anchor id or is prefixed by that anchor's
-// `<model>.entities.` / `<model>.metrics.` child namespace. An anchor is always
-// re-emitted, so it is never deleted here.
+// Removes the catalog entries left behind when you delete an entity or metric
+// from a model and push again -- the entries the model no longer emits. Only
+// entries this push OWNS are ever touched: an entry whose id is a pushed model's
+// anchor, or that lives under that anchor's `<model>.entities.` /
+// `<model>.metrics.` namespace. Entries belonging to other models that share the
+// entry group are left alone, and an anchor (always re-emitted) is never deleted
+// here.
 //
-// Whole-model removal (an anchor no longer in this push) is handled separately by
-// the --force-remove guard in deployKnowledgeCatalog; orphaned relationship links
-// are handled by reconcileLinks. This step operates on `existing` -- the
-// entry-group listing captured once before writes -- so it never issues its own
-// list call; a re-emitted entry is never a deletion candidate, so the pre-write
-// snapshot stays correct.
+// Deleting a whole model is handled by the --force-remove guard, and orphaned
+// relationship links by reconcileLinks. This step reads the pre-write snapshot
+// `existing`, so it issues no list call of its own (a re-emitted entry is never a
+// deletion candidate, so the snapshot stays correct).
 function reconcileDeletions(
-    cat: CatalogClient, opts: KcDeployOptions,
-    emitted: {resources: KcResources}[],
+    cat: CatalogClient, opts: KcDeployOptions, emitted: EmittedModel[],
     existing: Entry[]): Promise<ReconcileOutcome> {
   const emittedIds = new Set<string>();
   const anchorIds = new Set<string>();
