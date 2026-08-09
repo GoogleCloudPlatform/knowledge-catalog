@@ -126,10 +126,10 @@ becomes one part of that graph:
 
 | Model element | BigQuery construct | Notes |
 |---|---|---|
-| Model | one `PROPERTY GRAPH` | named by the deployment-target URI |
-| Entity | a `NODE TABLE` | backed by the entity's `source` table, keyed by its primary key |
-| Relationship | an `EDGE TABLE` | connects the two entities' node tables |
-| Metric | a `MEASURE` on a node table | must reduce to one aggregate over one entity, or it is skipped with a warning |
+| Model | `PROPERTY GRAPH` | named by the deployment-target URI |
+| Entity | `NODE TABLE` | backed by the entity's `source` table, keyed by its primary key |
+| Relationship | `EDGE TABLE` | connects the two entities' node tables |
+| Metric | `MEASURE` on a node table | must reduce to one aggregate over one entity, or it is skipped with a warning |
 
 `push` reads the target dataset's location (`bigquery.datasets.get`) so the
 statement runs in the right region; without that permission it falls back to
@@ -170,8 +170,8 @@ still exists in the BigQuery property graph.
 touched**, so a model that cannot deploy fails fast instead of half-deploying:
 
 * **At least one deployment target per model.** *(static)*
-* **Every metric on a BigQuery-graph model resolves to exactly one entity** —
-  otherwise it cannot lower to a MEASURE and would be dropped from the graph. Set
+* **Every metric on a BigQuery Graph model resolves to exactly one entity** —
+  otherwise it cannot lower to a MEASURE and would be dropped from the BigQuery Graph. Set
   the metric's attach entity, or scope its expression to a single entity.
   *(static)*
 * **Every entity's source table is reachable.** Each `source` is probed with a
@@ -190,7 +190,7 @@ could deploy to BigQuery.
 
 Your model document is the source of truth. To change what is deployed, edit
 the document and run `kcmd push` again — you never edit the catalog or the
-BigQuery graph by hand. Re-running is safe: each push makes the destinations
+BigQuery Graph by hand. Re-running is safe: each push makes the destinations
 match the document as it stands now.
 
 **When you edit an entity, metric, or relationship** — push overwrites the
