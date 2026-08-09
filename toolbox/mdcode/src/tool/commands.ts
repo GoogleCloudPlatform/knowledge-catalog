@@ -12,8 +12,9 @@ import { SemanticModelLayout } from '../libts/layouts/semantic-model';
 import { SemanticModelSource } from '../libts/sources/semantic-model';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
+import {BigQueryClient} from '../libts/gcp/bigquery';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
-import {validatePushRequirements} from '../libts/semantic/validate';
+import {validateBigQueryDataSources, validatePushRequirements} from '../libts/semantic/validate';
 
 
 export interface InitOptions {
@@ -214,6 +215,19 @@ export async function push(options: PushOptions): Promise<number> {
     const validationErrors = validatePushRequirements(loaded.models);
     if (validationErrors.length) {
       for (const e of validationErrors) {
+        console.error(`Error: ${e}`);
+      }
+      return 1;
+    }
+
+    // Live pre-flight over the same models, before any destination runs: every
+    // entity's BigQuery source table must be reachable, so a push to either
+    // BigQuery or Knowledge Catalog fails fast when the model could not deploy.
+    // Runs for every --target and for --validate-only.
+    const accessErrors =
+        await validateBigQueryDataSources(loaded.models, new BigQueryClient(ctx));
+    if (accessErrors.length) {
+      for (const e of accessErrors) {
         console.error(`Error: ${e}`);
       }
       return 1;

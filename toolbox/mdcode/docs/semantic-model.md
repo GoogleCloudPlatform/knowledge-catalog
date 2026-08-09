@@ -107,16 +107,21 @@ has relationships.
 
 ## Validation
 
-The same checks gate a real push and `--validate-only`:
+The same checks gate a real push and `--validate-only`, and run **before** either
+destination is touched, so a model that cannot deploy fails fast:
 
-* **Every model must declare at least one deployment target.**
+* **Every model must declare at least one deployment target.** (static)
 * **On a BigQuery-graph model, every metric must resolve to exactly one entity**
   — otherwise it cannot lower to a MEASURE and would be dropped from the graph.
   Set the metric's attach entity, or scope its expression to a single entity.
-
-These are static checks (no network). Whether the underlying tables exist and are
-readable in BigQuery is *not* checked here; that surfaces when the BigQuery leg
-runs the DDL.
+  (static)
+* **Every entity's BigQuery source table must be reachable.** Each entity's
+  `dataSource` that is a plain `project.dataset.table` is probed against BigQuery;
+  a table that does not exist or that you cannot access fails the push, naming the
+  table and the entity. This runs for every `--target` (the entity tables back
+  both legs) and confirms the model can deploy before any write to BigQuery *or*
+  Knowledge Catalog. Sources that are queries or are not plain table references
+  are skipped. (live — needs BigQuery read access)
 
 ## Re-push, updates, and cleanup
 

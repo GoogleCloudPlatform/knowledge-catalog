@@ -169,6 +169,15 @@ export class BigQueryClientMock extends bigquery.BigQueryClient {
     return { status: 404, message: 'Not found' };
   }
 
+  async getTable(project: string, dataset: string, table: string): Promise<gcp.ApiResult<bigquery.Table>> {
+    const name = `projects/${project}/datasets/${dataset}/tables/${table}`;
+    const resource = this.mockTables.get(name);
+    if (resource) {
+      return { status: 200, result: resource };
+    }
+    return { status: 404, message: 'Not found' };
+  }
+
   async *listTables(project: string, dataset: string): AsyncGenerator<bigquery.Table> {
     for (const table of this.mockTables.values()) {
       if (table.tableReference.projectId === project && table.tableReference.datasetId === dataset) {
