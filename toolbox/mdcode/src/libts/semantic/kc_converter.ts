@@ -425,8 +425,10 @@ function relationshipName(
 
 // Mirrors the model-name portion of the emitter's linkSlug so the prefix a link
 // id was built with can be stripped. Kept local rather than imported: this
-// read-side module must not depend on the write-side emitter.
-function linkNamePrefix(modelName: string): string {
+// read-side module must not depend on the write-side emitter. Exported for the
+// symmetry test, which reuses it to reproduce the normalized relationship name
+// rather than reimplementing the slug rule.
+export function linkNamePrefix(modelName: string): string {
   return modelName.toLowerCase()
       .replace(/[^a-z0-9-]+/g, '-')
       .replace(/-+/g, '-')

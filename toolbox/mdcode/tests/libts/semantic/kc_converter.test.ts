@@ -19,9 +19,10 @@ import {describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import {Entity, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
-import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
+import {CustomExtension, Entity, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
+import {linkNamePrefix, modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
+import {loadModels} from '../../../src/libts/semantic/loader';
 import {serializeModel} from '../../../src/libts/semantic/osi_converter';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -559,3 +560,132 @@ describe(
         });
       }
     });
+
+
+// -- Symmetry: emit -> read drops ONLY the documented set. --
+//
+// The golden pull above lets a human eyeball what a Knowledge Catalog round
+// trip loses; this asserts it mechanically. For each corpus fixture it loads
+// the authored IR, runs a full emit -> read round trip, and asserts the result
+// equals the authored IR reduced to the "KC floor" -- the model with exactly
+// the documented losses and normalizations applied (`stripToKcFloor`). Applying
+// that same reduction to BOTH sides makes `toEqual` flag only UNDOCUMENTED
+// divergence, so a new emitter/reader regression (a dropped column, a lost
+// description, an un-stripped M:N edge) fails here even though every individual
+// loss is already pinned by a targeted test above.
+describe(
+    'symmetry: an emit -> read round trip drops only documented fields', () => {
+      const CORPUS = [
+        'sales_bq_graph_target.yaml',
+        'star_orders_customer.yaml',
+        'tpcds_date_edge.yaml',
+      ];
+      // Same load defaults as the OSI / KC / pull goldens.
+      const LOAD = {defaultProject: 'sqlgen-testing', defaultDataset: 'demo'};
+
+      for (const fixture of CORPUS) {
+        test(fixture, () => {
+          const text = fs.readFileSync(path.join(FIXTURES, fixture), 'utf8');
+          for (const authored of loadModels(text, LOAD).models) {
+            const {models, warnings} = roundTrip(authored);
+            expect(models).toHaveLength(1);
+            expect(stripToKcFloor(models[0])).toEqual(stripToKcFloor(authored));
+            // A clean corpus model round-trips without reader warnings.
+            expect(warnings).toEqual([]);
+          }
+        });
+      }
+    });
+
+
+// Reduces a model to the "KC floor": the most an emit -> read round trip can
+// preserve, i.e. the authored model with exactly the documented Knowledge
+// Catalog losses and normalizations applied. Idempotent (already-floored input
+// is unchanged), so it can be applied to both sides of a round trip. Each
+// transform mirrors one emitter/reader behavior pinned by a targeted test
+// above.
+function stripToKcFloor(model: SemanticModel): SemanticModel {
+  const m = structuredClone(model);
+
+  // Model ai_context is not persisted; only a GOOGLE deployment-targets block
+  // rides back, re-serialized to the reader's canonical JSON form.
+  delete m.aiContext;
+  const ext = canonicalGoogleExt(m.customExtensions);
+  if (ext) {
+    m.customExtensions = ext;
+  } else {
+    delete m.customExtensions;
+  }
+
+  for (const e of m.entities) {
+    e.keys = [];  // keys / unique keys are never persisted
+    delete e.uniqueKeys;
+    delete e.aiContext;
+    delete e.customExtensions;
+    for (const f of e.fields) {
+      delete f.label;  // display label is not persisted
+      delete f.aiContext;
+      delete f.importedExpression;  // vendor SQL is not persisted
+      delete f.importedDialect;
+      delete f.customExtensions;
+      if (f.dimension) f.dimension = {};  // only the DIMENSION role survives
+      // String is indistinguishable from an un-typed field on read.
+      if (f.type === 'String') delete f.type;
+    }
+  }
+
+  for (const metric of m.metrics) {
+    delete metric.aiContext;
+    delete metric.importedExpression;
+    delete metric.importedDialect;
+    delete metric.customExtensions;
+    // The emitter writes a required dataType, defaulting typeless -> NUMERIC,
+    // which reads back as Decimal; String collapses to un-typed like fields.
+    if (metric.type === undefined) {
+      metric.type = 'Decimal';
+    } else if (metric.type === 'String') {
+      delete metric.type;
+    }
+  }
+
+  // M:N (association) edges are never published; a 1:1 / 1:N name comes back
+  // normalized via the emitter's slug (its exact form is pinned above).
+  m.relationships = m.relationships.filter(r => !r.association).map(r => {
+    const rel = structuredClone(r);
+    rel.name = linkNamePrefix(rel.name);
+    delete rel.aiContext;
+    delete rel.customExtensions;
+    return rel;
+  });
+
+  return m;
+}
+
+
+// The inverse-canonical of the emitter's deployment-target persistence,
+// matching the reader's readDeploymentTargets: keep only GOOGLE
+// deploymentTargets and re-serialize them so an authored block and its
+// round-tripped form (which the reader always JSON.stringifies afresh) compare
+// equal. Returns undefined when the model declares none, exactly as the reader
+// omits custom_extensions then.
+function canonicalGoogleExt(exts: CustomExtension[]|undefined):
+    CustomExtension[]|undefined {
+  const targets: string[] = [];
+  for (const ext of exts ?? []) {
+    if (ext.vendorName !== 'GOOGLE') continue;
+    let parsed: any;
+    try {
+      parsed = JSON.parse(ext.data);
+    } catch {
+      continue;
+    }
+    for (const t of parsed?.deploymentTargets ?? []) {
+      if (typeof t === 'string' && t) targets.push(t);
+    }
+  }
+  return targets.length ? [{
+    vendorName: 'GOOGLE',
+    data: JSON.stringify({deploymentTargets: targets})
+  }] :
+                          undefined;
+}
