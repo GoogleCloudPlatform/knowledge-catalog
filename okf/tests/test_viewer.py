@@ -201,6 +201,30 @@ def test_missing_link_targets_are_skipped(tmp_path: Path):
     assert len(data["nodes"]) == 1
 
 
+def test_hidden_directories_are_not_walked(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    _make_bundle(bundle)
+    # Producer-internal state (e.g. a revision snapshot) must not become nodes.
+    _write(
+        bundle / ".oknoll" / "revisions" / "rev-000000000001" / "tables" / "users.md",
+        """
+        ---
+        type: BigQuery Table
+        title: Users (snapshot)
+        description: Old revision snapshot.
+        generated: {by: 'reference_agent/gemini', at: '2026-05-01T00:00:00+00:00'}
+        ---
+        Stale copy.
+        """,
+    )
+    out = tmp_path / "viz.html"
+    generate_visualization(bundle, out)
+    data = _extract_bundle_data(out.read_text(encoding="utf-8"))
+    ids = {n["data"]["id"] for n in data["nodes"]}
+    assert len(ids) == 4
+    assert not any(i.startswith(".oknoll/") for i in ids)
+
+
 def test_node_colors_match_palette(tmp_path: Path):
     bundle = tmp_path / "bundle"
     _make_bundle(bundle)

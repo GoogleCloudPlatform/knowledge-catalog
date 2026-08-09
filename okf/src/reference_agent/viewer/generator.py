@@ -97,6 +97,10 @@ def _walk_concepts(bundle_root: Path) -> list[Concept]:
         if md_path.name == _INDEX_NAME:
             continue
         rel = md_path.relative_to(bundle_root).with_suffix("")
+        # Producer-internal state (.oknoll/ revision snapshots, .git/, …) is
+        # not bundle content; without this, every snapshot duplicates its node.
+        if any(part.startswith(".") for part in rel.parts):
+            continue
         concept_id = "/".join(rel.parts)
         try:
             doc = OKFDocument.parse(md_path.read_text(encoding="utf-8"))
