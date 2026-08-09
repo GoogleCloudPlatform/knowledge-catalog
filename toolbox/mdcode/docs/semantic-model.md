@@ -138,6 +138,12 @@ statement runs in the right region; without that permission it falls back to
 BigQuery's own location inference and warns. Nothing runs under
 `--validate-only`; add `--print` to see the DDL.
 
+Push to BigQuery is **lossy**: the graph captures the queryable structure —
+node tables, edge tables, and measures — but not descriptive metadata
+(descriptions, `ai_context`, synonyms, labels), and a metric that does not
+reduce to a single MEASURE is dropped with a warning. It is a query surface,
+not a copy of your model.
+
 ### What gets created in Knowledge Catalog
 
 Each element of your model maps to one catalog resource. Every resource type
@@ -155,16 +161,19 @@ An entity entry carries its columns in the `schema` aspect (name, data type, and
 description per field); a `schema-join` link carries the relationship detail — the
 paired columns and foreign-key direction — in its aspect.
 
-> **Note — the catalog is not a full copy of your model.** By default the SQL
-> expressions are **not** written to Knowledge Catalog: the published system-type
-> templates do not yet carry a per-field `semantics` block or a
-> `semantic-metric.expression` field, so the default push omits them (pass
-> `--emit-expressions` to write them once the templates gain the fields). The
-> original vendor SQL (`importedExpression` — e.g. the MAQL or Snowflake form a
-> metric was imported from) is never written either. All of it stays in your
-> authored document and is still used when generating BigQuery SQL. Keep your
-> model document as the source of truth: a model reconstructed only from the
-> catalog would come back without its SQL.
+> **Note — push to Knowledge Catalog is lossy.** The catalog holds metadata,
+> not a full copy of your model. It **stores** names, descriptions, data
+> sources, field datatypes and roles, and 1:1 / 1:N relationships (as
+> `schema-join` links). By default it does **not** store the SQL expressions:
+> the published system-type templates do not yet carry a per-field `semantics`
+> block or a `semantic-metric.expression` field, so the default push omits them
+> (pass `--emit-expressions` to write the canonical GoogleSQL/ANSI expression
+> once the templates gain the fields). It never stores entity keys, `ai_context`,
+> field labels, the original vendor SQL (`importedExpression` — e.g. the MAQL or
+> Snowflake form a metric was imported from), or M:N relationships. Those stay in
+> your authored document (and, for the edges, in the BigQuery property graph); the
+> vendor SQL and expressions are still used when generating BigQuery SQL. Keep
+> your model document as the source of truth.
 
 ## Validation
 
@@ -250,16 +259,18 @@ Pull writes with the same last-write-wins policy as the core pull: a model that
 already exists locally is overwritten in place, and a local-only document (one
 with no matching catalog entry) is left untouched — pull never deletes.
 
-> **Note — pull recovers the catalog, not your authored document.** The catalog
-> stores only what push wrote to it (see the note under [What gets created in
-> Knowledge Catalog](#what-gets-created-in-knowledge-catalog)), so a pulled
-> document comes back without the content the catalog never held: entity keys,
+> **Note — pull is lossy.** It reconstructs a model only from what push wrote
+> to the catalog (see the note under [What gets created in Knowledge
+> Catalog](#what-gets-created-in-knowledge-catalog)), and recovers even less
+> than the catalog holds. A pulled document comes back without entity keys,
 > `ai_context`, field labels, the original vendor SQL (`importedExpression`),
-> and relationships (the graph edges live in the BigQuery property graph, not
-> the catalog). A field's *role* survives as a bare `dimension: {}` marker, but
-> its detail (`is_time`, and so on) does not. Keep your authored document as the
-> source of truth; treat a pulled document as a faithful copy of the catalog
-> metadata, not of the original model.
+> relationships (even the 1:1 / 1:N `schema-join` links push wrote — the edges
+> live in the BigQuery property graph), and the `deploymentTargets` custom
+> extension. A field's *role* survives as a bare `dimension: {}` marker, but its
+> detail (`is_time`, and so on) does not. **A push followed by a pull does not
+> return your original file** — treat a pulled document as a faithful copy of
+> the catalog metadata, not of the authored model, and keep the authored
+> document as the source of truth.
 
 ## Permissions
 
