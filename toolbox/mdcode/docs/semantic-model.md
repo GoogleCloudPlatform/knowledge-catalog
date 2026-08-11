@@ -2,19 +2,19 @@
 
 A *semantic model* describes your entities (tables), the metrics computed over
 them, and the relationships between them, authored as a single
-[Apache Ossie](https://ossie.dev) document. `kcmd push` deploys one model to two
-destinations at once:
+[Apache Ossie](https://ossie.apache.org/) document. `kcmd push` deploys one
+model to two destinations at once:
 
 * **BigQuery** — a queryable `CREATE OR REPLACE PROPERTY GRAPH` over the model's
   tables, so the model can be traversed and its metrics computed in SQL.
-* **Knowledge Catalog (Dataplex)** — catalog entries and links that make the
+* **Knowledge Catalog** — catalog entries and links that make the
   model discoverable as metadata.
 
 Both are generated from the same source document — you never author them
 separately, and a single `push` keeps them in sync.
 
 This guide covers authoring, deploying, and updating a model. For the Ossie
-document format itself, see [ossie.dev](https://ossie.dev).
+document format itself, see [ossie.apache.org](https://ossie.apache.org/).
 
 ## Prerequisites
 
@@ -24,19 +24,18 @@ document format itself, see [ossie.dev](https://ossie.dev).
 gcloud auth application-default login
 ```
 
-You also need read/write access to whichever destinations you deploy to — see
-[Permissions](#permissions).
+You also need read/write access to whichever destinations you deploy to.
 
 ## 1. Author a model
 
-Create the local layout. The scope is the Dataplex EntryGroup the model will be
-published to, written as `<projectId>.<locationId>.<entryGroupId>`:
+Create the local layout. The scope is the Knowledge Catalog entry group the
+model will be published to, written as `<projectId>.<locationId>.<entryGroupId>`:
 
 ```bash
-kcmd init --semantic-model my-project.us.my_models
+kcmd init --semantic-model my-project.us-central1.my_model
 ```
 
-`init` provisions that EntryGroup (idempotent — an existing group is fine) and
+`init` provisions that entry group (idempotent — an existing group is fine) and
 creates its local directory. Author the model at
 `catalog/EntryGroups/<entryGroupId>/<model>.yaml`:
 
@@ -44,9 +43,10 @@ creates its local directory. Author the model at
 version: "0.2.0.dev0"
 
 semantic_model:
-  - name: sales
-    # Required: at least one deployment target, in a GOOGLE custom extension.
-    # `data` is a JSON string whose deploymentTargets is a list of graph URIs.
+  - name: sales                              # must match the <model>.yaml filename
+    # Required: the deployment target, in a GOOGLE custom extension. `data` is a
+    # JSON string whose deploymentTargets holds the target graph URI (for now,
+    # exactly one).
     custom_extensions:
       - vendor_name: GOOGLE
         data: '{"deploymentTargets": ["//bigquery.googleapis.com/projects/my-project/datasets/sales/propertyGraphs/sales_graph"]}'
@@ -56,12 +56,12 @@ semantic_model:
         primary_key: [o_orderkey]
         fields:
           - name: o_orderkey
-            expression: {dialects: [{dialect: ANSI_SQL, expression: o_orderkey}]}
+            expression: {dialects: [{dialect: BIGQUERY, expression: o_orderkey}]}
           - name: o_totalprice
-            expression: {dialects: [{dialect: ANSI_SQL, expression: o_totalprice}]}
+            expression: {dialects: [{dialect: BIGQUERY, expression: o_totalprice}]}
     metrics:
       - name: total_revenue
-        expression: {dialects: [{dialect: ANSI_SQL, expression: SUM(orders.o_totalprice)}]}
+        expression: {dialects: [{dialect: BIGQUERY, expression: SUM(orders.o_totalprice)}]}
 ```
 
 ### Deployment targets (required)
@@ -82,15 +82,14 @@ no deployment target is rejected at push time (see [Validation](#validation)).
 
 Each entity's `source` is its backing BigQuery table. A `source` written as
 `dataset.table` (two parts) is qualified with the scope's project — the
-`<projectId>` from `init`, *not* your ambient `gcloud` project. Write the full
-`project.dataset.table` when a table lives in another project.
+`<projectId>` from `init`. Write the full `project.dataset.table` when a table
+lives in another project.
 
 Sources are not limited to native BigQuery tables. A name with more than
 three parts — for example a four-part `catalog.database.schema.table`
 reference — points at a table in a **federated REST catalog**, such as an
 Apache Iceberg table exposed through BigLake. Write it exactly as BigQuery
-resolves the name; it is emitted into the property graph verbatim, and
-validation resolves it the same way the deploy does (see
+resolves the name, and validation resolves it the same way the deploy does (see
 [Validation](#validation)).
 
 ## 2. Push
@@ -147,14 +146,11 @@ them, it never creates them.
 | Model | `semantic-model` | entry — anchor / parent of the rest | `<model>` |
 | Entity | `semantic-entity` (+ built-in `schema` aspect) | entry | `<model>.entities.<entity>` |
 | Metric | `semantic-metric` | entry | `<model>.metrics.<metric>` |
-| Relationship (1:1, 1:N) | `schema-join` | entry link between the two entity entries | derived from the relationship name |
-| Relationship (M:N) | *(none yet)* | not published — push warns and skips | — |
+| Relationship | `schema-join` | entry link between the two entity entries | derived from the relationship name |
 
 An entity entry carries its columns and per-field semantics in the `schema`
-aspect; a `schema-join` link carries the join detail — the paired columns and
-foreign-key direction — in its aspect. A many-to-many (association /
-junction-table) relationship is not published to the catalog yet, but the edge
-still exists in the BigQuery property graph.
+aspect; a `schema-join` link carries the relationship detail — the paired columns
+and foreign-key direction — in its aspect.
 
 > **Note — the catalog is not a full copy of your model.** Only the canonical
 > `expression` (GoogleSQL/ANSI) is written to Knowledge Catalog; the original
@@ -171,16 +167,15 @@ touched**, so a model that cannot deploy fails fast instead of half-deploying:
 
 * **At least one deployment target per model.** *(static)*
 * **Every metric on a BigQuery Graph model resolves to exactly one entity** —
-  otherwise it cannot lower to a MEASURE and would be dropped from the BigQuery Graph. Set
-  the metric's attach entity, or scope its expression to a single entity.
-  *(static)*
+  otherwise it would be dropped from the BigQuery Graph. Set the metric's attach
+  entity, or scope its expression to a single entity. *(static)*
 * **Every entity's source table is reachable.** Each `source` is probed with a
   dry-run query, so BigQuery resolves it exactly as the deploy will — a
   three-part `project.dataset.table`, a four-part federated REST-catalog name
   (e.g. an Iceberg table via BigLake), or a quoted identifier all work. A table
   that does not exist or that you cannot access fails the push, naming the table
   and the entity; a `source` that is a query (not a table) is skipped. *(live —
-  needs BigQuery access; see [Permissions](#permissions))*
+  needs BigQuery access)*
 
 The live table check runs for **every** `--target`, because the same tables back
 both destinations — so even a Knowledge-Catalog-only push confirms the model
@@ -220,21 +215,3 @@ Every push prints one line per destination summarizing what it did. For a
 Deployed 1 BigQuery Graph(s).
 Wrote 5 new and 2 updated Knowledge Catalog entries; removed 1 orphaned entry; linked 2 relationships; unlinked 1 orphaned link.
 ```
-
-## Permissions
-
-`push` needs access to whichever destinations you deploy to.
-
-**BigQuery** — for `--target bq` or `all`, and for the validation pre-flight:
-
-* `bigquery.jobs.create` in the deployment-target project — to run the deploy's
-  `CREATE OR REPLACE PROPERTY GRAPH` and the validation dry-run query
-* read access on each entity's source table, so the dry-run can resolve it
-* `bigquery.datasets.get` on the target dataset (region detection; optional —
-  push degrades gracefully without it)
-
-**Knowledge Catalog / Dataplex** — for `--target kc` or `all`:
-
-* `dataplex.entryGroups.useSemanticModelAspect` on the destination entry group
-* `dataplex.entryGroups.useSchemaJoinEntryLink` and
-  `dataplex.entryGroups.useSchemaJoinAspect` when the model has relationships
