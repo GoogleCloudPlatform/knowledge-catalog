@@ -1,0 +1,53 @@
+# Test fixture -- AI-first semantics format (v0.2.0.dev0).
+#
+# One entity, many metrics: exercises how a metric is LOWERED into a derived
+# operand property plus a MEASURE over it (a BigQuery graph measure can only
+# aggregate an exposed property, never a raw column or an inline expression).
+# Read the golden to see each lowering:
+#   - total_amount   SUM over a column that is NOT a declared field -> the column
+#                    is exposed as a bare property, then measured.
+#   - fulfilled      SUM over an inline expression -> the expression is exposed
+#                    as `<expr> AS fulfilled_input`, then measured.
+#   - avg_fulfilled  the SAME inline expression -> reuses `fulfilled_input`; no
+#                    second derived property is emitted.
+#   - n_status       COUNT(DISTINCT status) over an existing field -> reuses the
+#                    field; DISTINCT is preserved.
+#   - region         a metric whose name equals its operand column -> the measure
+#                    name is reserved first, so the operand lands on `region_input`.
+#   - flagged        an entity qualifier inside a STRING LITERAL ('orders.note')
+#                    is preserved verbatim and not mistaken for a column ref.
+
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: lowering
+    datasets:
+      - name: orders
+        source: orders
+        primary_key: [o_orderkey]
+        fields:
+          - name: o_orderkey
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: orders.o_orderkey }]
+          - name: status
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: orders.status }]
+    metrics:
+      - name: total_amount
+        expression:
+          dialects: [{ dialect: BIGQUERY, expression: SUM(orders.amount) }]
+      - name: fulfilled
+        expression:
+          dialects: [{ dialect: BIGQUERY, expression: "SUM(IF(orders.status = 'F', orders.amount, 0))" }]
+      - name: avg_fulfilled
+        expression:
+          dialects: [{ dialect: BIGQUERY, expression: "AVG(IF(orders.status = 'F', orders.amount, 0))" }]
+      - name: n_status
+        expression:
+          dialects: [{ dialect: BIGQUERY, expression: COUNT(DISTINCT orders.status) }]
+      - name: region
+        expression:
+          dialects: [{ dialect: BIGQUERY, expression: COUNT(orders.region) }]
+      - name: flagged
+        expression:
+          dialects: [{ dialect: BIGQUERY, expression: "SUM(IF(CAST(orders.amount AS STRING) = 'orders.note', 0, orders.amount))" }]

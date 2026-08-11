@@ -1,0 +1,109 @@
+# Test fixture -- AI-first semantics format (v0.2.0.dev0).
+#
+# Exercises the VENDOR-DIALECT case: fields and metrics authored in a non-target,
+# non-canonical dialect (SNOWFLAKE / DATABRICKS) that BigQuery does not
+# accept verbatim. Keys are ANSI_SQL (portable across engines); the interesting
+# expressions carry only a vendor variant, so the loader keeps the
+# original as `importedExpression` (with `importedDialect`) for a later transpile
+# pass to rewrite into GoogleSQL.
+#
+# Every vendor expression here was transpiled with sqlglot and its GoogleSQL
+# output dry-run-validated against a real BigQuery instance (project
+# sqlgen-testing) — see the committed `.transpiled.golden.sql` for the outputs.
+
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: vendor_sales
+    description: Orders and customers with vendor-dialect expressions
+    datasets:
+      - name: orders
+        source: samples.tpch.orders
+        primary_key: [o_orderkey]
+        description: One row per order
+        fields:
+          - name: o_orderkey
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_orderkey
+          - name: o_custkey
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_custkey
+          - name: order_status_label
+            description: Human-readable order status
+            expression:
+              dialects:
+                - dialect: SNOWFLAKE
+                  expression: "IFF(orders.o_orderstatus = 'F', 'fulfilled', 'open')"
+          - name: clerk_name
+            expression:
+              dialects:
+                - dialect: SNOWFLAKE
+                  expression: "NVL(orders.o_clerk, 'unknown')"
+          - name: comment_text
+            expression:
+              dialects:
+                - dialect: DATABRICKS
+                  expression: "orders.o_comment::text"
+          - name: price_float
+            expression:
+              dialects:
+                - dialect: DATABRICKS
+                  expression: "orders.o_totalprice::double"
+          - name: due_date
+            expression:
+              dialects:
+                - dialect: SNOWFLAKE
+                  expression: "DATEADD(day, 7, orders.o_orderdate)"
+          - name: ship_days
+            expression:
+              dialects:
+                - dialect: SNOWFLAKE
+                  expression: "DATEDIFF(day, orders.o_orderdate, orders.o_shipdate)"
+      - name: customer
+        source: samples.tpch.customer
+        primary_key: [c_custkey]
+        fields:
+          - name: c_custkey
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c_custkey
+          - name: phone_is_numeric
+            expression:
+              dialects:
+                - dialect: SNOWFLAKE
+                  expression: "REGEXP_LIKE(customer.c_phone, '[0-9]+')"
+          - name: is_auto_segment
+            expression:
+              dialects:
+                - dialect: DATABRICKS
+                  expression: "customer.c_mktsegment ILIKE 'AUTO%'"
+    relationships:
+      - name: orders_to_customer
+        from: orders
+        to: customer
+        from_columns: [o_custkey]
+        to_columns: [c_custkey]
+    metrics:
+      - name: total_revenue
+        description: Total order revenue (portable control expression)
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(orders.o_totalprice)
+      - name: fulfilled_revenue
+        description: Revenue from fulfilled orders
+        expression:
+          dialects:
+            - dialect: SNOWFLAKE
+              expression: "SUM(IFF(orders.o_orderstatus = 'F', orders.o_totalprice, 0))"
+      - name: avg_price_known
+        description: Average order price, treating NULL as zero
+        expression:
+          dialects:
+            - dialect: SNOWFLAKE
+              expression: "AVG(NVL(orders.o_totalprice, 0))"
