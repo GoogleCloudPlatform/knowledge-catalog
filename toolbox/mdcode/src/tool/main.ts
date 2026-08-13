@@ -11,6 +11,7 @@ cli.command('init', 'Initialize a new catalog snapshot')
    .option('--entry-group <id>', 'Identifier of the EntryGroup (project.location.id)')
    .option('--bigquery-dataset <id...>', 'Identifier of the BigQuery dataset(s) (project.datasetId)')
    .option('--kb <id>', 'Identifier of the Knowledge Base EntryGroup (project.location.id)')
+   .option('--semantic-model <id>', 'Semantic model scope as <projectId>.<locationId>.<entryGroupId>')
    .option('--pull', 'Optionally pull catalog entries during initialization')
    .action(async (options) => {
       try {
@@ -40,6 +41,8 @@ cli.command('pull', 'Pull catalog entries')
 cli.command('push', 'Push catalog entries')
    .option('--force', 'Force push changes')
    .option('--validate-only', 'Only validate changes without applying')
+   .option('--target <targets>', 'Semantic-model push destination(s): bq, kc, all (default), or a comma-separated list (e.g. bq,kc)')
+   .option('--print', 'Print each pushed destination\'s generated artifact in its native format (BigQuery Graph SQL DDL, Knowledge Catalog entry plan); scope with --target (semantic-model push only)')
    .action(async (options) => {
       let exitCode = 1;
       try {
