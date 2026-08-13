@@ -14,10 +14,11 @@ function dataplex(cmd: string, data: string|null=null) {
 dataplex(`entry-groups delete ${entryGroup}`);
 console.log(`Deleted entry group ${entryGroup}`);
 
-try {
-  dataplex(`aspect-types delete okf`);
-  console.log('Deleted custom aspect type okf');
-}
-catch {
-  // Might not exist, or still referenced
-}
+// The okf aspect type is scoped to the project and location, not to this demo's
+// entry group, so any other OKF bundle in the project attaches its signal layer
+// to the same type. Deleting it here would strip that signal from bundles this
+// demo does not own.
+console.log(
+  `Left aspect type ${project}.${location}.okf in place (shared across OKF bundles). ` +
+  `To remove it: gcloud dataplex aspect-types delete okf --project ${project} --location ${location}`
+);
