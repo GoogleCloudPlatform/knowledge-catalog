@@ -1,0 +1,217 @@
+{
+  "entries": [
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-model",
+      "entrySource": {
+        "displayName": "sales",
+        "description": "Sales orders with customer attributes"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-model": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-model",
+          "data": {
+            "deploymentTargets": [
+              "//bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.entities.orders",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "orders",
+        "description": "One row per order"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "source": {
+              "resources": [
+                "//bigquery.googleapis.com/projects/samples/datasets/tpch/tables/orders"
+              ]
+            }
+          }
+        },
+        "dataplex-types.global.schema": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema",
+          "data": {
+            "fields": [
+              {
+                "name": "o_orderkey",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "description": "Order identifier",
+                "semantics": {
+                  "expression": "o_orderkey",
+                  "role": "DEFAULT"
+                }
+              },
+              {
+                "name": "o_custkey",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "semantics": {
+                  "expression": "o_custkey",
+                  "role": "DEFAULT"
+                }
+              },
+              {
+                "name": "o_orderdate",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "semantics": {
+                  "expression": "o_orderdate",
+                  "role": "DIMENSION"
+                }
+              },
+              {
+                "name": "o_totalprice",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "semantics": {
+                  "expression": "o_totalprice",
+                  "role": "DEFAULT"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.entities.customer",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "customer"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "source": {
+              "resources": [
+                "//bigquery.googleapis.com/projects/samples/datasets/tpch/tables/customer"
+              ]
+            }
+          }
+        },
+        "dataplex-types.global.schema": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema",
+          "data": {
+            "fields": [
+              {
+                "name": "c_custkey",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "semantics": {
+                  "expression": "c_custkey",
+                  "role": "DEFAULT"
+                }
+              },
+              {
+                "name": "c_name",
+                "dataType": "STRING",
+                "metadataType": "STRING",
+                "description": "Customer name",
+                "semantics": {
+                  "expression": "c_name",
+                  "role": "DEFAULT"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.metrics.total_revenue",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-metric",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "total_revenue",
+        "description": "Total order revenue"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-metric": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-metric",
+          "data": {
+            "entity": "orders",
+            "dataType": "NUMERIC",
+            "expression": "SUM(orders.o_totalprice)"
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.metrics.order_count",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-metric",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "order_count",
+        "description": "Number of orders"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-metric": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-metric",
+          "data": {
+            "entity": "orders",
+            "dataType": "NUMERIC",
+            "expression": "COUNT(orders.o_orderkey)"
+          }
+        }
+      }
+    }
+  ],
+  "entryLinks": [
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/sales-orders-to-customer",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/schema-join",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.entities.orders",
+          "type": "UNSPECIFIED"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.entities.customer",
+          "type": "UNSPECIFIED"
+        }
+      ],
+      "aspects": {
+        "dataplex-types.global.schema-join": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema-join",
+          "data": {
+            "joins": [
+              {
+                "source": {
+                  "name": "samples.tpch.orders",
+                  "fields": [
+                    "o_custkey"
+                  ]
+                },
+                "target": {
+                  "name": "samples.tpch.customer",
+                  "fields": [
+                    "c_custkey"
+                  ]
+                },
+                "type": "FOREIGN_KEY",
+                "inferenceSource": "USER"
+              }
+            ],
+            "userManaged": true
+          }
+        }
+      }
+    }
+  ],
+  "warnings": [
+    "metric 'total_revenue': no datatype in the source model; defaulting the required semantic-metric.dataType to 'NUMERIC'",
+    "metric 'order_count': no datatype in the source model; defaulting the required semantic-metric.dataType to 'NUMERIC'"
+  ]
+}

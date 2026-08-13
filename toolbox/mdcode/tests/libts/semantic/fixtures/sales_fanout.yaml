@@ -1,0 +1,39 @@
+# Two-hop fan-out model: order_items -> orders -> customers.
+#
+# Executed against a live BigQuery instance (project `sqlgen-testing`): the
+# generated PROPERTY GRAPH was accepted and its measures validated with
+# GRAPH_EXPAND + AGG against a plain-SQL control. For the `west` region the graph
+# returned total_revenue 135 and order_count 3 (not 4) — confirming order_count
+# lands on the `orders` node and is deduplicated per order despite the
+# order_items fan-out.
+version: 0.2.0.dev0
+semantic_model:
+  - name: sales_graph
+    datasets:
+      - name: customers
+        source: customers
+        primary_key: [customer_id]
+        fields:
+          - { name: customer_id, expression: { dialects: [{ dialect: BIGQUERY, expression: customers.customer_id }] } }
+          - { name: region, expression: { dialects: [{ dialect: BIGQUERY, expression: customers.region }] } }
+      - name: orders
+        source: orders
+        primary_key: [order_id]
+        fields:
+          - { name: order_id, expression: { dialects: [{ dialect: BIGQUERY, expression: orders.order_id }] } }
+          - { name: customer_id, expression: { dialects: [{ dialect: BIGQUERY, expression: orders.customer_id }] } }
+      - name: order_items
+        source: order_items
+        primary_key: [order_item_id]
+        fields:
+          - { name: order_item_id, expression: { dialects: [{ dialect: BIGQUERY, expression: order_items.order_item_id }] } }
+          - { name: order_id, expression: { dialects: [{ dialect: BIGQUERY, expression: order_items.order_id }] } }
+          - { name: amount, expression: { dialects: [{ dialect: BIGQUERY, expression: order_items.amount }] } }
+    relationships:
+      - { name: orders_customers, from: orders, to: customers, from_columns: [customer_id], to_columns: [customer_id] }
+      - { name: orderitems_orders, from: order_items, to: orders, from_columns: [order_id], to_columns: [order_id] }
+    metrics:
+      - name: total_revenue
+        expression: { dialects: [{ dialect: BIGQUERY, expression: "SUM(order_items.amount)" }] }
+      - name: order_count
+        expression: { dialects: [{ dialect: BIGQUERY, expression: "COUNT(orders.order_id)" }] }
