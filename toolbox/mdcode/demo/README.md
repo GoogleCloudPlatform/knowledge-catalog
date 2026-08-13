@@ -183,7 +183,10 @@ bun push.ts
 
 **Cleanup**
 
-* Deletes the Dataplex EntryGroup and the custom `okf` aspect type.
+* Deletes the Dataplex EntryGroup. The custom `okf` aspect type is left in
+  place: it is scoped to the project and location rather than to this demo, so
+  other OKF bundles in the same project carry their signal layer on it. The
+  command to remove it manually is printed at the end.
 
 ```bash
 bun cleanup.ts
