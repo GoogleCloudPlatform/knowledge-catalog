@@ -50,6 +50,11 @@ export interface PushOptions {
   // plan), each block labeled by destination. Scope which destinations run with
   // --target. Works with or without --validate-only. Semantic-model push only.
   print?: boolean;
+  // Emit the SQL-expression fields not yet supported by the published Knowledge
+  // Catalog system-type templates (per-field schema semantics and the metric
+  // expression). Off by default so a push matches the live types; enable once
+  // the templates gain these fields. Semantic-model KC push only.
+  emitExpressions?: boolean;
 }
 
 
@@ -318,6 +323,7 @@ async function pushKnowledgeCatalog(
     entryGroup: source.entryGroup,
     validateOnly: options.validateOnly,
     forceRemove: options.forceRemove,
+    emitExpressions: options.emitExpressions,
   });
 
   for (const w of result.warnings) {

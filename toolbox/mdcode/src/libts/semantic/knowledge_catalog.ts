@@ -22,10 +22,14 @@
 //   * semantic-model  = { deploymentTargets: string[] }
 //   * semantic-entity = { source: { resources: string[], importedSystem?,
 //                                    importedResource? } }
-//   * semantic-metric = { entity?, dataType (required), expression? }
+//   * semantic-metric = { entity?, dataType (required) }
 //   * schema          = { fields: [{ name, dataType, metadataType,
-//                                    description?, semantics: { expression?,
-//                                    role } }] }
+//                                    description? }] }
+//
+// The SQL-expression fields -- `semantic-metric.expression` and the per-field
+// `schema.semantics` { expression, role } block -- are NOT in the published
+// system-type templates yet, so they are gated behind
+// KcGenerateOptions.emitExpressions (off by default) and omitted above.
 //
 // Relationships become `schema-join` entry links between the two entity entries.
 // schema-join is a built-in, undirected entry link type in `dataplex-types/global`
@@ -55,6 +59,13 @@ export interface KcGenerateOptions {
   entryGroup: string;  // destination entry group
   systemTypeProject?: string;   // default 'dataplex-types'
   systemTypeLocation?: string;  // default 'global'
+  // Emit the SQL-expression fields the published Dataplex system-type templates
+  // do not carry yet: the per-field `schema.semantics` block (expression +
+  // role) and `semantic-metric.expression`. Off by default so a push matches
+  // the live types; flip on once the templates gain these fields. Enabling it
+  // against today's types fails the push with an ASPECT_*_PARSING_FAILURE on
+  // the unknown property.
+  emitExpressions?: boolean;
 }
 
 export interface KcResources {
@@ -85,6 +96,7 @@ export function generateCatalogResources(
   }
 
   const names = new Namer(opts);
+  const emitExpr = opts.emitExpressions ?? false;
 
   // Entry ids must be unique within the entry group. Two source names that
   // normalize to the same id (see slug), or exact duplicates the loader did not
@@ -129,7 +141,7 @@ export function generateCatalogResources(
       // required_aspects: semantic-entity AND the built-in schema.
       aspects: aspectMap(names, {
         'semantic-entity': entityAspectData(entity),
-        'schema': schemaAspectData(entity),
+        'schema': schemaAspectData(entity, emitExpr),
       }),
     });
   }
@@ -144,7 +156,7 @@ export function generateCatalogResources(
       parentEntry: modelEntryName,
       entrySource: source(metric.name, metric.description),
       aspects: aspectMap(names, {
-        'semantic-metric': metricAspectData(metric, warnings),
+        'semantic-metric': metricAspectData(metric, warnings, emitExpr),
       }),
     });
   }
@@ -273,7 +285,8 @@ function entityAspectData(entity: Entity): Record<string, any> {
 // The built-in schema aspect, carrying each field's column type plus the new
 // per-field `semantics` block (expression / role). name,
 // dataType, and metadataType are required per column.
-function schemaAspectData(entity: Entity): Record<string, any> {
+function schemaAspectData(
+    entity: Entity, emitExpressions: boolean): Record<string, any> {
   return {
     fields: (entity.fields ??
              []).map(f => compact({
@@ -281,12 +294,17 @@ function schemaAspectData(entity: Entity): Record<string, any> {
                        dataType: columnDataType(f.type),
                        metadataType: columnMetadataType(f.type),
                        description: f.description,
-                       semantics: compact({
+                       // The per-field `semantics` block (expression + role) is
+                       // not in the published `schema` aspect template yet, so
+                       // it is gated off by default (see
+                       // KcGenerateOptions.emitExpressions); compact() then
+                       // drops the undefined key.
+                       semantics: emitExpressions ? compact({
                          expression: f.expression,
                          // A field with any dimension metadata is a dimension;
                          // otherwise DEFAULT.
                          role: f.dimension ? 'DIMENSION' : 'DEFAULT',
-                       }),
+                       }) : undefined,
                      })),
   };
 }
@@ -297,7 +315,8 @@ function schemaAspectData(entity: Entity): Record<string, any> {
 // sensible default; dimensions, in schemaAspectData, default to STRING) rather
 // than emit an invalid aspect.
 function metricAspectData(
-    metric: Metric, warnings: string[]): Record<string, any> {
+    metric: Metric, warnings: string[],
+    emitExpressions: boolean): Record<string, any> {
   let dataType = metric.type ? columnDataType(metric.type) : undefined;
   if (!dataType) {
     warnings.push(
@@ -309,7 +328,9 @@ function metricAspectData(
   return compact({
     entity: metric.entity,
     dataType,
-    expression: metric.expression,
+    // `expression` is not in the published semantic-metric aspect template yet;
+    // gated off by default (see KcGenerateOptions.emitExpressions).
+    expression: emitExpressions ? metric.expression : undefined,
   });
 }
 

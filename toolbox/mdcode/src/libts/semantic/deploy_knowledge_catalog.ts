@@ -56,6 +56,11 @@ export interface KcDeployOptions {
   systemTypeProject?: string;
   // Location the built-in system types are referenced from. Default `global`.
   systemTypeLocation?: string;
+  // Emit the SQL-expression fields not yet in the published system-type
+  // templates (per-field `schema.semantics` and `semantic-metric.expression`).
+  // Off by default so the push matches the live types; see
+  // KcGenerateOptions.emitExpressions.
+  emitExpressions?: boolean;
   // Compile and report only; never writes to the catalog (a dry run).
   validateOnly?: boolean;
   // Delete models already in the entry group that this push does not re-emit --
@@ -224,6 +229,7 @@ function emitModels(models: LoadedModel[], opts: KcDeployOptions):
         entryGroup: opts.entryGroup,
         systemTypeProject: opts.systemTypeProject,
         systemTypeLocation: opts.systemTypeLocation,
+        emitExpressions: opts.emitExpressions,
       });
     } catch (err: any) {
       return {
