@@ -30,6 +30,8 @@ for (const file of listMarkdown(catalogDir)) {
   fs.writeFileSync(dest, toStaging(fs.readFileSync(file, 'utf8'), okfKey));
 }
 
-cp.execFileSync(binary, ['push'], { cwd: stagingDir, stdio: 'inherit' });
-
-fs.rmSync(stagingDir, { recursive: true, force: true });
+try {
+  cp.execFileSync(binary, ['push'], { cwd: stagingDir, stdio: 'inherit' });
+} finally {
+  fs.rmSync(stagingDir, { recursive: true, force: true });
+}

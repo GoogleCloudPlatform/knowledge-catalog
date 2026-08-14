@@ -12,6 +12,12 @@ import * as yaml from 'yaml';
 
 export interface Split { meta: any | null; body: string; }
 
+// Where an unmodeled key sits in the frontmatter: record fields are strings,
+// list positions are numbers. `['sources', 0, 'license']` is a producer-defined
+// subfield on the first source.
+type Path = (string | number)[];
+type Extra = [Path, any];
+
 // `--bundle <dir>` selects which OKF bundle to operate on, so the demo can run
 // against a bundle elsewhere in the repo instead of only its own catalog/.
 export function bundleDir(root: string, argv: string[] = process.argv.slice(2)): string {
@@ -87,6 +93,18 @@ function render(meta: any, body: string): string {
   return `---\n${fm}\n---\n\n${body.trim()}\n`;
 }
 
+function setAtPath(root: any, path: Path, value: any): void {
+  let node = root;
+  for (let i = 0; i < path.length - 1; i++) {
+    const segment = path[i];
+    if (node[segment] === undefined) {
+      node[segment] = typeof path[i + 1] === 'number' ? [] : {};
+    }
+    node = node[segment];
+  }
+  node[path[path.length - 1]] = value;
+}
+
 // Keep only present keys, in a stable order, so round-trips are deterministic.
 function pick(obj: any, keys: string[]): any {
   const out: any = {};
@@ -105,27 +123,49 @@ export function toStaging(content: string, okfKey: string): string {
     return content;
   }
 
+  // OKF permits producer-defined keys at any depth, so an enumerated template
+  // can never be complete. Anything unmodeled is diverted here and rides along
+  // in `extra` as a [path, value] pair to keep the round-trip lossless.
+  const extras: Extra[] = [];
+  const divert = (value: any, fields: string[], path: Path): any => {
+    const kept: any = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (item === undefined || item === null) {
+        continue;
+      }
+      if (fields.includes(key)) {
+        kept[key] = item;
+      } else {
+        extras.push([[...path, key], item]);
+      }
+    }
+    return pick(kept, fields);
+  };
+
   const signal: any = {};
   if (meta.type !== undefined) {
     signal.okf_type = meta.type;
   }
-  Object.assign(signal, pick(meta, SIGNAL_KEYS));
-  // SPEC 5.2 allows a lone verifier as a bare mapping; the aspect field is a list.
-  if (signal.verified !== undefined && !Array.isArray(signal.verified)) {
-    signal.verified = [signal.verified];
-  }
-
-  // OKF permits producer-defined keys, so an enumerated template can never be
-  // complete. Anything unmodeled rides along as JSON to keep the round-trip
-  // lossless.
-  const extra: any = {};
-  for (const key of Object.keys(meta)) {
-    if (!MODELED_KEYS.has(key)) {
-      extra[key] = meta[key];
+  for (const [key, value] of Object.entries(pick(meta, SIGNAL_KEYS))) {
+    const fields = RECORD_KEYS[key];
+    if (!fields) {
+      signal[key] = value;
+    } else if (LIST_KEYS.has(key)) {
+      // SPEC 5.2 allows a lone verifier as a bare mapping; the field is a list.
+      const list = Array.isArray(value) ? value : [value];
+      signal[key] = list.map((item, i) => divert(item, fields, [key, i]));
+    } else {
+      signal[key] = divert(value, fields, [key]);
     }
   }
-  if (Object.keys(extra).length > 0) {
-    signal.extra = JSON.stringify(extra);
+
+  for (const key of Object.keys(meta)) {
+    if (!MODELED_KEYS.has(key)) {
+      extras.push([[key], meta[key]]);
+    }
+  }
+  if (extras.length > 0) {
+    signal.extra = JSON.stringify(extras);
   }
 
   const staged = pick(meta, LAYOUT_KEYS);
@@ -166,8 +206,13 @@ export function fromStaging(content: string, okfKey: string): string {
       clean[key] = pick(value, fields);
     }
   }
+  // Last, so the records the nested paths point into already exist. A diverted
+  // subfield returns at the end of its record rather than its original
+  // position, which pull already normalizes anyway.
   if (okf.extra !== undefined) {
-    Object.assign(clean, JSON.parse(okf.extra));
+    for (const [path, value] of JSON.parse(okf.extra) as Extra[]) {
+      setAtPath(clean, path, value);
+    }
   }
   return render(clean, body);
 }

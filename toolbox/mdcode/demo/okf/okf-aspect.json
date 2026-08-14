@@ -320,7 +320,7 @@
       "type": "string",
       "annotations": {
         "displayName": "Extra Frontmatter",
-        "description": "JSON of producer-defined frontmatter keys this template does not model. OKF allows arbitrary extra keys, so no enumerated template can be complete; keeping them here makes the round-trip lossless."
+        "description": "Producer-defined frontmatter this template does not model, as a JSON list of [path, value] pairs where a path is a list of record field names and list indices. OKF allows arbitrary extra keys at any depth, so no enumerated template can be complete; keeping them here makes the round-trip lossless."
       }
     }
   ],
