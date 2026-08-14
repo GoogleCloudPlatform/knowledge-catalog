@@ -13,6 +13,7 @@ import { bundleDir, listMarkdown, toStaging } from './okf';
 
 const context = kcmd.gcp.ApiContext.default();
 const okfKey = `${context.project}.${context.location}.okf`;
+const entryTypeKey = `${context.project}.${context.location}.okf-bundle`;
 
 const root = process.cwd();
 const catalogDir = bundleDir(root);
@@ -27,7 +28,7 @@ for (const file of listMarkdown(catalogDir)) {
   const rel = path.relative(catalogDir, file);
   const dest = path.join(stagingDir, 'catalog', rel);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.writeFileSync(dest, toStaging(fs.readFileSync(file, 'utf8'), okfKey));
+  fs.writeFileSync(dest, toStaging(fs.readFileSync(file, 'utf8'), okfKey, entryTypeKey));
 }
 
 try {

@@ -134,6 +134,15 @@ translate it into a custom typed `okf` Dataplex aspect (created by
 `setup.ts`) and back, keeping the on-disk files clean OKF and
 round-tripping the signal losslessly.
 
+Entries are published under a custom `okf-bundle` entry type rather than
+the built-in `dataplex-types.global.generic`, so a catalog-wide search can
+pick out OKF documents. A document's OKF `type:` is freeform prose, not a
+Dataplex type ref, so it is recorded separately as `okf_type` on the `okf`
+aspect. `okf-bundle` declares no required aspects, because SPEC 8 index
+files carry no signal layer and requiring the `okf` aspect would reject
+them. An entry's type is fixed at creation, so a bundle already published
+under the generic type has to have its entry group deleted and recreated.
+
 The aspect models the full OKF v0.2 signal as typed, searchable fields:
 `type`, `resource`, `generated`, `verified`, `status`, `stale_after`,
 `sources` (with `author`, `usage_count`, `last_modified`), `usage_window`,
@@ -153,8 +162,9 @@ applies elsewhere.
 * Creates an empty Dataplex EntryGroup (`okf_ga4`).
 * Creates the custom `okf` aspect type from `okf-aspect.json`, or updates it
   if a previous run of this demo left an older template behind.
+* Creates the custom `okf-bundle` entry type.
 * Creates a `catalog.yaml` manifest pointing at the EntryGroup and listing
-  the `okf` aspect.
+  the `okf-bundle` entry type and the `okf` aspect.
 * The `catalog/` directory is already populated with the GA4 markdown bundle.
 
 ```bash
@@ -167,9 +177,8 @@ ls -R catalog
 
 * Push the bundled markdown to Knowledge Catalog. Entry names mirror the
   file path (e.g. `references/metrics/purchasers.md` &rarr; entry
-  `references/metrics/purchasers`). Custom `type:` values in frontmatter
-  that aren't valid Dataplex type refs are preserved on the `okf` aspect
-  (the entry itself falls back to `dataplex-types.global.generic`).
+  `references/metrics/purchasers`). Every file lands as an `okf-bundle`
+  entry, index files included, with its OKF `type:` on the `okf` aspect.
 
 ```bash
 bun push.ts
@@ -222,10 +231,11 @@ bun pull.ts --bundle /tmp/acme_pulled
 
 **Cleanup**
 
-* Deletes the Dataplex EntryGroup. The custom `okf` aspect type is left in
-  place: it is scoped to the project and location rather than to this demo, so
-  other OKF bundles in the same project carry their signal layer on it. The
-  command to remove it manually is printed at the end.
+* Deletes the Dataplex EntryGroup. The custom `okf` aspect type and
+  `okf-bundle` entry type are left in place: they are scoped to the project and
+  location rather than to this demo, so other OKF bundles in the same project
+  are typed by them too. The commands to remove them manually are printed at
+  the end.
 
 ```bash
 bun cleanup.ts

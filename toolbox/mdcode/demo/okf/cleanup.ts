@@ -14,11 +14,14 @@ function dataplex(cmd: string, data: string|null=null) {
 dataplex(`entry-groups delete ${entryGroup}`);
 console.log(`Deleted entry group ${entryGroup}`);
 
-// The okf aspect type is scoped to the project and location, not to this demo's
-// entry group, so any other OKF bundle in the project attaches its signal layer
-// to the same type. Deleting it here would strip that signal from bundles this
-// demo does not own.
+// The okf aspect type and the okf-bundle entry type are scoped to the project
+// and location, not to this demo's entry group, so any other OKF bundle in the
+// project is typed by them too. Deleting them here would strip the signal layer
+// from bundles this demo does not own, and Dataplex refuses to delete a type
+// that entries still reference.
 console.log(
-  `Left aspect type ${project}.${location}.okf in place (shared across OKF bundles). ` +
-  `To remove it: gcloud dataplex aspect-types delete okf --project ${project} --location ${location}`
+  `Left aspect type ${project}.${location}.okf and entry type ` +
+  `${project}.${location}.okf-bundle in place (shared across OKF bundles). To remove them:\n` +
+  `  gcloud dataplex aspect-types delete okf --project ${project} --location ${location}\n` +
+  `  gcloud dataplex entry-types delete okf-bundle --project ${project} --location ${location}`
 );

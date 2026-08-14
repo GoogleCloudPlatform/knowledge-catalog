@@ -117,10 +117,14 @@ function pick(obj: any, keys: string[]): any {
 }
 
 // clean OKF -> pushable (signal moved into catalogEntry / okf aspect)
-export function toStaging(content: string, okfKey: string): string {
+export function toStaging(content: string, okfKey: string, entryTypeKey: string): string {
   const { meta, body } = splitFrontmatter(content);
   if (!meta) {
-    return content;
+    // SPEC 8 index files carry no frontmatter, so stage the entry type on its
+    // own. Without it the layout falls back to the built-in generic type and
+    // the bundle's navigation nodes end up a different kind of thing from the
+    // concepts they link to. Pull drops it again: there is no signal to restore.
+    return render({ type: entryTypeKey }, body);
   }
 
   // OKF permits producer-defined keys at any depth, so an enumerated template
@@ -168,7 +172,10 @@ export function toStaging(content: string, okfKey: string): string {
     signal.extra = JSON.stringify(extras);
   }
 
-  const staged = pick(meta, LAYOUT_KEYS);
+  // The OKF `type` is freeform prose and never a Dataplex type ref, so the
+  // layout would fall back to generic. It rides on the aspect as `okf_type`
+  // instead, leaving `type` here to name the Dataplex entry type.
+  const staged: any = { type: entryTypeKey, ...pick(meta, LAYOUT_KEYS) };
   staged.catalogEntry = {
     resource: { name: meta.resource },
     aspects: { [okfKey]: signal },

@@ -39,26 +39,47 @@ catch {
   console.log();
 }
 
-const okfAspect = `${project}.${location}.okf`;
+// A custom entry type, so a search can tell an OKF document apart from anything
+// else in the project. It declares no required aspects: SPEC 8 index files
+// carry no signal layer, so requiring the okf aspect would reject them.
+const entryTypeFlags =
+  '--display-name="OKF Document" ' +
+  '--description="A document in an Open Knowledge Format bundle."';
 
+try {
+  dataplex(`entry-types create okf-bundle ${entryTypeFlags}`);
+  console.log('Created custom entry type okf-bundle');
+  console.log();
+}
+catch {
+  dataplex(`entry-types update okf-bundle ${entryTypeFlags}`);
+  console.log('Updated existing entry type okf-bundle');
+  console.log();
+}
+
+const okfAspect = `${project}.${location}.okf`;
+const okfEntryType = `${project}.${location}.okf-bundle`;
+
+// Every markdown file in the bundle is published as okf-bundle, so the built-in
+// generic type is gone from both lists. The list must stay non-empty: it is
+// what keeps the entry group's own root entry, which belongs to no file, from
+// being pulled down as one.
 await Bun.file(path.join(process.cwd(), 'catalog.yaml')).write(YAML.stringify({
   scope: `kb.${project}.${location}.${entryGroup}`,
   snapshot: {
     entries: [
-      'dataplex-types.global.generic'
+      okfEntryType
     ],
     aspects: [
-      'dataplex-types.global.generic',
       'dataplex-types.global.overview',
       okfAspect
     ]
   },
   publishing: {
     entries: [
-      'dataplex-types.global.generic'
+      okfEntryType
     ],
     aspects: [
-      'dataplex-types.global.generic',
       'dataplex-types.global.overview',
       okfAspect
     ]
