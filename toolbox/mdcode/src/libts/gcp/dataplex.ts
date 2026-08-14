@@ -249,14 +249,15 @@ export class CatalogClient extends api.ApiClient {
     return await this._post<EntryLink>(resourceName, entryLink, params);
   }
 
-  // Patches an existing entry link. Only the aspects are mutable (the entry
-  // references and link type are immutable server-side), so callers pass the
-  // link name + aspects with updateMask ['aspects'].
+  // Patches an existing entry link. UpdateEntryLink has no update mask: the
+  // aspects present in the request body are the ones written, narrowed to
+  // `aspectKeys` (each `project.location.aspectType`) when given. The entry
+  // references and link type are immutable server-side.
   async updateEntryLink(entryLink: EntryLink,
-                        updateMask?: string[]): Promise<api.ApiResult<EntryLink>> {
+                        aspectKeys?: string[]): Promise<api.ApiResult<EntryLink>> {
     const params: Record<string, any> = {};
-    if (updateMask && updateMask.length) {
-      params.updateMask = updateMask.join(',');
+    if (aspectKeys && aspectKeys.length) {
+      params.aspectKeys = aspectKeys;
     }
     return await this._patch<EntryLink>(entryLink.name!, entryLink, params);
   }

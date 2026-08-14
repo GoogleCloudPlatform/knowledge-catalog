@@ -213,6 +213,10 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
     expect(result.linked).toBe(1);
     expect(createLink).toHaveBeenCalledTimes(1);
     expect(updateLink).toHaveBeenCalledTimes(1);
+    // The upsert narrows the patch to the link's aspect keys (schema-join);
+    // UpdateEntryLink has no update mask, so a stale ['aspects'] mask would 400.
+    const aspectKeys = updateLink.mock.calls[0][1] ?? [];
+    expect(aspectKeys.some((k: string) => k.endsWith('schema-join'))).toBe(true);
   });
 
   test('a failed link write fails the push, naming the link', async () => {
