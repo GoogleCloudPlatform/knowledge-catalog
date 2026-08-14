@@ -42,20 +42,12 @@
               {
                 "name": "o_orderkey",
                 "dataType": "STRING",
-                "metadataType": "STRING",
-                "semantics": {
-                  "expression": "o_orderkey",
-                  "role": "DEFAULT"
-                }
+                "metadataType": "STRING"
               },
               {
                 "name": "o_totalprice",
                 "dataType": "STRING",
-                "metadataType": "STRING",
-                "semantics": {
-                  "expression": "o_totalprice",
-                  "role": "DEFAULT"
-                }
+                "metadataType": "STRING"
               }
             ]
           }
@@ -74,8 +66,7 @@
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-metric",
           "data": {
             "entity": "orders",
-            "dataType": "NUMERIC",
-            "expression": "SUM(orders.o_totalprice)"
+            "dataType": "NUMERIC"
           }
         }
       }

@@ -24,6 +24,9 @@ const OPTS = {
   location: 'us',
   entryGroup: 'eg'
 };
+// The expression fields (per-field schema semantics, metric expression) are
+// gated off by default; this turns them on to assert their content.
+const OPTS_EXPR = {...OPTS, emitExpressions: true};
 
 // A one-entity model whose single field carries the given IR type + dimension,
 // so a test can read back the emitted schema aspect for that field.
@@ -44,8 +47,9 @@ function modelWithField(
 }
 
 // The schema-aspect field record for the sole field of modelWithField.
-function schemaField(model: SemanticModel): Record<string, any> {
-  const {entries} = generateCatalogResources(model, OPTS);
+function schemaField(
+    model: SemanticModel, opts = OPTS): Record<string, any> {
+  const {entries} = generateCatalogResources(model, opts);
   const entity = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
   const schema = entity.aspects!['dataplex-types.global.schema'].data!;
   return schema.fields[0];
@@ -86,11 +90,11 @@ describe(
 describe(
     'a field with dimension metadata gets role DIMENSION, else DEFAULT', () => {
       test('dimension -> DIMENSION', () => {
-        expect(schemaField(modelWithField('String', true)).semantics.role)
+        expect(schemaField(modelWithField('String', true), OPTS_EXPR).semantics.role)
             .toBe('DIMENSION');
       });
       test('no dimension -> DEFAULT', () => {
-        expect(schemaField(modelWithField('String', false)).semantics.role)
+        expect(schemaField(modelWithField('String', false), OPTS_EXPR).semantics.role)
             .toBe('DEFAULT');
       });
     });
@@ -114,10 +118,24 @@ describe('the schema aspect carries the target expression in semantics', () => {
         }],
       }],
     };
-    const f = schemaField(model);
+    const f = schemaField(model, OPTS_EXPR);
     expect(f.semantics.expression).toBe('CAST(e.f AS INT64)');
     // importedExpression is the vendor/MAQL form; KC has no consumer for it.
     expect(f.semantics.importedExpression).toBeUndefined();
+  });
+});
+
+
+describe('the schema semantics block is gated behind emitExpressions', () => {
+  test('omitted by default; the non-gated columns are still emitted', () => {
+    const f = schemaField(modelWithField('String', true));
+    expect(f.semantics).toBeUndefined();
+    expect(f.dataType).toBe('STRING');
+    expect(f.metadataType).toBe('STRING');
+  });
+  test('emitExpressions re-adds the semantics block (expression + role)', () => {
+    const f = schemaField(modelWithField('String', true), OPTS_EXPR);
+    expect(f.semantics).toEqual({expression: 'e.f', role: 'DIMENSION'});
   });
 });
 
@@ -153,8 +171,8 @@ describe('entity dataSource maps to a resource path', () => {
 
 
 describe('semantic-metric aspect', () => {
-  function metricData(model: SemanticModel) {
-    const {entries, warnings} = generateCatalogResources(model, OPTS);
+  function metricData(model: SemanticModel, opts = OPTS) {
+    const {entries, warnings} = generateCatalogResources(model, opts);
     const metric = entries.find(e => e.entryType.endsWith('/semantic-metric'))!;
     return {
       data: metric.aspects!['dataplex-types.global.semantic-metric'].data!,
@@ -173,7 +191,7 @@ describe('semantic-metric aspect', () => {
             {name: 'rev', expression: 'SUM(o.p)', entity: 'o', type: 'Decimal'}
           ],
         };
-        const {data, warnings} = metricData(model);
+        const {data, warnings} = metricData(model, OPTS_EXPR);
         expect(data).toEqual(
             {entity: 'o', dataType: 'NUMERIC', expression: 'SUM(o.p)'});
         expect(warnings.some(w => w.includes('dataType'))).toBe(false);
@@ -193,6 +211,20 @@ describe('semantic-metric aspect', () => {
                w => w.includes('metric \'rev\'') && w.includes('NUMERIC')))
         .toBe(true);
   });
+
+  test('the expression is gated: omitted by default, kept with emitExpressions',
+       () => {
+         const model: SemanticModel = {
+           name: 'm',
+           entities: [],
+           relationships: [],
+           metrics: [{
+             name: 'rev', expression: 'SUM(o.p)', entity: 'o', type: 'Decimal'
+           }],
+         };
+         expect(metricData(model).data).toEqual({entity: 'o', dataType: 'NUMERIC'});
+         expect(metricData(model, OPTS_EXPR).data.expression).toBe('SUM(o.p)');
+       });
 });
 
 
