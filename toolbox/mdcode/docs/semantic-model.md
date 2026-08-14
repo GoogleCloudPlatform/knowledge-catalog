@@ -298,6 +298,22 @@ with no matching catalog entry) is left untouched — pull never deletes.
 > pulled document as a faithful copy of the catalog metadata, not of the authored
 > model, and keep the authored document as the source of truth.
 
+> **Note — writer-side follow-ups (not inherent to pull).** Two of the reductions
+> above are limits of what push currently *writes*, not of what pull can recover.
+> They are recorded here as write-side follow-ups; the reader (pull) already
+> returns everything the catalog holds.
+>
+> - **Relationship names.** The `schema-join` aspect does not store the authored
+>   relationship name, so pull recovers it from the link id — which is lowercased
+>   and hyphenated. Persisting the name in the aspect on write would let pull
+>   return it verbatim.
+> - **Non-canonical deployment targets.** Push persists a target only when it is a
+>   canonical BigQuery Graph URL
+>   (`//bigquery.googleapis.com/projects/.../datasets/.../propertyGraphs/...`).
+>   Other forms — a misspelled path, or the `projects/.../entryGroups/@bigquery/`
+>   entry form — are dropped on write, so pull has nothing to recover. Widening or
+>   normalizing the writer's accepted forms would let them round-trip.
+
 ## Permissions
 
 `push` needs access to whichever destinations you deploy to.
