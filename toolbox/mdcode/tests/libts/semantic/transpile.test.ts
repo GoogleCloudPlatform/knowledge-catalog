@@ -135,7 +135,7 @@ describe('transpileModel', () => {
       });
 
   test(
-      'rejects a rewrite that changes the referenced entities (guard)',
+      'rejects a rewrite that re-cases an entity qualifier (guard)',
       async () => {
         // Re-casing the qualifier (`orders.` -> `Orders.`) would make the
         // case-sensitive emitter miss the reference; the guard must keep it
@@ -149,8 +149,42 @@ describe('transpileModel', () => {
         expect(rev.importedExpression).toBe('SUM(orders.amt)');
         expect(warnings.some(
                    w => w.includes(`metric 'rev'`) &&
-                       w.includes('altered the referenced entities')))
+                       w.includes('re-cased an entity qualifier')))
             .toBe(true);
+      });
+
+  test(
+      'accepts a correct rewrite even when the vendor form quoted the ' +
+          'qualifier (no false reject)',
+      async () => {
+        // The imported Snowflake form double-quotes the qualifier
+        // (`"orders".amt`); blankStringLiterals treats double-quotes as a
+        // string literal, so an input-vs-output guard would see the qualifier
+        // vanish and wrongly reject a perfectly good rewrite. The guard now
+        // checks the output against itself, so the valid GoogleSQL is accepted.
+        const model: SemanticModel = {
+          name: 'm',
+          entities: [{
+            name: 'orders',
+            dataSource: 'p.d.orders',
+            keys: ['id'],
+            fields: [{
+              name: 'amt_known',
+              importedExpression: 'NVL("orders".amt, 0)',
+              importedDialect: 'SNOWFLAKE',
+            }],
+          }],
+          relationships: [],
+          metrics: [],
+        };
+        const {transpiler} = fakeTranspiler(() => 'COALESCE(orders.amt, 0)');
+        const {model: out, warnings} =
+            await transpileModel(model, {transpiler});
+
+        expect(out.entities[0].fields[0].expression)
+            .toBe('COALESCE(orders.amt, 0)');
+        expect(warnings.some(w => w.includes('transpiled'))).toBe(true);
+        expect(warnings.some(w => w.includes('re-cased'))).toBe(false);
       });
 
   test('does not mutate the input model', async () => {
@@ -222,6 +256,40 @@ describe('transpileModel', () => {
             keys: ['id'],
             fields:
                 [{name: 'label', importedExpression: 'IFF(orders.s=1,1,0)'}],
+          }],
+          relationships: [],
+          metrics: [],
+        };
+        const {transpiler, seen} =
+            fakeTranspiler(() => 'IF(orders.s = 1, 1, 0)');
+        const {model: out, warnings} =
+            await transpileModel(model, {transpiler});
+
+        const req = seen.find(r => r.expression === 'IFF(orders.s=1,1,0)');
+        expect(req?.dialect).toBe('ANSI_SQL');
+        expect(out.entities[0].fields[0].expression)
+            .toBe('IF(orders.s = 1, 1, 0)');
+        expect(warnings.some(w => w.includes(`field 'orders.label'`)))
+            .toBe(true);
+      });
+
+  test(
+      'treats an empty source dialect as ANSI_SQL, not an unsupported dialect',
+      async () => {
+        // An importer may leave importedDialect as '' rather than undefined.
+        // `?? 'ANSI_SQL'` would keep the empty string and the adapter would
+        // report it unsupported; `|| 'ANSI_SQL'` (the fix) falls back to ANSI.
+        const model: SemanticModel = {
+          name: 'm',
+          entities: [{
+            name: 'orders',
+            dataSource: 'p.d.orders',
+            keys: ['id'],
+            fields: [{
+              name: 'label',
+              importedExpression: 'IFF(orders.s=1,1,0)',
+              importedDialect: '',
+            }],
           }],
           relationships: [],
           metrics: [],

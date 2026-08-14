@@ -118,10 +118,11 @@ export async function transpileModel(
       request: {
         id,
         // A node can carry an imported expression without a declared dialect
-        // (hand-built IR); treat that as portable ANSI (a dialect-neutral
-        // parse) rather than passing `undefined` into the adapter and crashing
-        // it.
-        dialect: node.importedDialect ?? 'ANSI_SQL',
+        // -- undefined (hand-built IR) or an empty string. Treat either as
+        // portable ANSI (a dialect-neutral parse) rather than passing a
+        // missing/empty token into the adapter, which would report it as an
+        // unsupported dialect.
+        dialect: node.importedDialect || 'ANSI_SQL',
         expression: node.importedExpression,
       },
       ctx,
@@ -165,17 +166,25 @@ export async function transpileModel(
     }
     // Qualifier-preservation guard: the BigQuery emitter locates measures and
     // strips qualifiers by matching `<Entity>.` case-sensitively (see
-    // ./sql_expr_utils). If the transpiler re-cased or quoted a qualifier, the
-    // referenced-entity set would change and the metric would silently drop or
-    // misplace. Reject any such rewrite: leave `expression` unset (the emitter
-    // falls back to the imported form) and warn.
-    const before = referencedEntityNames(request.expression, entityNames);
-    const after = referencedEntityNames(res.sql, entityNames);
-    if (!sameSet(before, after)) {
+    // ./sql_expr_utils). A transpiler that re-cases a qualifier (`orders.` ->
+    // `Orders.`) leaves SQL the emitter can no longer match, so the measure
+    // would silently drop or misplace. Detect that on the OUTPUT: every entity
+    // the transpiled SQL references case-insensitively must also be matched
+    // case-sensitively -- i.e. kept in the exact case the emitter needs.
+    // Comparing the output against itself (rather than the vendor input) avoids
+    // false positives from dialect-specific identifier quoting: the imported
+    // form may quote a qualifier in a way blankStringLiterals blanks (e.g.
+    // Snowflake double-quotes, which are string literals in GoogleSQL), so its
+    // qualifiers are invisible here anyway and are not a fair basis for
+    // comparison.
+    const emitterVisible = referencedEntityNames(res.sql, entityNames);
+    const anyCase =
+        referencedEntityNames(res.sql, entityNames, {caseInsensitive: true});
+    if (!sameSet(emitterVisible, anyCase)) {
       warnings.push(
           `${ctx}: transpiled '${request.dialect}' -> '${
-              target}' but it altered ` +
-          `the referenced entities (${fmtSet(before)} -> ${fmtSet(after)}); ` +
+              target}' but it re-cased an entity qualifier the emitter matches ` +
+          `case-sensitively (${fmtSet(emitterVisible)} vs ${fmtSet(anyCase)}); ` +
           `leaving the imported expression for the emitter`);
       continue;
     }

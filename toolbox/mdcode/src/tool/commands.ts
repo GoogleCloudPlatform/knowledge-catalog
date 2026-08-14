@@ -286,6 +286,23 @@ export async function push(options: PushOptions): Promise<number> {
     return 0;
   }
 
+  // These flags only take effect on a semantic-model push; on a regular
+  // catalog snapshot they are inert. Warn rather than silently ignore them, so
+  // a user who expected (say) --transpile to run isn't misled by a clean exit.
+  const semanticOnlyFlags: Array<[boolean, string]> = [
+    [!!options.transpile, '--transpile'],
+    [options.target !== undefined, '--target'],
+    [!!options.print, '--print'],
+    [!!options.emitExpressions, '--emit-expressions'],
+    [!!options.forceRemove, '--force-remove'],
+  ];
+  for (const [set, flag] of semanticOnlyFlags) {
+    if (set) {
+      console.warn(
+          `Warning: ${flag} only applies to a semantic-model push; ignoring it.`);
+    }
+  }
+
   const catalog = new dataplex.CatalogClient(ctx);
   const sync = new kcmd.CatalogSync(catalog, snapshot);
 
