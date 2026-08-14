@@ -131,18 +131,50 @@ becomes one part of that graph:
 | Model | `PROPERTY GRAPH` | named by the deployment-target URI |
 | Entity | `NODE TABLE` | backed by the entity's `source` table, keyed by its primary key |
 | Relationship | `EDGE TABLE` | connects the two entities' node tables |
-| Metric | `MEASURE` on a node table | must reduce to one aggregate over one entity, or it is skipped with a warning |
+| Metric | `MEASURE` on a node table | must resolve to a single entity (otherwise the push is rejected — see [Validation](#validation)) and reduce to one supported aggregate over one operand (otherwise that metric is skipped with a warning) |
 
 `push` reads the target dataset's location (`bigquery.datasets.get`) so the
 statement runs in the right region; without that permission it falls back to
-BigQuery's own location inference and warns. Nothing runs under
-`--validate-only`; add `--print` to see the DDL.
+BigQuery's own location inference and warns. Under `--validate-only` no graph
+DDL is executed and nothing is written (the live source-table checks still run —
+see [Validation](#validation)); add `--print` to see the generated DDL.
 
-Push to BigQuery is **lossy**: the graph captures the queryable structure —
-node tables, edge tables, and measures — but not descriptive metadata
-(descriptions, `ai_context`, synonyms, labels), and a metric that does not
-reduce to a single MEASURE is dropped with a warning. It is a query surface,
-not a copy of your model.
+#### What carries over, and what doesn't
+
+Push preserves both the queryable structure and the descriptive metadata
+attached to it. The structure becomes the node tables, edge tables, and
+measures; the descriptive metadata is written into each element's `OPTIONS(...)`
+in the graph (visible with `--print`). BigQuery's graph `OPTIONS` give an element
+a `description` string and a `synonyms` array, so synonyms are carried across
+structurally, as their own array — not flattened into the description text.
+
+**Carried over** — for every entity, relationship, metric, and field:
+
+| Authored metadata | Where it lands in the generated DDL |
+|---|---|
+| `ai_context.synonyms` | the element's `OPTIONS(synonyms=[...])`, a structured array |
+| `description` | the element's `OPTIONS(description=...)` |
+| `ai_context.instructions` | added to the same `OPTIONS(description=...)` |
+| `ai_context.examples` | added to it, as an `Examples: …` line |
+| A field's `label` | added to the field's `OPTIONS(description=...)` |
+| A field's time-dimension role | noted in the field's `OPTIONS(description=...)` |
+
+**Not carried over:**
+
+| Authored metadata | Why |
+|---|---|
+| The model's own `description` / `ai_context` | BigQuery silently drops statement-level graph `OPTIONS`, so model-level metadata has no home in the graph; it is carried into [Knowledge Catalog](#what-gets-created-in-knowledge-catalog) instead |
+| A field's `datatype` | BigQuery uses the source column's own type |
+| Unique keys beyond the primary key | only the primary key is emitted |
+| The imported vendor SQL and its dialect | only the canonical GoogleSQL expression is used |
+| `custom_extensions` | not part of the graph (the model-level `GOOGLE` block only supplies the [deployment target](#deployment-targets-required)) |
+| A metric that isn't a single aggregate (`SUM`/`AVG`/`COUNT`/`MIN`/`MAX`) over one column | it can't become a `MEASURE`, so it is skipped with a warning |
+
+One caveat on the metadata that carries over: `synonyms` is the only part with a
+dedicated BigQuery option. The rest — `description`, `instructions`, `examples`,
+and a field's `label` — share the single `description` string, so they are
+combined into it (examples as an `Examples: …` line). Their content is
+preserved; their separate structure is not.
 
 ### What gets created in Knowledge Catalog
 
@@ -155,7 +187,7 @@ them, it never creates them.
 | Model | `semantic-model` | entry — anchor / parent of the rest | `<model>` |
 | Entity | `semantic-entity` (+ built-in `schema` aspect) | entry | `<model>.entities.<entity>` |
 | Metric | `semantic-metric` | entry | `<model>.metrics.<metric>` |
-| Relationship | `schema-join` | entry link between the two entity entries | derived from the relationship name |
+| Relationship | `schema-join` | entry link between the two entity entries | derived from the model and relationship names |
 
 An entity entry carries its columns in the `schema` aspect (name, data type, and
 description per field); a `schema-join` link carries the relationship detail — the
@@ -226,11 +258,14 @@ Relationships owned by other models that share the entry group are left
 untouched.
 
 **When you remove a whole model** — deleting its document does *not* remove it
-from the catalog on the next push. Instead, push stops and names the model the
-catalog still has that you no longer push, so you can't wipe out a model by
-accident or by pushing from the wrong directory. When you do mean to remove it,
-run push again with `--force-remove` and its entries and links are deleted
-first.
+from the catalog. As long as you still push at least one other model in the same
+entry group, push stops and names the model the catalog still has that you no
+longer push, so you can't wipe one out by accident or by pushing from the wrong
+directory; run push again with `--force-remove` to delete its entries and links.
+Deleting *every* document is the exception: with no models left to push, the run
+reports `No semantic model documents found; nothing to deploy` and touches
+nothing — so remove a model while other models in its group remain, or delete
+its catalog entries directly.
 
 Every push prints one line per destination summarizing what it did. For a
 `--target all` push:
