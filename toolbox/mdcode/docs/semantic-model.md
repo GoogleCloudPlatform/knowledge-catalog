@@ -163,12 +163,12 @@ structurally, as their own array — not flattened into the description text.
 
 | Authored metadata | Why |
 |---|---|
-| The model's own `description` / `ai_context` | BigQuery silently drops statement-level graph `OPTIONS`, so model-level metadata has no home in the graph; it is carried into [Knowledge Catalog](#what-gets-created-in-knowledge-catalog) instead |
+| The model's own `description` / `ai_context` | BigQuery silently drops statement-level graph `OPTIONS`, so model-level metadata has no home in the graph. The model's `description` is carried into [Knowledge Catalog](#what-gets-created-in-knowledge-catalog) instead; its `ai_context` (instructions, synonyms, examples) is not preserved in either destination |
 | A field's `datatype` | BigQuery uses the source column's own type |
 | Unique keys beyond the primary key | only the primary key is emitted |
 | The imported vendor SQL and its dialect | only the canonical GoogleSQL expression is used |
 | `custom_extensions` | not part of the graph (the model-level `GOOGLE` block only supplies the [deployment target](#deployment-targets-required)) |
-| A metric that isn't a single aggregate (`SUM`/`AVG`/`COUNT`/`MIN`/`MAX`) over one column | it can't become a `MEASURE`, so it is skipped with a warning |
+| A metric that isn't a single aggregate (`SUM`/`AVG`/`COUNT`/`MIN`/`MAX`) over one operand | it can't become a `MEASURE`, so it is skipped with a warning |
 
 One caveat on the metadata that carries over: `synonyms` is the only part with a
 dedicated BigQuery option. The rest — `description`, `instructions`, `examples`,
