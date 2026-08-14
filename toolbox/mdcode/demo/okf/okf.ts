@@ -1,14 +1,72 @@
 // Translation between clean OKF frontmatter and the kcmd "pushable" form.
 //
 // kcmd's generic Documents Layout only maps title/description/tags + body and
-// passes a `catalogEntry:` block through verbatim. The OKF signal layer
-// (type, resource, generated, sources) has no generic home, so we move it into
-// a custom `okf` Dataplex aspect carried through that passthrough. This keeps
-// the library generic — all OKF knowledge lives here in the demo.
+// passes a `catalogEntry:` block through verbatim. The OKF signal layer has no
+// generic home, so we move it into a custom `okf` Dataplex aspect carried
+// through that passthrough. This keeps the library generic: all OKF knowledge
+// lives here in the demo.
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import * as yaml from 'yaml';
 
 export interface Split { meta: any | null; body: string; }
+
+// `--bundle <dir>` selects which OKF bundle to operate on, so the demo can run
+// against a bundle elsewhere in the repo instead of only its own catalog/.
+export function bundleDir(root: string, argv: string[] = process.argv.slice(2)): string {
+  const i = argv.indexOf('--bundle');
+  if (i === -1) {
+    return path.join(root, 'catalog');
+  }
+  const value = argv[i + 1];
+  if (!value) {
+    throw new Error('--bundle requires a directory path');
+  }
+  return path.resolve(root, value);
+}
+
+export function listMarkdown(dir: string): string[] {
+  const out: string[] = [];
+  for (const name of fs.readdirSync(dir)) {
+    const full = path.join(dir, name);
+    if (fs.statSync(full).isDirectory()) {
+      out.push(...listMarkdown(full));
+    } else if (name.endsWith('.md')) {
+      out.push(full);
+    }
+  }
+  return out.sort();
+}
+
+// Mapped natively by the Documents Layout, so they stay at the top level of the
+// staged frontmatter.
+const LAYOUT_KEYS = ['title', 'description', 'tags'];
+
+// The OKF v0.2 signal layer, in SPEC order, carried on the `okf` aspect.
+// Adding a key the SPEC gains is a one-line change here plus a field in
+// okf-aspect.json.
+const SIGNAL_KEYS = [
+  'generated', 'verified', 'status', 'stale_after', 'usage_window',
+  'runtime', 'parameters', 'computation', 'executor', 'attester', 'sources',
+];
+
+// `type` and `resource` are carried outside the signal record: `type` as
+// `okf_type`, `resource` as the catalog entry's resource name.
+const MODELED_KEYS = new Set([...LAYOUT_KEYS, ...SIGNAL_KEYS, 'type', 'resource']);
+
+// Field order within each signal record, and which signal keys hold a list of
+// them. Used to give pulled records a deterministic shape.
+const RECORD_KEYS: Record<string, string[]> = {
+  generated: ['by', 'at'],
+  verified: ['by', 'at'],
+  usage_window: ['from', 'to'],
+  parameters: ['name', 'type', 'required'],
+  executor: ['resource', 'receipt'],
+  attester: ['resource'],
+  sources: ['id', 'resource', 'title', 'author', 'usage_count', 'last_modified'],
+};
+const LIST_KEYS = new Set(['verified', 'parameters', 'sources']);
 
 export function splitFrontmatter(content: string): Split {
   const lines = content.split(/\r?\n/);
@@ -46,15 +104,34 @@ export function toStaging(content: string, okfKey: string): string {
   if (!meta) {
     return content;
   }
-  const staged = pick(meta, ['title', 'description', 'tags']);
+
+  const signal: any = {};
+  if (meta.type !== undefined) {
+    signal.okf_type = meta.type;
+  }
+  Object.assign(signal, pick(meta, SIGNAL_KEYS));
+  // SPEC 5.2 allows a lone verifier as a bare mapping; the aspect field is a list.
+  if (signal.verified !== undefined && !Array.isArray(signal.verified)) {
+    signal.verified = [signal.verified];
+  }
+
+  // OKF permits producer-defined keys, so an enumerated template can never be
+  // complete. Anything unmodeled rides along as JSON to keep the round-trip
+  // lossless.
+  const extra: any = {};
+  for (const key of Object.keys(meta)) {
+    if (!MODELED_KEYS.has(key)) {
+      extra[key] = meta[key];
+    }
+  }
+  if (Object.keys(extra).length > 0) {
+    signal.extra = JSON.stringify(extra);
+  }
+
+  const staged = pick(meta, LAYOUT_KEYS);
   staged.catalogEntry = {
     resource: { name: meta.resource },
-    aspects: {
-      [okfKey]: pick(
-        { okf_type: meta.type, generated: meta.generated, sources: meta.sources },
-        ['okf_type', 'generated', 'sources'],
-      ),
-    },
+    aspects: { [okfKey]: signal },
   };
   return render(staged, body);
 }
@@ -68,23 +145,29 @@ export function fromStaging(content: string, okfKey: string): string {
   const ce = meta.catalogEntry ?? {};
   const okf = (ce.aspects ?? {})[okfKey] ?? {};
 
-  // Directory index entries carry no OKF signal — emit body only, matching the
-  // frontmatter-free index files in the source bundle.
-  const isOkf = okf.okf_type !== undefined || okf.generated !== undefined
-    || okf.sources !== undefined || ce.resource?.name !== undefined;
-  if (!isOkf) {
+  // Directory index entries carry no OKF signal, so emit body only, matching
+  // the frontmatter-free index files in the source bundle.
+  const hasSignal = Object.keys(okf).length > 0 || ce.resource?.name !== undefined;
+  if (!hasSignal) {
     return `${body.trim()}\n`;
   }
 
   const clean: any = {};
   if (okf.okf_type !== undefined) clean.type = okf.okf_type;
   if (ce.resource?.name !== undefined) clean.resource = ce.resource.name;
-  if (meta.title !== undefined) clean.title = meta.title;
-  if (meta.description !== undefined) clean.description = meta.description;
-  if (meta.tags !== undefined) clean.tags = meta.tags;
-  if (okf.generated !== undefined) clean.generated = pick(okf.generated, ['by', 'at']);
-  if (okf.sources !== undefined) {
-    clean.sources = (okf.sources as any[]).map((s) => pick(s, ['id', 'resource', 'title']));
+  Object.assign(clean, pick(meta, LAYOUT_KEYS));
+  for (const [key, value] of Object.entries(pick(okf, SIGNAL_KEYS))) {
+    const fields = RECORD_KEYS[key];
+    if (!fields) {
+      clean[key] = value;
+    } else if (LIST_KEYS.has(key)) {
+      clean[key] = (value as any[]).map((item) => pick(item, fields));
+    } else {
+      clean[key] = pick(value, fields);
+    }
+  }
+  if (okf.extra !== undefined) {
+    Object.assign(clean, JSON.parse(okf.extra));
   }
   return render(clean, body);
 }

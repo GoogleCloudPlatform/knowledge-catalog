@@ -28,7 +28,15 @@ try {
   console.log();
 }
 catch {
-  // Might already exist
+  // Already exists. Update rather than skip: a project left over from an
+  // earlier run of this demo holds an older template, and pushing v0.2 signal
+  // against it fails with an opaque "Unknown property" error. Dataplex rejects
+  // backwards-incompatible template changes, so new fields in okf-aspect.json
+  // must be appended with fresh indices; renumbering an existing field breaks
+  // this update for everyone who already ran the demo.
+  dataplex(`aspect-types update okf --metadata-template-file-name=okf-aspect.json`);
+  console.log('Updated existing aspect type okf to the current template');
+  console.log();
 }
 
 const okfAspect = `${project}.${location}.okf`;
