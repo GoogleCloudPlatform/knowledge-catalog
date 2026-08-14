@@ -113,6 +113,7 @@ kcmd push --print              # also print the generated DDL / entry plan
 | `--validate-only` | Run every validation check and report pass/fail, but write nothing. |
 | `--print` | Print each destination's generated artifact (BigQuery DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
 | `--force-remove` | Delete models in the entry group that this push no longer includes (see [Updating and removing models](#updating-and-removing-models)). |
+| `--emit-expressions` | Also write the SQL-expression fields (per-field `schema.semantics` and `semantic-metric.expression`) to Knowledge Catalog. Off by default: the published system-type templates do not carry them yet. Knowledge Catalog push only. |
 
 Destinations always deploy BigQuery-first and fail fast, so a rejected model
 never half-deploys.
@@ -148,17 +149,20 @@ them, it never creates them.
 | Metric | `semantic-metric` | entry | `<model>.metrics.<metric>` |
 | Relationship | `schema-join` | entry link between the two entity entries | derived from the relationship name |
 
-An entity entry carries its columns and per-field semantics in the `schema`
-aspect; a `schema-join` link carries the relationship detail — the paired columns
-and foreign-key direction — in its aspect.
+An entity entry carries its columns in the `schema` aspect (name, data type, and
+description per field); a `schema-join` link carries the relationship detail — the
+paired columns and foreign-key direction — in its aspect.
 
-> **Note — the catalog is not a full copy of your model.** Only the canonical
-> `expression` (GoogleSQL/ANSI) is written to Knowledge Catalog; the original
-> vendor SQL (`importedExpression` — e.g. the MAQL or Snowflake form a metric
-> was imported from) is **not**. It stays in your authored document, and is still
-> used when generating BigQuery SQL, but nothing in the catalog stores it. Keep
-> your model document as the source of truth: a model reconstructed only from
-> the catalog would come back without its vendor SQL.
+> **Note — the catalog is not a full copy of your model.** By default the SQL
+> expressions are **not** written to Knowledge Catalog: the published system-type
+> templates do not yet carry a per-field `semantics` block or a
+> `semantic-metric.expression` field, so the default push omits them (pass
+> `--emit-expressions` to write them once the templates gain the fields). The
+> original vendor SQL (`importedExpression` — e.g. the MAQL or Snowflake form a
+> metric was imported from) is never written either. All of it stays in your
+> authored document and is still used when generating BigQuery SQL. Keep your
+> model document as the source of truth: a model reconstructed only from the
+> catalog would come back without its SQL.
 
 ## Validation
 
