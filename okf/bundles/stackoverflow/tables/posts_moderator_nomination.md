@@ -4,7 +4,7 @@ resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datas
 title: Posts Moderator Nomination
 description: Contains posts related to moderator nominations on the Stack Overflow
   platform.
-tags: stackoverflow, posts, moderator, nomination
+tags: [stackoverflow, posts, moderator, nomination]
 generated:
   by: reference_agent/gemini-2.5-flash
   at: '2026-07-10T22:48:22+00:00'
