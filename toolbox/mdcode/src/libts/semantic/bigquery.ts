@@ -140,12 +140,12 @@ export function generatePropertyGraph(
     blocks.push(`EDGE TABLES (\n${edgeTables.join(',\n')}\n)`);
   }
 
-  // Graph-level metadata: the trailing OPTIONS after the EDGE TABLES clause
-  // (grammar: create_property_graph_statement). The model's AI-first
-  // annotations are folded into the description here (see elementDescription).
-  const graphOpts =
-      optionsClause(elementDescription(model.description, model.aiContext));
-  if (graphOpts) blocks.push(graphOpts);
+  // Model-level description / ai_context has no home in the BigQuery graph:
+  // statement-level `OPTIONS` after EDGE TABLES parses but BigQuery silently
+  // drops it (verified live; create_property_graph_options is off for
+  // BigQuery), so we do not emit it. The model's description is carried into
+  // Knowledge Catalog's model entry instead (see knowledge_catalog.ts);
+  // element-level metadata rides on labels, properties, and measures here.
 
   return {ddl: blocks.join('\n') + ';\n', warnings: dedupe(warnings)};
 }
@@ -309,8 +309,9 @@ function placeMetric(
   const propName = exposeOperand(lowering, operandExpr, metric.name);
   const aggregate = `${agg.fn}(${agg.distinct ? 'DISTINCT ' : ''}${propName})`;
 
-  const opts =
-      optionsClause(elementDescription(metric.description, metric.aiContext));
+  const opts = optionsClause(
+      elementDescription(metric.description, metric.aiContext),
+      metric.aiContext?.synonyms);
   const measure = `MEASURE(${aggregate}) AS ${metric.name}`;
   const lines = metricsByEntity.get(entityName) ?? [];
   lines.push(opts ? `${measure} ${opts}` : measure);
@@ -475,10 +476,11 @@ function renderNodeTable(
     line(1, `${table} AS ${entity.name}`),
     line(2, `KEY(${entity.keys.join(', ')})`),
   ];
-  // Element-table description attaches to the DEFAULT LABEL: after the key
-  // clause, before PROPERTIES (grammar: element_table_definition).
-  const labelOpts =
-      optionsClause(elementDescription(entity.description, entity.aiContext));
+  // Element-table description and synonyms attach to the DEFAULT LABEL: after
+  // the key clause, before PROPERTIES (grammar: element_table_definition).
+  const labelOpts = optionsClause(
+      elementDescription(entity.description, entity.aiContext),
+      entity.aiContext?.synonyms);
   if (labelOpts) lines.push(line(2, labelOpts));
   // Omit the PROPERTIES block when there is nothing to list, rather than emit
   // an empty `PROPERTIES()` (a node table may declare just its KEY).
@@ -495,7 +497,8 @@ function renderFieldProperty(field: Field, entity: string): string {
   const expr = fieldExpression(field);
   const local = expr !== undefined ? stripQualifier(expr, entity) : field.name;
   const prop = local === field.name ? field.name : `${local} AS ${field.name}`;
-  const opts = optionsClause(fieldDescription(field));
+  const opts =
+      optionsClause(fieldDescription(field), field.aiContext?.synonyms);
   return opts ? `${prop} ${opts}` : prop;
 }
 
@@ -540,10 +543,11 @@ function renderEdgeTable(
             rel.destination.entity}(${rel.destination.columns.join(', ')})`),
   ];
 
-  // Edge description attaches to the DEFAULT LABEL: after the
+  // Edge description and synonyms attach to the DEFAULT LABEL: after the
   // SOURCE/DESTINATION clauses (grammar: element_table_definition).
-  const labelOpts =
-      optionsClause(elementDescription(rel.description, rel.aiContext));
+  const labelOpts = optionsClause(
+      elementDescription(rel.description, rel.aiContext),
+      rel.aiContext?.synonyms);
   if (labelOpts) lines.push(line(2, labelOpts));
 
   return lines.join('\n');
@@ -590,11 +594,12 @@ function renderAssociationEdge(
             rel.destination.entity}(${refColumns(rel.destination)})`),
   ];
 
-  // Edge description attaches to the DEFAULT LABEL: after the
+  // Edge description and synonyms attach to the DEFAULT LABEL: after the
   // SOURCE/DESTINATION clauses, before PROPERTIES (grammar:
   // element_table_definition).
-  const labelOpts =
-      optionsClause(elementDescription(rel.description, rel.aiContext));
+  const labelOpts = optionsClause(
+      elementDescription(rel.description, rel.aiContext),
+      rel.aiContext?.synonyms);
   if (labelOpts) lines.push(line(2, labelOpts));
 
   // The junction's own non-key fields are the edge's properties.
@@ -694,37 +699,33 @@ function propertiesBlock(properties: string[]): string {
 }
 
 
-// Composes the `OPTIONS(description=...)` text for a graph element from its
-// base description and AI-first annotations. BigQuery graph DDL exposes only a
-// single description slot, so instructions, synonyms, and examples are folded
-// into that one text (the only metadata sink the graph DDL provides).
+// Composes the folded `description` text for a graph element from its base
+// description and the AI-first annotations that have no dedicated BigQuery
+// option: instructions and examples. Synonyms are NOT folded in here --
+// BigQuery's PropertyGraph{Label,Property}Options carry a structured `synonyms`
+// array, so they are emitted as their own option (see optionsClause and the
+// call sites).
 function elementDescription(description?: string, ai?: AiContext): string|
     undefined {
   return composeText([
     description,
     ai?.instructions,
-    synonymsLine(ai?.synonyms),
     examplesLine(ai?.examples),
   ]);
 }
 
 // A field additionally carries a human `label` and a temporal-dimension role,
 // which lead the composed text (matching the authored order) ahead of its
-// description and AI-first annotations.
+// description and instructions/examples. Synonyms are emitted structurally, as
+// for elementDescription.
 function fieldDescription(field: Field): string|undefined {
   return composeText([
     field.label,
     isTimeDimension(field) ? 'Time dimension.' : undefined,
     field.description,
     field.aiContext?.instructions,
-    synonymsLine(field.aiContext?.synonyms),
     examplesLine(field.aiContext?.examples),
   ]);
-}
-
-function synonymsLine(synonyms?: string[]): string|undefined {
-  return synonyms && synonyms.length ? `Synonyms: ${synonyms.join(', ')}` :
-                                       undefined;
 }
 
 function examplesLine(examples?: string[]): string|undefined {
@@ -740,14 +741,22 @@ function composeText(parts: (string|undefined)[]): string|undefined {
   return kept.length ? kept.join('\n\n') : undefined;
 }
 
-// Renders the trailing `OPTIONS(description=...)` clause, or undefined when
-// there is nothing to say. The grammar allows this clause on graph properties
-// and measures (after the alias), on element tables (as DEFAULT LABEL options,
-// before PROPERTIES), and on the graph itself (after the EDGE TABLES clause).
-// See storage/googlesql/parser: `derived_property`, `element_table_definition`,
-// `create_property_graph_statement`.
-function optionsClause(text?: string): string|undefined {
-  return text ? `OPTIONS(description=${quote(text)})` : undefined;
+// Renders the trailing `OPTIONS(...)` clause for a graph element -- a folded
+// `description` string and/or a structured `synonyms` array -- or undefined
+// when there is nothing to emit. Both map to BigQuery's
+// PropertyGraph{Label,Property}Options (`description` singular, `synonyms`
+// repeated), honored on element-table labels (DEFAULT LABEL, before PROPERTIES)
+// and on derived properties and measures (after the alias). Statement-level
+// graph OPTIONS is intentionally not emitted: it parses but BigQuery silently
+// drops it (verified live; create_property_graph_options is off for BigQuery).
+function optionsClause(description?: string, synonyms?: string[]): string|
+    undefined {
+  const parts: string[] = [];
+  if (description) parts.push(`description=${quote(description)}`);
+  if (synonyms && synonyms.length) {
+    parts.push(`synonyms=[${synonyms.map(quote).join(', ')}]`);
+  }
+  return parts.length ? `OPTIONS(${parts.join(', ')})` : undefined;
 }
 
 // Renders a value as a BigQuery double-quoted string literal. Backslash and the

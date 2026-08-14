@@ -54,8 +54,7 @@ EDGE TABLES (
     KEY(ss_item_sk, ss_ticket_number)
     SOURCE KEY(ss_item_sk, ss_ticket_number) REFERENCES store_sales(ss_item_sk, ss_ticket_number)
     DESTINATION KEY(ss_store_sk) REFERENCES store(s_store_sk)
-)
-OPTIONS(description="TPC-DS retail model");
+);
 
 -- warnings --
 -- note: no 'BIGQUERY' dialect for one or more expressions; using the portable 'ANSI_SQL' dialect verbatim ('BIGQUERY' accepts the ANSI core subset — supply 'BIGQUERY' variants only for BIGQUERY-specific SQL)

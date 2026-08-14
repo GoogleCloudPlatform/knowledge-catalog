@@ -351,6 +351,92 @@ describe('degenerate inputs and GenerateOptions behavior', () => {
 });
 
 
+describe('descriptive metadata: structured synonyms vs folded description', () => {
+  // A two-entity model with an FK edge, exercising ai_context on every element
+  // kind (entity label, field property, measure, edge label) plus the model.
+  // BigQuery's PropertyGraph{Label,Property}Options carry a structured
+  // `synonyms` array (verified live), so synonyms are emitted as their own
+  // option; instructions and examples (which have no dedicated option) still
+  // fold into `description`.
+  const model = (): SemanticModel => ({
+    name: 'm',
+    description: 'MODEL_LEVEL_DESC',
+    aiContext: {instructions: 'model help', synonyms: ['modelsyn']},
+    entities: [
+      {
+        name: 'orders',
+        dataSource: 'orders',
+        keys: ['o_orderkey'],
+        description: 'the orders',
+        aiContext: {
+          instructions: 'one row per order',
+          synonyms: ['ord', 'purchase'],
+          examples: ['how many orders?'],
+        },
+        fields: [
+          {name: 'o_orderkey', expression: 'orders.o_orderkey'},
+          {
+            name: 'amount',
+            expression: 'orders.amount',
+            label: 'Order amount',
+            aiContext: {synonyms: ['total', 'value']},
+          },
+        ],
+      },
+      {
+        name: 'customers',
+        dataSource: 'customers',
+        keys: ['c_custkey'],
+        fields: [{name: 'c_custkey', expression: 'customers.c_custkey'}],
+      },
+    ],
+    relationships: [{
+      name: 'placed_by',
+      source: {entity: 'orders', columns: ['o_custkey']},
+      destination: {entity: 'customers', columns: ['c_custkey']},
+      aiContext: {synonyms: ['belongs to']},
+    }],
+    metrics: [{
+      name: 'total_amount',
+      expression: 'SUM(orders.amount)',
+      entity: 'orders',
+      aiContext: {synonyms: ['revenue', 'sales']},
+    }],
+  });
+
+  test(
+      'synonyms are a structured array on every element, not folded into description',
+      () => {
+        const {ddl} = generatePropertyGraph(model(), GEN_OPTS);
+        // Entity label, field property, measure, and edge label each carry a
+        // structured `synonyms=[...]` array.
+        expect(ddl).toContain('synonyms=["ord", "purchase"]');
+        expect(ddl).toContain('synonyms=["total", "value"]');
+        expect(ddl).toContain('synonyms=["revenue", "sales"]');
+        expect(ddl).toContain('synonyms=["belongs to"]');
+        // The legacy folded "Synonyms: ..." text is gone entirely.
+        expect(ddl).not.toContain('Synonyms:');
+      });
+
+  test(
+      'instructions and examples still fold into the description option',
+      () => {
+        const {ddl} = generatePropertyGraph(model(), GEN_OPTS);
+        expect(ddl).toContain('one row per order');  // entity instructions
+        expect(ddl).toContain('Examples: how many orders?');
+        expect(ddl).toContain('Order amount');  // field label leads
+      });
+
+  test(
+      'model-level metadata is not emitted (BigQuery drops statement-level graph OPTIONS)',
+      () => {
+        const {ddl} = generatePropertyGraph(model(), GEN_OPTS);
+        expect(ddl).not.toContain('MODEL_LEVEL_DESC');
+        expect(ddl).not.toContain('modelsyn');
+      });
+});
+
+
 // The BigQuery restrictions recorded at
 // go/x20 -> bei/bigquery-property-graph-limits.html (section A): a graph
 // MEASURE may only aggregate a SINGLE EXPOSED PROPERTY of its node — never a
