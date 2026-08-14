@@ -43,6 +43,23 @@ describe('polyglotTranspiler (mechanism invariants)', () => {
         expect(responses[0].sql).toBeUndefined();
         expect(responses[0].error).toBeDefined();
       });
+
+  test(
+      'errors every request for an unsupported target dialect rather than ' +
+          'silently emitting BigQuery',
+      async () => {
+        const responses = await polyglotTranspiler(
+            [
+              {id: 'a', dialect: 'SNOWFLAKE', expression: 'NVL(x, 0)'},
+              {id: 'b', dialect: 'DATABRICKS', expression: 'x::double'},
+            ],
+            'NOT_A_DIALECT');
+        expect(responses.length).toBe(2);
+        for (const r of responses) {
+          expect(r.sql).toBeUndefined();
+          expect(r.error).toContain('unsupported target dialect');
+        }
+      });
 });
 
 describe('polyglotTranspiler (transformations)', () => {

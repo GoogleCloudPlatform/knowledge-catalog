@@ -85,13 +85,14 @@ interface Pending {
 }
 
 // True when a node needs transpilation: it has no target `expression`, but does
-// carry an imported vendor form to derive one from. A node that already has an
-// `expression` is left alone; one with neither has nothing to transpile.
+// carry a non-empty imported vendor form to derive one from. A node that
+// already has an `expression` is left alone; one with neither (or only an empty
+// imported form) has nothing to transpile.
 function needsTranspile(node: Field|Metric): node is(Field | Metric)&{
   importedExpression: string;
 }
 {
-  return node.expression === undefined && node.importedExpression !== undefined;
+  return node.expression === undefined && !!node.importedExpression;
 }
 
 /**
@@ -195,8 +196,10 @@ export async function transpileModel(
 export async function transpileModels(
     models: LoadedModel[], opts: TranspileOptions = {}):
     Promise<{models: LoadedModel[]; warnings: string[]}> {
-  // Models are independent; transpile them concurrently. They share the single
-  // process-wide WASM engine instance (initialized once), so this is cheap.
+  // Models are independent, so map over them together; they share the single
+  // process-wide WASM engine instance (initialized once). The engine's
+  // transpile call is synchronous, so this does not run expressions in
+  // parallel -- it just avoids re-initializing the engine per model.
   const results =
       await Promise.all(models.map(({model}) => transpileModel(model, opts)));
   const out: LoadedModel[] = [];
@@ -274,7 +277,13 @@ function loadEngine(): Promise<PolyglotEngine> {
           await import('@polyglot-sql/sdk/manual') as unknown as PolyglotEngine;
       await engine.init({wasmUrl: readFileSync(wasmPath) as unknown as string});
       return engine;
-    })();
+    })().catch(err => {
+      // Don't cache the failure: a transient init error (e.g. a failed read)
+      // must not permanently disable transpilation for a long-lived process.
+      // Clear the memo so the next call retries, then propagate.
+      enginePromise = undefined;
+      throw err;
+    });
   }
   return enginePromise;
 }
@@ -290,10 +299,14 @@ function loadEngine(): Promise<PolyglotEngine> {
 export const polyglotTranspiler: SqlTranspiler = async (requests, target) => {
   if (!requests.length) return [];
   // Map the target to the engine's write dialect. A known token that maps to
-  // 'generic' (ANSI_SQL) means dialect-neutral output and must be preserved;
-  // only an absent/unknown target falls back to BigQuery, the pass's reason for
-  // existing.
-  const write = polyglotDialect(target) ?? 'bigquery';
+  // 'generic' (ANSI_SQL) means dialect-neutral output and must be preserved.
+  // An unknown target is an error for every request (symmetric with an unknown
+  // source dialect below) rather than a silent fallback to BigQuery, which would
+  // emit the wrong dialect while the caller's warning claimed the requested one.
+  const write = polyglotDialect(target);
+  if (write === undefined)
+    return requests.map(
+        r => ({id: r.id, error: `unsupported target dialect '${target}'`}));
 
   let engine: PolyglotEngine;
   try {
@@ -313,6 +326,15 @@ export const polyglotTranspiler: SqlTranspiler = async (requests, target) => {
         return {
           id: r.id,
           error: res.error ?? 'transpilation produced no output'
+        };
+      // A field/metric is a single scalar expression, so the engine should
+      // return exactly one statement. More than one means the input was not a
+      // lone expression; taking [0] would silently drop the rest, so reject it.
+      if (res.sql.length > 1)
+        return {
+          id: r.id,
+          error: `expected a single expression but got ${
+              res.sql.length} statements`
         };
       return {id: r.id, sql: res.sql[0]};
     } catch (err) {
