@@ -610,38 +610,47 @@ describe('metric expression referencing no known entity', () => {
 });
 
 
-// -- Golden pull: the whole KC entries -> IR -> OSI YAML output. --
+// -- Golden pull: the whole model -> KC entries -> IR -> OSI YAML output. --
 //
 // The round trip above proves the reader inverts the emitter in memory; this
-// pins the reviewable artifact. For each corpus fixture it reads the committed
-// emitter golden (`<fixture>.knowledge_catalog.golden.json` -- the exact
-// entries and entry links a push produced) back through the reader and
-// serializes the reconstructed IR to `<fixture>.pull.golden.yaml`. Open that
-// next to the fixture's `.osi.golden.yaml` to see, as whole files, what a
-// Knowledge Catalog round trip preserves (including 1:1 / 1:N relationships and
-// deployment targets) and what it drops (keys, ai_context, labels, vendor SQL,
-// M:N relationships).
+// pins the reviewable artifact. For each corpus fixture it emits the model
+// through a `--emit-expressions` push (so the catalog carries the
+// sql-expressions companion aspect) and reads the entries and entry links back
+// through the reader, serializing the reconstructed IR to
+// `<fixture>.pull.golden.yaml`. Open that next to the fixture's
+// `.osi.golden.yaml` to see, as whole files, what a Knowledge Catalog round
+// trip preserves (field/metric expressions, 1:1 / 1:N relationships, deployment
+// targets) and what it drops (keys, ai_context, labels, the imported dialect
+// label, M:N relationships). The primary GoogleSQL and the imported vendor form
+// both come back; the imported form's dialect is not persisted, so it serializes
+// under the `IMPORTED` placeholder -- which is why osi_schema.test.ts excludes
+// these lossy reconstructions from its OSI dialect-enum check.
 //
 //   Regenerate after an intentional reader/serializer change:
 //     UPDATE_GOLDENS=1 npx bun test ./tests/libts/semantic/kc_converter.test.ts
 describe(
-    'golden pull: each corpus KC golden reconstructs to its exact YAML', () => {
+    'golden pull: each corpus model reconstructs to its exact YAML', () => {
       const CORPUS = [
         'sales_bq_graph_target.yaml',
         'star_orders_customer.yaml',
         'tpcds_date_edge.yaml',
       ];
-      const kcGoldenPath = (fixture: string) => path.join(
-          FIXTURES,
-          fixture.replace(/\.yaml$/, '.knowledge_catalog.golden.json'));
+      // Same load defaults as the symmetry / OSI goldens, so the pulled model
+      // lines up with the fixture's other goldens.
+      const LOAD = {defaultProject: 'sqlgen-testing', defaultDataset: 'demo'};
       const pullGoldenPath = (fixture: string) =>
           path.join(FIXTURES, fixture.replace(/\.yaml$/, '.pull.golden.yaml'));
 
       for (const fixture of CORPUS) {
         test(fixture, () => {
-          const kc = JSON.parse(fs.readFileSync(kcGoldenPath(fixture), 'utf8'));
+          const text = fs.readFileSync(path.join(FIXTURES, fixture), 'utf8');
+          const [model] = loadModels(text, LOAD).models;
+          // Emit through a --emit-expressions push so the round trip carries
+          // the sql-expressions companion aspect (see roundTripFull).
+          const {entries, entryLinks} =
+              generateCatalogResources(model, {...OPTS, emitExpressions: true});
           const {models, warnings} =
-              modelsFromCatalogResources(kc.entries, kc.entryLinks ?? []);
+              modelsFromCatalogResources(entries, entryLinks);
           // Reader warnings ride along as YAML comments so the golden shows
           // the full outcome, not just the recovered document.
           const header = warnings.length ?

@@ -10,7 +10,19 @@ semantic_model:
         source: demo.sales.orders
         fields:
           - name: o_orderkey
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: o_orderkey
           - name: o_totalprice
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: o_totalprice
     metrics:
       - name: total_revenue
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: SUM(orders.o_totalprice)
         datatype: Decimal

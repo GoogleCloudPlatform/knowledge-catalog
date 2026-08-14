@@ -149,10 +149,11 @@ describe(
                 }],
               }],
             };
-            // The schema aspect stays metadata-only: no expression on the
-            // field.
+            // The schema aspect stays metadata-only: no inline expression on
+            // the field (the field is not a dimension, so `semantic` is unset
+            // too).
             const sf = schemaField(model, OPTS_EXPR);
-            expect(sf.semantics).toBeUndefined();
+            expect(sf.semantic).toBeUndefined();
             expect(sf.expression).toBeUndefined();
             // The expressions ride in the companion aspect: the primary
             // (unqualified) GoogleSQL form + the imported vendor form under the
