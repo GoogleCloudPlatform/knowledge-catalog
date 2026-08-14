@@ -129,17 +129,42 @@ file to an entry whose name is derived from the file path, with the
 markdown body stored on the `dataplex-types.global.overview` aspect.
 
 The generic Documents Layout only carries `title`/`description`/`tags` +
-body. OKF's signal layer (`resource`, `type`, `generated`, `sources`) has
-no generic home, so `push.ts`/`pull.ts` translate it into a custom typed
-`okf` Dataplex aspect (created by `setup.ts`) and back, keeping the
-on-disk files clean OKF and round-tripping the signal losslessly.
+body. OKF's signal layer has no generic home, so `push.ts`/`pull.ts`
+translate it into a custom typed `okf` Dataplex aspect (created by
+`setup.ts`) and back, keeping the on-disk files clean OKF and
+round-tripping the signal losslessly.
+
+Entries are published under a custom `okf-bundle` entry type rather than
+the built-in `dataplex-types.global.generic`, so a catalog-wide search can
+pick out OKF documents. A document's OKF `type:` is freeform prose, not a
+Dataplex type ref, so it is recorded separately as `okf_type` on the `okf`
+aspect. `okf-bundle` declares no required aspects, because SPEC 8 index
+files carry no signal layer and requiring the `okf` aspect would reject
+them. An entry's type is fixed at creation, so a bundle already published
+under the generic type has to have its entry group deleted and recreated.
+
+The aspect models the full OKF v0.2 signal as typed, searchable fields:
+`type`, `resource`, `generated`, `verified`, `status`, `stale_after`,
+`sources` (with `author`, `usage_count`, `last_modified`), `usage_window`,
+and the Attested Computation contract (`runtime`, `parameters`,
+`computation`, `executor`, `attester`). OKF also permits producer-defined
+frontmatter keys at any depth, so no enumerated template can ever be
+complete. Anything the template does not model, whether a top-level key like
+`not:` or a subfield inside a modeled record like `sources[].license`, is
+diverted onto a single `extra` field as a JSON list of `[path, value]` pairs
+and restored on pull. That keeps the round-trip lossless for any conformant
+bundle. A diverted subfield returns at the end of its record rather than its
+original position, which is the same presentation normalization pull already
+applies elsewhere.
 
 **Setup**
 
 * Creates an empty Dataplex EntryGroup (`okf_ga4`).
-* Creates the custom `okf` aspect type from `okf-aspect.json`.
+* Creates the custom `okf` aspect type from `okf-aspect.json`, or updates it
+  if a previous run of this demo left an older template behind.
+* Creates the custom `okf-bundle` entry type.
 * Creates a `catalog.yaml` manifest pointing at the EntryGroup and listing
-  the `okf` aspect.
+  the `okf-bundle` entry type and the `okf` aspect.
 * The `catalog/` directory is already populated with the GA4 markdown bundle.
 
 ```bash
@@ -152,9 +177,8 @@ ls -R catalog
 
 * Push the bundled markdown to Knowledge Catalog. Entry names mirror the
   file path (e.g. `references/metrics/purchasers.md` &rarr; entry
-  `references/metrics/purchasers`). Custom `type:` values in frontmatter
-  that aren't valid Dataplex type refs are preserved on the `okf` aspect
-  (the entry itself falls back to `dataplex-types.global.generic`).
+  `references/metrics/purchasers`). Every file lands as an `okf-bundle`
+  entry, index files included, with its OKF `type:` on the `okf` aspect.
 
 ```bash
 bun push.ts
@@ -172,21 +196,46 @@ bun pull.ts
 
 **Modify Metadata Snapshot**
 
-* Edit any markdown file under `catalog/` directly. Frontmatter fields
-  (`title`, `description`, `tags`, plus the OKF signal keys `resource`,
-  `type`, `generated`, `sources`) and the markdown body can be changed,
-  then push again.
+* Edit any markdown file under `catalog/` directly. Any frontmatter key and
+  the markdown body can be changed, then push again.
 
 ```bash
 bun push.ts
 ```
 
+**Run Against Another Bundle**
+
+* `push.ts` and `pull.ts` both take `--bundle <dir>`, so the demo can run
+  against a bundle elsewhere in the repo without copying it in.
+  `okf/bundles/acme_retail` is the bundle that exercises the full v0.2
+  signal layer, including an Attested Computation and a producer-defined
+  key.
+
+```bash
+bun push.ts --bundle ../../../../okf/bundles/acme_retail
+bun pull.ts --bundle /tmp/acme_pulled
+```
+
+* Pull re-emits frontmatter in a canonical key order and block style, so
+  pulling a bundle that was hand-authored with flow mappings back over
+  itself shows presentation churn in `git diff` even though nothing was
+  lost. Compare parsed frontmatter and body rather than bytes. The GA4
+  bundle in `catalog/` is already in canonical form, so for it a pull after
+  a push leaves the tree byte-identical.
+
+* Two things do not make the trip. Only `.md` files are pushed, so bundle
+  attachments such as `acme_retail/attesters/sql_equality.py` stay local
+  even though frontmatter points at them. And in-body markdown links
+  between concepts stay markdown; the only native Knowledge Catalog edges
+  are the parent links derived from the directory structure.
+
 **Cleanup**
 
-* Deletes the Dataplex EntryGroup. The custom `okf` aspect type is left in
-  place: it is scoped to the project and location rather than to this demo, so
-  other OKF bundles in the same project carry their signal layer on it. The
-  command to remove it manually is printed at the end.
+* Deletes the Dataplex EntryGroup. The custom `okf` aspect type and
+  `okf-bundle` entry type are left in place: they are scoped to the project and
+  location rather than to this demo, so other OKF bundles in the same project
+  are typed by them too. The commands to remove them manually are printed at
+  the end.
 
 ```bash
 bun cleanup.ts

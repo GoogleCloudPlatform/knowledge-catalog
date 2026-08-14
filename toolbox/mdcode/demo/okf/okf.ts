@@ -1,14 +1,78 @@
 // Translation between clean OKF frontmatter and the kcmd "pushable" form.
 //
 // kcmd's generic Documents Layout only maps title/description/tags + body and
-// passes a `catalogEntry:` block through verbatim. The OKF signal layer
-// (type, resource, generated, sources) has no generic home, so we move it into
-// a custom `okf` Dataplex aspect carried through that passthrough. This keeps
-// the library generic — all OKF knowledge lives here in the demo.
+// passes a `catalogEntry:` block through verbatim. The OKF signal layer has no
+// generic home, so we move it into a custom `okf` Dataplex aspect carried
+// through that passthrough. This keeps the library generic: all OKF knowledge
+// lives here in the demo.
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import * as yaml from 'yaml';
 
 export interface Split { meta: any | null; body: string; }
+
+// Where an unmodeled key sits in the frontmatter: record fields are strings,
+// list positions are numbers. `['sources', 0, 'license']` is a producer-defined
+// subfield on the first source.
+type Path = (string | number)[];
+type Extra = [Path, any];
+
+// `--bundle <dir>` selects which OKF bundle to operate on, so the demo can run
+// against a bundle elsewhere in the repo instead of only its own catalog/.
+export function bundleDir(root: string, argv: string[] = process.argv.slice(2)): string {
+  const i = argv.indexOf('--bundle');
+  if (i === -1) {
+    return path.join(root, 'catalog');
+  }
+  const value = argv[i + 1];
+  if (!value) {
+    throw new Error('--bundle requires a directory path');
+  }
+  return path.resolve(root, value);
+}
+
+export function listMarkdown(dir: string): string[] {
+  const out: string[] = [];
+  for (const name of fs.readdirSync(dir)) {
+    const full = path.join(dir, name);
+    if (fs.statSync(full).isDirectory()) {
+      out.push(...listMarkdown(full));
+    } else if (name.endsWith('.md')) {
+      out.push(full);
+    }
+  }
+  return out.sort();
+}
+
+// Mapped natively by the Documents Layout, so they stay at the top level of the
+// staged frontmatter.
+const LAYOUT_KEYS = ['title', 'description', 'tags'];
+
+// The OKF v0.2 signal layer, in SPEC order, carried on the `okf` aspect.
+// Adding a key the SPEC gains is a one-line change here plus a field in
+// okf-aspect.json.
+const SIGNAL_KEYS = [
+  'generated', 'verified', 'status', 'stale_after', 'usage_window',
+  'runtime', 'parameters', 'computation', 'executor', 'attester', 'sources',
+];
+
+// `type` and `resource` are carried outside the signal record: `type` as
+// `okf_type`, `resource` as the catalog entry's resource name.
+const MODELED_KEYS = new Set([...LAYOUT_KEYS, ...SIGNAL_KEYS, 'type', 'resource']);
+
+// Field order within each signal record, and which signal keys hold a list of
+// them. Used to give pulled records a deterministic shape.
+const RECORD_KEYS: Record<string, string[]> = {
+  generated: ['by', 'at'],
+  verified: ['by', 'at'],
+  usage_window: ['from', 'to'],
+  parameters: ['name', 'type', 'required'],
+  executor: ['resource', 'receipt'],
+  attester: ['resource'],
+  sources: ['id', 'resource', 'title', 'author', 'usage_count', 'last_modified'],
+};
+const LIST_KEYS = new Set(['verified', 'parameters', 'sources']);
 
 export function splitFrontmatter(content: string): Split {
   const lines = content.split(/\r?\n/);
@@ -29,6 +93,18 @@ function render(meta: any, body: string): string {
   return `---\n${fm}\n---\n\n${body.trim()}\n`;
 }
 
+function setAtPath(root: any, path: Path, value: any): void {
+  let node = root;
+  for (let i = 0; i < path.length - 1; i++) {
+    const segment = path[i];
+    if (node[segment] === undefined) {
+      node[segment] = typeof path[i + 1] === 'number' ? [] : {};
+    }
+    node = node[segment];
+  }
+  node[path[path.length - 1]] = value;
+}
+
 // Keep only present keys, in a stable order, so round-trips are deterministic.
 function pick(obj: any, keys: string[]): any {
   const out: any = {};
@@ -41,20 +117,68 @@ function pick(obj: any, keys: string[]): any {
 }
 
 // clean OKF -> pushable (signal moved into catalogEntry / okf aspect)
-export function toStaging(content: string, okfKey: string): string {
+export function toStaging(content: string, okfKey: string, entryTypeKey: string): string {
   const { meta, body } = splitFrontmatter(content);
   if (!meta) {
-    return content;
+    // SPEC 8 index files carry no frontmatter, so stage the entry type on its
+    // own. Without it the layout falls back to the built-in generic type and
+    // the bundle's navigation nodes end up a different kind of thing from the
+    // concepts they link to. Pull drops it again: there is no signal to restore.
+    return render({ type: entryTypeKey }, body);
   }
-  const staged = pick(meta, ['title', 'description', 'tags']);
+
+  // OKF permits producer-defined keys at any depth, so an enumerated template
+  // can never be complete. Anything unmodeled is diverted here and rides along
+  // in `extra` as a [path, value] pair to keep the round-trip lossless.
+  const extras: Extra[] = [];
+  const divert = (value: any, fields: string[], path: Path): any => {
+    const kept: any = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (item === undefined || item === null) {
+        continue;
+      }
+      if (fields.includes(key)) {
+        kept[key] = item;
+      } else {
+        extras.push([[...path, key], item]);
+      }
+    }
+    return pick(kept, fields);
+  };
+
+  const signal: any = {};
+  if (meta.type !== undefined) {
+    signal.okf_type = meta.type;
+  }
+  for (const [key, value] of Object.entries(pick(meta, SIGNAL_KEYS))) {
+    const fields = RECORD_KEYS[key];
+    if (!fields) {
+      signal[key] = value;
+    } else if (LIST_KEYS.has(key)) {
+      // SPEC 5.2 allows a lone verifier as a bare mapping; the field is a list.
+      const list = Array.isArray(value) ? value : [value];
+      signal[key] = list.map((item, i) => divert(item, fields, [key, i]));
+    } else {
+      signal[key] = divert(value, fields, [key]);
+    }
+  }
+
+  for (const key of Object.keys(meta)) {
+    if (!MODELED_KEYS.has(key)) {
+      extras.push([[key], meta[key]]);
+    }
+  }
+  if (extras.length > 0) {
+    signal.extra = JSON.stringify(extras);
+  }
+
+  // The OKF `type` is freeform prose and never a Dataplex type ref, so the
+  // layout would fall back to generic. It rides on the aspect as `okf_type`
+  // instead, leaving `type` here to name the Dataplex entry type.
+  const staged: any = { type: entryTypeKey, ...pick(meta, LAYOUT_KEYS) };
   staged.catalogEntry = {
     resource: { name: meta.resource },
-    aspects: {
-      [okfKey]: pick(
-        { okf_type: meta.type, generated: meta.generated, sources: meta.sources },
-        ['okf_type', 'generated', 'sources'],
-      ),
-    },
+    aspects: { [okfKey]: signal },
   };
   return render(staged, body);
 }
@@ -68,23 +192,34 @@ export function fromStaging(content: string, okfKey: string): string {
   const ce = meta.catalogEntry ?? {};
   const okf = (ce.aspects ?? {})[okfKey] ?? {};
 
-  // Directory index entries carry no OKF signal — emit body only, matching the
-  // frontmatter-free index files in the source bundle.
-  const isOkf = okf.okf_type !== undefined || okf.generated !== undefined
-    || okf.sources !== undefined || ce.resource?.name !== undefined;
-  if (!isOkf) {
+  // Directory index entries carry no OKF signal, so emit body only, matching
+  // the frontmatter-free index files in the source bundle.
+  const hasSignal = Object.keys(okf).length > 0 || ce.resource?.name !== undefined;
+  if (!hasSignal) {
     return `${body.trim()}\n`;
   }
 
   const clean: any = {};
   if (okf.okf_type !== undefined) clean.type = okf.okf_type;
   if (ce.resource?.name !== undefined) clean.resource = ce.resource.name;
-  if (meta.title !== undefined) clean.title = meta.title;
-  if (meta.description !== undefined) clean.description = meta.description;
-  if (meta.tags !== undefined) clean.tags = meta.tags;
-  if (okf.generated !== undefined) clean.generated = pick(okf.generated, ['by', 'at']);
-  if (okf.sources !== undefined) {
-    clean.sources = (okf.sources as any[]).map((s) => pick(s, ['id', 'resource', 'title']));
+  Object.assign(clean, pick(meta, LAYOUT_KEYS));
+  for (const [key, value] of Object.entries(pick(okf, SIGNAL_KEYS))) {
+    const fields = RECORD_KEYS[key];
+    if (!fields) {
+      clean[key] = value;
+    } else if (LIST_KEYS.has(key)) {
+      clean[key] = (value as any[]).map((item) => pick(item, fields));
+    } else {
+      clean[key] = pick(value, fields);
+    }
+  }
+  // Last, so the records the nested paths point into already exist. A diverted
+  // subfield returns at the end of its record rather than its original
+  // position, which pull already normalizes anyway.
+  if (okf.extra !== undefined) {
+    for (const [path, value] of JSON.parse(okf.extra) as Extra[]) {
+      setAtPath(clean, path, value);
+    }
   }
   return render(clean, body);
 }

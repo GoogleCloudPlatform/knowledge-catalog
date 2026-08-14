@@ -13,8 +13,9 @@ model to two destinations at once:
 Both are generated from the same source document — you never author them
 separately, and a single `push` keeps them in sync.
 
-This guide covers authoring, deploying, and updating a model. For the Ossie
-document format itself, see [ossie.apache.org](https://ossie.apache.org/).
+This guide covers authoring, deploying, pulling back, and updating a model.
+For the Ossie document format itself, see
+[ossie.apache.org](https://ossie.apache.org/).
 
 ## Prerequisites
 
@@ -130,12 +131,50 @@ becomes one part of that graph:
 | Model | `PROPERTY GRAPH` | named by the deployment-target URI |
 | Entity | `NODE TABLE` | backed by the entity's `source` table, keyed by its primary key |
 | Relationship | `EDGE TABLE` | connects the two entities' node tables |
-| Metric | `MEASURE` on a node table | must reduce to one aggregate over one entity, or it is skipped with a warning |
+| Metric | `MEASURE` on a node table | must resolve to a single entity (otherwise the push is rejected — see [Validation](#validation)) and reduce to one supported aggregate over one operand (otherwise that metric is skipped with a warning) |
 
 `push` reads the target dataset's location (`bigquery.datasets.get`) so the
 statement runs in the right region; without that permission it falls back to
-BigQuery's own location inference and warns. Nothing runs under
-`--validate-only`; add `--print` to see the DDL.
+BigQuery's own location inference and warns. Under `--validate-only` no graph
+DDL is executed and nothing is written (the live source-table checks still run —
+see [Validation](#validation)); add `--print` to see the generated DDL.
+
+#### What carries over, and what doesn't
+
+Push preserves both the queryable structure and the descriptive metadata
+attached to it. The structure becomes the node tables, edge tables, and
+measures; the descriptive metadata is written into each element's `OPTIONS(...)`
+in the graph (visible with `--print`). BigQuery's graph `OPTIONS` give an element
+a `description` string and a `synonyms` array, so synonyms are carried across
+structurally, as their own array — not flattened into the description text.
+
+**Carried over** — for every entity, relationship, metric, and field:
+
+| Authored metadata | Where it lands in the generated DDL |
+|---|---|
+| `ai_context.synonyms` | the element's `OPTIONS(synonyms=[...])`, a structured array |
+| `description` | the element's `OPTIONS(description=...)` |
+| `ai_context.instructions` | added to the same `OPTIONS(description=...)` |
+| `ai_context.examples` | added to it, as an `Examples: …` line |
+| A field's `label` | added to the field's `OPTIONS(description=...)` |
+| A field's time-dimension role | noted in the field's `OPTIONS(description=...)` |
+
+**Not carried over:**
+
+| Authored metadata | Why |
+|---|---|
+| The model's own `description` / `ai_context` | BigQuery silently drops statement-level graph `OPTIONS`, so model-level metadata has no home in the graph. The model's `description` is carried into [Knowledge Catalog](#what-gets-created-in-knowledge-catalog) instead; its `ai_context` (instructions, synonyms, examples) is not preserved in either destination |
+| A field's `datatype` | BigQuery uses the source column's own type |
+| Unique keys beyond the primary key | only the primary key is emitted |
+| The imported vendor SQL and its dialect | only the canonical GoogleSQL expression is used |
+| `custom_extensions` | not part of the graph (the model-level `GOOGLE` block only supplies the [deployment target](#deployment-targets-required)) |
+| A metric that isn't a single aggregate (`SUM`/`AVG`/`COUNT`/`MIN`/`MAX`) over one operand | it can't become a `MEASURE`, so it is skipped with a warning |
+
+One caveat on the metadata that carries over: `synonyms` is the only part with a
+dedicated BigQuery option. The rest — `description`, `instructions`, `examples`,
+and a field's `label` — share the single `description` string, so they are
+combined into it (examples as an `Examples: …` line). Their content is
+preserved; their separate structure is not.
 
 ### What gets created in Knowledge Catalog
 
@@ -148,29 +187,41 @@ them, it never creates them.
 | Model | `semantic-model` | entry — anchor / parent of the rest | `<model>` |
 | Entity | `semantic-entity` (+ built-in `schema` aspect) | entry | `<model>.entities.<entity>` |
 | Metric | `semantic-metric` | entry | `<model>.metrics.<metric>` |
-| Relationship | `schema-join` | entry link between the two entity entries | derived from the relationship name |
+| Relationship | `schema-join` | entry link between the two entity entries | derived from the model and relationship names |
 
 An entity entry carries its columns in the `schema` aspect (name, data type, and
 description per field); a `schema-join` link carries the relationship detail — the
 paired columns and foreign-key direction — in its aspect.
 
-> **Note — the catalog is not a full copy of your model.** By default the SQL
-> expressions are **not** written to Knowledge Catalog: the published system-type
-> templates do not yet carry a per-field `semantics` block or a
-> `semantic-metric.expression` field, so the default push omits them (pass
-> `--emit-expressions` to write them once the templates gain the fields). The
-> original vendor SQL (`importedExpression` — e.g. the MAQL or Snowflake form a
-> metric was imported from) is never written either. All of it stays in your
-> authored document and is still used when generating BigQuery SQL. Keep your
-> model document as the source of truth: a model reconstructed only from the
-> catalog would come back without its SQL.
+> **Note — push to Knowledge Catalog is lossy.** The catalog holds metadata,
+> not a full copy of your model. It **stores** names, descriptions, data
+> sources, field datatypes and roles, and 1:1 / 1:N relationships (as
+> `schema-join` links). By default it does **not** store the SQL expressions:
+> the published system-type templates do not yet carry a per-field `semantics`
+> block or a `semantic-metric.expression` field, so the default push omits them
+> (pass `--emit-expressions` to write the canonical GoogleSQL/ANSI expression
+> once the templates gain the fields). It never stores entity keys, `ai_context`,
+> field labels, the original vendor SQL (`importedExpression` — e.g. the MAQL or
+> Snowflake form a metric was imported from), or M:N relationships. Those stay in
+> your authored document (and, for the edges, in the BigQuery property graph); the
+> vendor SQL and expressions are still used when generating BigQuery SQL. Keep
+> your model document as the source of truth.
 
 ## Validation
 
 `push` and `--validate-only` run the same checks, **before either destination is
 touched**, so a model that cannot deploy fails fast instead of half-deploying:
 
-* **Exactly one deployment target per model.** *(static)*
+* **Exactly one deployment target per model, and it must be a valid BigQuery
+  Graph URI.** A model with no target — or with more than one — is rejected, and
+  so is a single target whose URI does not match
+  `//bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>` (for
+  example a `propertyGraph`/`propertyGraphs` typo, or a
+  `…/entryGroups/@bigquery/entries/…` entry form). The error names the offending
+  URI and the expected form. This gate runs before any destination leg and for
+  every `--target`, so a malformed target writes **nothing** — not to BigQuery
+  and **not to Knowledge Catalog**; the push aborts with a non-zero exit and no
+  entries are created. *(static)*
 * **Every metric on a BigQuery Graph model resolves to exactly one entity** —
   otherwise it would be dropped from the BigQuery Graph. Set the metric's attach
   entity, or scope its expression to a single entity. *(static)*
@@ -207,11 +258,14 @@ Relationships owned by other models that share the entry group are left
 untouched.
 
 **When you remove a whole model** — deleting its document does *not* remove it
-from the catalog on the next push. Instead, push stops and names the model the
-catalog still has that you no longer push, so you can't wipe out a model by
-accident or by pushing from the wrong directory. When you do mean to remove it,
-run push again with `--force-remove` and its entries and links are deleted
-first.
+from the catalog. As long as you still push at least one other model in the same
+entry group, push stops and names the model the catalog still has that you no
+longer push, so you can't wipe one out by accident or by pushing from the wrong
+directory; run push again with `--force-remove` to delete its entries and links.
+Deleting *every* document is the exception: with no models left to push, the run
+reports `No semantic model documents found; nothing to deploy` and touches
+nothing — so remove a model while other models in its group remain, or delete
+its catalog entries directly.
 
 Every push prints one line per destination summarizing what it did. For a
 `--target all` push:
@@ -220,3 +274,109 @@ Every push prints one line per destination summarizing what it did. For a
 Deployed 1 BigQuery Graph(s).
 Wrote 5 new and 2 updated Knowledge Catalog entries; removed 1 orphaned entry; linked 2 relationships; unlinked 1 orphaned link.
 ```
+
+## Pull
+
+`kcmd pull` is the inverse of push's Knowledge Catalog leg: it reads the
+`semantic-*` entries back from the catalog and reconstructs local model
+documents at `catalog/EntryGroups/<entryGroupId>/<model>.yaml`. Use it to
+recover a workspace from a catalog someone else deployed, or to see what the
+catalog actually holds.
+
+```bash
+kcmd pull
+```
+
+Pull reads only from Knowledge Catalog (never BigQuery). Its coordinates come
+from the same scope you authored under (`<projectId>.<locationId>.<entryGroupId>`).
+
+| Flag | Effect |
+|------|--------|
+| `--dry-run` | Reconstruct from the catalog and report what would be written, but write no files. |
+| `--model <name>` | Pull a single model by name; other models in the entry group are left alone. |
+
+One entry group can hold **many models** — each `semantic-model` entry is a
+separate anchor, and pull reconstructs one document per anchor. `--model`
+narrows both the fetch and the write to a single anchor.
+
+Pull writes with the same last-write-wins policy as the core pull: a model that
+already exists locally is overwritten in place, and a local-only document (one
+with no matching catalog entry) is left untouched — pull never deletes.
+
+> **Note — pull reconstructs what the catalog holds, not your original file.**
+> Pull can only recover what push wrote (see the note under [What gets created in
+> Knowledge Catalog](#what-gets-created-in-knowledge-catalog)). What that means in
+> practice:
+>
+> **Recovered exactly** — these come back as authored:
+> - Model structure: the model, its entities, and each entity's fields.
+> - Field data source and data type.
+> - Metrics: name, data type, and attach entity.
+> - 1:1 / 1:N relationships: endpoints, foreign-key direction, and join columns
+>   (from the `schema-join` links).
+> - Deployment targets.
+>
+> **Recovered only if pushed with `--emit-expressions`** — the per-field
+> `semantics` block (expressions and the dimension role) and the metric
+> expression are omitted from the catalog by default (see the note above), so
+> pull returns them only when the push that wrote them used `--emit-expressions`:
+> - Field expressions and metric expressions (the canonical GoogleSQL/ANSI form).
+> - A field's dimension role, which comes back as a bare `dimension: {}` marker,
+>   without its detail (`is_time`, and so on). A default push drops the marker
+>   entirely.
+>
+> **Recovered, but normalized** — the content survives, the form changes:
+> - Relationship *names* come back lowercased/hyphenated (the catalog stores the
+>   name only in the link id, e.g. `Places Order` → `places-order`).
+> - A metric authored with no data type comes back as an explicit `Decimal`
+>   (push must write a type, and defaults it to `NUMERIC`).
+>
+> **Not recovered** — push never wrote these, so pull cannot return them:
+> - Entity keys / unique keys.
+> - `ai_context`.
+> - Field labels.
+> - The original vendor SQL (`importedExpression`).
+> - M:N relationships (the edge lives only in the BigQuery property graph).
+>
+> **So: a push followed by a pull does not return your original file.** Treat a
+> pulled document as a faithful copy of the catalog metadata, not of the authored
+> model, and keep the authored document as the source of truth.
+
+> **Note — writer-side follow-up (not inherent to pull).** One reduction above is
+> a limit of what push currently *writes*, not of what pull can recover. It is
+> recorded here as a write-side follow-up; the reader (pull) already returns
+> everything the catalog holds.
+>
+> - **Relationship names.** The `schema-join` aspect type's `metadataTemplate` has
+>   no field for the relationship name, so push cannot store it and pull recovers
+>   it from the link id — which is lowercased and hyphenated (the entry-link id
+>   format forbids the original casing/underscores). Returning the name verbatim
+>   requires adding a name field to the built-in `schema-join` aspect type in
+>   Knowledge Catalog (server-side), after which the client write/read is trivial;
+>   it is the same class of gap as the `semantics` field that gates
+>   `--emit-expressions`.
+>
+> (A non-canonical deployment target is **not** a pull gap: push rejects it at the
+> validation gate before any leg runs, so it is never written — see
+> [Validation](#validation).)
+
+## Permissions
+
+`push` needs access to whichever destinations you deploy to.
+
+**BigQuery** — for `--target bq` or `all`, and for the validation pre-flight:
+
+* `bigquery.jobs.create` in the deployment-target project — to run the deploy's
+  `CREATE OR REPLACE PROPERTY GRAPH` and the validation dry-run query
+* read access on each entity's source table, so the dry-run can resolve it
+* `bigquery.datasets.get` on the target dataset (region detection; optional —
+  push degrades gracefully without it)
+
+**Knowledge Catalog / Dataplex** — for `--target kc` or `all`:
+
+* `dataplex.entryGroups.useSemanticModelAspect` on the destination entry group
+* `dataplex.entryGroups.useSchemaJoinEntryLink` and
+  `dataplex.entryGroups.useSchemaJoinAspect` when the model has relationships
+
+`kcmd pull` needs read access to the same entry group instead — to list its
+entries and fetch each `semantic-*` entry with its aspects.

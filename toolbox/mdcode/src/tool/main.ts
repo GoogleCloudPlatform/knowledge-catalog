@@ -25,10 +25,12 @@ cli.command('init', 'Initialize a new catalog snapshot')
 
 
 cli.command('pull', 'Pull catalog entries')
-   .action(async () => {
+   .option('--dry-run', 'Reconstruct and report only; do not write files (semantic-model scope)')
+   .option('--model <name>', 'Limit the pull to a single model by name (semantic-model scope)')
+   .action(async (options) => {
       let exitCode = 1;
       try {
-        exitCode = await commands.pull();
+        exitCode = await commands.pull(options);
       }
       catch (err: any) {
         console.error('Error:', err.message || err);

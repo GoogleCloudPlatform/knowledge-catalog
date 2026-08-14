@@ -1,0 +1,39 @@
+# (no warnings)
+version: 0.2.0.dev0
+semantic_model:
+  - name: sales
+    description: Sales orders with customer attributes
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{"deploymentTargets":["//bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales"]}'
+    datasets:
+      - name: orders
+        source: samples.tpch.orders
+        description: One row per order
+        fields:
+          - name: o_orderkey
+            description: Order identifier
+          - name: o_custkey
+          - name: o_orderdate
+          - name: o_totalprice
+      - name: customer
+        source: samples.tpch.customer
+        fields:
+          - name: c_custkey
+          - name: c_name
+            description: Customer name
+    relationships:
+      - name: orders-to-customer
+        from: orders
+        to: customer
+        from_columns:
+          - o_custkey
+        to_columns:
+          - c_custkey
+    metrics:
+      - name: total_revenue
+        datatype: Decimal
+        description: Total order revenue
+      - name: order_count
+        datatype: Decimal
+        description: Number of orders
