@@ -288,11 +288,11 @@ describe('deployKnowledgeCatalog: failures', () => {
       });
 
   test(
-      'two models generating the same entry id fail before any write',
+      'more than one model in a single push is rejected before any write',
       async () => {
-        // Both docs declare a model named 'sales', so their entry ids collide
-        // within the entry group; the second would silently upsert over the
-        // first. The publisher must catch the collision up front.
+        // Only one model per entry group is supported, so a push carrying two
+        // documents is rejected up front -- which also means two models can
+        // never race for the same entry id.
         const {group, create} = stubClient();
         const docs = [
           {name: 'a.yaml', text: OSSIE},
@@ -302,8 +302,7 @@ describe('deployKnowledgeCatalog: failures', () => {
         const result = await deployKnowledgeCatalog(models(docs), CTX, OPTS);
 
         expect(result.success).toBe(false);
-        expect(result.details).toContain('sales');   // the colliding entry id
-        expect(result.details).toContain('unique');  // the reason
+        expect(result.details).toContain('one model per entry group');
         expect(group).not.toHaveBeenCalled();
         expect(create).not.toHaveBeenCalled();
       });
