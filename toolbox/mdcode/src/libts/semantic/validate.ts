@@ -31,11 +31,20 @@ export function validatePushRequirements(models: LoadedModel[]): string[] {
       continue;
     }
 
-    // Every model must declare at least one deployment target.
-    if (!deployInfo.uris.length) {
+    // Every model must declare exactly one deployment target -- a single
+    // BigQuery Graph URI (we do not support zero or several graphs per model).
+    if (deployInfo.uris.length !== 1) {
       errors.push(
-          `model '${model.name}' (${document}) declares no deploymentTargets; ` +
-          `add at least one under its GOOGLE custom_extension.`);
+          `model '${model.name}' (${document}) declares ${
+              deployInfo.uris.length} deploymentTargets; exactly one BigQuery ` +
+          `Graph target is required under its GOOGLE custom_extension.`);
+    } else if (deployInfo.malformed.length) {
+      // The single target is present but is not a valid BigQuery Graph URI.
+      errors.push(
+          `model '${model.name}' (${document}) deploymentTarget '${
+              deployInfo.malformed[0]}' is not a valid BigQuery Graph URI; ` +
+          `expected //bigquery.googleapis.com/projects/<p>/datasets/<d>/` +
+          `propertyGraphs/<g>.`);
     }
 
     // A model that targets a BigQuery graph must have every metric resolve to a
@@ -66,7 +75,8 @@ export function validatePushRequirements(models: LoadedModel[]): string[] {
 // The entity sources are BigQuery tables regardless of --target, so this runs
 // for every destination and for --validate-only.
 //
-// Each distinct source is probed with a dry-run query (`SELECT 1 FROM <ref>`),
+// Each distinct source is probed with a dry-run query (`SELECT 1 FROM <ref>`,
+// suffixed `WHERE FALSE` so it scans no data),
 // so BigQuery resolves the reference exactly as the generated DDL will. That
 // covers every reference form the generator emits -- a three-part
 // `project.dataset.table`, a four-part federated REST-catalog / Lakehouse name
@@ -104,7 +114,8 @@ export async function validateBigQueryDataSources(
   const errors: string[] = [];
   for (const {project, ref, document, model, entity} of refs.values()) {
     const res =
-        await bq.query(project, `SELECT 1 FROM \`${ref}\``, undefined, true);
+        await bq.query(
+        project, `SELECT 1 FROM \`${ref}\` WHERE FALSE`, undefined, true);
     if (res.status === 200) continue;
     const msg = res.message?.trim() || `HTTP ${res.status}`;
     const why = /not found/i.test(msg) ?

@@ -41,10 +41,10 @@ describe('validatePushRequirements', () => {
     expect(validatePushRequirements([loaded(m)])).toEqual([]);
   });
 
-  test('a model with no deployment targets is rejected', () => {
+  test('a model with no deployment target is rejected', () => {
     const errs = validatePushRequirements([loaded(model())]);
     expect(errs.length).toBe(1);
-    expect(errs[0]).toContain('no deploymentTargets');
+    expect(errs[0]).toContain('exactly one');
     expect(errs[0]).toContain('doc');
   });
 
@@ -58,16 +58,24 @@ describe('validatePushRequirements', () => {
     expect(errs[0]).toContain('single entity');
   });
 
-  test('an entity-less metric is allowed when no BigQuery graph is targeted',
-     () => {
-       // A deployment target that is not a BigQuery Graph URI: the model still
-       // declares a target (passes the first check) but does not target a
-       // graph, so the metric-entity rule does not apply.
-       const m = model(
-           {metrics: [{name: 'cnt', expression: 'COUNT(*)'} as Metric]},
-           [googleExt(['//dataplex.googleapis.com/projects/p/locations/us'])]);
-       expect(validatePushRequirements([loaded(m)])).toEqual([]);
-     });
+  test('a non-BigQuery Graph deployment target is rejected as malformed', () => {
+    // We only support BigQuery Graph targets; a single, otherwise well-formed
+    // non-BigQuery URI still fails because it does not parse as one.
+    const m = model(
+        {}, [googleExt(['//dataplex.googleapis.com/projects/p/locations/us'])]);
+    const errs = validatePushRequirements([loaded(m)]);
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain('not a valid BigQuery Graph URI');
+  });
+
+  test('more than one deployment target is rejected', () => {
+    const other =
+        '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
+    const m = model({}, [googleExt([BQ_TARGET, other])]);
+    const errs = validatePushRequirements([loaded(m)]);
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain('exactly one');
+  });
 
   test('malformed GOOGLE extension JSON is reported, not thrown', () => {
     const m = model({}, [{vendorName: 'GOOGLE', data: '{not json'}]);
