@@ -26,15 +26,20 @@
 //
 // Fidelity is bounded by what the emitter persisted, so this read is the
 // inverse of the WRITE, not of the authored document. It recovers names,
-// descriptions, data sources, field datatypes (via the schema aspect) and
-// DIMENSION roles, field/metric expressions, each metric's attach entity
-// (re-derived from its expression, as the loader does, else the value the
-// emitter persisted), the model's deployment targets (from the semantic-model
-// aspect, back into the GOOGLE `custom_extensions` block), and 1:1 / 1:N
-// relationships (from the `schema-join` entry links a pull fetched -- see
-// `modelsFromCatalogResources`'s `entryLinks` argument). It cannot recover what
-// the emitter does not write: entity keys/unique keys, `ai_context`, field
-// labels, `importedExpression`/`importedDialect` (the vendor-dialect SQL), and
+// descriptions, data sources, field datatypes (via the schema aspect), each
+// metric's attach entity (re-derived from its expression, as the loader does,
+// when the catalog holds one, else the value the emitter persisted), the
+// model's deployment targets (from the semantic-model aspect, back into the
+// GOOGLE `custom_extensions` block), and 1:1 / 1:N relationships (from the
+// `schema-join` entry links a pull fetched -- see
+// `modelsFromCatalogResources`'s `entryLinks` argument). The per-field
+// `semantics` block -- field/metric expressions and the DIMENSION role -- is
+// gated off the catalog by default: the emitter writes it only under
+// `--emit-expressions` (see `KcGenerateOptions.emitExpressions`), so those
+// three recover only when the push that wrote them enabled it, and a default
+// push -> pull drops them. It cannot recover what the emitter never writes:
+// entity keys/unique keys, `ai_context`, field labels,
+// `importedExpression`/`importedDialect` (the vendor-dialect SQL), and
 // many-to-many (association) relationships (whose edge lives only in the
 // BigQuery property graph). A `String`- or `Opaque`-typed METRIC also reads
 // back un-typed: the metric aspect persists only `dataType` (both collapse to
@@ -197,15 +202,14 @@ function readField(fd: any, entityName: string, warnings: string[]): Field|
 
 
 // Reconstructs a metric from its `semantic-metric` aspect. The attach `entity`
-// is re-derived from the expression (as the loader does) rather than read from
-// the aspect, so it stays consistent with the reconstructed entity set.
+// is re-derived from the expression (as the loader does) when the aspect holds
+// one, else it falls back to the entity the emitter persisted. A default push
+// omits the expression entirely (it is gated behind `--emit-expressions`), so
+// an absent expression is expected, not an error, and does not warn.
 function readMetric(
     entry: Entry, entityNames: string[], warnings: string[]): Metric {
   const name = entry.entrySource?.displayName ?? idOf(entry.name);
   const data = aspectData(entry, 'semantic-metric');
-  if (data.expression === undefined) {
-    warnings.push(`metric '${name}': no expression in semantic-metric aspect`);
-  }
 
   const metric: Metric = {name};
   if (data.expression !== undefined) metric.expression = data.expression;

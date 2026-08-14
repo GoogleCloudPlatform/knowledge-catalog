@@ -7,13 +7,16 @@
 // emitter is lossless. The write drops content by design (entity keys,
 // ai_context, field labels, importedDialect, and many-to-many relationships --
 // see the emitter header), so the expected read-back is the source model with
-// exactly those fields cleared. 1:1 / 1:N relationships and deployment targets
-// DO round-trip (via schema-join links and the semantic-model aspect), except
-// that relationship names come back normalized (lowercased/hyphenated).
-// Targeted tests pin the mapping details a round trip cannot isolate (the
-// dataType inverse, the DIMENSION role, resource-URI parsing, metric attach
-// re-derivation, relationship endpoint/direction recovery, and parent/anchor
-// grouping).
+// exactly those fields cleared. It ALSO drops the per-field `semantics` block
+// (field/metric expressions and the DIMENSION role) unless the push enabled
+// `emitExpressions`, so a DEFAULT round trip (roundTrip) loses those too, while
+// a full round trip (roundTripFull, emitExpressions: true) keeps them. 1:1 /
+// 1:N relationships and deployment targets DO round-trip either way (via
+// schema-join links and the semantic-model aspect), except that relationship
+// names come back normalized (lowercased/hyphenated). Targeted tests pin the
+// mapping details a round trip cannot isolate (the dataType inverse, the
+// DIMENSION role, resource-URI parsing, metric attach re-derivation,
+// relationship endpoint/direction recovery, and parent/anchor grouping).
 
 import {describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
@@ -33,10 +36,22 @@ const OPTS = {
   entryGroup: 'eg'
 };
 
-// Emits a model to entries + entry links and reads it straight back.
+// Emits a model to entries + entry links and reads it straight back. The
+// default push omits the per-field `semantics` block (expressions + role), so a
+// default round trip drops those; use roundTripFull to exercise their recovery.
 function roundTrip(model: SemanticModel):
     {models: SemanticModel[]; warnings: string[]} {
   const {entries, entryLinks} = generateCatalogResources(model, OPTS);
+  return modelsFromCatalogResources(entries, entryLinks);
+}
+
+// A round trip through a `--emit-expressions` push: the catalog then holds the
+// per-field `semantics` block and the metric expression, so field/metric
+// expressions and DIMENSION roles round-trip too.
+function roundTripFull(model: SemanticModel):
+    {models: SemanticModel[]; warnings: string[]} {
+  const {entries, entryLinks} =
+      generateCatalogResources(model, {...OPTS, emitExpressions: true});
   return modelsFromCatalogResources(entries, entryLinks);
 }
 
@@ -44,7 +59,9 @@ function roundTrip(model: SemanticModel):
 describe('emitter -> reader round trip (lossless slice)', () => {
   // A model using only round-trippable content: no keys/ai_context/labels/
   // relationships (all dropped by the write), and datatypes that invert
-  // cleanly.
+  // cleanly. Its fields and metric carry expressions and a DIMENSION role, so
+  // it round-trips losslessly only through a `--emit-expressions` push
+  // (roundTripFull); a default push omits the per-field `semantics` block.
   const source: SemanticModel = {
     name: 'sales',
     description: 'the sales model',
@@ -73,7 +90,7 @@ describe('emitter -> reader round trip (lossless slice)', () => {
   };
 
   test('reconstructs an IR equal to the source', () => {
-    const {models} = roundTrip(source);
+    const {models} = roundTripFull(source);
     expect(models).toHaveLength(1);
     expect(models[0]).toEqual(source);
   });
@@ -357,30 +374,46 @@ describe('dataType inverse (schema aspect -> IR type)', () => {
 
 
 describe('field mapping details', () => {
-  function readField(field: Entity['fields'][number]) {
+  function readWith(
+      rt: (m: SemanticModel) => {models: SemanticModel[]},
+      field: Entity['fields'][number]) {
     const model: SemanticModel = {
       name: 'm',
       entities: [{name: 'e', dataSource: 'p.d.t', keys: [], fields: [field]}],
       relationships: [],
       metrics: [],
     };
-    return roundTrip(model).models[0].entities[0].fields[0];
+    return rt(model).models[0].entities[0].fields[0];
   }
+  // Default push (no per-field `semantics`) vs a `--emit-expressions` push.
+  const readField = (f: Entity['fields'][number]) => readWith(roundTrip, f);
+  const readFieldFull = (f: Entity['fields'][number]) =>
+      readWith(roundTripFull, f);
 
   test('a DIMENSION role reads back as a dimension marker', () => {
-    const back = readField({name: 'd', expression: 'e.d', dimension: {}});
+    // The role lives in the gated `semantics` block, so it survives only a
+    // `--emit-expressions` push.
+    const back = readFieldFull({name: 'd', expression: 'e.d', dimension: {}});
     expect(back.dimension).toEqual({});
   });
 
   test('a non-dimension field has no dimension marker', () => {
-    const back = readField({name: 'f', expression: 'e.f'});
+    const back = readFieldFull({name: 'f', expression: 'e.f'});
     expect(back.dimension).toBeUndefined();
   });
 
   test(
+      'a default push drops the DIMENSION role with the semantics block',
+      () => {
+        const back = readField({name: 'd', expression: 'e.d', dimension: {}});
+        expect(back.dimension).toBeUndefined();
+        expect(back.expression).toBeUndefined();
+      });
+
+  test(
       'an imported expression is not persisted to or recovered from the catalog',
       () => {
-        const back = readField({
+        const back = readFieldFull({
           name: 'amt',
           expression: 'e.amt',
           importedExpression: 'e.amt::NUMBER',
@@ -476,7 +509,9 @@ describe('metric attach entity is re-derived from the expression', () => {
             },
           ],
         };
-        const {models} = roundTrip(model);
+        // Full push: the expression is in the catalog, so the entity is
+        // re-derived from it (single entity -> attach; two entities -> none).
+        const {models} = roundTripFull(model);
         const byName = new Map(models[0].metrics.map(m => [m.name, m]));
         expect(byName.get('revenue')!.entity).toBe('orders');
         expect(byName.get('mix')!.entity).toBeUndefined();
@@ -559,7 +594,9 @@ describe('metric expression referencing no known entity', () => {
           // References `widgets`, which is not an entity of this model.
           metrics: [{name: 'bogus', expression: 'SUM(widgets.qty)'}],
         };
-        const {models, warnings} = roundTrip(model);
+        // The unplaceable warning fires from the expression, so it needs a push
+        // that wrote one (a default push omits it, leaving nothing to check).
+        const {models, warnings} = roundTripFull(model);
         expect(models[0].metrics[0].entity).toBeUndefined();
         expect(warnings.some(w => /bogus.*references no known entity/i.test(w)))
             .toBe(true);
@@ -688,7 +725,11 @@ function stripToKcFloor(model: SemanticModel): SemanticModel {
       delete f.importedExpression;  // vendor SQL is not persisted
       delete f.importedDialect;
       delete f.customExtensions;
-      if (f.dimension) f.dimension = {};  // only the DIMENSION role survives
+      // A default push omits the per-field `semantics` block, so the field
+      // expression and the DIMENSION role are not persisted (they ride back
+      // only through a `--emit-expressions` push).
+      delete f.expression;
+      delete f.dimension;
       // String is indistinguishable from an un-typed field on read.
       if (f.type === 'String') delete f.type;
     }
@@ -699,6 +740,7 @@ function stripToKcFloor(model: SemanticModel): SemanticModel {
     delete metric.importedExpression;
     delete metric.importedDialect;
     delete metric.customExtensions;
+    delete metric.expression;  // omitted by a default push, like field ones
     // The emitter writes a required dataType, defaulting typeless -> NUMERIC,
     // which reads back as Decimal; String collapses to un-typed like fields.
     if (metric.type === undefined) {

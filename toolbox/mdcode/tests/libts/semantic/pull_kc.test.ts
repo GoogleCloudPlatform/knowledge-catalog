@@ -47,9 +47,13 @@ const SALES: SemanticModel = {
   }],
 };
 
-// The entries the emitter would have written for a model.
+// The entries the emitter would have written for a model. Emitted with
+// expressions on (a `--emit-expressions` push) so a model that carries field /
+// metric expressions reconstructs exactly; the default push omits them (the
+// converter tests in kc_converter.test.ts pin that gating).
 function entriesFor(model: SemanticModel): Entry[] {
-  return generateCatalogResources(model, OPTS).entries;
+  return generateCatalogResources(model, {...OPTS, emitExpressions: true})
+      .entries;
 }
 
 function ok<T>(result?: T): ApiResult<T> {

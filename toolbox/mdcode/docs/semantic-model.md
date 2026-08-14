@@ -266,17 +266,24 @@ with no matching catalog entry) is left untouched — pull never deletes.
 >
 > **Recovered exactly** — these come back as authored:
 > - Model structure: the model, its entities, and each entity's fields.
-> - Field data source and data type; the field expression.
-> - Metrics: name, expression, data type, and attach entity.
+> - Field data source and data type.
+> - Metrics: name, data type, and attach entity.
 > - 1:1 / 1:N relationships: endpoints, foreign-key direction, and join columns
 >   (from the `schema-join` links).
 > - Deployment targets.
 >
+> **Recovered only if pushed with `--emit-expressions`** — the per-field
+> `semantics` block (expressions and the dimension role) and the metric
+> expression are omitted from the catalog by default (see the note above), so
+> pull returns them only when the push that wrote them used `--emit-expressions`:
+> - Field expressions and metric expressions (the canonical GoogleSQL/ANSI form).
+> - A field's dimension role, which comes back as a bare `dimension: {}` marker,
+>   without its detail (`is_time`, and so on). A default push drops the marker
+>   entirely.
+>
 > **Recovered, but normalized** — the content survives, the form changes:
 > - Relationship *names* come back lowercased/hyphenated (the catalog stores the
 >   name only in the link id, e.g. `Places Order` → `places-order`).
-> - A field marked as a dimension comes back as a bare `dimension: {}` marker,
->   without its detail (`is_time`, and so on).
 > - A metric authored with no data type comes back as an explicit `Decimal`
 >   (push must write a type, and defaults it to `NUMERIC`).
 >
