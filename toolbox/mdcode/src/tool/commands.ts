@@ -14,6 +14,7 @@ import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import {BigQueryClient} from '../libts/gcp/bigquery';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
+import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryDataSources, validatePushRequirements} from '../libts/semantic/validate';
 
 
@@ -55,6 +56,13 @@ export interface PushOptions {
   // expression). Off by default so a push matches the live types; enable once
   // the templates gain these fields. Semantic-model KC push only.
   emitExpressions?: boolean;
+  // Rewrite vendor-dialect expressions (e.g. Snowflake/Databricks) to GoogleSQL
+  // before deploying, filling any target `expression` the loader left unset
+  // because only an `importedExpression` was supplied. Off by default (a model
+  // authored in GoogleSQL/ANSI needs nothing). Runs once over the shared
+  // models, so both the BigQuery and Knowledge Catalog legs see the filled
+  // expressions. Semantic-model push only. See ../libts/semantic/transpile.
+  transpile?: boolean;
 }
 
 
@@ -218,7 +226,26 @@ export async function push(options: PushOptions): Promise<number> {
       return 1;
     }
     for (const w of loaded.warnings) {
+      // When transpiling, the loader's "needs transpilation to ..." notes are
+      // superseded by the transpile pass's own per-expression outcome lines
+      // (transpiled / left imported); printing both is contradictory, so drop
+      // the loader note here and let the pass report the result below.
+      if (options.transpile && w.includes('needs transpilation')) continue;
       console.warn(`Warning: ${w}`);
+    }
+
+    // Rewrite vendor-dialect expressions to GoogleSQL once over the shared
+    // models, before validation, so both destination legs and every downstream
+    // check see the filled target expressions. Off unless --transpile: a model
+    // authored in GoogleSQL/ANSI needs nothing, and the pass degrades to the
+    // imported form (with a warning) when sqlglot is unavailable.
+    let models = loaded.models;
+    if (options.transpile) {
+      const transpiled = await transpileModels(models);
+      models = transpiled.models;
+      for (const w of transpiled.warnings) {
+        console.warn(`Warning: ${w}`);
+      }
     }
 
     // Enforce push-time requirements once over the shared models, before any
@@ -226,7 +253,7 @@ export async function push(options: PushOptions): Promise<number> {
     // BigQuery-graph-targeting model's metrics must each resolve to one entity.
     // This is also the --validate-only path, so a dry run reports the same
     // failures.
-    const validationErrors = validatePushRequirements(loaded.models);
+    const validationErrors = validatePushRequirements(models);
     if (validationErrors.length) {
       for (const e of validationErrors) {
         console.error(`Error: ${e}`);
@@ -239,7 +266,7 @@ export async function push(options: PushOptions): Promise<number> {
     // BigQuery or Knowledge Catalog fails fast when the model could not deploy.
     // Runs for every --target and for --validate-only.
     const accessErrors = await validateBigQueryDataSources(
-        loaded.models, new BigQueryClient(ctx), source.project ?? ctx.project);
+        models, new BigQueryClient(ctx), source.project ?? ctx.project);
     if (accessErrors.length) {
       for (const e of accessErrors) {
         console.error(`Error: ${e}`);
@@ -252,8 +279,8 @@ export async function push(options: PushOptions): Promise<number> {
     // fails.
     for (const target of targets) {
       const code = target === 'bigquery'
-        ? await pushBigQuery(loaded.models, ctx, options)
-        : await pushKnowledgeCatalog(loaded.models, ctx, options, source);
+        ? await pushBigQuery(models, ctx, options)
+        : await pushKnowledgeCatalog(models, ctx, options, source);
       if (code !== 0) return code;
     }
     return 0;
