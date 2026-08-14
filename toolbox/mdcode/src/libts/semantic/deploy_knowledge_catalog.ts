@@ -51,8 +51,9 @@ export interface KcDeployOptions {
   // Id of the destination entry group (provisioned at `init`, not by push).
   entryGroup: string;
   // Project the built-in `semantic-*` / `schema` system types are referenced
-  // from. Default `dataplex-types`. Override to reference them from a staging
-  // project; the emitted entries are otherwise unchanged.
+  // from. Defaults to `dataplex-types`, where these types live; overridable
+  // only so hermetic tests can point at a fixture types project. The emitted
+  // entries are otherwise unchanged.
   systemTypeProject?: string;
   // Location the built-in system types are referenced from. Default `global`.
   systemTypeLocation?: string;
@@ -130,8 +131,7 @@ function sleep(ms: number): Promise<void> {
 
 // Deploys every authored model's Knowledge Catalog resources. The body is the
 // sequence of phases, each a helper below:
-//   emitModels           -- turn every model into catalog resources (pure)
-//   checkEntryIdCollisions -- fail if two models want the same entry id
+//   emitModels           -- turn the model into catalog resources (pure)
 //   buildPlan            -- the dry-run plan (and stop here for --validate-only)
 //   listEntryGroup       -- snapshot the group once, before any write
 //   guardForeignModels   -- refuse (or --force-remove) models no longer pushed
@@ -157,22 +157,26 @@ export async function deployKnowledgeCatalog(
   if (emit.error) return result(false, emit.error);
   const emitted = emit.emitted;
 
-  // A parsed document always yields at least one model (the loader enforces
-  // `semantic_model` min 1), so an empty `emitted` means no documents were
-  // found. validateOnly mutates nothing, so that is a clean no-op; a real push
-  // treats an empty workspace as a configuration error worth flagging.
-  if (!emitted.length) {
-    if (opts.validateOnly) {
-      warnings.push('No semantic model documents found; nothing to validate.');
-      return result(true);
+  // Exactly one model per entry group is supported for now. An empty workspace
+  // is a clean no-op under --validate-only and a configuration error on a real
+  // push; more than one model in a single push is always rejected (which also
+  // means two models can never race for the same entry id).
+  if (emitted.length !== 1) {
+    if (!emitted.length) {
+      if (opts.validateOnly) {
+        warnings.push(
+            'No semantic model documents found; nothing to validate.');
+        return result(true);
+      }
+      return result(
+          false, 'No semantic model documents found; nothing to deploy.');
     }
     return result(
-        false, 'No semantic model documents found; nothing to deploy.');
+        false,
+        `entry group '${opts.entryGroup}' would receive ${
+            emitted.length} models, but only one model per entry group is ` +
+            `supported; split them into separate entry groups.`);
   }
-
-  // Fail before any write if two models generate the same entry id.
-  const collision = checkEntryIdCollisions(emitted, opts);
-  if (collision) return result(false, collision);
 
   // The plan is built for every push (printed with --print) and is the only
   // output of a --validate-only run, which writes nothing.
@@ -241,33 +245,6 @@ function emitModels(models: LoadedModel[], opts: KcDeployOptions):
     emitted.push({model: model.name, resources});
   }
   return {emitted, warnings};
-}
-
-
-// Fails (returns the error message) if two models in this push generate the same
-// catalog entry id. Entry ids must be unique within the entry group; the emitter
-// dedups within one model, but two models (two documents, or two `semantic_model`s
-// in one document) whose names normalize to the same id would collide -- on
-// publish the later one 409s and silently upserts over the earlier. Catch it here
-// and name the entry so the author can rename a model. Ownership is tracked by
-// index, not model name, so two same-named models (the common collision) are
-// still distinguished.
-function checkEntryIdCollisions(
-    emitted: EmittedModel[], opts: KcDeployOptions): string|undefined {
-  const entryOwner = new Map<string, number>();
-  for (let i = 0; i < emitted.length; i++) {
-    for (const entry of emitted[i].resources.entries) {
-      const prev = entryOwner.get(entry.name);
-      if (prev !== undefined && prev !== i) {
-        return `models '${emitted[prev].model}' and '${emitted[i].model}' ` +
-            `both generate catalog entry '${idOf(entry.name)}'; entry ids must ` +
-            `be unique within entry group '${opts.entryGroup}' -- rename one ` +
-            `model.`;
-      }
-      entryOwner.set(entry.name, i);
-    }
-  }
-  return undefined;
 }
 
 
