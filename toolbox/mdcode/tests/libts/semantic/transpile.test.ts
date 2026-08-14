@@ -1,11 +1,11 @@
 // Hermetic tests for the transpile pass (src/libts/semantic/transpile.ts).
 //
-// These never invoke sqlglot: the transpilation MECHANISM is injected as a fake
-// SqlTranspiler, so the tests pin the pass's own logic -- which nodes it
-// selects, how it applies results, the qualifier-preservation guard, graceful
-// degradation, and non-mutation -- independent of any external engine. The real
-// sqlglot adapter is exercised separately in transpile.sqlglot.test.ts (gated
-// on the dependency being installed) and end-to-end in transpile.e2e.test.ts.
+// These never invoke the real engine: the transpilation MECHANISM is injected
+// as a fake SqlTranspiler, so the tests pin the pass's own logic -- which nodes
+// it selects, how it applies results, the qualifier-preservation guard,
+// graceful degradation, and non-mutation -- independent of any engine. The real
+// @polyglot-sql/sdk adapter is exercised separately in
+// transpile.polyglot.test.ts and end-to-end in transpile.e2e.test.ts.
 
 import {describe, expect, test} from 'bun:test';
 

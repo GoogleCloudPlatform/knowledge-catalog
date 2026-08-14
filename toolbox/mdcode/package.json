@@ -26,6 +26,7 @@
   "type": "commonjs",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@polyglot-sql/sdk": "^0.9.1",
     "cac": "^7.0.0",
     "glob": "^13.0.6",
     "yaml": "^2.8.4",

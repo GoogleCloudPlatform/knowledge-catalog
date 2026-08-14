@@ -1,5 +1,5 @@
 // End-to-end golden test for the transpile pass: file -> IR -> transpile ->
-// BigQuery DDL, with the REAL sqlglot mechanism.
+// BigQuery DDL, with the REAL @polyglot-sql/sdk WASM mechanism.
 //
 // This is the transpiled counterpart to bigquery.e2e.test.ts. That golden
 // (`vendor_dialects.bigquery.golden.sql`) captures the UN-transpiled output --
@@ -9,14 +9,10 @@
 // `importedExpression`, so the DDL carries GoogleSQL. Every expression in the
 // golden was dry-run-validated against real BigQuery (see the fixture header).
 //
-// It is GATED on sqlglot being importable through the adapter -- the golden is
-// a function of sqlglot's output, so it can only be checked (or regenerated)
-// where sqlglot is installed. On a machine without it the test skips rather
-// than fails.
+// The engine is bundled (WASM), so this runs everywhere with no external setup.
 //
-//   Regenerate after an intentional change (needs sqlglot):
-//     KCMD_PYTHON=/path/to/venv/bin/python UPDATE_GOLDENS=1 \
-//       bun test ./tests/libts/semantic/transpile.e2e.test.ts
+//   Regenerate after an intentional change:
+//     UPDATE_GOLDENS=1 bun test ./tests/libts/semantic/transpile.e2e.test.ts
 //   then read the diff before committing.
 
 import {describe, expect, test} from 'bun:test';
@@ -25,14 +21,12 @@ import * as path from 'path';
 
 import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {loadModels} from '../../../src/libts/semantic/loader';
-import {sqlglotInstalled, transpileModel} from '../../../src/libts/semantic/transpile';
+import {transpileModel} from '../../../src/libts/semantic/transpile';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 const FIXTURE = 'vendor_dialects.yaml';
 const GOLDEN =
     path.join(FIXTURES, 'vendor_dialects.bigquery.transpiled.golden.sql');
-
-const AVAILABLE = sqlglotInstalled();
 
 // The full artifact: DDL generated from the transpiled model, then every
 // warning as a SQL comment. Mirrors bigquery.e2e's render but inserts the
@@ -54,14 +48,13 @@ async function render(): Promise<string> {
 }
 
 describe('golden DDL: vendor_dialects transpiled to GoogleSQL', () => {
-  test.skipIf(!AVAILABLE)(
-      'matches the committed transpiled golden', async () => {
-        const actual = await render();
-        if (process.env.UPDATE_GOLDENS) {
-          fs.writeFileSync(GOLDEN, actual);
-          return;
-        }
-        const expected = fs.readFileSync(GOLDEN, 'utf8');
-        expect(actual).toBe(expected);
-      });
+  test('matches the committed transpiled golden', async () => {
+    const actual = await render();
+    if (process.env.UPDATE_GOLDENS) {
+      fs.writeFileSync(GOLDEN, actual);
+      return;
+    }
+    const expected = fs.readFileSync(GOLDEN, 'utf8');
+    expect(actual).toBe(expected);
+  });
 });

@@ -24,23 +24,23 @@
 //   - Target-agnostic and non-mutating: `transpileModel(model, {target,
 //     transpiler})` returns a `structuredClone`, so the portable IR is
 //     preserved. The mechanism is injectable so tests run hermetically; the
-//     default adapter shells out to Python's `sqlglot` out of process.
-//   - Graceful degradation: if the transpiler is missing, errors, or would
-//   alter
-//     which entities an expression references (the qualifier-preservation
+//     default adapter is the @polyglot-sql/sdk Rust/WASM engine, bundled into
+//     the tool -- there is no external runtime dependency to install.
+//   - Graceful degradation: if the engine fails to initialize, errors, or would
+//     alter which entities an expression references (the qualifier-preservation
 //     guard), the node is left with no target `expression` and a warning is
 //     emitted -- never a throw. The downstream emitter then falls back to the
 //     imported form exactly as it would have without this pass.
 //
 
-import {spawn, spawnSync} from 'node:child_process';
+import {readFileSync} from 'node:fs';
 
 import {Field, Metric, SemanticModel} from './ir';
 import {LoadedModel} from './loader';
 import {referencedEntityNames} from './sql_expr_utils';
 
 // The target dialect this pass rewrites into. The whole point of the pass is to
-// reach GoogleSQL/BigQuery, so it is fixed rather than a knob; the sqlglot
+// reach GoogleSQL/BigQuery, so it is fixed rather than a knob; the polyglot
 // adapter still accepts any target token for reuse/testing.
 const DEFAULT_TARGET = 'BIGQUERY';
 
@@ -68,7 +68,7 @@ export type SqlTranspiler = (requests: TranspileRequest[], target: string) =>
 
 export interface TranspileOptions {
   target?: string;             // target dialect; default 'BIGQUERY'
-  transpiler?: SqlTranspiler;  // mechanism; default `sqlglotTranspiler`
+  transpiler?: SqlTranspiler;  // mechanism; default `polyglotTranspiler`
 }
 
 export interface TranspileResult {
@@ -104,7 +104,7 @@ export async function transpileModel(
     model: SemanticModel,
     opts: TranspileOptions = {}): Promise<TranspileResult> {
   const target = opts.target ?? DEFAULT_TARGET;
-  const transpiler = opts.transpiler ?? sqlglotTranspiler;
+  const transpiler = opts.transpiler ?? polyglotTranspiler;
   const clone: SemanticModel = structuredClone(model);
   const entityNames = clone.entities.map(e => e.name);
   const warnings: string[] = [];
@@ -195,8 +195,8 @@ export async function transpileModel(
 export async function transpileModels(
     models: LoadedModel[], opts: TranspileOptions = {}):
     Promise<{models: LoadedModel[]; warnings: string[]}> {
-  // Models are independent, so transpile them concurrently rather than paying
-  // one sequential sqlglot subprocess spawn per model.
+  // Models are independent; transpile them concurrently. They share the single
+  // process-wide WASM engine instance (initialized once), so this is cheap.
   const results =
       await Promise.all(models.map(({model}) => transpileModel(model, opts)));
   const out: LoadedModel[] = [];
@@ -219,20 +219,20 @@ function fmtSet(names: string[]): string {
 }
 
 
-// --- sqlglot adapter (the default mechanism) ---------------------------------
+// --- polyglot-sql adapter (the default mechanism) ----------------------------
 
-// Maps our dialect tokens (as authored in the AI-first format) to sqlglot's
-// read dialect names. Unknown tokens fall through as their lower-cased form,
-// which sqlglot either accepts or rejects (rejection degrades to the imported
-// form + warning).
-const SQLGLOT_DIALECTS: Record<string, string> = {
+// Maps our dialect tokens (as authored in the AI-first format) to the
+// @polyglot-sql/sdk dialect names (lower-case). ANSI_SQL maps to the engine's
+// dialect-neutral 'generic' parser. An unknown token has no mapping and
+// degrades to a per-request error (the imported form + warning).
+const POLYGLOT_DIALECTS: Record<string, string> = {
   BIGQUERY: 'bigquery',
-  ANSI_SQL: '',  // sqlglot's dialect-neutral parser
+  ANSI_SQL: 'generic',  // the engine's dialect-neutral parser
   SNOWFLAKE: 'snowflake',
   DATABRICKS: 'databricks',
   SPARK: 'spark',
-  POSTGRES: 'postgres',
-  POSTGRESQL: 'postgres',
+  POSTGRES: 'postgresql',
+  POSTGRESQL: 'postgresql',
   TERADATA: 'teradata',
   PRESTO: 'presto',
   TRINO: 'trino',
@@ -243,144 +243,84 @@ const SQLGLOT_DIALECTS: Record<string, string> = {
   TSQL: 'tsql',
 };
 
-function sqlglotDialect(token: string): string {
-  if (!token) return '';  // absent/empty -> sqlglot's dialect-neutral parser
-  const up = token.toUpperCase();
-  return up in SQLGLOT_DIALECTS ? SQLGLOT_DIALECTS[up] : token.toLowerCase();
+function polyglotDialect(token: string): string|undefined {
+  if (!token) return undefined;
+  return POLYGLOT_DIALECTS[token.toUpperCase()];
 }
 
-// Embedded, dependency-free driver run as `python3 -c <SCRIPT>`. It reads one
-// JSON request object from stdin and writes a JSON array of responses to
-// stdout. A missing sqlglot is caught and reported per-item (exit 0), so the
-// absence of the optional dependency degrades to the imported form rather than
-// a hard failure.
-const SQLGLOT_SCRIPT = `
-import sys, json
-data = json.load(sys.stdin)
-write = data["write"]
-items = data["items"]
-try:
-    import sqlglot
-except Exception as e:
-    print(json.dumps([{"id": it["id"], "error": "sqlglot unavailable: %s" % (e,)} for it in items]))
-    sys.exit(0)
-out = []
-for it in items:
-    try:
-        tree = sqlglot.parse_one(it["expr"], read=(it["read"] or None))
-        out.append({"id": it["id"], "sql": tree.sql(dialect=(write or None))})
-    except Exception as e:
-        out.append({"id": it["id"], "error": str(e)})
-print(json.dumps(out))
-`;
+// The subset of the @polyglot-sql/sdk `/manual` surface we use. Declared
+// locally because the package's `/manual` subpath does not re-export its named
+// bindings through tsc under this project's CommonJS/nodenext setting; the
+// dynamic import is cast to this shape.
+interface PolyglotEngine {
+  init(opts: {wasmUrl: string}): Promise<void>;
+  transpile(sql: string, read: string, write: string):
+      {success: boolean; sql?: string[]; error?: string};
+}
+
+// The WASM engine, initialized once and shared process-wide. The Rust/WASM blob
+// is embedded into the standalone binary via bun's `import(... , {with: {type:
+// 'file'}})` (statically analyzable, so bundled) and handed to `init()` as
+// bytes
+// -- the package's default loader reads the blob from disk at runtime, which
+// fails inside a `bun --compile` binary, so we use the `/manual` entry instead.
+let enginePromise: Promise<PolyglotEngine>|undefined;
+function loadEngine(): Promise<PolyglotEngine> {
+  if (!enginePromise) {
+    enginePromise = (async () => {
+      const {default: wasmPath} = await import(
+          '@polyglot-sql/sdk/polyglot_sql.wasm', {with: {type: 'file'}});
+      const engine =
+          await import('@polyglot-sql/sdk/manual') as unknown as PolyglotEngine;
+      await engine.init({wasmUrl: readFileSync(wasmPath) as unknown as string});
+      return engine;
+    })();
+  }
+  return enginePromise;
+}
 
 /**
- * The default {@link SqlTranspiler}: transpiles via Python's `sqlglot` in a
- * subprocess. The Python interpreter is `$KCMD_PYTHON` or `python3`. It never
- * throws: a spawn failure (e.g. no interpreter), non-zero exit, or unparseable
- * output yields an `error` response for every request, so the caller degrades
- * to the imported form + warning. `sqlglot` itself is optional -- see
- * {@link SQLGLOT_SCRIPT}.
+ * The default {@link SqlTranspiler}: transpiles via the embedded
+ * @polyglot-sql/sdk Rust/WASM engine. There is no external runtime dependency
+ * -- the WASM blob is bundled into the tool. It never throws: an engine that
+ * fails to initialize yields an `error` response for every request, and a
+ * per-request parse failure or unsupported dialect yields an `error` for just
+ * that request, so the caller degrades to the imported form + warning.
  */
-export const sqlglotTranspiler: SqlTranspiler = (requests, target) => {
-  if (!requests.length) return Promise.resolve([]);
-  // Map the target to sqlglot's write dialect. A known token that maps to ''
-  // (ANSI_SQL) means dialect-neutral output and must be preserved; only an
-  // absent target falls back to BigQuery, the pass's reason for existing.
-  const write = target ? sqlglotDialect(target) : 'bigquery';
-  const payload = JSON.stringify({
-    write,
-    items: requests.map(
-        r => ({id: r.id, read: sqlglotDialect(r.dialect), expr: r.expression})),
-  });
-  const python = process.env.KCMD_PYTHON || 'python3';
+export const polyglotTranspiler: SqlTranspiler = async (requests, target) => {
+  if (!requests.length) return [];
+  // Map the target to the engine's write dialect. A known token that maps to
+  // 'generic' (ANSI_SQL) means dialect-neutral output and must be preserved;
+  // only an absent/unknown target falls back to BigQuery, the pass's reason for
+  // existing.
+  const write = polyglotDialect(target) ?? 'bigquery';
 
-  return new Promise<TranspileResponse[]>(resolve => {
-    const fail = (reason: string) =>
-        resolve(requests.map(r => ({id: r.id, error: reason})));
+  let engine: PolyglotEngine;
+  try {
+    engine = await loadEngine();
+  } catch (err) {
+    const reason = `SQL transpiler engine unavailable: ${errMessage(err)}`;
+    return requests.map(r => ({id: r.id, error: reason}));
+  }
 
-    let child;
+  return requests.map(r => {
+    const read = polyglotDialect(r.dialect);
+    if (read === undefined)
+      return {id: r.id, error: `unsupported source dialect '${r.dialect}'`};
     try {
-      child = spawn(
-          python, ['-c', SQLGLOT_SCRIPT], {stdio: ['pipe', 'pipe', 'pipe']});
-    } catch (err: any) {
-      fail(`could not start '${python}': ${err?.message ?? err}`);
-      return;
+      const res = engine.transpile(r.expression, read, write);
+      if (!res.success || !res.sql || res.sql.length === 0)
+        return {
+          id: r.id,
+          error: res.error ?? 'transpilation produced no output'
+        };
+      return {id: r.id, sql: res.sql[0]};
+    } catch (err) {
+      return {id: r.id, error: errMessage(err)};
     }
-
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-    const done = (fn: () => void) => {
-      if (!settled) {
-        settled = true;
-        fn();
-      }
-    };
-
-    // Decode as UTF-8 via the stream's StringDecoder so a multibyte character
-    // split across two chunks is reassembled correctly (concatenating raw
-    // Buffers would decode each half independently and corrupt it).
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', d => {
-      stdout += d;
-    });
-    child.stderr.on('data', d => {
-      stderr += d;
-    });
-    child.on(
-        'error',
-        err => done(
-            () => fail(`could not run '${python}': ${err?.message ?? err}`)));
-    child.on(
-        'close',
-        code => done(() => {
-          if (code !== 0) {
-            fail(`'${python}' exited ${code}${
-                stderr.trim() ? `: ${stderr.trim()}` : ''}`);
-            return;
-          }
-          let parsed: unknown;
-          try {
-            parsed = JSON.parse(stdout);
-          } catch {
-            fail(`could not parse transpiler output: ${stdout.slice(0, 200)}`);
-            return;
-          }
-          if (!Array.isArray(parsed)) {
-            fail('transpiler output was not a JSON array');
-            return;
-          }
-          resolve(parsed as TranspileResponse[]);
-        }));
-
-    child.stdin.on('error', () => {/* handled via 'error'/'close' above */});
-    child.stdin.end(payload);
   });
 };
 
-/**
- * Synchronously reports whether the sqlglot mechanism is usable: the
- * `$KCMD_PYTHON` (or `python3`) interpreter exists and can `import sqlglot`.
- * Returns false on any failure (missing interpreter, missing module, non-zero
- * exit).
- *
- * Used as the `kcmd push --transpile` pre-flight -- fail fast with a clear
- * error when the engine is missing entirely, rather than deploying
- * un-transpiled vendor SQL that only fails later, deep in the BigQuery leg --
- * and to let a `bun test` file gate sqlglot-dependent cases at registration
- * time without a top-level `await` (which `tsc` rejects under this project's
- * CommonJS module setting). Per-expression transpile failures still degrade
- * gracefully inside {@link sqlglotTranspiler}; this only catches total absence.
- */
-export function sqlglotInstalled(): boolean {
-  const python = process.env.KCMD_PYTHON || 'python3';
-  try {
-    return spawnSync(python, ['-c', 'import sqlglot'], {
-             stdio: 'ignore'
-           }).status === 0;
-  } catch {
-    return false;
-  }
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
