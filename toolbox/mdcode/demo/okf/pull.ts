@@ -23,13 +23,15 @@ fs.rmSync(stagingDir, { recursive: true, force: true });
 fs.mkdirSync(stagingCatalog, { recursive: true });
 fs.copyFileSync(path.join(root, 'catalog.yaml'), path.join(stagingDir, 'catalog.yaml'));
 
-cp.execFileSync(binary, ['pull'], { cwd: stagingDir, stdio: 'inherit' });
+try {
+  cp.execFileSync(binary, ['pull'], { cwd: stagingDir, stdio: 'inherit' });
 
-for (const file of listMarkdown(stagingCatalog)) {
-  const rel = path.relative(stagingCatalog, file);
-  const dest = path.join(catalogDir, rel);
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.writeFileSync(dest, fromStaging(fs.readFileSync(file, 'utf8'), okfKey));
+  for (const file of listMarkdown(stagingCatalog)) {
+    const rel = path.relative(stagingCatalog, file);
+    const dest = path.join(catalogDir, rel);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(dest, fromStaging(fs.readFileSync(file, 'utf8'), okfKey));
+  }
+} finally {
+  fs.rmSync(stagingDir, { recursive: true, force: true });
 }
-
-fs.rmSync(stagingDir, { recursive: true, force: true });

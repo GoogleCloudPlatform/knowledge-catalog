@@ -139,9 +139,14 @@ The aspect models the full OKF v0.2 signal as typed, searchable fields:
 `sources` (with `author`, `usage_count`, `last_modified`), `usage_window`,
 and the Attested Computation contract (`runtime`, `parameters`,
 `computation`, `executor`, `attester`). OKF also permits producer-defined
-frontmatter keys, so no enumerated template can ever be complete. Anything
-the template does not model is carried as JSON on a single `extra` field,
-which keeps the round-trip lossless for any conformant bundle.
+frontmatter keys at any depth, so no enumerated template can ever be
+complete. Anything the template does not model, whether a top-level key like
+`not:` or a subfield inside a modeled record like `sources[].license`, is
+diverted onto a single `extra` field as a JSON list of `[path, value]` pairs
+and restored on pull. That keeps the round-trip lossless for any conformant
+bundle. A diverted subfield returns at the end of its record rather than its
+original position, which is the same presentation normalization pull already
+applies elsewhere.
 
 **Setup**
 
