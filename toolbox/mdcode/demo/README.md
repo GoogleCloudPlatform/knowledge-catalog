@@ -129,15 +129,25 @@ file to an entry whose name is derived from the file path, with the
 markdown body stored on the `dataplex-types.global.overview` aspect.
 
 The generic Documents Layout only carries `title`/`description`/`tags` +
-body. OKF's signal layer (`resource`, `type`, `generated`, `sources`) has
-no generic home, so `push.ts`/`pull.ts` translate it into a custom typed
-`okf` Dataplex aspect (created by `setup.ts`) and back, keeping the
-on-disk files clean OKF and round-tripping the signal losslessly.
+body. OKF's signal layer has no generic home, so `push.ts`/`pull.ts`
+translate it into a custom typed `okf` Dataplex aspect (created by
+`setup.ts`) and back, keeping the on-disk files clean OKF and
+round-tripping the signal losslessly.
+
+The aspect models the full OKF v0.2 signal as typed, searchable fields:
+`type`, `resource`, `generated`, `verified`, `status`, `stale_after`,
+`sources` (with `author`, `usage_count`, `last_modified`), `usage_window`,
+and the Attested Computation contract (`runtime`, `parameters`,
+`computation`, `executor`, `attester`). OKF also permits producer-defined
+frontmatter keys, so no enumerated template can ever be complete. Anything
+the template does not model is carried as JSON on a single `extra` field,
+which keeps the round-trip lossless for any conformant bundle.
 
 **Setup**
 
 * Creates an empty Dataplex EntryGroup (`okf_ga4`).
-* Creates the custom `okf` aspect type from `okf-aspect.json`.
+* Creates the custom `okf` aspect type from `okf-aspect.json`, or updates it
+  if a previous run of this demo left an older template behind.
 * Creates a `catalog.yaml` manifest pointing at the EntryGroup and listing
   the `okf` aspect.
 * The `catalog/` directory is already populated with the GA4 markdown bundle.
@@ -172,14 +182,50 @@ bun pull.ts
 
 **Modify Metadata Snapshot**
 
-* Edit any markdown file under `catalog/` directly. Frontmatter fields
-  (`title`, `description`, `tags`, plus the OKF signal keys `resource`,
-  `type`, `generated`, `sources`) and the markdown body can be changed,
-  then push again.
+* Edit any markdown file under `catalog/` directly. Any frontmatter key and
+  the markdown body can be changed, then push again.
 
 ```bash
 bun push.ts
 ```
+
+**Verify the Translation**
+
+* `verify.ts` runs every file in a bundle through the translation in both
+  directions and reports any key or body content that did not survive. It
+  touches no cloud resources, so it needs no project and makes a good
+  pre-push check.
+
+```bash
+bun verify.ts
+```
+
+**Run Against Another Bundle**
+
+* `push.ts`, `pull.ts`, and `verify.ts` all take `--bundle <dir>`, so the
+  demo can run against a bundle elsewhere in the repo without copying it
+  in. `okf/bundles/acme_retail` is the bundle that exercises the full v0.2
+  signal layer, including an Attested Computation and a producer-defined
+  key.
+
+```bash
+bun verify.ts --bundle ../../../../okf/bundles/acme_retail
+bun push.ts   --bundle ../../../../okf/bundles/acme_retail
+bun pull.ts   --bundle /tmp/acme_pulled
+```
+
+* Pull re-emits frontmatter in a canonical key order and block style, so
+  pulling a bundle that was hand-authored with flow mappings back over
+  itself shows presentation churn in `git diff` even though nothing was
+  lost. `verify.ts` is the semantic check; it compares parsed frontmatter
+  and body, not bytes. The GA4 bundle in `catalog/` is already in canonical
+  form, so for it a pull after a push leaves the tree byte-identical.
+
+* Two things do not make the trip. Only `.md` files are pushed, so bundle
+  attachments such as `acme_retail/attesters/sql_equality.py` stay local
+  even though frontmatter points at them. And in-body markdown links
+  between concepts stay markdown; the only native Knowledge Catalog edges
+  are the parent links derived from the directory structure.
 
 **Cleanup**
 

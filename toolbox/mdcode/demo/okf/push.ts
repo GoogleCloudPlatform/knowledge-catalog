@@ -9,34 +9,21 @@ import * as cp from 'child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as kcmd from 'kcmd';
-import { toStaging } from './okf';
+import { bundleDir, listMarkdown, toStaging } from './okf';
 
 const context = kcmd.gcp.ApiContext.default();
 const okfKey = `${context.project}.${context.location}.okf`;
 
 const root = process.cwd();
-const catalogDir = path.join(root, 'catalog');
+const catalogDir = bundleDir(root);
 const stagingDir = path.join(root, '.staging');
 const binary = path.resolve(root, '../../dist/kcmd');
-
-function listMd(dir: string): string[] {
-  const out: string[] = [];
-  for (const name of fs.readdirSync(dir)) {
-    const full = path.join(dir, name);
-    if (fs.statSync(full).isDirectory()) {
-      out.push(...listMd(full));
-    } else if (name.endsWith('.md')) {
-      out.push(full);
-    }
-  }
-  return out;
-}
 
 fs.rmSync(stagingDir, { recursive: true, force: true });
 fs.mkdirSync(path.join(stagingDir, 'catalog'), { recursive: true });
 fs.copyFileSync(path.join(root, 'catalog.yaml'), path.join(stagingDir, 'catalog.yaml'));
 
-for (const file of listMd(catalogDir)) {
+for (const file of listMarkdown(catalogDir)) {
   const rel = path.relative(catalogDir, file);
   const dest = path.join(stagingDir, 'catalog', rel);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
