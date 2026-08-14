@@ -35,7 +35,17 @@ function yamlFixtures(dir: string): string[] {
 // against it, not the schema's own meta-style.
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 const validate = ajv.compile(schema);
-const fixtures = yamlFixtures(fixturesDir);
+
+// The `.pull.golden.yaml` artifacts are lossy Knowledge Catalog reconstructions,
+// not authored OSI documents: a KC round trip does not persist an imported
+// expression's source dialect (see sql_expressions.ts -- the dialect is inferred
+// from the entity, not stored), so a pulled model that carried a vendor form
+// serializes it under the `IMPORTED` placeholder dialect, which is outside the
+// OSI dialect enum. Their exact content and documented losses are pinned by
+// kc_converter.test.ts; this guardrail validates the authored input fixtures and
+// the full-fidelity OSI-converter goldens, the artifacts that must be valid OSI.
+const fixtures =
+  yamlFixtures(fixturesDir).filter(p => !p.endsWith('.pull.golden.yaml'));
 
 describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () => {
   test('at least one fixture is discovered', () => {

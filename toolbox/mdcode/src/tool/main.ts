@@ -25,10 +25,12 @@ cli.command('init', 'Initialize a new catalog snapshot')
 
 
 cli.command('pull', 'Pull catalog entries')
-   .action(async () => {
+   .option('--dry-run', 'Reconstruct and report only; do not write files (semantic-model scope)')
+   .option('--model <name>', 'Limit the pull to a single model by name (semantic-model scope)')
+   .action(async (options) => {
       let exitCode = 1;
       try {
-        exitCode = await commands.pull();
+        exitCode = await commands.pull(options);
       }
       catch (err: any) {
         console.error('Error:', err.message || err);
@@ -41,7 +43,7 @@ cli.command('pull', 'Pull catalog entries')
 cli.command('push', 'Push catalog entries')
    .option('--force', 'Force push changes')
    .option('--force-remove', 'Delete Knowledge Catalog models in the entry group that this push does not include (removed/renamed models); semantic-model push only')
-   .option('--emit-expressions', 'Emit SQL-expression fields not yet in the published Knowledge Catalog system-type templates (per-field schema semantics, metric expression); off by default, enable once the templates support them; semantic-model push only')
+   .option('--emit-expressions', 'Emit the sql-expressions companion aspect (field/metric expressions, primary + imported) and the schema DIMENSION marker, not yet in the published Knowledge Catalog system-type templates; off by default, enable once the sql-expressions aspect type is provisioned; semantic-model push only')
    .option('--validate-only', 'Only validate changes without applying')
    .option('--target <targets>', 'Semantic-model push destination(s): bq, kc, all (default), or a comma-separated list (e.g. bq,kc)')
    .option('--print', 'Print each pushed destination\'s generated artifact in its native format (BigQuery Graph SQL DDL, Knowledge Catalog entry plan); scope with --target (semantic-model push only)')

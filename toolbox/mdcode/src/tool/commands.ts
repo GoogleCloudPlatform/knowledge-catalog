@@ -14,6 +14,8 @@ import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import {BigQueryClient} from '../libts/gcp/bigquery';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
+import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
+import {serializeModel} from '../libts/semantic/osi_converter';
 import {validateBigQueryDataSources, validatePushRequirements} from '../libts/semantic/validate';
 
 
@@ -50,10 +52,11 @@ export interface PushOptions {
   // plan), each block labeled by destination. Scope which destinations run with
   // --target. Works with or without --validate-only. Semantic-model push only.
   print?: boolean;
-  // Emit the SQL-expression fields not yet supported by the published Knowledge
-  // Catalog system-type templates (per-field schema semantics and the metric
-  // expression). Off by default so a push matches the live types; enable once
-  // the templates gain these fields. Semantic-model KC push only.
+  // Emit the sql-expressions companion aspect (field/metric expressions, primary
+  // + imported) and the schema DIMENSION marker, not yet supported by the
+  // published Knowledge Catalog system-type templates. Off by default so a push
+  // matches the live types; enable once the sql-expressions aspect type is
+  // provisioned. Semantic-model KC push only.
   emitExpressions?: boolean;
 }
 
@@ -158,15 +161,20 @@ export async function init(options: InitOptions): Promise<number> {
 }
 
 
-export async function pull(): Promise<number> {
+export interface PullOptions {
+  // Reconstruct + report only; never writes a file. Mirrors push --validate-only.
+  dryRun?: boolean;
+  // Limit the pull to a single model by name (default: all in the entry group).
+  model?: string;
+}
+
+
+export async function pull(options: PullOptions = {}): Promise<number> {
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
 
   if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
-    console.log(
-      'Semantic-model scope: nothing to pull. Knowledge Catalog resource ' +
-      'pull for the semantic model is not yet implemented.');
-    return 0;
+    return await pullSemanticModel(ctx, snapshot, options);
   }
 
   const catalog = new dataplex.CatalogClient(ctx);
@@ -358,5 +366,79 @@ async function pushKnowledgeCatalog(
     : `Wrote ${result.created} new and ${result.updated} updated ` +
         `Knowledge Catalog entr${n === 1 ? 'y' : 'ies'}${removed}${linked}${
             unlinked}.`);
+  return 0;
+}
+
+
+// Pulls the semantic model's Knowledge Catalog entries back into local model
+// documents (catalog/EntryGroups/<entryGroup>/<model>.yaml) and prints the
+// result. The destination coordinates come from the scope
+// (project.location.entryGroup). Overwrite policy matches the core pull:
+// last-write-wins, local-only documents are left untouched (never deleted).
+// Returns a process exit code (0 on success).
+async function pullSemanticModel(
+  ctx: context.ApiContext, snapshot: kcmd.CatalogSnapshot,
+  options: PullOptions): Promise<number> {
+  // The semantic-model source always resolves to the SemanticModel layout
+  // (see createLayout), so these casts are safe.
+  const layout = snapshot.layout as SemanticModelLayout;
+  const source = snapshot.manifest.source as SemanticModelSource;
+
+  console.log(options.dryRun
+    ? 'Reconstructing semantic model from Knowledge Catalog (dry run)...'
+    : 'Pulling semantic model from Knowledge Catalog...');
+
+  const catalog = new dataplex.CatalogClient(ctx);
+  const result = await pullKnowledgeCatalog(catalog, {
+    project: source.project,
+    location: source.location,
+    entryGroup: source.entryGroup,
+    model: options.model,
+  });
+
+  for (const w of result.warnings) {
+    console.warn(`Warning: ${w}`);
+  }
+
+  if (!result.models.length) {
+    console.log('No semantic models found; nothing to pull.');
+    return 0;
+  }
+
+  let created = 0;
+  let updated = 0;
+  // Guard against two reconstructed models whose names map to the same file
+  // (path-separator sanitizing, or two anchors sharing a display name): the
+  // later write would silently clobber the earlier. Track written paths so the
+  // collision is reported and the dry-run/real counts agree on the repeat.
+  const writtenBy = new Map<string, string>();
+  for (const model of result.models) {
+    const serialized = serializeModel(model);
+    for (const w of serialized.warnings) {
+      console.warn(`Warning: [${model.name}] ${w}`);
+    }
+    const target = layout.modelPath(model.name);
+    const prior = writtenBy.get(target);
+    if (prior !== undefined && prior !== model.name) {
+      console.warn(
+          `Warning: models '${prior}' and '${model.name}' both map to ` +
+          `${target}; the later overwrites the earlier -- rename one model.`);
+    }
+    const existed = writtenBy.has(target) || layout.hasModel(model.name);
+    writtenBy.set(target, model.name);
+    if (options.dryRun) {
+      console.log(`  would ${existed ? 'update' : 'create'} ${target}`);
+    }
+    else {
+      layout.writeModelDocument(model.name, serialized.yaml);
+      console.log(`  ${existed ? 'updated' : 'created'} ${target}`);
+    }
+    if (existed) updated++;
+    else created++;
+  }
+
+  console.log(options.dryRun
+    ? `Dry run: would write ${created} new and ${updated} updated model document(s).`
+    : `Wrote ${created} new and ${updated} updated model document(s).`);
   return 0;
 }

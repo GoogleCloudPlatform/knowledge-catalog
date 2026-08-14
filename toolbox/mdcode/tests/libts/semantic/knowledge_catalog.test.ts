@@ -24,9 +24,13 @@ const OPTS = {
   location: 'us',
   entryGroup: 'eg'
 };
-// The expression fields (per-field schema semantics, metric expression) are
-// gated off by default; this turns them on to assert their content.
-const OPTS_EXPR = {...OPTS, emitExpressions: true};
+// SQL expressions (the sql-expressions companion aspect + the schema field's
+// DIMENSION `semantic` marker) are gated off by default; this turns them on to
+// assert their content.
+const OPTS_EXPR = {
+  ...OPTS,
+  emitExpressions: true
+};
 
 // A one-entity model whose single field carries the given IR type + dimension,
 // so a test can read back the emitted schema aspect for that field.
@@ -46,9 +50,32 @@ function modelWithField(
   return {name: 'm', entities: [entity], relationships: [], metrics: []};
 }
 
-// The schema-aspect field record for the sole field of modelWithField.
-function schemaField(
+// The aspect-map keys on the sole entity entry (to assert presence/absence of
+// the sql-expressions companion aspect).
+function entityAspectKeys(model: SemanticModel, opts = OPTS): string[] {
+  const {entries} = generateCatalogResources(model, opts);
+  const entity = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
+  return Object.keys(entity.aspects ?? {});
+}
+
+// The sql-expressions companion aspect data on the sole entity entry.
+function entitySqlExpressions(
     model: SemanticModel, opts = OPTS): Record<string, any> {
+  const {entries} = generateCatalogResources(model, opts);
+  const entity = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
+  return entity.aspects!['dataplex-types.global.sql-expressions'].data!;
+}
+
+// The sql-expressions companion aspect data on the sole metric entry.
+function metricSqlExpressions(
+    model: SemanticModel, opts = OPTS): Record<string, any> {
+  const {entries} = generateCatalogResources(model, opts);
+  const metric = entries.find(e => e.entryType.endsWith('/semantic-metric'))!;
+  return metric.aspects!['dataplex-types.global.sql-expressions'].data!;
+}
+
+// The schema-aspect field record for the sole field of modelWithField.
+function schemaField(model: SemanticModel, opts = OPTS): Record<string, any> {
   const {entries} = generateCatalogResources(model, opts);
   const entity = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
   const schema = entity.aspects!['dataplex-types.global.schema'].data!;
@@ -88,56 +115,101 @@ describe(
 
 
 describe(
-    'a field with dimension metadata gets role DIMENSION, else DEFAULT', () => {
+    'a dimension field gets schema.semantic DIMENSION, else it is unset',
+    () => {
       test('dimension -> DIMENSION', () => {
-        expect(schemaField(modelWithField('String', true), OPTS_EXPR).semantics.role)
+        expect(schemaField(modelWithField('String', true), OPTS_EXPR).semantic)
             .toBe('DIMENSION');
       });
-      test('no dimension -> DEFAULT', () => {
-        expect(schemaField(modelWithField('String', false), OPTS_EXPR).semantics.role)
-            .toBe('DEFAULT');
+      test('no dimension -> semantic unset', () => {
+        expect(schemaField(modelWithField('String', false), OPTS_EXPR).semantic)
+            .toBeUndefined();
       });
     });
 
 
-describe('the schema aspect carries the target expression in semantics', () => {
-  test('the target expression is kept; imported vendor SQL is not emitted', () => {
-    const model: SemanticModel = {
-      name: 'm',
-      relationships: [],
-      metrics: [],
-      entities: [{
-        name: 'e',
-        dataSource: 'p.d.t',
-        keys: ['k'],
-        fields: [{
-          name: 'f',
-          expression: 'CAST(e.f AS INT64)',
-          importedExpression: 'e.f::int',
-          importedDialect: 'SNOWFLAKE',
-        }],
-      }],
-    };
-    const f = schemaField(model, OPTS_EXPR);
-    expect(f.semantics.expression).toBe('CAST(e.f AS INT64)');
-    // importedExpression is the vendor/MAQL form; KC has no consumer for it.
-    expect(f.semantics.importedExpression).toBeUndefined();
-  });
-});
+describe(
+    'field expressions live in the sql-expressions companion aspect', () => {
+      test(
+          'both the primary GoogleSQL and the imported vendor form are emitted',
+          () => {
+            const model: SemanticModel = {
+              name: 'm',
+              relationships: [],
+              metrics: [],
+              entities: [{
+                name: 'e',
+                dataSource: 'p.d.t',
+                keys: ['k'],
+                fields: [{
+                  name: 'f',
+                  expression: 'CAST(e.f AS INT64)',
+                  importedExpression: 'e.f::int',
+                  importedDialect: 'SNOWFLAKE',
+                }],
+              }],
+            };
+            // The schema aspect stays metadata-only: no inline expression on
+            // the field (the field is not a dimension, so `semantic` is unset
+            // too).
+            const sf = schemaField(model, OPTS_EXPR);
+            expect(sf.semantic).toBeUndefined();
+            expect(sf.expression).toBeUndefined();
+            // The expressions ride in the companion aspect: the primary
+            // (unqualified) GoogleSQL form + the imported vendor form under the
+            // `imported` qualifier.
+            expect(entitySqlExpressions(model, OPTS_EXPR).fields).toEqual([{
+              name: 'f',
+              expressions: [
+                {sql: 'CAST(e.f AS INT64)'},
+                {qualifier: 'imported', sql: 'e.f::int'},
+              ],
+            }]);
+          });
+    });
 
 
-describe('the schema semantics block is gated behind emitExpressions', () => {
-  test('omitted by default; the non-gated columns are still emitted', () => {
-    const f = schemaField(modelWithField('String', true));
-    expect(f.semantics).toBeUndefined();
-    expect(f.dataType).toBe('STRING');
-    expect(f.metadataType).toBe('STRING');
-  });
-  test('emitExpressions re-adds the semantics block (expression + role)', () => {
-    const f = schemaField(modelWithField('String', true), OPTS_EXPR);
-    expect(f.semantics).toEqual({expression: 'e.f', role: 'DIMENSION'});
-  });
-});
+describe(
+    'the companion aspect + schema.semantic are gated behind emitExpressions',
+    () => {
+      test(
+          'omitted by default; the non-gated columns are still emitted', () => {
+            const model = modelWithField('String', true);
+            const f = schemaField(model);
+            expect(f.semantic).toBeUndefined();
+            expect(f.dataType).toBe('STRING');
+            expect(f.metadataType).toBe('STRING');
+            // No sql-expressions aspect on a default push.
+            expect(entityAspectKeys(model).some(
+                       k => k.endsWith('.sql-expressions')))
+                .toBe(false);
+          });
+      test(
+          'emitExpressions adds the companion aspect + the DIMENSION marker',
+          () => {
+            const model = modelWithField('String', true);
+            expect(schemaField(model, OPTS_EXPR).semantic).toBe('DIMENSION');
+            expect(entitySqlExpressions(model, OPTS_EXPR).fields).toEqual([
+              {name: 'f', expressions: [{sql: 'e.f'}]},
+            ]);
+          });
+      test('no companion aspect when no field has an expression', () => {
+        const model: SemanticModel = {
+          name: 'm',
+          relationships: [],
+          metrics: [],
+          entities: [{
+            name: 'e',
+            dataSource: 'p.d.t',
+            keys: ['k'],
+            fields: [{name: 'f'}],  // no expression
+          }],
+        };
+        expect(entityAspectKeys(model, OPTS_EXPR)
+                   .some(k => k.endsWith('.sql-expressions')))
+            .toBe(false);
+      });
+    });
 
 
 describe('entity dataSource maps to a resource path', () => {
@@ -192,8 +264,8 @@ describe('semantic-metric aspect', () => {
           ],
         };
         const {data, warnings} = metricData(model, OPTS_EXPR);
-        expect(data).toEqual(
-            {entity: 'o', dataType: 'NUMERIC', expression: 'SUM(o.p)'});
+        // The metric aspect stays metadata-only: no expression here.
+        expect(data).toEqual({entity: 'o', dataType: 'NUMERIC'});
         expect(warnings.some(w => w.includes('dataType'))).toBe(false);
       });
 
@@ -212,19 +284,35 @@ describe('semantic-metric aspect', () => {
         .toBe(true);
   });
 
-  test('the expression is gated: omitted by default, kept with emitExpressions',
-       () => {
-         const model: SemanticModel = {
-           name: 'm',
-           entities: [],
-           relationships: [],
-           metrics: [{
-             name: 'rev', expression: 'SUM(o.p)', entity: 'o', type: 'Decimal'
-           }],
-         };
-         expect(metricData(model).data).toEqual({entity: 'o', dataType: 'NUMERIC'});
-         expect(metricData(model, OPTS_EXPR).data.expression).toBe('SUM(o.p)');
-       });
+  test(
+      'the aggregate formula rides in the sql-expressions companion aspect, gated',
+      () => {
+        const model: SemanticModel = {
+          name: 'm',
+          entities: [],
+          relationships: [],
+          metrics: [{
+            name: 'rev',
+            expression: 'SUM(o.p)',
+            importedExpression: 'SUM(o.p)::NUMBER',
+            importedDialect: 'SNOWFLAKE',
+            entity: 'o',
+            type: 'Decimal'
+          }],
+        };
+        // Default push: no companion aspect at all.
+        const def = generateCatalogResources(model, OPTS);
+        const defMetric =
+            def.entries.find(e => e.entryType.endsWith('/semantic-metric'))!;
+        expect(Object.keys(defMetric.aspects ?? {})
+                   .some(k => k.endsWith('.sql-expressions')))
+            .toBe(false);
+        // --emit-expressions push: primary GoogleSQL + imported vendor form.
+        expect(metricSqlExpressions(model, OPTS_EXPR).expressions).toEqual([
+          {sql: 'SUM(o.p)'},
+          {qualifier: 'imported', sql: 'SUM(o.p)::NUMBER'},
+        ]);
+      });
 });
 
 

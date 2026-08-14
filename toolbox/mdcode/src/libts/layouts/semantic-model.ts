@@ -91,6 +91,36 @@ export class SemanticModelLayout implements CatalogLayout {
     return docs;
   }
 
+  // True when a model document with this handle already exists on disk. `pull`
+  // uses it to report which files it would overwrite vs. create.
+  hasModel(name: string): boolean {
+    return fs.existsSync(this.modelPath(name));
+  }
+
+  // The absolute path a model document with this handle maps to:
+  // `<catalog>/EntryGroups/<entryGroup>/<name>.yaml`. Path separators in the
+  // model name are replaced so a name still yields a single flat file. Requires
+  // the layout to be scoped to an entry group (the semantic-model source always
+  // is).
+  modelPath(name: string): string {
+    if (!this._entryGroup) {
+      throw new Error(
+          'SemanticModel layout has no entry group; cannot resolve a model path.');
+    }
+    const file = `${name.replace(/[/\\]/g, '_')}.yaml`;
+    return path.join(this._catalogPath, 'EntryGroups', this._entryGroup, file);
+  }
+
+  // Writes a model's serialized document to its path, creating the EntryGroup
+  // directory if needed, and indexes it so a later modelDocuments() sees it.
+  // This is the sink `pull` writes reconstructed models to.
+  writeModelDocument(name: string, text: string): void {
+    const localPath = this.modelPath(name);
+    fs.mkdirSync(path.dirname(localPath), {recursive: true});
+    fs.writeFileSync(localPath, text);
+    this._index.set(name, localPath);
+  }
+
   // The Knowledge Catalog entry-level members are not applicable to this
   // push-only layout; the model is authored as a single Ossie document, not as
   // per-entry Knowledge Catalog files. These are wired when KC-resource emit
