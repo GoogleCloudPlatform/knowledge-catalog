@@ -47,6 +47,7 @@ cli.command('push', 'Push catalog entries')
    .option('--validate-only', 'Only validate changes without applying')
    .option('--target <targets>', 'Semantic-model push destination(s): bq, kc, all (default), or a comma-separated list (e.g. bq,kc)')
    .option('--print', 'Print each pushed destination\'s generated artifact in its native format (BigQuery Graph SQL DDL, Knowledge Catalog entry plan); scope with --target (semantic-model push only)')
+   .option('--transpile', 'Rewrite vendor-dialect (e.g. Snowflake/Databricks) expressions to GoogleSQL before deploying, filling target expressions the loader left unset; semantic-model push only')
    .action(async (options) => {
       let exitCode = 1;
       try {
