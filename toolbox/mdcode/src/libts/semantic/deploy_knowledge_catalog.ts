@@ -628,10 +628,9 @@ async function writeEntryLink(
   const res = await cat.createEntryLink(
       opts.project, opts.location, opts.entryGroup, linkId, link);
   if (isExists(res)) {
-    const upd =
-        await cat.updateEntryLink({name: link.name, aspects: link.aspects} as
-                                      EntryLink,
-                                  ['aspects']);
+    const upd = await cat.updateEntryLink(
+        {name: link.name, aspects: link.aspects} as EntryLink,
+        Object.keys(link.aspects ?? {}));
     if (!isOk(upd)) return {error: `entry link '${linkId}': ${errText(upd)}`};
     return {};
   }
