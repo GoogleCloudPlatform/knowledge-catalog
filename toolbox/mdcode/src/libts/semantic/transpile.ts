@@ -89,7 +89,6 @@ interface Pending {
 // `expression` is left alone; one with neither has nothing to transpile.
 function needsTranspile(node: Field|Metric): node is(Field | Metric)&{
   importedExpression: string;
-  importedDialect: string
 }
 {
   return node.expression === undefined && node.importedExpression !== undefined;
@@ -117,8 +116,12 @@ export async function transpileModel(
     pending.push({
       request: {
         id,
-        dialect: node.importedDialect!,
-        expression: node.importedExpression!
+        // A node can carry an imported expression without a declared dialect
+        // (hand-built IR); treat that as portable ANSI (a dialect-neutral
+        // parse) rather than passing `undefined` into the adapter and crashing
+        // it.
+        dialect: node.importedDialect ?? 'ANSI_SQL',
+        expression: node.importedExpression,
       },
       ctx,
       accept: (sql: string) => {
@@ -179,7 +182,7 @@ export async function transpileModel(
     warnings.push(`${ctx}: transpiled '${request.dialect}' -> '${target}'`);
   }
 
-  return {model: clone, warnings: dedupe(warnings)};
+  return {model: clone, warnings};
 }
 
 /**
@@ -192,13 +195,16 @@ export async function transpileModel(
 export async function transpileModels(
     models: LoadedModel[], opts: TranspileOptions = {}):
     Promise<{models: LoadedModel[]; warnings: string[]}> {
+  // Models are independent, so transpile them concurrently rather than paying
+  // one sequential sqlglot subprocess spawn per model.
+  const results =
+      await Promise.all(models.map(({model}) => transpileModel(model, opts)));
   const out: LoadedModel[] = [];
   const warnings: string[] = [];
-  for (const {document, model} of models) {
-    const t = await transpileModel(model, opts);
-    out.push({document, model: t.model});
-    for (const w of t.warnings) warnings.push(`[${document}] ${w}`);
-  }
+  models.forEach(({document}, i) => {
+    out.push({document, model: results[i].model});
+    for (const w of results[i].warnings) warnings.push(`[${document}] ${w}`);
+  });
   return {models: out, warnings};
 }
 
@@ -210,20 +216,6 @@ function sameSet(a: string[], b: string[]): boolean {
 
 function fmtSet(names: string[]): string {
   return names.length ? `{${names.join(', ')}}` : '{}';
-}
-
-// Order-preserving de-duplication, so identical outcome lines (e.g. the same
-// dialect transpiled across several fields) collapse to one.
-function dedupe(items: string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const item of items) {
-    if (!seen.has(item)) {
-      seen.add(item);
-      out.push(item);
-    }
-  }
-  return out;
 }
 
 
@@ -252,6 +244,7 @@ const SQLGLOT_DIALECTS: Record<string, string> = {
 };
 
 function sqlglotDialect(token: string): string {
+  if (!token) return '';  // absent/empty -> sqlglot's dialect-neutral parser
   const up = token.toUpperCase();
   return up in SQLGLOT_DIALECTS ? SQLGLOT_DIALECTS[up] : token.toLowerCase();
 }
@@ -275,7 +268,7 @@ out = []
 for it in items:
     try:
         tree = sqlglot.parse_one(it["expr"], read=(it["read"] or None))
-        out.append({"id": it["id"], "sql": tree.sql(dialect=write)})
+        out.append({"id": it["id"], "sql": tree.sql(dialect=(write or None))})
     except Exception as e:
         out.append({"id": it["id"], "error": str(e)})
 print(json.dumps(out))
@@ -291,7 +284,10 @@ print(json.dumps(out))
  */
 export const sqlglotTranspiler: SqlTranspiler = (requests, target) => {
   if (!requests.length) return Promise.resolve([]);
-  const write = sqlglotDialect(target) || 'bigquery';
+  // Map the target to sqlglot's write dialect. A known token that maps to ''
+  // (ANSI_SQL) means dialect-neutral output and must be preserved; only an
+  // absent target falls back to BigQuery, the pass's reason for existing.
+  const write = target ? sqlglotDialect(target) : 'bigquery';
   const payload = JSON.stringify({
     write,
     items: requests.map(
@@ -370,11 +366,13 @@ export const sqlglotTranspiler: SqlTranspiler = (requests, target) => {
  * Returns false on any failure (missing interpreter, missing module, non-zero
  * exit).
  *
- * This is a test/tooling convenience -- it lets a `bun test` file gate
- * sqlglot-dependent cases at registration time without a top-level `await`
- * (which `tsc` rejects under this project's CommonJS module setting). The
- * production path uses {@link sqlglotTranspiler}, which degrades gracefully
- * instead of probing.
+ * Used as the `kcmd push --transpile` pre-flight -- fail fast with a clear
+ * error when the engine is missing entirely, rather than deploying
+ * un-transpiled vendor SQL that only fails later, deep in the BigQuery leg --
+ * and to let a `bun test` file gate sqlglot-dependent cases at registration
+ * time without a top-level `await` (which `tsc` rejects under this project's
+ * CommonJS module setting). Per-expression transpile failures still degrade
+ * gracefully inside {@link sqlglotTranspiler}; this only catches total absence.
  */
 export function sqlglotInstalled(): boolean {
   const python = process.env.KCMD_PYTHON || 'python3';

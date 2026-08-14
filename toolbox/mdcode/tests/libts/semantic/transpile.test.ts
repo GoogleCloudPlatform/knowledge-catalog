@@ -209,6 +209,37 @@ describe('transpileModel', () => {
       });
 
   test(
+      'defaults a missing source dialect to ANSI_SQL instead of crashing',
+      async () => {
+        // Hand-built IR can carry an imported expression with no declared
+        // dialect. The pass must still transpile it (as portable ANSI) rather
+        // than passing `undefined` into the mechanism.
+        const model: SemanticModel = {
+          name: 'm',
+          entities: [{
+            name: 'orders',
+            dataSource: 'p.d.orders',
+            keys: ['id'],
+            fields:
+                [{name: 'label', importedExpression: 'IFF(orders.s=1,1,0)'}],
+          }],
+          relationships: [],
+          metrics: [],
+        };
+        const {transpiler, seen} =
+            fakeTranspiler(() => 'IF(orders.s = 1, 1, 0)');
+        const {model: out, warnings} =
+            await transpileModel(model, {transpiler});
+
+        const req = seen.find(r => r.expression === 'IFF(orders.s=1,1,0)');
+        expect(req?.dialect).toBe('ANSI_SQL');
+        expect(out.entities[0].fields[0].expression)
+            .toBe('IF(orders.s = 1, 1, 0)');
+        expect(warnings.some(w => w.includes(`field 'orders.label'`)))
+            .toBe(true);
+      });
+
+  test(
       'honors a non-default target dialect passed through to the mechanism',
       async () => {
         let sawTarget = '';

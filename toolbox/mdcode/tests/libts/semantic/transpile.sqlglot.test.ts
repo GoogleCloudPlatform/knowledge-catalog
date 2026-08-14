@@ -46,6 +46,21 @@ describe('sqlglotTranspiler (mechanism invariants; run everywhere)', () => {
     expect(await sqlglotTranspiler([], 'BIGQUERY')).toEqual([]);
   });
 
+  test('sqlglotInstalled reports false for a bad interpreter', () => {
+    // This is the probe the `push --transpile` pre-flight relies on to fail
+    // fast rather than deploy un-transpiled vendor SQL.
+    const saved = process.env.KCMD_PYTHON;
+    process.env.KCMD_PYTHON = '/nonexistent/python-that-is-not-here';
+    try {
+      expect(sqlglotInstalled()).toBe(false);
+    } finally {
+      if (saved === undefined)
+        delete process.env.KCMD_PYTHON;
+      else
+        process.env.KCMD_PYTHON = saved;
+    }
+  });
+
   test(
       'degrades to a per-request error (never throws) for a bad interpreter',
       async () => {
@@ -116,6 +131,22 @@ describe(
                 }],
                 'BIGQUERY');
             expect(res.sql).toContain('orders.d');
+          });
+
+      test.skipIf(!AVAILABLE)(
+          'targets ANSI_SQL as dialect-neutral, not silently BigQuery',
+          async () => {
+            // ANSI_SQL maps to sqlglot's neutral dialect (''); it must not be
+            // clobbered to BigQuery. `::double` renders as the generic
+            // `CAST(... AS DOUBLE)` under ANSI, vs `FLOAT64` under BigQuery.
+            const [ansi] = await sqlglotTranspiler(
+                [{id: '0', dialect: 'DATABRICKS', expression: 'x::double'}],
+                'ANSI_SQL');
+            expect(ansi.sql).toBe('CAST(x AS DOUBLE)');
+            const [bq] = await sqlglotTranspiler(
+                [{id: '0', dialect: 'DATABRICKS', expression: 'x::double'}],
+                'BIGQUERY');
+            expect(bq.sql).toBe('CAST(x AS FLOAT64)');
           });
 
       test.skipIf(!AVAILABLE)(

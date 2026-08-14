@@ -14,7 +14,7 @@ import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import {BigQueryClient} from '../libts/gcp/bigquery';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
-import {transpileModels} from '../libts/semantic/transpile';
+import {sqlglotInstalled, transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryDataSources, validatePushRequirements} from '../libts/semantic/validate';
 
 
@@ -241,6 +241,17 @@ export async function push(options: PushOptions): Promise<number> {
     // imported form (with a warning) when sqlglot is unavailable.
     let models = loaded.models;
     if (options.transpile) {
+      // Fail fast when --transpile is requested but the engine is missing
+      // entirely: otherwise the push would deploy the un-transpiled vendor SQL
+      // and only fail later, deep in the BigQuery leg. (Per-expression
+      // transpile failures still degrade to a warning inside the pass.)
+      if (!sqlglotInstalled()) {
+        console.error(
+            'Error: --transpile requires sqlglot, which is not available via ' +
+            '$KCMD_PYTHON or python3. Install it (e.g. `pip install sqlglot`) ' +
+            'or omit --transpile.');
+        return 1;
+      }
       const transpiled = await transpileModels(models);
       models = transpiled.models;
       for (const w of transpiled.warnings) {
