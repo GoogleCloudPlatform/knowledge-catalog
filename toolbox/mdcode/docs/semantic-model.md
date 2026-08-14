@@ -115,7 +115,7 @@ kcmd push --print              # also print the generated DDL / entry plan
 | `--validate-only` | Run every validation check and report pass/fail, but write nothing. |
 | `--print` | Print each destination's generated artifact (BigQuery DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
 | `--force-remove` | Delete models in the entry group that this push no longer includes (see [Updating and removing models](#updating-and-removing-models)). |
-| `--emit-expressions` | Also write the SQL-expression fields (per-field `schema.semantics` and `semantic-metric.expression`) to Knowledge Catalog. Off by default: the published system-type templates do not carry them yet. Knowledge Catalog push only. |
+| `--emit-expressions` | Also write the SQL expressions to Knowledge Catalog: a `sql-expressions` companion aspect (the field/metric expressions, both the primary GoogleSQL form and the imported vendor form) plus the schema field's `semantic` DIMENSION marker. Off by default: the published system-type templates do not carry them yet. Knowledge Catalog push only. |
 
 Destinations always deploy BigQuery-first and fail fast, so a rejected model
 never half-deploys.
@@ -164,16 +164,18 @@ paired columns and foreign-key direction — in its aspect.
 > **Note — push to Knowledge Catalog is lossy.** The catalog holds metadata,
 > not a full copy of your model. It **stores** names, descriptions, data
 > sources, field datatypes and roles, and 1:1 / 1:N relationships (as
-> `schema-join` links). By default it does **not** store the SQL expressions:
-> the published system-type templates do not yet carry a per-field `semantics`
-> block or a `semantic-metric.expression` field, so the default push omits them
-> (pass `--emit-expressions` to write the canonical GoogleSQL/ANSI expression
-> once the templates gain the fields). It never stores entity keys, `ai_context`,
-> field labels, the original vendor SQL (`importedExpression` — e.g. the MAQL or
-> Snowflake form a metric was imported from), or M:N relationships. Those stay in
-> your authored document (and, for the edges, in the BigQuery property graph); the
-> vendor SQL and expressions are still used when generating BigQuery SQL. Keep
-> your model document as the source of truth.
+> `schema-join` links). By default it does **not** store the SQL expressions: the
+> core `schema` / `semantic-metric` aspects stay metadata-only, and the
+> executable SQL lives in a separate `sql-expressions` companion aspect the
+> published system-type templates do not carry yet, so the default push omits it.
+> Pass `--emit-expressions` (once that aspect type is provisioned) to write the
+> companion aspect — it stores **both** the canonical GoogleSQL/ANSI expression
+> and the original vendor form (`importedExpression` — e.g. the MAQL or Snowflake
+> form a metric was imported from), under an `imported` qualifier — plus the
+> schema field's DIMENSION marker. It never stores entity keys, `ai_context`,
+> field labels, the exact imported dialect label, or M:N relationships. Those stay
+> in your authored document (and, for the edges, in the BigQuery property graph).
+> Keep your model document as the source of truth.
 
 ## Validation
 
@@ -281,11 +283,14 @@ with no matching catalog entry) is left untouched — pull never deletes.
 >   (from the `schema-join` links).
 > - Deployment targets.
 >
-> **Recovered only if pushed with `--emit-expressions`** — the per-field
-> `semantics` block (expressions and the dimension role) and the metric
-> expression are omitted from the catalog by default (see the note above), so
-> pull returns them only when the push that wrote them used `--emit-expressions`:
-> - Field expressions and metric expressions (the canonical GoogleSQL/ANSI form).
+> **Recovered only if pushed with `--emit-expressions`** — the `sql-expressions`
+> companion aspect and the schema DIMENSION marker are omitted from the catalog
+> by default (see the note above), so pull returns them only when the push that
+> wrote them used `--emit-expressions`:
+> - Field expressions and metric expressions — **both** the canonical
+>   GoogleSQL/ANSI form and the original vendor form (`importedExpression`), the
+>   latter under the aspect's `imported` qualifier. Only the exact imported
+>   *dialect label* is not recovered.
 > - A field's dimension role, which comes back as a bare `dimension: {}` marker,
 >   without its detail (`is_time`, and so on). A default push drops the marker
 >   entirely.
@@ -300,7 +305,8 @@ with no matching catalog entry) is left untouched — pull never deletes.
 > - Entity keys / unique keys.
 > - `ai_context`.
 > - Field labels.
-> - The original vendor SQL (`importedExpression`).
+> - The exact imported dialect label (`importedDialect`) — the vendor SQL itself
+>   comes back with `--emit-expressions`, but its dialect is not stored.
 > - M:N relationships (the edge lives only in the BigQuery property graph).
 >
 > **So: a push followed by a pull does not return your original file.** Treat a

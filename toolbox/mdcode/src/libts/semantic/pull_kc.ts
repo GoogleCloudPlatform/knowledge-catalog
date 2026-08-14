@@ -152,8 +152,11 @@ export async function pullKnowledgeCatalog(
 // The aspect type resource names to hydrate for a semantic entry, derived from
 // its entryType (the aspect types are the parallel resources in the same
 // project/location). An entity carries two aspects: its `semantic-entity`
-// aspect and the built-in `schema` aspect that holds its fields. Returns
-// undefined for entries that are not part of a semantic model.
+// aspect and the built-in `schema` aspect that holds its fields. Entities and
+// metrics also carry the optional `sql-expressions` companion aspect (the
+// field/metric expressions); it is absent on a default push, so requesting it
+// is harmless when it does not exist. Returns undefined for entries that are
+// not part of a semantic model.
 function semanticAspectTypes(entryType: string): string[]|undefined {
   const marker = '/entryTypes/';
   const idx = entryType?.indexOf(marker) ?? -1;
@@ -165,9 +168,12 @@ function semanticAspectTypes(entryType: string): string[]|undefined {
     case 'semantic-model':
       return [aspectType('semantic-model')];
     case 'semantic-entity':
-      return [aspectType('semantic-entity'), aspectType('schema')];
+      return [
+        aspectType('semantic-entity'), aspectType('schema'),
+        aspectType('sql-expressions')
+      ];
     case 'semantic-metric':
-      return [aspectType('semantic-metric')];
+      return [aspectType('semantic-metric'), aspectType('sql-expressions')];
     default:
       return undefined;
   }

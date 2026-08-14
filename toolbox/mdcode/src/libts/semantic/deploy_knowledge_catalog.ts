@@ -57,10 +57,10 @@ export interface KcDeployOptions {
   systemTypeProject?: string;
   // Location the built-in system types are referenced from. Default `global`.
   systemTypeLocation?: string;
-  // Emit the SQL-expression fields not yet in the published system-type
-  // templates (per-field `schema.semantics` and `semantic-metric.expression`).
-  // Off by default so the push matches the live types; see
-  // KcGenerateOptions.emitExpressions.
+  // Emit the SQL expressions not yet in the published system-type templates: a
+  // `sql-expressions` companion aspect on entity/metric entries plus the schema
+  // field's DIMENSION marker. Off by default so the push matches the live
+  // types; see KcGenerateOptions.emitExpressions.
   emitExpressions?: boolean;
   // Compile and report only; never writes to the catalog (a dry run).
   validateOnly?: boolean;

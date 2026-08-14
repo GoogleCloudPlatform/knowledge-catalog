@@ -32,14 +32,17 @@
 // model's deployment targets (from the semantic-model aspect, back into the
 // GOOGLE `custom_extensions` block), and 1:1 / 1:N relationships (from the
 // `schema-join` entry links a pull fetched -- see
-// `modelsFromCatalogResources`'s `entryLinks` argument). The per-field
-// `semantics` block -- field/metric expressions and the DIMENSION role -- is
-// gated off the catalog by default: the emitter writes it only under
-// `--emit-expressions` (see `KcGenerateOptions.emitExpressions`), so those
-// three recover only when the push that wrote them enabled it, and a default
-// push -> pull drops them. It cannot recover what the emitter never writes:
-// entity keys/unique keys, `ai_context`, field labels,
-// `importedExpression`/`importedDialect` (the vendor-dialect SQL), and
+// `modelsFromCatalogResources`'s `entryLinks` argument). Field and metric
+// expressions ride in the `sql-expressions` companion aspect and the DIMENSION
+// role in the schema field's `semantic` marker; both are gated off the catalog
+// by default -- the emitter writes them only under `--emit-expressions` (see
+// `KcGenerateOptions.emitExpressions`) -- so they recover only when the push
+// that wrote them enabled it, and a default push -> pull drops them. When the
+// aspect is present, BOTH the primary GoogleSQL expression AND the imported
+// vendor form (`importedExpression`) come back (the imported form under an
+// `imported` qualifier); its source dialect is not stored, so `importedDialect`
+// stays unset. It cannot recover what the emitter never writes: entity
+// keys/unique keys, `ai_context`, field labels, the exact imported dialect, and
 // many-to-many (association) relationships (whose edge lives only in the
 // BigQuery property graph). A `String`- or `Opaque`-typed METRIC also reads
 // back un-typed: the metric aspect persists only `dataType` (both collapse to
@@ -52,6 +55,7 @@ import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
 import {CustomExtension, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
 import {referencedEntityNames} from './sql_expr_utils';
+import {recoverExpressions, SqlExpressionRecord, SqlExpressionsData} from './sql_expressions';
 
 export interface ReadResult {
   models: SemanticModel[];
@@ -163,12 +167,16 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
         `entity '${name}': no backing data source in the semantic-entity ` +
         `aspect; 'source' will be empty and the entity may not load`);
   }
+  // Field expressions live in the sql-expressions companion aspect (absent on a
+  // default push), keyed by field name. Build the lookup once, then join each
+  // schema field to its records by name.
+  const exprByField = fieldExpressionRecords(entry);
   const entity: Entity = {
     name,
     dataSource,
     keys: [],  // not persisted by the emitter; unrecoverable on read
     fields: asArray(schema.fields)
-                .map(fd => readField(fd, name, warnings))
+                .map(fd => readField(fd, exprByField, name, warnings))
                 .filter((f): f is Field => f !== undefined),
   };
   const description = entry.entrySource?.description;
@@ -177,12 +185,14 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
 }
 
 
-// Reconstructs a field from one `schema` aspect field record, inverting
-// schemaAspectData: the datatype from dataType/metadataType, expressions from
-// the nested `semantics` block, and the DIMENSION role back to a dimension
-// marker.
-function readField(fd: any, entityName: string, warnings: string[]): Field|
-    undefined {
+// Reconstructs a field from one `schema` aspect field record plus its
+// expression records from the companion sql-expressions aspect (keyed by name),
+// inverting schemaAspectData + entitySqlExpressionsData: the datatype from
+// dataType/metadataType, the primary/imported expressions from the companion
+// aspect, and the `semantic` DIMENSION marker back to a dimension marker.
+function readField(
+    fd: any, exprByField: Map<string, SqlExpressionRecord[]>,
+    entityName: string, warnings: string[]): Field|undefined {
   const name = fd?.name;
   if (name === undefined || name === '') {
     warnings.push(
@@ -191,29 +201,57 @@ function readField(fd: any, entityName: string, warnings: string[]): Field|
     return undefined;
   }
   const field: Field = {name};
-  const sem = fd?.semantics ?? {};
-  if (sem.expression !== undefined) field.expression = sem.expression;
+  const {expression, importedExpression} =
+      recoverExpressions(exprByField.get(name));
+  if (expression !== undefined) field.expression = expression;
+  if (importedExpression !== undefined) {
+    field.importedExpression = importedExpression;
+  }
   const type = irDataType(fd?.dataType, fd?.metadataType);
   if (type !== undefined) field.type = type;
-  if (sem.role === 'DIMENSION') field.dimension = {};
+  if (fd?.semantic === 'DIMENSION') field.dimension = {};
   if (fd?.description !== undefined) field.description = fd.description;
   return field;
 }
 
 
-// Reconstructs a metric from its `semantic-metric` aspect. The attach `entity`
-// is re-derived from the expression (as the loader does) when the aspect holds
-// one, else it falls back to the entity the emitter persisted. A default push
-// omits the expression entirely (it is gated behind `--emit-expressions`), so
-// an absent expression is expected, not an error, and does not warn.
+// The per-field expression records from an entity's sql-expressions aspect,
+// indexed by field name. Empty when a default push wrote no companion aspect.
+// Field records missing a name are dropped (they cannot be joined to a schema
+// field).
+function fieldExpressionRecords(entry: Entry):
+    Map<string, SqlExpressionRecord[]> {
+  const data = aspectData(entry, 'sql-expressions') as SqlExpressionsData;
+  const out = new Map<string, SqlExpressionRecord[]>();
+  for (const f of asArray(data.fields)) {
+    if (typeof f?.name === 'string' && f.name !== '') {
+      out.set(f.name, asArray(f.expressions));
+    }
+  }
+  return out;
+}
+
+
+// Reconstructs a metric from its `semantic-metric` aspect (metadata) and its
+// `sql-expressions` companion aspect (the aggregate formula). The attach
+// `entity` is re-derived from the expression (as the loader does) when the
+// catalog holds one, else it falls back to the entity the emitter persisted. A
+// default push omits the expression entirely (it is gated behind
+// `--emit-expressions`), so an absent expression is expected, not an error, and
+// does not warn.
 function readMetric(
     entry: Entry, entityNames: string[], warnings: string[]): Metric {
   const name = entry.entrySource?.displayName ?? idOf(entry.name);
   const data = aspectData(entry, 'semantic-metric');
+  const sql = aspectData(entry, 'sql-expressions') as SqlExpressionsData;
 
   const metric: Metric = {name};
-  if (data.expression !== undefined) metric.expression = data.expression;
-  const exprForRefs = data.expression ?? '';
+  const {expression, importedExpression} = recoverExpressions(sql.expressions);
+  if (expression !== undefined) metric.expression = expression;
+  if (importedExpression !== undefined) {
+    metric.importedExpression = importedExpression;
+  }
+  const exprForRefs = expression ?? '';
   const referenced = referencedEntityNames(exprForRefs, entityNames);
   const persistedEntity =
       typeof data.entity === 'string' && data.entity !== '' ? data.entity :

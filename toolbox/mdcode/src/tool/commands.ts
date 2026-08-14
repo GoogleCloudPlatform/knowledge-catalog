@@ -52,10 +52,11 @@ export interface PushOptions {
   // plan), each block labeled by destination. Scope which destinations run with
   // --target. Works with or without --validate-only. Semantic-model push only.
   print?: boolean;
-  // Emit the SQL-expression fields not yet supported by the published Knowledge
-  // Catalog system-type templates (per-field schema semantics and the metric
-  // expression). Off by default so a push matches the live types; enable once
-  // the templates gain these fields. Semantic-model KC push only.
+  // Emit the sql-expressions companion aspect (field/metric expressions, primary
+  // + imported) and the schema DIMENSION marker, not yet supported by the
+  // published Knowledge Catalog system-type templates. Off by default so a push
+  // matches the live types; enable once the sql-expressions aspect type is
+  // provisioned. Semantic-model KC push only.
   emitExpressions?: boolean;
 }
 

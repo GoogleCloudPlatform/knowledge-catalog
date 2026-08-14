@@ -116,7 +116,8 @@ describe('pullKnowledgeCatalog: happy path', () => {
   });
 
   test(
-      'an entity is hydrated with BOTH its semantic-entity and schema aspects',
+      'an entity is hydrated with its semantic-entity, schema, and ' +
+          'sql-expressions aspects',
       async () => {
         const entries = entriesFor(SALES);
         const {lookup} = stubClient(entries, entries);
@@ -136,6 +137,25 @@ describe('pullKnowledgeCatalog: happy path', () => {
             .toBe(true);
         expect(aspectTypes.some(t => t.endsWith('/aspectTypes/schema')))
             .toBe(true);
+        // The companion sql-expressions aspect is hydrated too, so field
+        // expressions come back.
+        expect(
+            aspectTypes.some(t => t.endsWith('/aspectTypes/sql-expressions')))
+            .toBe(true);
+      });
+
+  test(
+      'a --emit-expressions push round-trips field + metric expressions',
+      async () => {
+        const entries = entriesFor(SALES);
+        stubClient(entries, entries);
+
+        const cat = new CatalogClient({} as any);
+        const {models} = await pullKnowledgeCatalog(cat, OPTS);
+        const model = models[0];
+        expect(model.entities[0].fields[0].expression)
+            .toBe('orders.o_totalprice');
+        expect(model.metrics[0].expression).toBe('SUM(orders.o_totalprice)');
       });
 });
 

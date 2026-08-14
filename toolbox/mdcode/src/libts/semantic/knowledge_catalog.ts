@@ -24,12 +24,18 @@
 //                                    importedResource? } }
 //   * semantic-metric = { entity?, dataType (required) }
 //   * schema          = { fields: [{ name, dataType, metadataType,
-//                                    description? }] }
+//                                    description?, semantic? }] }
 //
-// The SQL-expression fields -- `semantic-metric.expression` and the per-field
-// `schema.semantics` { expression, role } block -- are NOT in the published
-// system-type templates yet, so they are gated behind
-// KcGenerateOptions.emitExpressions (off by default) and omitted above.
+// The core `schema` / `semantic-metric` aspects stay metadata-only: they never
+// carry executable SQL. Per the V2 "SQL Expression Storage in USL Semantic
+// Models" proposal, SQL lives in a separate `sql-expressions` companion aspect
+// (see ./sql_expressions), attached alongside the entity's `schema` and the
+// metric's `semantic-metric` aspect and holding the field/metric expressions
+// (primary GoogleSQL + the imported vendor form). Both that companion aspect
+// AND the schema field's `semantic` (DIMENSION role) marker are gated behind
+// KcGenerateOptions.emitExpressions (off by default), because the published
+// system-type templates do not carry them yet; a default push emits neither and
+// matches the live types byte-for-byte.
 //
 // Relationships become `schema-join` entry links between the two entity entries.
 // schema-join is a built-in, undirected entry link type in `dataplex-types/global`
@@ -46,6 +52,7 @@ import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
 import {bigQueryGraphTargets} from './deploy_bigquery';
 import {DataType, Entity, Metric, Relationship, SemanticModel} from './ir';
+import {expressionRecords, SQL_EXPRESSIONS_ASPECT, SqlExpressionsData} from './sql_expressions';
 
 // Where the `semantic-*` and `schema` system types live: built-in types in
 // project `dataplex-types`, location `global`. Callers may override to reference
@@ -59,12 +66,14 @@ export interface KcGenerateOptions {
   entryGroup: string;  // destination entry group
   systemTypeProject?: string;   // default 'dataplex-types'
   systemTypeLocation?: string;  // default 'global'
-  // Emit the SQL-expression fields the published Dataplex system-type templates
-  // do not carry yet: the per-field `schema.semantics` block (expression +
-  // role) and `semantic-metric.expression`. Off by default so a push matches
-  // the live types; flip on once the templates gain these fields. Enabling it
+  // Emit the SQL expressions the published Dataplex system-type templates do
+  // not carry yet: a `sql-expressions` companion aspect (see ./sql_expressions)
+  // on each entity and metric entry holding the field/metric expressions, plus
+  // the schema field's `semantic` (DIMENSION role) marker. Off by default so a
+  // push matches the live types; flip on once the sql-expressions aspect type
+  // is provisioned and the schema template exposes `semantic`. Enabling it
   // against today's types fails the push with an ASPECT_*_PARSING_FAILURE on
-  // the unknown property.
+  // the unknown aspect/property.
   emitExpressions?: boolean;
 }
 
@@ -133,16 +142,23 @@ export function generateCatalogResources(
       warnings.push(
           `entity '${entity.name}': no keys declared in the source model`);
     }
+    // required_aspects: semantic-entity AND the built-in schema. The
+    // sql-expressions companion aspect rides alongside only under emitExpr, and
+    // only when some field actually has an expression (never an empty aspect).
+    const entityAspects: Record<string, Record<string, any>> = {
+      'semantic-entity': entityAspectData(entity),
+      'schema': schemaAspectData(entity, emitExpr),
+    };
+    if (emitExpr) {
+      const sql = entitySqlExpressionsData(entity);
+      if (sql) entityAspects[SQL_EXPRESSIONS_ASPECT] = sql;
+    }
     entries.push({
       name: names.entry(entityId),
       entryType: names.typeName('entry', 'semantic-entity'),
       parentEntry: modelEntryName,
       entrySource: source(entity.name, entity.description),
-      // required_aspects: semantic-entity AND the built-in schema.
-      aspects: aspectMap(names, {
-        'semantic-entity': entityAspectData(entity),
-        'schema': schemaAspectData(entity, emitExpr),
-      }),
+      aspects: aspectMap(names, entityAspects),
     });
   }
 
@@ -150,14 +166,19 @@ export function generateCatalogResources(
     const metricId = names.metricId(model, metric);
     if (!claim(seen, metricId, 'entry', `metric '${metric.name}'`, warnings))
       continue;
+    const metricAspects: Record<string, Record<string, any>> = {
+      'semantic-metric': metricAspectData(metric, warnings),
+    };
+    if (emitExpr) {
+      const sql = metricSqlExpressionsData(metric);
+      if (sql) metricAspects[SQL_EXPRESSIONS_ASPECT] = sql;
+    }
     entries.push({
       name: names.entry(metricId),
       entryType: names.typeName('entry', 'semantic-metric'),
       parentEntry: modelEntryName,
       entrySource: source(metric.name, metric.description),
-      aspects: aspectMap(names, {
-        'semantic-metric': metricAspectData(metric, warnings, emitExpr),
-      }),
+      aspects: aspectMap(names, metricAspects),
     });
   }
 
@@ -282,9 +303,13 @@ function entityAspectData(entity: Entity): Record<string, any> {
   };
 }
 
-// The built-in schema aspect, carrying each field's column type plus the new
-// per-field `semantics` block (expression / role). name,
-// dataType, and metadataType are required per column.
+// The built-in schema aspect: metadata-only (name, dataType, metadataType,
+// description), plus the per-field `semantic` DIMENSION marker. Executable SQL
+// does NOT live here -- field expressions are emitted in the sql-expressions
+// companion aspect (see entitySqlExpressionsData). `semantic` is set only for a
+// dimension field and only under emitExpressions (the published `schema`
+// template does not carry it yet); a plain field, or any field on a default
+// push, leaves it unset -- matching the proposal's "Unset otherwise".
 function schemaAspectData(
     entity: Entity, emitExpressions: boolean): Record<string, any> {
   return {
@@ -294,29 +319,48 @@ function schemaAspectData(
                        dataType: columnDataType(f.type),
                        metadataType: columnMetadataType(f.type),
                        description: f.description,
-                       // The per-field `semantics` block (expression + role) is
-                       // not in the published `schema` aspect template yet, so
-                       // it is gated off by default (see
-                       // KcGenerateOptions.emitExpressions); compact() then
-                       // drops the undefined key.
-                       semantics: emitExpressions ? compact({
-                         expression: f.expression,
-                         // A field with any dimension metadata is a dimension;
-                         // otherwise DEFAULT.
-                         role: f.dimension ? 'DIMENSION' : 'DEFAULT',
-                       }) : undefined,
+                       semantic: emitExpressions && f.dimension ? 'DIMENSION' :
+                                                                  undefined,
                      })),
   };
 }
 
-// semantic-metric: the model-level aggregate. `dataType` is required by the
-// aspect type; when the model does not declare one, fall back to NUMERIC
-// (decimal) and warn (metrics are aggregates, so an exact numeric is the
-// sensible default; dimensions, in schemaAspectData, default to STRING) rather
-// than emit an invalid aspect.
+// The entity's sql-expressions aspect: one `fields[]` record per field that
+// carries an expression, each with the primary GoogleSQL form (unqualified) and
+// the imported vendor form (qualifier `imported`). Fields with no expression
+// are omitted; returns undefined when no field has any, so the caller attaches
+// the aspect only when it has content.
+function entitySqlExpressionsData(entity: Entity): SqlExpressionsData|
+    undefined {
+  const fields = (entity.fields ?? [])
+                     .map(f => ({
+                            name: f.name,
+                            expressions: expressionRecords(
+                                f.expression, f.importedExpression),
+                          }))
+                     .filter(f => f.expressions.length > 0);
+  return fields.length ? {fields} : undefined;
+}
+
+// The metric's sql-expressions aspect: the aggregate formula as entry-level
+// `expressions[]` (primary GoogleSQL + the imported vendor form). Returns
+// undefined when the metric has neither expression form.
+function metricSqlExpressionsData(metric: Metric): SqlExpressionsData|
+    undefined {
+  const expressions =
+      expressionRecords(metric.expression, metric.importedExpression);
+  return expressions.length ? {expressions} : undefined;
+}
+
+// semantic-metric: the model-level aggregate. Metadata-only -- the aggregation
+// formula lives in the sql-expressions companion aspect (see
+// metricSqlExpressionsData), not here. `dataType` is required by the aspect
+// type; when the model does not declare one, fall back to NUMERIC (decimal) and
+// warn (metrics are aggregates, so an exact numeric is the sensible default;
+// dimensions, in schemaAspectData, default to STRING) rather than emit an
+// invalid aspect.
 function metricAspectData(
-    metric: Metric, warnings: string[],
-    emitExpressions: boolean): Record<string, any> {
+    metric: Metric, warnings: string[]): Record<string, any> {
   let dataType = metric.type ? columnDataType(metric.type) : undefined;
   if (!dataType) {
     warnings.push(
@@ -328,9 +372,6 @@ function metricAspectData(
   return compact({
     entity: metric.entity,
     dataType,
-    // `expression` is not in the published semantic-metric aspect template yet;
-    // gated off by default (see KcGenerateOptions.emitExpressions).
-    expression: emitExpressions ? metric.expression : undefined,
   });
 }
 

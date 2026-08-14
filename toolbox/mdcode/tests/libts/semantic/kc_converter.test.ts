@@ -5,18 +5,21 @@
 // central guarantee is an emitter -> reader round trip: emit a model's entries
 // AND entry links, read them back, and get an IR equal to the source WHERE the
 // emitter is lossless. The write drops content by design (entity keys,
-// ai_context, field labels, importedDialect, and many-to-many relationships --
-// see the emitter header), so the expected read-back is the source model with
-// exactly those fields cleared. It ALSO drops the per-field `semantics` block
-// (field/metric expressions and the DIMENSION role) unless the push enabled
-// `emitExpressions`, so a DEFAULT round trip (roundTrip) loses those too, while
-// a full round trip (roundTripFull, emitExpressions: true) keeps them. 1:1 /
-// 1:N relationships and deployment targets DO round-trip either way (via
-// schema-join links and the semantic-model aspect), except that relationship
-// names come back normalized (lowercased/hyphenated). Targeted tests pin the
-// mapping details a round trip cannot isolate (the dataType inverse, the
-// DIMENSION role, resource-URI parsing, metric attach re-derivation,
-// relationship endpoint/direction recovery, and parent/anchor grouping).
+// ai_context, field labels, the imported dialect label, and many-to-many
+// relationships -- see the emitter header), so the expected read-back is the
+// source model with exactly those fields cleared. It ALSO omits the
+// sql-expressions companion aspect (field/metric expressions -- primary AND the
+// imported vendor form) and the schema field's DIMENSION `semantic` marker
+// unless the push enabled `emitExpressions`, so a DEFAULT round trip
+// (roundTrip) loses those too, while a full round trip (roundTripFull,
+// emitExpressions: true) keeps them (importedExpression included; only its
+// dialect label is lost). 1:1 / 1:N relationships and deployment targets DO
+// round-trip either way (via schema-join links and the semantic-model aspect),
+// except that relationship names come back normalized (lowercased/hyphenated).
+// Targeted tests pin the mapping details a round trip cannot isolate (the
+// dataType inverse, the DIMENSION role, resource-URI parsing, metric attach
+// re-derivation, relationship endpoint/direction recovery, and parent/anchor
+// grouping).
 
 import {describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
@@ -37,8 +40,9 @@ const OPTS = {
 };
 
 // Emits a model to entries + entry links and reads it straight back. The
-// default push omits the per-field `semantics` block (expressions + role), so a
-// default round trip drops those; use roundTripFull to exercise their recovery.
+// default push omits the sql-expressions companion aspect (field/metric
+// expressions) and the schema DIMENSION marker, so a default round trip drops
+// those; use roundTripFull to exercise their recovery.
 function roundTrip(model: SemanticModel):
     {models: SemanticModel[]; warnings: string[]} {
   const {entries, entryLinks} = generateCatalogResources(model, OPTS);
@@ -46,8 +50,9 @@ function roundTrip(model: SemanticModel):
 }
 
 // A round trip through a `--emit-expressions` push: the catalog then holds the
-// per-field `semantics` block and the metric expression, so field/metric
-// expressions and DIMENSION roles round-trip too.
+// sql-expressions companion aspect and the schema DIMENSION marker, so
+// field/metric expressions (primary + imported) and DIMENSION roles round-trip
+// too.
 function roundTripFull(model: SemanticModel):
     {models: SemanticModel[]; warnings: string[]} {
   const {entries, entryLinks} =
@@ -61,7 +66,7 @@ describe('emitter -> reader round trip (lossless slice)', () => {
   // relationships (all dropped by the write), and datatypes that invert
   // cleanly. Its fields and metric carry expressions and a DIMENSION role, so
   // it round-trips losslessly only through a `--emit-expressions` push
-  // (roundTripFull); a default push omits the per-field `semantics` block.
+  // (roundTripFull); a default push omits the sql-expressions companion aspect.
   const source: SemanticModel = {
     name: 'sales',
     description: 'the sales model',
@@ -385,14 +390,14 @@ describe('field mapping details', () => {
     };
     return rt(model).models[0].entities[0].fields[0];
   }
-  // Default push (no per-field `semantics`) vs a `--emit-expressions` push.
+  // Default push (no sql-expressions aspect) vs a `--emit-expressions` push.
   const readField = (f: Entity['fields'][number]) => readWith(roundTrip, f);
   const readFieldFull = (f: Entity['fields'][number]) =>
       readWith(roundTripFull, f);
 
   test('a DIMENSION role reads back as a dimension marker', () => {
-    // The role lives in the gated `semantics` block, so it survives only a
-    // `--emit-expressions` push.
+    // The role lives in the gated schema `semantic` marker, so it survives only
+    // a `--emit-expressions` push.
     const back = readFieldFull({name: 'd', expression: 'e.d', dimension: {}});
     expect(back.dimension).toEqual({});
   });
@@ -403,7 +408,7 @@ describe('field mapping details', () => {
   });
 
   test(
-      'a default push drops the DIMENSION role with the semantics block',
+      'a default push drops the expression + DIMENSION role (no companion aspect)',
       () => {
         const back = readField({name: 'd', expression: 'e.d', dimension: {}});
         expect(back.dimension).toBeUndefined();
@@ -411,7 +416,7 @@ describe('field mapping details', () => {
       });
 
   test(
-      'an imported expression is not persisted to or recovered from the catalog',
+      'an imported expression round-trips via the sql-expressions aspect',
       () => {
         const back = readFieldFull({
           name: 'amt',
@@ -420,9 +425,10 @@ describe('field mapping details', () => {
           importedDialect: 'SNOWFLAKE',
         });
         expect(back.expression).toBe('e.amt');
-        // The emitter no longer writes importedExpression/importedDialect, so
-        // neither survives the round trip.
-        expect(back.importedExpression).toBeUndefined();
+        // The companion aspect stores the imported form under an `imported`
+        // qualifier, so importedExpression survives; its source dialect is not
+        // stored, so importedDialect does not.
+        expect(back.importedExpression).toBe('e.amt::NUMBER');
         expect(back.importedDialect).toBeUndefined();
       });
 
@@ -722,12 +728,14 @@ function stripToKcFloor(model: SemanticModel): SemanticModel {
     for (const f of e.fields) {
       delete f.label;  // display label is not persisted
       delete f.aiContext;
-      delete f.importedExpression;  // vendor SQL is not persisted
+      delete f.importedExpression;  // dropped by a default push (no companion
+                                    // aspect)
       delete f.importedDialect;
       delete f.customExtensions;
-      // A default push omits the per-field `semantics` block, so the field
-      // expression and the DIMENSION role are not persisted (they ride back
-      // only through a `--emit-expressions` push).
+      // A default push omits the sql-expressions companion aspect and the
+      // schema DIMENSION marker, so the field expression and the DIMENSION role
+      // are not persisted (they ride back only through a `--emit-expressions`
+      // push).
       delete f.expression;
       delete f.dimension;
       // String is indistinguishable from an un-typed field on read.
