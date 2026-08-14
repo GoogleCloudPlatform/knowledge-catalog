@@ -66,7 +66,7 @@ semantic_model:
 
 ### Deployment targets (required)
 
-Every model must declare at least one **deployment target** — the BigQuery
+Every model must declare exactly one **deployment target** — the BigQuery
 property graph it deploys to — in a `GOOGLE` custom extension, as shown above. A
 target is a URI of the form:
 
@@ -76,7 +76,8 @@ target is a URI of the form:
 
 The target's project and dataset are where the property graph is created; the
 same URIs are also recorded on the model's Knowledge Catalog entry. A model with
-no deployment target is rejected at push time (see [Validation](#validation)).
+no deployment target — or with more than one — is rejected at push time (see
+[Validation](#validation)).
 
 ### Table sources
 
@@ -169,7 +170,7 @@ paired columns and foreign-key direction — in its aspect.
 `push` and `--validate-only` run the same checks, **before either destination is
 touched**, so a model that cannot deploy fails fast instead of half-deploying:
 
-* **At least one deployment target per model.** *(static)*
+* **Exactly one deployment target per model.** *(static)*
 * **Every metric on a BigQuery Graph model resolves to exactly one entity** —
   otherwise it would be dropped from the BigQuery Graph. Set the metric's attach
   entity, or scope its expression to a single entity. *(static)*
