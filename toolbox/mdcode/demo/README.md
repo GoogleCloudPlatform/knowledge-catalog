@@ -189,37 +189,25 @@ bun pull.ts
 bun push.ts
 ```
 
-**Verify the Translation**
-
-* `verify.ts` runs every file in a bundle through the translation in both
-  directions and reports any key or body content that did not survive. It
-  touches no cloud resources, so it needs no project and makes a good
-  pre-push check.
-
-```bash
-bun verify.ts
-```
-
 **Run Against Another Bundle**
 
-* `push.ts`, `pull.ts`, and `verify.ts` all take `--bundle <dir>`, so the
-  demo can run against a bundle elsewhere in the repo without copying it
-  in. `okf/bundles/acme_retail` is the bundle that exercises the full v0.2
+* `push.ts` and `pull.ts` both take `--bundle <dir>`, so the demo can run
+  against a bundle elsewhere in the repo without copying it in.
+  `okf/bundles/acme_retail` is the bundle that exercises the full v0.2
   signal layer, including an Attested Computation and a producer-defined
   key.
 
 ```bash
-bun verify.ts --bundle ../../../../okf/bundles/acme_retail
-bun push.ts   --bundle ../../../../okf/bundles/acme_retail
-bun pull.ts   --bundle /tmp/acme_pulled
+bun push.ts --bundle ../../../../okf/bundles/acme_retail
+bun pull.ts --bundle /tmp/acme_pulled
 ```
 
 * Pull re-emits frontmatter in a canonical key order and block style, so
   pulling a bundle that was hand-authored with flow mappings back over
   itself shows presentation churn in `git diff` even though nothing was
-  lost. `verify.ts` is the semantic check; it compares parsed frontmatter
-  and body, not bytes. The GA4 bundle in `catalog/` is already in canonical
-  form, so for it a pull after a push leaves the tree byte-identical.
+  lost. Compare parsed frontmatter and body rather than bytes. The GA4
+  bundle in `catalog/` is already in canonical form, so for it a pull after
+  a push leaves the tree byte-identical.
 
 * Two things do not make the trip. Only `.md` files are pushed, so bundle
   attachments such as `acme_retail/attesters/sql_equality.py` stay local
