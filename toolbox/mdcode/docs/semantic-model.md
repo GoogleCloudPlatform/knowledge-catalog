@@ -180,7 +180,16 @@ paired columns and foreign-key direction — in its aspect.
 `push` and `--validate-only` run the same checks, **before either destination is
 touched**, so a model that cannot deploy fails fast instead of half-deploying:
 
-* **Exactly one deployment target per model.** *(static)*
+* **Exactly one deployment target per model, and it must be a valid BigQuery
+  Graph URI.** A model with no target — or with more than one — is rejected, and
+  so is a single target whose URI does not match
+  `//bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>` (for
+  example a `propertyGraph`/`propertyGraphs` typo, or a
+  `…/entryGroups/@bigquery/entries/…` entry form). The error names the offending
+  URI and the expected form. This gate runs before any destination leg and for
+  every `--target`, so a malformed target writes **nothing** — not to BigQuery
+  and **not to Knowledge Catalog**; the push aborts with a non-zero exit and no
+  entries are created. *(static)*
 * **Every metric on a BigQuery Graph model resolves to exactly one entity** —
   otherwise it would be dropped from the BigQuery Graph. Set the metric's attach
   entity, or scope its expression to a single entity. *(static)*
@@ -298,21 +307,23 @@ with no matching catalog entry) is left untouched — pull never deletes.
 > pulled document as a faithful copy of the catalog metadata, not of the authored
 > model, and keep the authored document as the source of truth.
 
-> **Note — writer-side follow-ups (not inherent to pull).** Two of the reductions
-> above are limits of what push currently *writes*, not of what pull can recover.
-> They are recorded here as write-side follow-ups; the reader (pull) already
-> returns everything the catalog holds.
+> **Note — writer-side follow-up (not inherent to pull).** One reduction above is
+> a limit of what push currently *writes*, not of what pull can recover. It is
+> recorded here as a write-side follow-up; the reader (pull) already returns
+> everything the catalog holds.
 >
-> - **Relationship names.** The `schema-join` aspect does not store the authored
->   relationship name, so pull recovers it from the link id — which is lowercased
->   and hyphenated. Persisting the name in the aspect on write would let pull
->   return it verbatim.
-> - **Non-canonical deployment targets.** Push persists a target only when it is a
->   canonical BigQuery Graph URL
->   (`//bigquery.googleapis.com/projects/.../datasets/.../propertyGraphs/...`).
->   Other forms — a misspelled path, or the `projects/.../entryGroups/@bigquery/`
->   entry form — are dropped on write, so pull has nothing to recover. Widening or
->   normalizing the writer's accepted forms would let them round-trip.
+> - **Relationship names.** The `schema-join` aspect type's `metadataTemplate` has
+>   no field for the relationship name, so push cannot store it and pull recovers
+>   it from the link id — which is lowercased and hyphenated (the entry-link id
+>   format forbids the original casing/underscores). Returning the name verbatim
+>   requires adding a name field to the built-in `schema-join` aspect type in
+>   Knowledge Catalog (server-side), after which the client write/read is trivial;
+>   it is the same class of gap as the `semantics` field that gates
+>   `--emit-expressions`.
+>
+> (A non-canonical deployment target is **not** a pull gap: push rejects it at the
+> validation gate before any leg runs, so it is never written — see
+> [Validation](#validation).)
 
 ## Permissions
 
