@@ -4,9 +4,12 @@
 // The reader is the inverse of the emitter (generateCatalogResources). The
 // central guarantee is an emitter -> reader round trip: emit a model's entries
 // AND entry links, read them back, and get an IR equal to the source WHERE the
-// emitter is lossless. The write drops content by design (entity keys,
-// ai_context, field labels, importedDialect, and many-to-many relationships --
-// see the emitter header), so the expected read-back is the source model with
+// emitter is lossless. The write persists entity keys / unique keys (schema
+// aspect primaryKey / uniqueConstraints), field labels (schema aspect per-field
+// annotations), and ai_context.instructions (guidelines aspect) on
+// model/entity/metric. It still drops by design ai_context.synonyms/examples,
+// field-level ai_context, importedDialect, and many-to-many relationships (see
+// the emitter header), so the expected read-back is the source model with
 // exactly those fields cleared. It ALSO drops the per-field `semantics` block
 // (field/metric expressions and the DIMENSION role) unless the push enabled
 // `emitExpressions`, so a DEFAULT round trip (roundTrip) loses those too, while
@@ -57,10 +60,10 @@ function roundTripFull(model: SemanticModel):
 
 
 describe('emitter -> reader round trip (lossless slice)', () => {
-  // A model using only round-trippable content: no keys/ai_context/labels/
-  // relationships (all dropped by the write), and datatypes that invert
-  // cleanly. Its fields and metric carry expressions and a DIMENSION role, so
-  // it round-trips losslessly only through a `--emit-expressions` push
+  // A model using only round-trippable content: no relationships (dropped when
+  // M:N, else name-normalized) and no still-lossy ai_context; datatypes that
+  // invert cleanly. Its fields and metric carry expressions and a DIMENSION
+  // role, so it round-trips losslessly only through a `--emit-expressions` push
   // (roundTripFull); a default push omits the per-field `semantics` block.
   const source: SemanticModel = {
     name: 'sales',
@@ -68,7 +71,7 @@ describe('emitter -> reader round trip (lossless slice)', () => {
     entities: [{
       name: 'orders',
       dataSource: 'demo.sales.orders',
-      keys: [],  // keys are not persisted; keep empty so the round trip matches
+      keys: [],  // no keys: an entity with none writes no primaryKey
       fields: [
         {name: 'o_orderkey', expression: 'orders.o_orderkey', type: 'Integer'},
         {
@@ -93,6 +96,131 @@ describe('emitter -> reader round trip (lossless slice)', () => {
     const {models} = roundTripFull(source);
     expect(models).toHaveLength(1);
     expect(models[0]).toEqual(source);
+  });
+});
+
+
+describe('schema + guidelines recovery (keys / labels / instructions)', () => {
+  // A model exercising every field now persisted through a built-in aspect:
+  // entity keys (schema primaryKey), unique keys (schema uniqueConstraints),
+  // field labels (schema per-field annotations), and ai_context.instructions
+  // (guidelines aspect) on the model, an entity, and a metric. It also carries
+  // the still-lossy pieces -- ai_context.synonyms/examples and field-level
+  // ai_context -- so the round trip pins that those still drop. Keys/labels are
+  // persisted by a default push, so a plain roundTrip (no --emit-expressions)
+  // suffices.
+  const source: SemanticModel = {
+    name: 'sales',
+    description: 'the sales model',
+    aiContext: {instructions: 'Use for order analysis.', synonyms: ['selling']},
+    entities: [{
+      name: 'orders',
+      dataSource: 'demo.sales.orders',
+      keys: ['o_orderkey'],
+      uniqueKeys: [['o_orderkey'], ['o_custkey', 'o_orderdate']],
+      aiContext: {instructions: 'One row per order.', examples: ['SELECT 1']},
+      fields: [
+        {name: 'o_orderkey', expression: 'orders.o_orderkey'},
+        {
+          name: 'o_orderdate',
+          expression: 'orders.o_orderdate',
+          label: 'Order Date',
+          aiContext: {synonyms: ['order date', 'date']},
+        },
+      ],
+    }],
+    relationships: [],
+    metrics: [{
+      name: 'total_revenue',
+      expression: 'SUM(orders.o_totalprice)',
+      entity: 'orders',
+      aiContext: {instructions: 'Sum of order totals.', synonyms: ['revenue']},
+    }],
+  };
+
+  test('keys, unique keys, and field labels round-trip', () => {
+    const {models} = roundTrip(source);
+    expect(models).toHaveLength(1);
+    const [entity] = models[0].entities;
+    expect(entity.keys).toEqual(['o_orderkey']);
+    expect(entity.uniqueKeys).toEqual([
+      ['o_orderkey'], ['o_custkey', 'o_orderdate']
+    ]);
+    const orderdate = entity.fields.find(f => f.name === 'o_orderdate')!;
+    expect(orderdate.label).toBe('Order Date');
+  });
+
+  test('ai_context.instructions round-trips on model / entity / metric', () => {
+    const {models} = roundTrip(source);
+    const model = models[0];
+    expect(model.aiContext).toEqual({instructions: 'Use for order analysis.'});
+    expect(model.entities[0].aiContext).toEqual({
+      instructions: 'One row per order.'
+    });
+    expect(model.metrics[0].aiContext).toEqual({
+      instructions: 'Sum of order totals.'
+    });
+  });
+
+  test('synonyms/examples and field-level ai_context still drop', () => {
+    const {models} = roundTrip(source);
+    const model = models[0];
+    // instructions survive but synonyms/examples ride nothing back.
+    expect(model.aiContext?.synonyms).toBeUndefined();
+    expect(model.entities[0].aiContext?.examples).toBeUndefined();
+    expect(model.metrics[0].aiContext?.synonyms).toBeUndefined();
+    // Fields get no guidelines aspect, so a field-only ai_context vanishes.
+    const orderdate =
+        model.entities[0].fields.find(f => f.name === 'o_orderdate')!;
+    expect(orderdate.aiContext).toBeUndefined();
+  });
+});
+
+
+describe('a guidelines aspect is recovered only when author-managed', () => {
+  // A minimal one-entity model with no ai_context, so the emitter attaches no
+  // guidelines aspect. Tests inject one directly to exercise the userManaged
+  // gate the reader applies (see readAiContext).
+  const model: SemanticModel = {
+    name: 'sales',
+    entities: [{name: 'orders', dataSource: 'demo.sales.orders', keys: [],
+                fields: [{name: 'o_orderkey', expression: 'orders.o_orderkey'}]}],
+    relationships: [],
+    metrics: [],
+  };
+  const GUIDELINES = 'dataplex-types.global.guidelines';
+
+  // Emits the model and stamps a guidelines aspect (with the given userManaged)
+  // onto the entity entry, then reads it back and returns the entity's
+  // recovered ai_context.
+  function withGuidelines(userManaged: boolean|undefined) {
+    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
+    const entity = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
+    const data: Record<string, unknown> = {instructions: 'One row per order.'};
+    if (userManaged !== undefined) data.userManaged = userManaged;
+    entity.aspects = {
+      ...entity.aspects,
+      [GUIDELINES]: {
+        aspectType:
+            'projects/dataplex-types/locations/global/aspectTypes/guidelines',
+        data,
+      },
+    };
+    const {models} = modelsFromCatalogResources(entries, entryLinks);
+    return models[0].entities[0].aiContext;
+  }
+
+  test('userManaged:true guidelines are recovered', () => {
+    expect(withGuidelines(true)).toEqual({instructions: 'One row per order.'});
+  });
+  test('guidelines with no userManaged flag are still recovered', () => {
+    expect(withGuidelines(undefined))
+        .toEqual({instructions: 'One row per order.'});
+  });
+  test('userManaged:false (machine-generated) guidelines are skipped', () => {
+    // Dataplex may attach auto-generated guidelines; those are not authored
+    // model content, so pull must not fold them into ai_context.
+    expect(withGuidelines(false)).toBeUndefined();
   });
 });
 
@@ -705,9 +833,12 @@ describe(
 function stripToKcFloor(model: SemanticModel): SemanticModel {
   const m = structuredClone(model);
 
-  // Model ai_context is not persisted; only a GOOGLE deployment-targets block
-  // rides back, re-serialized to the reader's canonical JSON form.
-  delete m.aiContext;
+  // ai_context rides back through the built-in `guidelines` aspect, but only
+  // `instructions` -- synonyms/examples are not persisted. Reduce every
+  // entry-backed object's ai_context to instructions-only (dropping the block
+  // when it carried nothing else). A GOOGLE deployment-targets block also rides
+  // back, re-serialized to the reader's canonical JSON form.
+  floorAiContext(m);
   const ext = canonicalGoogleExt(m.customExtensions);
   if (ext) {
     m.customExtensions = ext;
@@ -716,12 +847,16 @@ function stripToKcFloor(model: SemanticModel): SemanticModel {
   }
 
   for (const e of m.entities) {
-    e.keys = [];  // keys / unique keys are never persisted
-    delete e.uniqueKeys;
-    delete e.aiContext;
+    // keys (primaryKey) and unique keys (uniqueConstraints) now persist through
+    // the built-in `schema` aspect. An empty uniqueKeys array is written as
+    // nothing and reads back absent, so normalize it away.
+    floorAiContext(e);
+    if (e.uniqueKeys && !e.uniqueKeys.length) delete e.uniqueKeys;
     delete e.customExtensions;
     for (const f of e.fields) {
-      delete f.label;  // display label is not persisted
+      // Field label now persists via the schema aspect's per-field annotations;
+      // field-level ai_context does not (only entry-backed objects get a
+      // guidelines aspect).
       delete f.aiContext;
       delete f.importedExpression;  // vendor SQL is not persisted
       delete f.importedDialect;
@@ -744,7 +879,7 @@ function stripToKcFloor(model: SemanticModel): SemanticModel {
   }
 
   for (const metric of m.metrics) {
-    delete metric.aiContext;
+    floorAiContext(metric);
     delete metric.importedExpression;
     delete metric.importedDialect;
     delete metric.customExtensions;
@@ -769,6 +904,20 @@ function stripToKcFloor(model: SemanticModel): SemanticModel {
   });
 
   return m;
+}
+
+
+// Reduces an object's `aiContext` to what a push -> pull round trip preserves:
+// only `instructions` survives (via the `guidelines` aspect), so synonyms and
+// examples are dropped, and an ai_context that carried nothing but those is
+// removed entirely. Mutates in place.
+function floorAiContext(obj: {aiContext?: {instructions?: string}}): void {
+  const instructions = obj.aiContext?.instructions;
+  if (typeof instructions === 'string' && instructions !== '') {
+    obj.aiContext = {instructions};
+  } else {
+    delete obj.aiContext;
+  }
 }
 
 

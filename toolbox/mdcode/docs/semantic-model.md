@@ -163,7 +163,7 @@ structurally, as their own array — not flattened into the description text.
 
 | Authored metadata | Why |
 |---|---|
-| The model's own `description` / `ai_context` | BigQuery silently drops statement-level graph `OPTIONS`, so model-level metadata has no home in the graph. The model's `description` is carried into [Knowledge Catalog](#what-gets-created-in-knowledge-catalog) instead; its `ai_context` (instructions, synonyms, examples) is not preserved in either destination |
+| The model's own `description` / `ai_context` | BigQuery silently drops statement-level graph `OPTIONS`, so model-level metadata has no home in the graph. The model's `description` and its `ai_context.instructions` are carried into [Knowledge Catalog](#what-gets-created-in-knowledge-catalog) instead (the model's `ai_context.synonyms`/`examples` are preserved in neither destination) |
 | A field's `datatype` | BigQuery uses the source column's own type |
 | Unique keys beyond the primary key | only the primary key is emitted |
 | The imported vendor SQL and its dialect | only the canonical GoogleSQL expression is used |
@@ -189,22 +189,30 @@ them, it never creates them.
 | Metric | `semantic-metric` | entry | `<model>.metrics.<metric>` |
 | Relationship | `schema-join` | entry link between the two entity entries | derived from the model and relationship names |
 
-An entity entry carries its columns in the `schema` aspect (name, data type, and
-description per field); a `schema-join` link carries the relationship detail — the
-paired columns and foreign-key direction — in its aspect.
+An entity entry carries its columns in the `schema` aspect (name, data type,
+description, and any `label` per field), plus the entity's keys and unique keys
+(`primaryKey` / `uniqueConstraints`); a `schema-join` link carries the
+relationship detail — the paired columns and foreign-key direction — in its
+aspect. Any element with `ai_context.instructions` (the model, an entity, or a
+metric) also gets a built-in `guidelines` aspect holding that text.
 
 > **Note — push to Knowledge Catalog is lossy.** The catalog holds metadata,
 > not a full copy of your model. It **stores** names, descriptions, data
 > sources, field datatypes and roles, and 1:1 / 1:N relationships (as
-> `schema-join` links). By default it does **not** store the SQL expressions:
-> the published system-type templates do not yet carry a per-field `semantics`
-> block or a `semantic-metric.expression` field, so the default push omits them
-> (pass `--emit-expressions` to write the canonical GoogleSQL/ANSI expression
-> once the templates gain the fields). It never stores entity keys, `ai_context`,
-> field labels, or the original vendor SQL (`importedExpression` — e.g. the MAQL
-> or Snowflake form a metric was imported from). Those stay in your authored
-> document; the vendor SQL and expressions are still used when generating
-> BigQuery SQL. Keep your model document as the source of truth.
+> `schema-join` links). It also stores entity keys and unique keys (the built-in
+> `schema` aspect's `primaryKey` / `uniqueConstraints`), field labels (the
+> `schema` aspect's per-field `annotations`), and `ai_context.instructions` on
+> the model, entities, and metrics (the built-in `guidelines` aspect). By
+> default it does **not** store the SQL expressions: the published system-type
+> templates do not yet carry a per-field `semantics` block or a
+> `semantic-metric.expression` field, so the default push omits them (pass
+> `--emit-expressions` to write the canonical GoogleSQL/ANSI expression once the
+> templates gain the fields). It never stores `ai_context.synonyms`/`examples`,
+> field-level `ai_context` (only model/entity/metric instructions have a home),
+> or the original vendor SQL (`importedExpression` — e.g. the MAQL or Snowflake
+> form a metric was imported from). Those stay in your authored document; the
+> vendor SQL and expressions are still used when generating BigQuery SQL. Keep
+> your model document as the source of truth.
 
 ## Validation
 
@@ -314,6 +322,11 @@ local model and replace it with the catalog's. Pull never touches BigQuery.
 > - Model structure: the model, its entities, and each entity's fields.
 > - Each field's data source (its data type round-trips with the two collapses
 >   noted below).
+> - Entity keys and unique keys (from the `schema` aspect's `primaryKey` /
+>   `uniqueConstraints`).
+> - Field labels (from the `schema` aspect's per-field `annotations`).
+> - `ai_context.instructions` on the model, entities, and metrics (from the
+>   `guidelines` aspect).
 > - Metrics: name and attach entity (a concrete data type round-trips; see below).
 > - 1:1 / 1:N relationships: endpoints, foreign-key direction, and join columns
 >   (from the `schema-join` links).
@@ -342,10 +355,12 @@ local model and replace it with the catalog's. Pull never touches BigQuery.
 >   the authored one. Comments in the original YAML are not preserved.
 >
 > **Not recovered** — push never wrote these, so pull cannot return them:
-> - Entity keys / unique keys.
-> - `ai_context`.
-> - Field labels.
-> - The original vendor SQL (`importedExpression`).
+> - `ai_context.synonyms` and `ai_context.examples` (only `instructions` has a
+>   home, in the `guidelines` aspect).
+> - Field-level `ai_context` (only the model, entities, and metrics get a
+>   `guidelines` aspect).
+> - The original vendor SQL (`importedExpression` / `importedDialect`).
+> - M:N (`association`) relationships.
 >
 > **So: a push followed by a pull does not return your original file.** Treat a
 > pulled document as a faithful copy of the catalog metadata, not of the authored
@@ -386,6 +401,11 @@ local model and replace it with the catalog's. Pull never touches BigQuery.
 * `dataplex.entryGroups.useSemanticModelAspect`,
   `dataplex.entryGroups.useSemanticEntityAspect`, and
   `dataplex.entryGroups.useSemanticMetricAspect` on the destination entry group
+* `dataplex.entryGroups.useSchemaAspect` on the destination entry group — every
+  entity carries the built-in `schema` aspect (its fields, keys, unique keys,
+  and labels)
+* `dataplex.entryGroups.useGuidelinesAspect` when any element carries
+  `ai_context.instructions` (the model, an entity, or a metric)
 * `dataplex.entryGroups.useSchemaJoinEntryLink` and
   `dataplex.entryGroups.useSchemaJoinAspect` when the model has relationships
 

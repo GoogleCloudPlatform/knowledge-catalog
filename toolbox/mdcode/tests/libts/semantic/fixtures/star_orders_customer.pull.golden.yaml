@@ -3,12 +3,16 @@ version: 0.2.0.dev0
 semantic_model:
   - name: sales
     description: Sales orders with customer attributes
+    ai_context:
+      instructions: Use this model for order analysis.
     custom_extensions:
       - vendor_name: GOOGLE
         data: '{"deploymentTargets":["//bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales"]}'
     datasets:
       - name: orders
         source: samples.tpch.orders
+        primary_key:
+          - o_orderkey
         description: One row per order
         fields:
           - name: o_orderkey
@@ -18,10 +22,13 @@ semantic_model:
             datatype: Opaque
           - name: o_orderdate
             datatype: Opaque
+            label: Order Date
           - name: o_totalprice
             datatype: Opaque
       - name: customer
         source: samples.tpch.customer
+        primary_key:
+          - c_custkey
         fields:
           - name: c_custkey
             datatype: Opaque

@@ -136,8 +136,9 @@ export async function pullKnowledgeCatalog(
 
 // The aspect type resource names to hydrate for a semantic entry, derived from
 // its entryType (the aspect types are the parallel resources in the same
-// project/location). An entity carries two aspects: its `semantic-entity`
-// aspect and the built-in `schema` aspect that holds its fields. Returns
+// project/location). Every entry also carries the built-in `guidelines` aspect
+// (ai_context instructions); an entity additionally carries the built-in
+// `schema` aspect that holds its fields, keys, and unique constraints. Returns
 // undefined for entries that are not part of a semantic model.
 function semanticAspectTypes(entryType: string): string[]|undefined {
   const marker = '/entryTypes/';
@@ -148,11 +149,14 @@ function semanticAspectTypes(entryType: string): string[]|undefined {
   const aspectType = (name: string) => `${typeBase}/aspectTypes/${name}`;
   switch (t) {
     case 'semantic-model':
-      return [aspectType('semantic-model')];
+      return [aspectType('semantic-model'), aspectType('guidelines')];
     case 'semantic-entity':
-      return [aspectType('semantic-entity'), aspectType('schema')];
+      return [
+        aspectType('semantic-entity'), aspectType('schema'),
+        aspectType('guidelines')
+      ];
     case 'semantic-metric':
-      return [aspectType('semantic-metric')];
+      return [aspectType('semantic-metric'), aspectType('guidelines')];
     default:
       return undefined;
   }

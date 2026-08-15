@@ -10,12 +10,14 @@
 //
 // Target schema: the `semantic-model`, `semantic-entity`, and `semantic-metric`
 // entry/aspect types are built-in system types under `dataplex-types/global`,
-// alongside the built-in `schema` aspect. This emitter references them; it never
-// provisions them. Each entry type declares `required_aspects`, so the emitted aspect set
-// per entry is a hard contract:
-//   * semantic-model entry -> { semantic-model }
-//   * semantic-entity entry -> { semantic-entity, schema }
-//   * semantic-metric entry -> { semantic-metric }
+// alongside the built-in `schema` and `guidelines` aspects. This emitter
+// references them; it never provisions them. Each entry type declares
+// `required_aspects`; the emitted aspect set per entry is those plus the
+// optional `guidelines` aspect (attached only when the object carries
+// `ai_context.instructions`):
+//   * semantic-model entry -> { semantic-model, guidelines? }
+//   * semantic-entity entry -> { semantic-entity, schema, guidelines? }
+//   * semantic-metric entry -> { semantic-metric, guidelines? }
 //
 // Aspect data shapes mirror the aspect types' CLOSED metadataTemplates exactly
 // (a server aspect type rejects an undeclared data field):
@@ -24,7 +26,9 @@
 //                                    importedResource? } }
 //   * semantic-metric = { entity?, dataType (required) }
 //   * schema          = { fields: [{ name, dataType, metadataType,
-//                                    description? }] }
+//                                    description?, annotations? }],
+//                         primaryKey?: { fields }, uniqueConstraints?: [...] }
+//   * guidelines      = { instructions, userManaged (required) }
 //
 // The SQL-expression fields -- `semantic-metric.expression` and the per-field
 // `schema.semantics` { expression, role } block -- are NOT in the published
@@ -45,7 +49,7 @@
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
 import {bigQueryGraphTargets} from './deploy_bigquery';
-import {DataType, Entity, Metric, Relationship, SemanticModel} from './ir';
+import {AiContext, DataType, Entity, Metric, Relationship, SemanticModel} from './ir';
 
 // Where the `semantic-*` and `schema` system types live: built-in types in
 // project `dataplex-types`, location `global`. Callers may override to reference
@@ -115,9 +119,8 @@ export function generateCatalogResources(
     name: modelEntryName,
     entryType: names.typeName('entry', 'semantic-model'),
     entrySource: source(model.name, model.description),
-    aspects: aspectMap(names, {
-      'semantic-model': modelAspectData(model),
-    }),
+    aspects: aspectsFor(
+        names, {'semantic-model': modelAspectData(model)}, model.aiContext),
   }];
 
   // Maps an entity's model name to its published entry name, so a relationship
@@ -138,11 +141,15 @@ export function generateCatalogResources(
       entryType: names.typeName('entry', 'semantic-entity'),
       parentEntry: modelEntryName,
       entrySource: source(entity.name, entity.description),
-      // required_aspects: semantic-entity AND the built-in schema.
-      aspects: aspectMap(names, {
-        'semantic-entity': entityAspectData(entity),
-        'schema': schemaAspectData(entity, emitExpr),
-      }),
+      // required_aspects: semantic-entity AND the built-in schema; plus the
+      // built-in guidelines aspect when the entity carries ai_context
+      // instructions.
+      aspects: aspectsFor(
+          names, {
+            'semantic-entity': entityAspectData(entity),
+            'schema': schemaAspectData(entity, emitExpr),
+          },
+          entity.aiContext),
     });
   }
 
@@ -155,9 +162,9 @@ export function generateCatalogResources(
       entryType: names.typeName('entry', 'semantic-metric'),
       parentEntry: modelEntryName,
       entrySource: source(metric.name, metric.description),
-      aspects: aspectMap(names, {
-        'semantic-metric': metricAspectData(metric, emitExpr),
-      }),
+      aspects: aspectsFor(
+          names, {'semantic-metric': metricAspectData(metric, emitExpr)},
+          metric.aiContext),
     });
   }
 
@@ -295,12 +302,23 @@ function entityAspectData(entity: Entity): Record<string, any> {
   };
 }
 
-// The built-in schema aspect, carrying each field's column type plus the new
-// per-field `semantics` block (expression / role). name,
-// dataType, and metadataType are required per column.
+// The built-in schema aspect, carrying each field's column type and display
+// label, the entity's primary/unique keys, plus the gated per-field `semantics`
+// block (expression / role). name, dataType, and metadataType are required per
+// column.
 function schemaAspectData(
     entity: Entity, emitExpressions: boolean): Record<string, any> {
-  return {
+  // Key column lists ride the schema aspect verbatim -- they need NOT be
+  // declared fields (the closed template accepts and round-trips columns absent
+  // from fields[], live-verified). Keep only non-empty strings, matching the
+  // reader's stringList, so a degenerate '' member does not round-trip
+  // asymmetrically; a set that is empty after filtering is then dropped.
+  const keyFields = (cols: readonly string[]|undefined): string[] =>
+      (cols ?? []).filter(c => typeof c === 'string' && c !== '');
+  const primaryKey = keyFields(entity.keys);
+  const uniqueConstraints =
+      (entity.uniqueKeys ?? []).map(keyFields).filter(set => set.length);
+  return compact({
     fields: (entity.fields ??
              []).map(f => compact({
                        name: f.name,
@@ -311,6 +329,12 @@ function schemaAspectData(
                        dataType: columnDataType(f.type ?? 'Opaque'),
                        metadataType: columnMetadataType(f.type ?? 'Opaque'),
                        description: f.description,
+                       // A field's display label rides in the schema field's
+                       // `annotations` map (the template's free-form
+                       // string->string map) -- the one slot for metadata the
+                       // template has no dedicated column for. Omitted when the
+                       // field has no label.
+                       annotations: f.label ? {label: f.label} : undefined,
                        // The per-field `semantics` block (expression + role) is
                        // not in the published `schema` aspect template yet, so
                        // it is gated off by default (see
@@ -323,7 +347,30 @@ function schemaAspectData(
                          role: f.dimension ? 'DIMENSION' : 'DEFAULT',
                        }) : undefined,
                      })),
-  };
+    // The entity's grain / primary key -> the schema aspect's primaryKey.fields
+    // (ordered, so a composite key's ordinal positions round-trip). Omitted
+    // when the entity declares no (non-empty) keys.
+    primaryKey: primaryKey.length ? {fields: primaryKey} : undefined,
+    // Additional uniqueness constraints beyond the primary key -> one
+    // uniqueConstraints entry per non-empty unique column set. Omitted when
+    // there are none.
+    uniqueConstraints: uniqueConstraints.length ?
+        uniqueConstraints.map(fields => ({fields})) :
+        undefined,
+  });
+}
+
+// The built-in guidelines aspect: routes an object's `ai_context.instructions`
+// -- free-form guidance for AI consumers -- to the aspect's `instructions`
+// richText field. `userManaged` is required and always true: these guidelines
+// are author-declared, so Dataplex must not overwrite them. Only `instructions`
+// is routed here; `ai_context.synonyms`/`examples` have no home in this aspect.
+// Returns undefined (attach no aspect) when there are no instructions.
+function guidelinesAspectData(ai: AiContext|undefined): Record<string, any>|
+    undefined {
+  const instructions = ai?.instructions;
+  if (instructions === undefined || instructions === '') return undefined;
+  return {instructions, userManaged: true};
 }
 
 // semantic-metric: the model-level aggregate. `dataType` is required by the
@@ -487,6 +534,18 @@ function aspectMap(names: Namer, byType: Record<string, Record<string, any>>):
     };
   }
   return out;
+}
+
+// An entry's aspect map: its required `base` aspects, plus the optional
+// built-in `guidelines` aspect when the object carries
+// `ai_context.instructions`. Kept in one place so every entry kind
+// (model/entity/metric) routes instructions the same way and an object without
+// instructions carries no empty guidelines aspect.
+function aspectsFor(
+    names: Namer, base: Record<string, Record<string, any>>,
+    ai: AiContext|undefined): Record<string, Aspect> {
+  const guidelines = guidelinesAspectData(ai);
+  return aspectMap(names, guidelines ? {...base, guidelines} : base);
 }
 
 // The native catalog entry source (display name + description), separate from

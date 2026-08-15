@@ -26,19 +26,23 @@
 //
 // Fidelity is bounded by what the emitter persisted, so this read is the
 // inverse of the WRITE, not of the authored document. It recovers names,
-// descriptions, data sources, field datatypes (via the schema aspect), each
-// metric's attach entity (re-derived from its expression, as the loader does,
-// when the catalog holds one, else the value the emitter persisted), the
-// model's deployment targets (from the semantic-model aspect, back into the
-// GOOGLE `custom_extensions` block), and 1:1 / 1:N relationships (from the
-// `schema-join` entry links a pull fetched -- see
-// `modelsFromCatalogResources`'s `entryLinks` argument). The per-field
-// `semantics` block -- field/metric expressions and the DIMENSION role -- is
-// gated off the catalog by default: the emitter writes it only under
+// descriptions, data sources, field datatypes and labels (via the schema
+// aspect), entity keys and unique keys (the schema aspect's primaryKey /
+// uniqueConstraints), each object's `ai_context.instructions` (from its
+// `guidelines` aspect, on the model/entity/metric), each metric's attach entity
+// (re-derived from its expression, as the loader does, when the catalog holds
+// one, else the value the emitter persisted), the model's deployment targets
+// (from the semantic-model aspect, back into the GOOGLE `custom_extensions`
+// block), and 1:1 / 1:N relationships (from the `schema-join` entry links a
+// pull fetched -- see `modelsFromCatalogResources`'s `entryLinks` argument).
+// The per-field `semantics` block -- field/metric expressions and the DIMENSION
+// role
+// -- is gated off the catalog by default: the emitter writes it only under
 // `--emit-expressions` (see `KcGenerateOptions.emitExpressions`), so those
 // three recover only when the push that wrote them enabled it, and a default
 // push -> pull drops them. It cannot recover what the emitter never writes:
-// entity keys/unique keys, `ai_context`, field labels,
+// `ai_context.synonyms`/`examples` and field-level `ai_context` (only
+// model/entity/metric `instructions` are persisted, via `guidelines`),
 // `importedExpression`/`importedDialect` (the vendor-dialect SQL), and
 // many-to-many (association) relationships (whose edge lives only in the
 // BigQuery property graph). A `String`- or `Opaque`-typed METRIC also reads
@@ -50,7 +54,7 @@
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
-import {CustomExtension, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
+import {AiContext, CustomExtension, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
 import {referencedEntityNames} from './sql_expr_utils';
 
 export interface ReadResult {
@@ -127,6 +131,8 @@ export function modelsFromCatalogResources(
     // the author wrote them in (the inverse of the emitter's modelAspectData).
     const targets = readDeploymentTargets(anchor);
     if (targets) model.customExtensions = [targets];
+    const ai = readAiContext(anchor);
+    if (ai) model.aiContext = ai;
     return model;
   });
 
@@ -145,9 +151,9 @@ export function modelsFromCatalogResources(
 }
 
 
-// Reconstructs an entity from its `semantic-entity` aspect (the backing source)
-// and the built-in `schema` aspect (its fields). Keys are not persisted by the
-// emitter and so come back empty.
+// Reconstructs an entity from its `semantic-entity` aspect (the backing
+// source), the built-in `schema` aspect (its fields, primary key, and unique
+// constraints), and the built-in `guidelines` aspect (ai_context instructions).
 function readEntity(entry: Entry, warnings: string[]): Entity {
   const name = entry.entrySource?.displayName ?? idOf(entry.name);
   const semantic = aspectData(entry, 'semantic-entity');
@@ -166,14 +172,40 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
   const entity: Entity = {
     name,
     dataSource,
-    keys: [],  // not persisted by the emitter; unrecoverable on read
+    // The grain / primary key, from the schema aspect's primaryKey.fields
+    // (ordered, so a composite key's ordinal positions round-trip).
+    keys: stringList(schema.primaryKey?.fields),
     fields: asArray(schema.fields)
                 .map(fd => readField(fd, name, warnings))
                 .filter((f): f is Field => f !== undefined),
   };
+  // Additional unique column sets, from the schema aspect's uniqueConstraints
+  // (each constraint's `fields` is one set); dropped when empty.
+  const uniqueKeys = asArray(schema.uniqueConstraints)
+                         .map(uc => stringList(uc?.fields))
+                         .filter(fields => fields.length);
+  if (uniqueKeys.length) entity.uniqueKeys = uniqueKeys;
   const description = entry.entrySource?.description;
   if (description !== undefined) entity.description = description;
+  const ai = readAiContext(entry);
+  if (ai) entity.aiContext = ai;
   return entity;
+}
+
+
+// Recovers ai_context from an entry's `guidelines` aspect. The emitter routes
+// only `ai_context.instructions` to that aspect (see guidelinesAspectData), so
+// synonyms and examples stay absent. Author-declared guidelines are stamped
+// userManaged:true; Dataplex may also attach machine-generated guidelines
+// (userManaged:false), which are not authored model content, so those are
+// skipped. Returns undefined when the entry carries no author guidelines
+// instructions.
+function readAiContext(entry: Entry): AiContext|undefined {
+  const guidelines = aspectData(entry, 'guidelines');
+  if (guidelines.userManaged === false) return undefined;
+  const instructions = guidelines.instructions;
+  if (typeof instructions !== 'string' || instructions === '') return undefined;
+  return {instructions};
 }
 
 
@@ -197,6 +229,10 @@ function readField(fd: any, entityName: string, warnings: string[]): Field|
   if (type !== undefined) field.type = type;
   if (sem.role === 'DIMENSION') field.dimension = {};
   if (fd?.description !== undefined) field.description = fd.description;
+  // The display label rides in the schema field's `annotations` map (the
+  // inverse of the emitter's `annotations: {label}`).
+  const label = fd?.annotations?.label;
+  if (typeof label === 'string' && label !== '') field.label = label;
   return field;
 }
 
@@ -244,6 +280,8 @@ function readMetric(
   if (type !== undefined) metric.type = type;
   const description = entry.entrySource?.description;
   if (description !== undefined) metric.description = description;
+  const ai = readAiContext(entry);
+  if (ai) metric.aiContext = ai;
   return metric;
 }
 
@@ -481,4 +519,12 @@ export function idOf(name: string): string {
 
 function asArray(value: any): any[] {
   return Array.isArray(value) ? value : [];
+}
+
+
+// The non-empty strings of an array value, dropping non-string and empty
+// entries. Used for key / unique-constraint field lists from the schema aspect.
+function stringList(value: any): string[] {
+  return asArray(value).filter(
+      (s): s is string => typeof s === 'string' && s !== '');
 }

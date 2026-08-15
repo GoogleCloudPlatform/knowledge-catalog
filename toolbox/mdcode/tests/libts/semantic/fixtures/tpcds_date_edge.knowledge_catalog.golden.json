@@ -81,7 +81,13 @@
                 "metadataType": "OTHER",
                 "description": "Net profit from the sale"
               }
-            ]
+            ],
+            "primaryKey": {
+              "fields": [
+                "ss_item_sk",
+                "ss_ticket_number"
+              ]
+            }
           }
         }
       }
@@ -126,7 +132,12 @@
                 "metadataType": "OTHER",
                 "description": "Customer last name"
               }
-            ]
+            ],
+            "primaryKey": {
+              "fields": [
+                "c_customer_sk"
+              ]
+            }
           }
         }
       }
@@ -175,7 +186,12 @@
                 "metadataType": "OTHER",
                 "description": "Current price of the item"
               }
-            ]
+            ],
+            "primaryKey": {
+              "fields": [
+                "i_item_sk"
+              ]
+            }
           }
         }
       }
@@ -229,7 +245,12 @@
                 "metadataType": "OTHER",
                 "description": "Number of employees at the store"
               }
-            ]
+            ],
+            "primaryKey": {
+              "fields": [
+                "s_store_sk"
+              ]
+            }
           }
         }
       }
