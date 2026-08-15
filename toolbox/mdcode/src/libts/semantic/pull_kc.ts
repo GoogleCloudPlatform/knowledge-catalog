@@ -165,10 +165,19 @@ async function mapConcurrent<T, R>(
     items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let next = 0;
+  let failed = false;
   async function worker(): Promise<void> {
-    while (next < items.length) {
+    // Stop claiming new items once any worker has thrown: Promise.all rejects on
+    // the first failure, so fanning out more fetches is wasted work whose own
+    // rejections would surface as unhandled-rejection noise.
+    while (next < items.length && !failed) {
       const i = next++;
-      results[i] = await fn(items[i]);
+      try {
+        results[i] = await fn(items[i]);
+      } catch (err) {
+        failed = true;
+        throw err;
+      }
     }
   }
   const workers =

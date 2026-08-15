@@ -413,9 +413,13 @@ async function pullSemanticModel(
   // so pull refuses by default; --force-remove deletes the stale local
   // document(s) before the catalog's is written.
   const catalogNames = new Set(result.models.map(m => m.name));
+  // Compare by the on-disk path each name maps to, not the raw name: a catalog
+  // model name and a local document whose names sanitize to the same file (e.g.
+  // 'a/b' -> 'a_b.yaml') are the same model, not a stale conflict.
+  const catalogPaths = new Set(result.models.map(m => layout.modelPath(m.name)));
   const staleLocal = layout.modelDocuments()
     .map(d => d.name)
-    .filter(n => !catalogNames.has(n));
+    .filter(n => !catalogPaths.has(layout.modelPath(n)));
   if (staleLocal.length) {
     if (!options.forceRemove) {
       const localList = staleLocal.map(n => `'${n}'`).join(', ');
