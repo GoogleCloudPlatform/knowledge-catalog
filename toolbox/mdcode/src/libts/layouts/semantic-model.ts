@@ -121,6 +121,17 @@ export class SemanticModelLayout implements CatalogLayout {
     this._index.set(name, localPath);
   }
 
+  // Deletes a model document from disk and the index. `pull --force-remove`
+  // uses it to drop a local model the catalog no longer names before writing
+  // the catalog's, so the entry group is never left holding two models.
+  removeModelDocument(name: string): void {
+    const localPath = this.modelPath(name);
+    if (fs.existsSync(localPath)) {
+      fs.rmSync(localPath);
+    }
+    this._index.delete(name);
+  }
+
   // The Knowledge Catalog entry-level members are not applicable to this
   // push-only layout; the model is authored as a single Ossie document, not as
   // per-entry Knowledge Catalog files. These are wired when KC-resource emit

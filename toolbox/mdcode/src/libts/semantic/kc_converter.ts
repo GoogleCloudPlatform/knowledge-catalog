@@ -235,9 +235,11 @@ function readMetric(
         `be placeable downstream`);
   }
   // The emitter writes a required dataType, defaulting a typeless metric to
-  // NUMERIC (see metricAspectData); NUMERIC maps back to Decimal, so a metric
-  // authored without a datatype round-trips as an explicit Decimal rather than
-  // un-typed. (Dimensions differ: their STRING default reads back as un-typed.)
+  // Opaque (see metricAspectData). The metric aspect carries no metadataType,
+  // so Opaque serializes as a bare STRING, which irDataType reads back as
+  // un-typed
+  // -- a metric authored without a datatype round-trips un-typed rather than as
+  // a guessed numeric type.
   const type = irDataType(data.dataType, undefined);
   if (type !== undefined) metric.type = type;
   const description = entry.entrySource?.description;
@@ -248,9 +250,11 @@ function readMetric(
 
 // The inverse of columnDataType/columnMetadataType: maps the schema aspect's
 // dataType (disambiguated by metadataType only for the STRING family) back to
-// the IR's logical DataType. STRING + OTHER is Opaque; a plain STRING is read
-// as un-typed (undefined) -- the loader's default -- since the emitter cannot
-// distinguish an authored `String` from an un-typed field (both emit STRING).
+// the IR's logical DataType. STRING + OTHER is Opaque -- which the emitter
+// writes both for an authored `Opaque` field and for a field the author left
+// untyped; a plain STRING (metadataType STRING) is an authored `String` and is
+// read as un-typed (undefined), the loader's default. (The metric aspect has no
+// metadataType, so a metric's bare STRING always reads back un-typed.)
 function irDataType(dataType: string|undefined, metadataType: string|undefined):
     DataType|undefined {
   switch (dataType) {

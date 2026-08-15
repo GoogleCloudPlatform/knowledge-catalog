@@ -10,7 +10,8 @@
 // entity's schema-join links). The reader's own mapping is covered in
 // kc_converter.test.ts; the focus here is the fetch SEQUENCE: aspect hydration,
 // the relationship-link fetch (per-entry, deduped across endpoints), the
-// --model filter, skipped entries, and ignoring foreign entries.
+// single-model-per-group invariant, aborting on any fetch failure, and ignoring
+// foreign entries.
 
 import {afterEach, describe, expect, mock, spyOn, test} from 'bun:test';
 
@@ -206,56 +207,50 @@ describe('pullKnowledgeCatalog: relationship links', () => {
         expect(lookupLinks).toHaveBeenCalledTimes(2);
       });
 
-  test(
-      'a failed link lookup on one endpoint still recovers the edge from the ' +
-          'other, and warns',
-      async () => {
-        const {entries, entryLinks} = generateCatalogResources(SALES_REL, OPTS);
-        const ordersEntry =
-            entries.find(e => (e.entrySource?.displayName) === 'orders')!;
-        // Fail the link lookup for the orders entity; the link still comes back
-        // from the customer endpoint.
-        stubClient(entries, entries, undefined, entryLinks, ordersEntry.name);
+  test('a failed link lookup aborts the pull', async () => {
+    const {entries, entryLinks} = generateCatalogResources(SALES_REL, OPTS);
+    const ordersEntry =
+        entries.find(e => (e.entrySource?.displayName) === 'orders')!;
+    // A non-200 link lookup means a relationship might be silently missing, so
+    // the pull aborts rather than reconstruct a model with a dropped edge.
+    stubClient(entries, entries, undefined, entryLinks, ordersEntry.name);
 
-        const cat = new CatalogClient({} as any);
-        const {models, warnings} = await pullKnowledgeCatalog(cat, OPTS);
-
-        expect(models[0].relationships.map(r => r.name)).toEqual(['places']);
-        expect(warnings.some(
-                   w => /failed to fetch entry links/i.test(w) &&
-                       w.includes(ordersEntry.name)))
-            .toBe(true);
-      });
+    const cat = new CatalogClient({} as any);
+    await expect(pullKnowledgeCatalog(cat, OPTS))
+        .rejects.toThrow(new RegExp(
+            `failed to fetch entry links.*${ordersEntry.name}`, 'i'));
+  });
 });
 
 
-describe('pullKnowledgeCatalog: filtering and robustness', () => {
-  test('--model keeps only the named model', async () => {
-    const other: SemanticModel = {
-      name: 'inventory',
-      entities:
-          [{name: 'items', dataSource: 'p.d.items', keys: [], fields: []}],
-      relationships: [],
-      metrics: [],
-    };
-    const entries = [...entriesFor(SALES), ...entriesFor(other)];
-    stubClient(entries, entries);
+describe('pullKnowledgeCatalog: single-model invariant and robustness', () => {
+  test(
+      'more than one semantic model in the group is a hard error', async () => {
+        const other: SemanticModel = {
+          name: 'inventory',
+          entities:
+              [{name: 'items', dataSource: 'p.d.items', keys: [], fields: []}],
+          relationships: [],
+          metrics: [],
+        };
+        const entries = [...entriesFor(SALES), ...entriesFor(other)];
+        stubClient(entries, entries);
+
+        const cat = new CatalogClient({} as any);
+        // An entry group holds exactly one model; two anchors is an unexpected
+        // catalog state the pull refuses to guess through, naming both.
+        await expect(pullKnowledgeCatalog(cat, OPTS))
+            .rejects.toThrow(/holds 2 semantic models.*expected exactly one/i);
+      });
+
+  test('an empty group reconstructs no models (a clean no-op)', async () => {
+    stubClient([], []);
 
     const cat = new CatalogClient({} as any);
-    const {models} = await pullKnowledgeCatalog(cat, {...OPTS, model: 'sales'});
-    expect(models.map(m => m.name)).toEqual(['sales']);
-  });
-
-  test('--model with no match returns nothing and warns', async () => {
-    const entries = entriesFor(SALES);
-    stubClient(entries, entries);
-
-    const cat = new CatalogClient({} as any);
-    const {models, warnings} =
-        await pullKnowledgeCatalog(cat, {...OPTS, model: 'nope'});
+    const {models, warnings} = await pullKnowledgeCatalog(cat, OPTS);
     expect(models).toHaveLength(0);
-    expect(warnings.some(w => /no semantic model named 'nope'/i.test(w)))
-        .toBe(true);
+    // Zero anchors is "nothing to pull", surfaced as a soft warning.
+    expect(warnings.some(w => /nothing to reconstruct/i.test(w))).toBe(true);
   });
 
   test(
@@ -275,52 +270,28 @@ describe('pullKnowledgeCatalog: filtering and robustness', () => {
         expect(lookup).toHaveBeenCalledTimes(3);
       });
 
-  test('a failed hydration is skipped with a warning', async () => {
+  test('a failed hydration aborts the pull', async () => {
     const entries = entriesFor(SALES);
     const metricEntry =
         entries.find(e => e.entryType.endsWith('/semantic-metric'))!;
     stubClient(entries, entries, metricEntry.name);
 
     const cat = new CatalogClient({} as any);
-    const {models, warnings} = await pullKnowledgeCatalog(cat, OPTS);
-
-    // The model + entity still reconstruct; only the metric is dropped.
-    expect(models).toHaveLength(1);
-    expect(models[0].metrics).toHaveLength(0);
-    expect(warnings.some(
-               w => /failed to fetch/i.test(w) && w.includes(metricEntry.name)))
-        .toBe(true);
-  });
-
-  test('--model hydrates only the target model\'s entries', async () => {
-    const other: SemanticModel = {
-      name: 'inventory',
-      entities:
-          [{name: 'items', dataSource: 'p.d.items', keys: [], fields: []}],
-      relationships: [],
-      metrics: [],
-    };
-    const entries = [...entriesFor(SALES), ...entriesFor(other)];
-    const {lookup} = stubClient(entries, entries);
-
-    const cat = new CatalogClient({} as any);
-    const {models} = await pullKnowledgeCatalog(cat, {...OPTS, model: 'sales'});
-    expect(models.map(m => m.name)).toEqual(['sales']);
-    // SALES has 3 entries (model + entity + metric); inventory's are never
-    // fetched -- the flag scopes hydration, not just the final result.
-    expect(lookup).toHaveBeenCalledTimes(3);
+    // A failed fetch means part of the model would be silently missing, so the
+    // pull aborts rather than reconstruct an incomplete model.
+    await expect(pullKnowledgeCatalog(cat, OPTS))
+        .rejects.toThrow(
+            new RegExp(`failed to fetch entry.*${metricEntry.name}`, 'i'));
   });
 
   test(
-      '--model keeps a child whose parentEntry does not resolve (sole-anchor ' +
+      'a child whose parentEntry does not resolve is kept (sole-anchor ' +
           'fallback)',
       async () => {
         const entries = entriesFor(SALES);
         // Simulate a project-id normalization mismatch: the metric points at an
         // anchor name that differs from the emitted one. With a single model in
-        // the group a full pull still attaches it via the reader's sole-anchor
-        // fallback, so a scoped pull must keep it too (else --model silently
-        // drops a child a full pull returns).
+        // the group the reader still attaches it via the sole-anchor fallback.
         const metricEntry =
             entries.find(e => e.entryType.endsWith('/semantic-metric'))!;
         metricEntry.parentEntry = metricEntry.parentEntry!.replace(
@@ -328,25 +299,11 @@ describe('pullKnowledgeCatalog: filtering and robustness', () => {
         const {lookup} = stubClient(entries, entries);
 
         const cat = new CatalogClient({} as any);
-        const {models} =
-            await pullKnowledgeCatalog(cat, {...OPTS, model: 'sales'});
+        const {models} = await pullKnowledgeCatalog(cat, OPTS);
 
         expect(models).toHaveLength(1);
         expect(models[0].metrics.map(m => m.name)).toEqual(['total_revenue']);
         // The metric was hydrated despite the parent mismatch (3 entries).
         expect(lookup).toHaveBeenCalledTimes(3);
       });
-
-  test('--model with no match fetches nothing and warns', async () => {
-    const entries = entriesFor(SALES);
-    const {lookup} = stubClient(entries, entries);
-
-    const cat = new CatalogClient({} as any);
-    const {models, warnings} =
-        await pullKnowledgeCatalog(cat, {...OPTS, model: 'nope'});
-    expect(models).toHaveLength(0);
-    expect(lookup).not.toHaveBeenCalled();
-    expect(warnings.some(w => /no semantic model named 'nope'/i.test(w)))
-        .toBe(true);
-  });
 });

@@ -337,8 +337,9 @@ describe(
 describe('dataType inverse (schema aspect -> IR type)', () => {
   // Emit a one-field model of each IR type, read it back, and check the field's
   // reconstructed type. String and Opaque both emit dataType STRING; String
-  // (indistinguishable from an un-typed field) reads back as undefined, while
-  // Opaque is disambiguated by metadataType OTHER.
+  // reads back as un-typed (indistinguishable from a plain STRING), while
+  // Opaque is disambiguated by metadataType OTHER. An un-typed field is emitted
+  // as Opaque (STRING + OTHER) and so reads back as Opaque.
   const cases: [Metric['type']|undefined, Metric['type']|undefined][] = [
     ['Integer', 'Integer'],
     ['Decimal', 'Decimal'],
@@ -349,8 +350,8 @@ describe('dataType inverse (schema aspect -> IR type)', () => {
     ['DateTime', 'DateTime'],
     ['DateTimeTz', 'DateTimeTz'],
     ['Opaque', 'Opaque'],
-    ['String', undefined],   // collapses to un-typed
-    [undefined, undefined],  // un-typed stays un-typed
+    ['String', undefined],  // collapses to un-typed
+    [undefined, 'Opaque'],  // un-typed defaults to Opaque
   ];
 
   for (const [type, expected] of cases) {
@@ -730,8 +731,15 @@ function stripToKcFloor(model: SemanticModel): SemanticModel {
       // only through a `--emit-expressions` push).
       delete f.expression;
       delete f.dimension;
-      // String is indistinguishable from an un-typed field on read.
-      if (f.type === 'String') delete f.type;
+      // Field types round-trip through dataType + metadataType: String is
+      // indistinguishable from an un-typed field on read (both plain STRING),
+      // while an un-typed field is emitted as Opaque (STRING + OTHER) and so
+      // reads back as Opaque.
+      if (f.type === 'String') {
+        delete f.type;
+      } else if (f.type === undefined) {
+        f.type = 'Opaque';
+      }
     }
   }
 
@@ -741,11 +749,11 @@ function stripToKcFloor(model: SemanticModel): SemanticModel {
     delete metric.importedDialect;
     delete metric.customExtensions;
     delete metric.expression;  // omitted by a default push, like field ones
-    // The emitter writes a required dataType, defaulting typeless -> NUMERIC,
-    // which reads back as Decimal; String collapses to un-typed like fields.
-    if (metric.type === undefined) {
-      metric.type = 'Decimal';
-    } else if (metric.type === 'String') {
+    // The metric aspect stores only a dataType (no metadataType), so it cannot
+    // encode Opaque: a typeless metric, String, and Opaque all emit a bare
+    // STRING dataType that reads back un-typed. A concrete type like Decimal
+    // (NUMERIC) round-trips.
+    if (metric.type === 'String' || metric.type === 'Opaque') {
       delete metric.type;
     }
   }

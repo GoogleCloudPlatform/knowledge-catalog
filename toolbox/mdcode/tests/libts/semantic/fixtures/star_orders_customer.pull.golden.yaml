@@ -12,15 +12,21 @@ semantic_model:
         description: One row per order
         fields:
           - name: o_orderkey
+            datatype: Opaque
             description: Order identifier
           - name: o_custkey
+            datatype: Opaque
           - name: o_orderdate
+            datatype: Opaque
           - name: o_totalprice
+            datatype: Opaque
       - name: customer
         source: samples.tpch.customer
         fields:
           - name: c_custkey
+            datatype: Opaque
           - name: c_name
+            datatype: Opaque
             description: Customer name
     relationships:
       - name: orders-to-customer
@@ -32,8 +38,6 @@ semantic_model:
           - c_custkey
     metrics:
       - name: total_revenue
-        datatype: Decimal
         description: Total order revenue
       - name: order_count
-        datatype: Decimal
         description: Number of orders

@@ -10,7 +10,8 @@ semantic_model:
         source: demo.sales.orders
         fields:
           - name: o_orderkey
+            datatype: Opaque
           - name: o_totalprice
+            datatype: Opaque
     metrics:
       - name: total_revenue
-        datatype: Decimal

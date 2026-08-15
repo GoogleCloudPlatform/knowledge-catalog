@@ -26,7 +26,10 @@ const OPTS = {
 };
 // The expression fields (per-field schema semantics, metric expression) are
 // gated off by default; this turns them on to assert their content.
-const OPTS_EXPR = {...OPTS, emitExpressions: true};
+const OPTS_EXPR = {
+  ...OPTS,
+  emitExpressions: true
+};
 
 // A one-entity model whose single field carries the given IR type + dimension,
 // so a test can read back the emitted schema aspect for that field.
@@ -47,8 +50,7 @@ function modelWithField(
 }
 
 // The schema-aspect field record for the sole field of modelWithField.
-function schemaField(
-    model: SemanticModel, opts = OPTS): Record<string, any> {
+function schemaField(model: SemanticModel, opts = OPTS): Record<string, any> {
   const {entries} = generateCatalogResources(model, opts);
   const entity = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
   const schema = entity.aspects!['dataplex-types.global.schema'].data!;
@@ -79,10 +81,10 @@ describe(
         });
       }
 
-      test('an un-typed field falls back to STRING / STRING', () => {
+      test('an un-typed field falls back to Opaque (STRING / OTHER)', () => {
         const f = schemaField(modelWithField(undefined));
         expect(f.dataType).toBe('STRING');
-        expect(f.metadataType).toBe('STRING');
+        expect(f.metadataType).toBe('OTHER');
       });
     });
 
@@ -90,39 +92,44 @@ describe(
 describe(
     'a field with dimension metadata gets role DIMENSION, else DEFAULT', () => {
       test('dimension -> DIMENSION', () => {
-        expect(schemaField(modelWithField('String', true), OPTS_EXPR).semantics.role)
+        expect(schemaField(modelWithField('String', true), OPTS_EXPR)
+                   .semantics.role)
             .toBe('DIMENSION');
       });
       test('no dimension -> DEFAULT', () => {
-        expect(schemaField(modelWithField('String', false), OPTS_EXPR).semantics.role)
+        expect(schemaField(modelWithField('String', false), OPTS_EXPR)
+                   .semantics.role)
             .toBe('DEFAULT');
       });
     });
 
 
 describe('the schema aspect carries the target expression in semantics', () => {
-  test('the target expression is kept; imported vendor SQL is not emitted', () => {
-    const model: SemanticModel = {
-      name: 'm',
-      relationships: [],
-      metrics: [],
-      entities: [{
-        name: 'e',
-        dataSource: 'p.d.t',
-        keys: ['k'],
-        fields: [{
-          name: 'f',
-          expression: 'CAST(e.f AS INT64)',
-          importedExpression: 'e.f::int',
-          importedDialect: 'SNOWFLAKE',
-        }],
-      }],
-    };
-    const f = schemaField(model, OPTS_EXPR);
-    expect(f.semantics.expression).toBe('CAST(e.f AS INT64)');
-    // importedExpression is the vendor/MAQL form; KC has no consumer for it.
-    expect(f.semantics.importedExpression).toBeUndefined();
-  });
+  test(
+      'the target expression is kept; imported vendor SQL is not emitted',
+      () => {
+        const model: SemanticModel = {
+          name: 'm',
+          relationships: [],
+          metrics: [],
+          entities: [{
+            name: 'e',
+            dataSource: 'p.d.t',
+            keys: ['k'],
+            fields: [{
+              name: 'f',
+              expression: 'CAST(e.f AS INT64)',
+              importedExpression: 'e.f::int',
+              importedDialect: 'SNOWFLAKE',
+            }],
+          }],
+        };
+        const f = schemaField(model, OPTS_EXPR);
+        expect(f.semantics.expression).toBe('CAST(e.f AS INT64)');
+        // importedExpression is the vendor/MAQL form; KC has no consumer for
+        // it.
+        expect(f.semantics.importedExpression).toBeUndefined();
+      });
 });
 
 
@@ -133,10 +140,11 @@ describe('the schema semantics block is gated behind emitExpressions', () => {
     expect(f.dataType).toBe('STRING');
     expect(f.metadataType).toBe('STRING');
   });
-  test('emitExpressions re-adds the semantics block (expression + role)', () => {
-    const f = schemaField(modelWithField('String', true), OPTS_EXPR);
-    expect(f.semantics).toEqual({expression: 'e.f', role: 'DIMENSION'});
-  });
+  test(
+      'emitExpressions re-adds the semantics block (expression + role)', () => {
+        const f = schemaField(modelWithField('String', true), OPTS_EXPR);
+        expect(f.semantics).toEqual({expression: 'e.f', role: 'DIMENSION'});
+      });
 });
 
 
@@ -197,34 +205,39 @@ describe('semantic-metric aspect', () => {
         expect(warnings.some(w => w.includes('dataType'))).toBe(false);
       });
 
-  test('an un-typed metric falls back to NUMERIC dataType and warns', () => {
-    const model: SemanticModel = {
-      name: 'm',
-      entities: [],
-      relationships: [],
-      metrics: [{name: 'rev', expression: 'COUNT(*)'}],
-    };
-    const {data, warnings} = metricData(model);
-    expect(data.dataType).toBe('NUMERIC');
-    expect(data.entity).toBeUndefined();  // cross-entity / unattached
-    expect(warnings.some(
-               w => w.includes('metric \'rev\'') && w.includes('NUMERIC')))
-        .toBe(true);
-  });
+  test(
+      'an un-typed metric falls back to Opaque (STRING) dataType, no warning',
+      () => {
+        const model: SemanticModel = {
+          name: 'm',
+          entities: [],
+          relationships: [],
+          metrics: [{name: 'rev', expression: 'COUNT(*)'}],
+        };
+        const {data, warnings} = metricData(model);
+        // No metadataType on the metric aspect, so Opaque emits a bare STRING;
+        // the reader reads it back un-typed (see kc_converter). No NUMERIC
+        // guess, so nothing to warn about.
+        expect(data.dataType).toBe('STRING');
+        expect(data.entity).toBeUndefined();  // cross-entity / unattached
+        expect(warnings.some(w => w.includes('metric \'rev\''))).toBe(false);
+      });
 
-  test('the expression is gated: omitted by default, kept with emitExpressions',
-       () => {
-         const model: SemanticModel = {
-           name: 'm',
-           entities: [],
-           relationships: [],
-           metrics: [{
-             name: 'rev', expression: 'SUM(o.p)', entity: 'o', type: 'Decimal'
-           }],
-         };
-         expect(metricData(model).data).toEqual({entity: 'o', dataType: 'NUMERIC'});
-         expect(metricData(model, OPTS_EXPR).data.expression).toBe('SUM(o.p)');
-       });
+  test(
+      'the expression is gated: omitted by default, kept with emitExpressions',
+      () => {
+        const model: SemanticModel = {
+          name: 'm',
+          entities: [],
+          relationships: [],
+          metrics: [
+            {name: 'rev', expression: 'SUM(o.p)', entity: 'o', type: 'Decimal'}
+          ],
+        };
+        expect(metricData(model).data)
+            .toEqual({entity: 'o', dataType: 'NUMERIC'});
+        expect(metricData(model, OPTS_EXPR).data.expression).toBe('SUM(o.p)');
+      });
 });
 
 
@@ -302,7 +315,7 @@ describe('relationships map to schema-join entry links', () => {
         },
       ],
       relationships: [{
-        name: 'orders_to_customer',
+        name: 'orders-to-customer',
         source: {entity: 'orders', columns: ['custkey']},
         destination: {entity: 'customer', columns: ['c_key']},
         description: 'each order belongs to a customer',
@@ -319,6 +332,7 @@ describe('relationships map to schema-join entry links', () => {
     // Link id is slugged and undirected: two UNSPECIFIED references naming the
     // endpoint entities' entries, typed schema-join.
     expect(link.name!.endsWith('/entryLinks/m-orders-to-customer')).toBe(true);
+    // Already-normalized name: no rename, so no normalization warning.
     expect(link.entryLinkType.endsWith('/entryLinkTypes/schema-join'))
         .toBe(true);
     expect(link.entryReferences.map(r => r.type)).toEqual([
@@ -357,7 +371,7 @@ describe('relationships map to schema-join entry links', () => {
         const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
         expect(entryLinks.length).toBe(0);
         expect(warnings.some(
-                   w => w.includes('orders_to_customer') &&
+                   w => w.includes('orders-to-customer') &&
                        w.includes('many-to-many')))
             .toBe(true);
       });
@@ -370,7 +384,23 @@ describe('relationships map to schema-join entry links', () => {
     const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
     expect(entryLinks.length).toBe(0);
     expect(warnings.some(
-               w => w.includes('orders_to_customer') && w.includes('ghost')))
+               w => w.includes('orders-to-customer') && w.includes('ghost')))
         .toBe(true);
   });
+
+  test(
+      'a relationship name that is not link-id-clean warns it will normalize',
+      () => {
+        const model = directFkModel();
+        // Underscores + uppercase are not valid in a link id, so the emitter
+        // slugs the name into the link id; a pull can only recover that slugged
+        // form. Warn so the author knows the round trip renames it.
+        model.relationships[0].name = 'Orders_To_Customer';
+        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+        expect(entryLinks.length).toBe(1);
+        expect(warnings.some(
+                   w => w.includes('Orders_To_Customer') &&
+                       w.includes('orders-to-customer')))
+            .toBe(true);
+      });
 });
