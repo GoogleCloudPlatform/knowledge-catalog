@@ -163,8 +163,11 @@ export async function init(options: InitOptions): Promise<number> {
 export interface PullOptions {
   // Reconstruct + report only; never writes a file. Mirrors push --validate-only.
   dryRun?: boolean;
-  // Limit the pull to a single model by name (default: all in the entry group).
-  model?: string;
+  // Authorize replacing a differently-named local model with the catalog's.
+  // Without it, a pull whose catalog model id differs from the local model on
+  // disk fails rather than leave two models in the entry group. Mirrors the
+  // push flag of the same name.
+  forceRemove?: boolean;
 }
 
 
@@ -372,8 +375,10 @@ async function pushKnowledgeCatalog(
 // Pulls the semantic model's Knowledge Catalog entries back into local model
 // documents (catalog/EntryGroups/<entryGroup>/<model>.yaml) and prints the
 // result. The destination coordinates come from the scope
-// (project.location.entryGroup). Overwrite policy matches the core pull:
-// last-write-wins, local-only documents are left untouched (never deleted).
+// (project.location.entryGroup). An entry group holds one model: a local
+// document with the same name is overwritten in place; a differently-named
+// local document is a conflict (pull would leave two models), so pull fails
+// unless --force-remove authorizes deleting the stale local model first.
 // Returns a process exit code (0 on success).
 async function pullSemanticModel(
   ctx: context.ApiContext, snapshot: kcmd.CatalogSnapshot,
@@ -392,7 +397,6 @@ async function pullSemanticModel(
     project: source.project,
     location: source.location,
     entryGroup: source.entryGroup,
-    model: options.model,
   });
 
   for (const w of result.warnings) {
@@ -402,6 +406,38 @@ async function pullSemanticModel(
   if (!result.models.length) {
     console.log('No semantic models found; nothing to pull.');
     return 0;
+  }
+
+  // Reconcile the local layout with the catalog. A local document whose name
+  // differs from the pulled model would leave the entry group with two models,
+  // so pull refuses by default; --force-remove deletes the stale local
+  // document(s) before the catalog's is written.
+  const catalogNames = new Set(result.models.map(m => m.name));
+  const staleLocal = layout.modelDocuments()
+    .map(d => d.name)
+    .filter(n => !catalogNames.has(n));
+  if (staleLocal.length) {
+    if (!options.forceRemove) {
+      const localList = staleLocal.map(n => `'${n}'`).join(', ');
+      const catalogList = [...catalogNames].map(n => `'${n}'`).join(', ');
+      console.error(
+        `Error: local model(s) ${localList} do not match the catalog ` +
+        `model ${catalogList} in this entry group. An entry group holds ` +
+        `one model, so pull will not leave two behind. Re-run with ` +
+        `--force-remove to delete the local model(s) and pull the ` +
+        `catalog's.`);
+      return 1;
+    }
+    for (const name of staleLocal) {
+      const p = layout.modelPath(name);
+      if (options.dryRun) {
+        console.log(`  would remove ${p}`);
+      }
+      else {
+        layout.removeModelDocument(name);
+        console.log(`  removed ${p}`);
+      }
+    }
   }
 
   let created = 0;

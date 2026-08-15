@@ -26,7 +26,7 @@ cli.command('init', 'Initialize a new catalog snapshot')
 
 cli.command('pull', 'Pull catalog entries')
    .option('--dry-run', 'Reconstruct and report only; do not write files (semantic-model scope)')
-   .option('--model <name>', 'Limit the pull to a single model by name (semantic-model scope)')
+   .option('--force-remove', 'Delete a differently-named local model and replace it with the catalog\'s; without it, a pull that would leave two models in the entry group fails (semantic-model scope)')
    .action(async (options) => {
       let exitCode = 1;
       try {

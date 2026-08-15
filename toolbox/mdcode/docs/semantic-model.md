@@ -201,11 +201,10 @@ paired columns and foreign-key direction — in its aspect.
 > block or a `semantic-metric.expression` field, so the default push omits them
 > (pass `--emit-expressions` to write the canonical GoogleSQL/ANSI expression
 > once the templates gain the fields). It never stores entity keys, `ai_context`,
-> field labels, the original vendor SQL (`importedExpression` — e.g. the MAQL or
-> Snowflake form a metric was imported from), or M:N relationships. Those stay in
-> your authored document (and, for the edges, in the BigQuery property graph); the
-> vendor SQL and expressions are still used when generating BigQuery SQL. Keep
-> your model document as the source of truth.
+> field labels, or the original vendor SQL (`importedExpression` — e.g. the MAQL
+> or Snowflake form a metric was imported from). Those stay in your authored
+> document; the vendor SQL and expressions are still used when generating
+> BigQuery SQL. Keep your model document as the source of truth.
 
 ## Validation
 
@@ -293,15 +292,18 @@ from the same scope you authored under (`<projectId>.<locationId>.<entryGroupId>
 | Flag | Effect |
 |------|--------|
 | `--dry-run` | Reconstruct from the catalog and report what would be written, but write no files. |
-| `--model <name>` | Pull a single model by name; other models in the entry group are left alone. |
+| `--force-remove` | Replace a differently-named local model with the catalog's (see below); without it, a pull that would leave the entry group holding two models fails. |
 
-One entry group can hold **many models** — each `semantic-model` entry is a
-separate anchor, and pull reconstructs one document per anchor. `--model`
-narrows both the fetch and the write to a single anchor.
+An entry group holds **exactly one** semantic model. Pull reconstructs that one
+model's document; a group with more than one `semantic-model` anchor is an
+unexpected state, so pull stops and names the anchors rather than guess which to
+keep.
 
-Pull writes with the same last-write-wins policy as the core pull: a model that
-already exists locally is overwritten in place, and a local-only document (one
-with no matching catalog entry) is left untouched — pull never deletes.
+Pull overwrites a model that already exists locally in place. If the catalog's
+model has a **different name** than the one on disk, writing it would leave the
+entry group holding two models — so by default pull stops and reports the
+mismatch instead of deleting anything. Re-run with `--force-remove` to delete the
+local model and replace it with the catalog's. Pull never touches BigQuery.
 
 > **Note — pull reconstructs what the catalog holds, not your original file.**
 > Pull can only recover what push wrote (see the note under [What gets created in
@@ -310,8 +312,9 @@ with no matching catalog entry) is left untouched — pull never deletes.
 >
 > **Recovered exactly** — these come back as authored:
 > - Model structure: the model, its entities, and each entity's fields.
-> - Field data source and data type.
-> - Metrics: name, data type, and attach entity.
+> - Each field's data source (its data type round-trips with the two collapses
+>   noted below).
+> - Metrics: name and attach entity (a concrete data type round-trips; see below).
 > - 1:1 / 1:N relationships: endpoints, foreign-key direction, and join columns
 >   (from the `schema-join` links).
 > - Deployment targets.
@@ -328,15 +331,21 @@ with no matching catalog entry) is left untouched — pull never deletes.
 > **Recovered, but normalized** — the content survives, the form changes:
 > - Relationship *names* come back lowercased/hyphenated (the catalog stores the
 >   name only in the link id, e.g. `Places Order` → `places-order`).
-> - A metric authored with no data type comes back as an explicit `Decimal`
->   (push must write a type, and defaults it to `NUMERIC`).
+> - Field types round-trip except for two collapses: a field authored with no
+>   type comes back as `Opaque`, and a field authored as `String` comes back
+>   un-typed (`String` and un-typed both store as a plain catalog `STRING`).
+> - A metric's data type round-trips only for a concrete type (e.g. `Decimal`);
+>   an untyped, `String`, or `Opaque` metric comes back un-typed, because the
+>   metric aspect stores a data type but no metadata type to mark it `Opaque`.
+> - Ordering: field order within each entity is preserved, but the order of
+>   entities and metrics is not — they come back in the catalog's own order, not
+>   the authored one. Comments in the original YAML are not preserved.
 >
 > **Not recovered** — push never wrote these, so pull cannot return them:
 > - Entity keys / unique keys.
 > - `ai_context`.
 > - Field labels.
 > - The original vendor SQL (`importedExpression`).
-> - M:N relationships (the edge lives only in the BigQuery property graph).
 >
 > **So: a push followed by a pull does not return your original file.** Treat a
 > pulled document as a faithful copy of the catalog metadata, not of the authored
@@ -374,7 +383,9 @@ with no matching catalog entry) is left untouched — pull never deletes.
 
 **Knowledge Catalog / Dataplex** — for `--target kc` or `all`:
 
-* `dataplex.entryGroups.useSemanticModelAspect` on the destination entry group
+* `dataplex.entryGroups.useSemanticModelAspect`,
+  `dataplex.entryGroups.useSemanticEntityAspect`, and
+  `dataplex.entryGroups.useSemanticMetricAspect` on the destination entry group
 * `dataplex.entryGroups.useSchemaJoinEntryLink` and
   `dataplex.entryGroups.useSchemaJoinAspect` when the model has relationships
 

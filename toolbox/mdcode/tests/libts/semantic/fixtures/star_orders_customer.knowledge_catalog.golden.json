@@ -44,23 +44,23 @@
               {
                 "name": "o_orderkey",
                 "dataType": "STRING",
-                "metadataType": "STRING",
+                "metadataType": "OTHER",
                 "description": "Order identifier"
               },
               {
                 "name": "o_custkey",
                 "dataType": "STRING",
-                "metadataType": "STRING"
+                "metadataType": "OTHER"
               },
               {
                 "name": "o_orderdate",
                 "dataType": "STRING",
-                "metadataType": "STRING"
+                "metadataType": "OTHER"
               },
               {
                 "name": "o_totalprice",
                 "dataType": "STRING",
-                "metadataType": "STRING"
+                "metadataType": "OTHER"
               }
             ]
           }
@@ -92,12 +92,12 @@
               {
                 "name": "c_custkey",
                 "dataType": "STRING",
-                "metadataType": "STRING"
+                "metadataType": "OTHER"
               },
               {
                 "name": "c_name",
                 "dataType": "STRING",
-                "metadataType": "STRING",
+                "metadataType": "OTHER",
                 "description": "Customer name"
               }
             ]
@@ -118,7 +118,7 @@
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-metric",
           "data": {
             "entity": "orders",
-            "dataType": "NUMERIC"
+            "dataType": "STRING"
           }
         }
       }
@@ -136,7 +136,7 @@
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-metric",
           "data": {
             "entity": "orders",
-            "dataType": "NUMERIC"
+            "dataType": "STRING"
           }
         }
       }
@@ -185,7 +185,6 @@
     }
   ],
   "warnings": [
-    "metric 'total_revenue': no datatype in the source model; defaulting the required semantic-metric.dataType to 'NUMERIC'",
-    "metric 'order_count': no datatype in the source model; defaulting the required semantic-metric.dataType to 'NUMERIC'"
+    "relationship 'orders_to_customer': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'orders-to-customer'), not 'orders_to_customer'."
   ]
 }

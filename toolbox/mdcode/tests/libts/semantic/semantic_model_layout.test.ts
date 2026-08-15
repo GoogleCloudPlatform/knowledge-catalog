@@ -72,4 +72,25 @@ describe('SemanticModelLayout write path', () => {
         l.writeModelDocument('sales', 'second\n');
         expect(fs.readFileSync(l.modelPath('sales'), 'utf8')).toBe('second\n');
       });
+
+  test('removeModelDocument deletes the file and de-indexes it', async () => {
+    const l = await layout('eg');
+    l.writeModelDocument('sales', 'version: x\n');
+    const p = l.modelPath('sales');
+    expect(fs.existsSync(p)).toBe(true);
+
+    l.removeModelDocument('sales');
+
+    expect(fs.existsSync(p)).toBe(false);
+    expect(l.hasModel('sales')).toBe(false);
+    // De-indexed, so it no longer surfaces as a model document.
+    expect(l.modelDocuments()).toEqual([]);
+  });
+
+  test('removeModelDocument is a no-op for an unknown model', async () => {
+    const l = await layout('eg');
+    // `pull --force-remove` may name a model that was never written; removing
+    // it must not throw.
+    expect(() => l.removeModelDocument('ghost')).not.toThrow();
+  });
 });

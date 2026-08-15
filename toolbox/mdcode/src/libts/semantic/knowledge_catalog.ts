@@ -156,7 +156,7 @@ export function generateCatalogResources(
       parentEntry: modelEntryName,
       entrySource: source(metric.name, metric.description),
       aspects: aspectMap(names, {
-        'semantic-metric': metricAspectData(metric, warnings, emitExpr),
+        'semantic-metric': metricAspectData(metric, emitExpr),
       }),
     });
   }
@@ -205,6 +205,19 @@ function relationshipLink(
           seenLinks, linkId, 'entry link', `relationship '${rel.name}'`,
           warnings))
     return undefined;
+
+  // The name lives only in the link id (schema-join's aspect has no name
+  // field), and link ids are normalized -- lowercase, hyphens only. When the
+  // authored name is not already in that form, a later pull recovers it
+  // lowercased and hyphenated, not verbatim; warn so the round-trip change is
+  // not a surprise.
+  const normalizedName = linkSlug(rel.name);
+  if (normalizedName !== rel.name) {
+    warnings.push(
+        `relationship '${rel.name}': Knowledge Catalog stores the name only ` +
+        `in the normalized link id, so a pull returns it lowercased/hyphenated ` +
+        `(e.g. '${normalizedName}'), not '${rel.name}'.`);
+  }
 
   return {
     name: names.entryLink(linkId),
@@ -291,8 +304,12 @@ function schemaAspectData(
     fields: (entity.fields ??
              []).map(f => compact({
                        name: f.name,
-                       dataType: columnDataType(f.type),
-                       metadataType: columnMetadataType(f.type),
+                       // An untyped field is published as Opaque (STRING +
+                       // metadataType OTHER), the explicit "type unknown"
+                       // marker, so a pull recovers it as Opaque rather than
+                       // dropping the type. Authored `String` maps to STRING.
+                       dataType: columnDataType(f.type ?? 'Opaque'),
+                       metadataType: columnMetadataType(f.type ?? 'Opaque'),
                        description: f.description,
                        // The per-field `semantics` block (expression + role) is
                        // not in the published `schema` aspect template yet, so
@@ -310,21 +327,14 @@ function schemaAspectData(
 }
 
 // semantic-metric: the model-level aggregate. `dataType` is required by the
-// aspect type; when the model does not declare one, fall back to NUMERIC
-// (decimal) and warn (metrics are aggregates, so an exact numeric is the
-// sensible default; dimensions, in schemaAspectData, default to STRING) rather
-// than emit an invalid aspect.
+// aspect type; a metric the author left untyped is published as Opaque -- the
+// explicit "type unknown" marker -- rather than guessing a numeric type. (The
+// metric aspect template carries only `dataType`, not a metadataType, so Opaque
+// serializes as STRING and a pull recovers the metric untyped; once the
+// template gains a metadataType it can round-trip as an explicit Opaque.)
 function metricAspectData(
-    metric: Metric, warnings: string[],
-    emitExpressions: boolean): Record<string, any> {
-  let dataType = metric.type ? columnDataType(metric.type) : undefined;
-  if (!dataType) {
-    warnings.push(
-        `metric '${
-            metric.name}': no datatype in the source model; defaulting the ` +
-        `required semantic-metric.dataType to 'NUMERIC'`);
-    dataType = 'NUMERIC';
-  }
+    metric: Metric, emitExpressions: boolean): Record<string, any> {
+  const dataType = columnDataType(metric.type ?? 'Opaque');
   return compact({
     entity: metric.entity,
     dataType,
