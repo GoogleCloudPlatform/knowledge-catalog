@@ -401,6 +401,9 @@ local model and replace it with the catalog's. Pull never touches BigQuery.
 * `dataplex.entryGroups.useSemanticModelAspect`,
   `dataplex.entryGroups.useSemanticEntityAspect`, and
   `dataplex.entryGroups.useSemanticMetricAspect` on the destination entry group
+* `dataplex.entryGroups.useSchemaAspect` on the destination entry group — every
+  entity carries the built-in `schema` aspect (its fields, keys, unique keys,
+  and labels)
 * `dataplex.entryGroups.useGuidelinesAspect` when any element carries
   `ai_context.instructions` (the model, an entity, or a metric)
 * `dataplex.entryGroups.useSchemaJoinEntryLink` and

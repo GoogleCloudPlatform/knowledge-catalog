@@ -195,10 +195,15 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
 
 // Recovers ai_context from an entry's `guidelines` aspect. The emitter routes
 // only `ai_context.instructions` to that aspect (see guidelinesAspectData), so
-// synonyms and examples stay absent. Returns undefined when the entry carries
-// no guidelines instructions.
+// synonyms and examples stay absent. Author-declared guidelines are stamped
+// userManaged:true; Dataplex may also attach machine-generated guidelines
+// (userManaged:false), which are not authored model content, so those are
+// skipped. Returns undefined when the entry carries no author guidelines
+// instructions.
 function readAiContext(entry: Entry): AiContext|undefined {
-  const instructions = aspectData(entry, 'guidelines').instructions;
+  const guidelines = aspectData(entry, 'guidelines');
+  if (guidelines.userManaged === false) return undefined;
+  const instructions = guidelines.instructions;
   if (typeof instructions !== 'string' || instructions === '') return undefined;
   return {instructions};
 }

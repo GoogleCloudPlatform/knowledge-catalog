@@ -308,6 +308,16 @@ function entityAspectData(entity: Entity): Record<string, any> {
 // column.
 function schemaAspectData(
     entity: Entity, emitExpressions: boolean): Record<string, any> {
+  // Key column lists ride the schema aspect verbatim -- they need NOT be
+  // declared fields (the closed template accepts and round-trips columns absent
+  // from fields[], live-verified). Keep only non-empty strings, matching the
+  // reader's stringList, so a degenerate '' member does not round-trip
+  // asymmetrically; a set that is empty after filtering is then dropped.
+  const keyFields = (cols: readonly string[]|undefined): string[] =>
+      (cols ?? []).filter(c => typeof c === 'string' && c !== '');
+  const primaryKey = keyFields(entity.keys);
+  const uniqueConstraints =
+      (entity.uniqueKeys ?? []).map(keyFields).filter(set => set.length);
   return compact({
     fields: (entity.fields ??
              []).map(f => compact({
@@ -339,14 +349,13 @@ function schemaAspectData(
                      })),
     // The entity's grain / primary key -> the schema aspect's primaryKey.fields
     // (ordered, so a composite key's ordinal positions round-trip). Omitted
-    // when the entity declares no keys.
-    primaryKey: entity.keys && entity.keys.length ? {fields: entity.keys} :
-                                                    undefined,
+    // when the entity declares no (non-empty) keys.
+    primaryKey: primaryKey.length ? {fields: primaryKey} : undefined,
     // Additional uniqueness constraints beyond the primary key -> one
-    // uniqueConstraints entry per unique column set. Omitted when there are
-    // none.
-    uniqueConstraints: entity.uniqueKeys && entity.uniqueKeys.length ?
-        entity.uniqueKeys.map(fields => ({fields})) :
+    // uniqueConstraints entry per non-empty unique column set. Omitted when
+    // there are none.
+    uniqueConstraints: uniqueConstraints.length ?
+        uniqueConstraints.map(fields => ({fields})) :
         undefined,
   });
 }

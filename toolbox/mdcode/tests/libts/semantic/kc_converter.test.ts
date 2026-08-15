@@ -177,6 +177,54 @@ describe('schema + guidelines recovery (keys / labels / instructions)', () => {
 });
 
 
+describe('a guidelines aspect is recovered only when author-managed', () => {
+  // A minimal one-entity model with no ai_context, so the emitter attaches no
+  // guidelines aspect. Tests inject one directly to exercise the userManaged
+  // gate the reader applies (see readAiContext).
+  const model: SemanticModel = {
+    name: 'sales',
+    entities: [{name: 'orders', dataSource: 'demo.sales.orders', keys: [],
+                fields: [{name: 'o_orderkey', expression: 'orders.o_orderkey'}]}],
+    relationships: [],
+    metrics: [],
+  };
+  const GUIDELINES = 'dataplex-types.global.guidelines';
+
+  // Emits the model and stamps a guidelines aspect (with the given userManaged)
+  // onto the entity entry, then reads it back and returns the entity's
+  // recovered ai_context.
+  function withGuidelines(userManaged: boolean|undefined) {
+    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
+    const entity = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
+    const data: Record<string, unknown> = {instructions: 'One row per order.'};
+    if (userManaged !== undefined) data.userManaged = userManaged;
+    entity.aspects = {
+      ...entity.aspects,
+      [GUIDELINES]: {
+        aspectType:
+            'projects/dataplex-types/locations/global/aspectTypes/guidelines',
+        data,
+      },
+    };
+    const {models} = modelsFromCatalogResources(entries, entryLinks);
+    return models[0].entities[0].aiContext;
+  }
+
+  test('userManaged:true guidelines are recovered', () => {
+    expect(withGuidelines(true)).toEqual({instructions: 'One row per order.'});
+  });
+  test('guidelines with no userManaged flag are still recovered', () => {
+    expect(withGuidelines(undefined))
+        .toEqual({instructions: 'One row per order.'});
+  });
+  test('userManaged:false (machine-generated) guidelines are skipped', () => {
+    // Dataplex may attach auto-generated guidelines; those are not authored
+    // model content, so pull must not fold them into ai_context.
+    expect(withGuidelines(false)).toBeUndefined();
+  });
+});
+
+
 describe('relationship recovery (schema-join links -> IR)', () => {
   // orders.o_custkey (the foreign-key side) references customer.c_custkey.
   const twoEntities: Entity[] = [

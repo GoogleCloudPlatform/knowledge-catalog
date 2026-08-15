@@ -217,6 +217,33 @@ describe(
             expect(s.uniqueConstraints).toBeUndefined();
             expect(s.fields[0].annotations).toBeUndefined();
           });
+
+      test(
+          'empty-string key members and empty unique-key sets are dropped',
+          () => {
+            // Degenerate key input: the reader's stringList drops '' members,
+            // so the emitter must too or the round trip is asymmetric. A unique
+            // key that is empty after filtering is omitted entirely.
+            const degenerate: SemanticModel = {
+              name: 'm',
+              relationships: [],
+              metrics: [],
+              entities: [{
+                name: 'e',
+                dataSource: 'p.d.t',
+                keys: ['a', ''],
+                uniqueKeys: [[''], ['b', '']],
+                fields: [{name: 'a', expression: 'e.a'}],
+              }],
+            };
+            const s = generateCatalogResources(degenerate, OPTS)
+                          .entries
+                          .find(e => e.entryType.endsWith('/semantic-entity'))!
+                          .aspects!['dataplex-types.global.schema']
+                          .data!;
+            expect(s.primaryKey).toEqual({fields: ['a']});
+            expect(s.uniqueConstraints).toEqual([{fields: ['b']}]);
+          });
     });
 
 
