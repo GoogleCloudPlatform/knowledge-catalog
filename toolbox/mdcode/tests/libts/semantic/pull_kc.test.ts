@@ -29,12 +29,24 @@ const OPTS = {
 
 const SALES: SemanticModel = {
   name: 'sales',
+  // ai_context.instructions rides back through the guidelines aspect; keys,
+  // unique keys, and the field label ride back through the schema aspect -- all
+  // persisted by a default push, so the full model reconstructs exactly.
+  aiContext: {instructions: 'Use for order analysis.'},
   entities: [{
     name: 'orders',
     dataSource: 'demo.sales.orders',
-    keys: [],
+    keys: ['o_orderkey'],
+    uniqueKeys: [['o_totalprice']],
+    aiContext: {instructions: 'One row per order.'},
     fields: [
-      {name: 'o_totalprice', expression: 'orders.o_totalprice', type: 'Decimal'}
+      {name: 'o_orderkey', expression: 'orders.o_orderkey', type: 'Integer'},
+      {
+        name: 'o_totalprice',
+        expression: 'orders.o_totalprice',
+        type: 'Decimal',
+        label: 'Total Price',
+      },
     ],
   }],
   relationships: [],
@@ -42,6 +54,7 @@ const SALES: SemanticModel = {
     name: 'total_revenue',
     expression: 'SUM(orders.o_totalprice)',
     entity: 'orders',
+    aiContext: {instructions: 'Sum of order totals.'},
     // Metrics carry a datatype through KC (semantic-metric.dataType is
     // required); Decimal -> NUMERIC on emit, NUMERIC -> Decimal on read.
     type: 'Decimal'
@@ -117,7 +130,8 @@ describe('pullKnowledgeCatalog: happy path', () => {
   });
 
   test(
-      'an entity is hydrated with BOTH its semantic-entity and schema aspects',
+      'an entity is hydrated with its semantic-entity, schema, and ' +
+          'guidelines aspects',
       async () => {
         const entries = entriesFor(SALES);
         const {lookup} = stubClient(entries, entries);
@@ -136,6 +150,10 @@ describe('pullKnowledgeCatalog: happy path', () => {
             aspectTypes.some(t => t.endsWith('/aspectTypes/semantic-entity')))
             .toBe(true);
         expect(aspectTypes.some(t => t.endsWith('/aspectTypes/schema')))
+            .toBe(true);
+        // The guidelines aspect carries ai_context.instructions, so pull must
+        // request it too (for every semantic entry, not just entities).
+        expect(aspectTypes.some(t => t.endsWith('/aspectTypes/guidelines')))
             .toBe(true);
       });
 });

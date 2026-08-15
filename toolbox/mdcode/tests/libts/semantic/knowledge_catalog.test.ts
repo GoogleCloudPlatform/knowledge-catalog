@@ -148,6 +148,131 @@ describe('the schema semantics block is gated behind emitExpressions', () => {
 });
 
 
+describe(
+    'the schema aspect carries keys, unique constraints, and labels', () => {
+      // Entity keys / unique keys and a field label ride the built-in `schema`
+      // aspect (primaryKey / uniqueConstraints / per-field annotations); all
+      // three are in the CLOSED schema template, so they emit on a default push
+      // (no
+      // --emit-expressions gating).
+      const model: SemanticModel = {
+        name: 'm',
+        relationships: [],
+        metrics: [],
+        entities: [{
+          name: 'e',
+          dataSource: 'p.d.t',
+          keys: ['a', 'b'],
+          uniqueKeys: [['a'], ['b', 'c']],
+          fields: [
+            {name: 'a', expression: 'e.a'},
+            {name: 'b', expression: 'e.b', label: 'Bee'},
+          ],
+        }],
+      };
+      const {entries} = generateCatalogResources(model, OPTS);
+      const schema =
+          entries.find(e => e.entryType.endsWith('/semantic-entity'))!
+              .aspects!['dataplex-types.global.schema']
+              .data!;
+
+      test('entity keys emit as an ordered primaryKey', () => {
+        expect(schema.primaryKey).toEqual({fields: ['a', 'b']});
+      });
+      test('unique keys emit as uniqueConstraints, one per key', () => {
+        expect(schema.uniqueConstraints).toEqual([
+          {fields: ['a']}, {fields: ['b', 'c']}
+        ]);
+      });
+      test(
+          'a field label emits as an annotations map; unlabeled fields omit it',
+          () => {
+            const [a, b] = schema.fields;
+            expect(a.annotations).toBeUndefined();
+            expect(b.annotations).toEqual({label: 'Bee'});
+          });
+
+      test(
+          'an entity with no keys / unique keys / labels omits all three',
+          () => {
+            const bare: SemanticModel = {
+              name: 'm',
+              relationships: [],
+              metrics: [],
+              entities: [{
+                name: 'e',
+                dataSource: 'p.d.t',
+                keys: [],
+                fields: [
+                  {name: 'a', expression: 'e.a'},
+                ]
+              }],
+            };
+            const s = generateCatalogResources(bare, OPTS)
+                          .entries
+                          .find(e => e.entryType.endsWith('/semantic-entity'))!
+                          .aspects!['dataplex-types.global.schema']
+                          .data!;
+            expect(s.primaryKey).toBeUndefined();
+            expect(s.uniqueConstraints).toBeUndefined();
+            expect(s.fields[0].annotations).toBeUndefined();
+          });
+    });
+
+
+describe('ai_context.instructions emits a guidelines aspect', () => {
+  const GUIDELINES = 'dataplex-types.global.guidelines';
+  const model: SemanticModel = {
+    name: 'm',
+    aiContext: {instructions: 'Model doc.', synonyms: ['syn']},
+    relationships: [],
+    entities: [{
+      name: 'e',
+      dataSource: 'p.d.t',
+      keys: ['k'],
+      aiContext: {instructions: 'Entity doc.'},
+      fields: [
+        // A field-level ai_context has no entry to attach a guidelines aspect
+        // to, so it must not surface anywhere.
+        {name: 'k', expression: 'e.k', aiContext: {synonyms: ['field syn']}},
+      ],
+    }],
+    metrics: [{
+      name: 'rev',
+      expression: 'SUM(e.k)',
+      entity: 'e',
+      type: 'Integer',
+      aiContext: {instructions: 'Metric doc.'},
+    }],
+  };
+  const {entries} = generateCatalogResources(model, OPTS);
+  const byType = (suffix: string) =>
+      entries.find(e => e.entryType.endsWith(suffix))!;
+
+  test('the model anchor carries a userManaged guidelines aspect', () => {
+    expect(byType('/semantic-model').aspects![GUIDELINES].data)
+        .toEqual({instructions: 'Model doc.', userManaged: true});
+  });
+  test('the entity carries its instructions in a guidelines aspect', () => {
+    expect(byType('/semantic-entity').aspects![GUIDELINES].data)
+        .toEqual({instructions: 'Entity doc.', userManaged: true});
+  });
+  test('the metric carries its instructions in a guidelines aspect', () => {
+    expect(byType('/semantic-metric').aspects![GUIDELINES].data)
+        .toEqual({instructions: 'Metric doc.', userManaged: true});
+  });
+
+  test('an object with no instructions gets no guidelines aspect', () => {
+    // The field's synonym-only ai_context routes nothing; and a model without
+    // instructions omits the aspect entirely.
+    const plain: SemanticModel =
+        {name: 'm', entities: [], relationships: [], metrics: []};
+    const anchor = generateCatalogResources(plain, OPTS).entries[0];
+    expect(anchor.aspects![GUIDELINES]).toBeUndefined();
+  });
+});
+
+
 describe('entity dataSource maps to a resource path', () => {
   function resources(dataSource: string): string[] {
     const model: SemanticModel = {

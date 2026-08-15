@@ -8,6 +8,8 @@ semantic_model:
     datasets:
       - name: orders
         source: demo.sales.orders
+        primary_key:
+          - o_orderkey
         fields:
           - name: o_orderkey
             datatype: Opaque

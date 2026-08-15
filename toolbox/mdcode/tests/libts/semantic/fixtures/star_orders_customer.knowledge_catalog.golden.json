@@ -15,6 +15,13 @@
               "//bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales"
             ]
           }
+        },
+        "dataplex-types.global.guidelines": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/guidelines",
+          "data": {
+            "instructions": "Use this model for order analysis.",
+            "userManaged": true
+          }
         }
       }
     },
@@ -55,14 +62,22 @@
               {
                 "name": "o_orderdate",
                 "dataType": "STRING",
-                "metadataType": "OTHER"
+                "metadataType": "OTHER",
+                "annotations": {
+                  "label": "Order Date"
+                }
               },
               {
                 "name": "o_totalprice",
                 "dataType": "STRING",
                 "metadataType": "OTHER"
               }
-            ]
+            ],
+            "primaryKey": {
+              "fields": [
+                "o_orderkey"
+              ]
+            }
           }
         }
       }
@@ -100,7 +115,12 @@
                 "metadataType": "OTHER",
                 "description": "Customer name"
               }
-            ]
+            ],
+            "primaryKey": {
+              "fields": [
+                "c_custkey"
+              ]
+            }
           }
         }
       }

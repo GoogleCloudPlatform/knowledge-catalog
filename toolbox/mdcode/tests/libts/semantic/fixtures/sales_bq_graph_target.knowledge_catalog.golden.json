@@ -49,7 +49,12 @@
                 "dataType": "STRING",
                 "metadataType": "OTHER"
               }
-            ]
+            ],
+            "primaryKey": {
+              "fields": [
+                "o_orderkey"
+              ]
+            }
           }
         }
       }
