@@ -10,16 +10,14 @@ This repository features tools, agents, and samples that demonstrate Knowledge C
 [![Open in Cloud Shell](http://gstatic.com/cloudssh/images/open-btn.svg)](https://console.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https%3A%2F%2Fgithub.com%2FGoogleCloudPlatform%2Fknowledge-catalog.git)
 
 
+## Community & ecosystem tools
+
+Open-source tools built by the community around OKF:
+
+### Generation & publishing
+- [OmniOKF](https://github.com/vishal-raaj-dnd/gemini-okf-compiler) — A zero-system-dependency compiler that converts PDFs, Office documents, and HTML files into cross-linked OKF bundles using Microsoft's `markitdown` and Gemini Flash.
+
+
 ## Contributing
 
 See the contributing [instructions](CONTRIBUTING.md) to get started contributed.
-
-
-## License
-
-All solutions within this repository are provided under the [Apache 2.0](https://www.apache.org/licenses/LICENSE-2.0) license. Please see [LICENSE](LICENSE.md) for more detailed terms and conditions.
-
-
-## Disclaimer
-
-This repository and its contents are not an official Google product.
