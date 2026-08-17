@@ -544,6 +544,7 @@ frontmatter. Producers MAY generate `index.md` automatically; consumers
 MAY synthesize one on the fly when none is present.
 
 ---
+
 ## 9. Log files
 
 A `log.md` file MAY appear at any level of the hierarchy to record the
@@ -776,6 +777,7 @@ particular, consumers MUST NOT reject a bundle because of:
 - Missing `index.md` files.
 
 ---
+
 ## 12. Versioning
 
 This document specifies OKF version **0.2**. Revisions are versioned as
@@ -805,6 +807,7 @@ The following are intentionally left to a future revision:
   shifts from SQL equality to model-and-binding equality.
 
 ---
+
 ## 13. Changes from v0.1
 
 v0.2 supersedes OKF v0.1 and is a minor version bump under §12, except for
@@ -844,6 +847,7 @@ index-file bodies, log files, permissive conformance) is carried forward
 unchanged.
 
 ---
+
 ## Appendix A: Worked example, an income statement
 
 One bundle exercising every family, shown as a v0.1 to v0.2 migration of an
