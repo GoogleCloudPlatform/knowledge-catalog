@@ -14,13 +14,16 @@ cli.command('init', 'Initialize a new catalog snapshot')
    .option('--semantic-model <id>', 'Semantic model scope as <projectId>.<locationId>.<entryGroupId>')
    .option('--pull', 'Optionally pull catalog entries during initialization')
    .action(async (options) => {
+      let exitCode = 1;
       try {
-        await commands.init(options);
+        exitCode = await commands.init(options);
       }
       catch (err: any) {
         console.error('Error:', err.message || err);
-        process.exit(1);
+        exitCode = 1;
       }
+
+      process.exit(exitCode);
    });
 
 
