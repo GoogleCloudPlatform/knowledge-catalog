@@ -60,8 +60,12 @@ export class CatalogSync {
     }
   }
 
-  // Pushes local metadata to the Catalog service to publish/deploy it.
+  // Pushes local metadata to the Catalog service to publish/deploy it. Under
+  // `validateOnly` the entries are still walked and the pre-flight lookups run,
+  // but no create or update is issued -- mirroring the dry-run contract the
+  // semantic-model legs honor, so the flag behaves the same on every scope.
   async push(options?: { force?: boolean, validateOnly?: boolean; }): Promise<SyncResult> {
+    const validateOnly = !!options?.validateOnly;
     const entries = await this._snapshot.listEntries();
 
     for (const name of entries) {
@@ -81,6 +85,10 @@ export class CatalogSync {
 
       const exist = await this._catalog.lookupEntry(project, location, entry.name);
       if (exist.status != 200 || !exist.result) {
+        if (validateOnly) {
+          // Would create; write nothing under --validate-only.
+          continue;
+        }
         const entryGroup = nameParts[5];
         const entryId = nameParts.slice(7).join('/');
         const createEntryRes = await this._catalog.createEntry(project, location, entryGroup, entryId, entry);
@@ -106,6 +114,11 @@ export class CatalogSync {
       }
 
       if (!updateMask.length) {
+        continue;
+      }
+
+      if (validateOnly) {
+        // Would update; write nothing under --validate-only.
         continue;
       }
 
