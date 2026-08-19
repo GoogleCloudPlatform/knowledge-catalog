@@ -24,4 +24,6 @@ assert:
   fileSystem:
     catalog/child.yaml:
       - contains: "name: child"
-      - contains: "parent: projects/test/locations/us/entryGroups/g1/entries/parent"
+      # Stored as a bare local name (not the service name), matching how a
+      # human authors an entry and how _fetchEntry re-derives it on push.
+      - contains: "parent: parent"
