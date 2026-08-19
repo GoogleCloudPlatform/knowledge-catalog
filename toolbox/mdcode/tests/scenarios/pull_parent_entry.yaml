@@ -1,0 +1,27 @@
+name: pull_parent_entry
+description: >
+  A pulled entry with a parentEntry writes the parent into the local snapshot so
+  it round-trips (regression: toLocalEntry used to drop parentEntry).
+setup:
+  catalog:
+    entryGroups:
+      - name: projects/test/locations/us/entryGroups/g1
+    entryTypes:
+      - name: projects/test/locations/global/entryTypes/et1
+    entries:
+      - name: projects/test/locations/us/entryGroups/g1/entries/child
+        entryType: projects/test/locations/global/entryTypes/et1
+        parentEntry: projects/test/locations/us/entryGroups/g1/entries/parent
+
+  fileSystem:
+    catalog.yaml: |
+      scope: entryGroup.test.us.g1
+
+actions:
+  - action: pull
+
+assert:
+  fileSystem:
+    catalog/child.yaml:
+      - contains: "name: child"
+      - contains: "parent: projects/test/locations/us/entryGroups/g1/entries/parent"

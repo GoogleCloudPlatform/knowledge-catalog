@@ -206,8 +206,7 @@ export class CatalogSnapshot {
       entry,
       serviceName,
       this.manifest,
-      this._entryTypes,
-      this._aspectTypes
+      this._entryTypes
     );
   }
 }
@@ -232,6 +231,11 @@ function toLocalEntry(entry: dataplex.Entry, localName: string): md.Entry {
         description: entrySource.description ?? undefined,
         labels: entrySource.labels ?? undefined,
         location: entrySource.location ?? undefined,
+        // Preserve the parent so a pull after a push round-trips it. The stored
+        // value is the full service name; _fetchEntry passes it through unchanged
+        // on the next push (its bare-name conversion only fires for names that do
+        // not already start with 'projects/').
+        parent: entry.parentEntry ?? undefined,
         ancestors: entrySource.ancestors ?? undefined,
         createTime: entrySource.createTime ?? undefined,
         updateTime: entrySource.updateTime ?? undefined
@@ -245,8 +249,7 @@ function toLocalEntry(entry: dataplex.Entry, localName: string): md.Entry {
 function toServiceEntry(entry: md.Entry,
                         serviceName: string,
                         manifest: CatalogManifest,
-                        entryTypes: Map<string, dataplex.EntryType>,
-                        aspectTypes: Map<string, dataplex.AspectType>): dataplex.Entry {
+                        entryTypes: Map<string, dataplex.EntryType>): dataplex.Entry {
   const entryType = entryTypes.get(entry.type);
   if (!entryType) {
     throw new Error(`Unknown entry type ${entry.type} in snapshot`);

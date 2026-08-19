@@ -91,7 +91,11 @@ const TARGET_ALIASES: Record<string, PushTarget> = {
 // Accepts a comma-separated list ('bq,kc'), the keyword 'all' (every
 // destination), and defaults to 'bq'. The result is always in canonical
 // DESTINATIONS order.
-export function resolveTargets(target?: string): PushTarget[] | undefined {
+export function resolveTargets(target?: string | boolean): PushTarget[] | undefined {
+  // cac yields boolean `true` for a bare `--target` (no value); treat any
+  // non-string as an invalid selection so the caller reports it rather than
+  // throwing on `.toLowerCase()`.
+  if (target !== undefined && typeof target !== 'string') return undefined;
   const tokens = (target ?? DEFAULT_TARGET)
     .toLowerCase()
     .split(',')
