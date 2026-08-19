@@ -13,7 +13,7 @@ sources:
     resource: ../decisions.md
     title: "Harbor Skills decisions (the D-NNN decision record)"
   - id: decide-skill
-    resource: .../skills/decide.md
+    resource: ../skills/decide.md
     title: "Decide — the skill that emits decision record blocks"
 ---
 

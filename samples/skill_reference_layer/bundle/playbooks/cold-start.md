@@ -13,7 +13,7 @@ sources:
     resource: ../decisions.md
     title: "Harbor Skills decisions (the D-NNN decision record)"
   - id: bootstrap-skill
-    resource: .../skills/bootstrap.md
+    resource: ../skills/bootstrap.md
     title: "Bootstrap — the skill that executes this playbook on cold start"
 ---
 

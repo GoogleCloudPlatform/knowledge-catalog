@@ -64,6 +64,12 @@ sources:
 - **target boundary.** every concept file under `bundle/skills/` removes its `## Skip conditions` section; the skip content folds into Algorithm step 0. The proposal's revision keyword for navigation is `OKF as-is` for the reference layer - the bundle already conforms.
 - **machine-enforceable invariant.** a `## Skip conditions` section does not appear in any skill file under `bundle/skills/`; every skill file's `# Algorithm` carries step 0 with the folded skip content.
 
+#### D-008 · `sources[].resource` and markdown links resolve — **Accepted**
+
+- **context & trade-offs.** Two `sources[].resource` paths in the initial bundle — `.../skills/bootstrap.md` in `playbooks/cold-start.md` and `.../skills/decide.md` in `templates/decision-record-block.md` — carried a three-dot prefix and did not resolve from the referring files' directories. The seal-verifier's link phase (the `process:harbor-bundle-parse` structural pass, extended to resolve internal `sources[].resource` values) caught both before the PR shipped.
+- **target boundary.** every internal `sources[].resource` is relative to the referring file's directory and resolves; every markdown link resolves; every concept is reachable from `index.md`.
+- **machine-enforceable invariant.** the seal-verifier (parse + frontmatter + link resolution) passes over `bundle/`; a broken internal `sources[].resource`, a dangling markdown link, or a concept missing from `index.md` fails the pass.
+
 ## Provenance
 
 This decision record is the analog of an ADR archive. Its draft form is OKF-true (`generated` and `verified` fields are optional on `index.md` beyond `okf_version`; this file is a normal concept-equivalent and could carry the trust family if it were a concept). Consumers of the bundle should still treat decision record blocks as the authoritative decision surface — `sources` on every concept points here, not the other way around.
