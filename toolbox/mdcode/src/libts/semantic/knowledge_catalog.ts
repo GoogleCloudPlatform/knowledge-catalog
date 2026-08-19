@@ -76,6 +76,18 @@ export interface KcResources {
   entries: Entry[];
   entryLinks: EntryLink[];
   warnings: string[];
+  // Entry-id prefixes this model owns, used by delete reconciliation to decide
+  // which existing entries a push is allowed to remove. Supplied by the emitter
+  // rather than derived by the publisher: the id scheme is the emitter's
+  // concern, and origins differ (Ossie uses dotted ids, LookML the KC path
+  // form), so the publisher must not assume either.
+  //
+  // It rides on the emitter's output rather than being passed to the publisher
+  // alongside it so that the ids and the prefixes meant to match them are
+  // produced by one call and cannot drift apart. A prefix that stops matching
+  // fails silently in the dangerous direction: nothing is owned, so nothing is
+  // deleted, and orphaned entries accumulate while the push reports success.
+  ownedPrefixes: string[];
 }
 
 /**
@@ -177,7 +189,13 @@ export function generateCatalogResources(
     if (link) entryLinks.push(link);
   }
 
-  return {entries, entryLinks, warnings: [...new Set(warnings)]};
+  return {
+    entries,
+    entryLinks,
+    warnings: [...new Set(warnings)],
+    // Ossie ids are dotted: `<model>.entities.<name>` / `<model>.metrics.<name>`.
+    ownedPrefixes: [`${modelId}.entities.`, `${modelId}.metrics.`],
+  };
 }
 
 

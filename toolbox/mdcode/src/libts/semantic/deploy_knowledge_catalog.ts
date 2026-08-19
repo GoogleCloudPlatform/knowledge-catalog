@@ -142,7 +142,26 @@ function sleep(ms: number): Promise<void> {
 export async function deployKnowledgeCatalog(
     models: LoadedModel[], ctx: context.ApiContext,
     opts: KcDeployOptions): Promise<KcDeployResult> {
-  const warnings: string[] = [];
+  // Emit every model to catalog resources up front (pure -- no network).
+  const emit = emitModels(models, opts);
+  if (emit.error) {
+    return {
+      success: false, details: emit.error, warnings: emit.warnings,
+      created: 0, updated: 0, deleted: 0, linked: 0, unlinked: 0, plan: [],
+    };
+  }
+  return deployEmittedModels(emit.emitted, emit.warnings, ctx, opts);
+}
+
+
+// Publishes models that are already mapped to catalog resources. Origin-
+// agnostic: everything below operates on EmittedModel and never looks at the
+// source format, so an origin with its own emitter (LookML, which does not use
+// the Ossie IR) calls this directly instead of deployKnowledgeCatalog.
+export async function deployEmittedModels(
+    emitted: EmittedModel[], emitWarnings: string[], ctx: context.ApiContext,
+    opts: KcDeployOptions): Promise<KcDeployResult> {
+  const warnings: string[] = [...emitWarnings];
   const counts: Counts =
       {created: 0, updated: 0, deleted: 0, linked: 0, unlinked: 0};
   let plan: string[] = [];
@@ -150,12 +169,6 @@ export async function deployKnowledgeCatalog(
   // failure, and counts/plan reflect whatever had been done when called.
   const result = (success: boolean, details?: string): KcDeployResult =>
       ({success, warnings, ...counts, plan, ...(details ? {details} : {})});
-
-  // Emit every model to catalog resources up front (pure -- no network).
-  const emit = emitModels(models, opts);
-  warnings.push(...emit.warnings);
-  if (emit.error) return result(false, emit.error);
-  const emitted = emit.emitted;
 
   // Exactly one model per entry group is supported for now. An empty workspace
   // is a clean no-op under --validate-only and a configuration error on a real
@@ -344,10 +357,19 @@ function reconcileDeletions(
   const childPrefixes: string[] = [];
   for (const {resources} of emitted) {
     for (const e of resources.entries) emittedIds.add(idOf(e.name));
-    // entries[0] is the model anchor (the emitter writes it first).
-    const anchorId = idOf(resources.entries[0].name);
-    anchorIds.add(anchorId);
-    childPrefixes.push(`${anchorId}.entities.`, `${anchorId}.metrics.`);
+    // entries[0] is the model anchor (the emitter writes it first). An emitter
+    // that produced no entries has no anchor and owns nothing, so skip it
+    // rather than index into an empty array -- a throw here escapes the
+    // KcDeployResult contract, and it would do so *after* writes.
+    if (!resources.entries.length) continue;
+    anchorIds.add(idOf(resources.entries[0].name));
+    // An empty prefix matches every id, which would make every entry in the
+    // group -- including ones this tool never wrote -- an orphan. Both current
+    // emitters build prefixes from a validated model name and cannot produce
+    // one, but this function deletes things on the strength of what it is
+    // handed, and a future origin may supply them. Drop empties rather than trust
+    // the caller.
+    childPrefixes.push(...resources.ownedPrefixes.filter(p => p.length > 0));
   }
   const owned = (id: string) =>
       anchorIds.has(id) || childPrefixes.some(p => id.startsWith(p));
@@ -465,8 +487,15 @@ async function deleteOwnedLinks(
 function reconcileLinks(
     cat: CatalogClient, opts: KcDeployOptions, resources: KcResources,
     existing: Entry[]): Promise<LinkReconcileOutcome> {
-  const anchorId = idOf(resources.entries[0].name);
-  const entityPrefix = `${anchorId}.entities.`;
+  // An emitter that produced no entries has no anchor and owns nothing. Guarded
+  // for the same reason reconcileDeletions guards it: this runs inside
+  // writeModels, so a throw here escapes the KcDeployResult contract *after*
+  // writes have happened.
+  if (!resources.entries.length) return Promise.resolve({unlinked: 0});
+  // Owned by this model: the prefixes its emitter declared, not a guess at the
+  // id scheme.
+  const ownedId = (id: string) =>
+      resources.ownedPrefixes.some(p => p.length > 0 && id.startsWith(p));
   // Look up links via the model's entity entries KNOWN TO THE SERVER (the
   // pre-write snapshot), not the ones this push emits. Only a server-side entry
   // can already carry a link, and enumerating the snapshot also reaches a link
@@ -474,15 +503,19 @@ function reconcileLinks(
   // but both entries are still present in `existing` until reconcileDeletions
   // deletes them at the end. A brand-new model has no such entries, so it issues
   // no lookups at all.
-  const entityNames = existing.map(e => e.name)
-      .filter(name => idOf(name).startsWith(entityPrefix));
+  // Entity entries specifically, by entry type rather than by id shape: only
+  // those can be a schema-join endpoint.
+  const entityNames =
+      existing.filter(e => (e.entryType ?? '').endsWith('/semantic-entity'))
+          .map(e => e.name)
+          .filter(name => ownedId(idOf(name)));
   if (!entityNames.length) return Promise.resolve({unlinked: 0});
 
   const emittedLinkIds =
       new Set(resources.entryLinks.map(l => idOf(l.name ?? '')));
   const ownedByModel = (link: EntryLink) =>
       link.entryReferences.length === 2 &&
-      link.entryReferences.every(r => idOf(r.name).startsWith(entityPrefix));
+      link.entryReferences.every(r => ownedId(idOf(r.name)));
 
   return deleteOwnedLinks(
       cat, opts, entityNames,
@@ -494,8 +527,15 @@ function reconcileLinks(
 // Deletes models already in the entry group that this push does not re-emit
 // (--force-remove). For each foreign anchor: remove its schema-join links first
 // (they reference entries about to be deleted), then its entries -- the anchor
-// and its `<anchor>.entities.` / `<anchor>.metrics.` children present in the
-// pre-write listing `existing`.
+// and its children present in the pre-write listing `existing`.
+//
+// A foreign model is by definition not in this push, so its emitter's
+// `ownedPrefixes` are unavailable. Ownership is instead the anchor followed by
+// a separator, which holds for every id scheme without naming its segments:
+// `<anchor>.entities.x` and `<anchor>/entities/x` both match. Naming the
+// segments here would leave a model published by a different emitter with its
+// children orphaned and unreachable -- the anchor goes, so no later push sees a
+// foreign model, and nothing owns the remainder.
 async function removeForeignModels(
     cat: CatalogClient, opts: KcDeployOptions, existing: Entry[],
     foreignAnchors: string[]):
@@ -503,12 +543,10 @@ async function removeForeignModels(
   let deleted = 0;
   let unlinked = 0;
   for (const anchor of foreignAnchors) {
-    const entityPrefix = `${anchor}.entities.`;
-    const metricPrefix = `${anchor}.metrics.`;
     const owned = existing.filter(e => {
       const id = idOf(e.name);
-      return id === anchor || id.startsWith(entityPrefix) ||
-          id.startsWith(metricPrefix);
+      return id === anchor || id.startsWith(`${anchor}.`) ||
+          id.startsWith(`${anchor}/`);
     });
     const entityNames = owned
         .filter(e => (e.entryType ?? '').endsWith('/semantic-entity'))
@@ -544,11 +582,12 @@ interface EntriesOutcome {
 }
 
 // Creates a model's entries. The anchor (entries[0]) is the parent of every
-// child and is written first. Entity entries are then written before metric
-// entries -- a metric's aspect references its entity by name, so the entity must
-// exist first -- and within each of those two waves the entries are independent
-// and written concurrently. An entry that already exists is updated in place
-// (idempotent re-push).
+// child and is written first. Entity entries are then written before the entries
+// that reference them by name -- metrics (`semantic-metric.entity`) and, for
+// LookML, explores (`semantic-explore.baseEntity` / `joins[].fromEntity`) -- and
+// within each of those two waves the entries are independent and written
+// concurrently. An entry that already exists is updated in place (idempotent
+// re-push).
 async function createEntries(
     cat: CatalogClient, opts: KcDeployOptions,
     entries: Entry[]): Promise<EntriesOutcome> {
@@ -561,11 +600,15 @@ async function createEntries(
   let created = anchorRes.updated ? 0 : 1;
   let updated = anchorRes.updated ? 1 : 0;
 
-  // Entities first, then metrics (a metric references its entity); each wave is
-  // written concurrently.
-  const isMetric = (e: Entry) => (e.entryType ?? '').endsWith('/semantic-metric');
-  for (const wave of [children.filter(e => !isMetric(e)),
-                      children.filter(isMetric)]) {
+  // Entities first, then the entries that reference an entity by name (metrics
+  // and explores); each wave is written concurrently.
+  const dependsOnEntity = (e: Entry) => {
+    const type = e.entryType ?? '';
+    return type.endsWith('/semantic-metric') ||
+        type.endsWith('/semantic-explore');
+  };
+  for (const wave of [children.filter(e => !dependsOnEntity(e)),
+                      children.filter(dependsOnEntity)]) {
     const res = await Promise.all(wave.map(e => writeEntry(cat, opts, e)));
     const firstErr = res.find(r => r.error);
     if (firstErr) return {created, updated, error: firstErr.error};
@@ -607,7 +650,7 @@ async function createEntryLinks(
 async function writeEntryLink(
     cat: CatalogClient, opts: KcDeployOptions,
     link: EntryLink): Promise<{error?: string}> {
-  const linkId = idOf(link.name ?? '');
+  const linkId = linkIdOf(link.name ?? '');
   const res = await cat.createEntryLink(
       opts.project, opts.location, opts.entryGroup, linkId, link);
   if (isExists(res)) {
@@ -673,21 +716,47 @@ function planSummary(
     `  ${resources.entries.length} entr${
         resources.entries.length === 1 ? 'y' : 'ies'}:`,
     ...resources.entries.map(
-        e => `    - ${idOf(e.name)} (${idOf(e.entryType)})`),
+        e => `    - ${idOf(e.name)} (${typeIdOf(e.entryType)})`),
   ];
   if (resources.entryLinks.length) {
     lines.push(
         `  ${resources.entryLinks.length} schema-join link${
             resources.entryLinks.length === 1 ? '' : 's'}:`,
         ...resources.entryLinks.map(
-            l => `    - ${idOf(l.name ?? '')}`));
+            l => `    - ${linkIdOf(l.name ?? '')}`));
   }
   return lines;
 }
 
 
-// The id segment of a full entry/entryType resource name (after the last '/').
 function idOf(name: string): string {
+  // Match the container's SHAPE rather than any exact text. Two reasons:
+  //   - names from listEntries do not always spell the project the way the
+  //     scope does (the server mixes project ids and numbers, and _fixEntry
+  //     normalizes them only when its Cloud Resource Manager lookup succeeds);
+  //   - an entry id may itself contain slashes, as the LookML emitter's
+  //     `<model>/metrics/<view>/<name>` does, so taking the last segment alone
+  //     would return `<name>` and match no ownership prefix.
+  // Falls back to the last segment, which is correct for entry-link and type
+  // resource names that have no `/entries/` container.
+  const m = name.match(
+      /^projects\/[^/]+\/locations\/[^/]+\/entryGroups\/[^/]+\/entries\/(.+)$/);
+  return m ? m[1] : (name.split('/').pop() ?? name);
+}
+
+// The entry-link id: everything after `/entryLinks/`. Link ids are restricted to
+// a single segment (see linkSlug), but this stays symmetric with idOf so a
+// link name is never parsed by the wrong rule.
+function linkIdOf(name: string): string {
+  const i = name.indexOf('/entryLinks/');
+  return i < 0 ? name : name.slice(i + '/entryLinks/'.length);
+}
+
+// The trailing id of a *type* resource name, e.g.
+// `projects/dataplex-types/locations/global/entryTypes/semantic-metric` ->
+// `semantic-metric`. Type ids are always one segment, so last-segment is right
+// here -- and is why one shared helper worked until entry ids gained slashes.
+function typeIdOf(name: string): string {
   return name.split('/').pop() ?? name;
 }
 

@@ -15,7 +15,7 @@ import * as path from 'node:path';
 import {ApiResult} from '../../../src/libts/gcp/api';
 import {ApiContext} from '../../../src/libts/gcp/context';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
-import {deployKnowledgeCatalog} from '../../../src/libts/semantic/deploy_knowledge_catalog';
+import {deployEmittedModels, deployKnowledgeCatalog} from '../../../src/libts/semantic/deploy_knowledge_catalog';
 import {loadSemanticModels} from '../../../src/libts/semantic/loader';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
@@ -44,9 +44,12 @@ function models(docs: {name: string; text: string}[]) {
 }
 
 // A destination entry name for a given entry id, as the catalog returns it from
-// listEntries; reconciliation keys off the id (the last path segment).
-function entryName(id: string): string {
-  return `projects/dest/locations/us/entryGroups/eg/entries/${id}`;
+// listEntries. Reconciliation recovers the id by matching the CONTAINER's shape
+// (`projects/*/locations/*/entryGroups/*/entries/`), not its exact text, so that
+// a name spelling the project as a number is still recognised -- see the
+// project-number test below.
+function entryName(id: string, project = 'dest'): string {
+  return `projects/${project}/locations/us/entryGroups/eg/entries/${id}`;
 }
 
 // The same loader-valid model, but its GOOGLE custom_extension carries invalid
@@ -88,6 +91,10 @@ function stubClient(opts: {
   // A bare id defaults to a generic entryType; pass {id, type} to stage a
   // specific one (e.g. a foreign semantic-model anchor). Default: none.
   existing?: (string | {id: string; type: string})[],
+  // How listEntries spells the project in the names it yields. Defaults to the
+  // scope's own project; set to a number to reproduce the server's inconsistent
+  // id/number spelling.
+  existingProject?: string,
   del?: (entryId: string) => ApiResult<any>,
   // Result of createEntryLink, keyed by the entry-link id. Default: 200.
   createLink?: (linkId: string) => ApiResult<any>,
@@ -112,7 +119,10 @@ function stubClient(opts: {
                        const id = typeof e === 'string' ? e : e.id;
                        const entryType =
                            typeof e === 'string' ? 'semantic' : e.type;
-                       yield {name: entryName(id), entryType} as any;
+                       yield {
+                         name: entryName(id, opts.existingProject),
+                         entryType,
+                       } as any;
                      }
                    });
   const del = spyOn(CatalogClient.prototype, 'deleteEntry')
@@ -349,6 +359,60 @@ describe('deployKnowledgeCatalog: delete reconciliation', () => {
     expect(list).toHaveBeenCalledTimes(1);
     const deletedIds = del.mock.calls.map(c => c[3]).sort();
     expect(deletedIds).toEqual(['sales.entities.removed', 'sales.metrics.removed']);
+  });
+
+  test('recognises owned entries when the server names the project by number',
+       async () => {
+    // listEntries does not always spell the project the way the scope does: the
+    // server mixes ids and numbers, and _fixEntry only normalises them when its
+    // Cloud Resource Manager lookup succeeds -- which silently fails for a
+    // caller without resourcemanager.projects.get.
+    //
+    // An exact-prefix match against the scope's project therefore recovered no
+    // id at all, so nothing was ever "owned", nothing was deleted, and the push
+    // still reported success. Orphans accumulated invisibly.
+    const {del} = stubClient({
+      existing: [...EMITTED, 'sales.metrics.removed'],
+      existingProject: '123456789',
+    });
+
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(true);
+    expect(result.deleted).toBe(1);
+    expect(del.mock.calls.map(c => c[3])).toEqual(['sales.metrics.removed']);
+  });
+
+  test('an empty ownedPrefixes entry cannot delete the whole entry group',
+       async () => {
+    // Unreachable through either current emitter -- both build prefixes from a
+    // validated model name -- but deployEmittedModels is exported as the
+    // seam for future origins, and it deletes on the strength of what it is
+    // handed. An empty prefix matches every id, so without the guard this wipes
+    // every entry in the group that the push did not re-emit.
+    const {del} = stubClient({
+      existing: ['mine', 'someone-elses-entry', 'bigquery.table.42'],
+    });
+
+    const result = await deployEmittedModels(
+        [{
+          model: 'm',
+          resources: {
+            entries: [{
+              name: entryName('mine'),
+              entryType: 'x',
+              aspects: {},
+            }] as any,
+            entryLinks: [],
+            warnings: [],
+            ownedPrefixes: [''],
+          },
+        }],
+        [], CTX, OPTS);
+
+    expect(result.success).toBe(true);
+    expect(del).not.toHaveBeenCalled();
+    expect(result.deleted).toBe(0);
   });
 
   test('deletes nothing when the model still emits every entry', async () => {
@@ -614,6 +678,35 @@ describe('deployKnowledgeCatalog: whole-model removal (--force-remove)', () => {
            ['old', 'old.entities.a', 'old.entities.b', 'old.metrics.m']);
        // ...and the current model is still written (3 entries).
        expect(create).toHaveBeenCalledTimes(3);
+     });
+
+  test('a foreign model whose ids use a different scheme is removed whole',
+     async () => {
+       // The foreign model is by definition not in this push, so its emitter's
+       // ownedPrefixes are unavailable and ownership has to be inferred from
+       // the anchor. Naming the segments (`.entities.` / `.metrics.`) matches
+       // only one id scheme: a model published with path-form ids keeps all of
+       // its children, and because its anchor is gone no later push sees a
+       // foreign model, so nothing ever owns them again.
+       const {del} = stubClient({
+         existing: [
+           {id: 'old', type: MODEL_TYPE},
+           {id: 'old/entities/customers', type: ENTITY_TYPE},
+           {id: 'old/metrics/customers/count', type: METRIC_TYPE},
+           {id: 'old/explores/all', type: ENTITY_TYPE},
+         ],
+         links: () => ok([]),
+       });
+
+       const result = await deployKnowledgeCatalog(
+           models(DOCS), CTX, {...OPTS, forceRemove: true});
+
+       expect(result.success).toBe(true);
+       expect(result.deleted).toBe(4);
+       expect(del.mock.calls.map(c => c[3]).sort()).toEqual([
+         'old', 'old/entities/customers', 'old/explores/all',
+         'old/metrics/customers/count',
+       ]);
      });
 
   test('an existing anchor this push re-emits is not treated as foreign',
