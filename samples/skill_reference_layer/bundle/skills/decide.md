@@ -32,6 +32,9 @@ sources:
 
 ## Algorithm
 
+0. If the question does not apply, emit `no surface applies - skipping` and stop. Specific to this skill:
+   - The input already arrives as a decision record — `no surface applies`.
+
 1. Read the raw material end-to-end. Drop noise (anything that is not a claim or a question). Keep claims and questions.
 2. For each claim: bucket it — decision / action / open question / noise.
 3. For every decision bucket entry, write the four-key block (id, status, context, boundary, invariant).
@@ -47,9 +50,6 @@ The skill emits one of:
 - `open-questions: K` — K items escalated, not silenced.
 - `noise-dropped: M items` — M items dropped with named reason.
 
-## Skip conditions
-
-- The input already arrives as a decision record — `no surface applies`.
 
 ## Common mistakes
 

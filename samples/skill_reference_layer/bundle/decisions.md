@@ -58,6 +58,12 @@ sources:
 
 ---
 
+#### D-007 · Align the sample with the Skill-type proposal revision - **Accepted**
+
+- **context & trade-offs.** The companion `OKF v0.3 Skill concept type` proposal was revised after a real-world seal of twelve SKILL.md files shipped against the proposed shape. Five concrete changes (drop skip conditions as a top-level section, downgrade common mistakes to MAY, drop examples as a section, tighten `verified.process` to structural-only, sharpen the Playbook vs Skill distinction by routing) - this sample carries the changes forward so the recipe and the proposal stay aligned.
+- **target boundary.** every concept file under `bundle/skills/` removes its `## Skip conditions` section; the skip content folds into Algorithm step 0. The proposal's revision keyword for navigation is `OKF as-is` for the reference layer - the bundle already conforms.
+- **machine-enforceable invariant.** a `## Skip conditions` section does not appear in any skill file under `bundle/skills/`; every skill file's `# Algorithm` carries step 0 with the folded skip content.
+
 ## Provenance
 
 This decision record is the analog of an ADR archive. Its draft form is OKF-true (`generated` and `verified` fields are optional on `index.md` beyond `okf_version`; this file is a normal concept-equivalent and could carry the trust family if it were a concept). Consumers of the bundle should still treat decision record blocks as the authoritative decision surface — `sources` on every concept points here, not the other way around.

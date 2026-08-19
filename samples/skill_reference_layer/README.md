@@ -42,7 +42,7 @@ bundle/
     └── cold-start.md
 ```
 
-Nineteen concept files plus the navigational and decision surface.
+Nineteen concept files plus the navigational and decision surface. The skill concepts conform to the revised Skill-type proposal: six mandatory body sections (Doctrine, Algorithm, Judge rubric, Provenance) plus two MAY sections (Common mistakes, Examples). Skip conditions fold into Algorithm step 0 rather than existing as a separate section.
 
 ## How it was produced
 
@@ -69,6 +69,10 @@ The recipe is reproducible for any methodology corpus. The smallest viable bundl
 - N concept files, each with parseable YAML frontmatter (`type`, `title`, `description`, `tags`, `status`) and the trust family
 
 The first three are non-negotiable; the trust family is optional (the bundle is conformant without it, but consumers without `verified` cannot derive a trust tier).
+
+## Body section reduction (Skill concepts)
+
+The revised Skill-type proposal cuts the seven-section recommendation to six mandatory: `# Doctrine`, `# Algorithm`, `# Judge rubric`, `# Provenance`. (One SHOULD-mandatory: provenance was added.) `# Common mistakes` and `# Examples` are MAY - either as inlined fences in the section they exemplify, or as their own section when the skill's primary value IS the example. Skip conditions fold into `# Algorithm` step 0 rather than existing as a separate section; this sample applies the reduction so the recipe and the proposal stay aligned.
 
 ## What's not in this sample (deliberate)
 

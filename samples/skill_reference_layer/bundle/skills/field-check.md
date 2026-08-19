@@ -32,6 +32,10 @@ sources:
 
 ## Algorithm
 
+0. If the question does not apply, emit `no surface applies - skipping` and stop. Specific to this skill:
+   - The endpoint is local or unix — `no surface applies`.
+   - The task explicitly demands a payload-level check — use a contract-test skill.
+
 1. Parse the endpoint URL — scheme, host, port, path.
 2. Resolve DNS fresh. If unresolvable, emit `unreachable` and stop.
 3. Open TCP to host:port. If connect exceeds the envelope, emit `unreachable`.
@@ -48,10 +52,6 @@ The skill emits one of:
 
 The gate that proves a run: `connect()` returned within the envelope; the self-test runs the skill against a known-failing endpoint and asserts the failure verdict.
 
-## Skip conditions
-
-- The endpoint is local or unix — `no surface applies`.
-- The task explicitly demands a payload-level check — use a contract-test skill.
 
 ## Common mistakes
 

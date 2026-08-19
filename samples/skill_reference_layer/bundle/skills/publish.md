@@ -32,6 +32,9 @@ sources:
 
 ## Algorithm
 
+0. If the question does not apply, emit `no surface applies - skipping` and stop. Specific to this skill:
+   - The deliverable is incomplete. The skill refuses to publish an incomplete deliverable.
+
 1. Identify the named gates the deliverable owes: typecheck, lint, test, code review, deploy.
 2. Run each gate in order. Each prints a verdict line (PASS / FAIL / SKIP) with the evidence line.
 3. If any gate FAILs, print the fix and stop — do not chain past a FAIL.
@@ -44,9 +47,6 @@ sources:
 - `BLOCKED: <gate-name>` — one gate FAILed; the fix line is included.
 - `SKIPPED: <gate-name> = <reason>` — a gate was deliberately skipped.
 
-## Skip conditions
-
-- The deliverable is incomplete. The skill refuses to publish an incomplete deliverable.
 
 ## Common mistakes
 

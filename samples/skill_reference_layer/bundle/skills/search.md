@@ -33,6 +33,9 @@ sources:
 
 ## Algorithm
 
+0. If the question does not apply, emit `no surface applies - skipping` and stop. Specific to this skill:
+   - The question does not need external material — pure refactor of own code.
+
 1. Shape the question. One sentence; what would count as an answer?
 2. Federated search. Keyless engines in turn: each engine can be unavailable, an error is a finding not a retry trigger.
 3. Targeted scrape. The primary source, not the summary.
@@ -45,9 +48,6 @@ sources:
 - `CONTRADICTED` — sources disagree (name both sides).
 - `UNVERIFIED` — no reliable source (name the gap).
 
-## Skip conditions
-
-- The question does not need external material — pure refactor of own code.
 
 ## Common mistakes
 

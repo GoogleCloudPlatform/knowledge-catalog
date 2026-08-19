@@ -32,6 +32,9 @@ sources:
 
 ## Algorithm
 
+0. If the question does not apply, emit `no surface applies - skipping` and stop. Specific to this skill:
+   - The task is mid-session and the context is still warm — `no surface applies`.
+
 1. Read durable state: the decision record, the plan, the progress ledger.
 2. Identify the current position — the first open, unblocked, unclaimed ticket.
 3. Compose a context brief: that ticket's contract section + the decisions that bear on it + the trust family of any concept the ticket relies on.
@@ -41,9 +44,6 @@ sources:
 
 - `bootstrap: <brief handed off, current=<ticket>>` — the cold-start is complete.
 
-## Skip conditions
-
-- The task is mid-session and the context is still warm — `no surface applies`.
 
 ## Common mistakes
 

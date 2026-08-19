@@ -32,6 +32,9 @@ sources:
 
 ## Algorithm
 
+0. If the question does not apply, emit `no surface applies - skipping` and stop. Specific to this skill:
+   - The user's intent already names a specific skill → skip; route directly.
+
 1. Take the user's intent as a literal string.
 2. Compare against each `when_to_use` keyword in the bundle.
 3. If exactly one skill's `when_to_use` matches, route there.
@@ -46,9 +49,6 @@ The skill may emit:
 - `route: <skill-a>, <skill-b>` — multiple skills, the first being the primary.
 - `no-match` — no skill's `when_to_use` matched the intent.
 
-## Skip conditions
-
-- The user's intent already names a specific skill → skip; route directly.
 
 ## Common mistakes
 
