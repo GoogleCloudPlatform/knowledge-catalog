@@ -316,11 +316,15 @@ export async function push(options: PushOptions): Promise<number> {
   const catalog = new dataplex.CatalogClient(ctx);
   const sync = new kcmd.CatalogSync(catalog, snapshot);
 
-  console.log('Pushing catalog entries...');
+  console.log(options.validateOnly
+    ? 'Validating catalog entries...'
+    : 'Pushing catalog entries...');
   const result = await sync.push(options);
 
   if (result.success) {
-    console.log('Successfully pushed catalog entries.');
+    console.log(options.validateOnly
+      ? 'Validation complete; no changes applied.'
+      : 'Successfully pushed catalog entries.');
     return 0;
   }
   else {
