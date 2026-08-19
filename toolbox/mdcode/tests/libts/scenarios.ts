@@ -133,8 +133,9 @@ function runScenario(scenario: any) {
             expect(fs.existsSync(absolutePath)).toBe(true);
             const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
             // A condition is one of: a bare string (exact match), a `{contains}`
-            // mapping, an empty `{}` mapping (existence only, already asserted
-            // above), or a list of such conditions.
+            // mapping, a `{notContains}` mapping, an empty `{}` mapping
+            // (existence only, already asserted above), or a list of such
+            // conditions.
             const conditions = Array.isArray(condition) ? condition : [condition];
             for (const c of conditions) {
               if (typeof c === 'string') {
@@ -142,6 +143,9 @@ function runScenario(scenario: any) {
               }
               else if (c && typeof c === 'object' && 'contains' in c) {
                 expect(actualContent).toContain(c.contains);
+              }
+              else if (c && typeof c === 'object' && 'notContains' in c) {
+                expect(actualContent).not.toContain(c.notContains);
               }
               else if (c && typeof c === 'object' && Object.keys(c).length === 0) {
                 // Existence-only assertion; nothing more to check.

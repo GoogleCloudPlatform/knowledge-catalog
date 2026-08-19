@@ -15,7 +15,7 @@
     "build:tool": "npx bun build --compile --outfile dist/kcmd src/tool/main.ts",
     "build": "npm run build:libts && npm run build:tool",
     "compile": "npx tsc --noEmit",
-    "test:libts": "npx bun test ./tests/libts/scenarios.ts",
+    "test:libts": "npx bun test ./tests/libts/scenarios.ts && npx bun test ./tests/libts/layouts/",
     "test:semantic": "npx bun test ./tests/libts/semantic/",
     "test": "npm run test:libts && npm run test:semantic",
     "x:mcp": "npx @modelcontextprotocol/inspector dist/kcmd mcp"
