@@ -148,6 +148,28 @@ Tags remain a first-class concept through the `tags` frontmatter field
 documents by tag; a consumer that wants a tag-browsing view can
 synthesize one at consumption time by scanning frontmatter.
 
+### 3.2 Bundle root and conformance boundary
+
+Each conformance evaluation (§11) MUST establish one bundle root. The root
+MAY be a directory supplied to a consumer, a selected subdirectory of a
+larger repository, or a directory in the logical tree represented by an
+archive. OKF does not require a particular invocation mechanism or automatic
+root discovery.
+
+The conformance corpus is the set of regular `.md` file entries recursively
+beneath that root, excluding symbolic-link entries. Selecting a parent
+directory treats all qualifying descendants as one corpus. A repository MAY
+contain multiple candidate bundle roots; roots outside the selected root do
+not participate, and separate roots have separate conformance results.
+
+Non-markdown files MAY be resources within the bundle, including resources
+referenced under §6 and §10, but they are not concept or reserved documents
+and are not subject to §11 document checks. A markdown link, path-valued
+field, or symbolic link does not add its target to the corpus. Corpus
+membership neither requires nor authorizes dereferencing a target;
+resolution, archive extraction, filesystem access, and execution are
+consumer policy outside OKF conformance.
+
 ---
 
 ## 4. Concept documents
@@ -473,6 +495,9 @@ case it is not a path. Each path-valued field accepts:
 - a bundle-relative path beginning with `/`, or
 - a relative path (for example `../computations/revenue.md`).
 
+Resolving a link or path-valued field for consumption does not add its target
+to the conformance corpus (§3.2).
+
 ### 6.3 The `references/` convention
 
 A `references/` subdirectory conventionally mirrors external material, run
@@ -734,11 +759,12 @@ is why both are needed.
 
 A bundle is **conformant** with OKF v0.2 if:
 
-1. Every non-reserved `.md` file in the tree contains a parseable YAML
-   frontmatter block.
-2. Every frontmatter block contains a non-empty `type` field.
-3. Every reserved filename (`index.md`, `log.md`) follows the structure in
-   §8 and §9 respectively when present.
+1. Every non-reserved `.md` file in the conformance corpus (§3.2) contains
+   a parseable YAML frontmatter block.
+2. Each concept-document frontmatter block required by item 1 contains a
+   non-empty `type` field.
+3. Every `index.md` and `log.md` file in the conformance corpus follows §8
+   and §9, respectively.
 
 When the trust, lifecycle, provenance, or computation families are
 present, producers SHOULD follow §5 through §10, and consumers:
@@ -820,6 +846,9 @@ concept.
   `runtime`, `parameters`, `computation`, `executor`, `attester` (§10).
 - New conventional body heading `# Computation` (§4.2).
 - The actor convention for `generated.by` and `verified[].by` (§7).
+
+Section 3.2 makes explicit the bundle-root meaning of "in the tree" for
+conformance. It does not add document requirements.
 
 Everything else (bundle structure, reserved filenames, the required
 `type`, recommended `title`/`description`/`resource`/`tags`, cross-linking,
