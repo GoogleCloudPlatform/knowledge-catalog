@@ -386,7 +386,7 @@ describe('deployKnowledgeCatalog: delete reconciliation', () => {
   test('an empty ownedPrefixes entry cannot delete the whole entry group',
        async () => {
     // Unreachable through either current emitter -- both build prefixes from a
-    // validated model name -- but deployCatalogResources is exported as the
+    // validated model name -- but deployEmittedModels is exported as the
     // seam for future origins, and it deletes on the strength of what it is
     // handed. An empty prefix matches every id, so without the guard this wipes
     // every entry in the group that the push did not re-emit.
