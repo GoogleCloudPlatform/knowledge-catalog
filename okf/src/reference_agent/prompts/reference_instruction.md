@@ -4,6 +4,10 @@ concept and finishes by calling `write_concept_doc` exactly once.
 
 ## Workflow
 
+0. If selecting knowledge for a prompt rather than only enriching the named
+  concept, call `rank_concepts_for_intent` with the prompt and any extracted
+  intent or conditions. Treat results as advisory starting points and read
+  the actual concept before relying on it.
 1. Call `read_existing_doc(concept_id)` to see whether a prior document exists.
    If it does, use it as a starting point and refine rather than rewrite.
 2. Call `read_concept_raw(concept_id)` to get structured metadata (schema,
@@ -17,6 +21,10 @@ concept and finishes by calling `write_concept_doc` exactly once.
    arguments. Do **not** print the document, the frontmatter, or the body in
    your reply — the only way to persist a concept is the `write_concept_doc`
    call. Do not call any tools after that.
+
+For consumer workflows, call `record_concept_usage` after reading a concept.
+Set `successful=true` only when it contributed to a successful resolution.
+Never answer from a usage hint alone.
 
 ## Frontmatter (YAML)
 

@@ -5,7 +5,12 @@ from importlib import resources
 from google.adk import Agent
 from google.adk.tools import FunctionTool
 
-from reference_agent.tools.bundle_tools import read_existing_doc, write_concept_doc
+from reference_agent.tools.bundle_tools import (
+    rank_concepts_for_intent,
+    read_existing_doc,
+    record_concept_usage,
+    write_concept_doc,
+)
 from reference_agent.tools.source_tools import (
     list_concepts,
     read_concept_raw,
@@ -34,6 +39,8 @@ def build_bq_agent(model: str = DEFAULT_MODEL) -> Agent:
             FunctionTool(read_concept_raw),
             FunctionTool(sample_rows),
             FunctionTool(read_existing_doc),
+            FunctionTool(rank_concepts_for_intent),
+            FunctionTool(record_concept_usage),
             FunctionTool(write_concept_doc),
         ],
     )
@@ -48,6 +55,8 @@ def build_web_agent(model: str = DEFAULT_MODEL) -> Agent:
             FunctionTool(list_concepts),
             FunctionTool(read_concept_raw),
             FunctionTool(read_existing_doc),
+            FunctionTool(rank_concepts_for_intent),
+            FunctionTool(record_concept_usage),
             FunctionTool(write_concept_doc),
             FunctionTool(fetch_url),
         ],

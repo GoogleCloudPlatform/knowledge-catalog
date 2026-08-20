@@ -2,7 +2,14 @@ from datetime import datetime, timezone
 
 import pytest
 
-from reference_agent.bundle.usage import UsageError, load_usage, rank_usage, record_usage
+from reference_agent.bundle.usage import (
+    UsageError,
+    UsageHint,
+    load_usage,
+    rank_usage,
+    record_usage,
+    score_usage_hint,
+)
 
 
 def test_missing_usage_file_is_backward_compatible(tmp_path):
@@ -32,6 +39,35 @@ def test_rank_prefers_matching_conditions_then_frequency(tmp_path):
     record_usage(tmp_path, "metrics/regional.md", "revenue", {"period": "monthly", "group_by": "region"})
     ranked = rank_usage(tmp_path, "revenue", {"period": "monthly", "group_by": "region"})
     assert [hint.concept for hint in ranked] == ["metrics/regional.md", "metrics/general.md"]
+
+
+def test_score_explains_prompt_and_history_signals():
+    hint = UsageHint(
+        concept="metrics/regional-revenue.md",
+        intent="revenue_calculation",
+        conditions={"group_by": "region"},
+        access_count=8,
+        successful_count=6,
+    )
+    score = score_usage_hint(
+        hint,
+        prompt="Show revenue by region",
+        intent="revenue_calculation",
+        conditions={"group_by": "region"},
+        max_access_count=16,
+    )
+    assert score["prompt_match"] > 0
+    assert score["intent_match"] == 1
+    assert score["condition_match"] == 1
+    assert score["success_rate"] == 0.75
+    assert 0 < score["score"] <= 1
+
+
+def test_rank_can_use_prompt_without_preclassified_intent(tmp_path):
+    record_usage(tmp_path, "metrics/revenue.md", "revenue_calculation", {"period": "monthly"})
+    record_usage(tmp_path, "tables/orders.md", "order_lookup", {"entity": "order"})
+    ranked = rank_usage(tmp_path, "", {"period": "monthly"}, prompt="monthly revenue")
+    assert ranked[0].concept == "metrics/revenue.md"
 
 
 @pytest.mark.parametrize("concept", ["../secret.md", "/tmp/secret.md", "index.md", "log.md"])

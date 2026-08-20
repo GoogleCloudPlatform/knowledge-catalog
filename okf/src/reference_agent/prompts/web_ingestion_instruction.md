@@ -14,6 +14,10 @@ The user message contains:
 
 ## Workflow
 
+0. If selecting knowledge for a prompt rather than only processing supplied
+  URLs, call `rank_concepts_for_intent` with the prompt and any extracted
+  intent or conditions. Treat results as advisory starting points and read
+  the actual concept before relying on it.
 1. Call `list_concepts()` once at the start to learn what concepts the
    bundle already has. You will route web findings against these.
 2. For each seed URL, call `fetch_url(url)`. The result includes the page's
@@ -255,9 +259,7 @@ If a page surfaces several of these at once (a typical "data model"
 or "schema reference" page), make **multiple** `write_concept_doc`
 calls — one per affected concept — rather than dumping everything into
 one doc.
-
 ## Style and integrity
-
 - Record in `sources` **only** URLs you actually fetched (or URLs already
   present in the doc you're refining). Do not invent URLs.
 - Be concrete. Use concrete field names, concrete enum values, concrete

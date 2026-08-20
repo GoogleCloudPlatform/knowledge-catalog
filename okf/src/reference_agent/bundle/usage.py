@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import math
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -8,9 +9,11 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
+from rapidfuzz.fuzz import token_set_ratio
 
 USAGE_FILENAME = "usage.yaml"
 USAGE_VERSION = 1
+
 
 
 class UsageError(ValueError):
@@ -192,16 +195,85 @@ def record_usage(
     return hint
 
 
+def score_usage_hint(
+    hint: UsageHint,
+    *,
+    prompt: str = "",
+    intent: str = "",
+    conditions: dict[str, Any] | None = None,
+    max_access_count: int = 0,
+) -> dict[str, float]:
+    """Return an explainable 0..1 score for one advisory usage hint.
+
+    The score is deliberately heuristic. It ranks where to look first; it
+    never establishes that a concept is correct. Weights favor request
+    matching over historical popularity so stale or popular concepts cannot
+    dominate a materially better match.
+    """
+    requested_conditions = dict(conditions or {})
+    signature = " ".join(
+        [hint.intent, hint.concept]
+        + [f"{key} {value}" for key, value in hint.conditions.items()]
+    )
+    prompt_match = token_set_ratio(prompt, signature) / 100 if prompt else 0.0
+    intent_match = token_set_ratio(intent, hint.intent) / 100 if intent else 0.0
+    compared = len(requested_conditions)
+    condition_match = (
+        sum(hint.conditions.get(key) == value for key, value in requested_conditions.items())
+        / compared
+        if compared
+        else 0.0
+    )
+    frequency = (
+        math.log1p(hint.access_count) / math.log1p(max_access_count)
+        if max_access_count > 0 and hint.access_count > 0
+        else 0.0
+    )
+    success_rate = (
+        hint.successful_count / hint.access_count
+        if hint.successful_count is not None and hint.access_count > 0
+        else 0.0
+    )
+    total = (
+        0.35 * prompt_match
+        + 0.25 * intent_match
+        + 0.20 * condition_match
+        + 0.10 * frequency
+        + 0.10 * success_rate
+    )
+    return {
+        "score": round(total, 6),
+        "prompt_match": round(prompt_match, 6),
+        "intent_match": intent_match,
+        "condition_match": round(condition_match, 6),
+        "frequency": round(frequency, 6),
+        "success_rate": round(success_rate, 6),
+    }
+
+
 def rank_usage(
     bundle_root: Path,
     intent: str,
     conditions: dict[str, Any] | None = None,
+    *,
+    prompt: str = "",
 ) -> list[UsageHint]:
     requested = dict(conditions or {})
-    candidates = [hint for hint in load_usage(bundle_root).hints if hint.intent == intent]
+    candidates = [
+        hint
+        for hint in load_usage(bundle_root).hints
+        if not intent or hint.intent == intent
+    ]
+    max_access_count = max((hint.access_count for hint in candidates), default=0)
 
     def score(hint: UsageHint) -> tuple[int, int, str]:
-        matches = sum(requested.get(key) == value for key, value in hint.conditions.items())
-        return matches, hint.access_count, hint.concept
+        scored = score_usage_hint(
+            hint,
+            prompt=prompt,
+            intent=intent,
+            conditions=requested,
+            max_access_count=max_access_count,
+        )
+        return scored["score"], hint.access_count, hint.concept
 
     return sorted(candidates, key=score, reverse=True)
