@@ -9,7 +9,6 @@ from reference_agent.bundle.usage import (
     rank_usage,
     record_usage,
     save_usage,
-    score_usage_hint,
 )
 
 __all__ = [
@@ -25,5 +24,4 @@ __all__ = [
     "rank_usage",
     "record_usage",
     "save_usage",
-    "score_usage_hint",
 ]

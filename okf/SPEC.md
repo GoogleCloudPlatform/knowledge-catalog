@@ -579,10 +579,12 @@ accesses that contributed to a successful resolution and MUST NOT exceed
 
 Usage data SHOULD be aggregated across consumers and MAY be updated in
 batches. Producers MUST NOT store raw user queries or per-user history in
-this file. Consumers MAY use recency, success rate, frequency, keyword
-search, vector search, or graph traversal when ranking candidates; OKF does
-not prescribe a matching algorithm. A usage hint MUST NOT be used to answer
-a request without retrieving and evaluating the referenced concept.
+this file, and implementations MUST NOT require personally identifying
+information in `usage.yaml`. Consumers MAY use recency, success rate,
+frequency, keyword search, vector search, or graph traversal when ranking
+candidates; OKF does not prescribe a matching algorithm. A usage hint MUST
+NOT be used to answer a request without retrieving and evaluating the
+referenced concept.
 
 The file is optional. Consumers that do not support it MUST ignore it, and
 consumers MUST tolerate unknown top-level and entry fields.

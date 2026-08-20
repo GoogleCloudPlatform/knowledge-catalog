@@ -10,7 +10,6 @@ from reference_agent.bundle.document import (
     OKFDocumentError,
 )
 from reference_agent.bundle.paths import concept_id_to_path, parse_concept_id
-from reference_agent.bundle.usage import load_usage, rank_usage, record_usage, score_usage_hint
 from reference_agent.tools.context import get_context, is_web_pass
 
 _PREFERRED_KEY_ORDER = (
@@ -86,61 +85,6 @@ def read_existing_doc(concept_id: str) -> dict[str, Any] | None:
         return None
     doc = OKFDocument.parse(path.read_text(encoding="utf-8"))
     return {"frontmatter": doc.frontmatter, "body": doc.body}
-
-
-def rank_concepts_for_intent(
-    prompt: str = "",
-    intent: str = "",
-    conditions: dict[str, Any] | None = None,
-    limit: int = 5,
-) -> list[dict[str, Any]]:
-    """Return advisory cached candidates with explainable match scores."""
-    if limit < 1:
-        raise ValueError("limit must be positive")
-    ctx = get_context()
-    usage = load_usage(ctx.bundle_root)
-    ranked = rank_usage(ctx.bundle_root, intent, conditions, prompt=prompt)
-    max_access_count = max((hint.access_count for hint in usage.hints), default=0)
-    return [
-        {
-            "concept": hint.concept.removesuffix(".md"),
-            "path": hint.concept,
-            "score": score_usage_hint(
-                hint,
-                prompt=prompt,
-                intent=intent,
-                conditions=conditions,
-                max_access_count=max_access_count,
-            ),
-            "advisory": True,
-        }
-        for hint in ranked[:limit]
-    ]
-
-
-def record_concept_usage(
-    concept_id: str,
-    intent: str,
-    conditions: dict[str, Any] | None = None,
-    successful: bool = False,
-) -> dict[str, Any]:
-    """Record a concept access for future advisory navigation ranking."""
-    ctx = get_context()
-    concept_path = concept_id_to_path(ctx.bundle_root, parse_concept_id(concept_id))
-    hint = record_usage(
-        ctx.bundle_root,
-        concept_path.relative_to(ctx.bundle_root).as_posix(),
-        intent,
-        conditions,
-        successful=successful,
-    )
-    return {
-        "concept": concept_id,
-        "intent": hint.intent,
-        "access_count": hint.access_count,
-        "successful_count": hint.successful_count,
-        "advisory": True,
-    }
 
 
 def write_concept_doc(
