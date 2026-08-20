@@ -31,7 +31,7 @@
         {
           "index": 2,
           "name": "at",
-          "type": "string",
+          "type": "datetime",
           "annotations": {
             "displayName": "Generated At",
             "description": "ISO 8601 timestamp of the content's last meaningful change."
@@ -102,7 +102,7 @@
           {
             "index": 6,
             "name": "last_modified",
-            "type": "string",
+            "type": "datetime",
             "annotations": {
               "displayName": "Last Modified",
               "description": "ISO 8601 timestamp of the source's own last change."
@@ -135,7 +135,7 @@
           {
             "index": 2,
             "name": "at",
-            "type": "string",
+            "type": "datetime",
             "annotations": {
               "displayName": "Verified At",
               "description": "ISO 8601 timestamp of the verification."
@@ -163,7 +163,7 @@
     {
       "index": 6,
       "name": "stale_after",
-      "type": "string",
+      "type": "datetime",
       "annotations": {
         "displayName": "Stale After",
         "description": "ISO 8601 timestamp on or after which the content is stale."
@@ -177,7 +177,7 @@
         {
           "index": 1,
           "name": "from",
-          "type": "string",
+          "type": "datetime",
           "annotations": {
             "displayName": "From",
             "description": "ISO 8601 timestamp the window starts at."
@@ -186,7 +186,7 @@
         {
           "index": 2,
           "name": "to",
-          "type": "string",
+          "type": "datetime",
           "annotations": {
             "displayName": "To",
             "description": "ISO 8601 timestamp the window ends at."
