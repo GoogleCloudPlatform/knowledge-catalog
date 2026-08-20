@@ -105,7 +105,7 @@
             "type": "string",
             "annotations": {
               "displayName": "Last Modified",
-              "description": "Date the source itself last changed."
+              "description": "ISO 8601 timestamp of the source's own last change."
             }
           }
         ]
@@ -166,7 +166,7 @@
       "type": "string",
       "annotations": {
         "displayName": "Stale After",
-        "description": "Absolute date (YYYY-MM-DD) on or after which the content is stale."
+        "description": "ISO 8601 timestamp on or after which the content is stale."
       }
     },
     {
@@ -180,7 +180,7 @@
           "type": "string",
           "annotations": {
             "displayName": "From",
-            "description": "Start date of the window."
+            "description": "ISO 8601 timestamp the window starts at."
           }
         },
         {
@@ -189,7 +189,7 @@
           "type": "string",
           "annotations": {
             "displayName": "To",
-            "description": "End date of the window."
+            "description": "ISO 8601 timestamp the window ends at."
           }
         }
       ],

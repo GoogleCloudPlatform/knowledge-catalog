@@ -281,6 +281,13 @@ should I trust it," and "is it still current" answerable from frontmatter.
 All are optional. Their absence carries meaning: an unverified concept is
 distinguishable from a verified one, but is never rejected (§11).
 
+Every timestamp-valued key in OKF is an ISO 8601 datetime with an explicit
+UTC offset, for example `2026-06-30T14:00:00Z`. A date-only value is not
+conformant, and consumers MUST ignore it as they would any unparseable
+value. Without an offset, the same value names a different instant in
+every timezone, so two consumers reading one bundle can disagree about
+what it says.
+
 ### 5.1 Provenance: `sources`
 
 `sources` records the materials a concept derives from, external or
@@ -293,8 +300,8 @@ sources:
     title: GA4 BigQuery Export schema
     author: team:ga4-docs
     usage_count: 5000
-    last_modified: 2026-05-30
-usage_window: { from: 2026-06-01, to: 2026-06-30 }
+    last_modified: 2026-05-30T00:00:00Z
+usage_window: { from: 2026-06-01T00:00:00Z, to: 2026-06-30T00:00:00Z }
 ```
 
 Each `sources` entry:
@@ -323,12 +330,12 @@ stored. Each signal is optional and lives on a `sources` entry:
   signal. For a single artifact it is that artifact's own exercise count;
   for a scope descriptor it is the number of exercises within the scope that
   touch the concept.
-- `last_modified`: When the source itself last changed (`YYYY-MM-DD`). A
-  recency signal, distinct from `generated.at` (§5.2), which records when
-  the concept was written.
+- `last_modified`: When the source itself last changed. A recency signal,
+  distinct from `generated.at` (§5.2), which records when the concept was
+  written.
 - `usage_window`: Written once as a sibling of `sources`, it frames every
-  `usage_count` with a `{ from, to }` date range. A single entry MAY carry
-  its own `usage_window` to override the shared one.
+  `usage_count` with a `{ from, to }` datetime range. A single entry MAY
+  carry its own `usage_window` to override the shared one.
 
 `usage_count` is a coarse signal. It is comparable at the
 alive-versus-dead and order-of-magnitude level, and against a source's own
@@ -421,13 +428,14 @@ Absent `status` ⇒ `stable`.
 ### 5.5 Lifecycle: `stale_after`
 
 ```yaml
-stale_after: 2026-09-23   # absolute date; content is stale on/after this day
+stale_after: 2026-09-23T00:00:00Z   # content is stale on/after this instant
 ```
 
-Optional. An absolute date (`YYYY-MM-DD`). A concept is stale when
-`today >= stale_after`. An absolute date, not a relative TTL, keeps the
-staleness decision a plain date comparison with no reference to when the
-concept was read.
+Optional. An absolute instant. A concept is stale when
+`now >= stale_after`. An absolute instant, not a relative TTL, keeps the
+staleness decision a plain comparison with no reference to when the
+concept was read; the explicit offset is what lets two consumers in
+different timezones agree on the answer.
 
 ---
 
@@ -620,7 +628,7 @@ attester:
   resource: references/attesters/revenue.py
 generated: { by: reference_agent/gemini-2.5-pro, at: 2026-06-20T22:53:05Z }
 verified: { by: human:ahormati, at: 2026-06-25T09:00:00Z }
-stale_after: 2026-09-23
+stale_after: 2026-09-23T00:00:00Z
 sources:
   - id: rev-policy
     resource: https://wiki.acme/finance/revenue-recognition
@@ -712,7 +720,7 @@ are **not** stored in the bundle.
    displayed value matches the receipt's authoritative source, re-read by
    job id rather than taken from the agent's text).
 6. **Gate**: refuse to display a failing attestation; warn or refuse when
-   `today >= stale_after`. On success, surface the verdict (for example a
+   `now >= stale_after`. On success, surface the verdict (for example a
    link to the job log) so trust is visible.
 
 ### 10.6 Verification versus attestation
@@ -744,6 +752,8 @@ When the trust, lifecycle, provenance, or computation families are
 present, producers SHOULD follow §5 through §10, and consumers:
 
 - MUST treat a bare `verified` mapping as a one-element list (§5.2).
+- MUST ignore a timestamp that is not an ISO 8601 datetime with an
+  explicit UTC offset, including a date-only value (§5).
 - MUST NOT reject a concept for missing any optional family (§5.3).
 - SHOULD derive trust tiers and staleness only from the fields specified
   here, and SHOULD surface, not silently drop, a failing attestation
@@ -897,7 +907,7 @@ tags: [finance, income-statement]
 status: stable
 generated: { by: reference_agent/gemini-2.5-pro, at: 2026-06-20T22:53:05Z }
 verified: { by: human:ahormati, at: 2026-06-25T09:00:00Z }
-stale_after: 2026-12-31
+stale_after: 2026-12-31T00:00:00Z
 sources:
   - id: fpa-handbook
     resource: https://wiki.acme/finance/fpa-handbook
@@ -933,20 +943,20 @@ attester:
   resource: references/attesters/sql-equality.py
 generated: { by: reference_agent/gemini-2.5-pro, at: 2026-06-28T14:00:00Z }
 verified: { by: human:ahormati, at: 2026-06-25T09:00:00Z }
-stale_after: 2026-12-31
+stale_after: 2026-12-31T00:00:00Z
 sources:
   - id: rev-policy
     resource: https://wiki.acme/finance/revenue-recognition
     title: Revenue recognition policy
     author: team:finance-fpa
-    last_modified: 2026-04-02
+    last_modified: 2026-04-02T00:00:00Z
   - id: exec-rev-dash
     resource: dashboards/exec-revenue
     title: Executive revenue dashboard
     author: team:finance-fpa
     usage_count: 5000
-    last_modified: 2026-06-18
-usage_window: { from: 2026-06-01, to: 2026-06-30 }
+    last_modified: 2026-06-18T00:00:00Z
+usage_window: { from: 2026-06-01T00:00:00Z, to: 2026-06-30T00:00:00Z }
 ---
 
 # Computation
@@ -983,7 +993,7 @@ attester:
   resource: references/attesters/dbt-binding.py
 generated: { by: reference_agent/gemini-2.5-pro, at: 2026-06-14T14:00:00Z }
 verified: { by: process:finance-nightly, at: 2026-06-12T08:00:00Z }
-stale_after: 2026-06-15
+stale_after: 2026-06-15T00:00:00Z
 sources:
   - id: cost-alloc
     resource: https://wiki.acme/finance/cost-allocation

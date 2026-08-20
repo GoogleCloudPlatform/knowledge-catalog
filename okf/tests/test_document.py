@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import datetime, timezone
 
 import pytest
 
@@ -87,8 +87,12 @@ def test_trust_tier():
 
 
 def test_is_stale():
-    ref = date(2026, 9, 23)
-    assert is_stale({"stale_after": "2026-09-23"}, today=ref) is True
-    assert is_stale({"stale_after": "2026-09-24"}, today=ref) is False
-    assert is_stale({}, today=ref) is False
-    assert is_stale({"stale_after": "not-a-date"}, today=ref) is False
+    ref = datetime(2026, 9, 23, 12, 0, tzinfo=timezone.utc)
+    assert is_stale({"stale_after": "2026-09-23T00:00:00Z"}, now=ref) is True
+    assert is_stale({"stale_after": "2026-09-24T00:00:00Z"}, now=ref) is False
+    assert is_stale({}, now=ref) is False
+    assert is_stale({"stale_after": "not-a-date"}, now=ref) is False
+    # §11: a date-only value is not conformant, so it is ignored rather than
+    # read as midnight in whichever zone the consumer happens to run in.
+    assert is_stale({"stale_after": "2026-09-23"}, now=ref) is False
+    assert is_stale({"stale_after": "2026-09-23T00:00:00"}, now=ref) is False
