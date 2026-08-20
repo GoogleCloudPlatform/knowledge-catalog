@@ -187,3 +187,102 @@ def test_v02_signals_appear_in_graph_payload(tmp_path: Path):
 def test_raises_when_bundle_missing(tmp_path: Path):
     with pytest.raises(FileNotFoundError):
         generate_visualization(tmp_path / "nope", tmp_path / "viz.html")
+
+
+def test_bundle_absolute_links_become_edges(tmp_path: Path):
+    """OKF v0.2 §6.1: `/`-prefixed targets resolve against the bundle root."""
+    bundle = tmp_path / "bundle"
+    _make_bundle(bundle)
+    _write(
+        bundle / "policies" / "retention.md",
+        """
+        ---
+        type: Policy
+        title: Retention policy
+        ---
+        Applies to [users](/tables/users.md) and
+        [DAU](/references/metrics/dau.md).
+        """,
+    )
+    out = tmp_path / "viz.html"
+    generate_visualization(bundle, out)
+    data = _extract_bundle_data(out.read_text(encoding="utf-8"))
+    pairs = {(e["data"]["source"], e["data"]["target"]) for e in data["edges"]}
+    assert ("policies/retention", "tables/users") in pairs
+    assert ("policies/retention", "references/metrics/dau") in pairs
+
+
+def test_links_escaping_the_bundle_are_dropped(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    _make_bundle(bundle)
+    _write(
+        bundle / "policies" / "escape.md",
+        """
+        ---
+        type: Policy
+        title: Escape attempt
+        ---
+        Outside the bundle: [a](/../secret.md), [b](../../secret.md).
+        External: [c](https://example.com/tables/users.md).
+        """,
+    )
+    out = tmp_path / "viz.html"
+    generate_visualization(bundle, out)
+    data = _extract_bundle_data(out.read_text(encoding="utf-8"))
+    sources = {e["data"]["source"] for e in data["edges"]}
+    assert "policies/escape" not in sources
+
+
+def test_log_md_is_not_a_concept(tmp_path: Path):
+    """OKF v0.2 §3.1: `log.md` is reserved, not a concept document."""
+    bundle = tmp_path / "bundle"
+    _make_bundle(bundle)
+    _write(
+        bundle / "log.md",
+        """
+        # Log
+
+        * 2026-05-28 — bundle created.
+        """,
+    )
+    out = tmp_path / "viz.html"
+    generate_visualization(bundle, out)
+    data = _extract_bundle_data(out.read_text(encoding="utf-8"))
+    ids = {n["data"]["id"] for n in data["nodes"]}
+    assert "log" not in ids
+    assert "Unknown" not in data["types"]
+
+
+def test_script_tag_in_content_cannot_break_out_of_the_payload(tmp_path: Path):
+    """Bundle content must never terminate the inline <script> element."""
+    bundle = tmp_path / "bundle"
+    _write(
+        bundle / "tables" / "tricky.md",
+        """
+        ---
+        type: BigQuery Table
+        title: "Tricky </script><script>window.PWNED=1</script>"
+        ---
+        Body also closes the tag: </script><img src=x onerror=alert(1)>
+        """,
+    )
+    out = tmp_path / "viz.html"
+    generate_visualization(bundle, out)
+    html = out.read_text(encoding="utf-8")
+
+    # No raw markup characters survive in the embedded payload, so nothing
+    # in a bundle can close the script element or inject an element.
+    payload_lines = [
+        line for line in html.splitlines() if line.lstrip().startswith("window.BUNDLE")
+    ]
+    assert len(payload_lines) == 2  # window.BUNDLE_NAME and window.BUNDLE
+    for line in payload_lines:
+        assert "<" not in line
+        assert ">" not in line
+
+    # Escaping is JSON-level only: the value round-trips unchanged.
+    data = _extract_bundle_data(html)
+    assert data["nodes"][0]["data"]["label"] == (
+        "Tricky </script><script>window.PWNED=1</script>"
+    )
+    assert "onerror=alert(1)" in data["bodies"]["tables/tricky"]

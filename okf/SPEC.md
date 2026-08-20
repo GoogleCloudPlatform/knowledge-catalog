@@ -452,6 +452,19 @@ forms are supported:
   See the [neighboring concept](./other.md).
   ```
 
+Consumers that resolve links MUST support both forms. In particular, a
+consumer MUST NOT treat a leading `/` as an external reference or as an
+absolute filesystem path; it is relative to the bundle root. A target that
+resolves outside the bundle root is not a concept link.
+
+> **Note (non-normative).** Generic markdown renderers that are unaware of
+> the bundle root — GitHub's file view, for instance — resolve a leading
+> `/` against the repository or site root rather than the bundle, so
+> bundle-absolute links do not resolve there. Producers whose bundles are
+> primarily browsed through such a renderer may prefer the relative form.
+> This is a rendering-environment trade-off, not a conformance
+> distinction: both forms are valid OKF and consumers must handle both.
+
 A link from concept A to concept B asserts a *relationship*. The specific
 kind (parent/child, references, joins-with, depends-on) is conveyed by the
 surrounding prose, not by the link itself. Consumers that build a graph
