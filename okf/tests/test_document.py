@@ -7,6 +7,7 @@ import pytest
 from reference_agent.bundle.document import (
     OKFDocument,
     OKFDocumentError,
+    current_verified_events,
     is_stale,
     normalize_verified,
     trust_tier,
@@ -74,16 +75,75 @@ def test_normalize_verified_treats_bare_mapping_as_list():
 def test_trust_tier():
     assert trust_tier({}) == "unverified"
     assert trust_tier(
-        {"verified": [{"by": "process:finance-nightly", "at": "x"}]}
+        {
+            "verified": [
+                {
+                    "by": "process:finance-nightly",
+                    "at": "2026-06-26T02:00:00Z",
+                }
+            ]
+        }
     ) == "machine-confirmed"
     assert trust_tier(
         {"verified": [
-            {"by": "process:finance-nightly", "at": "x"},
-            {"by": "human:ahormati", "at": "y"},
+            {"by": "process:finance-nightly", "at": "2026-06-26T02:00:00Z"},
+            {"by": "human:ahormati", "at": "2026-06-27T09:00:00Z"},
         ]}
     ) == "human-reviewed"
     # A bare mapping is treated as a one-element list.
-    assert trust_tier({"verified": {"by": "human:ahormati", "at": "z"}}) == "human-reviewed"
+    assert trust_tier(
+        {
+            "verified": {
+                "by": "human:ahormati",
+                "at": "2026-06-27T09:00:00Z",
+            }
+        }
+    ) == "human-reviewed"
+
+
+def test_current_verified_events_excludes_checks_before_current_content():
+    frontmatter = {
+        "generated": {
+            "by": "reference_agent/gemini-2.5-pro",
+            "at": "2026-06-28T12:00:00Z",
+        },
+        "verified": [
+            {"by": "human:ahormati", "at": "2026-06-25T09:00:00Z"},
+            {"by": "process:finance-nightly", "at": "2026-06-29T02:00:00Z"},
+        ],
+    }
+
+    assert current_verified_events(frontmatter) == [
+        {"by": "process:finance-nightly", "at": "2026-06-29T02:00:00Z"}
+    ]
+    assert trust_tier(frontmatter) == "machine-confirmed"
+
+
+def test_trust_tier_is_unverified_when_all_checks_predate_current_content():
+    assert trust_tier(
+        {
+            "generated": {
+                "by": "reference_agent/gemini-2.5-pro",
+                "at": "2026-06-28T12:00:00Z",
+            },
+            "verified": {
+                "by": "human:ahormati",
+                "at": "2026-06-25T09:00:00Z",
+            },
+        }
+    ) == "unverified"
+
+
+def test_verified_events_remain_usable_when_generated_at_is_absent():
+    frontmatter = {
+        "verified": {
+            "by": "human:ahormati",
+            "at": "2026-06-25T09:00:00Z",
+        }
+    }
+
+    assert current_verified_events(frontmatter) == normalize_verified(frontmatter)
+    assert trust_tier(frontmatter) == "human-reviewed"
 
 
 def test_is_stale():

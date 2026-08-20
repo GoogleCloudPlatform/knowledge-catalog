@@ -388,6 +388,9 @@ verified:
   recently" is the latest `at`.
 - `verified` is independent of `generated.at`: content can change without
   re-confirmation, and facts can be re-confirmed without regeneration.
+- A verification event is **current** when no `generated.at` is present, or
+  when its `at` is at or after `generated.at`. Earlier events may remain as
+  history, but they do not confirm the current content.
 - A single verifier MAY be written as one `{ by, at }` mapping without the
   list dash. Consumers MUST treat a bare mapping as a one-element list:
 
@@ -397,11 +400,12 @@ verified: { by: human:ahormati, at: 2026-06-25T09:00:00Z }
 
 ### 5.3 Trust tiers
 
-Consumers derive a trust tier from `verified`, lowest to highest:
+Consumers derive a trust tier from **current** verification events (§5.2),
+lowest to highest:
 
-- No `verified` key ⇒ **unverified**.
-- `verified` by non-`human:` actors only ⇒ **machine-confirmed**.
-- `verified` by a `human:<id>` actor ⇒ **human-reviewed**.
+- No current verification event ⇒ **unverified**.
+- Current events by non-`human:` actors only ⇒ **machine-confirmed**.
+- A current event by a `human:<id>` actor ⇒ **human-reviewed**.
 
 A concept with no trust frontmatter is still consumable; consumers MUST
 NOT reject it (§11). Trust tiers are advisory signals, not access control.
@@ -932,7 +936,7 @@ executor:
 attester:
   resource: references/attesters/sql-equality.py
 generated: { by: reference_agent/gemini-2.5-pro, at: 2026-06-28T14:00:00Z }
-verified: { by: human:ahormati, at: 2026-06-25T09:00:00Z }
+verified: { by: human:ahormati, at: 2026-06-29T09:00:00Z }
 stale_after: 2026-12-31
 sources:
   - id: rev-policy
@@ -982,7 +986,7 @@ executor:
 attester:
   resource: references/attesters/dbt-binding.py
 generated: { by: reference_agent/gemini-2.5-pro, at: 2026-06-14T14:00:00Z }
-verified: { by: process:finance-nightly, at: 2026-06-12T08:00:00Z }
+verified: { by: process:finance-nightly, at: 2026-06-14T16:00:00Z }
 stale_after: 2026-06-15
 sources:
   - id: cost-alloc
