@@ -8,7 +8,7 @@ generated: { by: human:jsmith@acme, at: 2026-01-05T10:00:00Z }
 verified:
   - { by: human:jsmith@acme, at: 2026-06-15T09:00:00Z }
 status: stable
-stale_after: 2026-12-31
+stale_after: 2026-12-31T00:00:00Z
 ---
 
 # Acme Retail Revenue Recognition Policy — FY2026
