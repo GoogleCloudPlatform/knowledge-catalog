@@ -2,19 +2,20 @@
 //
 // kcmd pulls into a throwaway .staging/ tree in the "pushable" form (signal
 // carried in the custom `okf` aspect via the catalogEntry passthrough); we then
-// translate each file back to clean OKF and write it to catalog/. Inverse of push.ts.
+// translate each file back to clean OKF and write it to pulled/. Inverse of push.ts.
 
 import * as cp from 'child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as kcmd from 'kcmd';
-import { bundleDir, listMarkdown, fromStaging } from './okf';
+import { pullTargetDir, listMarkdown, fromStaging, requireManifest } from './okf';
 
 const context = kcmd.gcp.ApiContext.default();
 const okfKey = `${context.project}.${context.location}.okf`;
 
 const root = process.cwd();
-const catalogDir = bundleDir(root);
+requireManifest(root);
+const catalogDir = pullTargetDir(root);
 const stagingDir = path.join(root, '.staging');
 const stagingCatalog = path.join(stagingDir, 'catalog');
 const binary = path.resolve(root, '../../dist/kcmd');
