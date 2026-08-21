@@ -282,11 +282,7 @@ All are optional. Their absence carries meaning: an unverified concept is
 distinguishable from a verified one, but is never rejected (§11).
 
 Every timestamp-valued key in OKF is an ISO 8601 datetime with an explicit
-UTC offset, for example `2026-06-30T14:00:00Z`. A date-only value is not
-conformant, and consumers MUST ignore it as they would any unparseable
-value. Without an offset, the same value names a different instant in
-every timezone, so two consumers reading one bundle can disagree about
-what it says.
+UTC offset, for example `2026-06-30T14:00:00Z`.
 
 ### 5.1 Provenance: `sources`
 
