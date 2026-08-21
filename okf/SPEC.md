@@ -430,8 +430,7 @@ stale_after: 2026-09-23T00:00:00Z   # content is stale on/after this instant
 Optional. An absolute instant. A concept is stale when
 `now >= stale_after`. An absolute instant, not a relative TTL, keeps the
 staleness decision a plain comparison with no reference to when the
-concept was read; the explicit offset is what lets two consumers in
-different timezones agree on the answer.
+concept was read.
 
 ---
 
@@ -748,8 +747,6 @@ When the trust, lifecycle, provenance, or computation families are
 present, producers SHOULD follow §5 through §10, and consumers:
 
 - MUST treat a bare `verified` mapping as a one-element list (§5.2).
-- MUST ignore a timestamp that is not an ISO 8601 datetime with an
-  explicit UTC offset, including a date-only value (§5).
 - MUST NOT reject a concept for missing any optional family (§5.3).
 - SHOULD derive trust tiers and staleness only from the fields specified
   here, and SHOULD surface, not silently drop, a failing attestation

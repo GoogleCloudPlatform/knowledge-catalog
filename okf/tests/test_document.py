@@ -92,7 +92,7 @@ def test_is_stale():
     assert is_stale({"stale_after": "2026-09-24T00:00:00Z"}, now=ref) is False
     assert is_stale({}, now=ref) is False
     assert is_stale({"stale_after": "not-a-date"}, now=ref) is False
-    # §11: a date-only value is not conformant, so it is ignored rather than
-    # read as midnight in whichever zone the consumer happens to run in.
+    # A date-only value is ignored rather than read as midnight in whichever
+    # zone the consumer happens to run in.
     assert is_stale({"stale_after": "2026-09-23"}, now=ref) is False
     assert is_stale({"stale_after": "2026-09-23T00:00:00"}, now=ref) is False

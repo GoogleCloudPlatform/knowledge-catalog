@@ -118,8 +118,8 @@ def is_stale(frontmatter: dict[str, Any], now: datetime | None = None) -> bool:
 
     A concept is stale when `now >= stale_after`. Returns False when
     `stale_after` is absent, or is not an ISO 8601 datetime with an explicit
-    UTC offset: §11 requires a consumer to ignore such a value, and a
-    date-only `2026-12-31` names a different instant in every timezone.
+    UTC offset: a date-only `2026-12-31` names a different instant in every
+    timezone, so it is ignored rather than guessed at.
     """
     raw = str(frontmatter.get("stale_after") or "")
     if "T" not in raw:
