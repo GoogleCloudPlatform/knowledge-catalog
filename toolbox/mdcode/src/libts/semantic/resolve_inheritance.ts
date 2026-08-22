@@ -110,6 +110,13 @@ export function resolveInheritance(model: SemanticModel): ResolveResult {
 // ancestor renders `col`, and an emitter that reuses one label across both
 // tables (e.g. BigQuery's shared labels) would see two different definitions of
 // the same property and reject the graph.
+//
+// This composes with (does not duplicate) the emitter's own qualifier
+// stripping: this pass normalizes an inherited expression INTO the child's
+// frame once here, and the emitter's table-local renderer then strips the
+// child's own qualifier uniformly for every field (see
+// bigquery.renderFieldPropertyCore). Both route through the same `stripQualifier`
+// primitive; they differ only in which qualifier they remove.
 function localizeInheritedField(field: Field, ancestor: string): Field {
   const clone = structuredClone(field);
   if (clone.expression !== undefined) {

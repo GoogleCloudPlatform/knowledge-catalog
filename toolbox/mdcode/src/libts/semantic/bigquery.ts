@@ -149,15 +149,22 @@ export function generatePropertyGraph(
   }
 
   // A subclass's `LABEL <ancestor>` block lists that ancestor's own (flattened)
-  // signature, so the label renderer must reach every entity by name --
-  // including abstract ones, which have no node table but still contribute a
-  // label signature. Index all entities, not just the node-forming ones.
-  const allByName = new Map(entities.map(e => [e.name, e]));
+  // signature, so the label renderer must reach every LABEL CARRIER by name:
+  // node-forming entities plus abstract (table-less) supertypes, which have no
+  // node table but still contribute a label signature. A concrete entity
+  // dropped for an empty KEY is deliberately excluded -- it was reported as a
+  // structural defect, so it must not silently reappear as a shared label on a
+  // subclass (which would contradict the drop and expose a half-defined class);
+  // a subclass extending it drops that LABEL with a warning (see
+  // renderNodeTable).
+  const labelByName = new Map(
+      entities.filter(e => e.abstract || !skipped.has(e.name))
+          .map(e => [e.name, e]));
 
   const nodeTables = validEntities.map(
       entity => renderNodeTable(
           entity, loweringByEntity.get(entity.name)?.derivedProperties ?? [],
-          metricsByEntity.get(entity.name) ?? [], allByName,
+          metricsByEntity.get(entity.name) ?? [], labelByName,
           ancestorsUsed.has(entity.name), opts, warnings));
 
   const entitiesByName = new Map(validEntities.map(e => [e.name, e]));
@@ -530,8 +537,8 @@ function referencedEntities(
 
 function renderNodeTable(
     entity: Entity, derivedProperties: string[], measures: string[],
-    allByName: Map<string, Entity>, isSupertype: boolean, opts: GenerateOptions,
-    warnings: string[]): string {
+    labelByName: Map<string, Entity>, isSupertype: boolean,
+    opts: GenerateOptions, warnings: string[]): string {
   const table = qualifyTable(
       entity.dataSource, opts, warnings, `entity '${entity.name}'`);
 
@@ -545,12 +552,14 @@ function renderNodeTable(
   // copies on this entity, so in a well-formed hierarchy `renderOwn` below is a
   // no-op; the map's real job is to catch and neutralize a genuine override.
   const inheritedRender = new Map<string, string>();
+  const inheritedCore = new Map<string, string>();
   for (const ancestorName of entity.extends ?? []) {
-    const ancestor = allByName.get(ancestorName);
+    const ancestor = labelByName.get(ancestorName);
     if (!ancestor) continue;
     for (const f of ancestor.fields) {
       if (!inheritedRender.has(f.name)) {
         inheritedRender.set(f.name, renderFieldProperty(f, ancestor.name));
+        inheritedCore.set(f.name, renderFieldPropertyCore(f, ancestor.name));
       }
     }
   }
@@ -558,18 +567,30 @@ function renderNodeTable(
   // canonical definition for any inherited name. A subclass CANNOT give an
   // inherited property a different definition -- BigQuery requires one
   // definition per property under a shared label -- so a divergent override is
-  // warned and dropped in favor of the supertype's, keeping the DDL valid.
+  // warned and dropped in favor of the supertype's, keeping the DDL valid. The
+  // warning distinguishes a STRUCTURAL remap (a different column/expression --
+  // the property is genuinely rebound) from a METADATA-only refinement (same
+  // column, different description/synonyms) so it states precisely what the
+  // subclass loses, rather than mislabeling an added description as a redefined
+  // column.
   const renderOwn = (f: Field): string => {
     const own = renderFieldProperty(f, entity.name);
     const canonical = inheritedRender.get(f.name);
-    if (canonical === undefined) return own;
-    if (canonical !== own) {
+    if (canonical === undefined) return own;  // not inherited: render as-is
+    if (canonical === own) return canonical;  // identical: nothing to warn
+    if (renderFieldPropertyCore(f, entity.name) !== inheritedCore.get(f.name)) {
       warnings.push(
-          `entity '${entity.name}' redefines inherited property '${
-              f.name}' with a definition that differs from its supertype's; ` +
+          `entity '${entity.name}' remaps inherited property '${
+              f.name}' to a different column/expression than its supertype; ` +
           `BigQuery allows only one definition per property under a shared ` +
-          `label, so the supertype's is used and the subclass override is ` +
+          `label, so the supertype's is used and the subclass's remapping is ` +
           `dropped`);
+    } else {
+      warnings.push(
+          `entity '${entity.name}' overrides the description/synonyms of ` +
+          `inherited property '${f.name}'; under a shared label every binding ` +
+          `must declare it identically, so the supertype's metadata is used ` +
+          `and the subclass's is dropped`);
     }
     return canonical;
   };
@@ -630,8 +651,19 @@ function renderNodeTable(
   // renders the same inherited names via `renderOwn`, which also defers to the
   // ancestor, so the label is consistent within this table too.
   for (const ancestorName of entity.extends ?? []) {
-    const ancestor = allByName.get(ancestorName);
-    if (!ancestor) continue;
+    const ancestor = labelByName.get(ancestorName);
+    if (!ancestor) {
+      // The ancestor exists in the model (resolveInheritance already dropped
+      // unknown parents) but is not a label carrier -- it was dropped for an
+      // empty KEY. Its fields still flattened onto this node (they render as
+      // own properties above); it just forms no queryable label, so omit the
+      // LABEL and say so rather than reference a class reported as gone.
+      warnings.push(
+          `entity '${entity.name}' extends '${ancestorName}', which has no ` +
+          `node table and is not abstract (it was dropped, e.g. for an empty ` +
+          `KEY); the '${ancestorName}' label is omitted from '${entity.name}'`);
+      continue;
+    }
     lines.push(line(2, `LABEL ${ancestorName}`));
     const signature =
         ancestor.fields.map(f => renderFieldProperty(f, ancestor.name));
@@ -646,12 +678,27 @@ function renderNodeTable(
 // `derived_property` rule. A field with no expression is exposed as a bare
 // column under its name.
 function renderFieldProperty(field: Field, entity: string): string {
-  const expr = fieldExpression(field);
-  const local = expr !== undefined ? stripQualifier(expr, entity) : field.name;
-  const prop = local === field.name ? field.name : `${local} AS ${field.name}`;
+  const core = renderFieldPropertyCore(field, entity);
   const opts =
       optionsClause(fieldDescription(field), field.aiContext?.synonyms);
-  return opts ? `${prop} ${opts}` : prop;
+  return opts ? `${core} ${opts}` : core;
+}
+
+// Renders just the STRUCTURAL core of a field property -- the bare column, or
+// `<expr> AS <name>` when the field maps a non-trivial expression -- with no
+// trailing OPTIONS. This is the part BigQuery requires to be byte-for-byte
+// identical across every element table binding a shared label; metadata
+// (OPTIONS) is compared separately so a subclass's metadata-only refinement is
+// reported distinctly from a structural remap (see renderNodeTable's
+// renderOwn). This is also the single place a field expression is lowered to
+// its table-local form: the resolve-inheritance pass first rewrites an
+// inherited field's expression into the child's frame (localizeInheritedField),
+// then this strips the entity's own qualifier -- one normalization, in one
+// place, applied to own and inherited fields alike.
+function renderFieldPropertyCore(field: Field, entity: string): string {
+  const expr = fieldExpression(field);
+  const local = expr !== undefined ? stripQualifier(expr, entity) : field.name;
+  return local === field.name ? field.name : `${local} AS ${field.name}`;
 }
 
 

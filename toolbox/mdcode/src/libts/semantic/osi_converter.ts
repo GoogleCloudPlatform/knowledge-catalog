@@ -118,6 +118,16 @@ function modelDoc(
 
 function datasetDoc(
     entity: Entity, warnings: string[]): Record<string, any> {
+  // A concrete (non-abstract) entity with no source cannot be reloaded -- the
+  // loader requires `source` unless the dataset is abstract -- so surface the
+  // gap at write time instead of emitting a document that fails to load. This
+  // never fires for a well-formed IR; it catches a lossy pull that dropped a
+  // binding without marking the entity abstract.
+  if (!entity.abstract && !entity.dataSource) {
+    warnings.push(
+        `entity '${entity.name}' has no source and is not abstract; the ` +
+        `serialized document will not reload until a source is set`);
+  }
   return compact({
     name: entity.name,
     // An abstract entity has no physical table, so its source is empty; omit the

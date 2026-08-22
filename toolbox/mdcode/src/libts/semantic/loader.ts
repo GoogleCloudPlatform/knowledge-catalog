@@ -115,6 +115,19 @@ const datasetSchema = z.object({
           `source; set 'source', or mark it 'abstract: true' if it has no table`,
     });
   }
+  // The converse: an abstract dataset has no physical table, so declaring a
+  // `source` on it is contradictory -- the BigQuery leg forms no node table for
+  // an abstract entity and would silently ignore the source, dropping a table
+  // the author clearly intended. Reject it so the ambiguity is resolved
+  // explicitly rather than lost.
+  if (ds.abstract && ds.source !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['source'],
+      message: `dataset '${ds.name}': an abstract dataset has no table; ` +
+          `remove 'source', or drop 'abstract: true' to bind it to that table`,
+    });
+  }
 });
 
 const relationshipSchema = z.object({

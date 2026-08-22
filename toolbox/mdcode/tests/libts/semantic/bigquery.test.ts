@@ -744,10 +744,11 @@ describe('inherited property rendering (shared-label consistency)', () => {
     expect(warnings.some(w => w.includes('redefines inherited'))).toBe(false);
   });
 
-  test('a subclass overriding an inherited field is warned and neutralized', () => {
-    // Customer redefines `email` (inherited from Person) with a different
-    // expression. That cannot be represented under the shared Person label, so
-    // the supertype's definition wins and the override is dropped with a warning.
+  test('a subclass structurally remapping an inherited field is warned', () => {
+    // Customer remaps `email` (inherited from Person) to a different expression.
+    // That cannot be represented under the shared Person label, so the
+    // supertype's definition wins and the remap is dropped with a warning that
+    // names it as a column/expression remap.
     const model = base(
         [{name: 'id', expression: 'id'},
          {name: 'email', expression: 'LOWER(email)'}],
@@ -755,10 +756,90 @@ describe('inherited property rendering (shared-label consistency)', () => {
          {name: 'email', expression: 'email'}]);
     const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
     expect(warnings.some(
-               w => w.includes(`redefines inherited property 'email'`) &&
-                   w.includes('override is dropped')))
+               w => w.includes(`remaps inherited property 'email'`) &&
+                   w.includes('remapping is dropped')))
         .toBe(true);
-    // The overriding expression is gone; only the supertype's `email` remains.
+    // The remapping expression is gone; only the supertype's `email` remains.
     expect(ddl).not.toContain('LOWER(email)');
   });
+
+  test('a subclass refining only inherited metadata is warned as metadata-only',
+       () => {
+         // Customer keeps `email`'s column but adds a description. The structural
+         // core matches the supertype, so under the shared label the supertype's
+         // (option-free) definition still wins -- but the warning must say the
+         // refinement was METADATA, not a redefined column, and the added text
+         // must not leak into the DDL.
+         const model: SemanticModel = {
+           name: 'hier',
+           entities: [
+             {
+               name: 'Person', dataSource: 'proj.ds.person', keys: ['id'],
+               fields: [{name: 'id', expression: 'id'},
+                        {name: 'email', expression: 'email'}],
+             },
+             {
+               name: 'Customer', dataSource: 'proj.ds.customer', keys: ['id'],
+               extends: ['Person'],
+               fields: [{name: 'id', expression: 'id'}, {
+                 name: 'email',
+                 expression: 'email',
+                 description: 'Customer-specific email',
+               }],
+             },
+           ],
+           relationships: [],
+           metrics: [],
+         };
+         const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+         expect(
+             warnings.some(
+                 w => w.includes(
+                          `overrides the description/synonyms of inherited property 'email'`) &&
+                     w.includes('metadata is used')))
+             .toBe(true);
+         // Not mislabeled as a structural remap...
+         expect(warnings.some(w => w.includes('remaps inherited property')))
+             .toBe(false);
+         // ...and the subclass metadata is dropped, not emitted.
+         expect(ddl).not.toContain('Customer-specific email');
+       });
+
+  test('a subclass extending a KEY-less (dropped) supertype omits that label',
+       () => {
+         // Person is concrete but has no KEY, so it forms no node table. It must
+         // NOT be resurrected as a shared label on its subclass -- that would
+         // contradict the "skipped, invalid" report. The subclass keeps the
+         // flattened columns but drops the LABEL, with a warning explaining why.
+         const model: SemanticModel = {
+           name: 'hier',
+           entities: [
+             {
+               name: 'Person', dataSource: 'proj.ds.person', keys: [],
+               fields: [{name: 'id', expression: 'id'},
+                        {name: 'email', expression: 'email'}],
+             },
+             {
+               name: 'Customer', dataSource: 'proj.ds.customer', keys: ['id'],
+               extends: ['Person'],
+               fields: [{name: 'id', expression: 'id'},
+                        {name: 'loyalty', expression: 'loyalty'}],
+             },
+           ],
+           relationships: [],
+           metrics: [],
+         };
+         const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+         // No Person node table, and NOT a Person label anywhere.
+         expect(ddl).not.toContain('AS Person');
+         expect(ddl).not.toContain('LABEL Person');
+         // Reported both as the KEY defect and as the omitted label.
+         expect(warnings.some(w => w.includes('empty KEY'))).toBe(true);
+         expect(warnings.some(
+                    w => w.includes(
+                        `the 'Person' label is omitted from 'Customer'`)))
+             .toBe(true);
+         // Person's `email` still flattened onto Customer (it physically exists).
+         expect(ddl).toContain('email');
+       });
 });

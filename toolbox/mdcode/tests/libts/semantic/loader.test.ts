@@ -289,6 +289,42 @@ describe('relationships map onto the direct-FK IR convention', () => {
   });
 });
 
+describe('abstract datasets and their source constraint', () => {
+  test('a non-abstract dataset with no source is a hard error', () => {
+    expect(() => fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [{ name: 'orders', primary_key: ['id'], fields: [] }],
+      }],
+    })).toThrow(/non-abstract dataset requires a source/);
+  });
+
+  test('an abstract dataset that also declares a source is a hard error', () => {
+    // abstract == no physical table; a source would be silently ignored by the
+    // BigQuery leg, dropping a table the author intended, so reject the combo.
+    expect(() => fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [{
+          name: 'Party', source: 'proj.ds.party', abstract: true,
+          primary_key: ['id'], fields: [],
+        }],
+      }],
+    })).toThrow(/an abstract dataset has no table/);
+  });
+
+  test('an abstract dataset with no source loads and is marked abstract', () => {
+    const { models } = fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [{ name: 'Party', abstract: true, fields: [] }],
+      }],
+    });
+    expect(models[0].entities[0].abstract).toBe(true);
+    expect(models[0].entities[0].dataSource).toBe('');
+  });
+});
+
 
 describe('metrics infer their referenced entities from the expression', () => {
   test('a single referenced entity becomes the metric attach entity', () => {
