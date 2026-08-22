@@ -65,6 +65,22 @@ cli.command('push', 'Push catalog entries')
    });
 
 
+cli.command('owl <action> <file>', 'OWL ontology tools (action: import a .ttl ontology into an OSI model)')
+   .option('--out <path>', 'Write the generated OSI document to this path instead of the semantic-model layout dir')
+   .action(async (action, file, options) => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.owl(action, file, options);
+      }
+      catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+
+      process.exit(exitCode);
+   });
+
+
 cli.command('mcp', 'Run the Model Context Protocol (MCP) server')
    .option('--path <path>', 'Path to the catalog snapshot root directory')
    .action(async (options) => {

@@ -1,0 +1,48 @@
+version: 0.2.0.dev0
+semantic_model:
+  - name: sales
+    description: Imported from OWL ontology http://example.com/sales#
+    datasets:
+      - name: Customer
+        source: unbound:Customer
+        description: A person or organization that places orders.
+        fields:
+          - name: customerName
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: customerName
+            datatype: String
+            label: name
+          - name: signupDate
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: signupDate
+            datatype: Date
+      - name: Order
+        source: unbound:Order
+        description: A purchase placed by a customer.
+        fields:
+          - name: orderAmount
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: orderAmount
+            datatype: Decimal
+          - name: orderDate
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: orderDate
+            datatype: Date
+    relationships:
+      - name: placedBy
+        from: Order
+        to: Customer
+        from_columns:
+          - TODO_BIND
+        to_columns:
+          - TODO_BIND
+        ai_context:
+          instructions: Links an order to the customer who placed it.

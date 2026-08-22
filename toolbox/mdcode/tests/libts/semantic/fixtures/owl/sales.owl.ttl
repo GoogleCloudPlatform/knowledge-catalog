@@ -1,0 +1,29 @@
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex:   <http://example.com/sales#> .
+
+ex:Customer a owl:Class ;
+    rdfs:label   "Customer" ;
+    rdfs:comment "A person or organization that places orders." .
+
+ex:Order a owl:Class ;
+    rdfs:label   "Order" ;
+    rdfs:comment "A purchase placed by a customer." .
+
+ex:customerName a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ; rdfs:range xsd:string ; rdfs:label "name" .
+
+ex:signupDate a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ; rdfs:range xsd:date .
+
+ex:orderAmount a owl:DatatypeProperty ;
+    rdfs:domain ex:Order ; rdfs:range xsd:decimal .
+
+ex:orderDate a owl:DatatypeProperty ;
+    rdfs:domain ex:Order ; rdfs:range xsd:date .
+
+ex:placedBy a owl:ObjectProperty ;
+    rdfs:domain  ex:Order ; rdfs:range ex:Customer ;
+    rdfs:label   "placed by" ;
+    rdfs:comment "Links an order to the customer who placed it." .
