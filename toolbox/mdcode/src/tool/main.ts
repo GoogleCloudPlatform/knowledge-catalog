@@ -94,7 +94,13 @@ cli.command('mcp', 'Run the Model Context Protocol (MCP) server')
    });
 
 
-cli.parse();
+try {
+  cli.parse();
+}
+catch (err: any) {
+  console.error('Error:', err.message || err);
+  process.exit(1);
+}
 
 if (!cli.matchedCommand) {
   if (cli.args.length > 0) {

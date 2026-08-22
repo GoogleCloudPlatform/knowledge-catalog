@@ -230,6 +230,51 @@ describe('mapping table rules', () => {
         .toHaveLength(0);
   });
 
+  // A synonym (skos alt label or extra rdfs:label) that only respaces/recases
+  // the term's own name is redundant with the name and dropped -- the same rule
+  // the primary label gets.
+  test('synonyms redundant with the term name are dropped', () => {
+    const ttl = `
+      @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+      @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+      @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+      @prefix ex:   <http://example.com/x#> .
+
+      ex:Customer a owl:Class ;
+          rdfs:label "Customer" ;
+          skos:altLabel "customer" ;
+          skos:altLabel "Buyer" .
+    `;
+    const model = loadModels(convertOwlToOsi(ttl, 'x').yaml).models[0];
+    const customer = model.entities.find(e => e.name === 'Customer')!;
+    // Both "Customer" and "customer" collapse to the name; only "Buyer" survives.
+    expect(customer.aiContext?.synonyms).toEqual(['Buyer']);
+  });
+
+  // Terms are named by their namespace-stripped local name, so two terms that
+  // share a local name (e.g. across namespaces) would collapse to one OSI name.
+  // OSI names must be unique, so the first wins and the rest are warned and
+  // skipped -- the output stays valid and loadable rather than emitting a
+  // duplicate.
+  test('local-name collisions are warned and deduped (first wins)', () => {
+    const ttl = `
+      @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+      @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+      @prefix a:    <http://example.com/a#> .
+      @prefix b:    <http://example.com/b#> .
+
+      a:Customer a owl:Class ; rdfs:comment "from a" .
+      b:Customer a owl:Class ; rdfs:comment "from b" .
+    `;
+    const {yaml, warnings} = convertOwlToOsi(ttl, 'x');
+    expect(warnings.some(w => w.includes('Customer') && w.includes('more than once')))
+        .toBe(true);
+    // The result still loads: a single Customer entity, the first declaration.
+    const model = loadModels(yaml).models[0];
+    expect(model.entities.map(e => e.name)).toEqual(['Customer']);
+    expect(model.entities[0].description).toBe('from a');
+  });
+
   // The source ontology's base IRI is not carried on terms, but is preserved
   // once as provenance in the model description.
   test('the model description records the source ontology base IRI', () => {

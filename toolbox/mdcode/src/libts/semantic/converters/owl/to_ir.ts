@@ -102,6 +102,13 @@ function isRedundantLabel(label: string, name: string): boolean {
   return norm(label) === norm(name);
 }
 
+// Drops synonyms that merely respace/recase the term's own name -- the same
+// redundancy rule the primary label gets -- so an alternate label identical to
+// the name is not emitted as a synonym.
+function nonRedundant(names: string[], name: string): string[] {
+  return names.filter(s => !isRedundantLabel(s, name));
+}
+
 // The display label for a FIELD: the OSI `label` slot exists only on fields, so
 // a datatype property's rdfs:label lands here -- unless it is redundant with
 // the field name, in which case it is dropped.
@@ -119,14 +126,16 @@ function synonymAiContext(
     undefined {
   const all: string[] = [];
   if (label && !isRedundantLabel(label, name)) all.push(label);
-  all.push(...synonyms);
+  all.push(...nonRedundant(synonyms, name));
   return all.length ? {synonyms: dedupe(all)} : undefined;
 }
 
 // The ai_context for a FIELD (which already consumed its primary label into the
 // `label` slot): only the explicit synonyms remain. Undefined when empty.
-function fieldAiContext(synonyms: string[]): AiContext|undefined {
-  return synonyms.length ? {synonyms: dedupe(synonyms)} : undefined;
+function fieldAiContext(
+    synonyms: string[], name: string): AiContext|undefined {
+  const names = nonRedundant(synonyms, name);
+  return names.length ? {synonyms: dedupe(names)} : undefined;
 }
 
 // The ai_context for a RELATIONSHIP. Unlike datasets/fields, the OSI
@@ -139,7 +148,7 @@ function relationshipAiContext(
     comment: string|undefined): AiContext|undefined {
   const names: string[] = [];
   if (label && !isRedundantLabel(label, name)) names.push(label);
-  names.push(...synonyms);
+  names.push(...nonRedundant(synonyms, name));
   const ai: AiContext = {};
   if (comment) ai.instructions = comment;
   if (names.length) ai.synonyms = dedupe(names);
@@ -164,9 +173,19 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   const classNames = new Set(owl.classes.map(c => c.localName));
 
   // Entities, one per class, in class-declaration order. Fields are attached in
-  // datatype-property-declaration order below.
+  // datatype-property-declaration order below. Two classes can share a local
+  // name (e.g. same name in different namespaces); OSI dataset names must be
+  // unique, so the first wins and the rest are warned and skipped rather than
+  // silently emitting a duplicate the loader would reject.
   const entitiesByName = new Map<string, Entity>();
-  const entities: Entity[] = owl.classes.map(c => {
+  const entities: Entity[] = [];
+  for (const c of owl.classes) {
+    if (entitiesByName.has(c.localName)) {
+      warnings.push(
+          `class '${c.localName}' is declared more than once (same local name, ` +
+          `possibly across namespaces); keeping the first and skipping the rest.`);
+      continue;
+    }
     const entity: Entity = {
       name: c.localName,
       dataSource: unboundSource(c.localName),
@@ -176,8 +195,8 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
       fields: [],
     };
     entitiesByName.set(c.localName, entity);
-    return entity;
-  });
+    entities.push(entity);
+  }
 
   // Datatype properties -> fields on their domain's entity.
   for (const p of owl.datatypeProperties) {
@@ -194,6 +213,12 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
           `which is not an owl:Class in this ontology; skipped.`);
       continue;
     }
+    if (entity.fields.some(f => f.name === p.localName)) {
+      warnings.push(
+          `datatype property '${p.localName}' on '${p.domain}' duplicates an ` +
+          `existing field name; skipped (field names must be unique).`);
+      continue;
+    }
     const field: Field = {
       name: p.localName,
       // The property's local name is a valid column reference once the entity
@@ -202,7 +227,7 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
       type: datatypeFor(p.rangeIri),
       label: fieldLabel(p.label, p.localName),
       description: p.comment,
-      aiContext: fieldAiContext(p.synonyms),
+      aiContext: fieldAiContext(p.synonyms, p.localName),
     };
     entity.fields.push(field);
   }
@@ -221,6 +246,12 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
       warnings.push(
           `object property '${p.localName}' references a non-class endpoint ` +
           `(domain '${p.domain}', range '${p.range}'); skipped.`);
+      continue;
+    }
+    if (relationships.some(r => r.name === p.localName)) {
+      warnings.push(
+          `object property '${p.localName}' duplicates an existing relationship ` +
+          `name; skipped (relationship names must be unique).`);
       continue;
     }
     relationships.push({
