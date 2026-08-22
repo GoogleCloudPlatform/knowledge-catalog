@@ -15,6 +15,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import {convertOwlToOsi} from '../../../src/libts/semantic/converters/owl/convert';
+import {googleOntologyExtension} from '../../../src/libts/semantic/converters/owl/to_ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
 
 const FIXTURES = path.join(__dirname, 'fixtures', 'owl');
@@ -132,4 +133,141 @@ describe('mapping table rules', () => {
     expect(model.entities[0].fields).toHaveLength(0);
     expect(model.relationships).toHaveLength(0);
   });
+
+  // rdfs:comment is a description everywhere it has a slot; the OSI
+  // relationship has none, so an object property's comment rides in
+  // ai_context.instructions.
+  test(
+      'rdfs:comment routes to description, or relationship instructions',
+      () => {
+        const ttl = `
+      @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+      @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+      @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+      @prefix ex:   <http://example.com/x#> .
+
+      ex:Order a owl:Class ; rdfs:comment "A purchase." .
+      ex:Customer a owl:Class .
+      ex:amount a owl:DatatypeProperty ;
+          rdfs:domain ex:Order ; rdfs:range xsd:decimal ; rdfs:comment "Total charged." .
+      ex:placedBy a owl:ObjectProperty ;
+          rdfs:domain ex:Order ; rdfs:range ex:Customer ;
+          rdfs:comment "Who placed the order." .
+    `;
+        const model = loadModels(convertOwlToOsi(ttl, 'x').yaml).models[0];
+        const order = model.entities.find(e => e.name === 'Order')!;
+        // Class comment -> entity description.
+        expect(order.description).toBe('A purchase.');
+        // Datatype-property comment -> field description.
+        expect(order.fields.find(f => f.name === 'amount')!.description)
+            .toBe('Total charged.');
+        // Object-property comment -> relationship ai_context.instructions.
+        const placedBy = model.relationships.find(r => r.name === 'placedBy')!;
+        expect(placedBy.aiContext?.instructions).toBe('Who placed the order.');
+      });
+
+  // An object property is an edge between its domain and range; the real join
+  // columns are unknown until sources are bound, so both ends carry TODO_BIND.
+  test('an object property becomes an edge with UNBOUND join columns', () => {
+    const ttl = `
+      @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+      @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+      @prefix ex:   <http://example.com/x#> .
+
+      ex:Order a owl:Class .
+      ex:Customer a owl:Class .
+      ex:placedBy a owl:ObjectProperty ;
+          rdfs:domain ex:Order ; rdfs:range ex:Customer .
+    `;
+    const model = loadModels(convertOwlToOsi(ttl, 'x').yaml).models[0];
+    const edge = model.relationships.find(r => r.name === 'placedBy')!;
+    expect(edge.source.entity).toBe('Order');
+    expect(edge.destination.entity).toBe('Customer');
+    expect(edge.source.columns).toEqual(['TODO_BIND']);
+    expect(edge.destination.columns).toEqual(['TODO_BIND']);
+  });
+
+  // A class has no label slot, so its first (non-redundant) label and every
+  // further rdfs:label / skos label all collect as synonyms, in document order.
+  test('skos and extra rdfs:label values collect as synonyms', () => {
+    const ttl = `
+      @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+      @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+      @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+      @prefix ex:   <http://example.com/x#> .
+
+      ex:Client a owl:Class ;
+          rdfs:label "Customer account" ;
+          rdfs:label "Buyer" ;
+          skos:altLabel "Account holder" ;
+          skos:prefLabel "Patron" .
+    `;
+    const model = loadModels(convertOwlToOsi(ttl, 'x').yaml).models[0];
+    const client = model.entities.find(e => e.name === 'Client')!;
+    expect(client.aiContext?.synonyms).toEqual([
+      'Customer account', 'Buyer', 'Account holder', 'Patron'
+    ]);
+  });
+
+  // A domain that names something not declared as an owl:Class cannot host a
+  // field; it is skipped with a warning naming the property and the domain.
+  test('a datatype property whose domain is not a class is skipped', () => {
+    const ttl = `
+      @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+      @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+      @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+      @prefix ex:   <http://example.com/x#> .
+
+      ex:Thing a owl:Class .
+      ex:stray a owl:DatatypeProperty ;
+          rdfs:domain ex:NotAClass ; rdfs:range xsd:string .
+    `;
+    const {yaml, warnings} = convertOwlToOsi(ttl, 'x');
+    expect(warnings.some(w => w.includes('stray') && w.includes('NotAClass')))
+        .toBe(true);
+    const model = loadModels(yaml).models[0];
+    expect(model.entities.find(e => e.name === 'Thing')!.fields)
+        .toHaveLength(0);
+  });
+
+  // The source ontology's base IRI is not carried on terms, but is preserved
+  // once as provenance in the model description.
+  test('the model description records the source ontology base IRI', () => {
+    const ttl = `
+      @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+      @prefix ex:   <http://example.com/sales#> .
+      ex:Customer a owl:Class .
+    `;
+    const model = loadModels(convertOwlToOsi(ttl, 'x').yaml).models[0];
+    expect(model.description)
+        .toBe('Imported from OWL ontology http://example.com/sales#');
+  });
+});
+
+
+// The GOOGLE data.ontology extension is the promotion seam for OWL constructs
+// OSI cannot yet express natively (subClassOf, inverseOf, ...). It is defined
+// and shape-tested but unused by the minimal example, which maps entirely to
+// native OSI -- see to_ir.ts.
+describe('the GOOGLE ontology extension seam (defined-but-unused)', () => {
+  test(
+      'wraps its payload as a GOOGLE custom extension under data.ontology',
+      () => {
+        const ext =
+            googleOntologyExtension({subClassOf: {Manager: 'Employee'}});
+        expect(ext.vendorName).toBe('GOOGLE');
+        expect(JSON.parse(ext.data)).toEqual({
+          data: {ontology: {subClassOf: {Manager: 'Employee'}}}
+        });
+      });
+
+  test(
+      'is not exercised by the minimal example (nothing to promote yet)',
+      () => {
+        const {yaml} = convertOwlToOsi(readFixture('sales.owl.ttl'), 'sales');
+        // Everything maps natively, so no custom_extensions / GOOGLE block
+        // appears.
+        expect(yaml).not.toContain('custom_extensions');
+        expect(yaml).not.toContain('GOOGLE');
+      });
 });
