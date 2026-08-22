@@ -67,3 +67,21 @@ def test_fetch_and_parse_wraps_network_errors():
         with pytest.raises(FetchError) as exc:
             fetch_and_parse("https://example.com/dead")
         assert "connection refused" in str(exc.value)
+
+
+def test_fetch_and_parse_unescapes_html_entities_in_links():
+    # HTML attributes use &amp; for &. The fetcher must unescape before yielding
+    # links, otherwise agents receive a literally-encoded URL that many servers
+    # won't recognize as a valid query string.
+    html = (
+        b"<html><head><title>t</title></head><body>"
+        b'<a href="https://example.com/search?q=foo&amp;lang=en">link</a>'
+        b"</body></html>"
+    )
+    with patch("reference_agent.web.fetcher.urlopen") as mock_urlopen:
+        mock_urlopen.return_value = _mock_response(
+            html, url="https://example.com/page"
+        )
+        page = fetch_and_parse("https://example.com/page")
+    assert "https://example.com/search?q=foo&lang=en" in page.links
+    assert not any("&amp;" in link for link in page.links)
