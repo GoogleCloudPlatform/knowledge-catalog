@@ -109,9 +109,12 @@ semantic_model:
         from_columns: [city_id]
         to_columns: [id]
     metrics:
-      - name: total_people
+      # Targets City -- a leaf class. A metric on a SUPERTYPE (e.g. Person) is
+      # dropped with a warning: its label is shared across subclass tables and
+      # BigQuery cannot bind a MEASURE to a label carried by more than one table.
+      - name: total_cities
         expression:
           dialects:
             - dialect: ANSI_SQL
-              expression: COUNT(Person.id)
-        description: Number of people
+              expression: COUNT(City.id)
+        description: Number of cities

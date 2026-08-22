@@ -2,15 +2,15 @@ CREATE OR REPLACE PROPERTY GRAPH `sqlgen-testing.demo.people`
 NODE TABLES (
   `sqlgen-testing.demo.person` AS Person
     KEY(id)
-    OPTIONS(description="A human being")
+    DEFAULT LABEL
     PROPERTIES(
       id,
       full_name OPTIONS(description="Full Name"),
-      email,
-      MEASURE(COUNT(id)) AS total_people OPTIONS(description="Number of people")
+      email
     ),
   `sqlgen-testing.demo.customer` AS Customer
     KEY(id)
+    DEFAULT LABEL
     PROPERTIES(
       id,
       loyalty_tier,
@@ -25,6 +25,7 @@ NODE TABLES (
     ),
   `sqlgen-testing.demo.employee` AS Employee
     KEY(id)
+    DEFAULT LABEL
     PROPERTIES(
       id,
       department,
@@ -39,6 +40,7 @@ NODE TABLES (
     ),
   `sqlgen-testing.demo.manager` AS Manager
     KEY(id)
+    DEFAULT LABEL
     PROPERTIES(
       id,
       team_size,
@@ -63,7 +65,8 @@ NODE TABLES (
     KEY(id)
     PROPERTIES(
       id,
-      city_name
+      city_name,
+      MEASURE(COUNT(id)) AS total_cities OPTIONS(description="Number of cities")
     )
 )
 EDGE TABLES (
@@ -75,3 +78,4 @@ EDGE TABLES (
 
 -- warnings --
 -- note: no 'BIGQUERY' dialect for one or more expressions; using the portable 'ANSI_SQL' dialect verbatim ('BIGQUERY' accepts the ANSI core subset — supply 'BIGQUERY' variants only for BIGQUERY-specific SQL)
+-- entity 'Person' is a supertype in a class hierarchy; its description/synonyms are dropped from the shared 'Person' label (BigQuery forbids OPTIONS on a label bound by multiple tables)

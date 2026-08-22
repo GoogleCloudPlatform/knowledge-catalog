@@ -144,8 +144,8 @@ export function generatePropertyGraph(
   const loweringByEntity = new Map<string, MeasureLowering>();
   for (const metric of metrics) {
     placeMetric(
-        metric, resolved.model, entityByName, skipped, metricsByEntity,
-        loweringByEntity, warnings);
+        metric, resolved.model, entityByName, skipped, ancestorsUsed,
+        metricsByEntity, loweringByEntity, warnings);
   }
 
   // A subclass's `LABEL <ancestor>` block lists that ancestor's own (flattened)
@@ -157,7 +157,8 @@ export function generatePropertyGraph(
   const nodeTables = validEntities.map(
       entity => renderNodeTable(
           entity, loweringByEntity.get(entity.name)?.derivedProperties ?? [],
-          metricsByEntity.get(entity.name) ?? [], allByName, opts, warnings));
+          metricsByEntity.get(entity.name) ?? [], allByName,
+          ancestorsUsed.has(entity.name), opts, warnings));
 
   const entitiesByName = new Map(validEntities.map(e => [e.name, e]));
   const edgeTables =
@@ -234,7 +235,8 @@ function newLowering(entity: Entity): MeasureLowering {
 // single supported aggregate over one operand.
 function placeMetric(
     metric: Metric, model: SemanticModel, entityByName: Map<string, Entity>,
-    skipped: Set<string>, metricsByEntity: Map<string, string[]>,
+    skipped: Set<string>, ancestorsUsed: Set<string>,
+    metricsByEntity: Map<string, string[]>,
     loweringByEntity: Map<string, MeasureLowering>, warnings: string[]): void {
   // The IR keeps at most two expression forms; a measure is emitted from the
   // target/canonical `expression`, falling back to the imported vendor SQL when
@@ -297,6 +299,19 @@ function placeMetric(
   if (skipped.has(entityName)) {
     warnings.push(`metric '${metric.name}' targets entity '${
         entityName}', which has no KEY and was skipped; metric dropped`);
+    return;
+  }
+  // A metric lowers to a MEASURE on the target entity's DEFAULT LABEL. When that
+  // entity is a supertype, its label is shared with every subclass table, and
+  // BigQuery forbids binding a MEASURE to a label carried by more than one
+  // element table (a measure cannot be replicated across tables -- verified live
+  // "defined as MEASURE, but there are other declarations with the same name").
+  // Drop it with a warning rather than emit DDL BigQuery rejects.
+  if (ancestorsUsed.has(entityName)) {
+    warnings.push(
+        `metric '${metric.name}' targets entity '${entityName}', which is a ` +
+        `supertype whose label is shared across subclass tables; skipped ` +
+        `(BigQuery cannot bind a MEASURE to a shared label)`);
     return;
   }
 
@@ -505,7 +520,7 @@ function referencedEntities(
 
 function renderNodeTable(
     entity: Entity, derivedProperties: string[], measures: string[],
-    allByName: Map<string, Entity>, opts: GenerateOptions,
+    allByName: Map<string, Entity>, isSupertype: boolean, opts: GenerateOptions,
     warnings: string[]): string {
   const table = qualifyTable(
       entity.dataSource, opts, warnings, `entity '${entity.name}'`);
@@ -522,31 +537,55 @@ function renderNodeTable(
     line(1, `${table} AS ${entity.name}`),
     line(2, `KEY(${entity.keys.join(', ')})`),
   ];
-  // Element-table description and synonyms attach to the DEFAULT LABEL: after
-  // the key clause, before PROPERTIES (grammar: element_table_definition).
-  const labelOpts = optionsClause(
+  // Element-table description and synonyms attach to the node's DEFAULT LABEL --
+  // UNLESS this entity is a supertype whose label is shared by subclass tables.
+  // BigQuery forbids a label that carries an OPTIONS clause from being bound to
+  // more than one element table (verified live -- "the label ... is defined with
+  // OPTIONS clause in one of the element tables and cannot be bound to another
+  // element table"), so a shared supertype label must be options-free; its
+  // description/synonyms are dropped (with a warning).
+  let labelOpts = optionsClause(
       elementDescription(entity.description, entity.aiContext),
       entity.aiContext?.synonyms);
+  if (isSupertype && labelOpts) {
+    warnings.push(
+        `entity '${entity.name}' is a supertype in a class hierarchy; its ` +
+        `description/synonyms are dropped from the shared '${entity.name}' ` +
+        `label (BigQuery forbids OPTIONS on a label bound by multiple tables)`);
+    labelOpts = undefined;
+  }
+  // A node participating in the hierarchy -- as a subclass (it declares ancestor
+  // LABELs) or as a shared supertype (a subclass binds its label) -- must use an
+  // EXPLICIT `DEFAULT LABEL`: BigQuery rejects a bare (implicit default)
+  // PROPERTIES clause immediately followed by explicit LABEL clauses (verified
+  // live -- "Expected \")\" ... but got keyword LABEL"), and the validated
+  // shared-label shape is `DEFAULT LABEL PROPERTIES(...)`. A node outside any
+  // hierarchy keeps the implicit form so existing output is byte-for-byte
+  // unchanged.
+  const hasAncestors = !!(entity.extends && entity.extends.length);
+  if (hasAncestors || isSupertype) lines.push(line(2, 'DEFAULT LABEL'));
   if (labelOpts) lines.push(line(2, labelOpts));
   // Omit the PROPERTIES block when there is nothing to list, rather than emit
   // an empty `PROPERTIES()` (a node table may declare just its KEY).
   if (properties.length) lines.push(propertiesBlock(properties));
 
   // Inheritance: declare one LABEL per transitive ancestor (resolveInheritance
-  // expanded `extends` to the full ancestor set), each exposing that ancestor's
-  // own flattened signature. This makes `MATCH (:Ancestor)` also match this
-  // subclass node, and BigQuery requires every table sharing a label to list an
-  // identical property signature -- which holds because the ancestor's fields
-  // were flattened onto this entity too. The ancestor's description/synonyms
-  // stay on its own DEFAULT LABEL (or, for an abstract ancestor, are dropped);
-  // the descendant's LABEL clause carries no OPTIONS, to avoid conflicting
-  // duplicate options for the same shared label.
+  // expanded `extends` to the full ancestor set), each re-listing that
+  // ancestor's properties so `MATCH (:Ancestor)` also matches this subclass
+  // node. BigQuery requires a property shared across an element table's label
+  // blocks to have an IDENTICAL definition in each (verified live -- "Property
+  // ... has more than one definition"), so the ancestor block reuses THIS
+  // entity's own rendered property strings (by name) rather than re-rendering
+  // from the ancestor, guaranteeing they match byte-for-byte even when a field
+  // carries OPTIONS or a qualified expression.
+  const ownRender = new Map(
+      entity.fields.map(f => [f.name, renderFieldProperty(f, entity.name)]));
   for (const ancestorName of entity.extends ?? []) {
     const ancestor = allByName.get(ancestorName);
     if (!ancestor) continue;
     lines.push(line(2, `LABEL ${ancestorName}`));
-    const signature =
-        ancestor.fields.map(f => renderFieldProperty(f, ancestor.name));
+    const signature = ancestor.fields.map(f => ownRender.get(f.name))
+                          .filter((s): s is string => s !== undefined);
     if (signature.length) lines.push(propertiesBlock(signature));
   }
   return lines.join('\n');
