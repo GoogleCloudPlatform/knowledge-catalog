@@ -121,6 +121,8 @@ function datasetDoc(
   return compact({
     name: entity.name,
     source: entity.dataSource,
+    // Supertype entities (entity-level inheritance); omitted when none.
+    extends: nonEmpty(entity.extends),
     primary_key: nonEmpty(entity.keys),
     unique_keys: nonEmpty(entity.uniqueKeys),
     description: entity.description,

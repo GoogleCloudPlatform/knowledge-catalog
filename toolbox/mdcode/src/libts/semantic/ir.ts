@@ -81,6 +81,18 @@ export interface Entity {
   // Additional uniqueness constraints beyond the primary key; each inner array
   // is one unique column set (maps to the Schema aspect's uniqueConstraints).
   uniqueKeys?: string[][];
+  // Names of supertype entities this entity inherits from -- Apache Ossie's
+  // `extends` (see ontology/ontology.md), the target of OWL `rdfs:subClassOf`.
+  // Inheritance is ENTITY-LEVEL ONLY: only entities carry `extends`;
+  // relationships never do (there is no relationship-inheritance field), so OWL
+  // `rdfs:subPropertyOf` has no representation here by design.
+  //
+  // This is the hierarchy AS DECLARED: it records the fact, it does not itself
+  // flatten anything. Resolving `extends` into inherited fields (so an emitter
+  // sees a self-contained entity) is a separate pass, not yet wired -- so a
+  // consumer may observe `extends` on an entity whose `fields` do NOT yet
+  // include the supertype's fields.
+  extends?: string[];
   description?: string;
   aiContext?: AiContext;
   fields: Field[];       // dimensions / attributes

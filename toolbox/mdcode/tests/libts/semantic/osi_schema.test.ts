@@ -53,6 +53,25 @@ function onlyMissingExpression(errors: typeof validate.errors): boolean {
           'expression');
 }
 
+// `extends` (entity-level inheritance, the target of OWL rdfs:subClassOf) is a
+// deliberate SUPERSET of released Apache OSI: the keyword is borrowed from
+// Ossie's draft ontology proposal (ontology/ontology.md) and the vendored
+// osi-schema.json -- pinned to released v0.2.0.dev0 -- does not yet know it, so a
+// dataset carrying `extends` trips `additionalProperties: false` on the Dataset
+// def. We tolerate EXACTLY that one extra property (an additionalProperties error
+// naming `extends` on a datasets path) and nothing else, so an OWL hierarchy
+// golden validates while every other drift from the spec still fails. When
+// upstream OSI adopts `extends`, re-vendoring the schema makes this pass with no
+// special-casing and this tolerance can be removed.
+function onlyExtendsExtension(errors: typeof validate.errors): boolean {
+  return !!errors && errors.length > 0 &&
+    errors.every(
+      e => e.keyword === 'additionalProperties' &&
+        (e.params as {additionalProperty?: string}).additionalProperty ===
+          'extends' &&
+        /\/datasets\/\d+$/.test(e.instancePath));
+}
+
 describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () => {
   test('at least one fixture is discovered', () => {
     expect(fixtures.length).toBeGreaterThan(0);
@@ -69,6 +88,15 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
         // real regression and still fails.
         if (rel.endsWith('.pull.golden.yaml') &&
             onlyMissingExpression(validate.errors)) {
+          return;
+        }
+        // A dataset `extends` is a deliberate superset of released OSI (OWL
+        // rdfs:subClassOf -> entity-level inheritance); tolerate exactly that
+        // extra property and nothing else, and only on the OWL import goldens
+        // (.osi.golden.yaml) that legitimately carry it -- so a stray `extends`
+        // slipping into any other fixture still fails this guardrail.
+        if (rel.endsWith('.osi.golden.yaml') &&
+            onlyExtendsExtension(validate.errors)) {
           return;
         }
         const details = (validate.errors ?? [])

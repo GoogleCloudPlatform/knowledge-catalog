@@ -21,10 +21,19 @@ const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
 const OWL_CLASS = 'http://www.w3.org/2002/07/owl#Class';
 const OWL_DATATYPE_PROPERTY = 'http://www.w3.org/2002/07/owl#DatatypeProperty';
 const OWL_OBJECT_PROPERTY = 'http://www.w3.org/2002/07/owl#ObjectProperty';
+const OWL_THING = 'http://www.w3.org/2002/07/owl#Thing';
 const RDFS_LABEL = 'http://www.w3.org/2000/01/rdf-schema#label';
 const RDFS_COMMENT = 'http://www.w3.org/2000/01/rdf-schema#comment';
 const RDFS_DOMAIN = 'http://www.w3.org/2000/01/rdf-schema#domain';
 const RDFS_RANGE = 'http://www.w3.org/2000/01/rdf-schema#range';
+const RDFS_SUBCLASS_OF = 'http://www.w3.org/2000/01/rdf-schema#subClassOf';
+const RDFS_SUBPROPERTY_OF =
+    'http://www.w3.org/2000/01/rdf-schema#subPropertyOf';
+const RDFS_RESOURCE = 'http://www.w3.org/2000/01/rdf-schema#Resource';
+// The implicit universal superclasses: every class is trivially a subclass of
+// owl:Thing / rdfs:Resource, so an explicit `rdfs:subClassOf` naming one carries
+// no inheritance information and is not recorded as `extends` (nor warned about).
+const TOP_CLASS_IRIS = new Set([OWL_THING, RDFS_RESOURCE]);
 const SKOS_ALT_LABEL = 'http://www.w3.org/2004/02/skos/core#altLabel';
 const SKOS_PREF_LABEL = 'http://www.w3.org/2004/02/skos/core#prefLabel';
 
@@ -63,10 +72,12 @@ interface Annotations {
   domain?: string;
   range?: string;
   synonyms: string[];
+  subClassOf: string[];
+  subPropertyOf: string[];
 }
 
 function emptyAnnotations(): Annotations {
-  return {synonyms: []};
+  return {synonyms: [], subClassOf: [], subPropertyOf: []};
 }
 
 /**
@@ -131,6 +142,23 @@ export function parseOwl(turtle: string): OwlModel {
       case RDFS_RANGE:
         a.range = q.object.value;  // kept as IRI; mapper maps xsd:* -> datatype
         break;
+      case RDFS_SUBCLASS_OF:
+        // Class hierarchy -> the entity's `extends`. Named superclasses only:
+        // a blank-node object (an owl:Restriction and similar axioms) is not a
+        // named class, so it is ignored here (out of scope). The implicit
+        // universal superclasses (owl:Thing / rdfs:Resource) are ignored too --
+        // every class subclasses them, so they carry no inheritance information.
+        if (q.object.termType === 'NamedNode' &&
+            !TOP_CLASS_IRIS.has(q.object.value))
+          a.subClassOf.push(localName(q.object.value));
+        break;
+      case RDFS_SUBPROPERTY_OF:
+        // Property hierarchy -> NOT supported (entity-level inheritance only).
+        // Recorded so the mapper can warn and drop it; named superproperties
+        // only.
+        if (q.object.termType === 'NamedNode')
+          a.subPropertyOf.push(localName(q.object.value));
+        break;
       default:
         break;
     }
@@ -151,6 +179,7 @@ export function parseOwl(turtle: string): OwlModel {
           label: a.label,
           comment: a.comment,
           synonyms: a.synonyms,
+          subClassOf: a.subClassOf,
         });
         break;
       case 'datatypeProperty':
@@ -161,6 +190,7 @@ export function parseOwl(turtle: string): OwlModel {
           label: a.label,
           comment: a.comment,
           synonyms: a.synonyms,
+          subPropertyOf: a.subPropertyOf,
         });
         break;
       case 'objectProperty':
@@ -171,6 +201,7 @@ export function parseOwl(turtle: string): OwlModel {
           label: a.label,
           comment: a.comment,
           synonyms: a.synonyms,
+          subPropertyOf: a.subPropertyOf,
         });
         break;
       default:

@@ -392,10 +392,12 @@ does not learn a second format — it **converts OWL into a semantic model** onc
 then the ontology rides the normal `kcmd push` / `kcmd pull` above. The semantic
 model stays the single canonical form.
 
-This first cut converts only the OWL constructs that have a clean BigQuery Graph
-shape (class → node, object property → edge, datatype property → property).
-Richer OWL (`subClassOf`, `inverseOf`, SHACL, cardinality, individuals) is not
-read yet — see [What is not covered yet](#what-is-not-covered-yet).
+This first cut converts the OWL constructs that have a clean BigQuery Graph
+shape (class → node, object property → edge, datatype property → property), plus
+**class hierarchies** (`rdfs:subClassOf` → entity `extends`, see
+[Class hierarchies](#class-hierarchies-rdfssubclassof)). Richer OWL
+(`inverseOf`, `rdfs:subPropertyOf`, SHACL, cardinality, individuals) is not read
+yet — see [What is not covered yet](#what-is-not-covered-yet).
 
 ### 1. The OWL file
 
@@ -517,16 +519,71 @@ semantic_model:
 | `owl:DatatypeProperty` | `fields[]` on the domain's dataset | `expression` defaults to the property's local name (a valid column ref once bound) |
 | `rdfs:range xsd:*` | field `datatype` | `xsd:string→String`, `xsd:date→Date`, `xsd:decimal→Decimal`, else `Opaque` |
 | `owl:ObjectProperty` | `relationships[]` | `from`=domain, `to`=range; join columns unbound (`TODO_BIND`) |
+| `rdfs:subClassOf` (named superclass) | dataset `extends[]` | **entity-level inheritance only** — records the parent(s) in document order; not read on object properties (see [Class hierarchies](#class-hierarchies-rdfssubclassof)) |
 | `rdfs:label` on a datatype property | field `label` | the field's display name (a `label` slot exists only on fields); dropped when it only respaces/recases the name |
 | `rdfs:label` on a class / object property | `ai_context.synonyms` | no `label` slot there, so a distinct label becomes an alternate name; dropped when it only respaces/recases the name |
 | extra `rdfs:label` / `skos:altLabel` / `skos:prefLabel` | `ai_context.synonyms` | genuinely alternate names; feed NL search |
 | `rdfs:comment` on a class / datatype property | `description` | |
 | `rdfs:comment` on an object property | `ai_context.instructions` | a relationship has no `description` slot, so its comment rides in `ai_context` |
-| term IRIs, `@prefix` | dropped (provenance kept in model `description`) | reconstructable as `<base><name>`; re-carried only if reverse export or `subClassOf` needs them |
+| term IRIs, `@prefix` | dropped (provenance kept in model `description`) | reconstructable as `<base><name>`; re-carried only if reverse export needs them |
 
 A datatype property whose domain is not a class in the ontology, or an object
 property missing an endpoint, cannot be placed; it is **skipped with a warning**
 rather than failing the whole import.
+
+#### Class hierarchies (`rdfs:subClassOf`)
+
+`rdfs:subClassOf` maps to a dataset's `extends` — the one keyword borrowed from
+[Ossie's ontology proposal](https://github.com/apache/ossie/blob/main/ontology/ontology.md)
+onto our existing `datasets`. Given `Customer rdfs:subClassOf Person`:
+
+```turtle
+ex:Person a owl:Class ; rdfs:comment "A human being." .
+ex:fullName a owl:DatatypeProperty ; rdfs:domain ex:Person ; rdfs:range xsd:string .
+
+ex:Customer a owl:Class ;
+    rdfs:subClassOf ex:Person ;
+    rdfs:comment "A person who buys." .
+ex:loyaltyTier a owl:DatatypeProperty ; rdfs:domain ex:Customer ; rdfs:range xsd:string .
+```
+
+the `Customer` dataset carries `extends: [Person]`:
+
+```yaml
+  - name: Customer
+    source: unbound:Customer
+    extends:
+      - Person
+    description: A person who buys.
+    fields:
+      - name: loyaltyTier          # Customer's OWN field only
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: loyaltyTier
+        datatype: String
+```
+
+Multiple superclasses are allowed (`extends: [Person, Employee]`, in document
+order). A `subClassOf` whose object is a blank-node axiom (`owl:Restriction` and
+similar) is not a named class, so it is ignored, as are the implicit universal
+superclasses `owl:Thing` / `rdfs:Resource` (every class subclasses them, so they
+carry no inheritance information).
+
+Two boundaries to be clear about:
+
+- **This import *records* the hierarchy; it does not *resolve* it.** `Customer`
+  carries `extends: [Person]` and **only its own fields** — `Person`'s `fullName`
+  is **not copied down**. Nothing is pushed differently yet: a `kcmd push` today
+  publishes each dataset with exactly the fields it declares. Flattening
+  inherited fields into Knowledge Catalog entries and BigQuery Graph node tables
+  (fields flow down; edges do not) is a **follow-on** — this PR is the faithful
+  representation it will build on.
+- **Inheritance is entity-level only.** `extends` lives on `datasets`, never on
+  relationships — the boundary is structural. `rdfs:subPropertyOf` (property /
+  relationship inheritance) is **not supported**: the field or relationship is
+  still imported, but the `subPropertyOf` link is **dropped with a warning**. See
+  [What is not covered yet](#what-is-not-covered-yet).
 
 ### 4. Going from ontology to a running graph (binding)
 
@@ -569,10 +626,18 @@ before a BigQuery push. Binding is a manual edit in this first cut.
 
 ### What is not covered yet
 
-- `rdfs:subClassOf`, `owl:inverseOf`, `rdfs:subPropertyOf` — not read yet. When
-  added, they will land in a GOOGLE `custom_extensions` block (under a
-  `data.ontology` key), which is also where the base IRI + prefixes come back
-  (needed to expand parent-class/property references).
+- `rdfs:subClassOf` (class hierarchy) **is** read now — it maps to dataset
+  `extends` (see [Class hierarchies](#class-hierarchies-rdfssubclassof)).
+  *Resolving* that inheritance into Knowledge Catalog entries / BigQuery Graph
+  node tables (copying inherited fields down) is a follow-on; this cut only
+  records the hierarchy.
+- `owl:inverseOf`, `rdfs:subPropertyOf` (property / relationship inheritance) —
+  not supported. A `subPropertyOf` link is dropped with a warning (the field or
+  relationship itself is still imported); only entity-level inheritance exists.
+  When richer constructs are added, they will land in a GOOGLE
+  `custom_extensions` block (under a `data.ontology` key), which is also where the
+  base IRI + prefixes would come back (needed to expand parent-property
+  references).
 - SHACL shapes, cardinality, `owl:unionOf` domains, symmetric/transitive
   properties, `equivalentClass`, individuals — not read.
 - Semantic model → OWL export (reverse) — not built; import is one-way.
