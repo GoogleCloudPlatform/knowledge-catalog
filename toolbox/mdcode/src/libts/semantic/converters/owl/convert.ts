@@ -13,7 +13,9 @@ import {owlToIr} from './to_ir';
 export interface ConvertResult {
   // The OSI document text, ready to write as `<model>.yaml`.
   yaml: string;
-  // Counts for the CLI's one-line summary.
+  // Counts for the CLI's one-line summary -- what was actually converted, not
+  // the source-triple counts (see ToIrResult.stats), so a skipped element is
+  // not reported as "converted".
   stats:
       {classes: number; datatypeProperties: number; objectProperties: number};
   // Notes about OWL content that could not be mapped (from the mapper) and IR
@@ -34,15 +36,11 @@ export interface ConvertResult {
 export function convertOwlToOsi(
     turtle: string, modelName: string): ConvertResult {
   const owl = parseOwl(turtle);
-  const {model, warnings: mapWarnings} = owlToIr(owl, modelName);
+  const {model, warnings: mapWarnings, stats} = owlToIr(owl, modelName);
   const {yaml, warnings: serializeWarnings} = serializeModel(model);
   return {
     yaml,
-    stats: {
-      classes: owl.classes.length,
-      datatypeProperties: owl.datatypeProperties.length,
-      objectProperties: owl.objectProperties.length,
-    },
+    stats,
     warnings: [...mapWarnings, ...serializeWarnings],
   };
 }

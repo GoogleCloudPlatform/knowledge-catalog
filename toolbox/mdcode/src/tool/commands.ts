@@ -581,21 +581,23 @@ export async function owl(
   }
 
   const { classes, datatypeProperties, objectProperties } = result.stats;
+
+  // Guard: an ontology with no owl:Class yields a model with no datasets, which
+  // is not a loadable OSI model. Fail clearly -- before the summary, so we do
+  // not print a "converted 0 classes" line for a model we are about to reject --
+  // rather than writing an empty artifact that only errors on a later push/pull.
+  if (classes === 0) {
+    console.error(
+      `Error: no owl:Class declarations found in '${file}'; nothing to import.`);
+    return 1;
+  }
+
   console.log(
     `converted ${classes} ${plural(classes, 'class', 'classes')}, `
     + `${objectProperties} `
     + `${plural(objectProperties, 'object property', 'object properties')}, `
     + `${datatypeProperties} `
     + `${plural(datatypeProperties, 'datatype property', 'datatype properties')}`);
-
-  // Guard: an ontology with no owl:Class yields a model with no datasets, which
-  // is not a loadable OSI model. Fail clearly rather than writing an empty
-  // artifact that only errors on a later push/pull.
-  if (classes === 0) {
-    console.error(
-      `Error: no owl:Class declarations found in '${file}'; nothing to import.`);
-    return 1;
-  }
 
   // Sink: an explicit --out path writes directly; otherwise the semantic-model
   // layout places the document under the scope's entry group so `kcmd push`
