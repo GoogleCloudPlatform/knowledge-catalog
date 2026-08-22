@@ -17,31 +17,59 @@ function dataplex(args: string[], data: string|null=null) {
   cp.execFileSync('gcloud', argv, { encoding: 'utf8', input: data ?? undefined, stdio: 'inherit'});
 }
 
-try {
-  dataplex(['dataplex', 'entry-groups', 'create', entryGroup]);
-  console.log(`Created empty entry group ${entryGroup}`);
-  console.log();
-}
-catch {
-  // Might already exist
+// The same call with every stream discarded, for a command run only for its
+// exit status.
+function dataplexQuiet(args: string[]) {
+  const argv = [...args, '--project', project, '--location', location];
+  cp.execFileSync('gcloud', argv, { encoding: 'utf8', stdio: ['ignore', 'ignore', 'ignore'] });
 }
 
-try {
-  dataplex(['dataplex', 'aspect-types', 'create', 'okf', '--metadata-template-file-name=okf-aspect.json']);
-  console.log('Created custom aspect type okf');
-  console.log();
+// Whether the resource is already there. The describe's output and its
+// NOT_FOUND on stderr are both discarded, so asking the question prints
+// nothing. A describe that fails for any other reason answers false too, and
+// the create that follows then fails loudly with the real cause.
+function describeExists(kind: string, name: string): boolean {
+  try {
+    dataplexQuiet(['dataplex', kind, 'describe', name]);
+    return true;
+  }
+  catch {
+    return false;
+  }
 }
-catch {
-  // Already exists. Update rather than skip: a project left over from an
-  // earlier run of this demo holds an older template, and pushing v0.2 signal
-  // against it fails with an opaque "Unknown property" error. Dataplex rejects
-  // backwards-incompatible template changes, so new fields in okf-aspect.json
-  // must be appended with fresh indices; renumbering an existing field breaks
-  // this update for everyone who already ran the demo.
+
+// Each of the three resources below is looked up before it is created, rather
+// than created and then recovered from the 409. There are two reasons. gcloud
+// prints that 409 as a red ERROR line of its own before this script can react
+// to it, and re-running the demo in a project that already holds the shared
+// types is the normal case rather than a fault. A create wrapped in a catch
+// also swallows every other failure: a 429 on the entry group would leave this
+// script exiting 0 with the manifest below written against an entry group that
+// does not exist. No create is guarded, so any real failure stops the run.
+if (describeExists('entry-groups', entryGroup)) {
+  console.log(`Using existing entry group ${entryGroup}`);
+}
+else {
+  dataplex(['dataplex', 'entry-groups', 'create', entryGroup]);
+  console.log(`Created empty entry group ${entryGroup}`);
+}
+console.log();
+
+// Update rather than leave alone: a project left over from an earlier run of
+// this demo holds an older template, and pushing v0.2 signal against it fails
+// with an opaque "Unknown property" error. Dataplex rejects
+// backwards-incompatible template changes, so new fields in okf-aspect.json
+// must be appended with fresh indices; renumbering an existing field breaks
+// this update for everyone who already ran the demo.
+if (describeExists('aspect-types', 'okf')) {
   dataplex(['dataplex', 'aspect-types', 'update', 'okf', '--metadata-template-file-name=okf-aspect.json']);
   console.log('Updated existing aspect type okf to the current template');
-  console.log();
 }
+else {
+  dataplex(['dataplex', 'aspect-types', 'create', 'okf', '--metadata-template-file-name=okf-aspect.json']);
+  console.log('Created custom aspect type okf');
+}
+console.log();
 
 // A custom entry type, so a search can tell an OKF document apart from anything
 // else in the project. It declares no required aspects: SPEC 8 index files
@@ -51,16 +79,15 @@ const entryTypeFlags = [
   '--description=A document in an Open Knowledge Format bundle.',
 ];
 
-try {
-  dataplex(['dataplex', 'entry-types', 'create', 'okf-bundle', ...entryTypeFlags]);
-  console.log('Created custom entry type okf-bundle');
-  console.log();
-}
-catch {
+if (describeExists('entry-types', 'okf-bundle')) {
   dataplex(['dataplex', 'entry-types', 'update', 'okf-bundle', ...entryTypeFlags]);
   console.log('Updated existing entry type okf-bundle');
-  console.log();
 }
+else {
+  dataplex(['dataplex', 'entry-types', 'create', 'okf-bundle', ...entryTypeFlags]);
+  console.log('Created custom entry type okf-bundle');
+}
+console.log();
 
 const okfAspect = `${project}.${location}.okf`;
 const okfEntryType = `${project}.${location}.okf-bundle`;
