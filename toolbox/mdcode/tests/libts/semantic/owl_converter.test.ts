@@ -171,6 +171,28 @@ describe('class hierarchies map rdfs:subClassOf to entity extends', () => {
     expect(employee.fields.some(f => f.name === 'legalName')).toBe(true);
     expect(model.relationships.some(r => r.name === 'managedBy')).toBe(true);
   });
+
+  test('an extends parent that is not a class is recorded but warned', () => {
+    // subClassOf a superclass that is not an owl:Class in this ontology (a typo,
+    // or an external superclass) is still recorded as `extends`, but -- like
+    // every other unresolved cross-reference in the converter -- it is warned
+    // about rather than emitted silently.
+    const ttl = [
+      '@prefix owl:  <http://www.w3.org/2002/07/owl#> .',
+      '@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .',
+      '@prefix ex:   <http://example.com/hr#> .',
+      'ex:Customer a owl:Class ; rdfs:subClassOf ex:Persn .',
+    ].join('\n');
+    const {yaml, warnings} = convertOwlToOsi(ttl, 'dangling');
+    expect(warnings.some(
+               w => w.includes('Customer') && w.includes('Persn') &&
+                   w.includes('subClassOf')))
+        .toBe(true);
+    // Still recorded as declared -- the warning does not drop the link.
+    const customer =
+        loadModels(yaml).models[0].entities.find(e => e.name === 'Customer')!;
+    expect(customer.extends).toEqual(['Persn']);
+  });
 });
 
 

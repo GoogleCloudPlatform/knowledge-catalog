@@ -195,9 +195,24 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
       fields: [],
     };
     // rdfs:subClassOf -> entity-level `extends`. Recorded AS DECLARED (parent
-    // local names, deduped); parents are not validated or flattened here -- a
-    // later resolution pass expands inherited fields (see ir.ts Entity.extends).
-    if (c.subClassOf.length) entity.extends = dedupe(c.subClassOf);
+    // local names, deduped); parents are not flattened here -- a later
+    // resolution pass expands inherited fields (see ir.ts Entity.extends). A
+    // parent that is not an owl:Class in this ontology (a typo, or a superclass
+    // imported from another ontology) is still recorded, but warned about -- as
+    // every other cross-reference here is -- so a dangling `extends` is never
+    // emitted silently.
+    if (c.subClassOf.length) {
+      const parents = dedupe(c.subClassOf);
+      entity.extends = parents;
+      const unknown = parents.filter(name => !classNames.has(name));
+      if (unknown.length) {
+        warnings.push(
+            `class '${c.localName}' declares rdfs:subClassOf a non-class ` +
+            `superclass (${unknown.join(', ')}); the extends link is recorded ` +
+            `as declared but cannot be resolved (not an owl:Class in this ` +
+            `ontology).`);
+      }
+    }
     entitiesByName.set(c.localName, entity);
     entities.push(entity);
   }

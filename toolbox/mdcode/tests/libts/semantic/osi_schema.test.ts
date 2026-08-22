@@ -92,8 +92,11 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
         }
         // A dataset `extends` is a deliberate superset of released OSI (OWL
         // rdfs:subClassOf -> entity-level inheritance); tolerate exactly that
-        // extra property and nothing else.
-        if (onlyExtendsExtension(validate.errors)) {
+        // extra property and nothing else, and only on the OWL import goldens
+        // (.osi.golden.yaml) that legitimately carry it -- so a stray `extends`
+        // slipping into any other fixture still fails this guardrail.
+        if (rel.endsWith('.osi.golden.yaml') &&
+            onlyExtendsExtension(validate.errors)) {
           return;
         }
         const details = (validate.errors ?? [])
