@@ -1,17 +1,31 @@
 import * as cp from 'child_process';
 import * as kcmd from 'kcmd';
+import { manifestEntryGroup, rejectArgs } from './okf';
 
 const context = kcmd.gcp.ApiContext.default();
 const project = context.project;
 const location = context.location;
-const entryGroup = 'okf_ga4';
 
-function dataplex(cmd: string, data: string|null=null) {
-  cmd = 'gcloud -q dataplex ' + cmd + ` --project ${project} --location ${location}`;
-  cp.execSync(cmd, { encoding: 'utf8', input: data ?? undefined, stdio: 'inherit'});
+// The entry group to delete comes from the manifest setup.ts wrote, so cleanup
+// can only ever undo this demo's own setup.
+rejectArgs();
+const entryGroup = manifestEntryGroup(process.cwd());
+
+// Arguments go to gcloud as an argv array rather than a shell string, so a name
+// read out of the manifest is never word-split or interpreted by a shell.
+function dataplex(args: string[], data: string|null=null) {
+  const argv = [...args, '--project', project, '--location', location];
+  cp.execFileSync('gcloud', argv, { encoding: 'utf8', input: data ?? undefined, stdio: 'inherit'});
 }
 
-dataplex(`entry-groups delete ${entryGroup}`);
+// `-q` skips the confirmation prompt, so this is the only chance to notice that
+// the deletion is aimed at the wrong entry group.
+console.log(
+  `About to delete entry group ${entryGroup} in ${project}/${location}. ` +
+  `If this is not the entry group you meant, abort now.`
+);
+
+dataplex(['-q', 'dataplex', 'entry-groups', 'delete', entryGroup]);
 console.log(`Deleted entry group ${entryGroup}`);
 
 // The okf aspect type and the okf-bundle entry type are scoped to the project
