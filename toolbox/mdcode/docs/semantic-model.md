@@ -186,6 +186,26 @@ per supertype**, walking the full transitive chain. A node then matches its
 supertype in a query — `MATCH (:Person)` returns `Person`, `Customer`,
 `Employee`, and `Manager` nodes alike.
 
+You author only each entity's **own** fields plus the one `extends` keyword; the
+push does the rest:
+
+```yaml
+datasets:
+  - name: Person
+    source: proj.ds.person
+    primary_key: [id]
+    fields:
+      - {name: id,        expression: {dialects: [{dialect: BIGQUERY, expression: id}]}}
+      - {name: full_name, expression: {dialects: [{dialect: BIGQUERY, expression: full_name}]}}
+      - {name: email,     expression: {dialects: [{dialect: BIGQUERY, expression: email}]}}
+  - name: Customer
+    source: proj.ds.customer
+    primary_key: [id]          # each subclass keeps its OWN key; keys do not inherit
+    extends: [Person]          # the one keyword you add
+    fields:
+      - {name: loyalty_tier, expression: {dialects: [{dialect: BIGQUERY, expression: loyalty_tier}]}}
+```
+
 For those shared labels to work, **the supertype's fields flatten down** onto the
 subclass. BigQuery requires every table exposing a label to expose the **same
 property signature**, so a subclass's `LABEL Person` block must list exactly what
@@ -207,12 +227,13 @@ GRAPH proj.ds.people
 MATCH (p:Person) RETURN p.full_name   -- resolves on Customer/Employee/Manager too
 ```
 
-Three boundaries:
+Four boundaries:
 
-- **Fields flow down, edges do not.** A subclass gains its supertypes' fields but
-  **not** their relationships: an edge stays bound to the exact node table it was
-  declared on. If `Person —livesIn→ City`, a `Customer` node does not get a
-  `livesIn` edge.
+- **Fields flow down; edges and keys do not.** A subclass gains its supertypes'
+  fields but **not** their relationships or their key: an edge stays bound to the
+  exact node table it was declared on, and each subclass keeps its own `KEY` (a
+  node table is identified by its own grain, never its supertype's). If
+  `Person —livesIn→ City`, a `Customer` node does not get a `livesIn` edge.
 - **The subclass's `source` must physically expose the inherited columns.** The
   flattened `full_name`/`email` above are read from `proj.ds.customer`, so that
   table (or a view over it) must include those columns. Parent and child are
@@ -226,6 +247,11 @@ Three boundaries:
   warning), and a metric that targets a supertype is skipped (with a warning) —
   attach metrics to a leaf class instead. Subclass and leaf labels are
   unaffected.
+- **An inherited field cannot be redefined.** A shared label requires one
+  identical definition per property across every table that binds it, so if a
+  subclass declares a field of the same name as an inherited one but with a
+  different expression, the supertype's definition wins and the subclass's is
+  dropped (with a warning). Redeclaring it identically is a harmless no-op.
 
 An entity may also be marked **`abstract: true`** — a conceptual class with no
 physical table (so it has no `source` and no key). It produces **no node table**;
