@@ -176,3 +176,40 @@ describe('non-mutation and identity', () => {
     expect(fieldsOf(r, 'Person')).toEqual(['id', 'fullName']);
   });
 });
+
+
+describe('inherited-expression localization', () => {
+  // A field written on the supertype as `<Supertype>.col` references the
+  // supertype's own table; inherited onto a subclass it must reference the
+  // subclass's local column, so its own-name qualifier is stripped on the
+  // flattened copy (the supertype's own field is left untouched). Without this,
+  // the subclass and supertype would render the same property differently and
+  // an emitter reusing one label across both tables would reject it.
+  test('a self-qualified inherited expression becomes table-local', () => {
+    const {model: r} = resolveInheritance(model([
+      entity('Person', [], undefined, {
+        fields: [{name: 'email', expression: 'Person.email'}],
+      }),
+      entity('Customer', ['id'], ['Person']),
+    ]));
+    const inherited =
+        entityOf(r, 'Customer').fields.find(f => f.name === 'email')!;
+    expect(inherited.expression).toBe('email');
+    // The supertype's own copy is unchanged.
+    const own = entityOf(r, 'Person').fields.find(f => f.name === 'email')!;
+    expect(own.expression).toBe('Person.email');
+  });
+
+  test('a qualifier that is not the defining entity is left intact', () => {
+    // `LOWER(email)` has no `<Person>.` qualifier, so nothing is stripped.
+    const {model: r} = resolveInheritance(model([
+      entity('Person', [], undefined, {
+        fields: [{name: 'email', expression: 'LOWER(email)'}],
+      }),
+      entity('Customer', ['id'], ['Person']),
+    ]));
+    const inherited =
+        entityOf(r, 'Customer').fields.find(f => f.name === 'email')!;
+    expect(inherited.expression).toBe('LOWER(email)');
+  });
+});

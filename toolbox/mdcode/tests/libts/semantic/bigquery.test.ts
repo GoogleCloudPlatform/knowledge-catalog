@@ -604,10 +604,16 @@ describe('abstract (table-less) superclasses are eliminated to labels', () => {
 
   test('concrete subclasses share the abstract label and its flattened fields', () => {
     const {ddl} = generatePropertyGraph(partyModel(), GEN_OPTS);
-    // Both Person and Organization declare the shared Party label.
-    expect(ddl.match(/LABEL Party/g)?.length).toBe(2);
-    // Party's `name` field flattened down so the shared signature is present.
-    expect(ddl).toContain('name');
+    // Both Person and Organization declare the shared Party label, each with a
+    // PROPERTIES block that lists Party's flattened `name` (assert inside the
+    // block, so an unrelated `name` substring elsewhere can't satisfy this).
+    const partyBlocks =
+        [...ddl.matchAll(/LABEL Party\s*\n\s*PROPERTIES\(([\s\S]*?)\)/g)];
+    expect(partyBlocks.length).toBe(2);
+    for (const [, props] of partyBlocks) {
+      expect(props).toContain('name');
+      expect(props).toContain('id');
+    }
   });
 
   test('both concrete node tables are still emitted', () => {
@@ -695,5 +701,64 @@ describe('supertype shared-label constraints (inheritance)', () => {
     const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
     expect(ddl).toContain('AS total_customers');
     expect(warnings.some(w => w.includes('total_customers'))).toBe(false);
+  });
+});
+
+
+describe('inherited property rendering (shared-label consistency)', () => {
+  // BigQuery requires a property carried by a label bound to more than one
+  // element table to have an IDENTICAL definition in every table. These tests
+  // pin the two ways a naive renderer would violate that: a supertype field
+  // whose expression is qualified with its own name, and a subclass that
+  // redefines an inherited field.
+  function base(customerFields: Array<{name: string; expression?: string}>,
+                personFields: Array<{name: string; expression?: string}>):
+      SemanticModel {
+    return {
+      name: 'hier',
+      entities: [
+        {name: 'Person', dataSource: 'proj.ds.person', keys: ['id'],
+         fields: personFields},
+        {name: 'Customer', dataSource: 'proj.ds.customer', keys: ['id'],
+         extends: ['Person'], fields: customerFields},
+      ],
+      relationships: [],
+      metrics: [],
+    };
+  }
+
+  test('a supertype expression qualified with its own name is localized', () => {
+    // Person.email references Person's table; inherited onto Customer it must be
+    // the local `email`, so the qualifier appears NOWHERE in the DDL and every
+    // binding of the Person label lists an identical `email` property.
+    const model = base(
+        [{name: 'id', expression: 'id'}],
+        [{name: 'id', expression: 'id'},
+         {name: 'email', expression: 'Person.email'}]);
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).not.toContain('Person.email');
+    // Person's own DEFAULT LABEL, Customer's DEFAULT LABEL, and Customer's
+    // LABEL Person block must all list `email` the same way -> three occurrences.
+    expect(ddl.match(/\bemail\b/g)?.length).toBe(3);
+    // A well-formed hierarchy raises no override warning.
+    expect(warnings.some(w => w.includes('redefines inherited'))).toBe(false);
+  });
+
+  test('a subclass overriding an inherited field is warned and neutralized', () => {
+    // Customer redefines `email` (inherited from Person) with a different
+    // expression. That cannot be represented under the shared Person label, so
+    // the supertype's definition wins and the override is dropped with a warning.
+    const model = base(
+        [{name: 'id', expression: 'id'},
+         {name: 'email', expression: 'LOWER(email)'}],
+        [{name: 'id', expression: 'id'},
+         {name: 'email', expression: 'email'}]);
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(warnings.some(
+               w => w.includes(`redefines inherited property 'email'`) &&
+                   w.includes('override is dropped')))
+        .toBe(true);
+    // The overriding expression is gone; only the supertype's `email` remains.
+    expect(ddl).not.toContain('LOWER(email)');
   });
 });

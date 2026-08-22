@@ -34,6 +34,7 @@
 // signature).
 
 import {Entity, Field, SemanticModel} from './ir';
+import {stripQualifier} from './sql_expr_utils';
 
 export interface ResolveResult {
   model: SemanticModel;
@@ -81,7 +82,7 @@ export function resolveInheritance(model: SemanticModel): ResolveResult {
       for (const f of ownFields.get(anc) ?? []) {
         if (seenField.has(f.name)) continue;
         seenField.add(f.name);
-        flattened.push(structuredClone(f));
+        flattened.push(localizeInheritedField(f, anc));
       }
     }
     entity.fields = flattened;
@@ -97,6 +98,28 @@ export function resolveInheritance(model: SemanticModel): ResolveResult {
   }
 
   return {model: clone, warnings: [...new Set(warnings)]};
+}
+
+// Clones an ancestor's field for a descendant, rewriting its expression to be
+// TABLE-LOCAL. A field expression written on the ancestor as `<Ancestor>.col`
+// means "the `col` column of the ancestor's own table"; inherited onto a
+// descendant -- whose backing table carries the same column, since inherited
+// fields must physically exist on the child -- it must reference the
+// DESCENDANT's column, so the ancestor's own-name qualifier is stripped.
+// Without this the descendant would render `<Ancestor>.col AS col` while the
+// ancestor renders `col`, and an emitter that reuses one label across both
+// tables (e.g. BigQuery's shared labels) would see two different definitions of
+// the same property and reject the graph.
+function localizeInheritedField(field: Field, ancestor: string): Field {
+  const clone = structuredClone(field);
+  if (clone.expression !== undefined) {
+    clone.expression = stripQualifier(clone.expression, ancestor);
+  }
+  if (clone.importedExpression !== undefined) {
+    clone.importedExpression =
+        stripQualifier(clone.importedExpression, ancestor);
+  }
+  return clone;
 }
 
 // Computes the de-duplicated transitive ancestor set for `start`, ORDERED

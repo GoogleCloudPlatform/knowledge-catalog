@@ -234,7 +234,10 @@ flatten down so the label's signature is present). An abstract entity that no
 concrete entity extends has nothing to attach to and is dropped with a warning.
 `abstract` is an explicit marker: an entity left with an unbound `source`
 placeholder is treated as a binding error and fails the push, never silently
-dropped as if it were table-less.
+dropped as if it were table-less. The Knowledge Catalog leg does not
+model inheritance today, so an abstract entity has no physical resource to
+catalog and is skipped there (with a warning); its concrete subtypes are
+published normally.
 
 ### What gets created in Knowledge Catalog
 

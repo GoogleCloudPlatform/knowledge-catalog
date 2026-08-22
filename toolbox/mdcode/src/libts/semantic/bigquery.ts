@@ -292,6 +292,16 @@ function placeMetric(
         entityName}'; skipped (cannot be a single MEASURE)`);
     return;
   }
+  // An abstract entity is a table-less supertype with no node table, so it can
+  // carry no MEASURE. Report that specifically -- it is also in `skipped`, so
+  // this must precede the generic no-KEY message below to stay accurate.
+  if (entity.abstract) {
+    warnings.push(
+        `metric '${metric.name}' targets entity '${entityName}', which is ` +
+        `abstract (a table-less supertype with no node table to carry a ` +
+        `MEASURE); metric dropped`);
+    return;
+  }
   // A metric can only become a MEASURE on a node table, but an entity that was
   // skipped upstream (empty KEY) has no node table to carry it. Check the skip
   // set already computed, and report the drop directly, instead of letting it
@@ -524,11 +534,51 @@ function renderNodeTable(
     warnings: string[]): string {
   const table = qualifyTable(
       entity.dataSource, opts, warnings, `entity '${entity.name}'`);
+
+  // Canonical rendering of every inherited property: its supertype's OWN
+  // definition, keyed by property name (nearest ancestor wins, matching field
+  // flattening). A property that appears under a label shared across element
+  // tables must have one identical definition everywhere it appears, so the
+  // supertype is authoritative -- both this node's DEFAULT LABEL and its
+  // `LABEL <ancestor>` blocks render an inherited property exactly as the
+  // supertype's node table does. resolveInheritance localizes the inherited
+  // copies on this entity, so in a well-formed hierarchy `renderOwn` below is a
+  // no-op; the map's real job is to catch and neutralize a genuine override.
+  const inheritedRender = new Map<string, string>();
+  for (const ancestorName of entity.extends ?? []) {
+    const ancestor = allByName.get(ancestorName);
+    if (!ancestor) continue;
+    for (const f of ancestor.fields) {
+      if (!inheritedRender.has(f.name)) {
+        inheritedRender.set(f.name, renderFieldProperty(f, ancestor.name));
+      }
+    }
+  }
+  // Renders one of this entity's own fields, deferring to the supertype's
+  // canonical definition for any inherited name. A subclass CANNOT give an
+  // inherited property a different definition -- BigQuery requires one
+  // definition per property under a shared label -- so a divergent override is
+  // warned and dropped in favor of the supertype's, keeping the DDL valid.
+  const renderOwn = (f: Field): string => {
+    const own = renderFieldProperty(f, entity.name);
+    const canonical = inheritedRender.get(f.name);
+    if (canonical === undefined) return own;
+    if (canonical !== own) {
+      warnings.push(
+          `entity '${entity.name}' redefines inherited property '${
+              f.name}' with a definition that differs from its supertype's; ` +
+          `BigQuery allows only one definition per property under a shared ` +
+          `label, so the supertype's is used and the subclass override is ` +
+          `dropped`);
+    }
+    return canonical;
+  };
+
   // Order: declared fields, then any operand properties synthesized for
   // measures, then the measures themselves (which reference those operand
   // properties).
   const properties = [
-    ...entity.fields.map(f => renderFieldProperty(f, entity.name)),
+    ...entity.fields.map(renderOwn),
     ...derivedProperties,
     ...measures,
   ];
@@ -572,20 +622,19 @@ function renderNodeTable(
   // Inheritance: declare one LABEL per transitive ancestor (resolveInheritance
   // expanded `extends` to the full ancestor set), each re-listing that
   // ancestor's properties so `MATCH (:Ancestor)` also matches this subclass
-  // node. BigQuery requires a property shared across an element table's label
-  // blocks to have an IDENTICAL definition in each (verified live -- "Property
-  // ... has more than one definition"), so the ancestor block reuses THIS
-  // entity's own rendered property strings (by name) rather than re-rendering
-  // from the ancestor, guaranteeing they match byte-for-byte even when a field
-  // carries OPTIONS or a qualified expression.
-  const ownRender = new Map(
-      entity.fields.map(f => [f.name, renderFieldProperty(f, entity.name)]));
+  // node. The block is rendered straight from the ANCESTOR's own fields with
+  // the ancestor as qualifier, so it is byte-for-byte identical to the
+  // ancestor's own DEFAULT LABEL -- the exact match BigQuery requires for a
+  // property shared across the element tables that bind a label ("same set of
+  // property declarations under the same label"). This node's DEFAULT LABEL
+  // renders the same inherited names via `renderOwn`, which also defers to the
+  // ancestor, so the label is consistent within this table too.
   for (const ancestorName of entity.extends ?? []) {
     const ancestor = allByName.get(ancestorName);
     if (!ancestor) continue;
     lines.push(line(2, `LABEL ${ancestorName}`));
-    const signature = ancestor.fields.map(f => ownRender.get(f.name))
-                          .filter((s): s is string => s !== undefined);
+    const signature =
+        ancestor.fields.map(f => renderFieldProperty(f, ancestor.name));
     if (signature.length) lines.push(propertiesBlock(signature));
   }
   return lines.join('\n');
@@ -767,8 +816,7 @@ function qualifyGraph(model: SemanticModel, opts: GenerateOptions): string {
   // sources (whitespace), which carry no usable location.
   const first = (model.entities ?? [])
                     .find(e => e.dataSource && !/\s/.test(e.dataSource));
-  if ((!project || !dataset) && first?.dataSource &&
-      !/\s/.test(first.dataSource)) {
+  if ((!project || !dataset) && first) {
     const p = first.dataSource.trim().split('.');
     if (p.length >= 3) {
       project = project ?? p[0];
