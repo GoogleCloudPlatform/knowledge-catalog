@@ -555,3 +555,145 @@ describe(
         expect(ddl).not.toContain('MEASURE(COUNT(*))');
       });
     });
+
+
+describe('abstract (table-less) superclasses are eliminated to labels', () => {
+  // An abstract `Party` has no physical table; two concrete subtypes, `Person`
+  // and `Organization`, bind it. resolveInheritance flattens Party's `name`
+  // onto each subtype and expands their `extends` to [Party], so each concrete
+  // node table declares `LABEL Party` with Party's own signature. Party itself
+  // must produce NO node table -- it survives only as that shared label.
+  function partyModel(): SemanticModel {
+    return {
+      name: 'party_graph',
+      entities: [
+        {
+          name: 'Party',
+          dataSource: '',
+          keys: [],
+          abstract: true,
+          fields: [{name: 'id'}, {name: 'name'}],
+        },
+        {
+          name: 'Person',
+          dataSource: 'sqlgen-testing.demo.person',
+          keys: ['id'],
+          extends: ['Party'],
+          fields: [{name: 'id'}, {name: 'ssn'}],
+        },
+        {
+          name: 'Organization',
+          dataSource: 'sqlgen-testing.demo.organization',
+          keys: ['id'],
+          extends: ['Party'],
+          fields: [{name: 'id'}, {name: 'taxId'}],
+        },
+      ],
+      relationships: [],
+      metrics: [],
+    };
+  }
+
+  test('the abstract class produces no node table but survives as a label', () => {
+    const {ddl} = generatePropertyGraph(partyModel(), GEN_OPTS);
+    // No `AS Party` node table (it has no source/KEY to materialize)...
+    expect(ddl).not.toContain('AS Party');
+    // ...but its label is present on the concrete descendants.
+    expect(ddl).toContain('LABEL Party');
+  });
+
+  test('concrete subclasses share the abstract label and its flattened fields', () => {
+    const {ddl} = generatePropertyGraph(partyModel(), GEN_OPTS);
+    // Both Person and Organization declare the shared Party label.
+    expect(ddl.match(/LABEL Party/g)?.length).toBe(2);
+    // Party's `name` field flattened down so the shared signature is present.
+    expect(ddl).toContain('name');
+  });
+
+  test('both concrete node tables are still emitted', () => {
+    const {ddl} = generatePropertyGraph(partyModel(), GEN_OPTS);
+    expect(ddl).toContain('AS Person');
+    expect(ddl).toContain('AS Organization');
+  });
+
+  test('an abstract class that is nobody\'s supertype is warned and dropped', () => {
+    const model = partyModel();
+    model.entities!.push({
+      name: 'Ghost',
+      dataSource: '',
+      keys: [],
+      abstract: true,
+      fields: [{name: 'id'}],
+    });
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(warnings.some(
+               w => w.includes(`abstract entity 'Ghost'`) &&
+                   w.includes('no graph element')))
+        .toBe(true);
+    expect(ddl).not.toContain('Ghost');
+  });
+});
+
+
+describe('supertype shared-label constraints (inheritance)', () => {
+  // Person is a supertype (Customer extends it), so its label is shared across
+  // both element tables. BigQuery forbids OPTIONS on a shared label and forbids
+  // a MEASURE bound to more than one element table, so the generator must (a)
+  // drop Person's label OPTIONS with a warning and (b) skip a metric that
+  // targets a supertype with a warning -- while a metric on a leaf still emits.
+  function hierModel(): SemanticModel {
+    return {
+      name: 'hier',
+      entities: [
+        {
+          name: 'Person',
+          dataSource: 'proj.ds.person',
+          keys: ['id'],
+          description: 'A human being',
+          fields: [{name: 'id'}, {name: 'name'}],
+        },
+        {
+          name: 'Customer',
+          dataSource: 'proj.ds.customer',
+          keys: ['id'],
+          extends: ['Person'],
+          fields: [{name: 'id'}, {name: 'tier'}],
+        },
+      ],
+      relationships: [],
+      metrics: [{name: 'total_people', expression: 'COUNT(Person.id)'}],
+    };
+  }
+
+  test('a shared supertype label drops its OPTIONS (with a warning)', () => {
+    const {ddl, warnings} = generatePropertyGraph(hierModel(), GEN_OPTS);
+    // Person's description would normally ride its DEFAULT LABEL OPTIONS; because
+    // the label is shared with Customer it must be options-free.
+    expect(ddl).not.toContain('A human being');
+    expect(warnings.some(
+               w => w.includes(`entity 'Person' is a supertype`) &&
+                   w.includes('dropped from the shared')))
+        .toBe(true);
+    // The shared supertype still uses an explicit DEFAULT LABEL.
+    expect(ddl).toContain('DEFAULT LABEL');
+  });
+
+  test('a metric targeting a supertype is skipped (with a warning)', () => {
+    const {ddl, warnings} = generatePropertyGraph(hierModel(), GEN_OPTS);
+    expect(ddl).not.toContain('total_people');
+    expect(warnings.some(
+               w => w.includes(`metric 'total_people'`) &&
+                   w.includes('shared label')))
+        .toBe(true);
+  });
+
+  test('a metric on a leaf (non-supertype) entity is still emitted', () => {
+    const model = hierModel();
+    // Retarget to the leaf Customer -- nobody extends it, so its label is not
+    // shared and a MEASURE binds cleanly.
+    model.metrics = [{name: 'total_customers', expression: 'COUNT(Customer.id)'}];
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toContain('AS total_customers');
+    expect(warnings.some(w => w.includes('total_customers'))).toBe(false);
+  });
+});
