@@ -196,6 +196,7 @@ and the subclass's default label carries the inherited fields too:
 ```sql
 `proj.ds.customer` AS Customer
   KEY(id)
+  DEFAULT LABEL
   PROPERTIES( id, loyalty_tier, full_name, email )   -- own + inherited (flattened)
   LABEL Person
   PROPERTIES( id, full_name, email )                 -- matches Person's own signature
@@ -206,7 +207,7 @@ GRAPH proj.ds.people
 MATCH (p:Person) RETURN p.full_name   -- resolves on Customer/Employee/Manager too
 ```
 
-Two boundaries:
+Three boundaries:
 
 - **Fields flow down, edges do not.** A subclass gains its supertypes' fields but
   **not** their relationships: an edge stays bound to the exact node table it was
@@ -218,6 +219,13 @@ Two boundaries:
   separate physical tables, so the same real-world entity present in both
   `person` and `customer` appears as two nodes under `MATCH (:Person)` — a
   modeling choice for the binding step, not something the DDL enforces.
+- **A shared supertype label carries no OPTIONS and no measures.** A supertype's
+  label is bound by every subclass table, and BigQuery forbids a label carried by
+  more than one element table from carrying an `OPTIONS` clause or a `MEASURE`. So
+  a supertype's own `description`/synonyms are dropped from its label (with a
+  warning), and a metric that targets a supertype is skipped (with a warning) —
+  attach metrics to a leaf class instead. Subclass and leaf labels are
+  unaffected.
 
 An entity may also be marked **`abstract: true`** — a conceptual class with no
 physical table (so it has no `source` and no key). It produces **no node table**;
