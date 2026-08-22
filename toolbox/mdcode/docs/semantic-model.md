@@ -384,6 +384,200 @@ local model and replace it with the catalog's. Pull never touches BigQuery.
 > validation gate before any leg runs, so it is never written — see
 > [Validation](#validation).)
 
+## Importing an OWL ontology
+
+An OWL ontology and a semantic model share a backbone: **classes ≈ entities**,
+**object properties ≈ relationships**, **datatype properties ≈ fields**. `kcmd`
+does not learn a second format — it **converts OWL into a semantic model** once,
+then the ontology rides the normal `kcmd push` / `kcmd pull` above. The semantic
+model stays the single canonical form.
+
+This first cut converts only the OWL constructs that have a clean BigQuery Graph
+shape (class → node, object property → edge, datatype property → property).
+Richer OWL (`subClassOf`, `inverseOf`, SHACL, cardinality, individuals) is not
+read yet — see [What is not covered yet](#what-is-not-covered-yet).
+
+### 1. The OWL file
+
+A small sales ontology, `sales.owl.ttl` — two classes, four datatype properties,
+one object property. Nothing here needs an OWL reasoner:
+
+```turtle
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex:   <http://example.com/sales#> .
+
+ex:Customer a owl:Class ;
+    rdfs:label   "Customer" ;
+    rdfs:comment "A person or organization that places orders." .
+
+ex:Order a owl:Class ;
+    rdfs:label   "Order" ;
+    rdfs:comment "A purchase placed by a customer." .
+
+ex:customerName a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ; rdfs:range xsd:string ; rdfs:label "name" .
+
+ex:signupDate a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ; rdfs:range xsd:date .
+
+ex:orderAmount a owl:DatatypeProperty ;
+    rdfs:domain ex:Order ; rdfs:range xsd:decimal .
+
+ex:orderDate a owl:DatatypeProperty ;
+    rdfs:domain ex:Order ; rdfs:range xsd:date .
+
+ex:placedBy a owl:ObjectProperty ;
+    rdfs:domain  ex:Order ; rdfs:range ex:Customer ;
+    rdfs:label   "placed by" ;
+    rdfs:comment "Links an order to the customer who placed it." .
+```
+
+### 2. The command
+
+```console
+$ kcmd owl import sales.owl.ttl
+converted 2 classes, 1 object property, 4 datatype properties
+wrote catalog/EntryGroups/<entryGroup>/sales.yaml
+note: this model is UNBOUND (no backing tables yet).
+      -> `kcmd push --target kc` works now (publishes ontology metadata).
+      -> `kcmd push --target bq` is skipped until you bind sources.
+```
+
+The model name comes from the file (`sales.owl.ttl` → `sales`). By default the
+document is written into the semantic-model layout dir so the next `kcmd push`
+picks it up; pass `--out <path>` to write it elsewhere.
+
+### 3. The semantic model it produces — `sales.yaml`
+
+Note what is **not** here: no IRIs, no `custom_extensions`. Every OWL term has an
+IRI (`ex:Customer` = `http://example.com/sales#Customer`), but for the
+constructs that map cleanly, the IRI carries nothing the model doesn't already
+have — the term's identity is its name, and the source namespace is recorded once
+in the model `description` as provenance.
+
+```yaml
+version: 0.2.0.dev0
+semantic_model:
+  - name: sales
+    description: Imported from OWL ontology http://example.com/sales#
+    datasets:
+      - name: Customer
+        source: unbound:Customer        # placeholder — bind to a table for BigQuery Graph
+        description: A person or organization that places orders.
+        fields:
+          - name: customerName
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: customerName
+            datatype: String
+            label: name
+          - name: signupDate
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: signupDate
+            datatype: Date
+      - name: Order
+        source: unbound:Order
+        description: A purchase placed by a customer.
+        fields:
+          - name: orderAmount
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: orderAmount
+            datatype: Decimal
+          - name: orderDate
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: orderDate
+            datatype: Date
+    relationships:
+      - name: placedBy
+        from: Order
+        to: Customer
+        # UNBOUND: real FK/key columns are unknown until sources are bound.
+        from_columns:
+          - TODO_BIND
+        to_columns:
+          - TODO_BIND
+        ai_context:
+          instructions: Links an order to the customer who placed it.
+```
+
+#### How each OWL construct landed
+
+| OWL | Semantic model | Notes |
+|---|---|---|
+| `owl:Class` | `datasets[]` entry | `source` = `unbound:<Name>` placeholder until bound |
+| `owl:DatatypeProperty` | `fields[]` on the domain's dataset | `expression` defaults to the property's local name (a valid column ref once bound) |
+| `rdfs:range xsd:*` | field `datatype` | `xsd:string→String`, `xsd:date→Date`, `xsd:decimal→Decimal`, else `Opaque` |
+| `owl:ObjectProperty` | `relationships[]` | `from`=domain, `to`=range; join columns unbound (`TODO_BIND`) |
+| `rdfs:label` on a datatype property | field `label` | the field's display name (a `label` slot exists only on fields); dropped when it only respaces/recases the name |
+| `rdfs:label` on a class / object property | `ai_context.synonyms` | no `label` slot there, so a distinct label becomes an alternate name; dropped when it only respaces/recases the name |
+| extra `rdfs:label` / `skos:altLabel` / `skos:prefLabel` | `ai_context.synonyms` | genuinely alternate names; feed NL search |
+| `rdfs:comment` on a class / datatype property | `description` | |
+| `rdfs:comment` on an object property | `ai_context.instructions` | a relationship has no `description` slot, so its comment rides in `ai_context` |
+| term IRIs, `@prefix` | dropped (provenance kept in model `description`) | reconstructable as `<base><name>`; re-carried only if reverse export or `subClassOf` needs them |
+
+A datatype property whose domain is not a class in the ontology, or an object
+property missing an endpoint, cannot be placed; it is **skipped with a warning**
+rather than failing the whole import.
+
+### 4. Going from ontology to a running graph (binding)
+
+The import gets you a **KC-ready, BQ-pending** model. Publish the ontology as
+catalog metadata immediately:
+
+```console
+$ kcmd push --target kc      # Customer/Order entries + placedBy link appear in Knowledge Catalog
+```
+
+To make it queryable in **BigQuery Graph**, bind each class to a real table by
+editing the `unbound:` / `TODO_BIND` spots — `source` (+ `primary_key`) per
+dataset, and the relationship's join columns:
+
+```yaml
+  - name: Customer
+    source: myproj.sales.customers
+    primary_key:
+      - customer_id
+    fields:
+      - name: customerName
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: name
+        datatype: String
+  # ...Order bound to myproj.sales.orders, primary_key [order_id]...
+  relationships:
+    - name: placedBy
+      from: Order
+      to: Customer
+      from_columns:
+        - customer_id
+      to_columns:
+        - customer_id
+```
+
+You also need a [deployment target](#deployment-targets-required) on the model
+before a BigQuery push. Binding is a manual edit in this first cut.
+
+### What is not covered yet
+
+- `rdfs:subClassOf`, `owl:inverseOf`, `rdfs:subPropertyOf` — not read yet. When
+  added, they will land in a GOOGLE `custom_extensions` block (under a
+  `data.ontology` key), which is also where the base IRI + prefixes come back
+  (needed to expand parent-class/property references).
+- SHACL shapes, cardinality, `owl:unionOf` domains, symmetric/transitive
+  properties, `equivalentClass`, individuals — not read.
+- Semantic model → OWL export (reverse) — not built; import is one-way.
+- OWL serializations other than Turtle (`.ttl`) — not read.
+
 ## Permissions
 
 `push` needs access to whichever destinations you deploy to.

@@ -1,0 +1,76 @@
+# A broader ontology than sales.owl.ttl, exercising the full range of OWL
+# constructs the converter maps today (see the user guide's mapping table):
+#   - a class whose label is redundant with its name (dropped), one whose label
+#     is a genuine alternate name (-> synonym), and a bare class with no
+#     annotations at all;
+#   - skos:altLabel / skos:prefLabel and extra labels collected as synonyms;
+#   - every mapped xsd datatype (string/date/decimal) plus ranges outside the
+#     mapped set (xsd:integer, xsd:boolean) and a property with no range at all,
+#     all of which fall back to Opaque;
+#   - a field label that adds a name (kept) vs. one that only recases (dropped);
+#   - multiple object properties, including a self-referential one, with
+#     comments (-> ai_context.instructions) and synonyms.
+# Everything here maps cleanly to native OSI (no warnings) and stays UNBOUND.
+
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex:   <http://example.com/org#> .
+
+# Redundant label ("Employee" == name) dropped; comment + skos synonyms kept.
+ex:Employee a owl:Class ;
+    rdfs:label    "Employee" ;
+    rdfs:comment  "A person employed by the organization." ;
+    skos:altLabel "Staff member" ;
+    skos:prefLabel "Worker" .
+
+# Non-redundant label -> synonym; comment -> description.
+ex:Department a owl:Class ;
+    rdfs:label   "Org unit" ;
+    rdfs:comment "A functional unit that employees belong to." .
+
+# Bare class: no annotations at all.
+ex:Project a owl:Class .
+
+# The three mapped xsd types; "name" adds a display name over the field name.
+ex:fullName a owl:DatatypeProperty ;
+    rdfs:domain ex:Employee ; rdfs:range xsd:string ; rdfs:label "name" .
+ex:hireDate a owl:DatatypeProperty ;
+    rdfs:domain ex:Employee ; rdfs:range xsd:date .
+ex:salary a owl:DatatypeProperty ;
+    rdfs:domain ex:Employee ; rdfs:range xsd:decimal .
+# Outside today's mapped set -> Opaque.
+ex:employeeId a owl:DatatypeProperty ;
+    rdfs:domain ex:Employee ; rdfs:range xsd:integer .
+ex:isActive a owl:DatatypeProperty ;
+    rdfs:domain ex:Employee ; rdfs:range xsd:boolean .
+
+ex:budget a owl:DatatypeProperty ;
+    rdfs:domain ex:Department ; rdfs:range xsd:decimal .
+
+ex:startDate a owl:DatatypeProperty ;
+    rdfs:domain ex:Project ; rdfs:range xsd:date .
+# Label "code" only recases the field name -> dropped.
+ex:code a owl:DatatypeProperty ;
+    rdfs:domain ex:Project ; rdfs:range xsd:string ; rdfs:label "code" .
+# No range declared -> Opaque.
+ex:notes a owl:DatatypeProperty ;
+    rdfs:domain ex:Project .
+
+# Relationship with a redundant label (dropped), a skos synonym (kept), and a
+# comment (-> ai_context.instructions).
+ex:worksIn a owl:ObjectProperty ;
+    rdfs:domain ex:Employee ; rdfs:range ex:Department ;
+    rdfs:label    "works in" ;
+    skos:altLabel "member of" ;
+    rdfs:comment  "The department an employee belongs to." .
+
+# Self-referential relationship: Employee -> Employee.
+ex:reportsTo a owl:ObjectProperty ;
+    rdfs:domain ex:Employee ; rdfs:range ex:Employee ;
+    rdfs:comment "The manager an employee reports to." .
+
+ex:worksOn a owl:ObjectProperty ;
+    rdfs:domain ex:Employee ; rdfs:range ex:Project ;
+    rdfs:label "works on" .

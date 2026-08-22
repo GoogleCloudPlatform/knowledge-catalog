@@ -1,0 +1,106 @@
+version: 0.2.0.dev0
+semantic_model:
+  - name: org
+    description: Imported from OWL ontology http://example.com/org#
+    datasets:
+      - name: Employee
+        source: unbound:Employee
+        description: A person employed by the organization.
+        ai_context:
+          synonyms:
+            - Staff member
+            - Worker
+        fields:
+          - name: fullName
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: fullName
+            datatype: String
+            label: name
+          - name: hireDate
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: hireDate
+            datatype: Date
+          - name: salary
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: salary
+            datatype: Decimal
+          - name: employeeId
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: employeeId
+            datatype: Opaque
+          - name: isActive
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: isActive
+            datatype: Opaque
+      - name: Department
+        source: unbound:Department
+        description: A functional unit that employees belong to.
+        ai_context:
+          synonyms:
+            - Org unit
+        fields:
+          - name: budget
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: budget
+            datatype: Decimal
+      - name: Project
+        source: unbound:Project
+        fields:
+          - name: startDate
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: startDate
+            datatype: Date
+          - name: code
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: code
+            datatype: String
+          - name: notes
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: notes
+            datatype: Opaque
+    relationships:
+      - name: worksIn
+        from: Employee
+        to: Department
+        from_columns:
+          - TODO_BIND
+        to_columns:
+          - TODO_BIND
+        ai_context:
+          instructions: The department an employee belongs to.
+          synonyms:
+            - member of
+      - name: reportsTo
+        from: Employee
+        to: Employee
+        from_columns:
+          - TODO_BIND
+        to_columns:
+          - TODO_BIND
+        ai_context:
+          instructions: The manager an employee reports to.
+      - name: worksOn
+        from: Employee
+        to: Project
+        from_columns:
+          - TODO_BIND
+        to_columns:
+          - TODO_BIND
