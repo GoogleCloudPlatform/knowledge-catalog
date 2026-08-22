@@ -64,11 +64,16 @@ function onlyMissingExpression(errors: typeof validate.errors): boolean {
 // upstream OSI adopts `extends`, re-vendoring the schema makes this pass with no
 // special-casing and this tolerance can be removed.
 function onlyExtendsExtension(errors: typeof validate.errors): boolean {
+  // `extends` and `abstract` are the two deliberate dataset-level supersets of
+  // released OSI (OWL rdfs:subClassOf -> inheritance, and the abstract marker);
+  // tolerate exactly those additional properties and nothing else.
+  const allowed = new Set(['extends', 'abstract']);
   return !!errors && errors.length > 0 &&
     errors.every(
       e => e.keyword === 'additionalProperties' &&
-        (e.params as {additionalProperty?: string}).additionalProperty ===
-          'extends' &&
+        allowed.has(
+          (e.params as {additionalProperty?: string}).additionalProperty ??
+          '') &&
         /\/datasets\/\d+$/.test(e.instancePath));
 }
 
@@ -90,12 +95,14 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
             onlyMissingExpression(validate.errors)) {
           return;
         }
-        // A dataset `extends` is a deliberate superset of released OSI (OWL
-        // rdfs:subClassOf -> entity-level inheritance); tolerate exactly that
-        // extra property and nothing else, and only on the OWL import goldens
-        // (.osi.golden.yaml) that legitimately carry it -- so a stray `extends`
-        // slipping into any other fixture still fails this guardrail.
-        if (rel.endsWith('.osi.golden.yaml') &&
+        // A dataset `extends`/`abstract` is a deliberate superset of released
+        // OSI (OWL rdfs:subClassOf -> entity-level inheritance, plus the
+        // abstract marker); tolerate exactly those extra properties and nothing
+        // else, and only on the OWL import goldens (.osi.golden.yaml) and the
+        // hand-authored hierarchy fixture that legitimately carry them -- so a
+        // stray `extends` slipping into any other fixture still fails.
+        if ((rel.endsWith('.osi.golden.yaml') ||
+             rel === 'hierarchy_graph.yaml') &&
             onlyExtendsExtension(validate.errors)) {
           return;
         }

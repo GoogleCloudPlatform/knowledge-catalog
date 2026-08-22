@@ -259,6 +259,26 @@ describe('serialize flags loader-invalid reconstructions', () => {
         .toBe(true);
   });
 
+  test('a non-abstract entity with no source warns it will not reload', () => {
+    // A lossy pull could drop an entity's binding without marking it abstract;
+    // the loader requires a source unless abstract, so flag it at write time.
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [{
+        name: 'orphanEntity',
+        dataSource: '',
+        keys: ['id'],
+        fields: [{name: 'id', expression: 'id'}],
+      }],
+      relationships: [],
+      metrics: [],
+    };
+    const {warnings} = serializeModel(model);
+    expect(warnings.some(
+               w => /orphanEntity.*no source and is not abstract/i.test(w)))
+        .toBe(true);
+  });
+
   test(
       'an imported dialect colliding with the canonical label is relabeled',
       () => {

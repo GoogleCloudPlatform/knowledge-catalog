@@ -86,16 +86,48 @@ const fieldSchema = z.object({
 
 const datasetSchema = z.object({
   name: z.string(),
-  source: z.string(),
+  // A concrete dataset is backed by a physical `source` table; an `abstract`
+  // one has no table, so `source` is optional here and required-unless-abstract
+  // by the refinement below.
+  source: z.string().optional(),
   primary_key: z.array(z.string()).optional(),
   unique_keys: z.array(z.array(z.string())).optional(),
   // Supertype entity names (Ossie `extends`) -- entity-level inheritance. Only
   // datasets carry it; relationships have no `extends`.
   extends: z.array(z.string()).optional(),
+  // Marks a conceptual entity with no physical table (see Entity.abstract): it
+  // forms no node table and survives only as a label on its concrete
+  // descendants. Distinct from an unbound `source` placeholder, which must fail
+  // loudly rather than be silently treated as table-less.
+  abstract: z.boolean().optional(),
   description: z.string().optional(),
   ai_context: aiContextSchema.optional(),
   fields: z.array(fieldSchema).optional(),
   custom_extensions: z.array(customExtensionSchema).optional(),
+}).superRefine((ds, ctx) => {
+  // A concrete (non-abstract) dataset must name its backing table; only an
+  // abstract one may omit `source`.
+  if (!ds.abstract && ds.source === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['source'],
+      message: `dataset '${ds.name}': a non-abstract dataset requires a ` +
+          `source; set 'source', or mark it 'abstract: true' if it has no table`,
+    });
+  }
+  // The converse: an abstract dataset has no physical table, so declaring a
+  // `source` on it is contradictory -- the BigQuery leg forms no node table for
+  // an abstract entity and would silently ignore the source, dropping a table
+  // the author clearly intended. Reject it so the ambiguity is resolved
+  // explicitly rather than lost.
+  if (ds.abstract && ds.source !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['source'],
+      message: `dataset '${ds.name}': an abstract dataset has no table; ` +
+          `remove 'source', or drop 'abstract: true' to bind it to that table`,
+    });
+  }
 });
 
 const relationshipSchema = z.object({
@@ -278,9 +310,14 @@ function convertModel(m: ModelDoc, opts: LoadOptions, warnings: string[]): Seman
 function convertDataset(ds: DatasetDoc, opts: LoadOptions,
                         warnings: string[], dialect: string): Entity {
   const ctxLabel = `dataset '${ds.name}'`;
-  const dataSource = parseSource(ds.source, opts, warnings, ctxLabel);
+  // An abstract entity has no physical table, so it carries no source (empty
+  // dataSource) and no key -- both are meaningless for a class never
+  // materialized. Only a concrete entity is parsed/warned for those.
+  const dataSource = ds.source !== undefined ?
+      parseSource(ds.source, opts, warnings, ctxLabel) :
+      '';
   const keys = ds.primary_key ?? [];
-  if (!keys.length) {
+  if (!keys.length && !ds.abstract) {
     warnings.push(`${ctxLabel}: no primary_key; the entity's KEY will be empty (invalid for graph generation)`);
   }
   const fields = (ds.fields ?? []).map(f => convertField(f, ds.name, warnings, dialect));
@@ -289,6 +326,7 @@ function convertDataset(ds: DatasetDoc, opts: LoadOptions,
   const entity: Entity = { name: ds.name, dataSource, keys, fields };
   if (ds.unique_keys && ds.unique_keys.length) entity.uniqueKeys = ds.unique_keys;
   if (ds.extends && ds.extends.length) entity.extends = ds.extends;
+  if (ds.abstract) entity.abstract = true;
   const description = composeDescription(ds.description);
   if (description) entity.description = description;
   const ai = aiContextOrUndefined(ds.ai_context);

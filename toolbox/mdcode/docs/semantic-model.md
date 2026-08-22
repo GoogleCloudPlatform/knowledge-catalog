@@ -132,6 +132,7 @@ becomes one part of that graph:
 | Entity | `NODE TABLE` | backed by the entity's `source` table, keyed by its primary key |
 | Relationship | `EDGE TABLE` | connects the two entities' node tables |
 | Metric | `MEASURE` on a node table | must resolve to a single entity (otherwise the push is rejected — see [Validation](#validation)) and reduce to one supported aggregate over one operand (otherwise that metric is skipped with a warning) |
+| Entity `extends` | extra `LABEL` clauses on the subclass node table | the subclass also matches its supertypes; the supertypes' fields flatten down (see [Class hierarchies](#class-hierarchies-extends--labels)) |
 
 `push` reads the target dataset's location (`bigquery.datasets.get`) so the
 statement runs in the right region; without that permission it falls back to
@@ -175,6 +176,94 @@ dedicated BigQuery option. The rest — `description`, `instructions`, `examples
 and a field's `label` — share the single `description` string, so they are
 combined into it (examples as an `Examples: …` line). Their content is
 preserved; their separate structure is not.
+
+#### Class hierarchies (`extends` → labels)
+
+An entity that declares `extends: [Parent]` is a **subclass**. BigQuery Graph has
+no inheritance keyword, so the push expresses the hierarchy with **labels**: a
+subclass node table declares its own default label **plus one `LABEL <Ancestor>`
+per supertype**, walking the full transitive chain. A node then matches its
+supertype in a query — `MATCH (:Person)` returns `Person`, `Customer`,
+`Employee`, and `Manager` nodes alike.
+
+You author only each entity's **own** fields plus the one `extends` keyword; the
+push does the rest:
+
+```yaml
+datasets:
+  - name: Person
+    source: proj.ds.person
+    primary_key: [id]
+    fields:
+      - {name: id,        expression: {dialects: [{dialect: BIGQUERY, expression: id}]}}
+      - {name: full_name, expression: {dialects: [{dialect: BIGQUERY, expression: full_name}]}}
+      - {name: email,     expression: {dialects: [{dialect: BIGQUERY, expression: email}]}}
+  - name: Customer
+    source: proj.ds.customer
+    primary_key: [id]          # each subclass keeps its OWN key; keys do not inherit
+    extends: [Person]          # the one keyword you add
+    fields:
+      - {name: loyalty_tier, expression: {dialects: [{dialect: BIGQUERY, expression: loyalty_tier}]}}
+```
+
+For those shared labels to work, **the supertype's fields flatten down** onto the
+subclass. BigQuery requires every table exposing a label to expose the **same
+property signature**, so a subclass's `LABEL Person` block must list exactly what
+`Person`'s own table lists. The push copies each ancestor's fields onto the
+subclass (a nearer definition wins on a name clash) so those signatures line up,
+and the subclass's default label carries the inherited fields too:
+
+```sql
+`proj.ds.customer` AS Customer
+  KEY(id)
+  DEFAULT LABEL
+  PROPERTIES( id, loyalty_tier, full_name, email )   -- own + inherited (flattened)
+  LABEL Person
+  PROPERTIES( id, full_name, email )                 -- matches Person's own signature
+```
+
+```
+GRAPH proj.ds.people
+MATCH (p:Person) RETURN p.full_name   -- resolves on Customer/Employee/Manager too
+```
+
+Four boundaries:
+
+- **Fields flow down; edges and keys do not.** A subclass gains its supertypes'
+  fields but **not** their relationships or their key: an edge stays bound to the
+  exact node table it was declared on, and each subclass keeps its own `KEY` (a
+  node table is identified by its own grain, never its supertype's). If
+  `Person —livesIn→ City`, a `Customer` node does not get a `livesIn` edge.
+- **The subclass's `source` must physically expose the inherited columns.** The
+  flattened `full_name`/`email` above are read from `proj.ds.customer`, so that
+  table (or a view over it) must include those columns. Parent and child are
+  separate physical tables, so the same real-world entity present in both
+  `person` and `customer` appears as two nodes under `MATCH (:Person)` — a
+  modeling choice for the binding step, not something the DDL enforces.
+- **A shared supertype label carries no OPTIONS and no measures.** A supertype's
+  label is bound by every subclass table, and BigQuery forbids a label carried by
+  more than one element table from carrying an `OPTIONS` clause or a `MEASURE`. So
+  a supertype's own `description`/synonyms are dropped from its label (with a
+  warning), and a metric that targets a supertype is skipped (with a warning) —
+  attach metrics to a leaf class instead. Subclass and leaf labels are
+  unaffected.
+- **An inherited field cannot be redefined.** A shared label requires one
+  identical definition per property across every table that binds it, so if a
+  subclass declares a field of the same name as an inherited one but with a
+  different expression, the supertype's definition wins and the subclass's is
+  dropped (with a warning). Redeclaring it identically is a harmless no-op.
+
+An entity may also be marked **`abstract: true`** — a conceptual class with no
+physical table (so it has no `source` and no key). It produces **no node table**;
+it survives only as a `LABEL` on its concrete descendants (its fields still
+flatten down so the label's signature is present). An abstract entity that no
+concrete entity extends has nothing to attach to and is dropped with a warning.
+`abstract` is an explicit marker: an entity left with an unbound `source`
+placeholder is treated as a binding error and fails the push, never silently
+dropped as if it were table-less. The Knowledge Catalog leg does not
+model inheritance today, so an abstract entity has no physical resource to
+catalog and is skipped there (with a warning); its concrete subtypes are
+published normally.
 
 ### What gets created in Knowledge Catalog
 
@@ -717,13 +806,14 @@ carry no inheritance information).
 
 Two boundaries to be clear about:
 
-- **This import *records* the hierarchy; it does not *resolve* it.** `Customer`
-  carries `extends: [Person]` and **only its own fields** — `Person`'s `fullName`
-  is **not copied down**. Nothing is pushed differently yet: a `kcmd push` today
-  publishes each dataset with exactly the fields it declares. Flattening
-  inherited fields into Knowledge Catalog entries and BigQuery Graph node tables
-  (fields flow down; edges do not) is a **follow-on** — this PR is the faithful
-  representation it will build on.
+- **The import *records* the hierarchy; the BigQuery push *resolves* it.** The
+  importer writes `Customer` with `extends: [Person]` and **only its own fields**.
+  A **BigQuery** push then resolves that inheritance: it emits a `LABEL Person`
+  clause on the `Customer` node table and flattens `Person`'s fields down (fields
+  flow down; edges do not) — see [Class hierarchies (`extends` →
+  labels)](#class-hierarchies-extends--labels). The **Knowledge Catalog** push is
+  unchanged: it still publishes each entry with exactly the fields it declares
+  (KC-side inheritance is a separate, later opt-in).
 - **Inheritance is entity-level only.** `extends` lives on `datasets`, never on
   relationships — the boundary is structural. `rdfs:subPropertyOf` (property /
   relationship inheritance) is **not supported**: the field or relationship is
@@ -775,10 +865,12 @@ in this first cut.
 ### What is not covered yet
 
 - `rdfs:subClassOf` (class hierarchy) **is** read now — it maps to dataset
-  `extends` (see [Class hierarchies](#class-hierarchies-rdfssubclassof)).
-  *Resolving* that inheritance into Knowledge Catalog entries / BigQuery Graph
-  node tables (copying inherited fields down) is a follow-on; this cut only
-  records the hierarchy.
+  `extends` (see [Class hierarchies](#class-hierarchies-rdfssubclassof)) — and a
+  **BigQuery** push resolves it into node-table labels with inherited fields
+  flattened down (see [Class hierarchies (`extends` →
+  labels)](#class-hierarchies-extends--labels)). Resolving the same inheritance
+  into **Knowledge Catalog** entries is still a follow-on; the KC push publishes
+  each entry with only its own fields.
 - `owl:inverseOf`, `rdfs:subPropertyOf` (property / relationship inheritance),
   `owl:equivalentClass` — not supported. A `subPropertyOf` link is dropped with a
   warning (the field or relationship itself is still imported); only entity-level
