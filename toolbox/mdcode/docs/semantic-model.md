@@ -434,32 +434,77 @@ ex:Order a owl:Class ;
 # customerId is the key; email uniquely identifies a customer
 # (inverse-functional) so it becomes a unique-key constraint.
 ex:customerId a owl:DatatypeProperty ;
-    rdfs:domain ex:Customer ; rdfs:range xsd:string .
+    rdfs:domain ex:Customer ;
+    rdfs:range xsd:string .
 ex:email a owl:DatatypeProperty, owl:InverseFunctionalProperty ;
-    rdfs:domain ex:Customer ; rdfs:range xsd:string ;
+    rdfs:domain ex:Customer ;
+    rdfs:range xsd:string ;
     rdfs:comment "The customer's unique email address." .
 ex:customerName a owl:DatatypeProperty ;
-    rdfs:domain ex:Customer ; rdfs:range xsd:string ; rdfs:label "name" .
+    rdfs:domain ex:Customer ;
+    rdfs:range xsd:string ;
+    rdfs:label "name" .
 ex:signupDate a owl:DatatypeProperty ;
-    rdfs:domain ex:Customer ; rdfs:range xsd:date .
+    rdfs:domain ex:Customer ;
+    rdfs:range xsd:date .
 ex:isVip a owl:DatatypeProperty ;
-    rdfs:domain ex:Customer ; rdfs:range xsd:boolean ;
+    rdfs:domain ex:Customer ;
+    rdfs:range xsd:boolean ;
     rdfs:comment "Whether the customer is in the loyalty program." .
 
 ex:orderId a owl:DatatypeProperty ;
-    rdfs:domain ex:Order ; rdfs:range xsd:string .
+    rdfs:domain ex:Order ;
+    rdfs:range xsd:string .
 ex:orderAmount a owl:DatatypeProperty ;
-    rdfs:domain ex:Order ; rdfs:range xsd:decimal ; skos:example "19.99" .
+    rdfs:domain ex:Order ;
+    rdfs:range xsd:decimal ;
+    skos:example "19.99" .
 ex:quantity a owl:DatatypeProperty ;
-    rdfs:domain ex:Order ; rdfs:range xsd:integer .
+    rdfs:domain ex:Order ;
+    rdfs:range xsd:integer .
 ex:orderDate a owl:DatatypeProperty ;
-    rdfs:domain ex:Order ; rdfs:range xsd:date .
+    rdfs:domain ex:Order ;
+    rdfs:range xsd:date .
 
 ex:placedBy a owl:ObjectProperty ;
-    rdfs:domain  ex:Order ; rdfs:range ex:Customer ;
-    rdfs:label   "placed by" ;
+    rdfs:domain ex:Order ;
+    rdfs:range ex:Customer ;
+    rdfs:label "placed by" ;
     rdfs:comment "Links an order to the customer who placed it." .
 ```
+
+The same ontology as an RDF graph. Every arc is a triple: a class (the subject)
+points through a property (the predicate) to its object. Each **datatype
+property** points to its `xsd` range — a literal type, drawn as a plain box —
+and becomes a field. The **object property** `ex:placedBy` points from one class
+to another and becomes the relationship. The two classes become the datasets.
+
+```mermaid
+graph LR
+    Customer(["ex:Customer"])
+    Order(["ex:Order"])
+
+    Order -- "ex:placedBy" --> Customer
+
+    Customer -- "ex:customerId" --> cid["xsd:string"]
+    Customer -- "ex:email (inverse-functional)" --> cem["xsd:string"]
+    Customer -- "ex:customerName" --> cnm["xsd:string"]
+    Customer -- "ex:signupDate" --> csd["xsd:date"]
+    Customer -- "ex:isVip" --> civ["xsd:boolean"]
+
+    Order -- "ex:orderId" --> oid["xsd:string"]
+    Order -- "ex:orderAmount" --> oam["xsd:decimal"]
+    Order -- "ex:quantity" --> oqt["xsd:integer"]
+    Order -- "ex:orderDate" --> odt["xsd:date"]
+
+    classDef cls fill:#dae8fc,stroke:#6c8ebf,color:#000;
+    classDef lit fill:#f5f5f5,stroke:#999999,color:#000;
+    class Customer,Order cls;
+    class cid,cem,cnm,csd,civ,oid,oam,oqt,odt lit;
+```
+
+Classes (rounded) are the resources that become datasets; the `xsd` boxes are
+literal types that become each field's `datatype`.
 
 ### 2. The command
 
@@ -633,13 +678,18 @@ Keys also make relationships half-bindable — see the next section.
 onto our existing `datasets`. Given `Customer rdfs:subClassOf Person`:
 
 ```turtle
-ex:Person a owl:Class ; rdfs:comment "A human being." .
-ex:fullName a owl:DatatypeProperty ; rdfs:domain ex:Person ; rdfs:range xsd:string .
+ex:Person a owl:Class ;
+    rdfs:comment "A human being." .
+ex:fullName a owl:DatatypeProperty ;
+    rdfs:domain ex:Person ;
+    rdfs:range xsd:string .
 
 ex:Customer a owl:Class ;
     rdfs:subClassOf ex:Person ;
     rdfs:comment "A person who buys." .
-ex:loyaltyTier a owl:DatatypeProperty ; rdfs:domain ex:Customer ; rdfs:range xsd:string .
+ex:loyaltyTier a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ;
+    rdfs:range xsd:string .
 ```
 
 the `Customer` dataset carries `extends: [Person]`:
