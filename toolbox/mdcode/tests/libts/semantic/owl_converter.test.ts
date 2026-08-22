@@ -193,6 +193,24 @@ describe('class hierarchies map rdfs:subClassOf to entity extends', () => {
         loadModels(yaml).models[0].entities.find(e => e.name === 'Customer')!;
     expect(customer.extends).toEqual(['Persn']);
   });
+
+  test('the universal superclass owl:Thing is ignored (no extends, no warning)',
+     () => {
+       // Every class is trivially a subclass of owl:Thing / rdfs:Resource, so
+       // an explicit rdfs:subClassOf naming one is neither recorded as `extends`
+       // nor warned about -- unlike a genuine unresolved superclass.
+       const ttl = [
+         '@prefix owl:  <http://www.w3.org/2002/07/owl#> .',
+         '@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .',
+         '@prefix ex:   <http://example.com/hr#> .',
+         'ex:Person a owl:Class ; rdfs:subClassOf owl:Thing .',
+       ].join('\n');
+       const {yaml, warnings} = convertOwlToOsi(ttl, 'top');
+       expect(warnings).toEqual([]);
+       const person =
+           loadModels(yaml).models[0].entities.find(e => e.name === 'Person')!;
+       expect(person.extends).toBeUndefined();
+     });
 });
 
 

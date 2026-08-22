@@ -566,7 +566,9 @@ the `Customer` dataset carries `extends: [Person]`:
 
 Multiple superclasses are allowed (`extends: [Person, Employee]`, in document
 order). A `subClassOf` whose object is a blank-node axiom (`owl:Restriction` and
-similar) is not a named class, so it is ignored.
+similar) is not a named class, so it is ignored, as are the implicit universal
+superclasses `owl:Thing` / `rdfs:Resource` (every class subclasses them, so they
+carry no inheritance information).
 
 Two boundaries to be clear about:
 
