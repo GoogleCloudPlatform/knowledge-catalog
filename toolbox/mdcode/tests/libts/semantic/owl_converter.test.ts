@@ -404,6 +404,106 @@ describe('keys and edge binding', () => {
     expect(edge.destination.columns).toEqual(['TODO_BIND']);
     expect(edge.source.columns).toEqual(['TODO_BIND']);
   });
+
+  // An owl:hasKey column that has no datatype property on the class
+  // (undeclared, or declared only on another class) would name a phantom
+  // primary_key column that only errors later at graph generation. It is
+  // dropped with a warning, keeping the columns that do exist.
+  test(
+      'a hasKey column with no matching field is dropped with a warning',
+      () => {
+        const ttl = `${PREFIXES}
+      ex:Order a owl:Class ; owl:hasKey ( ex:orderId ex:ghost ) .
+      ex:orderId a owl:DatatypeProperty ; rdfs:domain ex:Order ; rdfs:range xsd:string .
+    `;
+        const {warnings} = convertOwlToOsi(ttl, 'x');
+        expect(loadOwl(ttl).entities[0].keys).toEqual(['orderId']);
+        expect(warnings.some(
+                   w => w.includes(`'ghost'`) && w.includes('primary_key')))
+            .toBe(true);
+      });
+
+  // A class whose only key material is a single inverse-functional property (no
+  // owl:hasKey) has a natural identifier; it is promoted to primary_key so the
+  // entity is valid for graph generation rather than keyless, and is then not
+  // also repeated as a unique_keys constraint.
+  test('a sole inverse-functional property is promoted to primary_key', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class .
+      ex:email a owl:DatatypeProperty, owl:InverseFunctionalProperty ;
+               rdfs:domain ex:Person ; rdfs:range xsd:string .
+    `;
+    const {warnings} = convertOwlToOsi(ttl, 'x');
+    const person = loadOwl(ttl).entities[0];
+    expect(person.keys).toEqual(['email']);
+    expect(person.uniqueKeys).toBeUndefined();
+    expect(
+        warnings.some(w => w.includes('no owl:hasKey') && w.includes('email')))
+        .toBe(true);
+  });
+
+  // Ambiguous key material (more than one inverse-functional property) is left
+  // alone: no primary_key is guessed, and each stays a unique_keys constraint.
+  test('multiple inverse-functional properties are not promoted', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class .
+      ex:email a owl:DatatypeProperty, owl:InverseFunctionalProperty ; rdfs:domain ex:Person ; rdfs:range xsd:string .
+      ex:ssn   a owl:DatatypeProperty, owl:InverseFunctionalProperty ; rdfs:domain ex:Person ; rdfs:range xsd:string .
+    `;
+    const person = loadOwl(ttl).entities[0];
+    expect(person.keys).toEqual([]);
+    expect(person.uniqueKeys).toEqual([['email'], ['ssn']]);
+  });
+});
+
+
+describe('converted counts and provenance', () => {
+  // The CLI summary counts what was actually converted, not source triples: a
+  // skipped element (duplicate class, domain-less or endpoint-less property) is
+  // not reported, and a multi-domain property counts once.
+  test('stats count conversions, excluding skipped elements', () => {
+    const ttl = `${PREFIXES}
+      @prefix ex2: <http://example.com/other#> .
+      ex:Order  a owl:Class .
+      ex2:Order a owl:Class .                                    # dup name -> skipped
+      ex:amount a owl:DatatypeProperty ; rdfs:domain ex:Order ; rdfs:range xsd:decimal .
+      ex:orphan a owl:DatatypeProperty ; rdfs:range xsd:string . # no domain -> skipped
+      ex:ghost  a owl:ObjectProperty ; rdfs:domain ex:Order .    # no range -> skipped
+    `;
+    const {stats} = convertOwlToOsi(ttl, 'x');
+    expect(stats.classes).toBe(1);
+    expect(stats.datatypeProperties).toBe(1);
+    expect(stats.objectProperties).toBe(0);
+  });
+
+  // A multi-domain datatype property is one conversion, not one per domain.
+  test('a multi-domain property counts once', () => {
+    const ttl = `${PREFIXES}
+      ex:A a owl:Class . ex:B a owl:Class .
+      ex:shared a owl:DatatypeProperty ; rdfs:domain ex:A ; rdfs:domain ex:B ; rdfs:range xsd:string .
+    `;
+    expect(convertOwlToOsi(ttl, 'x').stats.datatypeProperties).toBe(1);
+  });
+
+  // The base-IRI provenance is taken from an actual term's namespace (exact,
+  // delimiter and all), not from the ontology IRI's guessed `#` suffix -- so a
+  // slash-namespaced ontology is recorded correctly.
+  test(
+      'base IRI provenance follows the term namespace, not a guessed suffix',
+      () => {
+        const ttl = `
+      @prefix owl:  <http://www.w3.org/2002/07/owl#> .
+      @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+      @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+      @prefix ex:   <http://example.com/sales/> .
+      <http://example.com/sales> a owl:Ontology .
+      ex:Order  a owl:Class .
+      ex:amount a owl:DatatypeProperty ; rdfs:domain ex:Order ; rdfs:range xsd:decimal .
+    `;
+        const description = loadOwl(ttl).description ?? '';
+        expect(description).toContain('http://example.com/sales/');
+        expect(description).not.toContain('sales#');
+      });
 });
 
 

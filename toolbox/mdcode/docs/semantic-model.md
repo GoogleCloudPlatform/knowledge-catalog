@@ -569,7 +569,7 @@ in the model `description` as provenance.
 | `rdfs:subClassOf` (named superclass) | dataset `extends[]` | **entity-level inheritance only** — records the parent(s) in document order; not read on object properties (see [Class hierarchies](#class-hierarchies-rdfssubclassof)) |
 | `rdfs:range xsd:*` | field `datatype` | see [Datatypes](#datatypes-rdfsrange) |
 | `owl:hasKey ( ... )` | dataset `primary_key` | single or composite, in list order |
-| `owl:InverseFunctionalProperty` | dataset `unique_keys` | a uniquely-identifying property; omitted when it is already the `primary_key` |
+| `owl:InverseFunctionalProperty` | dataset `unique_keys` | a uniquely-identifying property; omitted when it is already the `primary_key`; a lone one on a keyless class is promoted to `primary_key` instead |
 | `rdfs:label` on a datatype property | field `label` | the field's display name (a `label` slot exists only on fields); dropped when it only respaces/recases the name |
 | `rdfs:label` on a class / object property | `ai_context.synonyms` | no `label` slot there, so a distinct label becomes an alternate name; dropped when redundant with the name |
 | extra `rdfs:label` / `skos:altLabel` / `prefLabel` / `hiddenLabel` | `ai_context.synonyms` | genuinely alternate names; feed NL search |
@@ -607,10 +607,17 @@ BigQuery Graph / BI treats it as one.
 #### Keys (`owl:hasKey`, `owl:InverseFunctionalProperty`)
 
 - **`owl:hasKey ( ... )`** on a class becomes the dataset's `primary_key` (its
-  grain), in list order — single or composite.
+  grain), in list order — single or composite. A key column that names no
+  datatype property on the class (undeclared, or declared only on another class)
+  has no field to back it, so it is dropped from the `primary_key` with a
+  warning rather than left to fail later at graph generation.
 - An **`owl:InverseFunctionalProperty`** (a datatype property that uniquely
   identifies its subject) becomes a `unique_keys` constraint — unless it is
-  already the `primary_key`, in which case it is not repeated.
+  already the `primary_key`, in which case it is not repeated. If a class
+  declares **no `owl:hasKey`** but has exactly **one** single-column
+  inverse-functional property, that property is promoted to the `primary_key`
+  (with a warning) so the dataset has a grain; ambiguous cases (several unique
+  keys, or a composite one) are left without a `primary_key`.
 
 Keys also make relationships half-bindable — see the next section.
 

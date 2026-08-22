@@ -323,9 +323,10 @@ export function parseOwl(turtle: string): OwlModel {
     }
   }
 
-  // The ontology header, if present, becomes model-level metadata. Its own IRI
-  // (a namespace URI without a term fragment) makes a better base-IRI
-  // provenance than the first term's namespace, so prefer it when available.
+  // The ontology header, if present, becomes model-level metadata. The base IRI
+  // is best derived from an actual term's namespace (exact, delimiter and all);
+  // the ontology IRI is only a heuristic fallback (its own IRI often omits the
+  // trailing `#`/`/`), so use it only when no term supplied a namespace.
   let ontology: OwlOntology|undefined;
   if (ontologyIri !== undefined) {
     const a = annotations.get(ontologyIri) ?? emptyAnnotations();
@@ -337,7 +338,7 @@ export function parseOwl(turtle: string): OwlModel {
       examples: a.examples,
       version: a.versionInfo,
     };
-    baseIri = ontologyBaseIri(ontologyIri) ?? baseIri;
+    baseIri = baseIri ?? ontologyBaseIri(ontologyIri);
   }
 
   return {baseIri, ontology, classes, datatypeProperties, objectProperties};

@@ -4,16 +4,16 @@
 // mechanical; every decision about how an ontology becomes a semantic model
 // lives here, in one place, so the mapping is easy to read and to evolve.
 //
-// The mapping (see the user guide's table):
-//   owl:Class                     -> dataset (entity), unbound source
-//   placeholder owl:DatatypeProperty          -> field on each domain class's
-//   dataset owl:ObjectProperty            -> relationship (edge) between domain
-//   and range rdfs:range xsd:*              -> field datatype (see
-//   XSD_DATATYPES; else Opaque) owl:hasKey                    -> dataset
-//   primary_key owl:InverseFunctionalProperty -> dataset unique_keys rdfs:label
-//   -> field label, or a synonym where there is no
-//                                    label slot (classes/relationships)
-//   rdfs:comment / skos:definition / dcterms:/dc:description -> description
+// The mapping (see the user guide's table). Each line is one construct, kept
+// short so a comment reflow cannot run the columns together:
+//   owl:Class                     -> dataset (entity) + unbound source
+//   owl:DatatypeProperty          -> field on each domain class's dataset
+//   owl:ObjectProperty            -> relationship (edge), domain -> range
+//   rdfs:range xsd:*              -> field datatype (see XSD_DATATYPES)
+//   owl:hasKey                    -> dataset primary_key
+//   owl:InverseFunctionalProperty -> dataset unique_keys (or primary_key)
+//   rdfs:label                    -> field label / synonym (no label slot)
+//   rdfs:comment/skos:definition/dcterms:/dc: -> description
 //   skos:example                  -> ai_context.examples
 //   owl:Ontology header           -> model description / ai_context
 //
@@ -35,6 +35,12 @@ export interface ToIrResult {
   // property with no domain). The caller prints these; they do not fail the
   // conversion.
   warnings: string[];
+  // Counts of what was actually converted (not the source-triple counts): a
+  // skipped class/property is excluded, and a multi-domain datatype property
+  // still counts once. The CLI reports these, so "converted N ..." is honest
+  // even when some elements were warned and skipped.
+  stats:
+      {classes: number; datatypeProperties: number; objectProperties: number};
 }
 
 // --- Seams: the isolated change-points for later work. ----------------------
@@ -291,6 +297,7 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
 
   // Datatype properties -> fields on each domain's entity. A property with more
   // than one domain appears on each; one with none has nowhere to live.
+  let datatypePropertiesConverted = 0;
   for (const p of owl.datatypeProperties) {
     if (!p.domains.length) {
       warnings.push(
@@ -308,6 +315,9 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
           `supported, so the subPropertyOf link is dropped (the field itself ` +
           `is still imported).`);
     }
+    // A property counts as converted once if it produces at least one field,
+    // regardless of how many domains it lands on.
+    let produced = false;
     for (const domain of p.domains) {
       const entity = entitiesByName.get(domain);
       if (!entity) {
@@ -337,11 +347,48 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
         aiContext: fieldAiContext(p.synonyms, p.localName, p.examples),
       };
       entity.fields.push(field);
+      produced = true;
       // An inverse-functional property uniquely identifies its subject -> a
       // unique_keys constraint, unless it is already the primary key.
       if (p.inverseFunctional && !arraysEqual(entity.keys, [p.localName])) {
         (entity.uniqueKeys ??= []).push([p.localName]);
       }
+    }
+    if (produced) datatypePropertiesConverted++;
+  }
+
+  // Reconcile each entity's keys with the fields that actually exist. Both
+  // corrections are fail-soft (warn, never throw), matching the converter's
+  // per-element policy:
+  //   1. owl:hasKey may name a property that is not a datatype property on the
+  //      class (undeclared, or declared only on a different domain). That
+  //      column has no field, so leaving it in primary_key would name a phantom
+  //      column that only errors later at graph generation -- drop it with a
+  //      warning.
+  //   2. A class with no usable owl:hasKey but exactly one single-column
+  //      inverse-functional property still has a natural identifier; promote
+  //      that unique key to the primary_key so the entity is valid for graph
+  //      generation rather than keyless. (Ambiguous cases -- several unique
+  //      keys, or a composite one -- are left alone.)
+  for (const entity of entities) {
+    const fieldNames = new Set(entity.fields.map(f => f.name));
+    const missing = entity.keys.filter(k => !fieldNames.has(k));
+    if (missing.length) {
+      warnings.push(
+          `class '${entity.name}' owl:hasKey names ${
+              missing.map(m => `'${m}'`).join(', ')} which ${
+              missing.length > 1 ? 'are' : 'is'} not a datatype property on ` +
+          `the class; dropped from primary_key.`);
+      entity.keys = entity.keys.filter(k => fieldNames.has(k));
+    }
+    if (!entity.keys.length && entity.uniqueKeys?.length === 1 &&
+        entity.uniqueKeys[0].length === 1) {
+      entity.keys = [...entity.uniqueKeys[0]];
+      entity.uniqueKeys = undefined;
+      warnings.push(
+          `class '${entity.name}' declares no owl:hasKey; using the ` +
+          `inverse-functional property '${
+              entity.keys[0]}' as its primary_key.`);
     }
   }
 
@@ -412,7 +459,15 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     metrics: [],
   };
 
-  return {model, warnings};
+  return {
+    model,
+    warnings,
+    stats: {
+      classes: entities.length,
+      datatypeProperties: datatypePropertiesConverted,
+      objectProperties: relationships.length,
+    },
+  };
 }
 
 // The model description: the ontology header's own description when it has one,
