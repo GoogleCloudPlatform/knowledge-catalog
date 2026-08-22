@@ -57,6 +57,66 @@ describe('sales ontology matches the user-guide CUJ', () => {
 });
 
 
+describe('org ontology exercises the full range of mapped constructs', () => {
+  const ttl = readFixture('org.owl.ttl');
+
+  test('produces exactly the documented OSI (golden)', () => {
+    const {yaml} = convertOwlToOsi(ttl, 'org');
+    expect(yaml).toEqual(readFixture('org.osi.golden.yaml'));
+  });
+
+  test('maps cleanly with no warnings', () => {
+    // Every construct here is supported, so nothing is dropped.
+    expect(convertOwlToOsi(ttl, 'org').warnings).toEqual([]);
+  });
+
+  test('the generated OSI loads and covers the mapping table', () => {
+    const model = loadModels(convertOwlToOsi(ttl, 'org').yaml).models[0];
+
+    // Classes in declaration order; a bare class carries no metadata.
+    expect(model.entities.map(e => e.name))
+        .toEqual(['Employee', 'Department', 'Project']);
+    const [employee, department, project] = model.entities;
+
+    // Redundant class label dropped; skos alt/pref labels -> synonyms.
+    expect(employee.aiContext?.synonyms).toEqual(['Staff member', 'Worker']);
+    // Non-redundant class label -> synonym.
+    expect(department.aiContext?.synonyms).toEqual(['Org unit']);
+    // Bare class: no description, no ai_context.
+    expect(project.description).toBeUndefined();
+    expect(project.aiContext).toBeUndefined();
+
+    // Datatypes: the three mapped xsd types, and Opaque for everything else
+    // (xsd:integer, xsd:boolean, and a property with no range).
+    const empTypes = Object.fromEntries(
+        employee.fields.map(f => [f.name, f.type]));
+    expect(empTypes).toEqual({
+      fullName: 'String',
+      hireDate: 'Date',
+      salary: 'Decimal',
+      employeeId: 'Opaque',
+      isActive: 'Opaque',
+    });
+    expect(project.fields.find(f => f.name === 'notes')!.type).toBe('Opaque');
+
+    // Field label kept when it adds a name, dropped when it only recases.
+    expect(employee.fields.find(f => f.name === 'fullName')!.label).toBe('name');
+    expect(project.fields.find(f => f.name === 'code')!.label).toBeUndefined();
+
+    // Relationships, including a self-referential one; comments -> instructions.
+    const byName = Object.fromEntries(model.relationships.map(r => [r.name, r]));
+    expect(Object.keys(byName)).toEqual(['worksIn', 'reportsTo', 'worksOn']);
+    // Redundant edge label dropped, skos synonym kept, comment -> instructions.
+    expect(byName['worksIn'].aiContext)
+        .toEqual({instructions: 'The department an employee belongs to.',
+                  synonyms: ['member of']});
+    // Self-referential edge: both endpoints are the same entity.
+    expect(byName['reportsTo'].source.entity).toBe('Employee');
+    expect(byName['reportsTo'].destination.entity).toBe('Employee');
+  });
+});
+
+
 describe('mapping table rules', () => {
   // A datatype property's rdfs:label is a display name -> the field `label`
   // slot; a class/object-property label has no slot, so a *non-redundant* one
