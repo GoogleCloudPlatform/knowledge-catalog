@@ -89,6 +89,9 @@ const datasetSchema = z.object({
   source: z.string(),
   primary_key: z.array(z.string()).optional(),
   unique_keys: z.array(z.array(z.string())).optional(),
+  // Supertype entity names (Ossie `extends`) -- entity-level inheritance. Only
+  // datasets carry it; relationships have no `extends`.
+  extends: z.array(z.string()).optional(),
   description: z.string().optional(),
   ai_context: aiContextSchema.optional(),
   fields: z.array(fieldSchema).optional(),
@@ -285,6 +288,7 @@ function convertDataset(ds: DatasetDoc, opts: LoadOptions,
 
   const entity: Entity = { name: ds.name, dataSource, keys, fields };
   if (ds.unique_keys && ds.unique_keys.length) entity.uniqueKeys = ds.unique_keys;
+  if (ds.extends && ds.extends.length) entity.extends = ds.extends;
   const description = composeDescription(ds.description);
   if (description) entity.description = description;
   const ai = aiContextOrUndefined(ds.ai_context);

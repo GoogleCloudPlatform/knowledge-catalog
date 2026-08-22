@@ -25,6 +25,10 @@ export interface OwlClass {
   // Additional human names (extra rdfs:label / skos:altLabel|prefLabel) ->
   // ai_context.synonyms.
   synonyms: string[];
+  // Local names of `rdfs:subClassOf` superclasses, in document order -> the
+  // entity's `extends` (entity-level inheritance). Named superclasses only;
+  // blank-node axioms (owl:Restriction, ...) are not recorded. Empty when none.
+  subClassOf: string[];
 }
 
 /**
@@ -42,6 +46,10 @@ export interface OwlDatatypeProperty {
   label?: string;
   comment?: string;
   synonyms: string[];
+  // Local names of `rdfs:subPropertyOf` superproperties, if any. Property
+  // inheritance is NOT supported (only entity-level `rdfs:subClassOf`); this is
+  // recorded solely so the mapper can warn and drop it. Empty when none.
+  subPropertyOf: string[];
 }
 
 /**
@@ -58,6 +66,10 @@ export interface OwlObjectProperty {
   label?: string;
   comment?: string;
   synonyms: string[];
+  // Local names of `rdfs:subPropertyOf` superproperties, if any. Relationship
+  // inheritance is NOT supported (only entity-level `rdfs:subClassOf`); this is
+  // recorded solely so the mapper can warn and drop it. Empty when none.
+  subPropertyOf: string[];
 }
 
 /**

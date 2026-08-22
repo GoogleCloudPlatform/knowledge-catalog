@@ -117,6 +117,63 @@ describe('org ontology exercises the full range of mapped constructs', () => {
 });
 
 
+describe('class hierarchies map rdfs:subClassOf to entity extends', () => {
+  const ttl = readFixture('hierarchy.owl.ttl');
+
+  test('produces exactly the documented OSI (golden)', () => {
+    const {yaml} = convertOwlToOsi(ttl, 'hierarchy');
+    expect(yaml).toEqual(readFixture('hierarchy.osi.golden.yaml'));
+  });
+
+  test('the generated OSI reloads through the loader with extends intact', () => {
+    // The point of the golden: `extends` survives import -> serialize -> load.
+    // If the loader schema did not accept `extends`, loadModels would throw or
+    // drop it; a clean reload with the parents present proves the round trip.
+    const {yaml} = convertOwlToOsi(ttl, 'hierarchy');
+    const model = loadModels(yaml).models[0];
+    const byName = Object.fromEntries(model.entities.map(e => [e.name, e]));
+    // Single-parent subclass.
+    expect(byName['Customer'].extends).toEqual(['Person']);
+    // Multi-parent subclass, parents in document order; the blank-node
+    // owl:Restriction superclass is not a named class and is excluded.
+    expect(byName['Manager'].extends).toEqual(['Person', 'Employee']);
+    // A base class with no rdfs:subClassOf carries no `extends`.
+    expect(byName['Person'].extends).toBeUndefined();
+    expect(byName['Employee'].extends).toBeUndefined();
+  });
+
+  test('inheritance is recorded, not flattened (no fields copied down)', () => {
+    // This cut only RECORDS the hierarchy; it does not resolve it. A subclass
+    // keeps exactly its own fields -- Person's fullName does NOT appear on
+    // Customer. Resolving inherited fields is a follow-on.
+    const model = loadModels(convertOwlToOsi(ttl, 'hierarchy').yaml).models[0];
+    const customer = model.entities.find(e => e.name === 'Customer')!;
+    expect(customer.fields.map(f => f.name)).toEqual(['loyaltyTier']);
+    const manager = model.entities.find(e => e.name === 'Manager')!;
+    expect(manager.fields).toHaveLength(0);
+  });
+
+  test('property inheritance (rdfs:subPropertyOf) is warned and dropped', () => {
+    // Only entity-level inheritance is supported. A datatype/object property's
+    // rdfs:subPropertyOf is dropped with a warning, but the field/relationship
+    // itself is still imported.
+    const {yaml, warnings} = convertOwlToOsi(ttl, 'hierarchy');
+    expect(warnings).toHaveLength(2);
+    expect(warnings.some(
+               w => w.includes('legalName') && w.includes('subPropertyOf')))
+        .toBe(true);
+    expect(warnings.some(
+               w => w.includes('managedBy') && w.includes('subPropertyOf')))
+        .toBe(true);
+    // The field and relationship survive despite the dropped subPropertyOf link.
+    const model = loadModels(yaml).models[0];
+    const employee = model.entities.find(e => e.name === 'Employee')!;
+    expect(employee.fields.some(f => f.name === 'legalName')).toBe(true);
+    expect(model.relationships.some(r => r.name === 'managedBy')).toBe(true);
+  });
+});
+
+
 describe('mapping table rules', () => {
   // A datatype property's rdfs:label is a display name -> the field `label`
   // slot; a class/object-property label has no slot, so a *non-redundant* one

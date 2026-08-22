@@ -1,0 +1,64 @@
+# An ontology exercising OWL class/property hierarchies (see the user guide's
+# "Class hierarchies (rdfs:subClassOf)" section):
+#   - a single-parent subclass (Customer rdfs:subClassOf Person);
+#   - a multi-parent subclass (Manager rdfs:subClassOf Person, Employee), whose
+#     parents are recorded in document order;
+#   - a subclass of a blank-node axiom (owl:Restriction), which is NOT a named
+#     class and so is ignored (only named superclasses become `extends`);
+#   - a datatype property with rdfs:subPropertyOf (property inheritance, NOT
+#     supported: warned and dropped, the field is still imported);
+#   - an object property with rdfs:subPropertyOf (relationship inheritance, NOT
+#     supported: warned and dropped, the relationship is still imported).
+# Class inheritance is recorded as the entity's `extends`; it is NOT flattened
+# (fields are not copied down) -- see the user guide.
+
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex:   <http://example.com/hr#> .
+
+ex:Person a owl:Class ;
+    rdfs:comment "A human being." .
+ex:fullName a owl:DatatypeProperty ;
+    rdfs:domain ex:Person ; rdfs:range xsd:string .
+
+# Employee is a second base class Manager will also extend.
+ex:Employee a owl:Class ;
+    rdfs:comment "A person employed by the organization." .
+ex:employeeId a owl:DatatypeProperty ;
+    rdfs:domain ex:Employee ; rdfs:range xsd:string .
+
+# Single-parent subclass -> extends: [Person]. No fields are copied down; the
+# subclass only records that it extends Person.
+ex:Customer a owl:Class ;
+    rdfs:subClassOf ex:Person ;
+    rdfs:comment "A person who buys." .
+ex:loyaltyTier a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ; rdfs:range xsd:string .
+
+# Multi-parent subclass -> extends: [Person, Employee], in document order. Also
+# subClassOf a blank-node owl:Restriction, which is not a named class and is
+# ignored.
+ex:Manager a owl:Class ;
+    rdfs:subClassOf ex:Person ;
+    rdfs:subClassOf ex:Employee ;
+    rdfs:subClassOf [ a owl:Restriction ;
+                      owl:onProperty ex:employeeId ;
+                      owl:minCardinality 1 ] ;
+    rdfs:comment "An employee who manages others." .
+
+# A datatype property with rdfs:subPropertyOf: property inheritance is not
+# supported, so the subPropertyOf link is warned and dropped -- but the field is
+# still imported onto Employee.
+ex:legalName a owl:DatatypeProperty ;
+    rdfs:domain ex:Employee ; rdfs:range xsd:string ;
+    rdfs:subPropertyOf ex:fullName .
+
+# An object property with rdfs:subPropertyOf: relationship inheritance is not
+# supported, so the subPropertyOf link is warned and dropped -- but the
+# relationship is still imported.
+ex:managedBy a owl:ObjectProperty ;
+    rdfs:domain ex:Employee ; rdfs:range ex:Manager ;
+    rdfs:subPropertyOf ex:worksWith .
+ex:worksWith a owl:ObjectProperty ;
+    rdfs:domain ex:Employee ; rdfs:range ex:Employee .

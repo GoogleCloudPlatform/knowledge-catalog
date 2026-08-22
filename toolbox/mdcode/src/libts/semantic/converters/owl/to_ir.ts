@@ -194,6 +194,10 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
       aiContext: synonymAiContext(c.label, c.localName, c.synonyms),
       fields: [],
     };
+    // rdfs:subClassOf -> entity-level `extends`. Recorded AS DECLARED (parent
+    // local names, deduped); parents are not validated or flattened here -- a
+    // later resolution pass expands inherited fields (see ir.ts Entity.extends).
+    if (c.subClassOf.length) entity.extends = dedupe(c.subClassOf);
     entitiesByName.set(c.localName, entity);
     entities.push(entity);
   }
@@ -218,6 +222,16 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
           `datatype property '${p.localName}' on '${p.domain}' duplicates an ` +
           `existing field name; skipped (field names must be unique).`);
       continue;
+    }
+    if (p.subPropertyOf.length) {
+      // Property inheritance is not supported (only entity-level
+      // rdfs:subClassOf -> extends). The field is still imported; only the
+      // subPropertyOf link is dropped.
+      warnings.push(
+          `datatype property '${p.localName}' declares rdfs:subPropertyOf ` +
+          `(${p.subPropertyOf.join(', ')}); property inheritance is not ` +
+          `supported, so the subPropertyOf link is dropped (the field itself ` +
+          `is still imported).`);
     }
     const field: Field = {
       name: p.localName,
@@ -253,6 +267,16 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
           `object property '${p.localName}' duplicates an existing relationship ` +
           `name; skipped (relationship names must be unique).`);
       continue;
+    }
+    if (p.subPropertyOf.length) {
+      // Relationship inheritance is not supported (only entity-level
+      // rdfs:subClassOf -> extends). The relationship is still imported; only
+      // the subPropertyOf link is dropped.
+      warnings.push(
+          `object property '${p.localName}' declares rdfs:subPropertyOf ` +
+          `(${p.subPropertyOf.join(', ')}); relationship inheritance is not ` +
+          `supported, so the subPropertyOf link is dropped (the relationship ` +
+          `itself is still imported).`);
     }
     relationships.push({
       name: p.localName,
