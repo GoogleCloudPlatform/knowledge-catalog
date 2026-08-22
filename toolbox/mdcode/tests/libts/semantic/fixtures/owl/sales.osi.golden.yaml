@@ -1,12 +1,38 @@
 version: 0.2.0.dev0
 semantic_model:
   - name: sales
-    description: Imported from OWL ontology http://example.com/sales#
+    description: "A minimal sales domain: customers and the orders they place.
+      (ontology version 1.0)"
+    ai_context:
+      synonyms:
+        - Sales domain
+      examples:
+        - How many orders did each customer place last month?
     datasets:
       - name: Customer
         source: unbound:Customer
+        primary_key:
+          - customerId
+        unique_keys:
+          - - email
         description: A person or organization that places orders.
+        ai_context:
+          synonyms:
+            - Buyer
         fields:
+          - name: customerId
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: customerId
+            datatype: String
+          - name: email
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: email
+            datatype: String
+            description: The customer's unique email address.
           - name: customerName
             expression:
               dialects:
@@ -20,22 +46,50 @@ semantic_model:
                 - dialect: BIGQUERY
                   expression: signupDate
             datatype: Date
+            dimension:
+              is_time: true
+          - name: isVip
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: isVip
+            datatype: Boolean
+            description: Whether the customer is in the loyalty program.
       - name: Order
         source: unbound:Order
+        primary_key:
+          - orderId
         description: A purchase placed by a customer.
         fields:
+          - name: orderId
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: orderId
+            datatype: String
           - name: orderAmount
             expression:
               dialects:
                 - dialect: BIGQUERY
                   expression: orderAmount
             datatype: Decimal
+            ai_context:
+              examples:
+                - "19.99"
+          - name: quantity
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: quantity
+            datatype: Integer
           - name: orderDate
             expression:
               dialects:
                 - dialect: BIGQUERY
                   expression: orderDate
             datatype: Date
+            dimension:
+              is_time: true
     relationships:
       - name: placedBy
         from: Order
@@ -43,6 +97,6 @@ semantic_model:
         from_columns:
           - TODO_BIND
         to_columns:
-          - TODO_BIND
+          - customerId
         ai_context:
           instructions: Links an order to the customer who placed it.

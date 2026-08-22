@@ -395,38 +395,63 @@ model stays the single canonical form.
 This first cut converts the OWL constructs that have a clean BigQuery Graph
 shape (class → node, object property → edge, datatype property → property), plus
 **class hierarchies** (`rdfs:subClassOf` → entity `extends`, see
-[Class hierarchies](#class-hierarchies-rdfssubclassof)). Richer OWL
-(`inverseOf`, `rdfs:subPropertyOf`, SHACL, cardinality, individuals) is not read
-yet — see [What is not covered yet](#what-is-not-covered-yet).
+[Class hierarchies](#class-hierarchies-rdfssubclassof)). Everything the converter
+reads maps to a **native** semantic-model field — no custom extensions, no IRIs
+to carry. Richer OWL that has no native home yet (`inverseOf`,
+`rdfs:subPropertyOf`, SHACL, cardinality, individuals) is not read yet — see
+[What is not covered yet](#what-is-not-covered-yet).
 
 ### 1. The OWL file
 
-A small sales ontology, `sales.owl.ttl` — two classes, four datatype properties,
-one object property. Nothing here needs an OWL reasoner:
+`sales.owl.ttl` — an ontology header, two classes with keys, datatype
+properties across several `xsd` types, and one object property. Nothing here
+needs an OWL reasoner:
 
 ```turtle
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
 @prefix ex:   <http://example.com/sales#> .
 
+<http://example.com/sales> a owl:Ontology ;
+    rdfs:label      "Sales domain" ;
+    rdfs:comment    "A minimal sales domain: customers and the orders they place." ;
+    skos:example    "How many orders did each customer place last month?" ;
+    owl:versionInfo "1.0" .
+
 ex:Customer a owl:Class ;
-    rdfs:label   "Customer" ;
-    rdfs:comment "A person or organization that places orders." .
+    rdfs:label    "Customer" ;
+    rdfs:comment  "A person or organization that places orders." ;
+    skos:altLabel "Buyer" ;
+    owl:hasKey ( ex:customerId ) .
 
 ex:Order a owl:Class ;
     rdfs:label   "Order" ;
-    rdfs:comment "A purchase placed by a customer." .
+    rdfs:comment "A purchase placed by a customer." ;
+    owl:hasKey ( ex:orderId ) .
 
+# customerId is the key; email uniquely identifies a customer
+# (inverse-functional) so it becomes a unique-key constraint.
+ex:customerId a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ; rdfs:range xsd:string .
+ex:email a owl:DatatypeProperty, owl:InverseFunctionalProperty ;
+    rdfs:domain ex:Customer ; rdfs:range xsd:string ;
+    rdfs:comment "The customer's unique email address." .
 ex:customerName a owl:DatatypeProperty ;
     rdfs:domain ex:Customer ; rdfs:range xsd:string ; rdfs:label "name" .
-
 ex:signupDate a owl:DatatypeProperty ;
     rdfs:domain ex:Customer ; rdfs:range xsd:date .
+ex:isVip a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ; rdfs:range xsd:boolean ;
+    rdfs:comment "Whether the customer is in the loyalty program." .
 
+ex:orderId a owl:DatatypeProperty ;
+    rdfs:domain ex:Order ; rdfs:range xsd:string .
 ex:orderAmount a owl:DatatypeProperty ;
-    rdfs:domain ex:Order ; rdfs:range xsd:decimal .
-
+    rdfs:domain ex:Order ; rdfs:range xsd:decimal ; skos:example "19.99" .
+ex:quantity a owl:DatatypeProperty ;
+    rdfs:domain ex:Order ; rdfs:range xsd:integer .
 ex:orderDate a owl:DatatypeProperty ;
     rdfs:domain ex:Order ; rdfs:range xsd:date .
 
@@ -440,7 +465,7 @@ ex:placedBy a owl:ObjectProperty ;
 
 ```console
 $ kcmd owl import sales.owl.ttl
-converted 2 classes, 1 object property, 4 datatype properties
+converted 2 classes, 1 object property, 9 datatype properties
 wrote catalog/EntryGroups/<entryGroup>/sales.yaml
 note: this model is UNBOUND (no backing tables yet).
       -> `kcmd push --target kc` works now (publishes ontology metadata).
@@ -453,22 +478,45 @@ picks it up; pass `--out <path>` to write it elsewhere.
 
 ### 3. The semantic model it produces — `sales.yaml`
 
-Note what is **not** here: no IRIs, no `custom_extensions`. Every OWL term has an
-IRI (`ex:Customer` = `http://example.com/sales#Customer`), but for the
-constructs that map cleanly, the IRI carries nothing the model doesn't already
-have — the term's identity is its name, and the source namespace is recorded once
-in the model `description` as provenance.
+The `Customer` dataset and the `placedBy` edge, verbatim (the `Order` dataset
+follows the same shape):
 
 ```yaml
 version: 0.2.0.dev0
 semantic_model:
   - name: sales
-    description: Imported from OWL ontology http://example.com/sales#
+    description: "A minimal sales domain: customers and the orders they place.
+      (ontology version 1.0)"
+    ai_context:
+      synonyms:
+        - Sales domain
+      examples:
+        - How many orders did each customer place last month?
     datasets:
       - name: Customer
         source: unbound:Customer        # placeholder — bind to a table for BigQuery Graph
+        primary_key:
+          - customerId                   # from owl:hasKey
+        unique_keys:
+          - - email                      # from the inverse-functional property
         description: A person or organization that places orders.
+        ai_context:
+          synonyms:
+            - Buyer
         fields:
+          - name: customerId
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: customerId
+            datatype: String
+          - name: email
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: email
+            datatype: String
+            description: The customer's unique email address.
           - name: customerName
             expression:
               dialects:
@@ -482,54 +530,89 @@ semantic_model:
                 - dialect: BIGQUERY
                   expression: signupDate
             datatype: Date
-      - name: Order
-        source: unbound:Order
-        description: A purchase placed by a customer.
-        fields:
-          - name: orderAmount
+            dimension:
+              is_time: true              # a temporal field is a time dimension
+          - name: isVip
             expression:
               dialects:
                 - dialect: BIGQUERY
-                  expression: orderAmount
-            datatype: Decimal
-          - name: orderDate
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: orderDate
-            datatype: Date
+                  expression: isVip
+            datatype: Boolean
+            description: Whether the customer is in the loyalty program.
+      # ... Order dataset: orderId, orderAmount, quantity, orderDate ...
     relationships:
       - name: placedBy
         from: Order
         to: Customer
-        # UNBOUND: real FK/key columns are unknown until sources are bound.
         from_columns:
-          - TODO_BIND
+          - TODO_BIND                    # source FK — fill in when you bind sources
         to_columns:
-          - TODO_BIND
+          - customerId                   # already bound to Customer's key
         ai_context:
           instructions: Links an order to the customer who placed it.
 ```
 
-#### How each OWL construct landed
+Note what is **not** here: no IRIs and no `custom_extensions`. Every OWL term has
+an IRI (`ex:Customer` = `http://example.com/sales#Customer`), but for the
+constructs that map cleanly the IRI carries nothing the model doesn't already
+have — the term's identity is its name, and the source namespace is recorded once
+in the model `description` as provenance.
+
+#### How each OWL construct maps
 
 | OWL | Semantic model | Notes |
 |---|---|---|
+| `owl:Ontology` header | model `description`, `ai_context`, version | comment → `description`; labels → `ai_context.synonyms`; `skos:example` → `ai_context.examples`; `owl:versionInfo` → appended to `description` |
 | `owl:Class` | `datasets[]` entry | `source` = `unbound:<Name>` placeholder until bound |
-| `owl:DatatypeProperty` | `fields[]` on the domain's dataset | `expression` defaults to the property's local name (a valid column ref once bound) |
-| `rdfs:range xsd:*` | field `datatype` | `xsd:string→String`, `xsd:date→Date`, `xsd:decimal→Decimal`, else `Opaque` |
-| `owl:ObjectProperty` | `relationships[]` | `from`=domain, `to`=range; join columns unbound (`TODO_BIND`) |
+| `owl:DatatypeProperty` | `fields[]` on **each** domain's dataset | a property with several `rdfs:domain` values lands on each; `expression` defaults to the property's local name (a valid column ref once bound) |
+| `owl:ObjectProperty` | `relationships[]` | `from` = domain, `to` = range; join columns bound to the destination key when it has one, else `TODO_BIND` (see [binding](#4-going-from-ontology-to-a-running-graph-binding)) |
 | `rdfs:subClassOf` (named superclass) | dataset `extends[]` | **entity-level inheritance only** — records the parent(s) in document order; not read on object properties (see [Class hierarchies](#class-hierarchies-rdfssubclassof)) |
+| `rdfs:range xsd:*` | field `datatype` | see [Datatypes](#datatypes-rdfsrange) |
+| `owl:hasKey ( ... )` | dataset `primary_key` | single or composite, in list order |
+| `owl:InverseFunctionalProperty` | dataset `unique_keys` | a uniquely-identifying property; omitted when it is already the `primary_key` |
 | `rdfs:label` on a datatype property | field `label` | the field's display name (a `label` slot exists only on fields); dropped when it only respaces/recases the name |
-| `rdfs:label` on a class / object property | `ai_context.synonyms` | no `label` slot there, so a distinct label becomes an alternate name; dropped when it only respaces/recases the name |
-| extra `rdfs:label` / `skos:altLabel` / `skos:prefLabel` | `ai_context.synonyms` | genuinely alternate names; feed NL search |
-| `rdfs:comment` on a class / datatype property | `description` | |
-| `rdfs:comment` on an object property | `ai_context.instructions` | a relationship has no `description` slot, so its comment rides in `ai_context` |
-| term IRIs, `@prefix` | dropped (provenance kept in model `description`) | reconstructable as `<base><name>`; re-carried only if reverse export needs them |
+| `rdfs:label` on a class / object property | `ai_context.synonyms` | no `label` slot there, so a distinct label becomes an alternate name; dropped when redundant with the name |
+| extra `rdfs:label` / `skos:altLabel` / `prefLabel` / `hiddenLabel` | `ai_context.synonyms` | genuinely alternate names; feed NL search |
+| `skos:example` | `ai_context.examples` | sample questions / values |
+| `rdfs:comment`, `skos:definition`, `dcterms:`/`dc:description` | `description` | first present wins, in that order; on an object property (which has no `description` slot) the comment rides in `ai_context.instructions` |
+| term IRIs, `@prefix` | dropped (base IRI kept as provenance in model `description`) | reconstructable as `<base><name>`; re-carried only if reverse export or `subClassOf` needs them |
 
-A datatype property whose domain is not a class in the ontology, or an object
-property missing an endpoint, cannot be placed; it is **skipped with a warning**
-rather than failing the whole import.
+A datatype property whose domain is not a class, or an object property missing an
+endpoint, cannot be placed; it is **skipped with a warning** rather than failing
+the whole import.
+
+#### Datatypes (`rdfs:range`)
+
+`rdfs:range` sets a field's logical `datatype`. Physical width is not carried (it
+belongs to the bound table, not the ontology), so several `xsd` types collapse
+onto one logical type:
+
+| `xsd` range | `datatype` |
+|---|---|
+| `string`, `normalizedString`, `token`, `anyURI`, `language`, `Name`, `NCName` | `String` |
+| `integer`, `int`, `long`, `short`, `byte`, `nonNegativeInteger`, `positiveInteger`, `unsignedInt`, … (any width/sign) | `Integer` |
+| `decimal` | `Decimal` |
+| `float`, `double` | `Float` |
+| `boolean` | `Boolean` |
+| `date` | `Date` |
+| `time` | `Time` |
+| `dateTime` | `DateTime` |
+| `dateTimeStamp` | `DateTimeTz` |
+| anything else, or no `rdfs:range` | `Opaque` |
+
+A temporal field (`Date` / `Time` / `DateTime` / `DateTimeTz`) is additionally
+marked a **time dimension** (`dimension: { is_time: true }`), so downstream
+BigQuery Graph / BI treats it as one.
+
+#### Keys (`owl:hasKey`, `owl:InverseFunctionalProperty`)
+
+- **`owl:hasKey ( ... )`** on a class becomes the dataset's `primary_key` (its
+  grain), in list order — single or composite.
+- An **`owl:InverseFunctionalProperty`** (a datatype property that uniquely
+  identifies its subject) becomes a `unique_keys` constraint — unless it is
+  already the `primary_key`, in which case it is not repeated.
+
+Keys also make relationships half-bindable — see the next section.
 
 #### Class hierarchies (`rdfs:subClassOf`)
 
@@ -594,35 +677,38 @@ catalog metadata immediately:
 $ kcmd push --target kc      # Customer/Order entries + placedBy link appear in Knowledge Catalog
 ```
 
-To make it queryable in **BigQuery Graph**, bind each class to a real table by
-editing the `unbound:` / `TODO_BIND` spots — `source` (+ `primary_key`) per
-dataset, and the relationship's join columns:
+To make it queryable in **BigQuery Graph**, bind each class to a real table. A
+declared key does half of this for you: an edge into a class that has a key
+already has its **destination** columns bound to that key, so you only fill each
+dataset's `source` table and the relationship's **source** foreign-key columns
+(the `TODO_BIND` placeholders):
 
 ```yaml
   - name: Customer
-    source: myproj.sales.customers
+    source: myproj.sales.customers       # was unbound:Customer
     primary_key:
-      - customer_id
-    fields:
-      - name: customerName
-        expression:
-          dialects:
-            - dialect: BIGQUERY
-              expression: name
-        datatype: String
-  # ...Order bound to myproj.sales.orders, primary_key [order_id]...
+      - customerId                        # already set from owl:hasKey
+    # ... fields, with each expression bound to its real column ...
+  # ... Order bound to myproj.sales.orders ...
   relationships:
     - name: placedBy
       from: Order
       to: Customer
       from_columns:
-        - customer_id
+        - customer_id                     # fill in the source FK (was TODO_BIND)
       to_columns:
-        - customer_id
+        - customerId                      # already bound to Customer's key
 ```
 
 You also need a [deployment target](#deployment-targets-required) on the model
-before a BigQuery push. Binding is a manual edit in this first cut.
+before a BigQuery push. Then:
+
+```console
+$ kcmd push                  # CREATE PROPERTY GRAPH sales (Customers, Orders, placedBy), then KC
+```
+
+Binding the `source` tables and the source foreign-key columns is a manual edit
+in this first cut.
 
 ### What is not covered yet
 
@@ -631,15 +717,18 @@ before a BigQuery push. Binding is a manual edit in this first cut.
   *Resolving* that inheritance into Knowledge Catalog entries / BigQuery Graph
   node tables (copying inherited fields down) is a follow-on; this cut only
   records the hierarchy.
-- `owl:inverseOf`, `rdfs:subPropertyOf` (property / relationship inheritance) —
-  not supported. A `subPropertyOf` link is dropped with a warning (the field or
-  relationship itself is still imported); only entity-level inheritance exists.
-  When richer constructs are added, they will land in a GOOGLE
-  `custom_extensions` block (under a `data.ontology` key), which is also where the
-  base IRI + prefixes would come back (needed to expand parent-property
+- `owl:inverseOf`, `rdfs:subPropertyOf` (property / relationship inheritance),
+  `owl:equivalentClass` — not supported. A `subPropertyOf` link is dropped with a
+  warning (the field or relationship itself is still imported); only entity-level
+  inheritance exists. When richer constructs are added, they will land in a
+  GOOGLE `custom_extensions` block (under a `data.ontology` key), which is also
+  where the base IRI + prefixes would come back (needed to expand parent-property
   references).
-- SHACL shapes, cardinality, `owl:unionOf` domains, symmetric/transitive
-  properties, `equivalentClass`, individuals — not read.
+- Cardinality / required (`owl:FunctionalProperty`, `owl:minCardinality`,
+  restrictions), enumerations (`owl:oneOf`), and property characteristics
+  (symmetric / transitive) — to be carried later via `custom_extensions`.
+- SHACL shapes, class expressions (`owl:unionOf` / `intersectionOf`), and
+  individuals (A-box instances) — not read.
 - Semantic model → OWL export (reverse) — not built; import is one-way.
 - OWL serializations other than Turtle (`.ttl`) — not read.
 

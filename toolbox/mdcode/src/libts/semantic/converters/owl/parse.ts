@@ -1,7 +1,7 @@
 // Turtle (.ttl) -> OwlModel parser.
 //
 // A mechanical triples-to-structs step: it reads RDF with `n3`, recognizes the
-// handful of OWL/RDFS terms the first cut supports, and fills the staging
+// OWL/RDFS/SKOS/Dublin-Core terms the converter supports, and fills the staging
 // OwlModel (model.ts). All OWL -> OSI mapping policy lives in to_ir.ts, not
 // here; this file only decides "which triples matter and where do their values
 // go".
@@ -12,30 +12,54 @@
 
 import {Parser} from 'n3';
 
-import {OwlClass, OwlDatatypeProperty, OwlModel, OwlObjectProperty,} from './model';
+import {OwlClass, OwlDatatypeProperty, OwlModel, OwlObjectProperty, OwlOntology,} from './model';
 
-// RDF/RDFS/OWL/SKOS term IRIs we recognize. Only these; anything else is
-// carried by neither the parser nor the model (see the user guide's
+// RDF/RDFS/OWL/SKOS/Dublin-Core term IRIs we recognize. Only these; anything
+// else is carried by neither the parser nor the model (see the user guide's
 // "not covered yet").
-const RDF_TYPE = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#type';
-const OWL_CLASS = 'http://www.w3.org/2002/07/owl#Class';
-const OWL_DATATYPE_PROPERTY = 'http://www.w3.org/2002/07/owl#DatatypeProperty';
-const OWL_OBJECT_PROPERTY = 'http://www.w3.org/2002/07/owl#ObjectProperty';
-const OWL_THING = 'http://www.w3.org/2002/07/owl#Thing';
-const RDFS_LABEL = 'http://www.w3.org/2000/01/rdf-schema#label';
-const RDFS_COMMENT = 'http://www.w3.org/2000/01/rdf-schema#comment';
-const RDFS_DOMAIN = 'http://www.w3.org/2000/01/rdf-schema#domain';
-const RDFS_RANGE = 'http://www.w3.org/2000/01/rdf-schema#range';
-const RDFS_SUBCLASS_OF = 'http://www.w3.org/2000/01/rdf-schema#subClassOf';
-const RDFS_SUBPROPERTY_OF =
-    'http://www.w3.org/2000/01/rdf-schema#subPropertyOf';
-const RDFS_RESOURCE = 'http://www.w3.org/2000/01/rdf-schema#Resource';
+const RDF = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
+const RDFS = 'http://www.w3.org/2000/01/rdf-schema#';
+const OWL = 'http://www.w3.org/2002/07/owl#';
+const SKOS = 'http://www.w3.org/2004/02/skos/core#';
+const DCTERMS = 'http://purl.org/dc/terms/';
+const DC = 'http://purl.org/dc/elements/1.1/';
+
+const RDF_TYPE = `${RDF}type`;
+// RDF collection (list) terms, used to walk an owl:hasKey list.
+const RDF_FIRST = `${RDF}first`;
+const RDF_REST = `${RDF}rest`;
+const RDF_NIL = `${RDF}nil`;
+
+const OWL_CLASS = `${OWL}Class`;
+const OWL_DATATYPE_PROPERTY = `${OWL}DatatypeProperty`;
+const OWL_OBJECT_PROPERTY = `${OWL}ObjectProperty`;
+const OWL_INVERSE_FUNCTIONAL_PROPERTY = `${OWL}InverseFunctionalProperty`;
+const OWL_ONTOLOGY = `${OWL}Ontology`;
+const OWL_HAS_KEY = `${OWL}hasKey`;
+const OWL_VERSION_INFO = `${OWL}versionInfo`;
+const OWL_THING = `${OWL}Thing`;
+
+const RDFS_LABEL = `${RDFS}label`;
+const RDFS_COMMENT = `${RDFS}comment`;
+const RDFS_DOMAIN = `${RDFS}domain`;
+const RDFS_RANGE = `${RDFS}range`;
+const RDFS_SUBCLASS_OF = `${RDFS}subClassOf`;
+const RDFS_SUBPROPERTY_OF = `${RDFS}subPropertyOf`;
+const RDFS_RESOURCE = `${RDFS}Resource`;
 // The implicit universal superclasses: every class is trivially a subclass of
-// owl:Thing / rdfs:Resource, so an explicit `rdfs:subClassOf` naming one carries
-// no inheritance information and is not recorded as `extends` (nor warned about).
+// owl:Thing / rdfs:Resource, so an explicit `rdfs:subClassOf` naming one
+// carries no inheritance information and is not recorded as `extends` (nor
+// warned about).
 const TOP_CLASS_IRIS = new Set([OWL_THING, RDFS_RESOURCE]);
-const SKOS_ALT_LABEL = 'http://www.w3.org/2004/02/skos/core#altLabel';
-const SKOS_PREF_LABEL = 'http://www.w3.org/2004/02/skos/core#prefLabel';
+
+const SKOS_ALT_LABEL = `${SKOS}altLabel`;
+const SKOS_PREF_LABEL = `${SKOS}prefLabel`;
+const SKOS_HIDDEN_LABEL = `${SKOS}hiddenLabel`;
+const SKOS_DEFINITION = `${SKOS}definition`;
+const SKOS_EXAMPLE = `${SKOS}example`;
+
+const DCTERMS_DESCRIPTION = `${DCTERMS}description`;
+const DC_DESCRIPTION = `${DC}description`;
 
 // One of the three OWL kinds we route a typed subject to.
 type OwlKind = 'class'|'datatypeProperty'|'objectProperty';
@@ -50,9 +74,7 @@ const KIND_BY_TYPE: Record<string, OwlKind> = {
 // or `/`. This is the OSI-facing identity (see the user guide -- the full IRI
 // is reconstructable as `<base><localName>` and is not carried).
 function localName(iri: string): string {
-  const hash = iri.lastIndexOf('#');
-  const slash = iri.lastIndexOf('/');
-  const cut = Math.max(hash, slash);
+  const cut = Math.max(iri.lastIndexOf('#'), iri.lastIndexOf('/'));
   return cut >= 0 ? iri.slice(cut + 1) : iri;
 }
 
@@ -65,19 +87,43 @@ function namespace(iri: string): string|undefined {
 
 // Per-subject accumulator, filled in a single ordered pass so the first
 // rdfs:label wins the `label` slot and later labels / SKOS alt labels become
-// synonyms.
+// synonyms. Descriptions are kept per source predicate so a fixed precedence
+// (rdfs:comment > skos:definition > dcterms: > dc:) can be applied at build
+// time regardless of the order the triples appear in the document.
 interface Annotations {
   label?: string;
-  comment?: string;
-  domain?: string;
-  range?: string;
   synonyms: string[];
+  examples: string[];
+  rdfsComment?: string;
+  skosDefinition?: string;
+  dctermsDescription?: string;
+  dcDescription?: string;
+  domains: string[];
+  ranges: string[];  // raw range IRIs; the mapper maps xsd:* -> datatype
+  versionInfo?: string;
+  keyListHeads: string[];  // owl:hasKey list heads (blank nodes)
   subClassOf: string[];
   subPropertyOf: string[];
 }
 
 function emptyAnnotations(): Annotations {
-  return {synonyms: [], subClassOf: [], subPropertyOf: []};
+  return {
+    synonyms: [],
+    examples: [],
+    domains: [],
+    ranges: [],
+    keyListHeads: [],
+    subClassOf: [],
+    subPropertyOf: []
+  };
+}
+
+// The effective description: the first present of rdfs:comment,
+// skos:definition, dcterms:description, dc:description -- a fixed precedence so
+// a term with more than one carries the most specific.
+function descriptionOf(a: Annotations): string|undefined {
+  return a.rdfsComment ?? a.skosDefinition ?? a.dctermsDescription ??
+      a.dcDescription;
 }
 
 /**
@@ -90,24 +136,65 @@ function emptyAnnotations(): Annotations {
 export function parseOwl(turtle: string): OwlModel {
   const quads = new Parser().parse(turtle);
 
-  // Pass 1: ordered list of typed subjects (first `rdf:type` occurrence wins
-  // the position), plus a kind index. Scanning `quads` directly (not the Store)
-  // keeps document order.
+  // Pass 1: types. An ordered list of typed subjects (first `rdf:type`
+  // occurrence wins the position) plus a kind index; the set of
+  // inverse-functional subjects and the ontology-header subject, which are
+  // recognized by their type but are not themselves classes/properties.
+  // Scanning `quads` directly (not the Store) keeps document order.
   const order: string[] = [];
   const kind = new Map<string, OwlKind>();
+  const inverseFunctional = new Set<string>();
+  let ontologyIri: string|undefined;
   for (const q of quads) {
     if (q.predicate.value !== RDF_TYPE) continue;
-    const k = KIND_BY_TYPE[q.object.value];
+    const type = q.object.value;
+    const subject = q.subject.value;
+    if (type === OWL_INVERSE_FUNCTIONAL_PROPERTY) {
+      inverseFunctional.add(subject);
+      continue;
+    }
+    if (type === OWL_ONTOLOGY) {
+      if (ontologyIri === undefined) ontologyIri = subject;
+      continue;
+    }
+    const k = KIND_BY_TYPE[type];
     if (!k) continue;
-    const iri = q.subject.value;
-    if (!kind.has(iri)) {
-      kind.set(iri, k);
-      order.push(iri);
+    if (!kind.has(subject)) {
+      kind.set(subject, k);
+      order.push(subject);
     }
   }
 
-  // Pass 2: accumulate annotations for each typed subject in document order, so
-  // the first label is the primary and the rest are synonyms.
+  // Pass 2: RDF list structure (rdf:first / rdf:rest), so an owl:hasKey list
+  // can be resolved to its member properties. List nodes are blank nodes
+  // unrelated to the typed subjects, so they are collected separately.
+  const listFirst = new Map<string, string>();
+  const listRest = new Map<string, string>();
+  for (const q of quads) {
+    if (q.predicate.value === RDF_FIRST)
+      listFirst.set(q.subject.value, q.object.value);
+    else if (q.predicate.value === RDF_REST)
+      listRest.set(q.subject.value, q.object.value);
+  }
+  // Resolves an RDF collection to its member IRIs, following rdf:rest to nil.
+  // Defensive against a cycle or a missing link (stops at the first gap).
+  const resolveList = (head: string): string[] => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    let node: string|undefined = head;
+    while (node && node !== RDF_NIL && !seen.has(node)) {
+      seen.add(node);
+      const value = listFirst.get(node);
+      if (value === undefined) break;
+      out.push(value);
+      node = listRest.get(node);
+    }
+    return out;
+  };
+
+  // Pass 3: accumulate annotations for each typed subject (and the ontology
+  // header) in document order, so the first label is the primary and the rest
+  // are synonyms.
   const annotations = new Map<string, Annotations>();
   const annotationsFor = (iri: string): Annotations => {
     let a = annotations.get(iri);
@@ -117,9 +204,11 @@ export function parseOwl(turtle: string): OwlModel {
     }
     return a;
   };
+  const annotated = (iri: string): boolean =>
+      kind.has(iri) || iri === ontologyIri;
   for (const q of quads) {
     const subject = q.subject.value;
-    if (!kind.has(subject)) continue;
+    if (!annotated(subject)) continue;
     const a = annotationsFor(subject);
     switch (q.predicate.value) {
       case RDFS_LABEL:
@@ -131,23 +220,43 @@ export function parseOwl(turtle: string): OwlModel {
         break;
       case SKOS_ALT_LABEL:
       case SKOS_PREF_LABEL:
+      case SKOS_HIDDEN_LABEL:
         a.synonyms.push(q.object.value);
         break;
+      case SKOS_EXAMPLE:
+        a.examples.push(q.object.value);
+        break;
       case RDFS_COMMENT:
-        a.comment = q.object.value;
+        a.rdfsComment = q.object.value;
+        break;
+      case SKOS_DEFINITION:
+        a.skosDefinition = q.object.value;
+        break;
+      case DCTERMS_DESCRIPTION:
+        a.dctermsDescription = q.object.value;
+        break;
+      case DC_DESCRIPTION:
+        a.dcDescription = q.object.value;
         break;
       case RDFS_DOMAIN:
-        a.domain = localName(q.object.value);
+        a.domains.push(localName(q.object.value));
         break;
       case RDFS_RANGE:
-        a.range = q.object.value;  // kept as IRI; mapper maps xsd:* -> datatype
+        a.ranges.push(q.object.value);  // kept as IRI; mapper maps xsd:*
+        break;
+      case OWL_VERSION_INFO:
+        a.versionInfo = q.object.value;
+        break;
+      case OWL_HAS_KEY:
+        a.keyListHeads.push(q.object.value);
         break;
       case RDFS_SUBCLASS_OF:
         // Class hierarchy -> the entity's `extends`. Named superclasses only:
         // a blank-node object (an owl:Restriction and similar axioms) is not a
         // named class, so it is ignored here (out of scope). The implicit
         // universal superclasses (owl:Thing / rdfs:Resource) are ignored too --
-        // every class subclasses them, so they carry no inheritance information.
+        // every class subclasses them, so they carry no inheritance
+        // information.
         if (q.object.termType === 'NamedNode' &&
             !TOP_CLASS_IRIS.has(q.object.value))
           a.subClassOf.push(localName(q.object.value));
@@ -177,30 +286,35 @@ export function parseOwl(turtle: string): OwlModel {
         classes.push({
           localName: localName(iri),
           label: a.label,
-          comment: a.comment,
+          comment: descriptionOf(a),
           synonyms: a.synonyms,
+          examples: a.examples,
+          keys: a.keyListHeads.flatMap(resolveList).map(localName),
           subClassOf: a.subClassOf,
         });
         break;
       case 'datatypeProperty':
         datatypeProperties.push({
           localName: localName(iri),
-          domain: a.domain,
-          rangeIri: a.range,
+          domains: a.domains,
+          rangeIri: a.ranges[0],
           label: a.label,
-          comment: a.comment,
+          comment: descriptionOf(a),
           synonyms: a.synonyms,
+          examples: a.examples,
+          inverseFunctional: inverseFunctional.has(iri),
           subPropertyOf: a.subPropertyOf,
         });
         break;
       case 'objectProperty':
         objectProperties.push({
           localName: localName(iri),
-          domain: a.domain,
-          range: a.range !== undefined ? localName(a.range) : undefined,
+          domain: a.domains[0],
+          range: a.ranges[0] !== undefined ? localName(a.ranges[0]) : undefined,
           label: a.label,
-          comment: a.comment,
+          comment: descriptionOf(a),
           synonyms: a.synonyms,
+          examples: a.examples,
           subPropertyOf: a.subPropertyOf,
         });
         break;
@@ -209,5 +323,33 @@ export function parseOwl(turtle: string): OwlModel {
     }
   }
 
-  return {baseIri, classes, datatypeProperties, objectProperties};
+  // The ontology header, if present, becomes model-level metadata. Its own IRI
+  // (a namespace URI without a term fragment) makes a better base-IRI
+  // provenance than the first term's namespace, so prefer it when available.
+  let ontology: OwlOntology|undefined;
+  if (ontologyIri !== undefined) {
+    const a = annotations.get(ontologyIri) ?? emptyAnnotations();
+    const labels =
+        a.label !== undefined ? [a.label, ...a.synonyms] : a.synonyms;
+    ontology = {
+      comment: descriptionOf(a),
+      synonyms: labels,
+      examples: a.examples,
+      version: a.versionInfo,
+    };
+    baseIri = ontologyBaseIri(ontologyIri) ?? baseIri;
+  }
+
+  return {baseIri, ontology, classes, datatypeProperties, objectProperties};
+}
+
+// The base namespace an ontology IRI stands for. An owl:Ontology is commonly
+// named by the namespace root without the trailing `#`/`/` (e.g.
+// `http://example.com/sales`), so append `#` when the IRI has no delimiter of
+// its own; otherwise keep it as given.
+function ontologyBaseIri(iri: string): string|undefined {
+  if (!iri) return undefined;
+  const last = iri[iri.length - 1];
+  if (last === '#' || last === '/') return iri;
+  return `${iri}#`;
 }

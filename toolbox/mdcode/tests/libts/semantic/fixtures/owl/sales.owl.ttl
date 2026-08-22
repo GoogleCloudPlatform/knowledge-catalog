@@ -1,28 +1,65 @@
+# The user guide's "Importing an OWL ontology" walkthrough. A small sales
+# ontology that exercises the constructs the converter maps to native OSI:
+#   - an owl:Ontology header (-> model description / version / ai_context);
+#   - classes with an owl:hasKey (-> primary_key) and skos synonyms;
+#   - an owl:InverseFunctionalProperty (-> a unique_keys constraint);
+#   - datatype properties across several xsd ranges (String / Date / Decimal /
+#     Boolean / Integer), with a temporal field marked as a time dimension;
+#   - a skos:example (-> ai_context.examples);
+#   - an object property whose destination has a key (-> a half-bound edge).
+# Nothing here needs an OWL reasoner.
+
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
 @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
 @prefix ex:   <http://example.com/sales#> .
 
+<http://example.com/sales> a owl:Ontology ;
+    rdfs:label      "Sales domain" ;
+    rdfs:comment    "A minimal sales domain: customers and the orders they place." ;
+    skos:example    "How many orders did each customer place last month?" ;
+    owl:versionInfo "1.0" .
+
 ex:Customer a owl:Class ;
-    rdfs:label   "Customer" ;
-    rdfs:comment "A person or organization that places orders." .
+    rdfs:label    "Customer" ;
+    rdfs:comment  "A person or organization that places orders." ;
+    skos:altLabel "Buyer" ;
+    owl:hasKey ( ex:customerId ) .
 
 ex:Order a owl:Class ;
     rdfs:label   "Order" ;
-    rdfs:comment "A purchase placed by a customer." .
+    rdfs:comment "A purchase placed by a customer." ;
+    owl:hasKey ( ex:orderId ) .
 
+# Customer fields. customerId is the key; email uniquely identifies a customer
+# (inverse-functional) so it becomes a unique_keys constraint.
+ex:customerId a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ; rdfs:range xsd:string .
+ex:email a owl:DatatypeProperty, owl:InverseFunctionalProperty ;
+    rdfs:domain ex:Customer ; rdfs:range xsd:string ;
+    rdfs:comment "The customer's unique email address." .
 ex:customerName a owl:DatatypeProperty ;
     rdfs:domain ex:Customer ; rdfs:range xsd:string ; rdfs:label "name" .
-
 ex:signupDate a owl:DatatypeProperty ;
     rdfs:domain ex:Customer ; rdfs:range xsd:date .
+ex:isVip a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ; rdfs:range xsd:boolean ;
+    rdfs:comment "Whether the customer is in the loyalty program." .
 
+# Order fields.
+ex:orderId a owl:DatatypeProperty ;
+    rdfs:domain ex:Order ; rdfs:range xsd:string .
 ex:orderAmount a owl:DatatypeProperty ;
-    rdfs:domain ex:Order ; rdfs:range xsd:decimal .
-
+    rdfs:domain ex:Order ; rdfs:range xsd:decimal ;
+    skos:example "19.99" .
+ex:quantity a owl:DatatypeProperty ;
+    rdfs:domain ex:Order ; rdfs:range xsd:integer .
 ex:orderDate a owl:DatatypeProperty ;
     rdfs:domain ex:Order ; rdfs:range xsd:date .
 
+# Order -> Customer. Customer has a key, so the edge's destination binds to it
+# and only the source foreign-key column stays a placeholder.
 ex:placedBy a owl:ObjectProperty ;
     rdfs:domain  ex:Order ; rdfs:range ex:Customer ;
     rdfs:label   "placed by" ;
