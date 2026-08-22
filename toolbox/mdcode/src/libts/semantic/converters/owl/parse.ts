@@ -309,8 +309,11 @@ export function parseOwl(turtle: string): OwlModel {
       case 'objectProperty':
         objectProperties.push({
           localName: localName(iri),
-          domain: a.domains[0],
-          range: a.ranges[0] !== undefined ? localName(a.ranges[0]) : undefined,
+          // a.domains are already local names; a.ranges are raw IRIs. Carry all
+          // of each so the mapper can warn about (and drop) the extras rather
+          // than silently keeping only the first.
+          domains: a.domains,
+          ranges: a.ranges.map(localName),
           label: a.label,
           comment: descriptionOf(a),
           synonyms: a.synonyms,

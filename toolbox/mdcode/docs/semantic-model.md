@@ -565,7 +565,7 @@ in the model `description` as provenance.
 | `owl:Ontology` header | model `description`, `ai_context`, version | comment → `description`; labels → `ai_context.synonyms`; `skos:example` → `ai_context.examples`; `owl:versionInfo` → appended to `description` |
 | `owl:Class` | `datasets[]` entry | `source` = `unbound:<Name>` placeholder until bound |
 | `owl:DatatypeProperty` | `fields[]` on **each** domain's dataset | a property with several `rdfs:domain` values lands on each; `expression` defaults to the property's local name (a valid column ref once bound) |
-| `owl:ObjectProperty` | `relationships[]` | `from` = domain, `to` = range; join columns bound to the destination key when it has one, else `TODO_BIND` (see [binding](#4-going-from-ontology-to-a-running-graph-binding)) |
+| `owl:ObjectProperty` | `relationships[]` | `from` = domain, `to` = range; join columns bound to the destination key when it has one, else `TODO_BIND` (see [binding](#4-going-from-ontology-to-a-running-graph-binding)); with several `rdfs:domain`/`rdfs:range` values only the first of each is kept (a relationship is one source → one destination) and the rest are warned |
 | `rdfs:subClassOf` (named superclass) | dataset `extends[]` | **entity-level inheritance only** — records the parent(s) in document order; not read on object properties (see [Class hierarchies](#class-hierarchies-rdfssubclassof)) |
 | `rdfs:range xsd:*` | field `datatype` | see [Datatypes](#datatypes-rdfsrange) |
 | `owl:hasKey ( ... )` | dataset `primary_key` | single or composite, in list order |
@@ -579,7 +579,10 @@ in the model `description` as provenance.
 
 A datatype property whose domain is not a class, or an object property missing an
 endpoint, cannot be placed; it is **skipped with a warning** rather than failing
-the whole import.
+the whole import. An object property that declares *more than one* `rdfs:domain`
+or `rdfs:range` is kept — a relationship maps one source to one destination, so
+the first of each is used and the extra endpoints are dropped with a warning
+(unlike a multi-domain *datatype* property, which lands on every domain).
 
 #### Datatypes (`rdfs:range`)
 
@@ -607,10 +610,12 @@ BigQuery Graph / BI treats it as one.
 #### Keys (`owl:hasKey`, `owl:InverseFunctionalProperty`)
 
 - **`owl:hasKey ( ... )`** on a class becomes the dataset's `primary_key` (its
-  grain), in list order — single or composite. A key column that names no
+  grain), in list order — single or composite. If any key column names no
   datatype property on the class (undeclared, or declared only on another class)
-  has no field to back it, so it is dropped from the `primary_key` with a
-  warning rather than left to fail later at graph generation.
+  it has no field to back it; because keeping only the columns that do exist
+  would silently narrow a composite key to a possibly non-unique one, the
+  **entire `primary_key` is dropped** with a warning rather than left to fail
+  later at graph generation.
 - An **`owl:InverseFunctionalProperty`** (a datatype property that uniquely
   identifies its subject) becomes a `unique_keys` constraint — unless it is
   already the `primary_key`, in which case it is not repeated. If a class

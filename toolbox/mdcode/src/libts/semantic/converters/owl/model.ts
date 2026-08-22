@@ -72,10 +72,13 @@ export interface OwlDatatypeProperty {
 export interface OwlObjectProperty {
   localName: string;
   // Local names of the rdfs:domain (edge source) and rdfs:range (edge
-  // destination) classes. Undefined when not declared (skipped with a warning:
-  // an edge needs both endpoints).
-  domain?: string;
-  range?: string;
+  // destination) classes. A relationship maps a single source to a single
+  // destination, so the mapper uses the first of each and warns when more are
+  // declared (multiple domains/ranges mean an intersection in OWL, which has no
+  // clean single-edge shape). Empty when none is declared (skipped with a
+  // warning: an edge needs both endpoints).
+  domains: string[];
+  ranges: string[];
   label?: string;
   comment?: string;
   synonyms: string[];

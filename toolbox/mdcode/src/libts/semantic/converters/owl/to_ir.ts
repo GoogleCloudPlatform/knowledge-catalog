@@ -362,9 +362,10 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   // per-element policy:
   //   1. owl:hasKey may name a property that is not a datatype property on the
   //      class (undeclared, or declared only on a different domain). That
-  //      column has no field, so leaving it in primary_key would name a phantom
-  //      column that only errors later at graph generation -- drop it with a
-  //      warning.
+  //      column has no field, so it would name a phantom column that only
+  //      errors later at graph generation. Drop the ENTIRE primary_key, not
+  //      just the phantom member -- keeping the survivors would silently narrow
+  //      a composite key to a possibly non-unique one, changing the grain.
   //   2. A class with no usable owl:hasKey but exactly one single-column
   //      inverse-functional property still has a natural identifier; promote
   //      that unique key to the primary_key so the entity is valid for graph
@@ -378,15 +379,16 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
           `class '${entity.name}' owl:hasKey names ${
               missing.map(m => `'${m}'`).join(', ')} which ${
               missing.length > 1 ? 'are' : 'is'} not a datatype property on ` +
-          `the class; dropped from primary_key.`);
-      entity.keys = entity.keys.filter(k => fieldNames.has(k));
+          `the class; dropping the entire primary_key (keeping only the ` +
+          `remaining columns would change the entity's grain).`);
+      entity.keys = [];
     }
     if (!entity.keys.length && entity.uniqueKeys?.length === 1 &&
         entity.uniqueKeys[0].length === 1) {
       entity.keys = [...entity.uniqueKeys[0]];
       entity.uniqueKeys = undefined;
       warnings.push(
-          `class '${entity.name}' declares no owl:hasKey; using the ` +
+          `class '${entity.name}' has no usable owl:hasKey; using the ` +
           `inverse-functional property '${
               entity.keys[0]}' as its primary_key.`);
     }
@@ -398,16 +400,33 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   // otherwise both ends are placeholders.
   const relationships: Relationship[] = [];
   for (const p of owl.objectProperties) {
-    if (!p.domain || !p.range) {
+    const domain = p.domains[0];
+    const range = p.ranges[0];
+    if (!domain || !range) {
       warnings.push(
           `object property '${p.localName}' is missing an rdfs:domain or ` +
           `rdfs:range; skipped (a relationship needs both endpoints).`);
       continue;
     }
-    if (!classNames.has(p.domain) || !classNames.has(p.range)) {
+    // A relationship maps ONE source to ONE destination. Multiple domains or
+    // ranges mean an intersection in OWL, which has no clean single-edge shape,
+    // so keep the first of each and say what was dropped rather than losing it
+    // silently.
+    const ignored = [
+      ...p.domains.slice(1).map(d => `domain '${d}'`),
+      ...p.ranges.slice(1).map(r => `range '${r}'`),
+    ];
+    if (ignored.length) {
+      warnings.push(
+          `object property '${p.localName}' declares more than one endpoint ` +
+          `(${ignored.join(', ')}); a relationship maps one source to one ` +
+          `destination, so only domain '${domain}' -> range '${
+              range}' is kept.`);
+    }
+    if (!classNames.has(domain) || !classNames.has(range)) {
       warnings.push(
           `object property '${p.localName}' references a non-class endpoint ` +
-          `(domain '${p.domain}', range '${p.range}'); skipped.`);
+          `(domain '${domain}', range '${range}'); skipped.`);
       continue;
     }
     if (relationships.some(r => r.name === p.localName)) {
@@ -427,20 +446,20 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
           `supported, so the subPropertyOf link is dropped (the relationship ` +
           `itself is still imported).`);
     }
-    const destKeys = entitiesByName.get(p.range)?.keys ?? [];
+    const destKeys = entitiesByName.get(range)?.keys ?? [];
     const bound = destKeys.length > 0;
     relationships.push({
       name: p.localName,
       // Source FK columns are unknown until binding; keep the count aligned
       // with the destination key so the positional join is well-formed.
       source: {
-        entity: p.domain,
+        entity: domain,
         columns: bound ? destKeys.map(() => TODO_BIND) : [TODO_BIND],
       },
       destination: {
         // Copy the key so the destination columns render inline rather than as
         // a YAML alias of the entity's primary_key (same array object).
-        entity: p.range,
+        entity: range,
         columns: bound ? [...destKeys] : [TODO_BIND],
       },
       // No `description`: the OSI relationship has no such slot, so the comment

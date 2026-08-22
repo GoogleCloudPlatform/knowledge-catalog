@@ -405,19 +405,41 @@ describe('keys and edge binding', () => {
     expect(edge.source.columns).toEqual(['TODO_BIND']);
   });
 
+  // A relationship maps ONE source to ONE destination. An object property with
+  // more than one rdfs:domain (or rdfs:range) keeps the first of each and warns
+  // about the rest, rather than silently dropping the extra endpoints.
+  test('a multi-endpoint object property keeps the first and warns', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class . ex:Company a owl:Class . ex:Asset a owl:Class .
+      ex:owns a owl:ObjectProperty ;
+          rdfs:domain ex:Person ; rdfs:domain ex:Company ;
+          rdfs:range ex:Asset .
+    `;
+    const {warnings} = convertOwlToOsi(ttl, 'x');
+    const model = loadOwl(ttl);
+    expect(model.relationships.length).toBe(1);
+    expect(model.relationships[0].source.entity).toBe('Person');
+    expect(model.relationships[0].destination.entity).toBe('Asset');
+    expect(warnings.some(
+               w => w.includes(`'owns'`) && w.includes(`domain 'Company'`) &&
+                   w.includes('one source to one destination')))
+        .toBe(true);
+  });
+
   // An owl:hasKey column that has no datatype property on the class
   // (undeclared, or declared only on another class) would name a phantom
-  // primary_key column that only errors later at graph generation. It is
-  // dropped with a warning, keeping the columns that do exist.
+  // primary_key column that only errors later at graph generation. Because a
+  // partial composite key would silently change the entity's grain, the ENTIRE
+  // primary_key is dropped -- not just the phantom member -- with a warning.
   test(
-      'a hasKey column with no matching field is dropped with a warning',
+      'a hasKey with a phantom column drops the whole key with a warning',
       () => {
         const ttl = `${PREFIXES}
       ex:Order a owl:Class ; owl:hasKey ( ex:orderId ex:ghost ) .
       ex:orderId a owl:DatatypeProperty ; rdfs:domain ex:Order ; rdfs:range xsd:string .
     `;
         const {warnings} = convertOwlToOsi(ttl, 'x');
-        expect(loadOwl(ttl).entities[0].keys).toEqual(['orderId']);
+        expect(loadOwl(ttl).entities[0].keys).toEqual([]);
         expect(warnings.some(
                    w => w.includes(`'ghost'`) && w.includes('primary_key')))
             .toBe(true);
@@ -437,8 +459,8 @@ describe('keys and edge binding', () => {
     const person = loadOwl(ttl).entities[0];
     expect(person.keys).toEqual(['email']);
     expect(person.uniqueKeys).toBeUndefined();
-    expect(
-        warnings.some(w => w.includes('no owl:hasKey') && w.includes('email')))
+    expect(warnings.some(
+               w => w.includes('no usable owl:hasKey') && w.includes('email')))
         .toBe(true);
   });
 
@@ -453,6 +475,25 @@ describe('keys and edge binding', () => {
     const person = loadOwl(ttl).entities[0];
     expect(person.keys).toEqual([]);
     expect(person.uniqueKeys).toEqual([['email'], ['ssn']]);
+  });
+
+  // A class whose declared owl:hasKey is entirely phantom still has usable key
+  // material if it carries a lone inverse-functional property: the phantom key
+  // is dropped and the IFP promoted. The promotion warning must not claim the
+  // class "declares no owl:hasKey" (it did -- the key was dropped), so it reads
+  // "no usable owl:hasKey".
+  test('a dropped phantom key still allows IFP promotion', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class ; owl:hasKey ( ex:ghost ) .
+      ex:email a owl:DatatypeProperty, owl:InverseFunctionalProperty ;
+               rdfs:domain ex:Person ; rdfs:range xsd:string .
+    `;
+    const {warnings} = convertOwlToOsi(ttl, 'x');
+    const person = loadOwl(ttl).entities[0];
+    expect(person.keys).toEqual(['email']);
+    expect(person.uniqueKeys).toBeUndefined();
+    expect(warnings.some(w => w.includes(`'ghost'`))).toBe(true);
+    expect(warnings.some(w => w.includes('no usable owl:hasKey'))).toBe(true);
   });
 });
 
