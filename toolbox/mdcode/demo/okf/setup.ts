@@ -39,13 +39,13 @@ function describeExists(kind: string, name: string): boolean {
 }
 
 // Each of the three resources below is looked up before it is created, rather
-// than created and then recovered from the 409. Two reasons. gcloud prints that
-// 409 as a red ERROR line of its own before this script can react to it, and
-// re-running the demo in a project that already holds the shared types is the
-// normal case, not a fault. And a create wrapped in a catch swallows every
-// other failure with it: a 429 on the entry group would leave this script
-// exiting 0 with the manifest below written against an entry group that does
-// not exist. No create is guarded, so any real failure stops the run.
+// than created and then recovered from the 409. There are two reasons. gcloud
+// prints that 409 as a red ERROR line of its own before this script can react
+// to it, and re-running the demo in a project that already holds the shared
+// types is the normal case rather than a fault. A create wrapped in a catch
+// also swallows every other failure: a 429 on the entry group would leave this
+// script exiting 0 with the manifest below written against an entry group that
+// does not exist. No create is guarded, so any real failure stops the run.
 if (describeExists('entry-groups', entryGroup)) {
   console.log(`Using existing entry group ${entryGroup}`);
 }
