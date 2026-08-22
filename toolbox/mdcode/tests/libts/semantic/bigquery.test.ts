@@ -555,3 +555,81 @@ describe(
         expect(ddl).not.toContain('MEASURE(COUNT(*))');
       });
     });
+
+
+describe('abstract (table-less) superclasses are eliminated to labels', () => {
+  // An abstract `Party` has no physical table; two concrete subtypes, `Person`
+  // and `Organization`, bind it. resolveInheritance flattens Party's `name`
+  // onto each subtype and expands their `extends` to [Party], so each concrete
+  // node table declares `LABEL Party` with Party's own signature. Party itself
+  // must produce NO node table -- it survives only as that shared label.
+  function partyModel(): SemanticModel {
+    return {
+      name: 'party_graph',
+      entities: [
+        {
+          name: 'Party',
+          dataSource: '',
+          keys: [],
+          abstract: true,
+          fields: [{name: 'id'}, {name: 'name'}],
+        },
+        {
+          name: 'Person',
+          dataSource: 'sqlgen-testing.demo.person',
+          keys: ['id'],
+          extends: ['Party'],
+          fields: [{name: 'id'}, {name: 'ssn'}],
+        },
+        {
+          name: 'Organization',
+          dataSource: 'sqlgen-testing.demo.organization',
+          keys: ['id'],
+          extends: ['Party'],
+          fields: [{name: 'id'}, {name: 'taxId'}],
+        },
+      ],
+      relationships: [],
+      metrics: [],
+    };
+  }
+
+  test('the abstract class produces no node table but survives as a label', () => {
+    const {ddl} = generatePropertyGraph(partyModel(), GEN_OPTS);
+    // No `AS Party` node table (it has no source/KEY to materialize)...
+    expect(ddl).not.toContain('AS Party');
+    // ...but its label is present on the concrete descendants.
+    expect(ddl).toContain('LABEL Party');
+  });
+
+  test('concrete subclasses share the abstract label and its flattened fields', () => {
+    const {ddl} = generatePropertyGraph(partyModel(), GEN_OPTS);
+    // Both Person and Organization declare the shared Party label.
+    expect(ddl.match(/LABEL Party/g)?.length).toBe(2);
+    // Party's `name` field flattened down so the shared signature is present.
+    expect(ddl).toContain('name');
+  });
+
+  test('both concrete node tables are still emitted', () => {
+    const {ddl} = generatePropertyGraph(partyModel(), GEN_OPTS);
+    expect(ddl).toContain('AS Person');
+    expect(ddl).toContain('AS Organization');
+  });
+
+  test('an abstract class that is nobody\'s supertype is warned and dropped', () => {
+    const model = partyModel();
+    model.entities!.push({
+      name: 'Ghost',
+      dataSource: '',
+      keys: [],
+      abstract: true,
+      fields: [{name: 'id'}],
+    });
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(warnings.some(
+               w => w.includes(`abstract entity 'Ghost'`) &&
+                   w.includes('no graph element')))
+        .toBe(true);
+    expect(ddl).not.toContain('Ghost');
+  });
+});

@@ -41,6 +41,7 @@ const CORPUS = [
   'measure_lowering.yaml',
   'metric_skips.yaml',
   'keyless_dimension.yaml',
+  'hierarchy_graph.yaml',
 ];
 
 // Loads a fixture file to its IR. Split out from `build` so a test that only

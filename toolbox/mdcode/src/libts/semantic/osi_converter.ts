@@ -120,9 +120,14 @@ function datasetDoc(
     entity: Entity, warnings: string[]): Record<string, any> {
   return compact({
     name: entity.name,
-    source: entity.dataSource,
+    // An abstract entity has no physical table, so its source is empty; omit the
+    // key rather than emit `source: ""` (which the loader reads as a
+    // concrete-but-empty reference).
+    source: entity.dataSource || undefined,
     // Supertype entities (entity-level inheritance); omitted when none.
     extends: nonEmpty(entity.extends),
+    // Conceptual (table-less) marker; omitted when false/absent.
+    abstract: entity.abstract || undefined,
     primary_key: nonEmpty(entity.keys),
     unique_keys: nonEmpty(entity.uniqueKeys),
     description: entity.description,

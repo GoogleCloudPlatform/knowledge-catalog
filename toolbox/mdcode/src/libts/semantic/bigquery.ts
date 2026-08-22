@@ -20,6 +20,7 @@
 //
 
 import {AiContext, Association, Entity, Field, isTimeDimension, Metric, Relationship, SemanticModel,} from './ir';
+import {resolveInheritance} from './resolve_inheritance';
 import {referencedEntityNames, stripQualifier} from './sql_expr_utils';
 
 export interface GenerateOptions {
@@ -60,11 +61,26 @@ export function generatePropertyGraph(
     model: SemanticModel, opts: GenerateOptions = {}): GenerateResult {
   const warnings: string[] = [];
 
+  // Resolve entity-level inheritance (`extends`) before generating: this
+  // flattens each subclass's inherited fields down and expands `extends` to the
+  // full transitive ancestor set, so labels and property signatures can be read
+  // straight off the resolved model. Only the BigQuery leg runs this; the KC
+  // push consumes the raw model, so its output is unaffected.
+  const resolved = resolveInheritance(model);
+  warnings.push(...resolved.warnings);
+
   // The IR requires entities/relationships/metrics, but be defensive against a
   // hand-built or partially-deserialized model rather than throwing on `.map`.
-  const entities = model.entities ?? [];
-  const relationships = model.relationships ?? [];
-  const metrics = model.metrics ?? [];
+  const entities = resolved.model.entities ?? [];
+  const relationships = resolved.model.relationships ?? [];
+  const metrics = resolved.model.metrics ?? [];
+
+  // An abstract entity is conceptual: it has no physical table and produces no
+  // NODE TABLE, surviving only as a LABEL on its concrete descendants (whose
+  // node tables carry its flattened fields). Collect the abstract names so the
+  // node-table filter drops them while label emission still sees them.
+  const abstractNames =
+      new Set(entities.filter(e => e.abstract).map(e => e.name));
 
   // A graph node table requires a non-empty KEY. An entity whose primary key is
   // empty cannot form a valid node, so skip it (and, below, any edge that
@@ -72,6 +88,13 @@ export function generatePropertyGraph(
   // warns about the missing key; this records the resulting structural drop.
   const skipped = new Set<string>();
   const validEntities = entities.filter(entity => {
+    // An abstract entity is intentionally table-less: skip its node table (it
+    // still contributes LABELs to descendants) without warning -- unlike a
+    // missing KEY, this is by design, not a defect.
+    if (abstractNames.has(entity.name)) {
+      skipped.add(entity.name);
+      return false;
+    }
     if (entity.keys && entity.keys.length) return true;
     warnings.push(
         `entity '${
@@ -80,6 +103,22 @@ export function generatePropertyGraph(
     skipped.add(entity.name);
     return false;
   });
+
+  // An abstract class exists only to be a supertype; one that is no concrete
+  // (valid) entity's ancestor produces no graph element at all, so warn and drop
+  // it rather than let it vanish silently.
+  const ancestorsUsed = new Set<string>();
+  for (const entity of validEntities) {
+    for (const a of entity.extends ?? []) ancestorsUsed.add(a);
+  }
+  for (const name of abstractNames) {
+    if (!ancestorsUsed.has(name)) {
+      warnings.push(
+          `abstract entity '${name}' is not a supertype of any concrete ` +
+          `entity; it has no table and no descendant to label, so it produces ` +
+          `no graph element`);
+    }
+  }
 
   // A property graph must have at least one NODE TABLE; an empty `NODE TABLES
   // ()` block is invalid DDL under any circumstance. When no entity can form a
@@ -105,14 +144,20 @@ export function generatePropertyGraph(
   const loweringByEntity = new Map<string, MeasureLowering>();
   for (const metric of metrics) {
     placeMetric(
-        metric, model, entityByName, skipped, metricsByEntity, loweringByEntity,
-        warnings);
+        metric, resolved.model, entityByName, skipped, metricsByEntity,
+        loweringByEntity, warnings);
   }
+
+  // A subclass's `LABEL <ancestor>` block lists that ancestor's own (flattened)
+  // signature, so the label renderer must reach every entity by name --
+  // including abstract ones, which have no node table but still contribute a
+  // label signature. Index all entities, not just the node-forming ones.
+  const allByName = new Map(entities.map(e => [e.name, e]));
 
   const nodeTables = validEntities.map(
       entity => renderNodeTable(
           entity, loweringByEntity.get(entity.name)?.derivedProperties ?? [],
-          metricsByEntity.get(entity.name) ?? [], opts, warnings));
+          metricsByEntity.get(entity.name) ?? [], allByName, opts, warnings));
 
   const entitiesByName = new Map(validEntities.map(e => [e.name, e]));
   const edgeTables =
@@ -130,7 +175,7 @@ export function generatePropertyGraph(
           })
           .map(rel => renderEdgeTable(rel, entitiesByName, opts, warnings));
 
-  const graphName = qualifyGraph(model, opts);
+  const graphName = qualifyGraph(resolved.model, opts);
 
   const blocks: string[] = [
     `CREATE OR REPLACE PROPERTY GRAPH ${graphName}`,
@@ -460,7 +505,8 @@ function referencedEntities(
 
 function renderNodeTable(
     entity: Entity, derivedProperties: string[], measures: string[],
-    opts: GenerateOptions, warnings: string[]): string {
+    allByName: Map<string, Entity>, opts: GenerateOptions,
+    warnings: string[]): string {
   const table = qualifyTable(
       entity.dataSource, opts, warnings, `entity '${entity.name}'`);
   // Order: declared fields, then any operand properties synthesized for
@@ -485,6 +531,24 @@ function renderNodeTable(
   // Omit the PROPERTIES block when there is nothing to list, rather than emit
   // an empty `PROPERTIES()` (a node table may declare just its KEY).
   if (properties.length) lines.push(propertiesBlock(properties));
+
+  // Inheritance: declare one LABEL per transitive ancestor (resolveInheritance
+  // expanded `extends` to the full ancestor set), each exposing that ancestor's
+  // own flattened signature. This makes `MATCH (:Ancestor)` also match this
+  // subclass node, and BigQuery requires every table sharing a label to list an
+  // identical property signature -- which holds because the ancestor's fields
+  // were flattened onto this entity too. The ancestor's description/synonyms
+  // stay on its own DEFAULT LABEL (or, for an abstract ancestor, are dropped);
+  // the descendant's LABEL clause carries no OPTIONS, to avoid conflicting
+  // duplicate options for the same shared label.
+  for (const ancestorName of entity.extends ?? []) {
+    const ancestor = allByName.get(ancestorName);
+    if (!ancestor) continue;
+    lines.push(line(2, `LABEL ${ancestorName}`));
+    const signature =
+        ancestor.fields.map(f => renderFieldProperty(f, ancestor.name));
+    if (signature.length) lines.push(propertiesBlock(signature));
+  }
   return lines.join('\n');
 }
 
@@ -659,7 +723,11 @@ function qualifyGraph(model: SemanticModel, opts: GenerateOptions): string {
   let project = opts.project;
   let dataset = opts.dataset;
 
-  const first = (model.entities ?? [])[0];
+  // Pick the first entity with a plain `project.dataset.table` source to derive
+  // the graph's location; skip abstract entities (empty source) and query-based
+  // sources (whitespace), which carry no usable location.
+  const first = (model.entities ?? [])
+                    .find(e => e.dataSource && !/\s/.test(e.dataSource));
   if ((!project || !dataset) && first?.dataSource &&
       !/\s/.test(first.dataSource)) {
     const p = first.dataSource.trim().split('.');
