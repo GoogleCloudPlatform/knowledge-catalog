@@ -2,6 +2,12 @@ version: 0.2.0.dev0
 semantic_model:
   - name: carriage
     description: Imported from OWL ontology http://example.com/people#
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: |-
+          {
+            "owl:baseIri": "http://example.com/people#"
+          }
     datasets:
       - name: Person
         source: unbound:Person
@@ -29,13 +35,41 @@ semantic_model:
             datatype: String
             custom_extensions:
               - vendor_name: GOOGLE
-                data: '{"rdfs:subPropertyOf":["name"],"owl:FunctionalProperty":true}'
+                data: |-
+                  {
+                    "rdfs:subPropertyOf": [
+                      "name"
+                    ],
+                    "owl:equivalentProperty": [
+                      "http://xmlns.com/foaf/0.1/name"
+                    ],
+                    "owl:FunctionalProperty": true,
+                    "rdfs:seeAlso": [
+                      "\"See the naming policy doc.\""
+                    ],
+                    "owl:deprecated": true,
+                    "owl:versionInfo": "2.0"
+                  }
         custom_extensions:
           - vendor_name: GOOGLE
-            data: '{"owl:equivalentClass":["Human"]}'
-      - name: Human
-        source: unbound:Human
-        description: Synonym class for Person.
+            data: |-
+              {
+                "owl:equivalentClass": [
+                  "http://xmlns.com/foaf/0.1/Person"
+                ],
+                "owl:disjointWith": [
+                  "Robot"
+                ],
+                "rdfs:seeAlso": [
+                  "<https://schema.org/Person>"
+                ],
+                "rdfs:isDefinedBy": [
+                  "http://example.com/people"
+                ]
+              }
+      - name: Robot
+        source: unbound:Robot
+        description: A machine, never a person.
     relationships:
       - name: ancestorOf
         from: Person
@@ -46,7 +80,22 @@ semantic_model:
           - personId
         custom_extensions:
           - vendor_name: GOOGLE
-            data: '{"rdfs:subPropertyOf":["relatedTo"],"owl:inverseOf":"descendantOf","owl:TransitiveProperty":true}'
+            data: |-
+              {
+                "rdfs:subPropertyOf": [
+                  "relatedTo"
+                ],
+                "owl:inverseOf": "descendantOf",
+                "owl:propertyDisjointWith": [
+                  "descendantOf"
+                ],
+                "owl:TransitiveProperty": true,
+                "owl:IrreflexiveProperty": true,
+                "owl:AsymmetricProperty": true,
+                "rdfs:isDefinedBy": [
+                  "http://example.com/people"
+                ]
+              }
       - name: relatedTo
         from: Person
         to: Person
@@ -56,4 +105,11 @@ semantic_model:
           - personId
         custom_extensions:
           - vendor_name: GOOGLE
-            data: '{"owl:SymmetricProperty":true}'
+            data: |-
+              {
+                "owl:equivalentProperty": [
+                  "http://xmlns.com/foaf/0.1/knows"
+                ],
+                "owl:SymmetricProperty": true,
+                "owl:ReflexiveProperty": true
+              }

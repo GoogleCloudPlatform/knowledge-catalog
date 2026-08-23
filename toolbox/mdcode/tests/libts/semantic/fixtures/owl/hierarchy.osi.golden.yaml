@@ -2,6 +2,12 @@ version: 0.2.0.dev0
 semantic_model:
   - name: hierarchy
     description: Imported from OWL ontology http://example.com/hr#
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: |-
+          {
+            "owl:baseIri": "http://example.com/hr#"
+          }
     datasets:
       - name: Person
         source: unbound:Person
@@ -31,7 +37,12 @@ semantic_model:
             datatype: String
             custom_extensions:
               - vendor_name: GOOGLE
-                data: '{"rdfs:subPropertyOf":["fullName"]}'
+                data: |-
+                  {
+                    "rdfs:subPropertyOf": [
+                      "fullName"
+                    ]
+                  }
       - name: Customer
         source: unbound:Customer
         extends:
@@ -60,7 +71,12 @@ semantic_model:
           - TODO_BIND
         custom_extensions:
           - vendor_name: GOOGLE
-            data: '{"rdfs:subPropertyOf":["worksWith"]}'
+            data: |-
+              {
+                "rdfs:subPropertyOf": [
+                  "worksWith"
+                ]
+              }
       - name: worksWith
         from: Employee
         to: Employee

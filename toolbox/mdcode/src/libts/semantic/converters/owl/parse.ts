@@ -12,7 +12,7 @@
 
 import {Parser} from 'n3';
 
-import {OwlClass, OwlDatatypeProperty, OwlModel, OwlObjectProperty, OwlOntology,} from './model';
+import {OwlClass, OwlCommonAnnotations, OwlDatatypeProperty, OwlModel, OwlObjectProperty, OwlOntology,} from './model';
 
 // RDF/RDFS/OWL/SKOS/Dublin-Core term IRIs we recognize. Only these; anything
 // else is carried by neither the parser nor the model (see the user guide's
@@ -23,6 +23,13 @@ const OWL = 'http://www.w3.org/2002/07/owl#';
 const SKOS = 'http://www.w3.org/2004/02/skos/core#';
 const DCTERMS = 'http://purl.org/dc/terms/';
 const DC = 'http://purl.org/dc/elements/1.1/';
+const XSD = 'http://www.w3.org/2001/XMLSchema#';
+const XSD_BOOLEAN = `${XSD}boolean`;
+const XSD_STRING = `${XSD}string`;
+// The two lexical forms of xsd:boolean `true` (XSD admits both `true` and `1`);
+// `false`/`0` restate the default and are not carried (see the OWL_DEPRECATED
+// case).
+const XSD_BOOLEAN_TRUE = new Set(['true', '1']);
 
 const RDF_TYPE = `${RDF}type`;
 // RDF collection (list) terms, used to walk an owl:hasKey list.
@@ -40,9 +47,16 @@ const OWL_INVERSE_FUNCTIONAL_PROPERTY = `${OWL}InverseFunctionalProperty`;
 const OWL_SYMMETRIC_PROPERTY = `${OWL}SymmetricProperty`;
 const OWL_TRANSITIVE_PROPERTY = `${OWL}TransitiveProperty`;
 const OWL_FUNCTIONAL_PROPERTY = `${OWL}FunctionalProperty`;
+const OWL_REFLEXIVE_PROPERTY = `${OWL}ReflexiveProperty`;
+const OWL_IRREFLEXIVE_PROPERTY = `${OWL}IrreflexiveProperty`;
+const OWL_ASYMMETRIC_PROPERTY = `${OWL}AsymmetricProperty`;
 const OWL_ONTOLOGY = `${OWL}Ontology`;
 const OWL_HAS_KEY = `${OWL}hasKey`;
 const OWL_INVERSE_OF = `${OWL}inverseOf`;
+const OWL_EQUIVALENT_PROPERTY = `${OWL}equivalentProperty`;
+const OWL_PROPERTY_DISJOINT_WITH = `${OWL}propertyDisjointWith`;
+const OWL_DISJOINT_WITH = `${OWL}disjointWith`;
+const OWL_DEPRECATED = `${OWL}deprecated`;
 const OWL_VERSION_INFO = `${OWL}versionInfo`;
 const OWL_THING = `${OWL}Thing`;
 
@@ -52,6 +66,8 @@ const RDFS_DOMAIN = `${RDFS}domain`;
 const RDFS_RANGE = `${RDFS}range`;
 const RDFS_SUBCLASS_OF = `${RDFS}subClassOf`;
 const RDFS_SUBPROPERTY_OF = `${RDFS}subPropertyOf`;
+const RDFS_SEE_ALSO = `${RDFS}seeAlso`;
+const RDFS_IS_DEFINED_BY = `${RDFS}isDefinedBy`;
 const OWL_EQUIVALENT_CLASS = `${OWL}equivalentClass`;
 const RDFS_RESOURCE = `${RDFS}Resource`;
 // The implicit universal superclasses: every class is trivially a subclass of
@@ -79,18 +95,60 @@ const KIND_BY_TYPE: Record<string, OwlKind> = {
 };
 
 // The namespace-stripped local name of a term IRI: the part after the last `#`
-// or `/`. This is the OSI-facing identity (see the user guide -- the full IRI
-// is reconstructable as `<base><localName>` and is not carried).
-function localName(iri: string): string {
+// or `/`. This is the OSI-facing identity of an in-namespace term (e.g. an
+// entity/field name); the mapper also uses it to shorten a carried in-namespace
+// cross-reference (see to_ir.refValue). Exported for that mapper use.
+export function localName(iri: string): string {
   const cut = Math.max(iri.lastIndexOf('#'), iri.lastIndexOf('/'));
   return cut >= 0 ? iri.slice(cut + 1) : iri;
 }
 
 // The namespace portion of a term IRI (everything up to and including the last
-// `#`/`/`); used as the ontology's base IRI for provenance.
-function namespace(iri: string): string|undefined {
+// `#`/`/`); the ontology's base IRI for provenance, and the key the mapper
+// compares against to decide whether a cross-reference is in-namespace (see
+// to_ir.refValue). Exported for that mapper use.
+export function namespace(iri: string): string|undefined {
   const cut = Math.max(iri.lastIndexOf('#'), iri.lastIndexOf('/'));
   return cut >= 0 ? iri.slice(0, cut + 1) : undefined;
+}
+
+// Renders a literal term in the N-Triples form used to carry an rdfs:seeAlso
+// literal (see the RDFS_SEE_ALSO case): the lexical value wrapped in double
+// quotes, followed by an optional `@lang` language tag or `^^<datatype>` type
+// IRI so a language-tagged or typed literal round-trips rather than collapsing
+// to a bare string. A plain xsd:string carries no suffix (it is the implicit
+// default). Backslash and double quote in the value are escaped, the two
+// characters that would otherwise break the wrapping. Reversed by parsing the
+// N-Triples literal grammar.
+function ntriplesLiteral(
+    value: string, language: string, datatype: string): string {
+  const quoted = `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  if (language) return `${quoted}@${language}`;
+  if (datatype && datatype !== XSD_STRING) return `${quoted}^^<${datatype}>`;
+  return quoted;
+}
+
+// The most common namespace among a set of term IRIs -- the ontology's own
+// namespace. A tie (or a single term) resolves to the first in document order,
+// since `best` is only replaced on a STRICTLY greater count. Returns undefined
+// for an empty set (a document with no typed terms). Delimiter-exact, unlike
+// deriving the base from the ontology IRI (which often omits the trailing
+// `#`/`/`).
+function dominantNamespace(iris: string[]): string|undefined {
+  const counts = new Map<string, number>();
+  let best: string|undefined;
+  let bestCount = 0;
+  for (const iri of iris) {
+    const ns = namespace(iri);
+    if (ns === undefined) continue;
+    const n = (counts.get(ns) ?? 0) + 1;
+    counts.set(ns, n);
+    if (n > bestCount) {
+      bestCount = n;
+      best = ns;
+    }
+  }
+  return best;
 }
 
 // Per-subject accumulator, filled in a single ordered pass so the first
@@ -109,11 +167,17 @@ interface Annotations {
   domains: string[];
   ranges: string[];  // raw range IRIs; the mapper maps xsd:* -> datatype
   versionInfo?: string;
-  keyListHeads: string[];  // owl:hasKey list heads (blank nodes)
-  subClassOf: string[];
-  subPropertyOf: string[];
-  equivalentClass: string[];  // owl:equivalentClass (named classes only)
-  inverseOf: string[];        // owl:inverseOf (named object properties only)
+  keyListHeads: string[];          // owl:hasKey list heads (blank nodes)
+  subClassOf: string[];            // local names (feed native `extends`)
+  subPropertyOf: string[];         // full IRIs (named superproperties)
+  equivalentClass: string[];       // full IRIs (named classes only)
+  inverseOf: string[];             // full IRIs (named object properties only)
+  disjointWith: string[];          // full IRIs (named classes only)
+  equivalentProperty: string[];    // full IRIs (named properties only)
+  propertyDisjointWith: string[];  // full IRIs (named properties only)
+  seeAlso: string[];               // rdfs:seeAlso (IRIs or literals, verbatim)
+  isDefinedBy: string[];           // rdfs:isDefinedBy (IRIs, verbatim)
+  deprecated: boolean;             // owl:deprecated
 }
 
 function emptyAnnotations(): Annotations {
@@ -126,7 +190,13 @@ function emptyAnnotations(): Annotations {
     subClassOf: [],
     subPropertyOf: [],
     equivalentClass: [],
-    inverseOf: []
+    inverseOf: [],
+    disjointWith: [],
+    equivalentProperty: [],
+    propertyDisjointWith: [],
+    seeAlso: [],
+    isDefinedBy: [],
+    deprecated: false
   };
 }
 
@@ -136,6 +206,18 @@ function emptyAnnotations(): Annotations {
 function descriptionOf(a: Annotations): string|undefined {
   return a.rdfsComment ?? a.skosDefinition ?? a.dctermsDescription ??
       a.dcDescription;
+}
+
+// The per-term carried annotations (rdfs:seeAlso / isDefinedBy, owl:deprecated
+// / versionInfo), shared by classes and both property kinds, projected from the
+// accumulator into the model's common-annotation shape.
+function commonAnnotations(a: Annotations): OwlCommonAnnotations {
+  return {
+    seeAlso: a.seeAlso,
+    isDefinedBy: a.isDefinedBy,
+    deprecated: a.deprecated,
+    versionInfo: a.versionInfo,
+  };
 }
 
 /**
@@ -164,6 +246,9 @@ export function parseOwl(turtle: string): OwlModel {
   const symmetric = new Set<string>();
   const transitive = new Set<string>();
   const functional = new Set<string>();
+  const reflexive = new Set<string>();
+  const irreflexive = new Set<string>();
+  const asymmetric = new Set<string>();
   let ontologyIri: string|undefined;
   for (const q of quads) {
     if (q.predicate.value !== RDF_TYPE) continue;
@@ -183,6 +268,18 @@ export function parseOwl(turtle: string): OwlModel {
     }
     if (type === OWL_FUNCTIONAL_PROPERTY) {
       functional.add(subject);
+      continue;
+    }
+    if (type === OWL_REFLEXIVE_PROPERTY) {
+      reflexive.add(subject);
+      continue;
+    }
+    if (type === OWL_IRREFLEXIVE_PROPERTY) {
+      irreflexive.add(subject);
+      continue;
+    }
+    if (type === OWL_ASYMMETRIC_PROPERTY) {
+      asymmetric.add(subject);
       continue;
     }
     if (type === OWL_ONTOLOGY) {
@@ -296,9 +393,10 @@ export function parseOwl(turtle: string): OwlModel {
       case RDFS_SUBPROPERTY_OF:
         // Property hierarchy -> no native OSI home; carried verbatim by the
         // mapper as a custom extension. Named superproperties only (a
-        // blank-node property expression is out of scope).
+        // blank-node property expression is out of scope). The full IRI is
+        // kept; the mapper shortens an in-namespace one (see to_ir.refValue).
         if (q.object.termType === 'NamedNode')
-          a.subPropertyOf.push(localName(q.object.value));
+          a.subPropertyOf.push(q.object.value);
         break;
       case OWL_EQUIVALENT_CLASS:
         // Class equivalence -> no native OSI home; carried verbatim. Named
@@ -306,13 +404,62 @@ export function parseOwl(turtle: string): OwlModel {
         // is a class definition, not a plain cross-reference, so it is ignored
         // (out of scope, like a blank-node subClassOf).
         if (q.object.termType === 'NamedNode')
-          a.equivalentClass.push(localName(q.object.value));
+          a.equivalentClass.push(q.object.value);
+        break;
+      case OWL_DISJOINT_WITH:
+        // Class disjointness -> no native OSI home; carried verbatim. Named
+        // classes only (a blank-node class expression is out of scope).
+        if (q.object.termType === 'NamedNode')
+          a.disjointWith.push(q.object.value);
         break;
       case OWL_INVERSE_OF:
         // Inverse edge -> no native OSI home; carried verbatim. Named object
         // properties only.
+        if (q.object.termType === 'NamedNode') a.inverseOf.push(q.object.value);
+        break;
+      case OWL_EQUIVALENT_PROPERTY:
+        // Property equivalence -> no native OSI home; carried verbatim. Named
+        // properties only.
         if (q.object.termType === 'NamedNode')
-          a.inverseOf.push(localName(q.object.value));
+          a.equivalentProperty.push(q.object.value);
+        break;
+      case OWL_PROPERTY_DISJOINT_WITH:
+        // Property disjointness -> no native OSI home; carried verbatim. Named
+        // properties only.
+        if (q.object.termType === 'NamedNode')
+          a.propertyDisjointWith.push(q.object.value);
+        break;
+      case RDFS_SEE_ALSO:
+        // A pointer to further information -> carried verbatim as an N-Triples
+        // object term, so an IRI stays distinguishable from a literal on
+        // round-trip: an IRI as `<iri>`, a literal as `"text"` with any
+        // language tag (`@en`) or datatype (`^^<iri>`) preserved (see
+        // ntriplesLiteral). seeAlso is the only carried slot that admits either
+        // kind; every other carries a bare IRI or local name. A blank node has
+        // no stable identity to carry, so it is skipped.
+        if (q.object.termType === 'NamedNode')
+          a.seeAlso.push(`<${q.object.value}>`);
+        else if (q.object.termType === 'Literal')
+          a.seeAlso.push(ntriplesLiteral(
+              q.object.value, q.object.language,
+              q.object.datatype?.value ?? ''));
+        break;
+      case RDFS_IS_DEFINED_BY:
+        // The resource (usually the defining ontology) that defines this term
+        // -> carried verbatim. Named resources only.
+        if (q.object.termType === 'NamedNode')
+          a.isDefinedBy.push(q.object.value);
+        break;
+      case OWL_DEPRECATED:
+        // Lifecycle flag -> carried only for an xsd:boolean literal that is
+        // `true`. That is the one meaningful assertion; an explicit `false`/`0`
+        // restates the default, and a non-boolean value (e.g. the string
+        // "true") is malformed -- neither is carried. Both XSD lexical forms of
+        // true (`true` and `1`) are accepted.
+        if (q.object.termType === 'Literal' &&
+            q.object.datatype?.value === XSD_BOOLEAN &&
+            XSD_BOOLEAN_TRUE.has(q.object.value))
+          a.deprecated = true;
         break;
       default:
         break;
@@ -322,10 +469,15 @@ export function parseOwl(turtle: string): OwlModel {
   const classes: OwlClass[] = [];
   const datatypeProperties: OwlDatatypeProperty[] = [];
   const objectProperties: OwlObjectProperty[] = [];
-  let baseIri: string|undefined;
+  // The ontology's own namespace: the one shared by MOST of its typed terms.
+  // Taking the most common namespace (not merely the first typed term's) is
+  // robust to a document that also types a handful of foreign-namespace terms
+  // -- e.g. an imported class it annotates -- which would otherwise hijack the
+  // base if one happened to appear first and silently invert the mapper's
+  // in-namespace/cross-namespace shortening (see to_ir.refValue).
+  let baseIri = dominantNamespace(order);
 
   for (const iri of order) {
-    if (baseIri === undefined) baseIri = namespace(iri);
     const a = annotations.get(iri) ?? emptyAnnotations();
     switch (kind.get(iri)) {
       case 'class':
@@ -338,6 +490,8 @@ export function parseOwl(turtle: string): OwlModel {
           keys: a.keyListHeads.flatMap(resolveList).map(localName),
           subClassOf: a.subClassOf,
           equivalentClass: a.equivalentClass,
+          disjointWith: a.disjointWith,
+          ...commonAnnotations(a),
         });
         break;
       case 'datatypeProperty':
@@ -352,6 +506,9 @@ export function parseOwl(turtle: string): OwlModel {
           inverseFunctional: inverseFunctional.has(iri),
           functional: functional.has(iri),
           subPropertyOf: a.subPropertyOf,
+          equivalentProperty: a.equivalentProperty,
+          propertyDisjointWith: a.propertyDisjointWith,
+          ...commonAnnotations(a),
         });
         break;
       case 'objectProperty':
@@ -368,9 +525,15 @@ export function parseOwl(turtle: string): OwlModel {
           examples: a.examples,
           subPropertyOf: a.subPropertyOf,
           inverseOf: a.inverseOf,
+          equivalentProperty: a.equivalentProperty,
+          propertyDisjointWith: a.propertyDisjointWith,
           symmetric: symmetric.has(iri),
           transitive: transitive.has(iri),
           functional: functional.has(iri),
+          reflexive: reflexive.has(iri),
+          irreflexive: irreflexive.has(iri),
+          asymmetric: asymmetric.has(iri),
+          ...commonAnnotations(a),
         });
         break;
       default:
