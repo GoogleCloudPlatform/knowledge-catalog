@@ -487,15 +487,18 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     if (p.subPropertyOf.length)
       relTerms['rdfs:subPropertyOf'] = dedupe(p.subPropertyOf);
     if (p.inverseOf.length) {
-      // owl:inverseOf pairs two properties; one statement is the norm. If more
-      // than one is declared, carry the first and say what was dropped rather
-      // than emitting an array the reader would have to disambiguate.
-      relTerms['owl:inverseOf'] = p.inverseOf[0];
-      if (p.inverseOf.length > 1) {
+      // owl:inverseOf pairs two properties; one DISTINCT statement is the norm.
+      // Dedupe first (as subPropertyOf/equivalentClass do) so a repeated
+      // identical triple isn't mistaken for a genuine conflict. If more than
+      // one distinct inverse remains, carry the first and say what was dropped
+      // rather than emitting an array the reader would have to disambiguate.
+      const inverses = dedupe(p.inverseOf);
+      relTerms['owl:inverseOf'] = inverses[0];
+      if (inverses.length > 1) {
         warnings.push(
             `object property '${p.localName}' declares owl:inverseOf more ` +
-            `than once (${p.inverseOf.join(', ')}); a relationship has one ` +
-            `inverse, so only '${p.inverseOf[0]}' is carried.`);
+            `than once (${inverses.join(', ')}); a relationship has one ` +
+            `inverse, so only '${inverses[0]}' is carried.`);
       }
     }
     if (p.symmetric) relTerms['owl:SymmetricProperty'] = true;

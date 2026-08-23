@@ -866,6 +866,22 @@ describe('OWL constructs carried as custom extensions', () => {
     });
   });
 
+  test('a repeated identical owl:inverseOf is not a conflict', () => {
+    // The same inverse stated twice is one distinct fact, not a genuine
+    // multi-inverse conflict: dedupe before counting so no spurious warning.
+    const ttl = `${PREFIXES}
+      ex:A a owl:Class . ex:B a owl:Class .
+      ex:rel a owl:ObjectProperty ;
+          rdfs:domain ex:A ; rdfs:range ex:B ;
+          owl:inverseOf ex:inv ; owl:inverseOf ex:inv .`;
+    const {yaml, warnings} = convertOwlToOsi(ttl, 'x');
+    expect(warnings.some(w => w.includes('inverseOf'))).toBe(false);
+    const rel = loadModels(yaml).models[0].relationships[0];
+    expect(ontologyTerms(rel.customExtensions)).toEqual({
+      'owl:inverseOf': 'inv'
+    });
+  });
+
   test(
       'property characteristics -> relationship, faithful boolean keys', () => {
         const ttl = `${PREFIXES}
@@ -925,9 +941,15 @@ describe('OWL constructs carried as custom extensions', () => {
           owl:inverseOf ex:invRel .`;
     const rel = loadOwl(ttl).relationships[0];
     // One GOOGLE block carries every fact; key order is fixed for a stable
-    // golden (subPropertyOf, inverseOf, then characteristics).
+    // golden (subPropertyOf, inverseOf, then characteristics). Assert the order
+    // explicitly -- toEqual on the parsed object is order-insensitive, so only
+    // Object.keys (insertion order, mirroring the serialized JSON) pins it.
     expect(rel.customExtensions).toHaveLength(1);
-    expect(JSON.parse(rel.customExtensions![0].data)).toEqual({
+    const carried = JSON.parse(rel.customExtensions![0].data);
+    expect(Object.keys(carried)).toEqual([
+      'rdfs:subPropertyOf', 'owl:inverseOf', 'owl:SymmetricProperty'
+    ]);
+    expect(carried).toEqual({
       'rdfs:subPropertyOf': ['base'],
       'owl:inverseOf': 'invRel',
       'owl:SymmetricProperty': true,
