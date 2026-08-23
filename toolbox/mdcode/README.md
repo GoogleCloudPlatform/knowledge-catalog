@@ -188,8 +188,9 @@ its entities and metrics, and `schema-join` links for its relationships). Use
 `--target bq|kc|all` (default `all`) to choose destinations, `--print` to dump
 each destination's generated artifact, and `--force-remove` to delete models
 left in the entry group that the push no longer includes. See
-[docs/semantic-model.md](docs/semantic-model.md) for the full guide, including
-how re-push reconciles removed entities, metrics, relationships, and models.
+[docs/semantic-model/](docs/semantic-model/README.md) for the full guide,
+including how re-push reconciles removed entities, metrics, relationships, and
+models.
 
 NOTE: The CLI uses `gcloud` to obtain authentication tokens, so ensure you are authenticated via `gcloud auth application-default login`.
 

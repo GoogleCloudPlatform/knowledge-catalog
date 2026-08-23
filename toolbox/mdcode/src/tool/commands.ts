@@ -90,7 +90,7 @@ const TARGET_ALIASES: Record<string, PushTarget> = {
 // Resolves a --target flag value to its ordered, de-duplicated destinations, or
 // undefined if any token is unrecognized (the caller reports the error).
 // Accepts a comma-separated list ('bq,kc'), the keyword 'all' (every
-// destination), and defaults to 'bq'. The result is always in canonical
+// destination), and defaults to 'all'. The result is always in canonical
 // DESTINATIONS order.
 export function resolveTargets(target?: string | boolean): PushTarget[] | undefined {
   // cac yields boolean `true` for a bare `--target` (no value); treat any
@@ -550,8 +550,9 @@ const OWL_EXTENSIONS = /\.owl\.ttl$|\.ttl$|\.owl$/i;
 // Handles `kcmd owl <action> <file>`. The only action is `import`: convert a
 // Turtle OWL ontology into an OSI model document that then rides the normal
 // `kcmd push` / `kcmd pull`. The converted model is UNBOUND (see the OWL
-// converter): it publishes to Knowledge Catalog as-is, but its sources / join
-// columns must be bound before a BigQuery push. Returns a process exit code.
+// converter): its sources / join columns must be bound and a BigQuery
+// deployment target added before `kcmd push` will deploy it (to either
+// destination). Returns a process exit code.
 export async function owl(
   action: string, file: string, options: OwlImportOptions): Promise<number> {
   if (action !== 'import') {
@@ -625,9 +626,9 @@ export async function owl(
 
   console.log(`wrote ${writtenPath}`);
   console.log(
-    `note: this model is UNBOUND (no backing tables yet).\n`
-    + `      -> \`kcmd push --target kc\` works now (publishes ontology metadata).\n`
-    + `      -> \`kcmd push --target bq\` is skipped until you bind sources.`);
+    `note: this model is UNBOUND (placeholder \`unbound:\` sources, no deployment target).\n`
+    + `      \`kcmd push\` is rejected until you bind each entity's source table and add\n`
+    + `      a BigQuery deployment target -- validation needs both, for every --target.`);
   return 0;
 }
 

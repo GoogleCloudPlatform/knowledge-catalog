@@ -6,7 +6,9 @@
 // the user-guide section "Importing an OWL ontology":
 //   1. the sales example produces exactly the documented OSI (golden), and
 //   2. that OSI loads through the OSI loader (the UNBOUND placeholders satisfy
-//      the schema, so `kcmd push --target kc` works on the result), and
+//      the schema, so the document is well-formed -- loadable, but not yet
+//      pushable: `kcmd push` rejects an unbound model, for every --target,
+//      until its sources are bound and a deployment target is set), and
 //   3. each mapped construct behaves as documented.
 // The scope is exactly the user guide; richer OWL is out of scope by design.
 
@@ -72,7 +74,8 @@ describe('sales ontology matches the user-guide CUJ', () => {
   test('the generated OSI loads and carries the guide highlights', () => {
     const {yaml} = convertOwlToOsi(ttl, 'sales');
     // loadModels throws on a schema violation; a clean return proves the model
-    // is loadable and thus KC-pushable as-is.
+    // is schema-valid and loadable -- not that it is pushable, since an unbound
+    // model still fails push validation until its sources are bound.
     const model = loadModels(yaml).models[0];
     expect(model.name).toBe('sales');
     expect(model.entities.map(e => e.name)).toEqual(['Customer', 'Order']);
@@ -98,6 +101,74 @@ describe('sales ontology matches the user-guide CUJ', () => {
     expect(placedBy.destination.columns).toEqual(['customerId']);
     expect(placedBy.source.columns).toEqual(['TODO_BIND']);
   });
+});
+
+
+describe('sales-advanced is the user-guide unified advanced example', () => {
+  // The one ontology the guide's advanced sections slice from: the same sales
+  // cast as sales.owl.ttl, extended with a class hierarchy and every carriage
+  // reference form. Golden-tested so the documented YAML cannot drift from what
+  // the converter emits. (The exhaustive per-construct edge cases live in the
+  // hierarchy/carriage fixtures below, which the guide does not show.)
+  const ttl = readFixture('sales-advanced.owl.ttl');
+
+  test('produces exactly the documented OSI (golden)', () => {
+    const {yaml} = convertOwlToOsi(ttl, 'sales');
+    expect(yaml).toEqual(readFixture('sales-advanced.osi.golden.yaml'));
+  });
+
+  test('maps cleanly (hierarchy + carriage never warn)', () => {
+    const {stats, warnings} = convertOwlToOsi(ttl, 'sales');
+    expect(stats).toEqual(
+        {classes: 3, datatypeProperties: 9, objectProperties: 2});
+    expect(warnings).toEqual([]);
+  });
+
+  test(
+      'carries the guide highlights: extends, carriage, both ref forms', () => {
+        const model = loadModels(convertOwlToOsi(ttl, 'sales').yaml).models[0];
+        const byName = Object.fromEntries(model.entities.map(e => [e.name, e]));
+
+        // Class hierarchy: Customer extends Person, own fields only (Person's
+        // fullName is recorded, not flattened down).
+        expect(byName['Customer'].extends).toEqual(['Person']);
+        expect(byName['Customer'].fields.some(f => f.name === 'fullName'))
+            .toBe(false);
+
+        // Carriage on an entity: a cross-namespace equivalentClass keeps its
+        // full IRI.
+        expect(ontologyTerms(byName['Person'].customExtensions)).toEqual({
+          'owl:equivalentClass': ['http://xmlns.com/foaf/0.1/Person'],
+        });
+
+        // email maps natively (inverse-functional -> unique key) AND carries
+        // owl:FunctionalProperty -- one construct native, the other along for
+        // the ride.
+        expect(byName['Customer'].uniqueKeys).toEqual([['email']]);
+        const email = byName['Customer'].fields.find(f => f.name === 'email')!;
+        expect(ontologyTerms(email.customExtensions)).toEqual({
+          'owl:FunctionalProperty': true
+        });
+
+        // One field block mixes an in-namespace ref (shortened to a local name)
+        // and a cross-namespace one (kept as a full IRI).
+        const customerName =
+            byName['Customer'].fields.find(f => f.name === 'customerName')!;
+        expect(ontologyTerms(customerName.customExtensions)).toEqual({
+          'rdfs:subPropertyOf': ['fullName'],
+          'owl:equivalentProperty': ['http://xmlns.com/foaf/0.1/name'],
+        });
+
+        // Relationship carriage: an in-namespace inverse is shortened, so the
+        // model carries owl:baseIri to make the short form reversible.
+        const placedBy = model.relationships.find(r => r.name === 'placedBy')!;
+        expect(ontologyTerms(placedBy.customExtensions)).toEqual({
+          'owl:inverseOf': 'places'
+        });
+        expect(ontologyTerms(model.customExtensions)).toEqual({
+          'owl:baseIri': 'http://example.com/sales#'
+        });
+      });
 });
 
 
@@ -822,10 +893,11 @@ describe('the GOOGLE ontology extension seam', () => {
 // GOOGLE custom extension. They are inert on push and lossless on round-trip;
 // each is pinned here at the level it attaches to.
 describe('OWL constructs carried as custom extensions', () => {
-  // The showcase fixture used verbatim in the user guide: every carried
-  // construct, at each level it attaches to, and both the cross-namespace
-  // (full IRI) and in-namespace (shortened) reference forms. Golden-tested so
-  // the documented YAML cannot drift from what the converter emits.
+  // The exhaustive carriage fixture: every carried construct, at each level it
+  // attaches to, and both the cross-namespace (full IRI) and in-namespace
+  // (shortened) reference forms. The user guide shows a sales-domain subset
+  // (sales-advanced above); this pins the full surface. Golden-tested so the
+  // emitted YAML cannot drift from what the converter produces.
   test(
       'the carriage fixture produces exactly the documented OSI (golden)',
       () => {
@@ -836,7 +908,8 @@ describe('OWL constructs carried as custom extensions', () => {
         expect(warnings).toEqual([]);
         expect(stats).toEqual(
             {classes: 2, datatypeProperties: 3, objectProperties: 2});
-        // And the result stays loadable (KC-pushable) with the blocks attached.
+        // And the result stays schema-valid and loadable with the blocks
+        // attached (loadable, not yet pushable -- sources are still unbound).
         expect(() => loadModels(yaml)).not.toThrow();
       });
 
