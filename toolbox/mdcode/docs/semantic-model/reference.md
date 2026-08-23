@@ -3,7 +3,7 @@
 Lookup companion to the [deploy guide](README.md): every flag, exactly what push
 creates in each destination, the validation checks, and the permissions each leg
 needs. For what of your metadata survives a deploy or a pull, see
-[What deploy and pull preserve](fidelity.md).
+[What push and pull preserve](fidelity.md).
 
 ## CLI flags
 
@@ -73,7 +73,7 @@ see [Validation](#validation)); add `--print` to see the generated DDL.
 
 For which of your descriptive metadata (`description`, `ai_context`, field
 labels, …) lands in the graph and which is dropped, see
-[What deploy and pull preserve](fidelity.md#to-bigquery).
+[What push and pull preserve](fidelity.md#to-bigquery).
 
 ### Class hierarchies (`extends` → labels)
 
@@ -186,7 +186,7 @@ metric) also gets a built-in `guidelines` aspect holding that text.
 Push to Knowledge Catalog is lossy — the catalog holds metadata, not a full copy
 of your model. For exactly what is stored, what is gated behind
 `--emit-expressions`, and what is never stored, see
-[What deploy and pull preserve](fidelity.md#to-knowledge-catalog).
+[What push and pull preserve](fidelity.md#to-knowledge-catalog).
 
 ## Validation
 

@@ -23,7 +23,7 @@ back. For the Ossie document format itself, see
 |---|---|
 | **This page** | author a model and deploy it |
 | [Reference](reference.md) | look up a flag, what push creates, validation, or permissions |
-| [What deploy and pull preserve](fidelity.md) | understand why something changed or wasn't recovered |
+| [What push and pull preserve](fidelity.md) | understand why something changed or wasn't recovered |
 | [Importing an OWL ontology](owl-import.md) | start from an OWL ontology instead of hand-authoring |
 
 ## Prerequisites
@@ -136,7 +136,7 @@ entity, and metric, plus `schema-join` links for relationships. The exact
 mapping — and the class-hierarchy handling — is in
 [Reference → What gets created](reference.md#what-gets-created-in-bigquery); what
 of your metadata survives the trip (and what doesn't) is in
-[What deploy and pull preserve](fidelity.md).
+[What push and pull preserve](fidelity.md).
 
 ## Updating and removing models
 
@@ -205,7 +205,7 @@ mismatch instead of deleting anything. Re-run with `--force-remove` to delete th
 local model and replace it with the catalog's. Pull never touches BigQuery.
 
 Pull can only return what push wrote, so a push→pull round trip is **not** an
-identity — see [What deploy and pull preserve](fidelity.md) for exactly what
+identity — see [What push and pull preserve](fidelity.md) for exactly what
 comes back, what comes back normalized, and what doesn't come back at all. Keep
 your authored document as the source of truth.
 

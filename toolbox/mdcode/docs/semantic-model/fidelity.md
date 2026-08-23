@@ -1,6 +1,6 @@
-# What deploy and pull preserve
+# What push and pull preserve
 
-Your model document is the source of truth. Deploying it (to BigQuery and to
+Your model document is the source of truth. Pushing it (to BigQuery and to
 Knowledge Catalog) and pulling it back are each **lossy in specific ways**: the
 graph keeps what it can query, the catalog keeps metadata, and `pull` can only
 return what the catalog was given. This page is the one authoritative map of what

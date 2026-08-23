@@ -364,7 +364,7 @@ they describe. Carriage is a holding pattern with three deliberate properties:
   survives a local load → serialize round-trip verbatim. Carriage is **not** yet
   persisted to Knowledge Catalog, though, so a `kcmd pull` does not return these
   facts today (push writes no aspect for them — see
-  [What deploy and pull preserve](fidelity.md)).
+  [What push and pull preserve](fidelity.md)).
 - **Inert.** A carried fact changes **nothing** downstream — the BigQuery Graph
   push and the Knowledge Catalog push read none of it, so it never alters a node,
   an edge, or a query. (Contrast `extends`, which *does* change the graph by
