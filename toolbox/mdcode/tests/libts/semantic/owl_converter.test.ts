@@ -823,8 +823,9 @@ describe('the GOOGLE ontology extension seam', () => {
 // each is pinned here at the level it attaches to.
 describe('OWL constructs carried as custom extensions', () => {
   // The showcase fixture used verbatim in the user guide: every carried
-  // construct, at each level it attaches to. Golden-tested so the documented
-  // YAML cannot drift from what the converter emits.
+  // construct, at each level it attaches to, and both the cross-namespace
+  // (full IRI) and in-namespace (shortened) reference forms. Golden-tested so
+  // the documented YAML cannot drift from what the converter emits.
   test(
       'the carriage fixture produces exactly the documented OSI (golden)',
       () => {
@@ -972,17 +973,10 @@ describe('OWL constructs carried as custom extensions', () => {
   });
 
   // --- Namespace-aware cross-references. ------------------------------------
-
-  test(
-      'the namespace-aware fixture produces exactly the documented OSI', () => {
-        const {yaml, warnings, stats} =
-            convertOwlToOsi(readFixture('carriage_ns.owl.ttl'), 'carriage_ns');
-        expect(yaml).toEqual(readFixture('carriage_ns.osi.golden.yaml'));
-        expect(warnings).toEqual([]);
-        expect(stats).toEqual(
-            {classes: 2, datatypeProperties: 2, objectProperties: 2});
-        expect(() => loadModels(yaml)).not.toThrow();
-      });
+  // The showcase carriage fixture above already exercises the namespace
+  // decision end to end (foaf:/schema.org cross-references kept as full IRIs,
+  // ex: references shortened, model-level owl:baseIri); these unit tests pin
+  // each branch in isolation.
 
   test('an in-namespace reference is shortened to its local name', () => {
     const ttl = `${PREFIXES}
