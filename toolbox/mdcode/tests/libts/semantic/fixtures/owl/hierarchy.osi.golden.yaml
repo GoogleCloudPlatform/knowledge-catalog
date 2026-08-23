@@ -29,6 +29,9 @@ semantic_model:
                 - dialect: BIGQUERY
                   expression: legalName
             datatype: String
+            custom_extensions:
+              - vendor_name: GOOGLE
+                data: '{"rdfs:subPropertyOf":["fullName"]}'
       - name: Customer
         source: unbound:Customer
         extends:
@@ -55,6 +58,9 @@ semantic_model:
           - TODO_BIND
         to_columns:
           - TODO_BIND
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: '{"rdfs:subPropertyOf":["worksWith"]}'
       - name: worksWith
         from: Employee
         to: Employee

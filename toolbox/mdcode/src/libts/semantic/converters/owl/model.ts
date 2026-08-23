@@ -9,9 +9,13 @@
 // Scope: the OWL constructs the converter maps to native OSI today -- classes,
 // datatype/object properties, their human annotations (rdfs:label / comment,
 // skos labels / definition / example, dcterms/dc description), datatype ranges,
-// keys (owl:hasKey, owl:InverseFunctionalProperty), and ontology-header
-// metadata. Richer OWL (subClassOf, inverseOf, SHACL, cardinality, individuals)
-// is intentionally absent; see the "What is not covered yet" note in the guide.
+// keys (owl:hasKey, owl:InverseFunctionalProperty), class hierarchy
+// (rdfs:subClassOf -> extends), and ontology-header metadata -- PLUS the
+// constructs with no native home that ride along verbatim as custom extensions
+// (rdfs:subPropertyOf, owl:inverseOf, owl:equivalentClass, and the
+// symmetric/transitive/functional property characteristics). Richer OWL still
+// absent (SHACL, cardinality restrictions, owl:oneOf, individuals); see the
+// "What is not covered yet" note in the guide.
 
 /** An `owl:Class` -- becomes an OSI dataset (entity). */
 export interface OwlClass {
@@ -36,6 +40,12 @@ export interface OwlClass {
   // entity's `extends` (entity-level inheritance). Named superclasses only;
   // blank-node axioms (owl:Restriction, ...) are not recorded. Empty when none.
   subClassOf: string[];
+  // Local names of `owl:equivalentClass` classes, in document order. No native
+  // OSI home (a class is one entity; equivalence is a fact ABOUT it, not a
+  // structural link), so it is carried verbatim as a custom extension. Named
+  // classes only; a blank-node class expression (owl:intersectionOf, ...) is
+  // not recorded (out of scope, Tier 3). Empty when none.
+  equivalentClass: string[];
 }
 
 /**
@@ -59,9 +69,14 @@ export interface OwlDatatypeProperty {
   // uniquely identifies its subject, so it maps to a unique_keys constraint on
   // each domain entity.
   inverseFunctional: boolean;
+  // True when the property is also an owl:FunctionalProperty -- it has at most
+  // one value per subject. No native OSI home (OSI has no single-valued flag),
+  // so it is carried verbatim as a field custom extension.
+  functional: boolean;
   // Local names of `rdfs:subPropertyOf` superproperties, if any. Property
-  // inheritance is NOT supported (only entity-level `rdfs:subClassOf`); this is
-  // recorded solely so the mapper can warn and drop it. Empty when none.
+  // inheritance has no native OSI home (only entity-level `rdfs:subClassOf` ->
+  // `extends`); it is carried verbatim as a field custom extension. Empty when
+  // none.
   subPropertyOf: string[];
 }
 
@@ -84,9 +99,25 @@ export interface OwlObjectProperty {
   synonyms: string[];
   examples: string[];
   // Local names of `rdfs:subPropertyOf` superproperties, if any. Relationship
-  // inheritance is NOT supported (only entity-level `rdfs:subClassOf`); this is
-  // recorded solely so the mapper can warn and drop it. Empty when none.
+  // inheritance has no native OSI home (only entity-level `rdfs:subClassOf` ->
+  // `extends`); it is carried verbatim as a relationship custom extension.
+  // Empty when none.
   subPropertyOf: string[];
+  // Local names of `owl:inverseOf` properties (the edge read the other way),
+  // in document order. No native OSI home (an edge is directed; the inverse is
+  // a separate fact), so it is carried verbatim. Usually one; more than one is
+  // kept here and reconciled by the mapper (first wins, rest warned). Empty
+  // when none.
+  inverseOf: string[];
+  // owl:SymmetricProperty -- the edge holds both ways (`a rel b` implies
+  // `b rel a`). Carried verbatim; no native OSI home.
+  symmetric: boolean;
+  // owl:TransitiveProperty -- the edge chains (`a rel b` and `b rel c` imply
+  // `a rel c`). Carried verbatim; no native OSI home.
+  transitive: boolean;
+  // owl:FunctionalProperty -- at most one destination per source. Carried
+  // verbatim; no native OSI home.
+  functional: boolean;
 }
 
 /**

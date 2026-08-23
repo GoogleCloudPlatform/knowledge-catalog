@@ -1,0 +1,48 @@
+# An ontology exercising the OWL constructs that have no native OSI home and so
+# ride along verbatim as GOOGLE custom extensions (see the user guide's
+# "Constructs carried as custom extensions (not yet native)"):
+#   - owl:equivalentClass on a class          -> entity extension
+#   - rdfs:subPropertyOf on a datatype prop   -> field extension
+#   - owl:FunctionalProperty on a datatype prop -> field extension
+#   - rdfs:subPropertyOf on an object prop     -> relationship extension
+#   - owl:inverseOf on an object prop          -> relationship extension
+#   - owl:Symmetric/TransitiveProperty         -> relationship extension
+# Each is carried under the GOOGLE vendor with the source construct AS the key
+# (prefixed with its vocabulary), the value mirroring the construct faithfully.
+# Carriage is inert on push and lossless on pull; it does not change the graph.
+
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex:   <http://example.com/people#> .
+
+# A class equivalent to another (owl:equivalentClass) -> carried on the entity.
+ex:Person a owl:Class ;
+    rdfs:comment "A human being." ;
+    owl:equivalentClass ex:Human ;
+    owl:hasKey ( ex:personId ) .
+ex:Human a owl:Class ;
+    rdfs:comment "Synonym class for Person." .
+
+ex:personId a owl:DatatypeProperty ;
+    rdfs:domain ex:Person ; rdfs:range xsd:string .
+
+# A super-property (rdfs:subPropertyOf) and a single-valued flag
+# (owl:FunctionalProperty) on a datatype property -> carried on the field.
+ex:name a owl:DatatypeProperty ;
+    rdfs:domain ex:Person ; rdfs:range xsd:string .
+ex:legalName a owl:DatatypeProperty, owl:FunctionalProperty ;
+    rdfs:domain ex:Person ; rdfs:range xsd:string ;
+    rdfs:subPropertyOf ex:name .
+
+# An object property that is its own inverse's counterpart (owl:inverseOf), is
+# symmetric and transitive, and refines a base property (rdfs:subPropertyOf) ->
+# all carried on the one relationship, in a single ordered block.
+ex:ancestorOf a owl:ObjectProperty, owl:TransitiveProperty ;
+    rdfs:domain ex:Person ; rdfs:range ex:Person ;
+    rdfs:subPropertyOf ex:relatedTo ;
+    owl:inverseOf ex:descendantOf .
+
+# A symmetric object property (owl:SymmetricProperty): the edge holds both ways.
+ex:relatedTo a owl:ObjectProperty, owl:SymmetricProperty ;
+    rdfs:domain ex:Person ; rdfs:range ex:Person .

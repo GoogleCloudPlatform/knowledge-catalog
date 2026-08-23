@@ -1,0 +1,59 @@
+version: 0.2.0.dev0
+semantic_model:
+  - name: carriage
+    description: Imported from OWL ontology http://example.com/people#
+    datasets:
+      - name: Person
+        source: unbound:Person
+        primary_key:
+          - personId
+        description: A human being.
+        fields:
+          - name: personId
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: personId
+            datatype: String
+          - name: name
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: name
+            datatype: String
+          - name: legalName
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: legalName
+            datatype: String
+            custom_extensions:
+              - vendor_name: GOOGLE
+                data: '{"rdfs:subPropertyOf":["name"],"owl:FunctionalProperty":true}'
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: '{"owl:equivalentClass":["Human"]}'
+      - name: Human
+        source: unbound:Human
+        description: Synonym class for Person.
+    relationships:
+      - name: ancestorOf
+        from: Person
+        to: Person
+        from_columns:
+          - TODO_BIND
+        to_columns:
+          - personId
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: '{"rdfs:subPropertyOf":["relatedTo"],"owl:inverseOf":"descendantOf","owl:TransitiveProperty":true}'
+      - name: relatedTo
+        from: Person
+        to: Person
+        from_columns:
+          - TODO_BIND
+        to_columns:
+          - personId
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: '{"owl:SymmetricProperty":true}'

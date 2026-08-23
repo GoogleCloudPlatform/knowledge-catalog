@@ -12,10 +12,18 @@
 //   rdfs:range xsd:*              -> field datatype (see XSD_DATATYPES)
 //   owl:hasKey                    -> dataset primary_key
 //   owl:InverseFunctionalProperty -> dataset unique_keys (or primary_key)
+//   rdfs:subClassOf               -> dataset extends (entity inheritance)
 //   rdfs:label                    -> field label / synonym (no label slot)
 //   rdfs:comment/skos:definition/dcterms:/dc: -> description
 //   skos:example                  -> ai_context.examples
 //   owl:Ontology header           -> model description / ai_context
+//
+// Constructs with no native OSI home ride along verbatim in a GOOGLE custom
+// extension (see googleOntologyExtension), inert on push and lossless on pull:
+//   rdfs:subPropertyOf            -> field / relationship (property
+//   inheritance) owl:inverseOf                 -> relationship (the edge,
+//   reversed) owl:equivalentClass           -> entity (class equivalence)
+//   owl:Symmetric/Transitive/FunctionalProperty -> relationship / field
 //
 // The result is UNBOUND: entities carry an `unbound:<Name>` source placeholder
 // and relationships carry `TODO_BIND` join columns, because an ontology has no
@@ -45,30 +53,55 @@ export interface ToIrResult {
 
 // --- Seams: the isolated change-points for later work. ----------------------
 
-// The GOOGLE custom-extensions vendor name. Ontology data that OSI can't yet
-// express natively (subClassOf, inverseOf, base IRI, ...) will ride in this
-// vendor's block under a `data.ontology` key -- Google's choice to support OWL,
-// so it sits in the GOOGLE block alongside deployment targets, not a new "OWL"
-// vendor. See deploy_bigquery.googleDeploymentTargets, which safely ignores a
-// GOOGLE block that carries no deploymentTargets.
+// The GOOGLE custom-extensions vendor name. OWL constructs OSI can't express
+// natively (rdfs:subPropertyOf, owl:inverseOf, owl:equivalentClass, property
+// characteristics) ride in this vendor's block -- Google's choice to support
+// OWL, so it sits in the GOOGLE block alongside deployment targets, not a new
+// "OWL" vendor. See deploy_bigquery.googleDeploymentTargets, which safely
+// ignores a GOOGLE block that carries no deploymentTargets.
 const GOOGLE_VENDOR = 'GOOGLE';
 
 /**
- * Builds the GOOGLE custom-extension block that carries OWL constructs OSI
- * cannot express natively, under `data.ontology`.
+ * Builds a GOOGLE custom-extension block carrying OWL constructs that have no
+ * native OSI home, verbatim.
  *
- * This is the promotion seam: when subClassOf / inverseOf / base-IRI carriage
- * lands, it is emitted here (and, later, promoted to native OSI fields by
- * changing only this function and its callers). The current cut maps everything
- * it reads to native OSI, so nothing calls this yet -- it is defined, tested
- * for shape, and left unused until the richer constructs arrive.
+ * The payload is a FLAT object whose keys ARE the source constructs, prefixed
+ * with their vocabulary (`owl:inverseOf`, `rdfs:subPropertyOf`, ...): the
+ * prefix carries the namespace, so the same short name from a different
+ * standard can't collide and the reader always knows which vocabulary a fact
+ * came from. This is the deliberate mirror of the deployment-target block,
+ * whose own keys are Google's (`deploymentTargets`, unprefixed) -- the two
+ * kinds of key coexist in one GOOGLE block without clashing, and a consumer
+ * reads "any key with a `:`" as a carried ontology fact.
+ *
+ * The values mirror the construct faithfully rather than inventing a shape:
+ * `owl:SymmetricProperty: true` (not a synthesized `characteristics` list), the
+ * raw superproperty names for `rdfs:subPropertyOf`, and so on. Carriage is
+ * inert on push (the BigQuery / KC legs read none of it) and round-trips
+ * losslessly through pull; promoting a construct to a native OSI concept later
+ * means changing this seam and its callers, nothing downstream.
+ *
+ * Returns undefined when `terms` is empty, so a caller can attach the result
+ * unconditionally without emitting an empty block.
  */
-export function googleOntologyExtension(ontology: Record<string, unknown>):
-    CustomExtension {
+export function googleOntologyExtension(terms: Record<string, unknown>):
+    CustomExtension|undefined {
+  if (!Object.keys(terms).length) return undefined;
   return {
     vendorName: GOOGLE_VENDOR,
-    data: JSON.stringify({data: {ontology}}),
+    data: JSON.stringify(terms),
   };
+}
+
+// Appends a carried-ontology GOOGLE block to an IR object (entity / field /
+// relationship), leaving any existing custom extensions in place. A no-op when
+// there is nothing to carry, so callers can attach unconditionally.
+function attachOntology(
+    target: {customExtensions?: CustomExtension[]},
+    terms: Record<string, unknown>): void {
+  const ext = googleOntologyExtension(terms);
+  if (!ext) return;
+  (target.customExtensions ??= []).push(ext);
 }
 
 // The placeholder source for an unbound entity: an ontology class has no
@@ -291,6 +324,14 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
             `ontology).`);
       }
     }
+    // owl:equivalentClass -> carried verbatim (no native OSI home: a class is
+    // one entity, so equivalence is a fact ABOUT it, not a structural link).
+    // Named classes only; blank-node class expressions were dropped in the
+    // parser.
+    if (c.equivalentClass.length) {
+      attachOntology(
+          entity, {'owl:equivalentClass': dedupe(c.equivalentClass)});
+    }
     entitiesByName.set(c.localName, entity);
     entities.push(entity);
   }
@@ -305,16 +346,15 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
           `(a field must belong to a class).`);
       continue;
     }
-    if (p.subPropertyOf.length) {
-      // Property inheritance is not supported (only entity-level
-      // rdfs:subClassOf -> extends). The field is still imported on each
-      // domain; only the subPropertyOf link is dropped.
-      warnings.push(
-          `datatype property '${p.localName}' declares rdfs:subPropertyOf ` +
-          `(${p.subPropertyOf.join(', ')}); property inheritance is not ` +
-          `supported, so the subPropertyOf link is dropped (the field itself ` +
-          `is still imported).`);
-    }
+    // OWL facts with no native OSI home, carried verbatim on the field. Built
+    // once and attached to the field on each domain (the facts are the
+    // property's, independent of which class it lands on). rdfs:subPropertyOf
+    // -> property inheritance (no entity-style flattening; the link is kept as
+    // a fact); owl:FunctionalProperty -> single-valued.
+    const fieldTerms: Record<string, unknown> = {};
+    if (p.subPropertyOf.length)
+      fieldTerms['rdfs:subPropertyOf'] = dedupe(p.subPropertyOf);
+    if (p.functional) fieldTerms['owl:FunctionalProperty'] = true;
     // A property counts as converted once if it produces at least one field,
     // regardless of how many domains it lands on.
     let produced = false;
@@ -346,6 +386,7 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
         description: p.comment,
         aiContext: fieldAiContext(p.synonyms, p.localName, p.examples),
       };
+      attachOntology(field, fieldTerms);
       entity.fields.push(field);
       produced = true;
       // An inverse-functional property uniquely identifies its subject -> a
@@ -436,19 +477,34 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
           `name; skipped (relationship names must be unique).`);
       continue;
     }
-    if (p.subPropertyOf.length) {
-      // Relationship inheritance is not supported (only entity-level
-      // rdfs:subClassOf -> extends). The relationship is still imported; only
-      // the subPropertyOf link is dropped.
-      warnings.push(
-          `object property '${p.localName}' declares rdfs:subPropertyOf ` +
-          `(${p.subPropertyOf.join(', ')}); relationship inheritance is not ` +
-          `supported, so the subPropertyOf link is dropped (the relationship ` +
-          `itself is still imported).`);
+    // OWL facts with no native OSI home, carried verbatim on the relationship,
+    // in a fixed key order so the emitted block is stable. rdfs:subPropertyOf
+    // -> relationship inheritance (kept as a fact, no flattening);
+    // owl:inverseOf -> the edge read the other way;
+    // owl:Symmetric/Transitive/FunctionalProperty
+    // -> the edge's characteristics.
+    const relTerms: Record<string, unknown> = {};
+    if (p.subPropertyOf.length)
+      relTerms['rdfs:subPropertyOf'] = dedupe(p.subPropertyOf);
+    if (p.inverseOf.length) {
+      // owl:inverseOf pairs two properties; one statement is the norm. If more
+      // than one is declared, carry the first and say what was dropped rather
+      // than emitting an array the reader would have to disambiguate.
+      relTerms['owl:inverseOf'] = p.inverseOf[0];
+      if (p.inverseOf.length > 1) {
+        warnings.push(
+            `object property '${p.localName}' declares owl:inverseOf more ` +
+            `than once (${p.inverseOf.join(', ')}); a relationship has one ` +
+            `inverse, so only '${p.inverseOf[0]}' is carried.`);
+      }
     }
+    if (p.symmetric) relTerms['owl:SymmetricProperty'] = true;
+    if (p.transitive) relTerms['owl:TransitiveProperty'] = true;
+    if (p.functional) relTerms['owl:FunctionalProperty'] = true;
+
     const destKeys = entitiesByName.get(range)?.keys ?? [];
     const bound = destKeys.length > 0;
-    relationships.push({
+    const relationship: Relationship = {
       name: p.localName,
       // Source FK columns are unknown until binding; keep the count aligned
       // with the destination key so the positional join is well-formed.
@@ -466,7 +522,9 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
       // rides in ai_context.instructions (see relationshipAiContext).
       aiContext: relationshipAiContext(
           p.label, p.localName, p.synonyms, p.comment, p.examples),
-    });
+    };
+    attachOntology(relationship, relTerms);
+    relationships.push(relationship);
   }
 
   const model: SemanticModel = {

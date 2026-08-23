@@ -34,8 +34,15 @@ const OWL_CLASS = `${OWL}Class`;
 const OWL_DATATYPE_PROPERTY = `${OWL}DatatypeProperty`;
 const OWL_OBJECT_PROPERTY = `${OWL}ObjectProperty`;
 const OWL_INVERSE_FUNCTIONAL_PROPERTY = `${OWL}InverseFunctionalProperty`;
+// Property characteristics carried verbatim (no native OSI home). Recognized by
+// their rdf:type, like owl:InverseFunctionalProperty, and collected as
+// typed-subject sets.
+const OWL_SYMMETRIC_PROPERTY = `${OWL}SymmetricProperty`;
+const OWL_TRANSITIVE_PROPERTY = `${OWL}TransitiveProperty`;
+const OWL_FUNCTIONAL_PROPERTY = `${OWL}FunctionalProperty`;
 const OWL_ONTOLOGY = `${OWL}Ontology`;
 const OWL_HAS_KEY = `${OWL}hasKey`;
+const OWL_INVERSE_OF = `${OWL}inverseOf`;
 const OWL_VERSION_INFO = `${OWL}versionInfo`;
 const OWL_THING = `${OWL}Thing`;
 
@@ -45,6 +52,7 @@ const RDFS_DOMAIN = `${RDFS}domain`;
 const RDFS_RANGE = `${RDFS}range`;
 const RDFS_SUBCLASS_OF = `${RDFS}subClassOf`;
 const RDFS_SUBPROPERTY_OF = `${RDFS}subPropertyOf`;
+const OWL_EQUIVALENT_CLASS = `${OWL}equivalentClass`;
 const RDFS_RESOURCE = `${RDFS}Resource`;
 // The implicit universal superclasses: every class is trivially a subclass of
 // owl:Thing / rdfs:Resource, so an explicit `rdfs:subClassOf` naming one
@@ -104,6 +112,8 @@ interface Annotations {
   keyListHeads: string[];  // owl:hasKey list heads (blank nodes)
   subClassOf: string[];
   subPropertyOf: string[];
+  equivalentClass: string[];  // owl:equivalentClass (named classes only)
+  inverseOf: string[];        // owl:inverseOf (named object properties only)
 }
 
 function emptyAnnotations(): Annotations {
@@ -114,7 +124,9 @@ function emptyAnnotations(): Annotations {
     ranges: [],
     keyListHeads: [],
     subClassOf: [],
-    subPropertyOf: []
+    subPropertyOf: [],
+    equivalentClass: [],
+    inverseOf: []
   };
 }
 
@@ -144,6 +156,14 @@ export function parseOwl(turtle: string): OwlModel {
   const order: string[] = [];
   const kind = new Map<string, OwlKind>();
   const inverseFunctional = new Set<string>();
+  // Property characteristics carried verbatim, each a set of the subjects typed
+  // with it. A property is commonly typed with several types (e.g.
+  // `a owl:ObjectProperty, owl:SymmetricProperty`), so a characteristic type is
+  // recorded here and does not compete with the kind that routes it to a
+  // class/property.
+  const symmetric = new Set<string>();
+  const transitive = new Set<string>();
+  const functional = new Set<string>();
   let ontologyIri: string|undefined;
   for (const q of quads) {
     if (q.predicate.value !== RDF_TYPE) continue;
@@ -151,6 +171,18 @@ export function parseOwl(turtle: string): OwlModel {
     const subject = q.subject.value;
     if (type === OWL_INVERSE_FUNCTIONAL_PROPERTY) {
       inverseFunctional.add(subject);
+      continue;
+    }
+    if (type === OWL_SYMMETRIC_PROPERTY) {
+      symmetric.add(subject);
+      continue;
+    }
+    if (type === OWL_TRANSITIVE_PROPERTY) {
+      transitive.add(subject);
+      continue;
+    }
+    if (type === OWL_FUNCTIONAL_PROPERTY) {
+      functional.add(subject);
       continue;
     }
     if (type === OWL_ONTOLOGY) {
@@ -262,11 +294,25 @@ export function parseOwl(turtle: string): OwlModel {
           a.subClassOf.push(localName(q.object.value));
         break;
       case RDFS_SUBPROPERTY_OF:
-        // Property hierarchy -> NOT supported (entity-level inheritance only).
-        // Recorded so the mapper can warn and drop it; named superproperties
-        // only.
+        // Property hierarchy -> no native OSI home; carried verbatim by the
+        // mapper as a custom extension. Named superproperties only (a
+        // blank-node property expression is out of scope).
         if (q.object.termType === 'NamedNode')
           a.subPropertyOf.push(localName(q.object.value));
+        break;
+      case OWL_EQUIVALENT_CLASS:
+        // Class equivalence -> no native OSI home; carried verbatim. Named
+        // classes only; a blank-node class expression (owl:intersectionOf, ...)
+        // is a class definition, not a plain cross-reference, so it is ignored
+        // (out of scope, like a blank-node subClassOf).
+        if (q.object.termType === 'NamedNode')
+          a.equivalentClass.push(localName(q.object.value));
+        break;
+      case OWL_INVERSE_OF:
+        // Inverse edge -> no native OSI home; carried verbatim. Named object
+        // properties only.
+        if (q.object.termType === 'NamedNode')
+          a.inverseOf.push(localName(q.object.value));
         break;
       default:
         break;
@@ -291,6 +337,7 @@ export function parseOwl(turtle: string): OwlModel {
           examples: a.examples,
           keys: a.keyListHeads.flatMap(resolveList).map(localName),
           subClassOf: a.subClassOf,
+          equivalentClass: a.equivalentClass,
         });
         break;
       case 'datatypeProperty':
@@ -303,6 +350,7 @@ export function parseOwl(turtle: string): OwlModel {
           synonyms: a.synonyms,
           examples: a.examples,
           inverseFunctional: inverseFunctional.has(iri),
+          functional: functional.has(iri),
           subPropertyOf: a.subPropertyOf,
         });
         break;
@@ -319,6 +367,10 @@ export function parseOwl(turtle: string): OwlModel {
           synonyms: a.synonyms,
           examples: a.examples,
           subPropertyOf: a.subPropertyOf,
+          inverseOf: a.inverseOf,
+          symmetric: symmetric.has(iri),
+          transitive: transitive.has(iri),
+          functional: functional.has(iri),
         });
         break;
       default:
