@@ -628,20 +628,23 @@ dataset's `source` table and the relationship's **source** foreign-key columns
 (the `TODO_BIND` placeholders):
 
 ```yaml
+datasets:
   - name: Customer
-    source: myproj.sales.customers       # was unbound:Customer
+    source: myproj.sales.customers        # was unbound:Customer
     primary_key:
       - customerId                        # already set from owl:hasKey
-    # ... fields, with each expression bound to its real column ...
-  # ... Order bound to myproj.sales.orders ...
-  relationships:
-    - name: placedBy
-      from: Order
-      to: Customer
-      from_columns:
-        - customer_id                     # fill in the source FK (was TODO_BIND)
-      to_columns:
-        - customerId                      # already bound to Customer's key
+    # ... fields, each expression bound to its real column ...
+  - name: Order
+    source: myproj.sales.orders           # was unbound:Order
+    # ... fields ...
+relationships:
+  - name: placedBy
+    from: Order
+    to: Customer
+    from_columns:
+      - customer_id                       # fill in the source FK (was TODO_BIND)
+    to_columns:
+      - customerId                        # already bound to Customer's key
 ```
 
 Add a [deployment target](README.md#deployment-targets-required) on the model as
