@@ -662,40 +662,56 @@ in this first cut.
 
 ## What is not covered yet
 
-- `rdfs:subClassOf` (class hierarchy) **is** read now — it maps to dataset
-  `extends` (see [Class hierarchies](#class-hierarchies-rdfssubclassof)) — and a
-  **BigQuery** push resolves it into node-table labels with inherited fields
-  flattened down (see [Class hierarchies (`extends` →
-  labels)](reference.md#class-hierarchies-extends--labels)). Resolving the same inheritance
-  into **Knowledge Catalog** entries is still a follow-on; the KC push publishes
-  each entry with only its own fields.
-- Property inheritance (`rdfs:subPropertyOf`), the cross-references
-  (`owl:inverseOf`, `owl:equivalentClass`, `owl:disjointWith`,
-  `owl:equivalentProperty`, `owl:propertyDisjointWith`), every property
-  characteristic (symmetric / transitive / functional / reflexive / irreflexive /
-  asymmetric), and the per-term annotations (`rdfs:seeAlso`, `rdfs:isDefinedBy`,
-  `owl:deprecated`, `owl:versionInfo`) **are** read now — they have no native
-  slot, so they are **carried verbatim** as `custom_extensions` rather than
+Four different situations hide in "not covered": constructs already read but not
+yet resolved all the way downstream, constructs not read but reachable next,
+constructs out of scope, and one item that is a push limitation rather than a
+converter gap.
+
+**Read now — only downstream resolution is pending.** These are not dropped; the
+importer handles them today, and the remaining work is a later step, not in the
+import:
+
+- **Class hierarchy** (`rdfs:subClassOf`) maps to dataset `extends` (see
+  [Class hierarchies](#class-hierarchies-rdfssubclassof)); a **BigQuery** push
+  resolves it into node-table labels with inherited fields flattened down (see
+  [Class hierarchies (`extends` →
+  labels)](reference.md#class-hierarchies-extends--labels)). Resolving the same
+  inheritance into **Knowledge Catalog** entries is the follow-on — KC push still
+  publishes each entry with only its own fields.
+- **Constructs with no native home** — property inheritance
+  (`rdfs:subPropertyOf`), the cross-references (`owl:inverseOf`,
+  `owl:equivalentClass`, `owl:disjointWith`, `owl:equivalentProperty`,
+  `owl:propertyDisjointWith`), every property characteristic (symmetric /
+  transitive / functional / reflexive / irreflexive / asymmetric), and the
+  per-term annotations (`rdfs:seeAlso`, `rdfs:isDefinedBy`, `owl:deprecated`,
+  `owl:versionInfo`) are **carried verbatim** as `custom_extensions` rather than
   dropped (see [Constructs carried as custom
   extensions](#constructs-carried-as-custom-extensions-not-yet-native)). They are
-  inert on push; promoting any of them to a native concept is a later step.
+  inert on push; promoting any to a native concept is the follow-on.
+
+**Not read yet — the next candidates for carriage.** Each is stated as a
+blank-node axiom (an RDF list or an anonymous node) whose predicates the
+converter does not recognize today; the RDF-list walker itself already exists (it
+reads `owl:hasKey`), so these are within reach:
+
 - Cardinality / required (`owl:minCardinality` / `owl:maxCardinality`
-  restrictions), enumerations (`owl:oneOf`), and the *set* disjointness/identity
+  restrictions), enumerations (`owl:oneOf`), and the *set* disjointness / identity
   axioms (`owl:AllDisjointClasses` / `AllDisjointProperties` / `AllDifferent`,
-  `owl:propertyChainAxiom`) — **not read yet.** All are stated as blank-node
-  axioms (an RDF list or an anonymous node) whose predicates the converter does
-  not recognize today — the RDF-list walker itself exists (it reads `owl:hasKey`),
-  these predicates just aren't handled; they are the next carriage candidates. (Pairwise `owl:disjointWith` /
+  `owl:propertyChainAxiom`). (Pairwise `owl:disjointWith` /
   `owl:propertyDisjointWith`, which name a term directly, *are* carried.)
+
+**Not read — out of scope.** Richer OWL/RDF beyond the schema-shaped subset this
+converter targets:
+
 - SHACL shapes, class expressions (`owl:unionOf` / `intersectionOf`, and any
   blank-node `owl:equivalentClass` / `rdfs:subClassOf`), individuals (A-box
-  instances), and `owl:sameAs` / `owl:differentFrom` (which relate individuals) —
-  not read.
-- Semantic model → OWL export (reverse) — not built; import is one-way.
-- OWL serializations other than Turtle (`.ttl`) — not read.
-- **Knowledge-Catalog-only publish of an unbound model** — not supported. A
-  freshly imported model cannot `kcmd push --target kc` until its sources are
-  bound and a deployment target is set: push validates the BigQuery deployment
-  target and probes every source table before any leg runs (for every
-  `--target`), so there is no KC-only path around those checks. Decoupling the
-  KC leg from the BigQuery checks is a possible follow-up.
+  instances), and `owl:sameAs` / `owl:differentFrom` (which relate individuals).
+- OWL serializations other than Turtle (`.ttl`), and the reverse direction —
+  semantic model → OWL export. Import is one-way.
+
+**A push limitation, not a converter gap: no Knowledge-Catalog-only publish of an
+unbound model.** A freshly imported model cannot `kcmd push --target kc` until its
+sources are bound and a deployment target is set: push validates the BigQuery
+deployment target and probes every source table before any leg runs (for every
+`--target`), so there is no KC-only path around those checks. Decoupling the KC
+leg from the BigQuery checks is a possible follow-up.
