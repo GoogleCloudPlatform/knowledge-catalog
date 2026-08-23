@@ -1068,13 +1068,18 @@ describe('OWL constructs carried as custom extensions', () => {
         // An IRI seeAlso is carried as `<iri>` and a literal as `"text"`, so
         // the two stay distinguishable on round-trip even when a literal
         // happens to look like an IRI. A quote/backslash inside a literal is
-        // escaped so the wrapping is unambiguous.
+        // escaped so the wrapping is unambiguous. A language tag (`@en`) and a
+        // non-string datatype (`^^<iri>`) are preserved; a plain xsd:string
+        // carries no suffix.
         const ttl = `${PREFIXES}
       ex:Person a owl:Class ;
           rdfs:seeAlso <https://schema.org/Person> ;
           rdfs:seeAlso "A note." ;
           rdfs:seeAlso "https://looks-like-an-iri.example/but-a-literal" ;
           rdfs:seeAlso "she said \\"hi\\"" ;
+          rdfs:seeAlso "une note"@fr ;
+          rdfs:seeAlso "42"^^xsd:integer ;
+          rdfs:seeAlso "plain"^^xsd:string ;
           rdfs:isDefinedBy <http://example.com/x> .`;
         const person = loadOwl(ttl).entities.find(e => e.name === 'Person')!;
         expect(ontologyTerms(person.customExtensions)).toEqual({
@@ -1083,6 +1088,11 @@ describe('OWL constructs carried as custom extensions', () => {
             '"A note."',
             '"https://looks-like-an-iri.example/but-a-literal"',
             '"she said \\"hi\\""',
+            '"une note"@fr',
+            '"42"^^<http://www.w3.org/2001/XMLSchema#integer>',
+            // An explicit xsd:string is the implicit default, so no `^^`
+            // suffix.
+            '"plain"',
           ],
           'rdfs:isDefinedBy': ['http://example.com/x'],
         });
@@ -1091,15 +1101,26 @@ describe('OWL constructs carried as custom extensions', () => {
   test('owl:deprecated is carried only for the boolean true', () => {
     const yes = `${PREFIXES}
       ex:Person a owl:Class ; owl:deprecated true .`;
+    // `"1"^^xsd:boolean` is the other lexical form of true and is accepted.
+    const one = `${PREFIXES}
+      ex:Person a owl:Class ; owl:deprecated "1"^^xsd:boolean .`;
     const no = `${PREFIXES}
       ex:Person a owl:Class ; owl:deprecated false .`;
+    // `"0"^^xsd:boolean` is the other lexical form of false; nothing carried.
+    const zero = `${PREFIXES}
+      ex:Person a owl:Class ; owl:deprecated "0"^^xsd:boolean .`;
     // A non-boolean `"true"` string literal is malformed, not a deprecation.
     const str = `${PREFIXES}
       ex:Person a owl:Class ; owl:deprecated "true" .`;
     const carried = loadOwl(yes).entities[0].customExtensions;
     expect(ontologyTerms(carried)).toEqual({'owl:deprecated': true});
-    // An explicit `false` restates the default, so nothing is carried.
+    expect(ontologyTerms(loadOwl(one).entities[0].customExtensions)).toEqual({
+      'owl:deprecated': true
+    });
+    // An explicit `false`/`0` restates the default, so nothing is carried.
     expect(ontologyTerms(loadOwl(no).entities[0].customExtensions))
+        .toBeUndefined();
+    expect(ontologyTerms(loadOwl(zero).entities[0].customExtensions))
         .toBeUndefined();
     expect(ontologyTerms(loadOwl(str).entities[0].customExtensions))
         .toBeUndefined();

@@ -19,7 +19,10 @@
 //   owl:Ontology header           -> model description / ai_context
 //
 // Constructs with no native OSI home ride along verbatim in a GOOGLE custom
-// extension (see googleOntologyExtension), inert on push and lossless on pull.
+// extension (see googleOntologyExtension). It is inert on push (the BigQuery /
+// KC legs read none of it) and preserved across the OSI document round-trip
+// (loader + osi_converter keep custom_extensions verbatim); it is NOT yet
+// persisted to Knowledge Catalog, so a KC pull does not recover it today.
 // Each line is kept short so a comment reflow cannot run the columns together:
 //   rdfs:subPropertyOf -> field / relationship (property inheritance)
 //   owl:inverseOf -> relationship (the edge, reversed)
@@ -87,9 +90,11 @@ const GOOGLE_VENDOR = 'GOOGLE';
  * The values mirror the construct faithfully rather than inventing a shape:
  * `owl:SymmetricProperty: true` (not a synthesized `characteristics` list), the
  * raw superproperty names for `rdfs:subPropertyOf`, and so on. Carriage is
- * inert on push (the BigQuery / KC legs read none of it) and round-trips
- * losslessly through pull; promoting a construct to a native OSI concept later
- * means changing this seam and its callers, nothing downstream.
+ * inert on push (the BigQuery / KC legs read none of it) and survives the OSI
+ * document round-trip verbatim (loader + osi_converter preserve
+ * custom_extensions); it is NOT yet persisted to / recovered from Knowledge
+ * Catalog. Promoting a construct to a native OSI concept later means changing
+ * this seam and its callers, nothing downstream.
  *
  * Returns undefined when `terms` is empty, so a caller can attach the result
  * unconditionally without emitting an empty block.

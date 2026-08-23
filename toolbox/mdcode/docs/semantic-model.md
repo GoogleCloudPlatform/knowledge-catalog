@@ -834,8 +834,12 @@ directed, so it has nowhere to record its *inverse*. Rather than drop these, the
 converter **carries them verbatim** in a `GOOGLE` custom extension on the object
 they describe. Carriage is a holding pattern with three deliberate properties:
 
-- **Lossless.** Nothing the converter reads is thrown away; `kcmd pull` recovers
-  every carried fact exactly as imported.
+- **Lossless in the document.** Nothing the converter reads is thrown away: the
+  imported OSI document holds every carried fact exactly as imported, and it
+  survives a local load → serialize round-trip verbatim. Carriage is **not** yet
+  persisted to Knowledge Catalog, though, so a `kcmd pull` does not return these
+  facts today (push writes no aspect for them — see the pull-fidelity notes
+  above).
 - **Inert.** A carried fact changes **nothing** downstream — the BigQuery Graph
   push and the Knowledge Catalog push read none of it, so it never alters a node,
   an edge, or a query. (Contrast `extends`, which *does* change the graph by
@@ -879,7 +883,7 @@ original construct is lost in translation.
 | `owl:ReflexiveProperty` | `owl:ReflexiveProperty` | relationship | `true` | every subject relates to itself (`a→a`) |
 | `owl:IrreflexiveProperty` | `owl:IrreflexiveProperty` | relationship | `true` | no subject relates to itself |
 | `owl:AsymmetricProperty` | `owl:AsymmetricProperty` | relationship | `true` | `a→b` rules out `b→a` |
-| `rdfs:seeAlso` | `rdfs:seeAlso` | any | `string[]` of N-Triples terms — an IRI as `<iri>`, a literal as `"text"` | pointer to further information (kept distinguishable, see below) |
+| `rdfs:seeAlso` | `rdfs:seeAlso` | any | `string[]` of N-Triples terms — an IRI as `<iri>`, a literal as `"text"` (with any `@lang` / `^^<datatype>` preserved) | pointer to further information (kept distinguishable, see below) |
 | `rdfs:isDefinedBy` | `rdfs:isDefinedBy` | any | `string[]` (IRIs, verbatim) | the resource that defines this term |
 | `owl:deprecated` | `owl:deprecated` | any | `true` | the term is deprecated (carried only when true) |
 | `owl:versionInfo` | `owl:versionInfo` | any | `string` | a term-level version string |
@@ -902,9 +906,10 @@ cross-namespace IRI is already complete. (The base also appears in the model
 `description` for humans, but the structured key is what a consumer reads.)
 `rdfs:seeAlso` / `rdfs:isDefinedBy` point *outside* the model by definition, so
 they are **always** kept verbatim; `rdfs:seeAlso` additionally wraps each value
-as an N-Triples term (`<iri>` vs `"text"`) so an IRI stays distinguishable from a
-literal on round-trip. A carried reference is **not** validated against the model
-— it is a fact to carry, not a resolved link.
+as an N-Triples term (`<iri>` vs `"text"`, with any language tag `@en` or
+datatype `^^<iri>` preserved) so an IRI stays distinguishable from a literal — and
+a tagged/typed literal from a plain one — on round-trip. A carried reference is
+**not** validated against the model — it is a fact to carry, not a resolved link.
 
 **Example.** Given this ontology:
 

@@ -25,6 +25,11 @@ const DCTERMS = 'http://purl.org/dc/terms/';
 const DC = 'http://purl.org/dc/elements/1.1/';
 const XSD = 'http://www.w3.org/2001/XMLSchema#';
 const XSD_BOOLEAN = `${XSD}boolean`;
+const XSD_STRING = `${XSD}string`;
+// The two lexical forms of xsd:boolean `true` (XSD admits both `true` and `1`);
+// `false`/`0` restate the default and are not carried (see the OWL_DEPRECATED
+// case).
+const XSD_BOOLEAN_TRUE = new Set(['true', '1']);
 
 const RDF_TYPE = `${RDF}type`;
 // RDF collection (list) terms, used to walk an owl:hasKey list.
@@ -107,13 +112,20 @@ export function namespace(iri: string): string|undefined {
   return cut >= 0 ? iri.slice(0, cut + 1) : undefined;
 }
 
-// Escapes a literal's lexical value for the N-Triples-style `"..."` form used
-// to carry an rdfs:seeAlso literal (see the RDFS_SEE_ALSO case): a backslash
-// and a double quote are the two characters that would otherwise break the
-// wrapping, so both are escaped. Reversed by unwrapping the quotes and undoing
-// these two escapes.
-function quoteLiteral(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+// Renders a literal term in the N-Triples form used to carry an rdfs:seeAlso
+// literal (see the RDFS_SEE_ALSO case): the lexical value wrapped in double
+// quotes, followed by an optional `@lang` language tag or `^^<datatype>` type
+// IRI so a language-tagged or typed literal round-trips rather than collapsing
+// to a bare string. A plain xsd:string carries no suffix (it is the implicit
+// default). Backslash and double quote in the value are escaped, the two
+// characters that would otherwise break the wrapping. Reversed by parsing the
+// N-Triples literal grammar.
+function ntriplesLiteral(
+    value: string, language: string, datatype: string): string {
+  const quoted = `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  if (language) return `${quoted}@${language}`;
+  if (datatype && datatype !== XSD_STRING) return `${quoted}^^<${datatype}>`;
+  return quoted;
 }
 
 // The most common namespace among a set of term IRIs -- the ontology's own
@@ -420,14 +432,17 @@ export function parseOwl(turtle: string): OwlModel {
       case RDFS_SEE_ALSO:
         // A pointer to further information -> carried verbatim as an N-Triples
         // object term, so an IRI stays distinguishable from a literal on
-        // round-trip: an IRI as `<iri>`, a literal as `"text"` (quote/backslash
-        // escaped). seeAlso is the only carried slot that admits either kind;
-        // every other carries a bare IRI or local name. A blank node has no
-        // stable identity to carry, so it is skipped.
+        // round-trip: an IRI as `<iri>`, a literal as `"text"` with any
+        // language tag (`@en`) or datatype (`^^<iri>`) preserved (see
+        // ntriplesLiteral). seeAlso is the only carried slot that admits either
+        // kind; every other carries a bare IRI or local name. A blank node has
+        // no stable identity to carry, so it is skipped.
         if (q.object.termType === 'NamedNode')
           a.seeAlso.push(`<${q.object.value}>`);
         else if (q.object.termType === 'Literal')
-          a.seeAlso.push(`"${quoteLiteral(q.object.value)}"`);
+          a.seeAlso.push(ntriplesLiteral(
+              q.object.value, q.object.language,
+              q.object.datatype?.value ?? ''));
         break;
       case RDFS_IS_DEFINED_BY:
         // The resource (usually the defining ontology) that defines this term
@@ -436,13 +451,14 @@ export function parseOwl(turtle: string): OwlModel {
           a.isDefinedBy.push(q.object.value);
         break;
       case OWL_DEPRECATED:
-        // Lifecycle flag -> carried only for the xsd:boolean literal `true`.
-        // That is the one meaningful assertion; an explicit `false` restates
-        // the default, and a non-boolean value (e.g. the string "true") is
-        // malformed -- neither is carried.
+        // Lifecycle flag -> carried only for an xsd:boolean literal that is
+        // `true`. That is the one meaningful assertion; an explicit `false`/`0`
+        // restates the default, and a non-boolean value (e.g. the string
+        // "true") is malformed -- neither is carried. Both XSD lexical forms of
+        // true (`true` and `1`) are accepted.
         if (q.object.termType === 'Literal' &&
             q.object.datatype?.value === XSD_BOOLEAN &&
-            q.object.value === 'true')
+            XSD_BOOLEAN_TRUE.has(q.object.value))
           a.deprecated = true;
         break;
       default:

@@ -32,9 +32,10 @@
 export interface OwlCommonAnnotations {
   // rdfs:seeAlso values, in document order, as N-Triples object terms so an
   // IRI stays distinguishable from a literal on round-trip: an IRI as `<iri>`,
-  // a literal as `"text"` (quote/backslash escaped). External pointers to
-  // further information; never shortened (an IRI points outside the model).
-  // Empty when none.
+  // a literal as `"text"` with any language tag (`@en`) or datatype (`^^<iri>`)
+  // preserved (see parse.ntriplesLiteral). External pointers to further
+  // information; never shortened (an IRI points outside the model). Empty when
+  // none.
   seeAlso: string[];
   // rdfs:isDefinedBy IRIs, in document order. Points at the resource (usually
   // the defining ontology) that defines this term; kept verbatim. Empty when
@@ -205,9 +206,14 @@ export interface OwlOntology {
  * entity's fields in datatype-property-declaration order.
  */
 export interface OwlModel {
-  // The ontology's base namespace IRI (from the default `@prefix` or the first
-  // term's namespace), kept only as provenance for the model description. Term
-  // IRIs themselves are dropped -- see the user guide.
+  // The ontology's base namespace IRI: the namespace shared by MOST of its
+  // typed terms (see parse.dominantNamespace), falling back to the ontology
+  // header IRI. Used two ways: as provenance in the model description, and --
+  // when a cross-reference is shortened to an in-namespace local name --
+  // carried structurally as `owl:baseIri` on the model so that shortening is
+  // reversible (a localName rebuilds as `<baseIri><localName>`; see
+  // to_ir.refValue). Term IRIs themselves are otherwise dropped -- see the user
+  // guide.
   baseIri?: string;
   // The ontology-header metadata (owl:Ontology node), if the document has one.
   ontology?: OwlOntology;

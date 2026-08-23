@@ -105,8 +105,8 @@ export function generatePropertyGraph(
   });
 
   // An abstract class exists only to be a supertype; one that is no concrete
-  // (valid) entity's ancestor produces no graph element at all, so warn and drop
-  // it rather than let it vanish silently.
+  // (valid) entity's ancestor produces no graph element at all, so warn and
+  // drop it rather than let it vanish silently.
   const ancestorsUsed = new Set<string>();
   for (const entity of validEntities) {
     for (const a of entity.extends ?? []) ancestorsUsed.add(a);
@@ -122,14 +122,21 @@ export function generatePropertyGraph(
 
   // A property graph must have at least one NODE TABLE; an empty `NODE TABLES
   // ()` block is invalid DDL under any circumstance. When no entity can form a
-  // node — the model declares none, or every one was skipped for an empty KEY —
-  // fail loudly rather than emit a graph BigQuery would reject. The collected
-  // skip reasons ride along in the error so the caller sees why each entity
-  // dropped.
+  // node — the model declares none, every one is abstract (a table-less
+  // supertype forms no node), or every one was skipped for an empty KEY — fail
+  // loudly rather than emit a graph BigQuery would reject. The collected skip
+  // reasons ride along in the error so the caller sees why each entity dropped.
   if (!validEntities.length) {
-    const reason = entities.length ?
-        'every entity was skipped because it has no primary key (a graph node requires a KEY)' :
-        'the model declares no entities';
+    let reason: string;
+    if (!entities.length) {
+      reason = 'the model declares no entities';
+    } else if (entities.every(e => e.abstract)) {
+      reason =
+          'every entity is abstract (a table-less supertype forms no node table)';
+    } else {
+      reason =
+          'every entity was skipped because it has no primary key (a graph node requires a KEY)';
+    }
     throw new Error(
         `cannot generate a property graph: ${reason}; a graph requires at ` +
         `least one NODE TABLE` +
@@ -157,9 +164,9 @@ export function generatePropertyGraph(
   // subclass (which would contradict the drop and expose a half-defined class);
   // a subclass extending it drops that LABEL with a warning (see
   // renderNodeTable).
-  const labelByName = new Map(
-      entities.filter(e => e.abstract || !skipped.has(e.name))
-          .map(e => [e.name, e]));
+  const labelByName =
+      new Map(entities.filter(e => e.abstract || !skipped.has(e.name))
+                  .map(e => [e.name, e]));
 
   const nodeTables = validEntities.map(
       entity => renderNodeTable(
@@ -318,12 +325,12 @@ function placeMetric(
         entityName}', which has no KEY and was skipped; metric dropped`);
     return;
   }
-  // A metric lowers to a MEASURE on the target entity's DEFAULT LABEL. When that
-  // entity is a supertype, its label is shared with every subclass table, and
-  // BigQuery forbids binding a MEASURE to a label carried by more than one
-  // element table (a measure cannot be replicated across tables -- verified live
-  // "defined as MEASURE, but there are other declarations with the same name").
-  // Drop it with a warning rather than emit DDL BigQuery rejects.
+  // A metric lowers to a MEASURE on the target entity's DEFAULT LABEL. When
+  // that entity is a supertype, its label is shared with every subclass table,
+  // and BigQuery forbids binding a MEASURE to a label carried by more than one
+  // element table (a measure cannot be replicated across tables -- verified
+  // live "defined as MEASURE, but there are other declarations with the same
+  // name"). Drop it with a warning rather than emit DDL BigQuery rejects.
   if (ancestorsUsed.has(entityName)) {
     warnings.push(
         `metric '${metric.name}' targets entity '${entityName}', which is a ` +
@@ -588,7 +595,8 @@ function renderNodeTable(
     } else {
       warnings.push(
           `entity '${entity.name}' overrides the description/synonyms of ` +
-          `inherited property '${f.name}'; under a shared label every binding ` +
+          `inherited property '${
+              f.name}'; under a shared label every binding ` +
           `must declare it identically, so the supertype's metadata is used ` +
           `and the subclass's is dropped`);
     }
@@ -608,13 +616,13 @@ function renderNodeTable(
     line(1, `${table} AS ${entity.name}`),
     line(2, `KEY(${entity.keys.join(', ')})`),
   ];
-  // Element-table description and synonyms attach to the node's DEFAULT LABEL --
-  // UNLESS this entity is a supertype whose label is shared by subclass tables.
-  // BigQuery forbids a label that carries an OPTIONS clause from being bound to
-  // more than one element table (verified live -- "the label ... is defined with
-  // OPTIONS clause in one of the element tables and cannot be bound to another
-  // element table"), so a shared supertype label must be options-free; its
-  // description/synonyms are dropped (with a warning).
+  // Element-table description and synonyms attach to the node's DEFAULT LABEL
+  // -- UNLESS this entity is a supertype whose label is shared by subclass
+  // tables. BigQuery forbids a label that carries an OPTIONS clause from being
+  // bound to more than one element table (verified live -- "the label ... is
+  // defined with OPTIONS clause in one of the element tables and cannot be
+  // bound to another element table"), so a shared supertype label must be
+  // options-free; its description/synonyms are dropped (with a warning).
   let labelOpts = optionsClause(
       elementDescription(entity.description, entity.aiContext),
       entity.aiContext?.synonyms);
@@ -625,14 +633,14 @@ function renderNodeTable(
         `label (BigQuery forbids OPTIONS on a label bound by multiple tables)`);
     labelOpts = undefined;
   }
-  // A node participating in the hierarchy -- as a subclass (it declares ancestor
-  // LABELs) or as a shared supertype (a subclass binds its label) -- must use an
-  // EXPLICIT `DEFAULT LABEL`: BigQuery rejects a bare (implicit default)
-  // PROPERTIES clause immediately followed by explicit LABEL clauses (verified
-  // live -- "Expected \")\" ... but got keyword LABEL"), and the validated
-  // shared-label shape is `DEFAULT LABEL PROPERTIES(...)`. A node outside any
-  // hierarchy keeps the implicit form so existing output is byte-for-byte
-  // unchanged.
+  // A node participating in the hierarchy -- as a subclass (it declares
+  // ancestor LABELs) or as a shared supertype (a subclass binds its label) --
+  // must use an EXPLICIT `DEFAULT LABEL`: BigQuery rejects a bare (implicit
+  // default) PROPERTIES clause immediately followed by explicit LABEL clauses
+  // (verified live -- "Expected \")\" ... but got keyword LABEL"), and the
+  // validated shared-label shape is `DEFAULT LABEL PROPERTIES(...)`. A node
+  // outside any hierarchy keeps the implicit form so existing output is
+  // byte-for-byte unchanged.
   const hasAncestors = !!(entity.extends && entity.extends.length);
   if (hasAncestors || isSupertype) lines.push(line(2, 'DEFAULT LABEL'));
   if (labelOpts) lines.push(line(2, labelOpts));
@@ -861,8 +869,8 @@ function qualifyGraph(model: SemanticModel, opts: GenerateOptions): string {
   // Pick the first entity with a plain `project.dataset.table` source to derive
   // the graph's location; skip abstract entities (empty source) and query-based
   // sources (whitespace), which carry no usable location.
-  const first = (model.entities ?? [])
-                    .find(e => e.dataSource && !/\s/.test(e.dataSource));
+  const first = (model.entities ??
+                 []).find(e => e.dataSource && !/\s/.test(e.dataSource));
   if ((!project || !dataset) && first) {
     const p = first.dataSource.trim().split('.');
     if (p.length >= 3) {
