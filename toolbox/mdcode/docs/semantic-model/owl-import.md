@@ -54,7 +54,8 @@ ex:Order a owl:Class ;
 ex:customerId a owl:DatatypeProperty ;
     rdfs:domain ex:Customer ;
     rdfs:range xsd:string .
-ex:email a owl:DatatypeProperty, owl:InverseFunctionalProperty ;
+ex:email a owl:DatatypeProperty,
+        owl:InverseFunctionalProperty ;
     rdfs:domain ex:Customer ;
     rdfs:range xsd:string ;
     rdfs:comment "The customer's unique email address." .
@@ -314,7 +315,8 @@ that `Customer` refines (`Customer rdfs:subClassOf Person`):
 ex:Person a owl:Class ;
     rdfs:comment "A human being." .
 ex:fullName a owl:DatatypeProperty ;
-    rdfs:domain ex:Person ; rdfs:range xsd:string .
+    rdfs:domain ex:Person ;
+    rdfs:range xsd:string .
 
 ex:Customer a owl:Class ;
     rdfs:subClassOf ex:Person ;
@@ -492,24 +494,32 @@ ex:Person a owl:Class ;
 
 # email is inverse-functional (-> unique_keys, native) AND single-valued
 # (owl:FunctionalProperty -> carried): one construct maps, the other rides along.
-ex:email a owl:DatatypeProperty, owl:InverseFunctionalProperty, owl:FunctionalProperty ;
-    rdfs:domain ex:Customer ; rdfs:range xsd:string .
+ex:email a owl:DatatypeProperty,
+        owl:InverseFunctionalProperty,
+        owl:FunctionalProperty ;
+    rdfs:domain ex:Customer ;
+    rdfs:range xsd:string .
 
 # customerName refines the in-namespace ex:fullName (-> "fullName") and equals
 # the external foaf:name (-> full IRI).
 ex:customerName a owl:DatatypeProperty ;
-    rdfs:domain ex:Customer ; rdfs:range xsd:string ;
+    rdfs:domain ex:Customer ;
+    rdfs:range xsd:string ;
     rdfs:subPropertyOf ex:fullName ;
     owl:equivalentProperty foaf:name .
 
 # placedBy's inverse is the in-namespace ex:places (-> "places").
 ex:placedBy a owl:ObjectProperty ;
-    rdfs:domain ex:Order ; rdfs:range ex:Customer ;
+    rdfs:domain ex:Order ;
+    rdfs:range ex:Customer ;
     owl:inverseOf ex:places .
 
 # referredBy is one-way and never self -- both characteristics carried.
-ex:referredBy a owl:ObjectProperty, owl:AsymmetricProperty, owl:IrreflexiveProperty ;
-    rdfs:domain ex:Customer ; rdfs:range ex:Customer .
+ex:referredBy a owl:ObjectProperty,
+        owl:AsymmetricProperty,
+        owl:IrreflexiveProperty ;
+    rdfs:domain ex:Customer ;
+    rdfs:range ex:Customer .
 ```
 
 Below is the resulting model, trimmed to the carried blocks — each `data` value

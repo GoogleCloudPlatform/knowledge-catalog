@@ -35,32 +35,44 @@ ex:Order a owl:Class ;
 # Customer fields. customerId is the key; email uniquely identifies a customer
 # (inverse-functional) so it becomes a unique_keys constraint.
 ex:customerId a owl:DatatypeProperty ;
-    rdfs:domain ex:Customer ; rdfs:range xsd:string .
-ex:email a owl:DatatypeProperty, owl:InverseFunctionalProperty ;
-    rdfs:domain ex:Customer ; rdfs:range xsd:string ;
+    rdfs:domain ex:Customer ;
+    rdfs:range xsd:string .
+ex:email a owl:DatatypeProperty,
+        owl:InverseFunctionalProperty ;
+    rdfs:domain ex:Customer ;
+    rdfs:range xsd:string ;
     rdfs:comment "The customer's unique email address." .
 ex:customerName a owl:DatatypeProperty ;
-    rdfs:domain ex:Customer ; rdfs:range xsd:string ; rdfs:label "name" .
+    rdfs:domain ex:Customer ;
+    rdfs:range xsd:string ;
+    rdfs:label "name" .
 ex:signupDate a owl:DatatypeProperty ;
-    rdfs:domain ex:Customer ; rdfs:range xsd:date .
+    rdfs:domain ex:Customer ;
+    rdfs:range xsd:date .
 ex:isVip a owl:DatatypeProperty ;
-    rdfs:domain ex:Customer ; rdfs:range xsd:boolean ;
+    rdfs:domain ex:Customer ;
+    rdfs:range xsd:boolean ;
     rdfs:comment "Whether the customer is in the loyalty program." .
 
 # Order fields.
 ex:orderId a owl:DatatypeProperty ;
-    rdfs:domain ex:Order ; rdfs:range xsd:string .
+    rdfs:domain ex:Order ;
+    rdfs:range xsd:string .
 ex:orderAmount a owl:DatatypeProperty ;
-    rdfs:domain ex:Order ; rdfs:range xsd:decimal ;
+    rdfs:domain ex:Order ;
+    rdfs:range xsd:decimal ;
     skos:example "19.99" .
 ex:quantity a owl:DatatypeProperty ;
-    rdfs:domain ex:Order ; rdfs:range xsd:integer .
+    rdfs:domain ex:Order ;
+    rdfs:range xsd:integer .
 ex:orderDate a owl:DatatypeProperty ;
-    rdfs:domain ex:Order ; rdfs:range xsd:date .
+    rdfs:domain ex:Order ;
+    rdfs:range xsd:date .
 
 # Order -> Customer. Customer has a key, so the edge's destination binds to it
 # and only the source foreign-key column stays a placeholder.
 ex:placedBy a owl:ObjectProperty ;
-    rdfs:domain  ex:Order ; rdfs:range ex:Customer ;
-    rdfs:label   "placed by" ;
+    rdfs:domain ex:Order ;
+    rdfs:range ex:Customer ;
+    rdfs:label "placed by" ;
     rdfs:comment "Links an order to the customer who placed it." .
