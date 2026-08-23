@@ -17,7 +17,7 @@ the property characteristics, and per-term annotations (`rdfs:seeAlso`,
 extensions, lossless and inert, until they earn a first-class concept (see
 [Constructs carried as custom extensions](#constructs-carried-as-custom-extensions-not-yet-native)).
 Richer OWL still not read at all (SHACL, cardinality restrictions, `owl:oneOf`,
-individuals) is listed in [What is not covered yet](#what-is-not-covered-yet).
+individuals) is listed in [Limitations](#limitations).
 
 ## 1. The OWL file
 
@@ -605,7 +605,7 @@ IRI):
 Blank-node forms are **not** carried: an `owl:equivalentClass` (or
 `rdfs:subClassOf`) whose object is a class *expression* (`owl:intersectionOf`, an
 `owl:Restriction`, …) is a definition rather than a plain cross-reference, so it
-is out of scope (see [What is not covered yet](#what-is-not-covered-yet)).
+is out of scope (see [Limitations](#limitations)).
 
 ## 4. Going from ontology to a running graph (binding)
 
@@ -621,7 +621,7 @@ Knowledge-Catalog-only shortcut around them today.
 > `kcmd push --target kc` runs the BigQuery deployment-target and live-source
 > checks first, so you cannot publish the ontology as catalog metadata while the
 > model is still unbound. Letting `--target kc` publish an unbound model is a
-> possible follow-up (see [What is not covered yet](#what-is-not-covered-yet)).
+> possible follow-up (see [Limitations](#limitations)).
 
 To make the model deployable, bind each class to a real table. A
 declared key does half of this for you: an edge into a class that has a key
@@ -660,7 +660,7 @@ $ kcmd push                  # CREATE OR REPLACE PROPERTY GRAPH (Customer/Order 
 Binding the `source` tables and the source foreign-key columns is a manual edit
 in this first cut.
 
-## What is not covered yet
+## Limitations
 
 Four different situations hide in "not covered": constructs already read but not
 yet resolved all the way downstream, constructs not read but reachable next,
