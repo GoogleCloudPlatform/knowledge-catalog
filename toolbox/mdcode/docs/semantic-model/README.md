@@ -28,10 +28,14 @@ back. For the Ossie document format itself, see
 
 ## Prerequisites
 
-`kcmd` authenticates with your `gcloud` credentials. Log in once before pushing:
+`kcmd` uses your `gcloud` configuration for credentials, project, and location.
+Before pushing, authenticate and make sure a project and region are set — `kcmd`
+errors out immediately if any of the three is missing:
 
 ```bash
 gcloud auth application-default login
+gcloud config set project <your-project>
+gcloud config set compute/region <your-region>
 ```
 
 You also need read/write access to whichever destinations you deploy to — see
@@ -54,7 +58,7 @@ creates its local directory. Author the model at
 version: "0.2.0.dev0"
 
 semantic_model:
-  - name: sales                              # must match the <model>.yaml filename
+  - name: sales                              # keep equal to the <model>.yaml filename (pull round-trips to that name)
     # Required: the deployment target, in a GOOGLE custom extension. `data` is a
     # JSON string whose deploymentTargets holds the target graph URI (for now,
     # exactly one).
@@ -154,9 +158,9 @@ push. Push deletes the leftover catalog entry for you (the summary shows
 
 **When you rename or delete a relationship** — push removes the old
 `schema-join` link after writing the new ones, so a rename never leaves the
-two entities disconnected (the summary shows `unlinked N orphaned links`).
-Relationships owned by other models that share the entry group are left
-untouched.
+two entities disconnected (the summary shows `unlinked N orphaned links`). Push
+reconciles only the links of the model it is deploying, and an entry group holds
+exactly one model, so it never disturbs another model's links.
 
 **When you remove a whole model** — deleting its document does *not* remove it
 from the catalog. As long as you still push at least one other model in the same
@@ -213,5 +217,7 @@ your authored document as the source of truth.
 
 Already have an OWL ontology? `kcmd owl import` converts it into a semantic model
 once — classes → entities, object properties → relationships, datatype
-properties → fields — and from there the model rides the normal `kcmd push` /
-`kcmd pull` above. See [Importing an OWL ontology](owl-import.md).
+properties → fields. The converted model is **unbound** (placeholder sources, no
+deployment target), so bind each entity's `source`, fill the relationship join
+columns, and add a deployment target before `kcmd push` will deploy it — then it
+rides the normal push / pull above. See [Importing an OWL ontology](owl-import.md).

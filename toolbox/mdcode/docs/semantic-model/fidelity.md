@@ -21,9 +21,9 @@ nuances that don't fit a cell.
 | Field dimension role (`is_time`) | noted in `OPTIONS(description)` | only with `--emit-expressions`³ | only if pushed with it³ |
 | Primary key | `KEY(...)` on the node table | `schema.primaryKey` | ✓ |
 | Unique keys | — dropped (only PK emitted) | `schema.uniqueConstraints` | ✓ |
-| Metric | `MEASURE`⁴ | `semantic-metric` entry | name + attach entity⁵ |
+| Metric | `MEASURE`⁴ | `semantic-metric` entry | name, entity, description, instructions, type⁵ |
 | Relationship (1:1 / 1:N) | `EDGE TABLE` | `schema-join` link | ✓ (name normalized⁶) |
-| Relationship (M:N / `association`) | — | — not stored | — |
+| Relationship (M:N / `association`) | `EDGE TABLE` (via junction table) | — not stored | — |
 | Entity `extends` | `LABEL` clauses + flattened fields | — not modelled | — |
 | `description` (entity / metric / field / relationship) | `OPTIONS(description)` | entry description / aspect | ✓ |
 | `ai_context.synonyms` | `OPTIONS(synonyms=[...])` | — not stored | — |
@@ -32,16 +32,16 @@ nuances that don't fit a cell.
 | Model-level `description` / `instructions` | — dropped⁸ | on the model entry | ✓⁸ |
 | Model-level `ai_context.synonyms` / `examples` | — dropped | — not stored | — |
 | Deployment target | names the graph | recorded on the model entry | ✓ |
-| Imported vendor SQL (`importedExpression` / `importedDialect`) | — canonical form only | — not stored | — |
+| Imported vendor SQL (`importedExpression` / `importedDialect`) | fallback — builds the DDL only when no canonical `expression` exists | — not stored | — |
 | `custom_extensions` (beyond the deployment target) | — not in graph | — not stored | — |
 
 ¹ BigQuery uses the source column's own type; a field's authored `datatype` is not carried.
-² Field types round-trip except two collapses: no type → `Opaque`, and `String` → un-typed (both store as a plain catalog `STRING`).
+² Field types round-trip except two collapses: no type → `Opaque`, and `String` → un-typed. Both store as `dataType STRING`, disambiguated by `metadataType` (`OTHER` → read back as `Opaque`; `STRING` → read back un-typed) — which is exactly what lets them round-trip differently.
 ³ The default push omits the per-field `semantics` block, so the dimension role is written only with `--emit-expressions` — and then comes back as a bare `dimension: {}` marker (without `is_time`, and so on). A default push drops the marker entirely.
 ⁴ A metric must resolve to exactly one entity (otherwise the push is rejected) and reduce to one supported aggregate — `SUM` / `AVG` / `COUNT` / `MIN` / `MAX` — over one operand (otherwise it is skipped with a warning).
 ⁵ A metric's expression is gated behind `--emit-expressions`; its data type round-trips only for a concrete type (e.g. `Decimal`) — an untyped, `String`, or `Opaque` metric comes back un-typed.
 ⁶ Relationship names come back lowercased/hyphenated (`Places Order` → `places-order`) — the catalog stores the name only in the link id. See [Writer-side follow-up](#writer-side-follow-up).
-⁷ The `guidelines` aspect exists only for the model, entities, and metrics — not fields, so field-level `ai_context` has no home.
+⁷ The `guidelines` aspect exists only for the model, entities, and metrics — not fields or relationships, so field- and relationship-level `ai_context.instructions` has no Knowledge Catalog home (a relationship's instructions still reach BigQuery, folded into the edge's `OPTIONS(description)`).
 ⁸ BigQuery silently drops statement-level graph `OPTIONS`, so model-level metadata has no home in the graph; the model's `description` and `ai_context.instructions` are carried into Knowledge Catalog instead.
 
 ## To BigQuery
@@ -61,9 +61,11 @@ preserved; their separate structure is not.
 The model's own statement-level metadata has nowhere to go: BigQuery silently
 drops graph-statement `OPTIONS`, so the model's `description` / `ai_context` are
 not in the graph — the `description` and `ai_context.instructions` are carried
-into Knowledge Catalog instead. The imported vendor SQL and unique keys beyond
-the primary key are also dropped (only the canonical GoogleSQL expression and the
-primary key are emitted).
+into Knowledge Catalog instead. Unique keys beyond the primary key are also
+dropped (only the primary key is emitted). The imported vendor SQL is not carried
+as a separate form: the graph builds from the canonical `expression` when
+present, and falls back to the imported vendor SQL verbatim only when the model
+was never transpiled to a canonical form.
 
 ## To Knowledge Catalog
 
@@ -95,7 +97,8 @@ summary. Two things about *how* it comes back:
   [Writer-side follow-up](#writer-side-follow-up).
 - Field types round-trip except two collapses: a field authored with no type
   comes back as `Opaque`, and a field authored as `String` comes back un-typed
-  (`String` and un-typed both store as a plain catalog `STRING`). A metric's data
+  (both store `dataType STRING`, kept distinct by a field's `metadataType` — see
+  footnote ²). A metric's data
   type round-trips only for a concrete type (e.g. `Decimal`); an untyped,
   `String`, or `Opaque` metric comes back un-typed, because the metric aspect
   stores a data type but no metadata type to mark it `Opaque`.

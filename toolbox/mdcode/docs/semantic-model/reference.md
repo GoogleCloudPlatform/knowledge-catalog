@@ -115,7 +115,7 @@ and the subclass's default label carries the inherited fields too:
 `proj.ds.customer` AS Customer
   KEY(id)
   DEFAULT LABEL
-  PROPERTIES( id, loyalty_tier, full_name, email )   -- own + inherited (flattened)
+  PROPERTIES( loyalty_tier, id, full_name, email )   -- own field first, then inherited (flattened)
   LABEL Person
   PROPERTIES( id, full_name, email )                 -- matches Person's own signature
 ```
@@ -232,16 +232,31 @@ could deploy to BigQuery.
 
 **Knowledge Catalog / Dataplex** — for `--target kc` or `all`:
 
-* `dataplex.entryGroups.useSemanticModelAspect`,
-  `dataplex.entryGroups.useSemanticEntityAspect`, and
-  `dataplex.entryGroups.useSemanticMetricAspect` on the destination entry group
-* `dataplex.entryGroups.useSchemaAspect` on the destination entry group — every
-  entity carries the built-in `schema` aspect (its fields, keys, unique keys,
-  and labels)
-* `dataplex.entryGroups.useGuidelinesAspect` when any element carries
-  `ai_context.instructions` (the model, an entity, or a metric)
-* `dataplex.entryGroups.useSchemaJoinEntryLink` and
-  `dataplex.entryGroups.useSchemaJoinAspect` when the model has relationships
+Writing an entry with aspects needs permission on **both** the entry operation
+and each aspect type attached, so a push needs, on the destination entry group:
+
+* `dataplex.entries.create`, `dataplex.entries.update`, `dataplex.entries.delete`,
+  and `dataplex.entries.list` — push upserts the model / entity / metric entries
+  and deletes orphaned ones
+* `dataplex.entryLinks.create` and `dataplex.entryLinks.delete` — the
+  `schema-join` links, when the model has relationships
+* `dataplex.entryGroups.useSchemaAspect` — every entity carries the built-in
+  `schema` aspect (its fields, keys, unique keys, and labels)
+* `dataplex.entryGroups.useGuidelinesAspect` — when the model, an entity, or a
+  metric carries `ai_context.instructions`
+* `dataplex.entryGroups.useSchemaJoinAspect` and
+  `dataplex.entryGroups.useSchemaJoinEntryLink` — when the model has relationships
+* the `use<AspectType>Aspect` permission for the `semantic-model`,
+  `semantic-entity`, and `semantic-metric` aspect types the push attaches — i.e.
+  `dataplex.entryGroups.useSemanticModelAspect`, `useSemanticEntityAspect`, and
+  `useSemanticMetricAspect`
+
+> The `schema` / `guidelines` / `schema-join` use-permissions follow Dataplex's
+> documented `dataplex.entryGroups.use<AspectType>Aspect`
+> [pattern](https://cloud.google.com/dataplex/docs/iam-permissions); the
+> `semantic-*` names follow the same pattern but are not yet in that public
+> reference (the `semantic-*` system aspect types are newer), so confirm them
+> against your project's IAM once granted.
 
 `kcmd pull` needs read access to the same entry group instead — to list its
 entries and fetch each `semantic-*` entry with its aspects.

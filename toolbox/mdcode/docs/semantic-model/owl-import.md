@@ -130,9 +130,9 @@ literal types that become each field's `datatype`.
 $ kcmd owl import sales.owl.ttl
 converted 2 classes, 1 object property, 9 datatype properties
 wrote catalog/EntryGroups/<entryGroup>/sales.yaml
-note: this model is UNBOUND (no backing tables yet).
-      -> `kcmd push --target kc` works now (publishes ontology metadata).
-      -> `kcmd push --target bq` is skipped until you bind sources.
+note: this model is UNBOUND (placeholder `unbound:` sources, no deployment target).
+      `kcmd push` is rejected until you bind each entity's source table and add
+      a BigQuery deployment target -- validation needs both, for every --target.
 ```
 
 The model name comes from the file (`sales.owl.ttl` → `sales`). By default the
@@ -141,8 +141,10 @@ picks it up; pass `--out <path>` to write it elsewhere.
 
 ## 3. The semantic model it produces — `sales.yaml`
 
-The `Customer` dataset and the `placedBy` edge, verbatim (the `Order` dataset
-follows the same shape):
+The `Customer` dataset and the `placedBy` edge (the `Order` dataset follows the
+same shape). The structure, keys, and values are exactly what the converter
+emits; the inline `#` comments are annotations added here for the walkthrough —
+the real output has none:
 
 ```yaml
 version: 0.2.0.dev0
@@ -218,8 +220,12 @@ semantic_model:
 Note what is **not** here: no IRIs and no `custom_extensions`. Every OWL term has
 an IRI (`ex:Customer` = `http://example.com/sales#Customer`), but for the
 constructs that map cleanly the IRI carries nothing the model doesn't already
-have — the term's identity is its name, and the source namespace is recorded once
-in the model `description` as provenance.
+have — the term's identity is its name. The source namespace is not recorded here
+at all: it is emitted only when actually needed — in the model `description` as a
+fallback when the ontology header has no comment of its own, or in an
+`owl:baseIri` extension when a cross-reference had to be shortened. This ontology
+has a header comment and no shortened references, so the namespace appears nowhere
+above.
 
 ### How each OWL construct maps
 
@@ -239,7 +245,7 @@ in the model `description` as provenance.
 | extra `rdfs:label` / `skos:altLabel` / `prefLabel` / `hiddenLabel` | `ai_context.synonyms` | genuinely alternate names; feed NL search |
 | `skos:example` | `ai_context.examples` | sample questions / values |
 | `rdfs:comment`, `skos:definition`, `dcterms:`/`dc:description` | `description` | first present wins, in that order; on an object property (which has no `description` slot) the comment rides in `ai_context.instructions` |
-| term IRIs, `@prefix` | a term's own IRI is dropped (base IRI kept as the model's `owl:baseIri` custom-extension key, and as prose in `description`) | reconstructable as `<base><name>`; a *carried cross-reference* to another namespace keeps its full IRI (see [Constructs carried as custom extensions](#constructs-carried-as-custom-extensions-not-yet-native)) |
+| term IRIs, `@prefix` | a term's own IRI is dropped (base IRI kept as the model's `owl:baseIri` custom-extension key **when any reference was shortened**, and in `description` **only when the header has no comment of its own**) | reconstructable as `<base><name>`; a *carried cross-reference* to another namespace keeps its full IRI (see [Constructs carried as custom extensions](#constructs-carried-as-custom-extensions-not-yet-native)) |
 
 A datatype property whose domain is not a class, or an object property missing an
 endpoint, cannot be placed; it is **skipped with a warning** rather than failing
@@ -359,11 +365,15 @@ directed, so it has nowhere to record its *inverse*. Rather than drop these, the
 converter **carries them verbatim** in a `GOOGLE` custom extension on the object
 they describe. Carriage is a holding pattern with three deliberate properties:
 
-- **Lossless in the document.** Nothing the converter reads is thrown away: the
-  imported OSI document holds every carried fact exactly as imported, and it
-  survives a local load → serialize round-trip verbatim. Carriage is **not** yet
-  persisted to Knowledge Catalog, though, so a `kcmd pull` does not return these
-  facts today (push writes no aspect for them — see
+- **Lossless for carried facts.** Every fact the converter *carries* is preserved
+  exactly: the imported OSI document holds each carried construct as imported, and
+  it survives a local load → serialize round-trip verbatim. (This is not a blanket
+  guarantee that nothing the converter reads is ever dropped — some constructs are
+  reduced with a warning, e.g. an object property's extra domains/ranges or a
+  duplicate declaration; see [How each OWL construct
+  maps](#how-each-owl-construct-maps).) Carriage is **not** yet persisted to
+  Knowledge Catalog, though, so a `kcmd pull` does not return these facts today
+  (push writes no aspect for them — see
   [What push and pull preserve](fidelity.md)).
 - **Inert.** A carried fact changes **nothing** downstream — the BigQuery Graph
   push and the Knowledge Catalog push read none of it, so it never alters a node,
@@ -383,11 +393,16 @@ custom_extensions:
     data: '{"rdfs:subPropertyOf":["name"],"owl:FunctionalProperty":true}'
 ```
 
+> The `data` values in these examples are shown on one line for readability. In
+> the emitted document `data` is a pretty-printed (2-space) JSON string, so it
+> actually appears as a YAML block scalar (`data: |-` with the JSON indented
+> beneath). The JSON content and key order are exactly as shown.
+
 The prefix carries the namespace, which does two jobs: it keeps a carried fact
 from colliding with Google's own keys in the same block (a deployment target is
 `deploymentTargets`, unprefixed), and it disambiguates a short name that means
 different things in different standards (`subPropertyOf` is RDFS; `inverseOf` is
-OWL). A reader treats **any key containing a `:`** as a carried ontology fact.
+OWL). A reader treats **any key containing a `:`** as a carried ontology fact (a convention for future consumers — nothing reads these keys back today).
 Values are mirrored, not invented — a symmetric property is `"owl:SymmetricProperty":
 true`, not a synthesized `characteristics` list — so no information about the
 original construct is lost in translation.
@@ -516,14 +531,21 @@ is out of scope (see [What is not covered yet](#what-is-not-covered-yet)).
 
 ## 4. Going from ontology to a running graph (binding)
 
-The import gets you a **KC-ready, BQ-pending** model. Publish the ontology as
-catalog metadata immediately:
+The import gets you an **unbound** model — placeholder `unbound:<Name>` sources,
+`TODO_BIND` join columns, and no deployment target — so it is **not deployable
+yet**. `kcmd push` is rejected for *any* `--target` (including `kc`) until the
+model passes [validation](reference.md#validation): every entity `source` must
+resolve to a real BigQuery table, and the model must declare exactly one BigQuery
+deployment target. Both checks run before either destination leg, so there is no
+Knowledge-Catalog-only shortcut around them today.
 
-```console
-$ kcmd push --target kc      # Customer/Order entries + placedBy link appear in Knowledge Catalog
-```
+> **Known limitation — no KC-only publish before binding.** Even
+> `kcmd push --target kc` runs the BigQuery deployment-target and live-source
+> checks first, so you cannot publish the ontology as catalog metadata while the
+> model is still unbound. Letting `--target kc` publish an unbound model is a
+> possible follow-up (see [What is not covered yet](#what-is-not-covered-yet)).
 
-To make it queryable in **BigQuery Graph**, bind each class to a real table. A
+To make the model deployable, bind each class to a real table. A
 declared key does half of this for you: an edge into a class that has a key
 already has its **destination** columns bound to that key, so you only fill each
 dataset's `source` table and the relationship's **source** foreign-key columns
@@ -546,11 +568,12 @@ dataset's `source` table and the relationship's **source** foreign-key columns
         - customerId                      # already bound to Customer's key
 ```
 
-You also need a [deployment target](README.md#deployment-targets-required) on the model
-before a BigQuery push. Then:
+Add a [deployment target](README.md#deployment-targets-required) on the model as
+well. With every `source` bound and one deployment target set, the model passes
+validation, and a single `kcmd push` deploys both destinations:
 
 ```console
-$ kcmd push                  # CREATE PROPERTY GRAPH sales (Customers, Orders, placedBy), then KC
+$ kcmd push                  # CREATE OR REPLACE PROPERTY GRAPH (Customer/Order nodes, placedBy edge), then KC entries
 ```
 
 Binding the `source` tables and the source foreign-key columns is a manual edit
@@ -579,8 +602,9 @@ in this first cut.
   restrictions), enumerations (`owl:oneOf`), and the *set* disjointness/identity
   axioms (`owl:AllDisjointClasses` / `AllDisjointProperties` / `AllDifferent`,
   `owl:propertyChainAxiom`) — **not read yet.** All are stated as blank-node
-  axioms (an RDF list or an anonymous node), which the parser does not walk today;
-  they are the next carriage candidates. (Pairwise `owl:disjointWith` /
+  axioms (an RDF list or an anonymous node) whose predicates the converter does
+  not recognize today — the RDF-list walker itself exists (it reads `owl:hasKey`),
+  these predicates just aren't handled; they are the next carriage candidates. (Pairwise `owl:disjointWith` /
   `owl:propertyDisjointWith`, which name a term directly, *are* carried.)
 - SHACL shapes, class expressions (`owl:unionOf` / `intersectionOf`, and any
   blank-node `owl:equivalentClass` / `rdfs:subClassOf`), individuals (A-box
@@ -588,3 +612,9 @@ in this first cut.
   not read.
 - Semantic model → OWL export (reverse) — not built; import is one-way.
 - OWL serializations other than Turtle (`.ttl`) — not read.
+- **Knowledge-Catalog-only publish of an unbound model** — not supported. A
+  freshly imported model cannot `kcmd push --target kc` until its sources are
+  bound and a deployment target is set: push validates the BigQuery deployment
+  target and probes every source table before any leg runs (for every
+  `--target`), so there is no KC-only path around those checks. Decoupling the
+  KC leg from the BigQuery checks is a possible follow-up.
