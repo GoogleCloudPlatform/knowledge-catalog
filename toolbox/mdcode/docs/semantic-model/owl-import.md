@@ -217,25 +217,22 @@ semantic_model:
           instructions: Links an order to the customer who placed it.
 ```
 
-Note what this *clean* example does **not** contain: no term IRIs and no
-`custom_extensions`. Both are supported — they just are not needed here.
-`custom_extensions` carry any OWL construct with no native home (see [the mapping
-table](#how-each-owl-construct-maps) and [Constructs carried as custom
-extensions](#constructs-carried-as-custom-extensions-not-yet-native)), and IRIs
-are kept whenever they carry information a name cannot: a cross-namespace
-reference keeps its full IRI, and the base IRI is recorded as an `owl:baseIri`
-extension when a reference had to be shortened. This ontology maps entirely onto
-native constructs and makes no cross-namespace references, so neither appears
-above.
+This is the **clean mapping**: every construct here has a native semantic-model
+home, so the output carries no term IRIs and no `custom_extensions`. Two kinds of
+ontology go further — a **class hierarchy** (`rdfs:subClassOf`) and constructs
+with **no native home yet** (inverses, equivalences, property characteristics,
+…). Both are supported; the rest of this page shows them as extensions of *this
+same sales domain* — see [Class hierarchies](#class-hierarchies-rdfssubclassof)
+and [Constructs carried as custom
+extensions](#constructs-carried-as-custom-extensions-not-yet-native).
 
-Every OWL term still has an IRI (`ex:Customer` =
-`http://example.com/sales#Customer`); it is dropped here only because for a
-construct that maps cleanly the IRI carries nothing the model doesn't already
-have — the term's identity is its name. The source namespace, likewise, is
-recorded only when actually needed: in the model `description` as a fallback when
-the ontology header has no comment of its own, or in the `owl:baseIri` extension
-above. This ontology has a header comment and no shortened references, so the
-namespace appears nowhere above.
+Why nothing extra appears here: for a cleanly-mapped term its IRI carries nothing
+the model doesn't already have — the term's identity is its name — and the source
+namespace is recorded only when needed: in the model `description` as a fallback
+when the ontology header has no comment of its own, or in an `owl:baseIri`
+extension when an in-namespace reference has to be shortened (both shown in the
+advanced example below). This ontology has a header comment and makes no such
+references, so the namespace appears nowhere above.
 
 ### How each OWL construct maps
 
@@ -310,38 +307,54 @@ Keys also make relationships half-bindable — see the next section.
 
 `rdfs:subClassOf` maps to a dataset's `extends` — the one keyword borrowed from
 [Ossie's ontology proposal](https://github.com/apache/ossie/blob/main/ontology/ontology.md)
-onto our existing `datasets`. Given `Customer rdfs:subClassOf Person`:
+onto our existing `datasets`. Extend the sales domain with a `Person` base class
+that `Customer` refines (`Customer rdfs:subClassOf Person`):
 
 ```turtle
 ex:Person a owl:Class ;
     rdfs:comment "A human being." .
 ex:fullName a owl:DatatypeProperty ;
-    rdfs:domain ex:Person ;
-    rdfs:range xsd:string .
+    rdfs:domain ex:Person ; rdfs:range xsd:string .
 
 ex:Customer a owl:Class ;
     rdfs:subClassOf ex:Person ;
-    rdfs:comment "A person who buys." .
-ex:loyaltyTier a owl:DatatypeProperty ;
-    rdfs:domain ex:Customer ;
-    rdfs:range xsd:string .
+    rdfs:comment "A person or organization that places orders." ;
+    owl:hasKey ( ex:customerId ) .
+# ... Customer's own datatype properties: customerId, email, customerName, … ...
 ```
 
-the `Customer` dataset carries `extends: [Person]`:
+the `Person` and `Customer` datasets come out as (`Customer` carrying
+`extends: [Person]`):
 
 ```yaml
+  # Person is its own dataset. (It also carries an owl:equivalentClass
+  # extension — see Constructs carried as custom extensions below.)
+  - name: Person
+    source: unbound:Person
+    description: A human being.
+    fields:
+      - name: fullName
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: fullName
+        datatype: String
+  # Customer records that it extends Person and keeps ONLY its own fields;
+  # Person's fullName is NOT flattened down.
   - name: Customer
     source: unbound:Customer
     extends:
       - Person
-    description: A person who buys.
+    primary_key:
+      - customerId
     fields:
-      - name: loyaltyTier          # Customer's OWN field only
+      - name: customerId
         expression:
           dialects:
             - dialect: BIGQUERY
-              expression: loyaltyTier
+              expression: customerId
         datatype: String
+      # ... email, customerName, signupDate, isVip (Customer's own) ...
 ```
 
 Multiple superclasses are allowed (`extends: [Person, Employee]`, in document
@@ -395,18 +408,24 @@ they describe. Carriage is a holding pattern with three deliberate properties:
 
 **The shape.** Each carried construct is one key in a flat JSON object under the
 `GOOGLE` vendor. **The key *is* the source construct, prefixed with its
-vocabulary** (`owl:` or `rdfs:`); the value mirrors the construct faithfully:
+vocabulary** (`owl:` or `rdfs:`); the value mirrors the construct faithfully.
+`data` is a pretty-printed (2-space) JSON string, so it appears as a YAML block
+scalar (`data: |-`). This is the block the `customerName` field gets from its
+`rdfs:subPropertyOf` and `owl:equivalentProperty` (real output, verbatim):
 
 ```yaml
 custom_extensions:
   - vendor_name: GOOGLE
-    data: '{"rdfs:subPropertyOf":["name"],"owl:FunctionalProperty":true}'
+    data: |-
+      {
+        "rdfs:subPropertyOf": [
+          "fullName"
+        ],
+        "owl:equivalentProperty": [
+          "http://xmlns.com/foaf/0.1/name"
+        ]
+      }
 ```
-
-> The `data` values in these examples are shown on one line for readability. In
-> the emitted document `data` is a pretty-printed (2-space) JSON string, so it
-> actually appears as a YAML block scalar (`data: |-` with the JSON indented
-> beneath). The JSON content and key order are exactly as shown.
 
 The prefix carries the namespace, which does two jobs: it keeps a carried fact
 from colliding with Google's own keys in the same block (a deployment target is
@@ -444,11 +463,11 @@ annotations) so the output is stable.
 
 **Names vs. full IRIs (namespace-aware).** A carried cross-reference points at
 another OWL term, which has an IRI. When that IRI lives in **this ontology's own
-namespace**, it is shortened to the plain local name (`"Human"`) — the same name
-the referenced entity/property carries in the model, so a consumer can resolve it
-by name. When it lives in **another namespace**, the **full IRI** is kept
-(`"http://xmlns.com/foaf/0.1/Person"`) — a shortened name would be ambiguous and
-resolve to nothing. Nothing is lost either way: whenever any reference is
+namespace**, it is shortened to the plain local name (`"fullName"`, `"places"`) —
+the same name the referenced entity/property carries in the model, so a consumer
+can resolve it by name. When it lives in **another namespace**, the **full IRI**
+is kept (`"http://xmlns.com/foaf/0.1/Person"`) — a shortened name would be
+ambiguous and resolve to nothing. Nothing is lost either way: whenever any reference is
 shortened, the base IRI is carried as structured metadata on the model — an
 `owl:baseIri` key in the model-level GOOGLE `custom_extensions` block — so an
 in-namespace name reconstructs mechanically as `<base><name>`, and a
@@ -461,68 +480,95 @@ datatype `^^<iri>` preserved) so an IRI stays distinguishable from a literal —
 a tagged/typed literal from a plain one — on round-trip. A carried reference is
 **not** validated against the model — it is a fact to carry, not a resolved link.
 
-**Example.** Given this ontology:
+**Example.** Extend the sales domain with the constructs that have no native
+home. `Person` is equivalent to the external `foaf:Person`; `email` (already
+inverse-functional) is also single-valued; `customerName` refines the
+in-namespace `ex:fullName` and equals the external `foaf:name`; `placedBy`'s
+inverse is the in-namespace `ex:places`; and `referredBy` is one-way and never
+self:
 
 ```turtle
 ex:Person a owl:Class ;
-    owl:equivalentClass ex:Human ;
-    owl:hasKey ( ex:personId ) .
+    owl:equivalentClass foaf:Person .             # external -> full IRI
 
-ex:legalName a owl:DatatypeProperty, owl:FunctionalProperty ;
-    rdfs:domain ex:Person ; rdfs:range xsd:string ;
-    rdfs:subPropertyOf ex:name .
+ex:email a owl:DatatypeProperty,
+           owl:InverseFunctionalProperty,         # -> unique_keys (native)
+           owl:FunctionalProperty ;               # -> carried
+    rdfs:domain ex:Customer ; rdfs:range xsd:string .
+ex:customerName a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ; rdfs:range xsd:string ;
+    rdfs:subPropertyOf ex:fullName ;              # in-namespace -> "fullName"
+    owl:equivalentProperty foaf:name .            # external -> full IRI
 
-ex:ancestorOf a owl:ObjectProperty, owl:TransitiveProperty ;
-    rdfs:domain ex:Person ; rdfs:range ex:Person ;
-    rdfs:subPropertyOf ex:relatedTo ;
-    owl:inverseOf ex:descendantOf .
+ex:placedBy a owl:ObjectProperty ;
+    rdfs:domain ex:Order ; rdfs:range ex:Customer ;
+    owl:inverseOf ex:places .                     # in-namespace -> "places"
+ex:referredBy a owl:ObjectProperty,
+                owl:AsymmetricProperty, owl:IrreflexiveProperty ;
+    rdfs:domain ex:Customer ; rdfs:range ex:Customer .
 ```
 
-the equivalence lands on the `Person` entity, the super-property and
-single-valued flag on the `legalName` field, and the inverse / super-property /
-transitivity together on the `ancestorOf` relationship:
+Each construct lands on the object it describes. The blocks below are the real
+emitted `data`, verbatim; the `# ...` lines omit the surrounding fields
+(`customerName`'s block is the one under **The shape** above; `placedBy` carries
+`{"owl:inverseOf": "places"}`):
 
 ```yaml
-  - name: Person
-    # ... fields ...
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"owl:equivalentClass":["Human"]}'
-# ... on the legalName field ...
+      # equivalence on the Person entity:
+      - name: Person
+        # ... fields ...
         custom_extensions:
           - vendor_name: GOOGLE
-            data: '{"rdfs:subPropertyOf":["name"],"owl:FunctionalProperty":true}'
-  relationships:
-    - name: ancestorOf
-      # ... endpoints ...
-      custom_extensions:
-        - vendor_name: GOOGLE
-          data: '{"rdfs:subPropertyOf":["relatedTo"],"owl:inverseOf":"descendantOf","owl:TransitiveProperty":true}'
+            data: |-
+              {
+                "owl:equivalentClass": [
+                  "http://xmlns.com/foaf/0.1/Person"
+                ]
+              }
+      # single-valued flag on Customer's email field -- which is ALSO a native
+      # unique key, because email is inverse-functional:
+          - name: email
+            # ...
+            custom_extensions:
+              - vendor_name: GOOGLE
+                data: |-
+                  {
+                    "owl:FunctionalProperty": true
+                  }
+    relationships:
+      # characteristics on the referredBy relationship:
+      - name: referredBy
+        # ... endpoints ...
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: |-
+              {
+                "owl:IrreflexiveProperty": true,
+                "owl:AsymmetricProperty": true
+              }
 ```
 
-Because those references (`Human`, `name`, `relatedTo`, `descendantOf`) were
-shortened, the **model header** also carries the base IRI so they can be
-reconstructed:
+Because the in-namespace references (`fullName`, `places`) were shortened, the
+**model header** also carries the base IRI so they can be reconstructed
+(`<base><name>` → `http://example.com/sales#fullName`):
 
 ```yaml
 semantic_model:
-  - name: <model>
-    description: Imported from OWL ontology http://example.com/x#
+  - name: sales
+    # ... description, ai_context ...
     custom_extensions:
       - vendor_name: GOOGLE
-        data: '{"owl:baseIri":"http://example.com/x#"}'
+        data: |-
+          {
+            "owl:baseIri": "http://example.com/sales#"
+          }
 ```
 
-A reference to an **external** vocabulary keeps its full IRI. Given
-`ex:Person owl:equivalentClass foaf:Person` (with `ex:` this ontology's namespace
-and `foaf:` an external one):
-
-```yaml
-  - name: Person
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"owl:equivalentClass":["http://xmlns.com/foaf/0.1/Person"]}'
-```
+A reference to an **external** vocabulary keeps its full IRI instead — as
+`Person`'s `owl:equivalentClass foaf:Person` and `customerName`'s
+`owl:equivalentProperty foaf:name` both show above
+(`"http://xmlns.com/foaf/0.1/Person"`, `"http://xmlns.com/foaf/0.1/name"`); no
+base IRI is needed to rebuild them.
 
 **Prefix → namespace** (the `owl:` / `rdfs:` on the *keys*; reconstruct an
 in-namespace *value* as `<base><name>`, where `<base>` is the model's

@@ -1,0 +1,85 @@
+# The user guide's unified "advanced" ontology: the same sales domain as
+# sales.owl.ttl, extended with the two features that need more than the clean
+# native mapping --
+#   - a class hierarchy (Customer rdfs:subClassOf Person -> entity `extends`); and
+#   - OWL constructs with no native OSI home, carried verbatim as GOOGLE custom
+#     extensions, in both reference forms (in-namespace shortened + owl:baseIri,
+#     cross-namespace kept as a full IRI).
+# It stays sales-natural: every carried construct has a real sales meaning, so
+# the guide can teach hierarchy and carriage on one continuous cast (Person,
+# Customer, Order) instead of three disconnected toy schemas.
+
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+@prefix ex:   <http://example.com/sales#> .
+
+<http://example.com/sales> a owl:Ontology ;
+    rdfs:label      "Sales domain" ;
+    rdfs:comment    "A sales domain: customers (a kind of person) and their orders." ;
+    owl:versionInfo "2.0" .
+
+# Person is a base class Customer extends. It is equivalent to the EXTERNAL
+# foaf:Person, carried as a full IRI (cross-namespace).
+ex:Person a owl:Class ;
+    rdfs:comment "A human being." ;
+    owl:equivalentClass foaf:Person .
+ex:fullName a owl:DatatypeProperty ;
+    rdfs:domain ex:Person ; rdfs:range xsd:string .
+
+# Customer is a Person (rdfs:subClassOf -> extends: [Person]); it keeps only its
+# OWN fields (inheritance is recorded, not flattened, at import).
+ex:Customer a owl:Class ;
+    rdfs:subClassOf ex:Person ;
+    rdfs:label    "Customer" ;
+    rdfs:comment  "A person or organization that places orders." ;
+    skos:altLabel "Buyer" ;
+    owl:hasKey ( ex:customerId ) .
+
+ex:Order a owl:Class ;
+    rdfs:label   "Order" ;
+    rdfs:comment "A purchase placed by a customer." ;
+    owl:hasKey ( ex:orderId ) .
+
+# Customer fields. email is inverse-functional (-> unique_keys, native) AND
+# single-valued (owl:FunctionalProperty -> carried): one construct maps
+# natively, the other rides along. customerName refines the in-namespace
+# ex:fullName (-> "fullName") and equals the external foaf:name (full IRI).
+ex:customerId a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ; rdfs:range xsd:string .
+ex:email a owl:DatatypeProperty, owl:InverseFunctionalProperty, owl:FunctionalProperty ;
+    rdfs:domain ex:Customer ; rdfs:range xsd:string ;
+    rdfs:comment "The customer's unique email address." .
+ex:customerName a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ; rdfs:range xsd:string ; rdfs:label "name" ;
+    rdfs:subPropertyOf ex:fullName ;
+    owl:equivalentProperty foaf:name .
+ex:signupDate a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ; rdfs:range xsd:date .
+ex:isVip a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ; rdfs:range xsd:boolean ;
+    rdfs:comment "Whether the customer is in the loyalty program." .
+
+# Order fields.
+ex:orderId a owl:DatatypeProperty ;
+    rdfs:domain ex:Order ; rdfs:range xsd:string .
+ex:orderAmount a owl:DatatypeProperty ;
+    rdfs:domain ex:Order ; rdfs:range xsd:decimal .
+ex:orderDate a owl:DatatypeProperty ;
+    rdfs:domain ex:Order ; rdfs:range xsd:date .
+
+# Order -> Customer. Its inverse is the in-namespace ex:places (-> "places",
+# which is why the model carries owl:baseIri so the short form is reversible).
+ex:placedBy a owl:ObjectProperty ;
+    rdfs:domain  ex:Order ; rdfs:range ex:Customer ;
+    rdfs:label   "placed by" ;
+    rdfs:comment "Links an order to the customer who placed it." ;
+    owl:inverseOf ex:places .
+
+# A self-referential edge: one customer referred another. Referral is one-way
+# and never self (owl:AsymmetricProperty + owl:IrreflexiveProperty, carried).
+ex:referredBy a owl:ObjectProperty, owl:AsymmetricProperty, owl:IrreflexiveProperty ;
+    rdfs:domain  ex:Customer ; rdfs:range ex:Customer ;
+    rdfs:comment "The customer who referred this one." .
