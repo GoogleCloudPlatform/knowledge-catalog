@@ -31,6 +31,16 @@ function loadOwl(ttl: string) {
   return loadModels(convertOwlToOsi(ttl, 'x').yaml).models[0];
 }
 
+// The carried OWL facts on an IR object: the parsed payload of its single
+// GOOGLE custom extension (the flat, prefixed-key block the converter emits).
+// Returns undefined when there is no GOOGLE block, so a test can assert
+// "nothing carried" too.
+function ontologyTerms(exts: {vendorName: string; data: string}[]|undefined):
+    Record<string, unknown>|undefined {
+  const google = exts?.find(e => e.vendorName === 'GOOGLE');
+  return google ? JSON.parse(google.data) : undefined;
+}
+
 const PREFIXES = `
   @prefix owl:  <http://www.w3.org/2002/07/owl#> .
   @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
@@ -208,25 +218,30 @@ describe('class hierarchies map rdfs:subClassOf to entity extends', () => {
   });
 
   test(
-      'property inheritance (rdfs:subPropertyOf) is warned and dropped', () => {
-        // Only entity-level inheritance is supported. A datatype/object
-        // property's rdfs:subPropertyOf is dropped with a warning, but the
-        // field/relationship itself is still imported.
-        const {yaml, warnings} = convertOwlToOsi(ttl, 'hierarchy');
-        expect(warnings).toHaveLength(2);
-        expect(warnings.some(
-                   w => w.includes('legalName') && w.includes('subPropertyOf')))
-            .toBe(true);
-        expect(warnings.some(
-                   w => w.includes('managedBy') && w.includes('subPropertyOf')))
-            .toBe(true);
-        // The field and relationship survive despite the dropped subPropertyOf
-        // link.
-        const model = loadModels(yaml).models[0];
+      'property inheritance (rdfs:subPropertyOf) is carried verbatim, not dropped',
+      () => {
+        // Only entity-level inheritance (rdfs:subClassOf -> extends) is native.
+        // A datatype/object property's rdfs:subPropertyOf has no native OSI
+        // home, so it rides along verbatim as a GOOGLE custom extension -- no
+        // warning, nothing lost.
+        const {warnings} = convertOwlToOsi(ttl, 'hierarchy');
+        expect(warnings).toEqual([]);
+        const model =
+            loadModels(convertOwlToOsi(ttl, 'hierarchy').yaml).models[0];
+
+        // The field survives AND carries its superproperty as a fact.
         const employee = model.entities.find(e => e.name === 'Employee')!;
-        expect(employee.fields.some(f => f.name === 'legalName')).toBe(true);
-        expect(model.relationships.some(r => r.name === 'managedBy'))
-            .toBe(true);
+        const legalName = employee.fields.find(f => f.name === 'legalName')!;
+        expect(ontologyTerms(legalName.customExtensions)).toEqual({
+          'rdfs:subPropertyOf': ['fullName']
+        });
+
+        // The relationship survives AND carries its superproperty as a fact.
+        const managedBy =
+            model.relationships.find(r => r.name === 'managedBy')!;
+        expect(ontologyTerms(managedBy.customExtensions)).toEqual({
+          'rdfs:subPropertyOf': ['worksWith']
+        });
       });
 
   test('an extends parent that is not a class is recorded but warned', () => {
@@ -773,25 +788,185 @@ describe('mapping table rules (labels, comments, skips)', () => {
 });
 
 
-// The GOOGLE data.ontology extension is the promotion seam for OWL constructs
-// OSI cannot yet express natively (subClassOf, inverseOf, ...). It is defined
-// and shape-tested but unused by the current cut, which maps everything it
-// reads to native OSI -- see to_ir.ts.
-describe('the GOOGLE ontology extension seam (defined-but-unused)', () => {
+// The GOOGLE ontology extension carries OWL constructs OSI has no native home
+// for. The payload is FLAT, its keys the prefixed source constructs -- the
+// prefix is the namespace, so a carried fact never collides with Google's own
+// keys (deploymentTargets) or with a same-named construct from another
+// vocabulary.
+describe('the GOOGLE ontology extension seam', () => {
+  test('emits a flat, prefixed-key GOOGLE block', () => {
+    const ext = googleOntologyExtension(
+        {'owl:inverseOf': 'hasChild', 'owl:SymmetricProperty': true})!;
+    expect(ext.vendorName).toBe('GOOGLE');
+    // No `data`/`ontology` wrapper: the keys ARE the constructs, verbatim.
+    expect(JSON.parse(ext.data))
+        .toEqual({'owl:inverseOf': 'hasChild', 'owl:SymmetricProperty': true});
+  });
+
+  test('returns undefined for an empty term set (nothing to carry)', () => {
+    expect(googleOntologyExtension({})).toBeUndefined();
+  });
+
   test(
-      'wraps its payload as a GOOGLE custom extension under data.ontology',
+      'is not emitted by the sales example (every construct maps natively)',
       () => {
-        const ext =
-            googleOntologyExtension({subClassOf: {Manager: 'Employee'}});
-        expect(ext.vendorName).toBe('GOOGLE');
-        expect(JSON.parse(ext.data)).toEqual({
-          data: {ontology: {subClassOf: {Manager: 'Employee'}}}
+        const {yaml} = convertOwlToOsi(readFixture('sales.owl.ttl'), 'sales');
+        expect(yaml).not.toContain('custom_extensions');
+        expect(yaml).not.toContain('GOOGLE');
+      });
+});
+
+
+// Tier 2 carriage: constructs with no native OSI home ride along verbatim in a
+// GOOGLE custom extension. They are inert on push and lossless on round-trip;
+// each is pinned here at the level it attaches to.
+describe('OWL constructs carried as custom extensions', () => {
+  // The showcase fixture used verbatim in the user guide: every carried
+  // construct, at each level it attaches to. Golden-tested so the documented
+  // YAML cannot drift from what the converter emits.
+  test(
+      'the carriage fixture produces exactly the documented OSI (golden)',
+      () => {
+        const {yaml, warnings, stats} =
+            convertOwlToOsi(readFixture('carriage.owl.ttl'), 'carriage');
+        expect(yaml).toEqual(readFixture('carriage.osi.golden.yaml'));
+        // Carriage is never a warning -- nothing is dropped.
+        expect(warnings).toEqual([]);
+        expect(stats).toEqual(
+            {classes: 2, datatypeProperties: 3, objectProperties: 2});
+        // And the result stays loadable (KC-pushable) with the blocks attached.
+        expect(() => loadModels(yaml)).not.toThrow();
+      });
+
+  test('owl:inverseOf on an object property -> relationship', () => {
+    const ttl = `${PREFIXES}
+      ex:Parent a owl:Class ; owl:hasKey ( ex:pid ) .
+      ex:pid a owl:DatatypeProperty ; rdfs:domain ex:Parent ; rdfs:range xsd:string .
+      ex:hasChild a owl:ObjectProperty ;
+          rdfs:domain ex:Parent ; rdfs:range ex:Parent ;
+          owl:inverseOf ex:hasParent .`;
+    const rel = loadOwl(ttl).relationships.find(r => r.name === 'hasChild')!;
+    expect(ontologyTerms(rel.customExtensions)).toEqual({
+      'owl:inverseOf': 'hasParent'
+    });
+  });
+
+  test('multiple owl:inverseOf keeps the first and warns', () => {
+    const ttl = `${PREFIXES}
+      ex:A a owl:Class . ex:B a owl:Class .
+      ex:rel a owl:ObjectProperty ;
+          rdfs:domain ex:A ; rdfs:range ex:B ;
+          owl:inverseOf ex:inv1 ; owl:inverseOf ex:inv2 .`;
+    const {yaml, warnings} = convertOwlToOsi(ttl, 'x');
+    expect(warnings.some(w => w.includes('inverseOf') && w.includes('inv1')))
+        .toBe(true);
+    const rel = loadModels(yaml).models[0].relationships[0];
+    expect(ontologyTerms(rel.customExtensions)).toEqual({
+      'owl:inverseOf': 'inv1'
+    });
+  });
+
+  test('a repeated identical owl:inverseOf is not a conflict', () => {
+    // The same inverse stated twice is one distinct fact, not a genuine
+    // multi-inverse conflict: dedupe before counting so no spurious warning.
+    const ttl = `${PREFIXES}
+      ex:A a owl:Class . ex:B a owl:Class .
+      ex:rel a owl:ObjectProperty ;
+          rdfs:domain ex:A ; rdfs:range ex:B ;
+          owl:inverseOf ex:inv ; owl:inverseOf ex:inv .`;
+    const {yaml, warnings} = convertOwlToOsi(ttl, 'x');
+    expect(warnings.some(w => w.includes('inverseOf'))).toBe(false);
+    const rel = loadModels(yaml).models[0].relationships[0];
+    expect(ontologyTerms(rel.customExtensions)).toEqual({
+      'owl:inverseOf': 'inv'
+    });
+  });
+
+  test(
+      'property characteristics -> relationship, faithful boolean keys', () => {
+        const ttl = `${PREFIXES}
+      ex:A a owl:Class . ex:B a owl:Class .
+      ex:knows a owl:ObjectProperty, owl:SymmetricProperty, owl:TransitiveProperty ;
+          rdfs:domain ex:A ; rdfs:range ex:B .`;
+        const rel = loadOwl(ttl).relationships.find(r => r.name === 'knows')!;
+        // The construct is mirrored (SymmetricProperty: true), not folded into
+        // an invented `characteristics` list.
+        expect(ontologyTerms(rel.customExtensions)).toEqual({
+          'owl:SymmetricProperty': true,
+          'owl:TransitiveProperty': true,
         });
       });
 
-  test('is not exercised by the sales example (nothing to promote yet)', () => {
-    const {yaml} = convertOwlToOsi(readFixture('sales.owl.ttl'), 'sales');
-    expect(yaml).not.toContain('custom_extensions');
-    expect(yaml).not.toContain('GOOGLE');
+  test('owl:FunctionalProperty on a datatype property -> field', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class .
+      ex:ssn a owl:DatatypeProperty, owl:FunctionalProperty ;
+          rdfs:domain ex:Person ; rdfs:range xsd:string .`;
+    const field = loadOwl(ttl).entities[0].fields.find(f => f.name === 'ssn')!;
+    expect(ontologyTerms(field.customExtensions)).toEqual({
+      'owl:FunctionalProperty': true
+    });
+  });
+
+  test('owl:equivalentClass -> entity (named classes only)', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class ; owl:equivalentClass ex:Human .
+      ex:Human a owl:Class .`;
+    const person = loadOwl(ttl).entities.find(e => e.name === 'Person')!;
+    expect(ontologyTerms(person.customExtensions)).toEqual({
+      'owl:equivalentClass': ['Human']
+    });
+  });
+
+  test('a blank-node owl:equivalentClass expression is not carried', () => {
+    // An equivalentClass to a class expression (owl:intersectionOf, ...) is a
+    // class definition, not a plain cross-reference -- out of scope, so nothing
+    // is carried (no empty block either).
+    const ttl = `${PREFIXES}
+      ex:Parent a owl:Class ;
+          owl:equivalentClass [ a owl:Restriction ;
+                                owl:onProperty ex:hasChild ;
+                                owl:minCardinality 1 ] .
+      ex:hasChild a owl:ObjectProperty ; rdfs:domain ex:Parent ; rdfs:range ex:Parent .`;
+    const parent = loadOwl(ttl).entities.find(e => e.name === 'Parent')!;
+    expect(ontologyTerms(parent.customExtensions)).toBeUndefined();
+  });
+
+  test('several facts on one relationship share a single ordered block', () => {
+    const ttl = `${PREFIXES}
+      ex:A a owl:Class . ex:B a owl:Class .
+      ex:rel a owl:ObjectProperty, owl:SymmetricProperty ;
+          rdfs:domain ex:A ; rdfs:range ex:B ;
+          rdfs:subPropertyOf ex:base ;
+          owl:inverseOf ex:invRel .`;
+    const rel = loadOwl(ttl).relationships[0];
+    // One GOOGLE block carries every fact; key order is fixed for a stable
+    // golden (subPropertyOf, inverseOf, then characteristics). Assert the order
+    // explicitly -- toEqual on the parsed object is order-insensitive, so only
+    // Object.keys (insertion order, mirroring the serialized JSON) pins it.
+    expect(rel.customExtensions).toHaveLength(1);
+    const carried = JSON.parse(rel.customExtensions![0].data);
+    expect(Object.keys(carried)).toEqual([
+      'rdfs:subPropertyOf', 'owl:inverseOf', 'owl:SymmetricProperty'
+    ]);
+    expect(carried).toEqual({
+      'rdfs:subPropertyOf': ['base'],
+      'owl:inverseOf': 'invRel',
+      'owl:SymmetricProperty': true,
+    });
+  });
+
+  test('carriage round-trips losslessly through the loader', () => {
+    // The generated YAML re-parses to the same carried facts -- the guarantee
+    // that pull recovers what import carried.
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class ; owl:equivalentClass ex:Human .
+      ex:Human a owl:Class .`;
+    const yaml = convertOwlToOsi(ttl, 'x').yaml;
+    const reloaded = loadModels(yaml).models[0];
+    const person = reloaded.entities.find(e => e.name === 'Person')!;
+    expect(ontologyTerms(person.customExtensions)).toEqual({
+      'owl:equivalentClass': ['Human']
+    });
   });
 });

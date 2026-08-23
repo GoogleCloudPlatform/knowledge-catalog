@@ -5,10 +5,10 @@
 #     parents are recorded in document order;
 #   - a subclass of a blank-node axiom (owl:Restriction), which is NOT a named
 #     class and so is ignored (only named superclasses become `extends`);
-#   - a datatype property with rdfs:subPropertyOf (property inheritance, NOT
-#     supported: warned and dropped, the field is still imported);
-#   - an object property with rdfs:subPropertyOf (relationship inheritance, NOT
-#     supported: warned and dropped, the relationship is still imported).
+#   - a datatype property with rdfs:subPropertyOf (property inheritance: no
+#     native OSI home, carried verbatim as a field custom extension);
+#   - an object property with rdfs:subPropertyOf (relationship inheritance: no
+#     native OSI home, carried verbatim as a relationship custom extension).
 # Class inheritance is recorded as the entity's `extends`; it is NOT flattened
 # (fields are not copied down) -- see the user guide.
 
@@ -47,16 +47,16 @@ ex:Manager a owl:Class ;
                       owl:minCardinality 1 ] ;
     rdfs:comment "An employee who manages others." .
 
-# A datatype property with rdfs:subPropertyOf: property inheritance is not
-# supported, so the subPropertyOf link is warned and dropped -- but the field is
-# still imported onto Employee.
+# A datatype property with rdfs:subPropertyOf: property inheritance has no native
+# OSI home, so the subPropertyOf link is carried verbatim as a field custom
+# extension; the field is imported onto Employee.
 ex:legalName a owl:DatatypeProperty ;
     rdfs:domain ex:Employee ; rdfs:range xsd:string ;
     rdfs:subPropertyOf ex:fullName .
 
-# An object property with rdfs:subPropertyOf: relationship inheritance is not
-# supported, so the subPropertyOf link is warned and dropped -- but the
-# relationship is still imported.
+# An object property with rdfs:subPropertyOf: relationship inheritance has no
+# native OSI home, so the subPropertyOf link is carried verbatim as a
+# relationship custom extension; the relationship is imported.
 ex:managedBy a owl:ObjectProperty ;
     rdfs:domain ex:Employee ; rdfs:range ex:Manager ;
     rdfs:subPropertyOf ex:worksWith .
