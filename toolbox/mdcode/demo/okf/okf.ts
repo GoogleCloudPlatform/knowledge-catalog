@@ -55,10 +55,21 @@ export function rejectArgs(argv: string[] = process.argv.slice(2)): void {
   parseFlags(argv, []);
 }
 
+// Hidden state directory for the demo's per-run manifest. A `catalog.yaml` beside
+// a `catalog/` directory is the shape of a canonical snapshot root, so a manifest
+// written into the demo directory itself invited readers inspecting that directory
+// after a push to mistake this demo for one.
+const STATE_DIR = '.state';
+
+/** Where setup.ts writes this demo's manifest, and every later script finds it. */
+export function manifestFile(root: string): string {
+  return path.join(root, STATE_DIR, 'catalog.yaml');
+}
+
 // The manifest setup.ts writes. Every later script addresses the entry group it
 // names, so without it there is nothing to act on.
 function manifestPath(root: string): string {
-  const file = path.join(root, 'catalog.yaml');
+  const file = manifestFile(root);
   if (!fs.existsSync(file)) {
     throw new Error('catalog.yaml not found; run setup.ts first.');
   }

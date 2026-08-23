@@ -1,8 +1,9 @@
 import * as cp from 'child_process';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as kcmd from 'kcmd';
 import { YAML } from 'bun';
-import { parseDemoArgs } from './okf';
+import { manifestFile, parseDemoArgs } from './okf';
 
 const context = kcmd.gcp.ApiContext.default();
 const project = context.project;
@@ -96,7 +97,9 @@ const okfEntryType = `${project}.${location}.okf-bundle`;
 // generic type is gone from both lists. The list must stay non-empty: it is
 // what keeps the entry group's own root entry, which belongs to no file, from
 // being pulled down as one.
-await Bun.file(path.join(process.cwd(), 'catalog.yaml')).write(YAML.stringify({
+const manifest = manifestFile(process.cwd());
+fs.mkdirSync(path.dirname(manifest), { recursive: true });
+await Bun.file(manifest).write(YAML.stringify({
   scope: `kb.${project}.${location}.${entryGroup}`,
   snapshot: {
     entries: [
@@ -117,4 +120,4 @@ await Bun.file(path.join(process.cwd(), 'catalog.yaml')).write(YAML.stringify({
     ]
   }
 }, null, 2));
-console.log('Created catalog.yaml manifest');
+console.log(`Created ${path.relative(process.cwd(), manifest)} manifest`);

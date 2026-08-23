@@ -1,4 +1,5 @@
 catalog/
 catalog.yaml
+.state/
 pulled/
 !okf/catalog/

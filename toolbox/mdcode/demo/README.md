@@ -170,16 +170,18 @@ applies elsewhere.
 * Creates the custom `okf` aspect type from `okf-aspect.json`, or updates it
   if a previous run of this demo left an older template behind.
 * Creates the custom `okf-bundle` entry type.
-* Creates a `catalog.yaml` manifest pointing at the EntryGroup and listing
-  the `okf-bundle` entry type and the `okf` aspect.
+* Creates a `.state/catalog.yaml` manifest pointing at the EntryGroup and
+  listing the `okf-bundle` entry type and the `okf` aspect. It sits in a hidden
+  `.state/` directory so that this demo directory never takes on the shape of a
+  canonical snapshot root, which is a `catalog.yaml` beside a `catalog/` tree.
 
 `setup.ts` is the only script that takes `--entry-group`. The rest read the
-EntryGroup back out of the `catalog.yaml` it writes, so they cannot be aimed at
-an EntryGroup this demo never created.
+EntryGroup back out of the manifest it writes, so they cannot be aimed at an
+EntryGroup this demo never created.
 
 ```bash
 bun setup.ts
-cat catalog.yaml
+cat .state/catalog.yaml
 ```
 
 **Publish Metadata Snapshot**
@@ -243,13 +245,13 @@ bun pull.ts --bundle /tmp/acme_pulled
 
 **Cleanup**
 
-* Deletes the Dataplex EntryGroup named in `catalog.yaml`, printing which one
-  and in which project first. It takes no flags, so the only EntryGroup it can
-  delete is the one `setup.ts` created. The custom `okf` aspect type and
-  `okf-bundle` entry type are left in place: they are scoped to the project and
-  location rather than to this demo, so other OKF bundles in the same project
-  are typed by them too. The commands to remove them manually are printed at
-  the end.
+* Deletes the Dataplex EntryGroup named in `.state/catalog.yaml`, printing
+  which one and in which project first. It takes no flags, so the only
+  EntryGroup it can delete is the one `setup.ts` created. The custom `okf`
+  aspect type and `okf-bundle` entry type are left in place: they are scoped
+  to the project and location rather than to this demo, so other OKF bundles
+  in the same project are typed by them too. The commands to remove them
+  manually are printed at the end.
 
 ```bash
 bun cleanup.ts
