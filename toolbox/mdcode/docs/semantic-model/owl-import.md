@@ -480,12 +480,10 @@ datatype `^^<iri>` preserved) so an IRI stays distinguishable from a literal —
 a tagged/typed literal from a plain one — on round-trip. A carried reference is
 **not** validated against the model — it is a fact to carry, not a resolved link.
 
-**Example.** Extend the sales domain with the constructs that have no native
-home. `Person` is equivalent to the external `foaf:Person`; `email` (already
-inverse-functional) is also single-valued; `customerName` refines the
-in-namespace `ex:fullName` and equals the external `foaf:name`; `placedBy`'s
-inverse is the in-namespace `ex:places`; and `referredBy` is one-way and never
-self:
+**Example.** A slice of the sales domain that exercises every kind of carried
+construct at once — a cross-namespace equivalence, a native-and-carried duality,
+in-namespace and external references side by side, an inverse, and property
+characteristics. Each `#` comment names where the construct lands:
 
 ```turtle
 ex:Person a owl:Class ;
@@ -508,10 +506,9 @@ ex:referredBy a owl:ObjectProperty,
     rdfs:domain ex:Customer ; rdfs:range ex:Customer .
 ```
 
-Each construct lands on the object it describes. The blocks below are the real
-emitted `data`, verbatim; the `# ...` lines omit the surrounding fields
-(`customerName`'s block is the one under **The shape** above; `placedBy` carries
-`{"owl:inverseOf": "places"}`):
+The blocks below are the real emitted `data`, verbatim; the `# ...` lines omit
+the surrounding fields (`customerName`'s block is the one under **The shape**
+above; `placedBy` carries `{"owl:inverseOf": "places"}`):
 
 ```yaml
       # equivalence on the Person entity:
