@@ -217,15 +217,25 @@ semantic_model:
           instructions: Links an order to the customer who placed it.
 ```
 
-Note what is **not** here: no IRIs and no `custom_extensions`. Every OWL term has
-an IRI (`ex:Customer` = `http://example.com/sales#Customer`), but for the
-constructs that map cleanly the IRI carries nothing the model doesn't already
-have — the term's identity is its name. The source namespace is not recorded here
-at all: it is emitted only when actually needed — in the model `description` as a
-fallback when the ontology header has no comment of its own, or in an
-`owl:baseIri` extension when a cross-reference had to be shortened. This ontology
-has a header comment and no shortened references, so the namespace appears nowhere
+Note what this *clean* example does **not** contain: no term IRIs and no
+`custom_extensions`. Both are supported — they just are not needed here.
+`custom_extensions` carry any OWL construct with no native home (see [the mapping
+table](#how-each-owl-construct-maps) and [Constructs carried as custom
+extensions](#constructs-carried-as-custom-extensions-not-yet-native)), and IRIs
+are kept whenever they carry information a name cannot: a cross-namespace
+reference keeps its full IRI, and the base IRI is recorded as an `owl:baseIri`
+extension when a reference had to be shortened. This ontology maps entirely onto
+native constructs and makes no cross-namespace references, so neither appears
 above.
+
+Every OWL term still has an IRI (`ex:Customer` =
+`http://example.com/sales#Customer`); it is dropped here only because for a
+construct that maps cleanly the IRI carries nothing the model doesn't already
+have — the term's identity is its name. The source namespace, likewise, is
+recorded only when actually needed: in the model `description` as a fallback when
+the ontology header has no comment of its own, or in the `owl:baseIri` extension
+above. This ontology has a header comment and no shortened references, so the
+namespace appears nowhere above.
 
 ### How each OWL construct maps
 
