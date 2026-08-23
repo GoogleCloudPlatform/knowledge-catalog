@@ -104,7 +104,12 @@ export function googleOntologyExtension(terms: Record<string, unknown>):
   if (!Object.keys(terms).length) return undefined;
   return {
     vendorName: GOOGLE_VENDOR,
-    data: JSON.stringify(terms),
+    // Pretty-printed (2-space) so the carried block reads as a legible JSON
+    // object in the serialized YAML -- the `yaml` serializer renders a
+    // newline-bearing string as a block scalar -- instead of one long quoted
+    // line. `data` is opaque and every consumer JSON.parses it, so the added
+    // whitespace is insignificant on the wire.
+    data: JSON.stringify(terms, null, 2),
   };
 }
 
