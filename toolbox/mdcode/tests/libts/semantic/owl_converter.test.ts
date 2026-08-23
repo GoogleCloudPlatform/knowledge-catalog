@@ -6,7 +6,9 @@
 // the user-guide section "Importing an OWL ontology":
 //   1. the sales example produces exactly the documented OSI (golden), and
 //   2. that OSI loads through the OSI loader (the UNBOUND placeholders satisfy
-//      the schema, so `kcmd push --target kc` works on the result), and
+//      the schema, so the document is well-formed -- loadable, but not yet
+//      pushable: `kcmd push` rejects an unbound model, for every --target,
+//      until its sources are bound and a deployment target is set), and
 //   3. each mapped construct behaves as documented.
 // The scope is exactly the user guide; richer OWL is out of scope by design.
 
@@ -72,7 +74,8 @@ describe('sales ontology matches the user-guide CUJ', () => {
   test('the generated OSI loads and carries the guide highlights', () => {
     const {yaml} = convertOwlToOsi(ttl, 'sales');
     // loadModels throws on a schema violation; a clean return proves the model
-    // is loadable and thus KC-pushable as-is.
+    // is schema-valid and loadable -- not that it is pushable, since an unbound
+    // model still fails push validation until its sources are bound.
     const model = loadModels(yaml).models[0];
     expect(model.name).toBe('sales');
     expect(model.entities.map(e => e.name)).toEqual(['Customer', 'Order']);
@@ -905,7 +908,8 @@ describe('OWL constructs carried as custom extensions', () => {
         expect(warnings).toEqual([]);
         expect(stats).toEqual(
             {classes: 2, datatypeProperties: 3, objectProperties: 2});
-        // And the result stays loadable (KC-pushable) with the blocks attached.
+        // And the result stays schema-valid and loadable with the blocks
+        // attached (loadable, not yet pushable -- sources are still unbound).
         expect(() => loadModels(yaml)).not.toThrow();
       });
 

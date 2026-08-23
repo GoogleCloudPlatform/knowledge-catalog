@@ -231,9 +231,11 @@ Why nothing extra appears here: for a cleanly-mapped term its IRI carries nothin
 the model doesn't already have — the term's identity is its name — and the source
 namespace is recorded only when needed: in the model `description` as a fallback
 when the ontology header has no comment of its own, or in an `owl:baseIri`
-extension when an in-namespace reference has to be shortened (both shown in the
-advanced example below). This ontology has a header comment and makes no such
-references, so the namespace appears nowhere above.
+extension when an in-namespace reference has to be shortened (the `owl:baseIri`
+form is shown in the advanced example below; the `description` fallback appears
+only when the header carries no comment, which is not the case there either).
+This ontology has a header comment and makes no such references, so the namespace
+appears nowhere above.
 
 ### How each OWL construct maps
 
@@ -329,8 +331,7 @@ the `Person` and `Customer` datasets come out as (`Customer` carrying
 `extends: [Person]`):
 
 ```yaml
-  # Person is its own dataset. (It also carries an owl:equivalentClass
-  # extension — see Constructs carried as custom extensions below.)
+  # Person is its own dataset:
   - name: Person
     source: unbound:Person
     description: A human being.
@@ -349,6 +350,7 @@ the `Person` and `Customer` datasets come out as (`Customer` carrying
       - Person
     primary_key:
       - customerId
+    description: A person or organization that places orders.
     fields:
       - name: customerId
         expression:
