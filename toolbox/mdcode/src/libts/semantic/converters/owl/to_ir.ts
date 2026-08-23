@@ -19,11 +19,20 @@
 //   owl:Ontology header           -> model description / ai_context
 //
 // Constructs with no native OSI home ride along verbatim in a GOOGLE custom
-// extension (see googleOntologyExtension), inert on push and lossless on pull:
-//   rdfs:subPropertyOf            -> field / relationship (property
-//   inheritance) owl:inverseOf                 -> relationship (the edge,
-//   reversed) owl:equivalentClass           -> entity (class equivalence)
-//   owl:Symmetric/Transitive/FunctionalProperty -> relationship / field
+// extension (see googleOntologyExtension), inert on push and lossless on pull.
+// Each line is kept short so a comment reflow cannot run the columns together:
+//   rdfs:subPropertyOf -> field / relationship (property inheritance)
+//   owl:inverseOf -> relationship (the edge, reversed)
+//   owl:equivalentClass -> entity (class equivalence)
+//   owl:disjointWith -> entity (class disjointness)
+//   owl:equivalentProperty -> field / relationship
+//   owl:propertyDisjointWith -> field / relationship
+//   property characteristics -> relationship (symmetric, transitive, ...)
+//   rdfs:seeAlso, rdfs:isDefinedBy -> any (external pointers, verbatim)
+//   owl:deprecated, owl:versionInfo -> any (lifecycle metadata)
+//
+// A carried cross-reference keeps the full referent IRI unless it is in this
+// ontology's own namespace, when it shortens to a local name (see refValue).
 //
 // The result is UNBOUND: entities carry an `unbound:<Name>` source placeholder
 // and relationships carry `TODO_BIND` join columns, because an ontology has no
@@ -35,7 +44,8 @@
 
 import {AiContext, CustomExtension, Entity, Field, Relationship, SemanticModel,} from '../../ir';
 
-import {OwlModel, OwlOntology} from './model';
+import {OwlCommonAnnotations, OwlModel, OwlOntology} from './model';
+import {localName, namespace} from './parse';
 
 export interface ToIrResult {
   model: SemanticModel;
@@ -102,6 +112,38 @@ function attachOntology(
   const ext = googleOntologyExtension(terms);
   if (!ext) return;
   (target.customExtensions ??= []).push(ext);
+}
+
+// How a carried CROSS-REFERENCE IRI is rendered: shortened to its local name
+// when it lives in this ontology's own namespace (an in-model reference a
+// consumer resolves by name), kept as the full IRI otherwise (a cross-ontology
+// reference that points outside the model). The base IRI already sits in the
+// model header, so an in-namespace localName is reconstructable -- shortening
+// is lossless, and "when in doubt, keep the full IRI" falls out for free.
+function refValue(iri: string, baseIri: string|undefined): string {
+  return baseIri !== undefined && namespace(iri) === baseIri ? localName(iri) :
+                                                               iri;
+}
+
+// refValue over a list, deduped. Mapping before dedupe collapses a referent
+// that was stated more than once (its shortened form is identical), so a
+// repeated identical triple never looks like a conflict downstream.
+function refs(iris: string[], baseIri: string|undefined): string[] {
+  return dedupe(iris.map(iri => refValue(iri, baseIri)));
+}
+
+// The per-term carried annotations shared by entities, fields, and
+// relationships (rdfs:seeAlso / isDefinedBy, owl:deprecated / versionInfo), in
+// a fixed key order. seeAlso/isDefinedBy are external pointers, so they are
+// kept verbatim (never shortened). Returns the entries to merge into a term's
+// carried block; empty when the term has none.
+function commonTerms(a: OwlCommonAnnotations): Record<string, unknown> {
+  const terms: Record<string, unknown> = {};
+  if (a.seeAlso.length) terms['rdfs:seeAlso'] = dedupe(a.seeAlso);
+  if (a.isDefinedBy.length) terms['rdfs:isDefinedBy'] = dedupe(a.isDefinedBy);
+  if (a.deprecated) terms['owl:deprecated'] = true;
+  if (a.versionInfo) terms['owl:versionInfo'] = a.versionInfo;
+  return terms;
 }
 
 // The placeholder source for an unbound entity: an ontology class has no
@@ -324,14 +366,19 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
             `ontology).`);
       }
     }
-    // owl:equivalentClass -> carried verbatim (no native OSI home: a class is
-    // one entity, so equivalence is a fact ABOUT it, not a structural link).
-    // Named classes only; blank-node class expressions were dropped in the
-    // parser.
-    if (c.equivalentClass.length) {
-      attachOntology(
-          entity, {'owl:equivalentClass': dedupe(c.equivalentClass)});
-    }
+    // OWL facts with no native OSI home, carried verbatim on the entity, in a
+    // fixed key order. owl:equivalentClass / owl:disjointWith are class
+    // cross-references (a class is one entity, so these are facts ABOUT it, not
+    // structural links); blank-node class expressions were dropped in the
+    // parser. commonTerms adds any per-term annotations (seeAlso, deprecated,
+    // ...).
+    const entityTerms: Record<string, unknown> = {};
+    if (c.equivalentClass.length)
+      entityTerms['owl:equivalentClass'] = refs(c.equivalentClass, owl.baseIri);
+    if (c.disjointWith.length)
+      entityTerms['owl:disjointWith'] = refs(c.disjointWith, owl.baseIri);
+    Object.assign(entityTerms, commonTerms(c));
+    attachOntology(entity, entityTerms);
     entitiesByName.set(c.localName, entity);
     entities.push(entity);
   }
@@ -346,15 +393,25 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
           `(a field must belong to a class).`);
       continue;
     }
-    // OWL facts with no native OSI home, carried verbatim on the field. Built
-    // once and attached to the field on each domain (the facts are the
-    // property's, independent of which class it lands on). rdfs:subPropertyOf
-    // -> property inheritance (no entity-style flattening; the link is kept as
-    // a fact); owl:FunctionalProperty -> single-valued.
+    // OWL facts with no native OSI home, carried verbatim on the field, in a
+    // fixed key order. Built once and attached to the field on each domain (the
+    // facts are the property's, independent of which class it lands on).
+    // rdfs:subPropertyOf -> property inheritance (no entity-style flattening;
+    // the link is kept as a fact); owl:equivalentProperty /
+    // propertyDisjointWith
+    // -> property cross-references; owl:FunctionalProperty -> single-valued;
+    // commonTerms adds any per-term annotations.
     const fieldTerms: Record<string, unknown> = {};
     if (p.subPropertyOf.length)
-      fieldTerms['rdfs:subPropertyOf'] = dedupe(p.subPropertyOf);
+      fieldTerms['rdfs:subPropertyOf'] = refs(p.subPropertyOf, owl.baseIri);
+    if (p.equivalentProperty.length)
+      fieldTerms['owl:equivalentProperty'] =
+          refs(p.equivalentProperty, owl.baseIri);
+    if (p.propertyDisjointWith.length)
+      fieldTerms['owl:propertyDisjointWith'] =
+          refs(p.propertyDisjointWith, owl.baseIri);
     if (p.functional) fieldTerms['owl:FunctionalProperty'] = true;
+    Object.assign(fieldTerms, commonTerms(p));
     // A property counts as converted once if it produces at least one field,
     // regardless of how many domains it lands on.
     let produced = false;
@@ -480,19 +537,20 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     // OWL facts with no native OSI home, carried verbatim on the relationship,
     // in a fixed key order so the emitted block is stable. rdfs:subPropertyOf
     // -> relationship inheritance (kept as a fact, no flattening);
-    // owl:inverseOf -> the edge read the other way;
-    // owl:Symmetric/Transitive/FunctionalProperty
-    // -> the edge's characteristics.
+    // owl:inverseOf -> the edge read the other way; owl:equivalentProperty /
+    // propertyDisjointWith -> property cross-references; then the edge's
+    // characteristics (symmetric / transitive / functional / reflexive /
+    // irreflexive / asymmetric); commonTerms adds any per-term annotations.
     const relTerms: Record<string, unknown> = {};
     if (p.subPropertyOf.length)
-      relTerms['rdfs:subPropertyOf'] = dedupe(p.subPropertyOf);
+      relTerms['rdfs:subPropertyOf'] = refs(p.subPropertyOf, owl.baseIri);
     if (p.inverseOf.length) {
       // owl:inverseOf pairs two properties; one DISTINCT statement is the norm.
-      // Dedupe first (as subPropertyOf/equivalentClass do) so a repeated
-      // identical triple isn't mistaken for a genuine conflict. If more than
-      // one distinct inverse remains, carry the first and say what was dropped
-      // rather than emitting an array the reader would have to disambiguate.
-      const inverses = dedupe(p.inverseOf);
+      // refs() shortens and dedupes first, so a repeated identical triple isn't
+      // mistaken for a genuine conflict. If more than one distinct inverse
+      // remains, carry the first and say what was dropped rather than emitting
+      // an array the reader would have to disambiguate.
+      const inverses = refs(p.inverseOf, owl.baseIri);
       relTerms['owl:inverseOf'] = inverses[0];
       if (inverses.length > 1) {
         warnings.push(
@@ -501,9 +559,19 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
             `inverse, so only '${inverses[0]}' is carried.`);
       }
     }
+    if (p.equivalentProperty.length)
+      relTerms['owl:equivalentProperty'] =
+          refs(p.equivalentProperty, owl.baseIri);
+    if (p.propertyDisjointWith.length)
+      relTerms['owl:propertyDisjointWith'] =
+          refs(p.propertyDisjointWith, owl.baseIri);
     if (p.symmetric) relTerms['owl:SymmetricProperty'] = true;
     if (p.transitive) relTerms['owl:TransitiveProperty'] = true;
     if (p.functional) relTerms['owl:FunctionalProperty'] = true;
+    if (p.reflexive) relTerms['owl:ReflexiveProperty'] = true;
+    if (p.irreflexive) relTerms['owl:IrreflexiveProperty'] = true;
+    if (p.asymmetric) relTerms['owl:AsymmetricProperty'] = true;
+    Object.assign(relTerms, commonTerms(p));
 
     const destKeys = entitiesByName.get(range)?.keys ?? [];
     const bound = destKeys.length > 0;

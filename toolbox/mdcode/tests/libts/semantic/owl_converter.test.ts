@@ -47,6 +47,7 @@ const PREFIXES = `
   @prefix skos: <http://www.w3.org/2004/02/skos/core#> .
   @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
   @prefix dct:  <http://purl.org/dc/terms/> .
+  @prefix foaf: <http://xmlns.com/foaf/0.1/> .
   @prefix ex:   <http://example.com/x#> .
 `;
 
@@ -969,4 +970,133 @@ describe('OWL constructs carried as custom extensions', () => {
       'owl:equivalentClass': ['Human']
     });
   });
+
+  // --- Namespace-aware cross-references. ------------------------------------
+
+  test(
+      'the namespace-aware fixture produces exactly the documented OSI', () => {
+        const {yaml, warnings, stats} =
+            convertOwlToOsi(readFixture('carriage_ns.owl.ttl'), 'carriage_ns');
+        expect(yaml).toEqual(readFixture('carriage_ns.osi.golden.yaml'));
+        expect(warnings).toEqual([]);
+        expect(stats).toEqual(
+            {classes: 2, datatypeProperties: 2, objectProperties: 2});
+        expect(() => loadModels(yaml)).not.toThrow();
+      });
+
+  test('an in-namespace reference is shortened to its local name', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class ; owl:equivalentClass ex:Human .
+      ex:Human a owl:Class .`;
+    const person = loadOwl(ttl).entities.find(e => e.name === 'Person')!;
+    expect(ontologyTerms(person.customExtensions)).toEqual({
+      'owl:equivalentClass': ['Human']
+    });
+  });
+
+  test('a cross-namespace reference keeps the full IRI', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class ; owl:equivalentClass foaf:Person .`;
+    const person = loadOwl(ttl).entities.find(e => e.name === 'Person')!;
+    expect(ontologyTerms(person.customExtensions)).toEqual({
+      'owl:equivalentClass': ['http://xmlns.com/foaf/0.1/Person']
+    });
+  });
+
+  // --- Additional cross-reference constructs. -------------------------------
+
+  test('owl:disjointWith -> entity', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class ; owl:disjointWith ex:Robot .
+      ex:Robot a owl:Class .`;
+    const person = loadOwl(ttl).entities.find(e => e.name === 'Person')!;
+    expect(ontologyTerms(person.customExtensions)).toEqual({
+      'owl:disjointWith': ['Robot']
+    });
+  });
+
+  test('owl:equivalentProperty -> field and relationship', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class . ex:Org a owl:Class .
+      ex:name a owl:DatatypeProperty ; rdfs:domain ex:Person ;
+          rdfs:range xsd:string ; owl:equivalentProperty foaf:name .
+      ex:member a owl:ObjectProperty ; rdfs:domain ex:Org ;
+          rdfs:range ex:Person ; owl:equivalentProperty foaf:member .`;
+    const model = loadOwl(ttl);
+    const field = model.entities.find(e => e.name === 'Person')!.fields.find(
+        f => f.name === 'name')!;
+    expect(ontologyTerms(field.customExtensions)).toEqual({
+      'owl:equivalentProperty': ['http://xmlns.com/foaf/0.1/name']
+    });
+    const rel = model.relationships.find(r => r.name === 'member')!;
+    expect(ontologyTerms(rel.customExtensions)).toEqual({
+      'owl:equivalentProperty': ['http://xmlns.com/foaf/0.1/member']
+    });
+  });
+
+  test('owl:propertyDisjointWith -> relationship', () => {
+    const ttl = `${PREFIXES}
+      ex:A a owl:Class . ex:B a owl:Class .
+      ex:rel a owl:ObjectProperty ; rdfs:domain ex:A ; rdfs:range ex:B ;
+          owl:propertyDisjointWith ex:other .`;
+    const rel = loadOwl(ttl).relationships[0];
+    expect(ontologyTerms(rel.customExtensions)).toEqual({
+      'owl:propertyDisjointWith': ['other']
+    });
+  });
+
+  test(
+      'reflexive / irreflexive / asymmetric characteristics -> relationship',
+      () => {
+        const ttl = `${PREFIXES}
+      ex:A a owl:Class . ex:B a owl:Class .
+      ex:rel a owl:ObjectProperty, owl:ReflexiveProperty,
+               owl:IrreflexiveProperty, owl:AsymmetricProperty ;
+          rdfs:domain ex:A ; rdfs:range ex:B .`;
+        const rel = loadOwl(ttl).relationships[0];
+        expect(ontologyTerms(rel.customExtensions)).toEqual({
+          'owl:ReflexiveProperty': true,
+          'owl:IrreflexiveProperty': true,
+          'owl:AsymmetricProperty': true,
+        });
+      });
+
+  // --- Per-term annotations. ------------------------------------------------
+
+  test(
+      'rdfs:seeAlso (IRI and literal) and rdfs:isDefinedBy -> any term', () => {
+        const ttl = `${PREFIXES}
+      ex:Person a owl:Class ;
+          rdfs:seeAlso <https://schema.org/Person> ;
+          rdfs:seeAlso "A note." ;
+          rdfs:isDefinedBy <http://example.com/x> .`;
+        const person = loadOwl(ttl).entities.find(e => e.name === 'Person')!;
+        expect(ontologyTerms(person.customExtensions)).toEqual({
+          'rdfs:seeAlso': ['https://schema.org/Person', 'A note.'],
+          'rdfs:isDefinedBy': ['http://example.com/x'],
+        });
+      });
+
+  test('owl:deprecated is carried only when true', () => {
+    const yes = `${PREFIXES}
+      ex:Person a owl:Class ; owl:deprecated true .`;
+    const no = `${PREFIXES}
+      ex:Person a owl:Class ; owl:deprecated false .`;
+    const carried = loadOwl(yes).entities[0].customExtensions;
+    expect(ontologyTerms(carried)).toEqual({'owl:deprecated': true});
+    // An explicit `false` restates the default, so nothing is carried.
+    expect(ontologyTerms(loadOwl(no).entities[0].customExtensions))
+        .toBeUndefined();
+  });
+
+  test(
+      'owl:versionInfo on a class/property is carried (not just the header)',
+      () => {
+        const ttl = `${PREFIXES}
+      ex:Person a owl:Class ; owl:versionInfo "3.1" .`;
+        const person = loadOwl(ttl).entities[0];
+        expect(ontologyTerms(person.customExtensions)).toEqual({
+          'owl:versionInfo': '3.1'
+        });
+      });
 });
