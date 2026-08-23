@@ -486,63 +486,76 @@ in-namespace and external references side by side, an inverse, and property
 characteristics. Each `#` comment names where the construct lands:
 
 ```turtle
+# Person is equivalent to the EXTERNAL foaf:Person -> carried as a full IRI.
 ex:Person a owl:Class ;
-    owl:equivalentClass foaf:Person .             # external -> full IRI
+    owl:equivalentClass foaf:Person .
 
-ex:email a owl:DatatypeProperty,
-           owl:InverseFunctionalProperty,         # -> unique_keys (native)
-           owl:FunctionalProperty ;               # -> carried
+# email is inverse-functional (-> unique_keys, native) AND single-valued
+# (owl:FunctionalProperty -> carried): one construct maps, the other rides along.
+ex:email a owl:DatatypeProperty, owl:InverseFunctionalProperty, owl:FunctionalProperty ;
     rdfs:domain ex:Customer ; rdfs:range xsd:string .
+
+# customerName refines the in-namespace ex:fullName (-> "fullName") and equals
+# the external foaf:name (-> full IRI).
 ex:customerName a owl:DatatypeProperty ;
     rdfs:domain ex:Customer ; rdfs:range xsd:string ;
-    rdfs:subPropertyOf ex:fullName ;              # in-namespace -> "fullName"
-    owl:equivalentProperty foaf:name .            # external -> full IRI
+    rdfs:subPropertyOf ex:fullName ;
+    owl:equivalentProperty foaf:name .
 
+# placedBy's inverse is the in-namespace ex:places (-> "places").
 ex:placedBy a owl:ObjectProperty ;
     rdfs:domain ex:Order ; rdfs:range ex:Customer ;
-    owl:inverseOf ex:places .                     # in-namespace -> "places"
-ex:referredBy a owl:ObjectProperty,
-                owl:AsymmetricProperty, owl:IrreflexiveProperty ;
+    owl:inverseOf ex:places .
+
+# referredBy is one-way and never self -- both characteristics carried.
+ex:referredBy a owl:ObjectProperty, owl:AsymmetricProperty, owl:IrreflexiveProperty ;
     rdfs:domain ex:Customer ; rdfs:range ex:Customer .
 ```
 
-The blocks below are the real emitted `data`, verbatim; the `# ...` lines omit
-the surrounding fields (`customerName`'s block is the one under **The shape**
-above; `placedBy` carries `{"owl:inverseOf": "places"}`):
+Below is the resulting model, trimmed to the carried blocks — each `data` value
+is the real emitted output, verbatim; the `# ...` lines stand in for elided
+structure. It attaches at three levels: on an **entity** (`Person`), on a
+**field** (`Customer.email`), and on a **relationship** (`referredBy`).
+(`customerName`'s field block is the one under **The shape** above; `placedBy`
+carries `{"owl:inverseOf": "places"}`.)
 
 ```yaml
-      # equivalence on the Person entity:
-      - name: Person
-        # ... fields ...
+datasets:
+  # entity level -- cross-namespace equivalence, on the Person entity:
+  - name: Person
+    # ... fields ...
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: |-
+          {
+            "owl:equivalentClass": [
+              "http://xmlns.com/foaf/0.1/Person"
+            ]
+          }
+  - name: Customer
+    # ... primary_key, unique_keys, other fields ...
+    fields:
+      # field level -- the single-valued flag on email, which is ALSO a native
+      # unique key (email is inverse-functional):
+      - name: email
+        # ... expression, datatype ...
         custom_extensions:
           - vendor_name: GOOGLE
             data: |-
               {
-                "owl:equivalentClass": [
-                  "http://xmlns.com/foaf/0.1/Person"
-                ]
+                "owl:FunctionalProperty": true
               }
-      # single-valued flag on Customer's email field -- which is ALSO a native
-      # unique key, because email is inverse-functional:
-          - name: email
-            # ...
-            custom_extensions:
-              - vendor_name: GOOGLE
-                data: |-
-                  {
-                    "owl:FunctionalProperty": true
-                  }
-    relationships:
-      # characteristics on the referredBy relationship:
-      - name: referredBy
-        # ... endpoints ...
-        custom_extensions:
-          - vendor_name: GOOGLE
-            data: |-
-              {
-                "owl:IrreflexiveProperty": true,
-                "owl:AsymmetricProperty": true
-              }
+relationships:
+  # relationship level -- characteristics on the referredBy edge:
+  - name: referredBy
+    # ... endpoints ...
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: |-
+          {
+            "owl:IrreflexiveProperty": true,
+            "owl:AsymmetricProperty": true
+          }
 ```
 
 Because the in-namespace references (`fullName`, `places`) were shortened, the
