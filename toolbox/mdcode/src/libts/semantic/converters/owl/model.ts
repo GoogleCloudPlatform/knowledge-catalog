@@ -30,9 +30,11 @@
  * by OwlClass, OwlDatatypeProperty, and OwlObjectProperty.
  */
 export interface OwlCommonAnnotations {
-  // rdfs:seeAlso values (IRIs or literals), in document order. External
-  // pointers to further information; kept verbatim (an IRI is never shortened
-  // -- it points outside the model). Empty when none.
+  // rdfs:seeAlso values, in document order, as N-Triples object terms so an
+  // IRI stays distinguishable from a literal on round-trip: an IRI as `<iri>`,
+  // a literal as `"text"` (quote/backslash escaped). External pointers to
+  // further information; never shortened (an IRI points outside the model).
+  // Empty when none.
   seeAlso: string[];
   // rdfs:isDefinedBy IRIs, in document order. Points at the resource (usually
   // the defining ontology) that defines this term; kept verbatim. Empty when

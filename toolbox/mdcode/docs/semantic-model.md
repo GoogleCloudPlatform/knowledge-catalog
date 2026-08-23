@@ -714,7 +714,7 @@ in the model `description` as provenance.
 | extra `rdfs:label` / `skos:altLabel` / `prefLabel` / `hiddenLabel` | `ai_context.synonyms` | genuinely alternate names; feed NL search |
 | `skos:example` | `ai_context.examples` | sample questions / values |
 | `rdfs:comment`, `skos:definition`, `dcterms:`/`dc:description` | `description` | first present wins, in that order; on an object property (which has no `description` slot) the comment rides in `ai_context.instructions` |
-| term IRIs, `@prefix` | a term's own IRI is dropped (base IRI kept as provenance in model `description`) | reconstructable as `<base><name>`; a *carried cross-reference* to another namespace keeps its full IRI (see [Constructs carried as custom extensions](#constructs-carried-as-custom-extensions-not-yet-native)) |
+| term IRIs, `@prefix` | a term's own IRI is dropped (base IRI kept as the model's `owl:baseIri` custom-extension key, and as prose in `description`) | reconstructable as `<base><name>`; a *carried cross-reference* to another namespace keeps its full IRI (see [Constructs carried as custom extensions](#constructs-carried-as-custom-extensions-not-yet-native)) |
 
 A datatype property whose domain is not a class, or an object property missing an
 endpoint, cannot be placed; it is **skipped with a warning** rather than failing
@@ -879,7 +879,7 @@ original construct is lost in translation.
 | `owl:ReflexiveProperty` | `owl:ReflexiveProperty` | relationship | `true` | every subject relates to itself (`a→a`) |
 | `owl:IrreflexiveProperty` | `owl:IrreflexiveProperty` | relationship | `true` | no subject relates to itself |
 | `owl:AsymmetricProperty` | `owl:AsymmetricProperty` | relationship | `true` | `a→b` rules out `b→a` |
-| `rdfs:seeAlso` | `rdfs:seeAlso` | any | `string[]` (IRIs or literals, verbatim) | pointer to further information |
+| `rdfs:seeAlso` | `rdfs:seeAlso` | any | `string[]` of N-Triples terms — an IRI as `<iri>`, a literal as `"text"` | pointer to further information (kept distinguishable, see below) |
 | `rdfs:isDefinedBy` | `rdfs:isDefinedBy` | any | `string[]` (IRIs, verbatim) | the resource that defines this term |
 | `owl:deprecated` | `owl:deprecated` | any | `true` | the term is deprecated (carried only when true) |
 | `owl:versionInfo` | `owl:versionInfo` | any | `string` | a term-level version string |
@@ -894,12 +894,17 @@ namespace**, it is shortened to the plain local name (`"Human"`) — the same na
 the referenced entity/property carries in the model, so a consumer can resolve it
 by name. When it lives in **another namespace**, the **full IRI** is kept
 (`"http://xmlns.com/foaf/0.1/Person"`) — a shortened name would be ambiguous and
-resolve to nothing. Nothing is lost either way: the base IRI is recorded in the
-model `description`, so an in-namespace name reconstructs as `<base><name>`, and a
-cross-namespace IRI is already complete. `rdfs:seeAlso` / `rdfs:isDefinedBy` point
-*outside* the model by definition, so they are **always** kept verbatim. A carried
-reference is **not** validated against the model — it is a fact to carry, not a
-resolved link.
+resolve to nothing. Nothing is lost either way: whenever any reference is
+shortened, the base IRI is carried as structured metadata on the model — an
+`owl:baseIri` key in the model-level GOOGLE `custom_extensions` block — so an
+in-namespace name reconstructs mechanically as `<base><name>`, and a
+cross-namespace IRI is already complete. (The base also appears in the model
+`description` for humans, but the structured key is what a consumer reads.)
+`rdfs:seeAlso` / `rdfs:isDefinedBy` point *outside* the model by definition, so
+they are **always** kept verbatim; `rdfs:seeAlso` additionally wraps each value
+as an N-Triples term (`<iri>` vs `"text"`) so an IRI stays distinguishable from a
+literal on round-trip. A carried reference is **not** validated against the model
+— it is a fact to carry, not a resolved link.
 
 **Example.** Given this ontology:
 
@@ -940,6 +945,19 @@ transitivity together on the `ancestorOf` relationship:
           data: '{"rdfs:subPropertyOf":["relatedTo"],"owl:inverseOf":"descendantOf","owl:TransitiveProperty":true}'
 ```
 
+Because those references (`Human`, `name`, `relatedTo`, `descendantOf`) were
+shortened, the **model header** also carries the base IRI so they can be
+reconstructed:
+
+```yaml
+semantic_model:
+  - name: <model>
+    description: Imported from OWL ontology http://example.com/x#
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{"owl:baseIri":"http://example.com/x#"}'
+```
+
 A reference to an **external** vocabulary keeps its full IRI. Given
 `ex:Person owl:equivalentClass foaf:Person` (with `ex:` this ontology's namespace
 and `foaf:` an external one):
@@ -952,8 +970,9 @@ and `foaf:` an external one):
 ```
 
 **Prefix → namespace** (the `owl:` / `rdfs:` on the *keys*; reconstruct an
-in-namespace *value* as `<base><name>`, where `<base>` is the model
-`description`'s ontology IRI — a cross-namespace value is already a full IRI):
+in-namespace *value* as `<base><name>`, where `<base>` is the model's
+`owl:baseIri` custom-extension key — a cross-namespace value is already a full
+IRI):
 
 | Prefix | Namespace IRI |
 |---|---|

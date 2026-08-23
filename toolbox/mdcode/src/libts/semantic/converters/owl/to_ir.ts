@@ -117,19 +117,14 @@ function attachOntology(
 // How a carried CROSS-REFERENCE IRI is rendered: shortened to its local name
 // when it lives in this ontology's own namespace (an in-model reference a
 // consumer resolves by name), kept as the full IRI otherwise (a cross-ontology
-// reference that points outside the model). The base IRI already sits in the
-// model header, so an in-namespace localName is reconstructable -- shortening
-// is lossless, and "when in doubt, keep the full IRI" falls out for free.
+// reference that points outside the model). Shortening is lossless because the
+// base IRI is carried as structured metadata (`owl:baseIri`) on the model
+// whenever any reference is shortened, so an in-namespace localName is
+// reconstructable as `<baseIri><localName>`; "when in doubt, keep the full IRI"
+// falls out for free.
 function refValue(iri: string, baseIri: string|undefined): string {
   return baseIri !== undefined && namespace(iri) === baseIri ? localName(iri) :
                                                                iri;
-}
-
-// refValue over a list, deduped. Mapping before dedupe collapses a referent
-// that was stated more than once (its shortened form is identical), so a
-// repeated identical triple never looks like a conflict downstream.
-function refs(iris: string[], baseIri: string|undefined): string[] {
-  return dedupe(iris.map(iri => refValue(iri, baseIri)));
 }
 
 // The per-term carried annotations shared by entities, fields, and
@@ -323,6 +318,19 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   const warnings: string[] = [];
   const classNames = new Set(owl.classes.map(c => c.localName));
 
+  // refValue over a list, deduped, recording whether any referent was actually
+  // shortened. When one was, the base IRI is carried on the model
+  // (`owl:baseIri` below) so the shortened localName is mechanically
+  // reconstructable. Mapping before dedupe collapses a referent stated more
+  // than once (its shortened form is identical), so a repeated identical triple
+  // never looks like a conflict.
+  let shortenedRef = false;
+  const refs = (iris: string[]): string[] => dedupe(iris.map(iri => {
+    const v = refValue(iri, owl.baseIri);
+    if (v !== iri) shortenedRef = true;
+    return v;
+  }));
+
   // Entities, one per class, in class-declaration order. Fields are attached in
   // datatype-property-declaration order below. Two classes can share a local
   // name (e.g. same name in different namespaces); OSI dataset names must be
@@ -374,9 +382,9 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     // ...).
     const entityTerms: Record<string, unknown> = {};
     if (c.equivalentClass.length)
-      entityTerms['owl:equivalentClass'] = refs(c.equivalentClass, owl.baseIri);
+      entityTerms['owl:equivalentClass'] = refs(c.equivalentClass);
     if (c.disjointWith.length)
-      entityTerms['owl:disjointWith'] = refs(c.disjointWith, owl.baseIri);
+      entityTerms['owl:disjointWith'] = refs(c.disjointWith);
     Object.assign(entityTerms, commonTerms(c));
     attachOntology(entity, entityTerms);
     entitiesByName.set(c.localName, entity);
@@ -395,21 +403,20 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     }
     // OWL facts with no native OSI home, carried verbatim on the field, in a
     // fixed key order. Built once and attached to the field on each domain (the
-    // facts are the property's, independent of which class it lands on).
-    // rdfs:subPropertyOf -> property inheritance (no entity-style flattening;
-    // the link is kept as a fact); owl:equivalentProperty /
-    // propertyDisjointWith
-    // -> property cross-references; owl:FunctionalProperty -> single-valued;
-    // commonTerms adds any per-term annotations.
+    // facts are the property's, independent of which class it lands on). Each
+    // mapping line is kept short so a comment reflow cannot mangle it:
+    //   rdfs:subPropertyOf -> property inheritance (kept as a fact, no
+    //     entity-style flattening)
+    //   owl:equivalentProperty, owl:propertyDisjointWith -> cross-references
+    //   owl:FunctionalProperty -> single-valued
+    //   commonTerms adds any per-term annotations
     const fieldTerms: Record<string, unknown> = {};
     if (p.subPropertyOf.length)
-      fieldTerms['rdfs:subPropertyOf'] = refs(p.subPropertyOf, owl.baseIri);
+      fieldTerms['rdfs:subPropertyOf'] = refs(p.subPropertyOf);
     if (p.equivalentProperty.length)
-      fieldTerms['owl:equivalentProperty'] =
-          refs(p.equivalentProperty, owl.baseIri);
+      fieldTerms['owl:equivalentProperty'] = refs(p.equivalentProperty);
     if (p.propertyDisjointWith.length)
-      fieldTerms['owl:propertyDisjointWith'] =
-          refs(p.propertyDisjointWith, owl.baseIri);
+      fieldTerms['owl:propertyDisjointWith'] = refs(p.propertyDisjointWith);
     if (p.functional) fieldTerms['owl:FunctionalProperty'] = true;
     Object.assign(fieldTerms, commonTerms(p));
     // A property counts as converted once if it produces at least one field,
@@ -543,14 +550,14 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     // irreflexive / asymmetric); commonTerms adds any per-term annotations.
     const relTerms: Record<string, unknown> = {};
     if (p.subPropertyOf.length)
-      relTerms['rdfs:subPropertyOf'] = refs(p.subPropertyOf, owl.baseIri);
+      relTerms['rdfs:subPropertyOf'] = refs(p.subPropertyOf);
     if (p.inverseOf.length) {
       // owl:inverseOf pairs two properties; one DISTINCT statement is the norm.
       // refs() shortens and dedupes first, so a repeated identical triple isn't
       // mistaken for a genuine conflict. If more than one distinct inverse
       // remains, carry the first and say what was dropped rather than emitting
       // an array the reader would have to disambiguate.
-      const inverses = refs(p.inverseOf, owl.baseIri);
+      const inverses = refs(p.inverseOf);
       relTerms['owl:inverseOf'] = inverses[0];
       if (inverses.length > 1) {
         warnings.push(
@@ -560,11 +567,9 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
       }
     }
     if (p.equivalentProperty.length)
-      relTerms['owl:equivalentProperty'] =
-          refs(p.equivalentProperty, owl.baseIri);
+      relTerms['owl:equivalentProperty'] = refs(p.equivalentProperty);
     if (p.propertyDisjointWith.length)
-      relTerms['owl:propertyDisjointWith'] =
-          refs(p.propertyDisjointWith, owl.baseIri);
+      relTerms['owl:propertyDisjointWith'] = refs(p.propertyDisjointWith);
     if (p.symmetric) relTerms['owl:SymmetricProperty'] = true;
     if (p.transitive) relTerms['owl:TransitiveProperty'] = true;
     if (p.functional) relTerms['owl:FunctionalProperty'] = true;
@@ -606,6 +611,13 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     relationships,
     metrics: [],
   };
+  // Carry the base IRI as structured metadata WHENEVER a cross-reference was
+  // shortened to a local name (refValue), so a consumer can rebuild the full
+  // IRI as `<baseIri><localName>` mechanically instead of parsing it out of the
+  // prose description. Only emitted when it is actually needed for that
+  // reconstruction, so a model with no shortened reference stays clean.
+  if (shortenedRef && owl.baseIri)
+    attachOntology(model, {'owl:baseIri': owl.baseIri});
 
   return {
     model,

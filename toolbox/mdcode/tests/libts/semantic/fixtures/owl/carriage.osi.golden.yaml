@@ -2,6 +2,9 @@ version: 0.2.0.dev0
 semantic_model:
   - name: carriage
     description: Imported from OWL ontology http://example.com/people#
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{"owl:baseIri":"http://example.com/people#"}'
     datasets:
       - name: Person
         source: unbound:Person
