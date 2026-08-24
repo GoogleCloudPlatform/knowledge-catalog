@@ -1,0 +1,109 @@
+# A hand-authored, fully-OWL-expressible OSI model that pins the OSI-origin
+# round-trip (OSI -> OWL -> OSI), the mirror of the OWL-origin fixtures. It is a
+# deliberate fixed point: every construct here is one the importer can produce,
+# so exporting it and re-importing yields this same IR with no warnings.
+#
+# Its distinctive job is the cross-entity FIELD ORDER merge (orderFields): the
+# multi-domain fields `name` and `createdAt` sit at different absolute positions
+# on Person and Company (companyId is interleaved before them on Company), so a
+# single global property order must be a linear extension of BOTH entities'
+# orders. An OWL-origin fixture cannot easily set this up; a hand-authored one
+# can. It also covers extends -> rdfs:subClassOf, a single-column unique key,
+# and a temporal time dimension, all in the OSI-origin direction.
+version: 0.2.0.dev0
+semantic_model:
+  - name: directory
+    description: A small organization directory (people and the companies they work at).
+    ai_context:
+      synonyms:
+        - Org directory
+      examples:
+        - Who works at which company?
+    datasets:
+      - name: Party
+        source: unbound:Party
+        primary_key:
+          - partyId
+        description: An abstract-in-spirit supertype for people and companies.
+        fields:
+          - name: partyId
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: partyId
+            datatype: String
+      - name: Person
+        source: unbound:Person
+        primary_key:
+          - personId
+        unique_keys:
+          - - email
+        extends:
+          - Party
+        description: An individual party.
+        fields:
+          - name: personId
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: personId
+            datatype: String
+          - name: email
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: email
+            datatype: String
+            description: The person's unique email address.
+          - name: name
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: name
+            datatype: String
+          - name: createdAt
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: createdAt
+            datatype: DateTime
+            dimension:
+              is_time: true
+      - name: Company
+        source: unbound:Company
+        primary_key:
+          - companyId
+        extends:
+          - Party
+        description: An organization party.
+        fields:
+          - name: companyId
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: companyId
+            datatype: String
+          - name: name
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: name
+            datatype: String
+          - name: createdAt
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: createdAt
+            datatype: DateTime
+            dimension:
+              is_time: true
+    relationships:
+      - name: worksAt
+        from: Person
+        to: Company
+        from_columns:
+          - TODO_BIND
+        to_columns:
+          - companyId
+        ai_context:
+          instructions: Links a person to the company that employs them.

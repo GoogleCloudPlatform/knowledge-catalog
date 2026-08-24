@@ -81,6 +81,43 @@ describe('sales export matches the documented Turtle (golden)', () => {
   });
 });
 
+// The OSI-origin round-trip: the mirror of the OWL-origin suite above. A
+// hand-authored, fully-OWL-expressible model, exported and re-imported, must be
+// IR-stable with no warnings. Its job is to reach paths an OWL-origin fixture
+// cannot easily set up -- above all the cross-entity field-order merge
+// (orderFields), where a multi-domain field sits at different absolute
+// positions on its domains and the single exported property order must be a
+// linear extension of every entity's order.
+describe('OSI-origin models round-trip OSI -> OWL -> OSI unchanged', () => {
+  test('directory is stable across a full round-trip', () => {
+    const model =
+        loadModels(readFixture('directory.osi.golden.yaml')).models[0];
+
+    const exported = convertOsiToOwl(model);
+    // Fully OWL-expressible, so export drops nothing: no warnings.
+    expect(exported.warnings).toEqual([]);
+    expect(exported.stats.classes).toBe(model.entities.length);
+    expect(exported.stats.objectProperties).toBe(model.relationships.length);
+
+    const reimported = importToIr(exported.turtle, 'directory');
+    expect(reimported).toEqual(model);
+  });
+
+  test('the cross-entity field order is preserved on both domains', () => {
+    const model =
+        loadModels(readFixture('directory.osi.golden.yaml')).models[0];
+    const reimported = importToIr(convertOsiToOwl(model).turtle, 'directory');
+    const names = (e: string) =>
+        reimported.entities.find(x => x.name === e)!.fields.map(f => f.name);
+    // `name` and `createdAt` are multi-domain and sit at different absolute
+    // positions on each entity; the single exported property order interleaves
+    // companyId between them globally, yet each entity's own order comes back
+    // intact -- the topological merge did its job.
+    expect(names('Person')).toEqual(['personId', 'email', 'name', 'createdAt']);
+    expect(names('Company')).toEqual(['companyId', 'name', 'createdAt']);
+  });
+});
+
 // A minimal, valid OWL-shaped model to graft one non-OWL construct onto per
 // test. On its own it exports with no warnings.
 function baseModel(): SemanticModel {
@@ -314,5 +351,104 @@ describe('hand-authored constructs OWL cannot faithfully carry warn', () => {
         // relative <placed>.
         expect(turtle).toContain('owl:inverseOf ex:placed');
         expect(turtle).not.toContain('<placed>');
+      });
+});
+
+describe('export warns on the remaining constructs with no OWL home', () => {
+  test('an abstract entity warns and still exports as a plain class', () => {
+    const model = baseModel();
+    model.entities[0].abstract = true;
+    const {warnings, turtle} = convertOsiToOwl(model);
+    expect(warnings.some(w => /abstract/.test(w))).toBe(true);
+    expect(turtle).toContain('ex:Customer a owl:Class');
+  });
+
+  test('an imported vendor expression is dropped with a warning', () => {
+    const model = baseModel();
+    model.entities[0].fields.push({
+      name: 'region',
+      expression: 'region',
+      importedExpression: 'UPPER(region)',
+      importedDialect: 'SNOWFLAKE',
+      type: 'String',
+    });
+    const {warnings, turtle} = convertOsiToOwl(model);
+    expect(warnings.some(w => /imported vendor expression/.test(w))).toBe(true);
+    // The property name and datatype survive; the vendor SQL does not.
+    expect(turtle).toContain('ex:region a owl:DatatypeProperty');
+    expect(turtle).not.toContain('UPPER');
+  });
+
+  test('a relationship to an endpoint outside the model warns', () => {
+    const model = baseModel();
+    model.relationships = [{
+      name: 'ghostLink',
+      source: {entity: 'Customer', columns: ['TODO_BIND']},
+      destination: {entity: 'Ghost', columns: ['ghostId']},
+    }];
+    const {warnings, turtle} = convertOsiToOwl(model);
+    expect(warnings.some(w => /not an entity in this model/.test(w)))
+        .toBe(true);
+    // The object property is still emitted; only its range dangles.
+    expect(turtle).toContain('ex:ghostLink a owl:ObjectProperty');
+  });
+
+  test('bound join columns are dropped with a warning', () => {
+    const model = twoEntityModel(
+        {name: 'placedAt', expression: 'placedAt', type: 'Date'});
+    model.relationships = [{
+      name: 'placedBy',
+      // A real FK column on the source -- not the TODO_BIND placeholder, not
+      // the destination key -- is a bound column OWL object properties cannot
+      // carry.
+      source: {entity: 'Order', columns: ['customerFk']},
+      destination: {entity: 'Customer', columns: ['customerId']},
+    }];
+    const {warnings} = convertOsiToOwl(model);
+    expect(warnings.some(w => /bound join columns/.test(w))).toBe(true);
+  });
+
+  test('a non-GOOGLE vendor extension on the model warns', () => {
+    const model = baseModel();
+    model.customExtensions = [{vendorName: 'ACME', data: '{}'}];
+    const {warnings} = convertOsiToOwl(model);
+    expect(warnings.some(w => /vendor extension/.test(w))).toBe(true);
+  });
+
+  test('an unparseable GOOGLE extension on the model warns', () => {
+    const model = baseModel();
+    model.customExtensions = [{vendorName: 'GOOGLE', data: '{ not json'}];
+    const {warnings} = convertOsiToOwl(model);
+    expect(warnings.some(w => /unparseable/.test(w))).toBe(true);
+  });
+
+  test(
+      'entities that disagree on a shared field order warn and still export',
+      () => {
+        const model = baseModel();
+        model.entities[0].fields = [
+          {name: 'customerId', expression: 'customerId', type: 'String'},
+          {name: 'a', expression: 'a', type: 'String'},
+          {name: 'b', expression: 'b', type: 'String'},
+        ];
+        model.entities.push({
+          name: 'Order',
+          dataSource: 'unbound:Order',
+          keys: ['orderId'],
+          fields: [
+            {name: 'orderId', expression: 'orderId', type: 'String'},
+            // b before a -- the reverse of Customer, so no single property
+            // order satisfies both (a cycle in orderFields' constraints).
+            {name: 'b', expression: 'b', type: 'String'},
+            {name: 'a', expression: 'a', type: 'String'},
+          ],
+        });
+        const {warnings, turtle} = convertOsiToOwl(model);
+        expect(warnings.some(w => /different relative order/.test(w)))
+            .toBe(true);
+        // Every property is still emitted; only their cross-entity order is
+        // arbitrary.
+        expect(turtle).toContain('ex:a a owl:DatatypeProperty');
+        expect(turtle).toContain('ex:b a owl:DatatypeProperty');
       });
 });
