@@ -1183,6 +1183,121 @@ describe('OWL constructs carried as custom extensions', () => {
     });
   });
 
+  // --- Set-level axioms (carried at the MODEL level). -----------------------
+  // These hang off an anonymous node and are ABOUT a set of terms, not any one
+  // named class/property, so they ride on the model rather than an
+  // entity/field/ relationship. Each is an array of member SETS (one per
+  // axiom).
+
+  test('owl:AllDisjointClasses -> model (a set of disjoint classes)', () => {
+    // The three classes are pairwise disjoint. In-namespace members shorten to
+    // local names, so the model carries owl:baseIri to make that reversible.
+    const ttl = `${PREFIXES}
+      ex:Cat a owl:Class .
+      ex:Dog a owl:Class .
+      ex:Fish a owl:Class .
+      [] a owl:AllDisjointClasses ; owl:members ( ex:Cat ex:Dog ex:Fish ) .`;
+    expect(ontologyTerms(loadOwl(ttl).customExtensions)).toEqual({
+      'owl:AllDisjointClasses': [['Cat', 'Dog', 'Fish']],
+      'owl:baseIri': 'http://example.com/x#',
+    });
+  });
+
+  test('owl:AllDisjointProperties -> model (a set of disjoint props)', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class .
+      ex:homePhone a owl:DatatypeProperty ; rdfs:domain ex:Person ; rdfs:range xsd:string .
+      ex:workPhone a owl:DatatypeProperty ; rdfs:domain ex:Person ; rdfs:range xsd:string .
+      [] a owl:AllDisjointProperties ; owl:members ( ex:homePhone ex:workPhone ) .`;
+    expect(ontologyTerms(loadOwl(ttl).customExtensions)).toEqual({
+      'owl:AllDisjointProperties': [['homePhone', 'workPhone']],
+      'owl:baseIri': 'http://example.com/x#',
+    });
+  });
+
+  test('owl:AllDifferent -> model (distinct individuals, owl:members)', () => {
+    // Members are individuals (not modeled), so only the names are kept -- like
+    // owl:oneOf. ex:Person merely anchors the base namespace so the individual
+    // names shorten.
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class .
+      [] a owl:AllDifferent ; owl:members ( ex:Alice ex:Bob ) .`;
+    expect(ontologyTerms(loadOwl(ttl).customExtensions)).toEqual({
+      'owl:AllDifferent': [['Alice', 'Bob']],
+      'owl:baseIri': 'http://example.com/x#',
+    });
+  });
+
+  test('owl:AllDifferent accepts the legacy owl:distinctMembers list', () => {
+    // OWL 1 spelled the list owl:distinctMembers; it must resolve identically.
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class .
+      [] a owl:AllDifferent ; owl:distinctMembers ( ex:Alice ex:Bob ) .`;
+    expect(ontologyTerms(loadOwl(ttl).customExtensions)).toEqual({
+      'owl:AllDifferent': [['Alice', 'Bob']],
+      'owl:baseIri': 'http://example.com/x#',
+    });
+  });
+
+  test('multiple set-level axioms of one kind are kept separate', () => {
+    // Each owl:AllDisjointClasses is its own set; they must not be merged into
+    // one flat list. Kept in document order.
+    const ttl = `${PREFIXES}
+      ex:Cat a owl:Class . ex:Dog a owl:Class .
+      ex:Car a owl:Class . ex:Truck a owl:Class .
+      [] a owl:AllDisjointClasses ; owl:members ( ex:Cat ex:Dog ) .
+      [] a owl:AllDisjointClasses ; owl:members ( ex:Car ex:Truck ) .`;
+    expect(ontologyTerms(loadOwl(ttl).customExtensions)).toEqual({
+      'owl:AllDisjointClasses': [['Cat', 'Dog'], ['Car', 'Truck']],
+      'owl:baseIri': 'http://example.com/x#',
+    });
+  });
+
+  test(
+      'set-level members outside the namespace stay full IRIs (no baseIri)',
+      () => {
+        // Cross-namespace members are not shortened, so nothing is shortened
+        // and the model carries no owl:baseIri (ex:Anchor only anchors the base
+        // namespace; it names no cross-reference).
+        const ttl = `${PREFIXES}
+      ex:Anchor a owl:Class .
+      [] a owl:AllDisjointClasses ; owl:members ( foaf:Person foaf:Agent ) .`;
+        expect(ontologyTerms(loadOwl(ttl).customExtensions)).toEqual({
+          'owl:AllDisjointClasses': [[
+            'http://xmlns.com/foaf/0.1/Person',
+            'http://xmlns.com/foaf/0.1/Agent',
+          ]],
+        });
+      });
+
+  test('owl:distinctMembers is ignored on a non-AllDifferent axiom', () => {
+    // owl:distinctMembers is the legacy OWL 1 spelling for owl:AllDifferent
+    // only; it has no meaning on owl:AllDisjointClasses. A node that carries it
+    // there (and no owl:members) contributes no member set, so nothing is
+    // carried at all (no shortened reference, hence no owl:baseIri either).
+    const ttl = `${PREFIXES}
+      ex:Cat a owl:Class . ex:Dog a owl:Class .
+      [] a owl:AllDisjointClasses ; owl:distinctMembers ( ex:Cat ex:Dog ) .`;
+    expect(ontologyTerms(loadOwl(ttl).customExtensions)).toBeUndefined();
+  });
+
+  test(
+      'an anonymous node typed as two axiom kinds is carried under both',
+      () => {
+        // A single blank node typed as both owl:AllDisjointClasses and
+        // owl:AllDifferent is unusual but legal RDF; its one owl:members list
+        // must surface under each kind, not be dropped for the second.
+        const ttl = `${PREFIXES}
+      ex:Cat a owl:Class . ex:Dog a owl:Class .
+      [] a owl:AllDisjointClasses, owl:AllDifferent ;
+         owl:members ( ex:Cat ex:Dog ) .`;
+        expect(ontologyTerms(loadOwl(ttl).customExtensions)).toEqual({
+          'owl:AllDisjointClasses': [['Cat', 'Dog']],
+          'owl:AllDifferent': [['Cat', 'Dog']],
+          'owl:baseIri': 'http://example.com/x#',
+        });
+      });
+
   test(
       'reflexive / irreflexive / asymmetric characteristics -> relationship',
       () => {

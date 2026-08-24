@@ -18,12 +18,14 @@
 // characteristics (symmetric / transitive / functional / reflexive /
 // irreflexive / asymmetric), per-term annotations (rdfs:seeAlso,
 // rdfs:isDefinedBy, owl:deprecated, owl:versionInfo), enumerations
-// (owl:oneOf), and property chains (owl:propertyChainAxiom). A carried
-// cross-reference keeps the FULL referent IRI; the mapper shortens it to a
-// local name only when it lives in this ontology's own namespace (see
-// to_ir.refValue). Richer OWL still absent (SHACL, cardinality restrictions,
-// the set-level disjointness/identity axioms, individuals); see the "What is
-// not covered yet" note in the guide.
+// (owl:oneOf), property chains (owl:propertyChainAxiom), and the set-level
+// axioms that hang off an anonymous node rather than a named term
+// (owl:AllDisjointClasses, owl:AllDisjointProperties, owl:AllDifferent -> the
+// model). A carried cross-reference keeps the FULL referent IRI; the mapper
+// shortens it to a local name only when it lives in this ontology's own
+// namespace (see to_ir.refValue). Richer OWL still absent (SHACL, cardinality
+// restrictions, individuals); see the "What is not covered yet" note in the
+// guide.
 
 /**
  * Per-term annotations carried verbatim on any class or property -- links to
@@ -245,4 +247,21 @@ export interface OwlModel {
   classes: OwlClass[];
   datatypeProperties: OwlDatatypeProperty[];
   objectProperties: OwlObjectProperty[];
+  // Set-level axioms carried at the MODEL level (unlike every other carried
+  // construct, these are asserted on an anonymous node and are ABOUT a set of
+  // terms, not any one named class/property, so they have no entity/field/
+  // relationship to ride on). Each is a list of axioms, and each axiom is the
+  // set of member referent IRIs named by its `owl:members` list -- a set, so
+  // the mapper dedupes and order is not significant (contrast propertyChain).
+  // Full IRIs; the mapper shortens an in-namespace one. Empty when none.
+  //
+  // owl:AllDisjointClasses -- the listed classes are pairwise disjoint.
+  allDisjointClasses: string[][];
+  // owl:AllDisjointProperties -- the listed properties are pairwise disjoint.
+  allDisjointProperties: string[][];
+  // owl:AllDifferent -- the listed individuals are pairwise distinct. Members
+  // are individuals (which the converter does not model), so only the names are
+  // kept, exactly like owl:oneOf. Both the OWL 2 `owl:members` and the legacy
+  // OWL 1 `owl:distinctMembers` spelling of the list are accepted.
+  allDifferent: string[][];
 }
