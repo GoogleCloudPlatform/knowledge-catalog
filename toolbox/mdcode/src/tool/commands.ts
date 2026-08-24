@@ -13,11 +13,11 @@ import { SemanticModelSource } from '../libts/sources/semantic-model';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import {BigQueryClient} from '../libts/gcp/bigquery';
-import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
+import {LoadedModel, loadModels, loadSemanticModels} from '../libts/semantic/loader';
 import {transpileModels} from '../libts/semantic/transpile';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
 import {serializeModel} from '../libts/semantic/osi_converter';
-import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
+import {convertOsiToOwl, convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import {validateBigQueryDataSources, validatePushRequirements} from '../libts/semantic/validate';
 
 
@@ -536,10 +536,12 @@ async function pullSemanticModel(
 }
 
 
-export interface OwlImportOptions {
-  // Write the generated OSI document to this path instead of the semantic-model
-  // layout dir. When omitted, the model lands in the scope's model layout so the
-  // next `kcmd push` picks it up.
+export interface OwlOptions {
+  // import: write the generated OSI document here instead of the semantic-model
+  //   layout dir (when omitted, the model lands in the scope's model layout so
+  //   the next `kcmd push` picks it up).
+  // export: write the generated Turtle here instead of `<model>.owl.ttl` in the
+  //   current directory.
   out?: string;
 }
 
@@ -547,21 +549,24 @@ export interface OwlImportOptions {
 // filename: `sales.owl.ttl` -> `sales`.
 const OWL_EXTENSIONS = /\.owl\.ttl$|\.ttl$|\.owl$/i;
 
-// Handles `kcmd owl <action> <file>`. The only action is `import`: convert a
-// Turtle OWL ontology into an OSI model document that then rides the normal
-// `kcmd push` / `kcmd pull`. The converted model is UNBOUND (see the OWL
-// converter): its sources / join columns must be bound and a BigQuery
-// deployment target added before `kcmd push` will deploy it (to either
-// destination). Returns a process exit code.
+// Handles `kcmd owl <action> <file>`, dispatching to `import` (Turtle -> OSI) or
+// `export` (OSI -> Turtle). Returns a process exit code.
 export async function owl(
-  action: string, file: string, options: OwlImportOptions): Promise<number> {
-  if (action !== 'import') {
-    console.error(
-      `Error: unknown owl action '${action}'; the only action is 'import' `
-      + `(usage: kcmd owl import <file.ttl>).`);
-    return 1;
-  }
+  action: string, file: string, options: OwlOptions): Promise<number> {
+  if (action === 'import') return owlImport(file, options);
+  if (action === 'export') return owlExport(file, options);
+  console.error(
+    `Error: unknown owl action '${action}'; expected 'import' or 'export' `
+    + `(usage: kcmd owl import <file.ttl> | kcmd owl export <model.yaml>).`);
+  return 1;
+}
 
+// `kcmd owl import <file.ttl>`: convert a Turtle OWL ontology into an OSI model
+// document that then rides the normal `kcmd push` / `kcmd pull`. The converted
+// model is UNBOUND (see the OWL converter): its sources / join columns must be
+// bound and a BigQuery deployment target added before `kcmd push` will deploy it
+// (to either destination).
+async function owlImport(file: string, options: OwlOptions): Promise<number> {
   if (!fs.existsSync(file)) {
     console.error(`Error: file not found: ${file}`);
     return 1;
@@ -629,6 +634,57 @@ export async function owl(
     `note: this model is UNBOUND (placeholder \`unbound:\` sources, no deployment target).\n`
     + `      \`kcmd push\` is rejected until you bind each entity's source table and add\n`
     + `      a BigQuery deployment target -- validation needs both, for every --target.`);
+  return 0;
+}
+
+// `kcmd owl export <model.yaml>`: convert an OSI model document back to a Turtle
+// OWL ontology (the inverse of `owl import`), scoped to round-trip fidelity. A
+// model that originated as OWL round-trips exactly; constructs OWL cannot express
+// (metrics, SQL expressions, bound sources, associations) are dropped with a
+// warning (see the OWL converter).
+async function owlExport(file: string, options: OwlOptions): Promise<number> {
+  if (!fs.existsSync(file)) {
+    console.error(`Error: file not found: ${file}`);
+    return 1;
+  }
+
+  // loadModels throws on a malformed document; main.ts's try/catch reports it.
+  const { models, warnings: loadWarnings } =
+    loadModels(fs.readFileSync(file, 'utf8'));
+  for (const w of loadWarnings) {
+    console.warn(`Warning: ${w}`);
+  }
+  if (!models.length) {
+    console.error(
+      `Error: no semantic model found in '${file}'; nothing to export.`);
+    return 1;
+  }
+  if (models.length > 1) {
+    console.warn(
+      `Warning: '${file}' declares ${models.length} models; exporting only `
+      + `the first ('${models[0].name}'). OWL has no multi-model document.`);
+  }
+  const model = models[0];
+
+  const result = convertOsiToOwl(model);
+  for (const w of result.warnings) {
+    console.warn(`Warning: ${w}`);
+  }
+
+  const { classes, datatypeProperties, objectProperties } = result.stats;
+  console.log(
+    `exported ${classes} ${plural(classes, 'class', 'classes')}, `
+    + `${objectProperties} `
+    + `${plural(objectProperties, 'object property', 'object properties')}, `
+    + `${datatypeProperties} `
+    + `${plural(datatypeProperties, 'datatype property', 'datatype properties')}`);
+
+  // Sink: an explicit --out path writes directly; otherwise `<model>.owl.ttl` in
+  // the current directory, mirroring the import filename convention.
+  const outPath = options.out ?? `${model.name}.owl.ttl`;
+  fs.mkdirSync(path.dirname(path.resolve(outPath)), { recursive: true });
+  fs.writeFileSync(outPath, result.turtle);
+  console.log(`wrote ${outPath}`);
   return 0;
 }
 

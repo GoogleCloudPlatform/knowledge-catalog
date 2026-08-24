@@ -65,8 +65,8 @@ cli.command('push', 'Push catalog entries')
    });
 
 
-cli.command('owl <action> <file>', 'OWL ontology tools (action: import a .ttl ontology into an OSI model)')
-   .option('--out <path>', 'Write the generated OSI document to this path instead of the semantic-model layout dir')
+cli.command('owl <action> <file>', 'OWL ontology tools (action: import a .ttl ontology into an OSI model, or export an OSI model to a .ttl ontology)')
+   .option('--out <path>', 'import: write the generated OSI document here instead of the semantic-model layout dir; export: write the .ttl here instead of <model>.owl.ttl in the current directory')
    .action(async (action, file, options) => {
       let exitCode = 1;
       try {

@@ -660,6 +660,39 @@ $ kcmd push                  # CREATE OR REPLACE PROPERTY GRAPH (Customer/Order 
 Binding the `source` tables and the source foreign-key columns is a manual edit
 in this first cut.
 
+## Exporting to OWL
+
+The reverse command, `kcmd owl export`, writes a semantic model back out as a
+Turtle ontology — the exact mirror of import:
+
+```console
+$ kcmd owl export sales.yaml
+exported 2 classes, 1 object property, 9 datatype properties
+wrote sales.owl.ttl
+```
+
+By default it writes `<model>.owl.ttl` in the current directory; pass
+`--out <path>` to write it elsewhere. Every native construct maps back the way
+it came in (class → `owl:Class`, field → `owl:DatatypeProperty`, relationship →
+`owl:ObjectProperty`, `primary_key` → `owl:hasKey`, `extends` →
+`rdfs:subClassOf`, the datatype → its `xsd:` range), and the constructs that rode
+in as [carried extensions](#constructs-carried-as-custom-extensions-not-yet-native)
+(`owl:inverseOf`, `rdfs:subPropertyOf`, the property characteristics, the
+per-term annotations, …) are re-emitted verbatim — a shortened in-namespace name
+is rebuilt to a full IRI from the carried `owl:baseIri`.
+
+**Export is scoped to round-tripping.** A model that came *from* OWL exports
+losslessly: `owl import` then `owl export` reproduces an equivalent ontology, and
+re-importing it yields the identical model — the semantic model stays the single
+canonical form. A model authored natively can hold things OWL has no shape for
+(a `metric`, a field whose `expression` is not a bare column, an
+`importedExpression`, a bound `source`, a many-to-many `association`, a composite
+`unique_key`). Those have no OWL representation, so they are **dropped with a
+warning** rather than misrepresented; the class/property/edge they hang off is
+still exported. The physical `xsd` width of a datatype is not restored either
+(every integer width came in as `Integer`, so it goes back out as `xsd:integer`)
+— the logical type round-trips, the width does not, exactly as on import.
+
 ## Limitations
 
 Four different situations hide in "not covered": constructs already read but not
@@ -706,8 +739,8 @@ converter targets:
 - SHACL shapes, class expressions (`owl:unionOf` / `intersectionOf`, and any
   blank-node `owl:equivalentClass` / `rdfs:subClassOf`), individuals (A-box
   instances), and `owl:sameAs` / `owl:differentFrom` (which relate individuals).
-- OWL serializations other than Turtle (`.ttl`), and the reverse direction —
-  semantic model → OWL export. Import is one-way.
+- OWL serializations other than Turtle (`.ttl`). Import reads only `.ttl`, and
+  [export](#exporting-to-owl) writes only `.ttl`.
 
 **A push limitation, not a converter gap: no Knowledge-Catalog-only publish of an
 unbound model.** A freshly imported model cannot `kcmd push --target kc` until its

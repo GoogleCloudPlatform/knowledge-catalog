@@ -220,4 +220,6 @@ once — classes → entities, object properties → relationships, datatype
 properties → fields. The converted model is **unbound** (placeholder sources, no
 deployment target), so bind each entity's `source`, fill the relationship join
 columns, and add a deployment target before `kcmd push` will deploy it — then it
-rides the normal push / pull above. See [Importing an OWL ontology](owl-import.md).
+rides the normal push / pull above. The reverse, `kcmd owl export`, writes a
+model back out as Turtle (round-trip scoped). See
+[Importing an OWL ontology](owl-import.md).

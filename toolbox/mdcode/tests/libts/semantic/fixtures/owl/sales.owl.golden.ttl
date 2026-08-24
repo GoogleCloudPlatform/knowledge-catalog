@@ -1,0 +1,64 @@
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex:   <http://example.com/ontology#> .
+
+<http://example.com/ontology> a owl:Ontology ;
+    skos:altLabel "Sales domain" ;
+    rdfs:comment "A minimal sales domain: customers and the orders they place. (ontology version 1.0)" ;
+    skos:example "How many orders did each customer place last month?" .
+
+ex:Customer a owl:Class ;
+    skos:altLabel "Buyer" ;
+    rdfs:comment "A person or organization that places orders." ;
+    owl:hasKey ( ex:customerId ) .
+
+ex:Order a owl:Class ;
+    rdfs:comment "A purchase placed by a customer." ;
+    owl:hasKey ( ex:orderId ) .
+
+ex:customerId a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ;
+    rdfs:range xsd:string .
+
+ex:email a owl:DatatypeProperty, owl:InverseFunctionalProperty ;
+    rdfs:domain ex:Customer ;
+    rdfs:range xsd:string ;
+    rdfs:comment "The customer's unique email address." .
+
+ex:customerName a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ;
+    rdfs:range xsd:string ;
+    rdfs:label "name" .
+
+ex:signupDate a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ;
+    rdfs:range xsd:date .
+
+ex:isVip a owl:DatatypeProperty ;
+    rdfs:domain ex:Customer ;
+    rdfs:range xsd:boolean ;
+    rdfs:comment "Whether the customer is in the loyalty program." .
+
+ex:orderId a owl:DatatypeProperty ;
+    rdfs:domain ex:Order ;
+    rdfs:range xsd:string .
+
+ex:orderAmount a owl:DatatypeProperty ;
+    rdfs:domain ex:Order ;
+    rdfs:range xsd:decimal ;
+    skos:example "19.99" .
+
+ex:quantity a owl:DatatypeProperty ;
+    rdfs:domain ex:Order ;
+    rdfs:range xsd:integer .
+
+ex:orderDate a owl:DatatypeProperty ;
+    rdfs:domain ex:Order ;
+    rdfs:range xsd:date .
+
+ex:placedBy a owl:ObjectProperty ;
+    rdfs:domain ex:Order ;
+    rdfs:range ex:Customer ;
+    rdfs:comment "Links an order to the customer who placed it." .

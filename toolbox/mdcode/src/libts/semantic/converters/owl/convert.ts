@@ -1,13 +1,17 @@
-// OWL -> OSI conversion orchestrator.
+// OWL <-> OSI conversion orchestrator.
 //
-// The public entry point of the OWL converter: it wires the three steps --
+// The public entry point of the OWL converter. Import wires three steps --
 // parse Turtle (parse.ts) -> map to the IR (to_ir.ts) -> serialize to OSI YAML
-// (../../osi_converter, reused unchanged) -- and returns the YAML plus a small
-// summary the CLI reports. It adds no mapping policy of its own.
+// (../../osi_converter, reused unchanged). Export is the exact mirror --
+// map the IR to an OwlModel (from_ir.ts) -> serialize to Turtle (serialize.ts).
+// This file wires the steps and adds no mapping policy of its own.
 
+import {SemanticModel} from '../../ir';
 import {serializeModel} from '../../osi_converter';
 
+import {irToOwl} from './from_ir';
 import {parseOwl} from './parse';
+import {serializeOwl} from './serialize';
 import {owlToIr} from './to_ir';
 
 export interface ConvertResult {
@@ -40,6 +44,42 @@ export function convertOwlToOsi(
   const {yaml, warnings: serializeWarnings} = serializeModel(model);
   return {
     yaml,
+    stats,
+    warnings: [...mapWarnings, ...serializeWarnings],
+  };
+}
+
+export interface ExportResult {
+  // The Turtle (.ttl) ontology text, ready to write as `<model>.owl.ttl`.
+  turtle: string;
+  // Counts for the CLI's one-line summary, mirroring ConvertResult.stats: what
+  // was actually exported (classes / datatype properties / object properties).
+  stats:
+      {classes: number; datatypeProperties: number; objectProperties: number};
+  // Notes about IR content with no OWL representation (a metric, a bound
+  // source, a non-column expression, ...). Non-fatal: the construct is dropped,
+  // not the export.
+  warnings: string[];
+}
+
+/**
+ * Converts a semantic-model IR to a Turtle (.ttl) OWL ontology -- the inverse
+ * of convertOwlToOsi, scoped to round-trip fidelity.
+ *
+ * A model that originated as OWL round-trips (OWL -> OSI -> OWL -> OSI is
+ * stable at the IR level): every native construct maps back and the carried
+ * GOOGLE `owl:`/`rdfs:` extensions are re-emitted verbatim. A model authored
+ * natively exports lossily -- constructs OWL cannot express (metrics, SQL
+ * expressions, bound sources, associations) are dropped with a warning (see
+ * from_ir.ts).
+ *
+ * Never throws; representation gaps are reported as warnings.
+ */
+export function convertOsiToOwl(model: SemanticModel): ExportResult {
+  const {owl, warnings: mapWarnings, stats} = irToOwl(model);
+  const {turtle, warnings: serializeWarnings} = serializeOwl(owl);
+  return {
+    turtle,
     stats,
     warnings: [...mapWarnings, ...serializeWarnings],
   };
