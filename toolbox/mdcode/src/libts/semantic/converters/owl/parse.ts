@@ -65,6 +65,16 @@ const OWL_DISJOINT_WITH = `${OWL}disjointWith`;
 const OWL_DEPRECATED = `${OWL}deprecated`;
 const OWL_VERSION_INFO = `${OWL}versionInfo`;
 const OWL_THING = `${OWL}Thing`;
+// Set-level axioms. Each is asserted on an ANONYMOUS node (not a named term)
+// typed with one of these, whose `owl:members` list names the set the axiom
+// constrains. owl:AllDifferent also accepts the legacy OWL 1
+// `owl:distinctMembers` spelling. Carried verbatim at the model level (no
+// native OSI home).
+const OWL_ALL_DISJOINT_CLASSES = `${OWL}AllDisjointClasses`;
+const OWL_ALL_DISJOINT_PROPERTIES = `${OWL}AllDisjointProperties`;
+const OWL_ALL_DIFFERENT = `${OWL}AllDifferent`;
+const OWL_MEMBERS = `${OWL}members`;
+const OWL_DISTINCT_MEMBERS = `${OWL}distinctMembers`;
 
 const RDFS_LABEL = `${RDFS}label`;
 const RDFS_COMMENT = `${RDFS}comment`;
@@ -259,6 +269,13 @@ export function parseOwl(turtle: string): OwlModel {
   const reflexive = new Set<string>();
   const irreflexive = new Set<string>();
   const asymmetric = new Set<string>();
+  // Anonymous set-level-axiom nodes, in document order, deduped by node id (a
+  // node carries exactly one of these types, so one shared seen-set suffices).
+  // Their `owl:members` list is resolved after the list structure is known.
+  const allDisjointClassesNodes: string[] = [];
+  const allDisjointPropertiesNodes: string[] = [];
+  const allDifferentNodes: string[] = [];
+  const seenAxiomNode = new Set<string>();
   let ontologyIri: string|undefined;
   for (const q of quads) {
     if (q.predicate.value !== RDF_TYPE) continue;
@@ -296,6 +313,27 @@ export function parseOwl(turtle: string): OwlModel {
       if (ontologyIri === undefined) ontologyIri = subject;
       continue;
     }
+    if (type === OWL_ALL_DISJOINT_CLASSES) {
+      if (!seenAxiomNode.has(subject)) {
+        seenAxiomNode.add(subject);
+        allDisjointClassesNodes.push(subject);
+      }
+      continue;
+    }
+    if (type === OWL_ALL_DISJOINT_PROPERTIES) {
+      if (!seenAxiomNode.has(subject)) {
+        seenAxiomNode.add(subject);
+        allDisjointPropertiesNodes.push(subject);
+      }
+      continue;
+    }
+    if (type === OWL_ALL_DIFFERENT) {
+      if (!seenAxiomNode.has(subject)) {
+        seenAxiomNode.add(subject);
+        allDifferentNodes.push(subject);
+      }
+      continue;
+    }
     const k = KIND_BY_TYPE[type];
     if (!k) continue;
     if (!kind.has(subject)) {
@@ -309,11 +347,21 @@ export function parseOwl(turtle: string): OwlModel {
   // unrelated to the typed subjects, so they are collected separately.
   const listFirst = new Map<string, string>();
   const listRest = new Map<string, string>();
+  // The `owl:members` list head of each set-level-axiom node. owl:members (OWL
+  // 2) wins over the legacy owl:distinctMembers (OWL 1, owl:AllDifferent only)
+  // when a node carries both, regardless of the order the two triples appear.
+  const membersHead = new Map<string, string>();
   for (const q of quads) {
     if (q.predicate.value === RDF_FIRST)
       listFirst.set(q.subject.value, q.object.value);
     else if (q.predicate.value === RDF_REST)
       listRest.set(q.subject.value, q.object.value);
+    else if (q.predicate.value === OWL_MEMBERS)
+      membersHead.set(q.subject.value, q.object.value);
+    else if (
+        q.predicate.value === OWL_DISTINCT_MEMBERS &&
+        !membersHead.has(q.subject.value))
+      membersHead.set(q.subject.value, q.object.value);
   }
   // Resolves an RDF collection to its member IRIs, following rdf:rest to nil.
   // Defensive against a cycle or a missing link (stops at the first gap).
@@ -597,7 +645,26 @@ export function parseOwl(turtle: string): OwlModel {
     baseIri = baseIri ?? ontologyBaseIri(ontologyIri);
   }
 
-  return {baseIri, ontology, classes, datatypeProperties, objectProperties};
+  // Resolve each set-level-axiom node's `owl:members` list to its member IRIs.
+  // A node with no members list, or one whose list is broken/empty, contributes
+  // nothing (an axiom over no members is meaningless). Member names are kept as
+  // full IRIs; the mapper shortens an in-namespace one.
+  const resolveMembers = (nodes: string[]): string[][] =>
+      nodes.map(n => membersHead.get(n))
+          .filter((h): h is string => h !== undefined)
+          .map(resolveList)
+          .filter(members => members.length > 0);
+
+  return {
+    baseIri,
+    ontology,
+    classes,
+    datatypeProperties,
+    objectProperties,
+    allDisjointClasses: resolveMembers(allDisjointClassesNodes),
+    allDisjointProperties: resolveMembers(allDisjointPropertiesNodes),
+    allDifferent: resolveMembers(allDifferentNodes),
+  };
 }
 
 // The base namespace an ontology IRI stands for. An owl:Ontology is commonly

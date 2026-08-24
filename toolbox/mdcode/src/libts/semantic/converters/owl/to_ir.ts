@@ -33,6 +33,9 @@
 //   property characteristics -> relationship (symmetric, transitive, ...)
 //   owl:oneOf -> entity (enumerated class members)
 //   owl:propertyChainAxiom -> relationship (ordered property composition)
+//   owl:AllDisjointClasses -> model (a set of pairwise-disjoint classes)
+//   owl:AllDisjointProperties -> model (pairwise-disjoint properties)
+//   owl:AllDifferent -> model (a set of distinct individuals)
 //   rdfs:seeAlso, rdfs:isDefinedBy -> any (external pointers, verbatim)
 //   owl:deprecated, owl:versionInfo -> any (lifecycle metadata)
 //
@@ -644,13 +647,25 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     relationships,
     metrics: [],
   };
-  // Carry the base IRI as structured metadata WHENEVER a cross-reference was
-  // shortened to a local name (refValue), so a consumer can rebuild the full
-  // IRI as `<baseIri><localName>` mechanically instead of parsing it out of the
-  // prose description. Only emitted when it is actually needed for that
-  // reconstruction, so a model with no shortened reference stays clean.
-  if (shortenedRef && owl.baseIri)
-    attachOntology(model, {'owl:baseIri': owl.baseIri});
+  // Model-level carried facts, in a fixed key order so the block is stable. The
+  // set-level axioms come first (each an array of member SETS -- one per axiom
+  // -- so refs() per set, which dedupes; order within a set is not meaningful).
+  // owl:baseIri comes last and only WHEN a cross-reference was shortened to a
+  // local name (refValue), so a consumer can rebuild the full IRI as
+  // `<baseIri><localName>` mechanically instead of parsing it from the prose
+  // description; a model with no shortened reference stays clean. The set-level
+  // members are shortened through refs() too, so they alone can require the
+  // base IRI -- computed before the check below relies on that side effect.
+  const modelTerms: Record<string, unknown> = {};
+  if (owl.allDisjointClasses.length)
+    modelTerms['owl:AllDisjointClasses'] = owl.allDisjointClasses.map(refs);
+  if (owl.allDisjointProperties.length)
+    modelTerms['owl:AllDisjointProperties'] =
+        owl.allDisjointProperties.map(refs);
+  if (owl.allDifferent.length)
+    modelTerms['owl:AllDifferent'] = owl.allDifferent.map(refs);
+  if (shortenedRef && owl.baseIri) modelTerms['owl:baseIri'] = owl.baseIri;
+  attachOntology(model, modelTerms);
 
   return {
     model,
