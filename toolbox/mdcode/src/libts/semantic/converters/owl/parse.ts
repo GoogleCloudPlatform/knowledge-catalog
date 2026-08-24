@@ -52,6 +52,12 @@ const OWL_IRREFLEXIVE_PROPERTY = `${OWL}IrreflexiveProperty`;
 const OWL_ASYMMETRIC_PROPERTY = `${OWL}AsymmetricProperty`;
 const OWL_ONTOLOGY = `${OWL}Ontology`;
 const OWL_HAS_KEY = `${OWL}hasKey`;
+// List-valued constructs whose object is an RDF collection head (a blank node),
+// resolved with the same list walker as owl:hasKey. owl:oneOf enumerates a
+// class's members; owl:propertyChainAxiom composes a property from a sequence
+// of others. Both are carried verbatim (no native OSI home).
+const OWL_ONE_OF = `${OWL}oneOf`;
+const OWL_PROPERTY_CHAIN_AXIOM = `${OWL}propertyChainAxiom`;
 const OWL_INVERSE_OF = `${OWL}inverseOf`;
 const OWL_EQUIVALENT_PROPERTY = `${OWL}equivalentProperty`;
 const OWL_PROPERTY_DISJOINT_WITH = `${OWL}propertyDisjointWith`;
@@ -168,6 +174,8 @@ interface Annotations {
   ranges: string[];  // raw range IRIs; the mapper maps xsd:* -> datatype
   versionInfo?: string;
   keyListHeads: string[];          // owl:hasKey list heads (blank nodes)
+  oneOfListHeads: string[];        // owl:oneOf list heads (blank nodes)
+  chainListHeads: string[];        // owl:propertyChainAxiom list heads
   subClassOf: string[];            // local names (feed native `extends`)
   subPropertyOf: string[];         // full IRIs (named superproperties)
   equivalentClass: string[];       // full IRIs (named classes only)
@@ -187,6 +195,8 @@ function emptyAnnotations(): Annotations {
     domains: [],
     ranges: [],
     keyListHeads: [],
+    oneOfListHeads: [],
+    chainListHeads: [],
     subClassOf: [],
     subPropertyOf: [],
     equivalentClass: [],
@@ -379,6 +389,20 @@ export function parseOwl(turtle: string): OwlModel {
       case OWL_HAS_KEY:
         a.keyListHeads.push(q.object.value);
         break;
+      case OWL_ONE_OF:
+        // Enumerated class -> no native OSI home; carried verbatim. The object
+        // is an RDF collection head; the members (usually individuals) are
+        // resolved with the list walker at build time. This is recorded for any
+        // annotated subject, but only the class build reads it -- if the
+        // subject is typed a property instead, the heads are collected here and
+        // then dropped (an owl:oneOf on a property is not meaningful).
+        a.oneOfListHeads.push(q.object.value);
+        break;
+      case OWL_PROPERTY_CHAIN_AXIOM:
+        // Property chain -> no native OSI home; carried verbatim. The object is
+        // an RDF collection head naming the composed properties, in order.
+        a.chainListHeads.push(q.object.value);
+        break;
       case RDFS_SUBCLASS_OF:
         // Class hierarchy -> the entity's `extends`. Named superclasses only:
         // a blank-node object (an owl:Restriction and similar axioms) is not a
@@ -491,6 +515,11 @@ export function parseOwl(turtle: string): OwlModel {
           subClassOf: a.subClassOf,
           equivalentClass: a.equivalentClass,
           disjointWith: a.disjointWith,
+          // Full member IRIs of the enumeration set (a carried cross-reference;
+          // the mapper shortens an in-namespace one). flatMap unions the
+          // members across every oneOf head -- an enumeration is a set, so the
+          // mapper dedupes and order does not matter (contrast propertyChain).
+          oneOf: a.oneOfListHeads.flatMap(resolveList),
           ...commonAnnotations(a),
         });
         break;
@@ -527,6 +556,15 @@ export function parseOwl(turtle: string): OwlModel {
           inverseOf: a.inverseOf,
           equivalentProperty: a.equivalentProperty,
           propertyDisjointWith: a.propertyDisjointWith,
+          // One resolved chain per owl:propertyChainAxiom (map, NOT flatMap):
+          // OWL 2 permits several chain axioms on one property, and fusing them
+          // would be indistinguishable from a single longer chain. Full
+          // property IRIs in chain order (the mapper shortens in-namespace
+          // ones); within a chain order and repetition are preserved, so no
+          // dedupe. An empty chain (a broken/gapped list) is dropped rather
+          // than carried as [].
+          propertyChain:
+              a.chainListHeads.map(resolveList).filter(c => c.length),
           symmetric: symmetric.has(iri),
           transitive: transitive.has(iri),
           functional: functional.has(iri),

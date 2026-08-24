@@ -70,6 +70,17 @@ semantic_model:
       - name: Robot
         source: unbound:Robot
         description: A machine, never a person.
+      - name: LifeStage
+        source: unbound:LifeStage
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: |-
+              {
+                "owl:oneOf": [
+                  "Infant",
+                  "Adult"
+                ]
+              }
     relationships:
       - name: ancestorOf
         from: Person
@@ -112,4 +123,22 @@ semantic_model:
                 ],
                 "owl:SymmetricProperty": true,
                 "owl:ReflexiveProperty": true
+              }
+      - name: uncleOf
+        from: Person
+        to: Person
+        from_columns:
+          - TODO_BIND
+        to_columns:
+          - personId
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: |-
+              {
+                "owl:propertyChainAxiom": [
+                  [
+                    "ancestorOf",
+                    "relatedTo"
+                  ]
+                ]
               }

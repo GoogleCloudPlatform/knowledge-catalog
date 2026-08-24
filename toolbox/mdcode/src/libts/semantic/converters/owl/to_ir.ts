@@ -31,6 +31,8 @@
 //   owl:equivalentProperty -> field / relationship
 //   owl:propertyDisjointWith -> field / relationship
 //   property characteristics -> relationship (symmetric, transitive, ...)
+//   owl:oneOf -> entity (enumerated class members)
+//   owl:propertyChainAxiom -> relationship (ordered property composition)
 //   rdfs:seeAlso, rdfs:isDefinedBy -> any (external pointers, verbatim)
 //   owl:deprecated, owl:versionInfo -> any (lifecycle metadata)
 //
@@ -341,6 +343,15 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     return v;
   }));
 
+  // Like refs(), but preserves order AND duplicates -- for an ORDERED construct
+  // (a property chain) where a repeated referent is meaningful (e.g.
+  // hasParent/hasParent == grandparent), so deduping would silently corrupt it.
+  const refSeq = (iris: string[]): string[] => iris.map(iri => {
+    const v = refValue(iri, owl.baseIri);
+    if (v !== iri) shortenedRef = true;
+    return v;
+  });
+
   // Entities, one per class, in class-declaration order. Fields are attached in
   // datatype-property-declaration order below. Two classes can share a local
   // name (e.g. same name in different namespaces); OSI dataset names must be
@@ -387,14 +398,18 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     // OWL facts with no native OSI home, carried verbatim on the entity, in a
     // fixed key order. owl:equivalentClass / owl:disjointWith are class
     // cross-references (a class is one entity, so these are facts ABOUT it, not
-    // structural links); blank-node class expressions were dropped in the
-    // parser. commonTerms adds any per-term annotations (seeAlso, deprecated,
-    // ...).
+    // structural links); owl:oneOf enumerates the class's members (usually
+    // individuals, which are not modeled, so only the names are kept) -- an
+    // enumeration is a set, so refs() (which dedupes) is correct here, unlike
+    // the ordered propertyChainAxiom which uses refSeq; blank-node class
+    // expressions were dropped in the parser. commonTerms adds any per-term
+    // annotations (seeAlso, deprecated, ...).
     const entityTerms: Record<string, unknown> = {};
     if (c.equivalentClass.length)
       entityTerms['owl:equivalentClass'] = refs(c.equivalentClass);
     if (c.disjointWith.length)
       entityTerms['owl:disjointWith'] = refs(c.disjointWith);
+    if (c.oneOf.length) entityTerms['owl:oneOf'] = refs(c.oneOf);
     Object.assign(entityTerms, commonTerms(c));
     attachOntology(entity, entityTerms);
     entitiesByName.set(c.localName, entity);
@@ -554,13 +569,21 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     // OWL facts with no native OSI home, carried verbatim on the relationship,
     // in a fixed key order so the emitted block is stable. rdfs:subPropertyOf
     // -> relationship inheritance (kept as a fact, no flattening);
-    // owl:inverseOf -> the edge read the other way; owl:equivalentProperty /
-    // propertyDisjointWith -> property cross-references; then the edge's
-    // characteristics (symmetric / transitive / functional / reflexive /
-    // irreflexive / asymmetric); commonTerms adds any per-term annotations.
+    // owl:propertyChainAxiom -> this edge as an ordered composition of other
+    // properties; owl:inverseOf -> the edge read the other way;
+    // owl:equivalentProperty / propertyDisjointWith -> property
+    // cross-references; then the edge's characteristics (symmetric / transitive
+    // / functional / reflexive / irreflexive / asymmetric); commonTerms adds
+    // any per-term annotations.
     const relTerms: Record<string, unknown> = {};
     if (p.subPropertyOf.length)
       relTerms['rdfs:subPropertyOf'] = refs(p.subPropertyOf);
+    // One list per chain axiom (a property may carry several). Each is ordered
+    // and repetition-sensitive, so refSeq (not refs): a chain may name the same
+    // property twice (e.g. hasParent/hasParent for a grandparent). Emitted as a
+    // list of chains so distinct axioms are not fused into one flat sequence.
+    if (p.propertyChain.length)
+      relTerms['owl:propertyChainAxiom'] = p.propertyChain.map(refSeq);
     if (p.inverseOf.length) {
       // owl:inverseOf pairs two properties; one DISTINCT statement is the norm.
       // refs() shortens and dedupes first, so a repeated identical triple isn't
