@@ -42,4 +42,11 @@ describe('resolveTargets', () => {
     expect(resolveTargets('snowflake')).toBeUndefined();
     expect(resolveTargets('bq,snowflake')).toBeUndefined();
   });
+  test(
+      'a bare --target (cac yields boolean true) resolves to undefined', () => {
+        // cac passes boolean `true` when the flag is given with no value;
+        // resolve it to undefined so the caller reports a clean error rather
+        // than throwing on `.toLowerCase()`.
+        expect(resolveTargets(true as unknown as string)).toBeUndefined();
+      });
 });

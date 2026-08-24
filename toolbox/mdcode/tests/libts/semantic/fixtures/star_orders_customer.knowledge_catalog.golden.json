@@ -15,6 +15,13 @@
               "//bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales"
             ]
           }
+        },
+        "dataplex-types.global.guidelines": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/guidelines",
+          "data": {
+            "instructions": "Use this model for order analysis.",
+            "userManaged": true
+          }
         }
       }
     },
@@ -44,41 +51,33 @@
               {
                 "name": "o_orderkey",
                 "dataType": "STRING",
-                "metadataType": "STRING",
-                "description": "Order identifier",
-                "semantics": {
-                  "expression": "o_orderkey",
-                  "role": "DEFAULT"
-                }
+                "metadataType": "OTHER",
+                "description": "Order identifier"
               },
               {
                 "name": "o_custkey",
                 "dataType": "STRING",
-                "metadataType": "STRING",
-                "semantics": {
-                  "expression": "o_custkey",
-                  "role": "DEFAULT"
-                }
+                "metadataType": "OTHER"
               },
               {
                 "name": "o_orderdate",
                 "dataType": "STRING",
-                "metadataType": "STRING",
-                "semantics": {
-                  "expression": "o_orderdate",
-                  "role": "DIMENSION"
+                "metadataType": "OTHER",
+                "annotations": {
+                  "label": "Order Date"
                 }
               },
               {
                 "name": "o_totalprice",
                 "dataType": "STRING",
-                "metadataType": "STRING",
-                "semantics": {
-                  "expression": "o_totalprice",
-                  "role": "DEFAULT"
-                }
+                "metadataType": "OTHER"
               }
-            ]
+            ],
+            "primaryKey": {
+              "fields": [
+                "o_orderkey"
+              ]
+            }
           }
         }
       }
@@ -108,23 +107,20 @@
               {
                 "name": "c_custkey",
                 "dataType": "STRING",
-                "metadataType": "STRING",
-                "semantics": {
-                  "expression": "c_custkey",
-                  "role": "DEFAULT"
-                }
+                "metadataType": "OTHER"
               },
               {
                 "name": "c_name",
                 "dataType": "STRING",
-                "metadataType": "STRING",
-                "description": "Customer name",
-                "semantics": {
-                  "expression": "c_name",
-                  "role": "DEFAULT"
-                }
+                "metadataType": "OTHER",
+                "description": "Customer name"
               }
-            ]
+            ],
+            "primaryKey": {
+              "fields": [
+                "c_custkey"
+              ]
+            }
           }
         }
       }
@@ -142,8 +138,7 @@
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-metric",
           "data": {
             "entity": "orders",
-            "dataType": "NUMERIC",
-            "expression": "SUM(orders.o_totalprice)"
+            "dataType": "STRING"
           }
         }
       }
@@ -161,8 +156,7 @@
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-metric",
           "data": {
             "entity": "orders",
-            "dataType": "NUMERIC",
-            "expression": "COUNT(orders.o_orderkey)"
+            "dataType": "STRING"
           }
         }
       }
@@ -211,7 +205,6 @@
     }
   ],
   "warnings": [
-    "metric 'total_revenue': no datatype in the source model; defaulting the required semantic-metric.dataType to 'NUMERIC'",
-    "metric 'order_count': no datatype in the source model; defaulting the required semantic-metric.dataType to 'NUMERIC'"
+    "relationship 'orders_to_customer': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'orders-to-customer'), not 'orders_to_customer'."
   ]
 }

@@ -1,0 +1,120 @@
+# Test fixture -- AI-first semantics format (v0.2.0.dev0).
+#
+# A bound class hierarchy exercising entity-level inheritance (`extends`) on the
+# BigQuery leg: labels mimic the hierarchy and supertype fields flatten down.
+#
+#   Person  (base)
+#     |- Customer   extends Person
+#     |- Employee   extends Person
+#           |- Manager   extends Employee   (transitive: also a Person)
+#
+# Every class here is CONCRETE (backed by a real table). A `livesIn` edge on
+# Person shows that edges do NOT inherit: Customer/Employee/Manager gain the
+# Person LABEL and its fields, but not its relationships. `extends` is a
+# deliberate superset of released OSI (see osi_schema.test.ts).
+
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: people
+    description: People and organizations, as a class hierarchy
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{"deploymentTargets": ["//bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/people"]}'
+    datasets:
+      - name: Person
+        source: sqlgen-testing.demo.person
+        primary_key: [id]
+        description: A human being
+        fields:
+          - name: id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: id
+          - name: full_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: full_name
+            label: Full Name
+          - name: email
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: email
+      - name: Customer
+        source: sqlgen-testing.demo.customer
+        primary_key: [id]
+        extends: [Person]
+        fields:
+          - name: id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: id
+          - name: loyalty_tier
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: loyalty_tier
+      - name: Employee
+        source: sqlgen-testing.demo.employee
+        primary_key: [id]
+        extends: [Person]
+        fields:
+          - name: id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: id
+          - name: department
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: department
+      - name: Manager
+        source: sqlgen-testing.demo.manager
+        primary_key: [id]
+        extends: [Employee]
+        fields:
+          - name: id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: id
+          - name: team_size
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: team_size
+      - name: City
+        source: sqlgen-testing.demo.city
+        primary_key: [id]
+        fields:
+          - name: id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: id
+          - name: city_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: city_name
+    relationships:
+      - name: livesIn
+        from: Person
+        to: City
+        from_columns: [city_id]
+        to_columns: [id]
+    metrics:
+      # Targets City -- a leaf class. A metric on a SUPERTYPE (e.g. Person) is
+      # dropped with a warning: its label is shared across subclass tables and
+      # BigQuery cannot bind a MEASURE to a label carried by more than one table.
+      - name: total_cities
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(City.id)
+        description: Number of cities

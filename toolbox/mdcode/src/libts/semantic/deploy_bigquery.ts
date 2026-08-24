@@ -29,21 +29,11 @@ const GOOGLE_VENDOR = 'GOOGLE';
 // The capture groups are restricted to valid BigQuery identifier characters:
 // the components are interpolated into DDL unescaped (see qualifyGraph), so a
 // permissive `[^/]+` would let backticks or semicolons through. A URI that
-// carries the BigQuery Graph prefix but fails this full match is collected as
-// `malformed` (see bigQueryGraphTargets) and named in the deploy error, rather
-// than being silently skipped and later misreported as "no target declared".
+// fails this full match is collected as `malformed` (see
+// googleDeploymentTargets) and named in the deploy/validation error, rather than
+// being silently skipped and later misreported as "no target declared".
 const BQ_GRAPH_TARGET =
     /^\/\/bigquery\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/datasets\/([A-Za-z0-9_-]+)\/propertyGraphs\/([A-Za-z0-9_-]+)$/;
-
-// A deployment target that "looks like" a BigQuery Graph URI but fails the
-// strict match above: it carries the bigquery.googleapis host (even under a
-// typo'd scheme such as `https://`, or a truncated host missing `.com`) or the
-// graph-specific `/propertyGraph(s)/` path segment. Such a URI is reported as
-// malformed (see bigQueryGraphTargets) rather than silently dropped, so a
-// host/scheme/segment/identifier typo surfaces instead of being misreported as
-// "no target declared". An unrelated destination (e.g. a Dataplex URI) matches
-// neither this hint nor the strict form and is left alone.
-const BQ_GRAPH_TARGET_HINT = /bigquery\.googleapis|\/propertyGraphs?\//;
 
 
 export interface BigQueryGraphTarget {
@@ -76,14 +66,20 @@ export interface DeployResult {
 }
 
 
-// Extracts the BigQuery Graph deployment targets from a model's GOOGLE
-// custom extension. The extension `data` is an opaque, vendor-serialized JSON
-// string (the loader keeps it verbatim); we own its `deploymentTargets` shape.
-export function bigQueryGraphTargets(model: SemanticModel):
-    {targets: BigQueryGraphTarget[]; malformed: string[]} {
+// Reads a model's GOOGLE custom_extension(s) in a single pass and returns the
+// deployment-target facts every caller derives from them: every declared
+// deploymentTarget URI (`uris`), the subset that parse as BigQuery Graph targets
+// (`targets`), and the URIs that did not parse as a BigQuery Graph target
+// (`malformed`, kept so a caller can name a typo instead of silently skipping).
+// The extension `data` is an opaque, vendor-serialized JSON string (the loader
+// keeps it verbatim); we own its `deploymentTargets` shape. Throws on malformed
+// extension JSON. bigQueryGraphTargets and deploymentTargetUris are thin views
+// over this, and validation calls it directly so a push parses each extension
+// once rather than once per reader.
+export function googleDeploymentTargets(model: SemanticModel):
+    {uris: string[]; targets: BigQueryGraphTarget[]; malformed: string[]} {
+  const uris: string[] = [];
   const targets: BigQueryGraphTarget[] = [];
-  // BigQuery-prefixed URIs that failed the strict match (typo, bad identifier
-  // char). Kept so the caller can name them instead of silently skipping.
   const malformed: string[] = [];
 
   for (const ext of model.customExtensions ?? []) {
@@ -99,28 +95,49 @@ export function bigQueryGraphTargets(model: SemanticModel):
           model.name}': GOOGLE custom_extension 'data' is not valid JSON.`);
     }
 
-    const uris = data?.deploymentTargets;
-    if (!Array.isArray(uris)) {
+    const list = data?.deploymentTargets;
+    if (!Array.isArray(list)) {
       continue;
     }
 
-    for (const uri of uris) {
+    for (const uri of list) {
       if (typeof uri !== 'string') {
         continue;
       }
+      uris.push(uri);
       const m = uri.match(BQ_GRAPH_TARGET);
       if (m) {
         targets.push({project: m[1], dataset: m[2], graphName: m[3], uri});
-      } else if (BQ_GRAPH_TARGET_HINT.test(uri)) {
-        // Looks like a BigQuery Graph target but doesn't parse (host, scheme,
-        // path-segment, or identifier-char typo); a plain Dataplex/other URI is
-        // not our concern and is left alone.
+      } else {
+        // We only support BigQuery Graph deployment targets, so any URI that
+        // does not parse as one -- a host/scheme/segment/identifier typo, or an
+        // unrelated destination -- is collected as malformed and rejected
+        // (validate.ts, and the deploy leg) rather than silently ignored.
         malformed.push(uri);
       }
     }
   }
 
+  return {uris, targets, malformed};
+}
+
+
+// The BigQuery Graph deployment targets a model declares in its GOOGLE custom
+// extension, plus any BigQuery-prefixed URIs that failed to parse. A view over
+// googleDeploymentTargets.
+export function bigQueryGraphTargets(model: SemanticModel):
+    {targets: BigQueryGraphTarget[]; malformed: string[]} {
+  const {targets, malformed} = googleDeploymentTargets(model);
   return {targets, malformed};
+}
+
+
+// Every deploymentTarget URI a model declares, regardless of whether each parses
+// as a BigQuery Graph target. Validation uses this to require that a model
+// declares at least one deployment target; bigQueryGraphTargets narrows to the
+// BigQuery graphs. Throws on malformed extension JSON.
+export function deploymentTargetUris(model: SemanticModel): string[] {
+  return googleDeploymentTargets(model).uris;
 }
 
 

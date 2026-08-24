@@ -12,7 +12,13 @@ import { SemanticModelLayout } from '../libts/layouts/semantic-model';
 import { SemanticModelSource } from '../libts/sources/semantic-model';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
+import {BigQueryClient} from '../libts/gcp/bigquery';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
+import {transpileModels} from '../libts/semantic/transpile';
+import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
+import {serializeModel} from '../libts/semantic/osi_converter';
+import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
+import {validateBigQueryDataSources, validatePushRequirements} from '../libts/semantic/validate';
 
 
 export interface InitOptions {
@@ -25,8 +31,21 @@ export interface InitOptions {
 
 
 export interface PushOptions {
+  // Generic push flag for non-semantic-model (CatalogSync) scopes;
+  // forwarded to CatalogSync.push. The semantic-model legs ignore it.
+  // The catch-all "force the push" toggle -- distinct from
+  // `forceRemove` below, which specifically authorizes deleting models
+  // this push no longer includes.
   force?: boolean;
+  // Run every validation check and report pass/fail, but write nothing
+  // to any destination (a dry run). Applies to both push paths.
   validateOnly?: boolean;
+  // Delete Knowledge Catalog models already in the entry group that this push
+  // does not include (a removed or renamed model). Without it, an unrecognized
+  // model in the group fails the push. Semantic-model KC push only.
+  // Unlike `force` above, this authorizes a destructive delete rather
+  // than overriding a conflict.
+  forceRemove?: boolean;
   // Semantic-model push destination(s): 'bq', 'kc', 'all' (default), or a
   // comma-separated list (e.g. 'bq,kc'). Ignored for non-semantic-model scopes.
   target?: string;
@@ -35,6 +54,18 @@ export interface PushOptions {
   // plan), each block labeled by destination. Scope which destinations run with
   // --target. Works with or without --validate-only. Semantic-model push only.
   print?: boolean;
+  // Emit the SQL-expression fields not yet supported by the published Knowledge
+  // Catalog system-type templates (per-field schema semantics and the metric
+  // expression). Off by default so a push matches the live types; enable once
+  // the templates gain these fields. Semantic-model KC push only.
+  emitExpressions?: boolean;
+  // Rewrite vendor-dialect expressions (e.g. Snowflake/Databricks) to GoogleSQL
+  // before deploying, filling any target `expression` the loader left unset
+  // because only an `importedExpression` was supplied. Off by default (a model
+  // authored in GoogleSQL/ANSI needs nothing). Runs once over the shared models,
+  // so both the BigQuery and Knowledge Catalog legs see the filled expressions.
+  // Semantic-model push only. See ../libts/semantic/transpile.
+  transpile?: boolean;
 }
 
 
@@ -59,9 +90,13 @@ const TARGET_ALIASES: Record<string, PushTarget> = {
 // Resolves a --target flag value to its ordered, de-duplicated destinations, or
 // undefined if any token is unrecognized (the caller reports the error).
 // Accepts a comma-separated list ('bq,kc'), the keyword 'all' (every
-// destination), and defaults to 'bq'. The result is always in canonical
+// destination), and defaults to 'all'. The result is always in canonical
 // DESTINATIONS order.
-export function resolveTargets(target?: string): PushTarget[] | undefined {
+export function resolveTargets(target?: string | boolean): PushTarget[] | undefined {
+  // cac yields boolean `true` for a bare `--target` (no value); treat any
+  // non-string as an invalid selection so the caller reports it rather than
+  // throwing on `.toLowerCase()`.
+  if (target !== undefined && typeof target !== 'string') return undefined;
   const tokens = (target ?? DEFAULT_TARGET)
     .toLowerCase()
     .split(',')
@@ -138,15 +173,23 @@ export async function init(options: InitOptions): Promise<number> {
 }
 
 
-export async function pull(): Promise<number> {
+export interface PullOptions {
+  // Reconstruct + report only; never writes a file. Mirrors push --validate-only.
+  dryRun?: boolean;
+  // Authorize replacing a differently-named local model with the catalog's.
+  // Without it, a pull whose catalog model id differs from the local model on
+  // disk fails rather than leave two models in the entry group. Mirrors the
+  // push flag of the same name.
+  forceRemove?: boolean;
+}
+
+
+export async function pull(options: PullOptions = {}): Promise<number> {
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
 
   if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
-    console.log(
-      'Semantic-model scope: nothing to pull. Knowledge Catalog resource ' +
-      'pull for the semantic model is not yet implemented.');
-    return 0;
+    return await pullSemanticModel(ctx, snapshot, options);
   }
 
   const catalog = new dataplex.CatalogClient(ctx);
@@ -198,7 +241,52 @@ export async function push(options: PushOptions): Promise<number> {
       return 1;
     }
     for (const w of loaded.warnings) {
+      // When transpiling, the loader's "needs transpilation to ..." notes are
+      // superseded by the transpile pass's own per-expression outcome lines
+      // (transpiled / left imported); printing both is contradictory, so drop
+      // the loader note here and let the pass report the result below.
+      if (options.transpile && w.includes('needs transpilation')) continue;
       console.warn(`Warning: ${w}`);
+    }
+
+    // Rewrite vendor-dialect expressions to GoogleSQL once over the shared
+    // models, before validation, so both destination legs and every downstream
+    // check see the filled target expressions. Off unless --transpile: a model
+    // authored in GoogleSQL/ANSI needs nothing, and the pass degrades to the
+    // imported form (with a warning) if any expression fails to transpile.
+    let models = loaded.models;
+    if (options.transpile) {
+      const transpiled = await transpileModels(models);
+      models = transpiled.models;
+      for (const w of transpiled.warnings) {
+        console.warn(`Warning: ${w}`);
+      }
+    }
+
+    // Enforce push-time requirements once over the shared models, before any
+    // destination runs: every model must declare a deployment target, and a
+    // BigQuery-graph-targeting model's metrics must each resolve to one entity.
+    // This is also the --validate-only path, so a dry run reports the same
+    // failures.
+    const validationErrors = validatePushRequirements(models);
+    if (validationErrors.length) {
+      for (const e of validationErrors) {
+        console.error(`Error: ${e}`);
+      }
+      return 1;
+    }
+
+    // Live pre-flight over the same models, before any destination runs: every
+    // entity's BigQuery source table must be reachable, so a push to either
+    // BigQuery or Knowledge Catalog fails fast when the model could not deploy.
+    // Runs for every --target and for --validate-only.
+    const accessErrors = await validateBigQueryDataSources(
+        models, new BigQueryClient(ctx), source.project ?? ctx.project);
+    if (accessErrors.length) {
+      for (const e of accessErrors) {
+        console.error(`Error: ${e}`);
+      }
+      return 1;
     }
 
     // Run the resolved destinations in canonical order (BigQuery first); the
@@ -206,21 +294,42 @@ export async function push(options: PushOptions): Promise<number> {
     // fails.
     for (const target of targets) {
       const code = target === 'bigquery'
-        ? await pushBigQuery(loaded.models, ctx, options)
-        : await pushKnowledgeCatalog(loaded.models, ctx, options, source);
+        ? await pushBigQuery(models, ctx, options)
+        : await pushKnowledgeCatalog(models, ctx, options, source);
       if (code !== 0) return code;
     }
     return 0;
   }
 
+  // These flags only take effect on a semantic-model push; on a regular
+  // catalog snapshot they are inert. Warn rather than silently ignore them, so
+  // a user who expected (say) --transpile to run isn't misled by a clean exit.
+  const semanticOnlyFlags: Array<[boolean, string]> = [
+    [!!options.transpile, '--transpile'],
+    [options.target !== undefined, '--target'],
+    [!!options.print, '--print'],
+    [!!options.emitExpressions, '--emit-expressions'],
+    [!!options.forceRemove, '--force-remove'],
+  ];
+  for (const [set, flag] of semanticOnlyFlags) {
+    if (set) {
+      console.warn(
+          `Warning: ${flag} only applies to a semantic-model push; ignoring it.`);
+    }
+  }
+
   const catalog = new dataplex.CatalogClient(ctx);
   const sync = new kcmd.CatalogSync(catalog, snapshot);
 
-  console.log('Pushing catalog entries...');
+  console.log(options.validateOnly
+    ? 'Validating catalog entries...'
+    : 'Pushing catalog entries...');
   const result = await sync.push(options);
 
   if (result.success) {
-    console.log('Successfully pushed catalog entries.');
+    console.log(options.validateOnly
+      ? 'Validation complete; no changes applied.'
+      : 'Successfully pushed catalog entries.');
     return 0;
   }
   else {
@@ -276,6 +385,8 @@ async function pushKnowledgeCatalog(
     location: source.location,
     entryGroup: source.entryGroup,
     validateOnly: options.validateOnly,
+    forceRemove: options.forceRemove,
+    emitExpressions: options.emitExpressions,
   });
 
   for (const w of result.warnings) {
@@ -294,14 +405,234 @@ async function pushKnowledgeCatalog(
     return 1;
   }
   const n = result.created + result.updated;
-  const removed =
-      result.deleted ? `; removed ${result.deleted} orphaned` : '';
+  const removed = result.deleted
+    ? `; removed ${result.deleted} orphaned entr${
+        result.deleted === 1 ? 'y' : 'ies'}`
+    : '';
   const linked = result.linked
     ? `; linked ${result.linked} relationship${result.linked === 1 ? '' : 's'}`
+    : '';
+  const unlinked = result.unlinked
+    ? `; unlinked ${result.unlinked} orphaned link${
+        result.unlinked === 1 ? '' : 's'}`
     : '';
   console.log(options.validateOnly
     ? 'Validation complete; no changes applied.'
     : `Wrote ${result.created} new and ${result.updated} updated ` +
-        `Knowledge Catalog entr${n === 1 ? 'y' : 'ies'}${removed}${linked}.`);
+        `Knowledge Catalog entr${n === 1 ? 'y' : 'ies'}${removed}${linked}${
+            unlinked}.`);
   return 0;
+}
+
+
+// Pulls the semantic model's Knowledge Catalog entries back into local model
+// documents (catalog/EntryGroups/<entryGroup>/<model>.yaml) and prints the
+// result. The destination coordinates come from the scope
+// (project.location.entryGroup). An entry group holds one model: a local
+// document with the same name is overwritten in place; a differently-named
+// local document is a conflict (pull would leave two models), so pull fails
+// unless --force-remove authorizes deleting the stale local model first.
+// Returns a process exit code (0 on success).
+async function pullSemanticModel(
+  ctx: context.ApiContext, snapshot: kcmd.CatalogSnapshot,
+  options: PullOptions): Promise<number> {
+  // The semantic-model source always resolves to the SemanticModel layout
+  // (see createLayout), so these casts are safe.
+  const layout = snapshot.layout as SemanticModelLayout;
+  const source = snapshot.manifest.source as SemanticModelSource;
+
+  console.log(options.dryRun
+    ? 'Reconstructing semantic model from Knowledge Catalog (dry run)...'
+    : 'Pulling semantic model from Knowledge Catalog...');
+
+  const catalog = new dataplex.CatalogClient(ctx);
+  const result = await pullKnowledgeCatalog(catalog, {
+    project: source.project,
+    location: source.location,
+    entryGroup: source.entryGroup,
+  });
+
+  for (const w of result.warnings) {
+    console.warn(`Warning: ${w}`);
+  }
+
+  if (!result.models.length) {
+    console.log('No semantic models found; nothing to pull.');
+    return 0;
+  }
+
+  // Reconcile the local layout with the catalog. A local document whose name
+  // differs from the pulled model would leave the entry group with two models,
+  // so pull refuses by default; --force-remove deletes the stale local
+  // document(s) before the catalog's is written.
+  const catalogNames = new Set(result.models.map(m => m.name));
+  // Compare by the on-disk path each name maps to, not the raw name: a catalog
+  // model name and a local document whose names sanitize to the same file (e.g.
+  // 'a/b' -> 'a_b.yaml') are the same model, not a stale conflict.
+  const catalogPaths = new Set(result.models.map(m => layout.modelPath(m.name)));
+  const staleLocal = layout.modelDocuments()
+    .map(d => d.name)
+    .filter(n => !catalogPaths.has(layout.modelPath(n)));
+  if (staleLocal.length) {
+    if (!options.forceRemove) {
+      const localList = staleLocal.map(n => `'${n}'`).join(', ');
+      const catalogList = [...catalogNames].map(n => `'${n}'`).join(', ');
+      console.error(
+        `Error: local model(s) ${localList} do not match the catalog ` +
+        `model ${catalogList} in this entry group. An entry group holds ` +
+        `one model, so pull will not leave two behind. Re-run with ` +
+        `--force-remove to delete the local model(s) and pull the ` +
+        `catalog's.`);
+      return 1;
+    }
+    for (const name of staleLocal) {
+      const p = layout.modelPath(name);
+      if (options.dryRun) {
+        console.log(`  would remove ${p}`);
+      }
+      else {
+        layout.removeModelDocument(name);
+        console.log(`  removed ${p}`);
+      }
+    }
+  }
+
+  let created = 0;
+  let updated = 0;
+  // Guard against two reconstructed models whose names map to the same file
+  // (path-separator sanitizing, or two anchors sharing a display name): the
+  // later write would silently clobber the earlier. Track written paths so the
+  // collision is reported and the dry-run/real counts agree on the repeat.
+  const writtenBy = new Map<string, string>();
+  for (const model of result.models) {
+    const serialized = serializeModel(model);
+    for (const w of serialized.warnings) {
+      console.warn(`Warning: [${model.name}] ${w}`);
+    }
+    const target = layout.modelPath(model.name);
+    const prior = writtenBy.get(target);
+    if (prior !== undefined && prior !== model.name) {
+      console.warn(
+          `Warning: models '${prior}' and '${model.name}' both map to ` +
+          `${target}; the later overwrites the earlier -- rename one model.`);
+    }
+    const existed = writtenBy.has(target) || layout.hasModel(model.name);
+    writtenBy.set(target, model.name);
+    if (options.dryRun) {
+      console.log(`  would ${existed ? 'update' : 'create'} ${target}`);
+    }
+    else {
+      layout.writeModelDocument(model.name, serialized.yaml);
+      console.log(`  ${existed ? 'updated' : 'created'} ${target}`);
+    }
+    if (existed) updated++;
+    else created++;
+  }
+
+  console.log(options.dryRun
+    ? `Dry run: would write ${created} new and ${updated} updated model document(s).`
+    : `Wrote ${created} new and ${updated} updated model document(s).`);
+  return 0;
+}
+
+
+export interface OwlImportOptions {
+  // Write the generated OSI document to this path instead of the semantic-model
+  // layout dir. When omitted, the model lands in the scope's model layout so the
+  // next `kcmd push` picks it up.
+  out?: string;
+}
+
+// Recognized OWL source extensions, stripped to derive the model name from the
+// filename: `sales.owl.ttl` -> `sales`.
+const OWL_EXTENSIONS = /\.owl\.ttl$|\.ttl$|\.owl$/i;
+
+// Handles `kcmd owl <action> <file>`. The only action is `import`: convert a
+// Turtle OWL ontology into an OSI model document that then rides the normal
+// `kcmd push` / `kcmd pull`. The converted model is UNBOUND (see the OWL
+// converter): its sources / join columns must be bound and a BigQuery
+// deployment target added before `kcmd push` will deploy it (to either
+// destination). Returns a process exit code.
+export async function owl(
+  action: string, file: string, options: OwlImportOptions): Promise<number> {
+  if (action !== 'import') {
+    console.error(
+      `Error: unknown owl action '${action}'; the only action is 'import' `
+      + `(usage: kcmd owl import <file.ttl>).`);
+    return 1;
+  }
+
+  if (!fs.existsSync(file)) {
+    console.error(`Error: file not found: ${file}`);
+    return 1;
+  }
+
+  const turtle = fs.readFileSync(file, 'utf8');
+  const modelName = path.basename(file).replace(OWL_EXTENSIONS, '');
+  if (!modelName) {
+    console.error(`Error: could not derive a model name from '${file}'.`);
+    return 1;
+  }
+
+  // convertOwlToOsi throws only on malformed Turtle; main.ts's try/catch
+  // reports it.
+  const result = convertOwlToOsi(turtle, modelName);
+  for (const w of result.warnings) {
+    console.warn(`Warning: ${w}`);
+  }
+
+  const { classes, datatypeProperties, objectProperties } = result.stats;
+
+  // Guard: an ontology with no owl:Class yields a model with no datasets, which
+  // is not a loadable OSI model. Fail clearly -- before the summary, so we do
+  // not print a "converted 0 classes" line for a model we are about to reject --
+  // rather than writing an empty artifact that only errors on a later push/pull.
+  if (classes === 0) {
+    console.error(
+      `Error: no owl:Class declarations found in '${file}'; nothing to import.`);
+    return 1;
+  }
+
+  console.log(
+    `converted ${classes} ${plural(classes, 'class', 'classes')}, `
+    + `${objectProperties} `
+    + `${plural(objectProperties, 'object property', 'object properties')}, `
+    + `${datatypeProperties} `
+    + `${plural(datatypeProperties, 'datatype property', 'datatype properties')}`);
+
+  // Sink: an explicit --out path writes directly; otherwise the semantic-model
+  // layout places the document under the scope's entry group so `kcmd push`
+  // finds it.
+  let writtenPath: string;
+  if (options.out) {
+    fs.mkdirSync(path.dirname(path.resolve(options.out)), { recursive: true });
+    fs.writeFileSync(options.out, result.yaml);
+    writtenPath = options.out;
+  }
+  else {
+    const ctx = context.ApiContext.default();
+    const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+    if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {
+      console.error(
+        `Error: this catalog is not a semantic-model scope, so there is no `
+        + `model layout to write into. Run \`kcmd init --semantic-model ...\` `
+        + `first, or pass --out <path> to write the OSI document directly.`);
+      return 1;
+    }
+    const layout = snapshot.layout as SemanticModelLayout;
+    layout.writeModelDocument(modelName, result.yaml);
+    writtenPath = layout.modelPath(modelName);
+  }
+
+  console.log(`wrote ${writtenPath}`);
+  console.log(
+    `note: this model is UNBOUND (placeholder \`unbound:\` sources, no deployment target).\n`
+    + `      \`kcmd push\` is rejected until you bind each entity's source table and add\n`
+    + `      a BigQuery deployment target -- validation needs both, for every --target.`);
+  return 0;
+}
+
+// Selects the singular or plural form based on `n` (English count agreement).
+function plural(n: number, one: string, many: string): string {
+  return n === 1 ? one : many;
 }

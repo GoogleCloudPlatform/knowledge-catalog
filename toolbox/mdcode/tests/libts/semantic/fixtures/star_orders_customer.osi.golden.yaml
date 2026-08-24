@@ -1,0 +1,86 @@
+version: 0.2.0.dev0
+semantic_model:
+  - name: sales
+    description: Sales orders with customer attributes
+    ai_context:
+      instructions: Use this model for order analysis.
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{"deploymentTargets":
+          ["//bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales"]}'
+    datasets:
+      - name: orders
+        source: samples.tpch.orders
+        primary_key:
+          - o_orderkey
+        description: One row per order
+        fields:
+          - name: o_orderkey
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: o_orderkey
+            description: Order identifier
+          - name: o_custkey
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: o_custkey
+          - name: o_orderdate
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: o_orderdate
+            label: Order Date
+            dimension:
+              is_time: true
+            ai_context:
+              synonyms:
+                - order date
+                - date
+          - name: o_totalprice
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: o_totalprice
+      - name: customer
+        source: samples.tpch.customer
+        primary_key:
+          - c_custkey
+        fields:
+          - name: c_custkey
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: c_custkey
+          - name: c_name
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: c_name
+            description: Customer name
+    relationships:
+      - name: orders_to_customer
+        from: orders
+        to: customer
+        from_columns:
+          - o_custkey
+        to_columns:
+          - c_custkey
+    metrics:
+      - name: total_revenue
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: SUM(orders.o_totalprice)
+        description: Total order revenue
+        ai_context:
+          synonyms:
+            - revenue
+            - sales
+      - name: order_count
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: COUNT(orders.o_orderkey)
+        description: Number of orders

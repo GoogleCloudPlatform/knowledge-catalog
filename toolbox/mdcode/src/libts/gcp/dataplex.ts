@@ -75,6 +75,12 @@ interface EntryList {
   nextPageToken?: string;
 }
 
+interface EntryLinkList {
+  // Absent when the referenced entry has no links of the requested type(s).
+  entryLinks?: EntryLink[];
+  nextPageToken?: string;
+}
+
 
 export class CatalogClient extends api.ApiClient {
 
@@ -243,16 +249,61 @@ export class CatalogClient extends api.ApiClient {
     return await this._post<EntryLink>(resourceName, entryLink, params);
   }
 
-  // Patches an existing entry link. Only the aspects are mutable (the entry
-  // references and link type are immutable server-side), so callers pass the
-  // link name + aspects with updateMask ['aspects'].
+  // Patches an existing entry link. UpdateEntryLink has no update mask: the
+  // aspects present in the request body are the ones written, narrowed to
+  // `aspectKeys` (each `project.location.aspectType`) when given. The entry
+  // references and link type are immutable server-side.
   async updateEntryLink(entryLink: EntryLink,
-                        updateMask?: string[]): Promise<api.ApiResult<EntryLink>> {
+                        aspectKeys?: string[]): Promise<api.ApiResult<EntryLink>> {
     const params: Record<string, any> = {};
-    if (updateMask && updateMask.length) {
-      params.updateMask = updateMask.join(',');
+    if (aspectKeys && aspectKeys.length) {
+      params.aspectKeys = aspectKeys;
     }
     return await this._patch<EntryLink>(entryLink.name!, entryLink, params);
+  }
+
+  async deleteEntryLink(project: string, location: string, entryGroup: string,
+                        entryLinkId: string): Promise<api.ApiResult<EntryLink>> {
+    const name = `${
+        catalogContainer(project, location, entryGroup)}/entryLinks/${
+        entryLinkId}`;
+    return await this._delete<EntryLink>(name);
+  }
+
+  // Returns every entry link that references `entry` (its full resource name),
+  // draining all pages. There is no list-entry-links collection API; the server
+  // only exposes links per referenced entry, via the location-scoped
+  // :lookupEntryLinks custom verb (mirroring :lookupEntry). `entryLinkTypes`
+  // optionally filters to specific link types (server caps it at 10); `entryMode`
+  // filters by the entry's role in the link (SOURCE/TARGET). The server caps a
+  // page at 10 links, so this follows nextPageToken until exhausted and returns
+  // the flat list. A non-200 on any page aborts and is returned as-is.
+  async lookupEntryLinks(
+      project: string, location: string,
+      opts: {entry: string; entryLinkTypes?: string[];
+             entryMode?: 'UNSPECIFIED' | 'SOURCE' | 'TARGET'}):
+      Promise<api.ApiResult<EntryLink[]>> {
+    const container = `${catalogContainer(project, location)}:lookupEntryLinks`;
+    const links: EntryLink[] = [];
+    let pageToken: string | undefined = undefined;
+    do {
+      const params: Record<string, any> = {
+        entry: opts.entry,
+        entryLinkTypes: opts.entryLinkTypes,
+        entryMode: opts.entryMode,
+        pageSize: 10,
+        pageToken,
+      };
+      const res = await this._get<EntryLinkList>(container, params);
+      if (res.status != 200) {
+        return { status: res.status, message: res.message };
+      }
+      for (const link of res.result?.entryLinks ?? []) {
+        links.push(link);
+      }
+      pageToken = res.result?.nextPageToken;
+    } while (pageToken);
+    return { status: 200, result: links };
   }
 
 }

@@ -1,0 +1,51 @@
+name: push_validate_only_update
+description: >
+  A --validate-only push that would update an existing entry writes nothing to
+  the catalog (regression for the ignored validateOnly flag on non-semantic
+  scopes).
+setup:
+  catalog:
+    entryGroups:
+      - name: projects/p/locations/us/entryGroups/custom-group
+    entryTypes:
+      - name: projects/p/locations/global/entryTypes/custom-type
+    entries:
+      - name: projects/p/locations/us/entryGroups/custom-group/entries/custom-entry
+        entryType: projects/p/locations/global/entryTypes/custom-type
+        entrySource:
+          description: Old custom description
+
+  fileSystem:
+    catalog.yaml: |
+      scope: entryGroup.p.us.custom-group
+      snapshot:
+        entries:
+          - p.global.custom-type
+
+actions:
+  - action: pull
+  - action: updateEntry
+    entry:
+      name: custom-entry
+      type: p.global.custom-type
+      resource:
+        description: New custom description
+    fields:
+      - resource
+  - action: push
+    options:
+      validateOnly: true
+
+assert:
+  # The local snapshot holds the edited description ...
+  fileSystem:
+    catalog/custom-entry.yaml:
+      - contains: "name: custom-entry"
+      - contains: "description: New custom description"
+  # ... but the catalog still shows the old description: nothing was modified.
+  catalog:
+    entries:
+      - name: projects/p/locations/us/entryGroups/custom-group/entries/custom-entry
+        entryType: projects/p/locations/global/entryTypes/custom-type
+        entrySource:
+          description: Old custom description
