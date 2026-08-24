@@ -13,6 +13,8 @@
 #     transitive / asymmetric characteristics on an object property ->
 #     relationship extension
 #   - owl:oneOf on a class (an enumeration) -> entity extension
+#   - an unqualified cardinality owl:Restriction (reached via rdfs:subClassOf)
+#     -> entity extension
 #   - owl:AllDisjointClasses / owl:AllDisjointProperties / owl:AllDifferent,
 #     each asserted on an ANONYMOUS node about a SET of terms (belonging to no
 #     single class/property) -> model extension
@@ -41,11 +43,20 @@
 
 # Person is equivalent to the EXTERNAL foaf:Person (carried as a full IRI) and
 # disjoint with the IN-NAMESPACE ex:Robot (carried as the local name "Robot").
-# rdfs:seeAlso / rdfs:isDefinedBy point outside the model, so they ride verbatim.
+# It also carries an unqualified cardinality restriction: every person has
+# exactly one name (owl:minCardinality/owl:maxCardinality 1 on the in-namespace
+# ex:name, reached via an anonymous owl:Restriction under rdfs:subClassOf -- the
+# restriction is not a named superclass, so it adds no `extends`, only the
+# carried restriction). rdfs:seeAlso / rdfs:isDefinedBy point outside the model,
+# so they ride verbatim.
 ex:Person a owl:Class ;
     rdfs:comment "A human being." ;
     owl:equivalentClass foaf:Person ;
     owl:disjointWith ex:Robot ;
+    rdfs:subClassOf [ a owl:Restriction ;
+                      owl:onProperty ex:name ;
+                      owl:minCardinality 1 ;
+                      owl:maxCardinality 1 ] ;
     rdfs:seeAlso <https://schema.org/Person> ;
     rdfs:isDefinedBy <http://example.com/people> ;
     owl:hasKey ( ex:personId ) .

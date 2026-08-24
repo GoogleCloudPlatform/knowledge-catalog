@@ -79,6 +79,13 @@ semantic_model:
                 "owl:disjointWith": [
                   "Robot"
                 ],
+                "owl:Restriction": [
+                  {
+                    "owl:onProperty": "name",
+                    "owl:minCardinality": 1,
+                    "owl:maxCardinality": 1
+                  }
+                ],
                 "rdfs:seeAlso": [
                   "<https://schema.org/Person>"
                 ],

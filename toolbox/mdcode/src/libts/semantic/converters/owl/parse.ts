@@ -12,7 +12,7 @@
 
 import {Parser} from 'n3';
 
-import {OwlClass, OwlCommonAnnotations, OwlDatatypeProperty, OwlModel, OwlObjectProperty, OwlOntology,} from './model';
+import {OwlClass, OwlCommonAnnotations, OwlDatatypeProperty, OwlModel, OwlObjectProperty, OwlOntology, OwlRestriction,} from './model';
 
 // RDF/RDFS/OWL/SKOS/Dublin-Core term IRIs we recognize. Only these; anything
 // else is carried by neither the parser nor the model (see the user guide's
@@ -75,6 +75,28 @@ const OWL_ALL_DISJOINT_PROPERTIES = `${OWL}AllDisjointProperties`;
 const OWL_ALL_DIFFERENT = `${OWL}AllDifferent`;
 const OWL_MEMBERS = `${OWL}members`;
 const OWL_DISTINCT_MEMBERS = `${OWL}distinctMembers`;
+// Unqualified cardinality restrictions. Each is an ANONYMOUS owl:Restriction
+// node reached through `rdfs:subClassOf` from a named class, naming the
+// restricted property (owl:onProperty) and one or more of the three unqualified
+// cardinality predicates. Carried verbatim on the class (no native OSI home).
+// The QUALIFIED forms (owl:qualifiedCardinality and friends, marked by
+// owl:onClass / owl:onDataRange) are a separate shape, out of scope for now: a
+// node carrying either marker is skipped rather than mis-carried as
+// unqualified.
+const OWL_RESTRICTION = `${OWL}Restriction`;
+const OWL_ON_PROPERTY = `${OWL}onProperty`;
+const OWL_CARDINALITY = `${OWL}cardinality`;
+const OWL_MIN_CARDINALITY = `${OWL}minCardinality`;
+const OWL_MAX_CARDINALITY = `${OWL}maxCardinality`;
+const OWL_ON_CLASS = `${OWL}onClass`;
+const OWL_ON_DATA_RANGE = `${OWL}onDataRange`;
+// The predicates gathered off an owl:Restriction node in pass 2 (see
+// restrictionData). Restricting the pass-2 branch to these avoids allocating a
+// data record for an unrelated triple (e.g. an rdfs:comment) on a restriction.
+const RESTRICTION_PREDICATES = new Set([
+  OWL_ON_PROPERTY, OWL_CARDINALITY, OWL_MIN_CARDINALITY, OWL_MAX_CARDINALITY,
+  OWL_ON_CLASS, OWL_ON_DATA_RANGE
+]);
 
 const RDFS_LABEL = `${RDFS}label`;
 const RDFS_COMMENT = `${RDFS}comment`;
@@ -144,6 +166,21 @@ function ntriplesLiteral(
   return quoted;
 }
 
+// The non-negative integer value of a cardinality literal (owl:cardinality /
+// owl:minCardinality / owl:maxCardinality). OWL types these
+// xsd:nonNegativeInteger, but a plain Turtle integer (xsd:integer, e.g. a bare
+// `1`) is accepted too -- the datatype is not checked, only the lexical form.
+// Returns undefined for a non-literal or any value that is not a plain run of
+// decimal digits, so a malformed cardinality is ignored rather than carried.
+// The digits-only test (not Number()) is deliberate: Number() would coerce an
+// empty or whitespace-only literal to 0, and a hex ("0x1F") or exponent
+// ("1e2") string to a bogus integer, silently fabricating a cardinality.
+function cardinalityValue(term: {termType: string; value: string}): number|
+    undefined {
+  if (term.termType !== 'Literal') return undefined;
+  return /^[0-9]+$/.test(term.value) ? Number(term.value) : undefined;
+}
+
 // The most common namespace among a set of term IRIs -- the ontology's own
 // namespace. A tie (or a single term) resolves to the first in document order,
 // since `best` is only replaced on a STRICTLY greater count. Returns undefined
@@ -186,6 +223,7 @@ interface Annotations {
   keyListHeads: string[];          // owl:hasKey list heads (blank nodes)
   oneOfListHeads: string[];        // owl:oneOf list heads (blank nodes)
   chainListHeads: string[];        // owl:propertyChainAxiom list heads
+  restrictionHeads: string[];      // subClassOf owl:Restriction nodes (blanks)
   subClassOf: string[];            // local names (feed native `extends`)
   subPropertyOf: string[];         // full IRIs (named superproperties)
   equivalentClass: string[];       // full IRIs (named classes only)
@@ -207,6 +245,7 @@ function emptyAnnotations(): Annotations {
     keyListHeads: [],
     oneOfListHeads: [],
     chainListHeads: [],
+    restrictionHeads: [],
     subClassOf: [],
     subPropertyOf: [],
     equivalentClass: [],
@@ -280,6 +319,11 @@ export function parseOwl(turtle: string): OwlModel {
   const seenDisjointClasses = new Set<string>();
   const seenDisjointProperties = new Set<string>();
   const seenDifferent = new Set<string>();
+  // Anonymous owl:Restriction nodes (blank nodes), by id, so an rdfs:subClassOf
+  // whose object is one is recognized as a cardinality restriction rather than
+  // a named superclass. Their onProperty / cardinality fields are gathered in
+  // pass 2 (restrictionData).
+  const restrictionNodes = new Set<string>();
   let ontologyIri: string|undefined;
   for (const q of quads) {
     if (q.predicate.value !== RDF_TYPE) continue;
@@ -338,11 +382,34 @@ export function parseOwl(turtle: string): OwlModel {
       }
       continue;
     }
+    if (type === OWL_RESTRICTION) {
+      // An anonymous restriction is a BLANK node by definition. A named IRI
+      // typed owl:Restriction is not an anonymous restriction -- ignore the
+      // marker so it keeps whatever named kind (owl:Class, ...) it also carries
+      // rather than being pruned below and vanishing (it is never reached via a
+      // blank-node subClassOf, so it could not be carried as a restriction).
+      if (q.subject.termType === 'BlankNode') restrictionNodes.add(subject);
+      continue;
+    }
     const k = KIND_BY_TYPE[type];
     if (!k) continue;
     if (!kind.has(subject)) {
       kind.set(subject, k);
       order.push(subject);
+    }
+  }
+  // A blank node typed BOTH owl:Restriction and a named kind (owl:Class, an
+  // owl:*Property) -- legal but nonsensical RDF, and possible from a reasoner
+  // materialization -- must not also surface as a bogus entity/property named
+  // after a blank-node id. The restriction reading owns it. Prune it from the
+  // named-term maps here, after pass 1, so the outcome is independent of which
+  // type triple was seen first (a guard at registration would miss the case
+  // where the named type came before the owl:Restriction type). Pruning from
+  // `order` also keeps the blank-node id out of the dominantNamespace tally.
+  for (const node of restrictionNodes) {
+    if (kind.delete(node)) {
+      const i = order.indexOf(node);
+      if (i >= 0) order.splice(i, 1);
     }
   }
 
@@ -359,6 +426,28 @@ export function parseOwl(turtle: string): OwlModel {
   // owl:distinctMembers on an owl:AllDisjoint* node is ignored rather than
   // carried.
   const membersHead = new Map<string, string>();
+  // owl:Restriction field data, by restriction node id: the restricted property
+  // and any of the three unqualified cardinality values, plus a `qualified`
+  // flag set when the node carries owl:onClass / owl:onDataRange (a QUALIFIED
+  // restriction, out of scope for now) so build skips it rather than carrying
+  // its unqualified-looking parts. Resolved against each class's subClassOf
+  // restriction heads at build time.
+  interface RestrictionData {
+    onProperty?: string;
+    cardinality?: number;
+    minCardinality?: number;
+    maxCardinality?: number;
+    qualified: boolean;
+  }
+  const restrictionData = new Map<string, RestrictionData>();
+  const restrictionFor = (node: string): RestrictionData => {
+    let r = restrictionData.get(node);
+    if (!r) {
+      r = {qualified: false};
+      restrictionData.set(node, r);
+    }
+    return r;
+  };
   for (const q of quads) {
     if (q.predicate.value === RDF_FIRST)
       listFirst.set(q.subject.value, q.object.value);
@@ -370,6 +459,39 @@ export function parseOwl(turtle: string): OwlModel {
         q.predicate.value === OWL_DISTINCT_MEMBERS &&
         seenDifferent.has(q.subject.value) && !membersHead.has(q.subject.value))
       membersHead.set(q.subject.value, q.object.value);
+    else if (
+        RESTRICTION_PREDICATES.has(q.predicate.value) &&
+        restrictionNodes.has(q.subject.value)) {
+      const r = restrictionFor(q.subject.value);
+      switch (q.predicate.value) {
+        case OWL_ON_PROPERTY:
+          // Named property only; a blank-node property expression (an inverse
+          // property, ...) is out of scope.
+          if (q.object.termType === 'NamedNode') r.onProperty = q.object.value;
+          break;
+        case OWL_CARDINALITY: {
+          const n = cardinalityValue(q.object);
+          if (n !== undefined) r.cardinality = n;
+          break;
+        }
+        case OWL_MIN_CARDINALITY: {
+          const n = cardinalityValue(q.object);
+          if (n !== undefined) r.minCardinality = n;
+          break;
+        }
+        case OWL_MAX_CARDINALITY: {
+          const n = cardinalityValue(q.object);
+          if (n !== undefined) r.maxCardinality = n;
+          break;
+        }
+        case OWL_ON_CLASS:
+        case OWL_ON_DATA_RANGE:
+          r.qualified = true;
+          break;
+        default:
+          break;
+      }
+    }
   }
   // Resolves an RDF collection to its member IRIs, following rdf:rest to nil.
   // Defensive against a cycle or a missing link (stops at the first gap).
@@ -386,6 +508,27 @@ export function parseOwl(turtle: string): OwlModel {
     }
     return out;
   };
+  // Resolves a class's subClassOf restriction heads to its carried cardinality
+  // restrictions. A head contributes one OwlRestriction only when it names a
+  // property (owl:onProperty) AND states at least one unqualified cardinality;
+  // a qualified restriction (owl:onClass / owl:onDataRange), a value
+  // restriction (owl:someValuesFrom / allValuesFrom, no cardinality), or a
+  // malformed one contributes nothing. Member names are kept as full IRIs; the
+  // mapper shortens an in-namespace one.
+  const resolveRestrictions = (heads: string[]): OwlRestriction[] =>
+      heads.map(h => restrictionData.get(h))
+          .filter(
+              (r): r is RestrictionData => r !== undefined && !r.qualified &&
+                  r.onProperty !== undefined &&
+                  (r.cardinality !== undefined ||
+                   r.minCardinality !== undefined ||
+                   r.maxCardinality !== undefined))
+          .map(r => ({
+                 onProperty: r.onProperty!,
+                 cardinality: r.cardinality,
+                 minCardinality: r.minCardinality,
+                 maxCardinality: r.maxCardinality,
+               }));
 
   // Pass 3: accumulate annotations for each typed subject (and the ontology
   // header) in document order, so the first label is the primary and the rest
@@ -460,15 +603,25 @@ export function parseOwl(turtle: string): OwlModel {
         a.chainListHeads.push(q.object.value);
         break;
       case RDFS_SUBCLASS_OF:
-        // Class hierarchy -> the entity's `extends`. Named superclasses only:
-        // a blank-node object (an owl:Restriction and similar axioms) is not a
-        // named class, so it is ignored here (out of scope). The implicit
-        // universal superclasses (owl:Thing / rdfs:Resource) are ignored too --
-        // every class subclasses them, so they carry no inheritance
-        // information.
-        if (q.object.termType === 'NamedNode' &&
-            !TOP_CLASS_IRIS.has(q.object.value))
-          a.subClassOf.push(localName(q.object.value));
+        // Class hierarchy. A NAMED superclass feeds the entity's `extends`
+        // (except the implicit universal superclasses owl:Thing /
+        // rdfs:Resource, which every class trivially subclasses, so they carry
+        // no inheritance information). A BLANK-NODE object typed
+        // owl:Restriction is a cardinality restriction -- recorded here as a
+        // restriction head for carriage on the class (see restrictionData); its
+        // unqualified cardinality is resolved at build time. Any other
+        // blank-node axiom (a class expression: owl:intersectionOf, a value
+        // restriction, ...) is out of scope and ignored. `includes` dedupes a
+        // subClassOf triple that names the same restriction node twice.
+        if (q.object.termType === 'NamedNode') {
+          if (!TOP_CLASS_IRIS.has(q.object.value))
+            a.subClassOf.push(localName(q.object.value));
+        } else if (
+            q.object.termType === 'BlankNode' &&
+            restrictionNodes.has(q.object.value) &&
+            !a.restrictionHeads.includes(q.object.value)) {
+          a.restrictionHeads.push(q.object.value);
+        }
         break;
       case RDFS_SUBPROPERTY_OF:
         // Property hierarchy -> no native OSI home; carried verbatim by the
@@ -576,6 +729,7 @@ export function parseOwl(turtle: string): OwlModel {
           // members across every oneOf head -- an enumeration is a set, so the
           // mapper dedupes and order does not matter (contrast propertyChain).
           oneOf: a.oneOfListHeads.flatMap(resolveList),
+          restrictions: resolveRestrictions(a.restrictionHeads),
           ...commonAnnotations(a),
         });
         break;

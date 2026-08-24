@@ -61,6 +61,17 @@ semantic_model:
           - Person
           - Employee
         description: An employee who manages others.
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: |-
+              {
+                "owl:Restriction": [
+                  {
+                    "owl:onProperty": "employeeId",
+                    "owl:minCardinality": 1
+                  }
+                ]
+              }
     relationships:
       - name: managedBy
         from: Employee

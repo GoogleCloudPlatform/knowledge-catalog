@@ -32,6 +32,7 @@
 //   owl:propertyDisjointWith -> field / relationship
 //   property characteristics -> relationship (symmetric, transitive, ...)
 //   owl:oneOf -> entity (enumerated class members)
+//   owl:Restriction -> entity (unqualified cardinality on a class's property)
 //   owl:propertyChainAxiom -> relationship (ordered property composition)
 //   owl:AllDisjointClasses -> model (a set of pairwise-disjoint classes)
 //   owl:AllDisjointProperties -> model (pairwise-disjoint properties)
@@ -52,7 +53,7 @@
 
 import {AiContext, CustomExtension, Entity, Field, Relationship, SemanticModel,} from '../../ir';
 
-import {OwlCommonAnnotations, OwlModel, OwlOntology} from './model';
+import {OwlCommonAnnotations, OwlModel, OwlOntology, OwlRestriction} from './model';
 import {localName, namespace} from './parse';
 
 export interface ToIrResult {
@@ -340,20 +341,40 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   // than once (its shortened form is identical), so a repeated identical triple
   // never looks like a conflict.
   let shortenedRef = false;
-  const refs = (iris: string[]): string[] => dedupe(iris.map(iri => {
+  // Shortens ONE referent IRI to its in-namespace local name (see refValue),
+  // recording whether it was actually shortened so owl:baseIri is carried on
+  // the model whenever any reference is (below). The single building block the
+  // list-shortening helpers -- and the single-IRI owl:onProperty on a
+  // restriction -- are all built from.
+  const ref1 = (iri: string): string => {
     const v = refValue(iri, owl.baseIri);
     if (v !== iri) shortenedRef = true;
     return v;
-  }));
+  };
+  // refValue over a list, deduped. Mapping before dedupe collapses a referent
+  // stated more than once (its shortened form is identical), so a repeated
+  // identical triple never looks like a conflict.
+  const refs = (iris: string[]): string[] => dedupe(iris.map(ref1));
 
   // Like refs(), but preserves order AND duplicates -- for an ORDERED construct
   // (a property chain) where a repeated referent is meaningful (e.g.
   // hasParent/hasParent == grandparent), so deduping would silently corrupt it.
-  const refSeq = (iris: string[]): string[] => iris.map(iri => {
-    const v = refValue(iri, owl.baseIri);
-    if (v !== iri) shortenedRef = true;
-    return v;
-  });
+  const refSeq = (iris: string[]): string[] => iris.map(ref1);
+
+  // One carried owl:Restriction record: the restricted property (shortened when
+  // in-namespace) followed by whichever unqualified cardinalities were stated,
+  // in a fixed key order (exact, then min, then max) so the emitted block is
+  // stable. The value mirrors the construct faithfully -- a compound is a real
+  // object, not a flattened string -- matching the carriage convention.
+  const restrictionTerm = (r: OwlRestriction): Record<string, unknown> => {
+    const rec: Record<string, unknown> = {'owl:onProperty': ref1(r.onProperty)};
+    if (r.cardinality !== undefined) rec['owl:cardinality'] = r.cardinality;
+    if (r.minCardinality !== undefined)
+      rec['owl:minCardinality'] = r.minCardinality;
+    if (r.maxCardinality !== undefined)
+      rec['owl:maxCardinality'] = r.maxCardinality;
+    return rec;
+  };
 
   // Entities, one per class, in class-declaration order. Fields are attached in
   // datatype-property-declaration order below. Two classes can share a local
@@ -405,14 +426,22 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     // individuals, which are not modeled, so only the names are kept) -- an
     // enumeration is a set, so refs() (which dedupes) is correct here, unlike
     // the ordered propertyChainAxiom which uses refSeq; blank-node class
-    // expressions were dropped in the parser. commonTerms adds any per-term
-    // annotations (seeAlso, deprecated, ...).
+    // expressions were dropped in the parser. owl:Restriction carries this
+    // class's unqualified cardinality restrictions (reached via
+    // rdfs:subClassOf). commonTerms adds any per-term annotations (seeAlso,
+    // deprecated, ...).
     const entityTerms: Record<string, unknown> = {};
     if (c.equivalentClass.length)
       entityTerms['owl:equivalentClass'] = refs(c.equivalentClass);
     if (c.disjointWith.length)
       entityTerms['owl:disjointWith'] = refs(c.disjointWith);
     if (c.oneOf.length) entityTerms['owl:oneOf'] = refs(c.oneOf);
+    // Unqualified cardinality restrictions (owl:Restriction reached via
+    // rdfs:subClassOf) -> a list of records, one per restriction, each naming
+    // the restricted property and its stated cardinalities. No native OSI home
+    // (OSI has no cardinality concept), so carried verbatim on the entity.
+    if (c.restrictions.length)
+      entityTerms['owl:Restriction'] = c.restrictions.map(restrictionTerm);
     Object.assign(entityTerms, commonTerms(c));
     attachOntology(entity, entityTerms);
     entitiesByName.set(c.localName, entity);

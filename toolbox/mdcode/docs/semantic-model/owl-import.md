@@ -12,13 +12,13 @@ datatype property → property, plus **class hierarchies** (`rdfs:subClassOf` �
 entity `extends`, see [Class hierarchies](#class-hierarchies-rdfssubclassof)).
 Constructs that have **no native home yet** — property inheritance
 (`rdfs:subPropertyOf`), the inverse / equivalence / disjointness cross-references,
-the property characteristics, and per-term annotations (`rdfs:seeAlso`,
+the property characteristics, the set-level disjointness / identity axioms,
+unqualified cardinality restrictions, and per-term annotations (`rdfs:seeAlso`,
 `owl:deprecated`, …) — are not dropped: they **ride along verbatim** as custom
 extensions, lossless and inert, until they earn a first-class concept (see
 [Constructs carried as custom extensions](#constructs-carried-as-custom-extensions-not-yet-native)).
-Richer OWL still not read at all (SHACL, cardinality restrictions, the set-level
-disjointness / identity axioms, individuals) is listed in
-[Limitations](#limitations).
+Richer OWL still not read at all (SHACL, *qualified* cardinality restrictions,
+individuals) is listed in [Limitations](#limitations).
 
 ## 1. The OWL file
 
@@ -247,7 +247,7 @@ appears nowhere above.
 | `owl:DatatypeProperty` | `fields[]` on **each** domain's dataset | a property with several `rdfs:domain` values lands on each; `expression` defaults to the property's local name (a valid column ref once bound) |
 | `owl:ObjectProperty` | `relationships[]` | `from` = domain, `to` = range; join columns bound to the destination key when it has one, else `TODO_BIND` (see [binding](#4-going-from-ontology-to-a-running-graph-binding)); with several `rdfs:domain`/`rdfs:range` values only the first of each is kept (a relationship is one source → one destination) and the rest are warned |
 | `rdfs:subClassOf` (named superclass) | dataset `extends[]` | **entity-level inheritance only** — records the parent(s) in document order; not read on object properties (see [Class hierarchies](#class-hierarchies-rdfssubclassof)) |
-| `rdfs:subPropertyOf`, `owl:inverseOf`, `owl:equivalentClass`, `owl:disjointWith`, `owl:oneOf`, `owl:equivalentProperty`, `owl:propertyDisjointWith`, `owl:propertyChainAxiom`, `owl:AllDisjointClasses`, `owl:AllDisjointProperties`, `owl:AllDifferent`, the property characteristics, `rdfs:seeAlso`, `rdfs:isDefinedBy`, `owl:deprecated`, `owl:versionInfo` | `custom_extensions` (GOOGLE) | **no native home yet** — carried verbatim, inert on push (see [Constructs carried as custom extensions](#constructs-carried-as-custom-extensions-not-yet-native)) |
+| `rdfs:subPropertyOf`, `owl:inverseOf`, `owl:equivalentClass`, `owl:disjointWith`, `owl:oneOf`, `owl:equivalentProperty`, `owl:propertyDisjointWith`, `owl:propertyChainAxiom`, `owl:AllDisjointClasses`, `owl:AllDisjointProperties`, `owl:AllDifferent`, unqualified cardinality restrictions (`owl:cardinality` / `owl:minCardinality` / `owl:maxCardinality` on an `owl:Restriction`), the property characteristics, `rdfs:seeAlso`, `rdfs:isDefinedBy`, `owl:deprecated`, `owl:versionInfo` | `custom_extensions` (GOOGLE) | **no native home yet** — carried verbatim, inert on push (see [Constructs carried as custom extensions](#constructs-carried-as-custom-extensions-not-yet-native)) |
 | `rdfs:range xsd:*` | field `datatype` | see [Datatypes](#datatypes-rdfsrange) |
 | `owl:hasKey ( ... )` | dataset `primary_key` | single or composite, in list order |
 | `owl:InverseFunctionalProperty` | dataset `unique_keys` | a uniquely-identifying property; omitted when it is already the `primary_key`; a lone one on a keyless class is promoted to `primary_key` instead |
@@ -363,10 +363,15 @@ the `Person` and `Customer` datasets come out as (`Customer` carrying
 ```
 
 Multiple superclasses are allowed (`extends: [Person, Employee]`, in document
-order). A `subClassOf` whose object is a blank-node axiom (`owl:Restriction` and
-similar) is not a named class, so it is ignored, as are the implicit universal
-superclasses `owl:Thing` / `rdfs:Resource` (every class subclasses them, so they
-carry no inheritance information).
+order). A `subClassOf` whose object is a blank-node axiom is not a named class,
+so it never becomes an `extends` — but an **unqualified cardinality
+`owl:Restriction`** reached this way is not simply dropped: its constraint rides
+along verbatim on the class (see [Constructs carried as custom
+extensions](#constructs-carried-as-custom-extensions-not-yet-native)). Any other
+blank-node class expression (`owl:intersectionOf`, a value restriction, …) is
+ignored, as are the implicit universal superclasses `owl:Thing` /
+`rdfs:Resource` (every class subclasses them, so they carry no inheritance
+information).
 
 Two boundaries to be clear about:
 
@@ -458,6 +463,7 @@ disjointness axioms stay two entries rather than merging into one flat list.
 | `owl:equivalentClass` | entity | `string[]` (equivalent class refs) | this class denotes the same set as another |
 | `owl:disjointWith` | entity | `string[]` (disjoint class refs) | no individual is in both classes |
 | `owl:oneOf` | entity | `string[]` (member refs; an enumeration is a **set** — deduped, order not significant) | the class is exactly this enumerated set of members |
+| `owl:Restriction` (unqualified cardinality, via `rdfs:subClassOf`) | entity | `object[]` — one record per restriction: `{ "owl:onProperty": ref, "owl:cardinality"? / "owl:minCardinality"? / "owl:maxCardinality"?: number }` (a compound, so a real object, not a flattened string) | how many values of the named property a class instance may have (the **qualified** forms are not read yet — see [Limitations](#limitations)) |
 | `rdfs:subPropertyOf` | field / relationship | `string[]` (super-property refs) | this property refines a broader one |
 | `owl:equivalentProperty` | field / relationship | `string[]` (equivalent property refs) | this property means the same as another |
 | `owl:propertyDisjointWith` | field / relationship | `string[]` (disjoint property refs) | the two properties never both hold |
@@ -618,10 +624,14 @@ IRI):
 | `owl:` | `http://www.w3.org/2002/07/owl#` |
 | `rdfs:` | `http://www.w3.org/2000/01/rdf-schema#` |
 
-Blank-node forms are **not** carried: an `owl:equivalentClass` (or
-`rdfs:subClassOf`) whose object is a class *expression* (`owl:intersectionOf`, an
-`owl:Restriction`, …) is a definition rather than a plain cross-reference, so it
-is out of scope (see [Limitations](#limitations)).
+Most blank-node forms are **not** carried: an `owl:equivalentClass` (or
+`rdfs:subClassOf`) whose object is a class *expression* (`owl:intersectionOf`, a
+value restriction, …) is a definition rather than a plain cross-reference, so it
+is out of scope (see [Limitations](#limitations)). The **one** blank-node shape
+that *is* read is an unqualified cardinality `owl:Restriction` reached through
+`rdfs:subClassOf`: its `owl:onProperty` + `owl:cardinality` / `owl:minCardinality`
+/ `owl:maxCardinality` ride on the class as an `owl:Restriction` record (see the
+table above).
 
 ## 4. Going from ontology to a running graph (binding)
 
@@ -707,21 +717,31 @@ import:
     (`owl:propertyChainAxiom`).
   - **Set-level axioms** — `owl:AllDisjointClasses`,
     `owl:AllDisjointProperties`, `owl:AllDifferent` (carried on the model).
+  - **Unqualified cardinality restrictions** — `owl:cardinality` /
+    `owl:minCardinality` / `owl:maxCardinality` on an anonymous `owl:Restriction`
+    reached through `rdfs:subClassOf` (carried on the class). The restriction
+    node must carry an explicit `a owl:Restriction` type triple (the shape the
+    reader targets); a bare blank node with `owl:onProperty` + a cardinality but
+    no `owl:Restriction` type is not recognized and is silently skipped.
   - **Per-term annotations** — `rdfs:seeAlso`, `rdfs:isDefinedBy`,
     `owl:deprecated`, `owl:versionInfo`.
 
-**Not read yet — the next candidate for carriage.** Cardinality
-(`owl:minCardinality` / `owl:maxCardinality`) lives on an anonymous
-`owl:Restriction` reached through `rdfs:subClassOf` — the last blank-node shape
-the converter does not yet read. Carrying it needs an `owl:Restriction` reader
-joined back to its class.
+**Not read yet — the next candidate for carriage.** *Qualified* cardinality
+(`owl:qualifiedCardinality` / `owl:minQualifiedCardinality` /
+`owl:maxQualifiedCardinality`) is the unqualified restriction now read plus an
+`owl:onClass` / `owl:onDataRange` naming the class or datatype the count ranges
+over. The reader already sees these markers and *skips* such a restriction rather
+than mis-carrying it as unqualified; carrying it in full means reading the extra
+`onClass` / `onDataRange` referent alongside the count.
 
 **Not read — out of scope.** Richer OWL/RDF beyond the schema-shaped subset this
 converter targets:
 
-- SHACL shapes, class expressions (`owl:unionOf` / `intersectionOf`, and any
-  blank-node `owl:equivalentClass` / `rdfs:subClassOf`), individuals (A-box
-  instances), and `owl:sameAs` / `owl:differentFrom` (which relate individuals).
+- SHACL shapes, class expressions (`owl:unionOf` / `intersectionOf`, value
+  restrictions, and any blank-node `owl:equivalentClass` / `rdfs:subClassOf`
+  *other than* the unqualified cardinality restriction read above), qualified
+  cardinality restrictions, individuals (A-box instances), and `owl:sameAs` /
+  `owl:differentFrom` (which relate individuals).
 - OWL serializations other than Turtle (`.ttl`), and the reverse direction —
   semantic model → OWL export. Import is one-way.
 

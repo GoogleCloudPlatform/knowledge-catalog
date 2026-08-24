@@ -278,6 +278,23 @@ describe('class hierarchies map rdfs:subClassOf to entity extends', () => {
         expect(byName['Employee'].extends).toBeUndefined();
       });
 
+  test(
+      'a subClassOf cardinality owl:Restriction is carried on the class',
+      () => {
+        // Manager rdfs:subClassOf an anonymous owl:Restriction (onProperty
+        // employeeId, minCardinality 1). The restriction is not a named
+        // superclass, so it adds no `extends`; its unqualified cardinality is
+        // carried verbatim on the entity instead.
+        const model =
+            loadModels(convertOwlToOsi(ttl, 'hierarchy').yaml).models[0];
+        const manager = model.entities.find(e => e.name === 'Manager')!;
+        expect(manager.extends).toEqual(['Person', 'Employee']);
+        expect(ontologyTerms(manager.customExtensions)).toEqual({
+          'owl:Restriction':
+              [{'owl:onProperty': 'employeeId', 'owl:minCardinality': 1}]
+        });
+      });
+
   test('inheritance is recorded, not flattened (no fields copied down)', () => {
     // This cut only RECORDS the hierarchy; it does not resolve it. A subclass
     // keeps exactly its own fields -- Person's fullName does NOT appear on
@@ -1297,6 +1314,230 @@ describe('OWL constructs carried as custom extensions', () => {
           'owl:baseIri': 'http://example.com/x#',
         });
       });
+
+  // --- Unqualified cardinality restrictions (carried on the class). ---------
+  // An anonymous owl:Restriction reached via rdfs:subClassOf, naming a property
+  // and one or more of owl:cardinality / owl:minCardinality /
+  // owl:maxCardinality. No native OSI home, so it rides on the entity as a list
+  // of records. The QUALIFIED forms (owl:onClass / owl:qualifiedCardinality)
+  // are out of scope.
+
+  test('owl:cardinality (exact) on a subClassOf restriction -> entity', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class ;
+          rdfs:subClassOf [ a owl:Restriction ;
+                            owl:onProperty ex:ssn ;
+                            owl:cardinality 1 ] .
+      ex:ssn a owl:DatatypeProperty ; rdfs:domain ex:Person ; rdfs:range xsd:string .`;
+    const model = loadOwl(ttl);
+    const person = model.entities.find(e => e.name === 'Person')!;
+    // The restriction rides on the entity; owl:baseIri (the in-namespace ssn
+    // was shortened) rides on the model, as for every other shortened ref.
+    expect(ontologyTerms(person.customExtensions)).toEqual({
+      'owl:Restriction': [{'owl:onProperty': 'ssn', 'owl:cardinality': 1}],
+    });
+    expect(ontologyTerms(model.customExtensions)).toEqual({
+      'owl:baseIri': 'http://example.com/x#',
+    });
+  });
+
+  test('owl:minCardinality and owl:maxCardinality are carried together', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class ;
+          rdfs:subClassOf [ a owl:Restriction ;
+                            owl:onProperty ex:name ;
+                            owl:minCardinality 1 ;
+                            owl:maxCardinality 3 ] .`;
+    const person = loadOwl(ttl).entities.find(e => e.name === 'Person')!;
+    // Fixed key order: onProperty, cardinality, min, max.
+    const carried = JSON.parse(person.customExtensions![0].data);
+    expect(Object.keys(carried['owl:Restriction'][0])).toEqual([
+      'owl:onProperty', 'owl:minCardinality', 'owl:maxCardinality'
+    ]);
+    expect(carried['owl:Restriction']).toEqual([{
+      'owl:onProperty': 'name',
+      'owl:minCardinality': 1,
+      'owl:maxCardinality': 3
+    }]);
+  });
+
+  test(
+      'multiple cardinality restrictions on one class are each carried', () => {
+        const ttl = `${PREFIXES}
+      ex:Person a owl:Class ;
+          rdfs:subClassOf [ a owl:Restriction ;
+                            owl:onProperty ex:ssn ; owl:cardinality 1 ] ;
+          rdfs:subClassOf [ a owl:Restriction ;
+                            owl:onProperty ex:phone ; owl:minCardinality 1 ] .`;
+        const person = loadOwl(ttl).entities.find(e => e.name === 'Person')!;
+        expect(ontologyTerms(person.customExtensions)!['owl:Restriction'])
+            .toEqual([
+              {'owl:onProperty': 'ssn', 'owl:cardinality': 1},
+              {'owl:onProperty': 'phone', 'owl:minCardinality': 1},
+            ]);
+      });
+
+  test(
+      'the restricted property shortens in-namespace, full IRI cross-ns',
+      () => {
+        // ex:name shortens to "name" (and the model carries owl:baseIri); the
+        // cross-namespace foaf:age keeps its full IRI (nothing to shorten
+        // there).
+        const inNs = `${PREFIXES}
+      ex:Person a owl:Class ;
+          rdfs:subClassOf [ a owl:Restriction ;
+                            owl:onProperty ex:name ; owl:cardinality 1 ] .`;
+        const crossNs = `${PREFIXES}
+      ex:Person a owl:Class ;
+          rdfs:subClassOf [ a owl:Restriction ;
+                            owl:onProperty foaf:age ; owl:cardinality 1 ] .`;
+        expect(ontologyTerms(loadOwl(inNs).entities[0].customExtensions))
+            .toEqual({
+              'owl:Restriction':
+                  [{'owl:onProperty': 'name', 'owl:cardinality': 1}],
+            });
+        expect(ontologyTerms(loadOwl(crossNs).entities[0].customExtensions))
+            .toEqual({
+              'owl:Restriction': [{
+                'owl:onProperty': 'http://xmlns.com/foaf/0.1/age',
+                'owl:cardinality': 1
+              }]
+            });
+      });
+
+  test('a value restriction (no cardinality) is not carried', () => {
+    // owl:someValuesFrom is a different restriction shape with no cardinality;
+    // it contributes no owl:Restriction (and no empty block).
+    const ttl = `${PREFIXES}
+      ex:Parent a owl:Class ;
+          rdfs:subClassOf [ a owl:Restriction ;
+                            owl:onProperty ex:hasChild ;
+                            owl:someValuesFrom ex:Person ] .
+      ex:Person a owl:Class .`;
+    const parent = loadOwl(ttl).entities.find(e => e.name === 'Parent')!;
+    expect(ontologyTerms(parent.customExtensions)).toBeUndefined();
+  });
+
+  test(
+      'a qualified cardinality restriction is not carried yet (Stage 4)',
+      () => {
+        // owl:onClass marks a QUALIFIED restriction; it is a separate
+        // blank-node shape, out of scope for now, so nothing is carried.
+        const ttl = `${PREFIXES}
+      ex:Parent a owl:Class ;
+          rdfs:subClassOf [ a owl:Restriction ;
+                            owl:onProperty ex:hasChild ;
+                            owl:onClass ex:Person ;
+                            owl:qualifiedCardinality 2 ] .
+      ex:Person a owl:Class .`;
+        const parent = loadOwl(ttl).entities.find(e => e.name === 'Parent')!;
+        expect(ontologyTerms(parent.customExtensions)).toBeUndefined();
+      });
+
+  test('a restriction reached via owl:equivalentClass is not carried', () => {
+    // Only rdfs:subClassOf feeds the restriction reader; a restriction under
+    // owl:equivalentClass is a class definition, out of scope (see the
+    // blank-node equivalentClass test above).
+    const ttl = `${PREFIXES}
+      ex:Parent a owl:Class ;
+          owl:equivalentClass [ a owl:Restriction ;
+                                owl:onProperty ex:hasChild ;
+                                owl:minCardinality 1 ] .
+      ex:hasChild a owl:ObjectProperty ; rdfs:domain ex:Parent ; rdfs:range ex:Parent .`;
+    const parent = loadOwl(ttl).entities.find(e => e.name === 'Parent')!;
+    expect(ontologyTerms(parent.customExtensions)).toBeUndefined();
+  });
+
+  test('a malformed cardinality value is ignored, valid siblings kept', () => {
+    // A non-integer max is dropped; a valid min on the same restriction still
+    // rides. (A negative value is likewise rejected.)
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class ;
+          rdfs:subClassOf [ a owl:Restriction ;
+                            owl:onProperty ex:name ;
+                            owl:minCardinality 1 ;
+                            owl:maxCardinality "many" ] .`;
+    const person = loadOwl(ttl).entities.find(e => e.name === 'Person')!;
+    expect(ontologyTerms(person.customExtensions)!['owl:Restriction']).toEqual([
+      {'owl:onProperty': 'name', 'owl:minCardinality': 1}
+    ]);
+  });
+
+  test(
+      'a cardinality that only Number()-coerces (empty/hex/exponent) is ignored',
+      () => {
+        // Values that are not a plain run of decimal digits must be dropped,
+        // not silently coerced: Number("") / Number(" ") are 0, Number("0x1F")
+        // is 31, Number("1e2") is 100 -- each would fabricate a cardinality. A
+        // valid sibling on the same restriction still rides.
+        const ttl = `${PREFIXES}
+      ex:Person a owl:Class ;
+          rdfs:subClassOf [ a owl:Restriction ;
+                            owl:onProperty ex:name ;
+                            owl:minCardinality 1 ;
+                            owl:cardinality "" ;
+                            owl:maxCardinality "1e2" ] .`;
+        const person = loadOwl(ttl).entities.find(e => e.name === 'Person')!;
+        expect(ontologyTerms(person.customExtensions)!['owl:Restriction'])
+            .toEqual([{'owl:onProperty': 'name', 'owl:minCardinality': 1}]);
+      });
+
+  test(
+      'a blank node typed both owl:Restriction and owl:Class is not an entity',
+      () => {
+        // Nonsensical but legal RDF (and possible from a reasoner dump): the
+        // node is a cardinality restriction on Person, never a class named
+        // after a blank-node id. Only Person surfaces; the restriction rides on
+        // it.
+        const ttl = `${PREFIXES}
+      ex:Person a owl:Class ;
+          rdfs:subClassOf [ a owl:Class, owl:Restriction ;
+                            owl:onProperty ex:name ;
+                            owl:minCardinality 1 ] .`;
+        const model = loadOwl(ttl);
+        expect(model.entities.map(e => e.name)).toEqual(['Person']);
+        expect(ontologyTerms(
+                   model.entities[0].customExtensions)!['owl:Restriction'])
+            .toEqual([{'owl:onProperty': 'name', 'owl:minCardinality': 1}]);
+      });
+
+  test(
+      'a NAMED class also typed owl:Restriction stays an entity (not pruned)',
+      () => {
+        // Only ANONYMOUS (blank-node) restrictions are restriction nodes. A
+        // named IRI typed owl:Restriction keeps its owl:Class identity -- the
+        // prune that drops dual-typed blank nodes must not touch it.
+        const ttl = `${PREFIXES}
+      ex:Weird a owl:Class, owl:Restriction ;
+          rdfs:comment "Still a class." .`;
+        const model = loadOwl(ttl);
+        expect(model.entities.map(e => e.name)).toEqual(['Weird']);
+        expect(model.entities[0].description).toBe('Still a class.');
+      });
+
+  test(
+      'owl:cardinality accepts xsd:nonNegativeInteger and a bare integer',
+      () => {
+        const typed = `${PREFIXES}
+      ex:Person a owl:Class ;
+          rdfs:subClassOf [ a owl:Restriction ;
+                            owl:onProperty ex:name ;
+                            owl:cardinality "1"^^xsd:nonNegativeInteger ] .`;
+        expect(ontologyTerms(loadOwl(typed)
+                                 .entities[0]
+                                 .customExtensions)!['owl:Restriction'])
+            .toEqual([{'owl:onProperty': 'name', 'owl:cardinality': 1}]);
+      });
+
+  test('a restriction with no owl:onProperty is dropped', () => {
+    // A cardinality with nothing to constrain is meaningless; drop it (no
+    // empty block).
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class ;
+          rdfs:subClassOf [ a owl:Restriction ; owl:cardinality 1 ] .`;
+    const person = loadOwl(ttl).entities.find(e => e.name === 'Person')!;
+    expect(ontologyTerms(person.customExtensions)).toBeUndefined();
+  });
 
   test(
       'reflexive / irreflexive / asymmetric characteristics -> relationship',

@@ -18,12 +18,15 @@
 // characteristics (symmetric / transitive / functional / reflexive /
 // irreflexive / asymmetric), per-term annotations (rdfs:seeAlso,
 // rdfs:isDefinedBy, owl:deprecated, owl:versionInfo), enumerations
-// (owl:oneOf), property chains (owl:propertyChainAxiom), and the set-level
+// (owl:oneOf), property chains (owl:propertyChainAxiom), the set-level
 // axioms that hang off an anonymous node rather than a named term
 // (owl:AllDisjointClasses, owl:AllDisjointProperties, owl:AllDifferent -> the
-// model). A carried cross-reference keeps the FULL referent IRI; the mapper
-// shortens it to a local name only when it lives in this ontology's own
-// namespace (see to_ir.refValue). Richer OWL still absent (SHACL, cardinality
+// model), and the UNqualified cardinality restrictions on an anonymous
+// owl:Restriction reached through rdfs:subClassOf (owl:cardinality /
+// owl:minCardinality / owl:maxCardinality -> the class). A carried
+// cross-reference keeps the FULL referent IRI; the mapper shortens it to a
+// local name only when it lives in this ontology's own namespace (see
+// to_ir.refValue). Richer OWL still absent (SHACL, QUALIFIED cardinality
 // restrictions, individuals); see the "What is not covered yet" note in the
 // guide.
 
@@ -49,6 +52,33 @@ export interface OwlCommonAnnotations {
   deprecated: boolean;
   // owl:versionInfo on the term itself (not the ontology header), if present.
   versionInfo?: string;
+}
+
+/**
+ * An UNqualified cardinality restriction on a class -- an anonymous
+ * `owl:Restriction` reached through `rdfs:subClassOf`, constraining how many
+ * values of one property an instance of the class may have.
+ *
+ * No native OSI home (OSI has no cardinality concept), so it is carried
+ * verbatim as a custom extension on the entity. Only the UNqualified forms are
+ * read; the qualified forms (`owl:qualifiedCardinality` and friends, which add
+ * `owl:onClass` / `owl:onDataRange`) are a separate blank-node shape, out of
+ * scope for now (see the user guide's "not read yet" note). A restriction with
+ * no cardinality (e.g. an `owl:someValuesFrom` value restriction) contributes
+ * no OwlRestriction -- only the cardinality shape is carried.
+ */
+export interface OwlRestriction {
+  // The restricted property's referent IRI (`owl:onProperty`). Full IRI -- the
+  // mapper shortens an in-namespace one to its local name (see to_ir.refValue).
+  onProperty: string;
+  // `owl:cardinality` -- the exact number of values. Undefined when not stated.
+  cardinality?: number;
+  // `owl:minCardinality` -- the minimum number of values. Undefined when not
+  // stated.
+  minCardinality?: number;
+  // `owl:maxCardinality` -- the maximum number of values. Undefined when not
+  // stated.
+  maxCardinality?: number;
 }
 
 /** An `owl:Class` -- becomes an OSI dataset (entity). */
@@ -97,6 +127,11 @@ export interface OwlClass extends OwlCommonAnnotations {
   // -- the mapper shortens an in-namespace one to its local name. Empty when
   // the class is not an enumeration.
   oneOf: string[];
+  // Unqualified cardinality restrictions on this class, in document order --
+  // each an anonymous `owl:Restriction` reached through `rdfs:subClassOf` (see
+  // OwlRestriction). No native OSI home; carried verbatim on the entity. Empty
+  // when the class declares none.
+  restrictions: OwlRestriction[];
 }
 
 /**
