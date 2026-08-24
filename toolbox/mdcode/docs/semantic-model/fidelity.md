@@ -33,7 +33,7 @@ nuances that don't fit a cell.
 | Model-level `ai_context.synonyms` / `examples` | — dropped | — not stored | — |
 | Deployment target | names the graph | recorded on the model entry | ✓ |
 | Imported vendor SQL (`importedExpression` / `importedDialect`) | fallback — builds the DDL only when no canonical `expression` exists | — not stored | — |
-| `custom_extensions` (beyond the deployment target) | — not in graph | — not stored | — |
+| `custom_extensions` (beyond the deployment target) | — not in graph | — not stored | —⁹ |
 
 ¹ BigQuery uses the source column's own type; a field's authored `datatype` is not carried.
 ² Field types round-trip except two collapses: no type → `Opaque`, and `String` → un-typed. Both store as `dataType STRING`, disambiguated by `metadataType` (`OTHER` → read back as `Opaque`; `STRING` → read back un-typed) — which is exactly what lets them round-trip differently.
@@ -43,6 +43,7 @@ nuances that don't fit a cell.
 ⁶ Relationship names come back lowercased/hyphenated (`Places Order` → `places-order`) — the catalog stores the name only in the link id. See [Writer-side follow-up](#writer-side-follow-up).
 ⁷ The `guidelines` aspect exists only for the model, entities, and metrics — not fields or relationships, so field- and relationship-level `ai_context.instructions` has no Knowledge Catalog home (a relationship's instructions still reach BigQuery, folded into the edge's `OPTIONS(description)`).
 ⁸ BigQuery silently drops statement-level graph `OPTIONS`, so model-level metadata has no home in the graph; the model's `description` and `ai_context.instructions` are carried into Knowledge Catalog instead.
+⁹ Every other `custom_extensions` block — most notably the OWL constructs the importer carries with no native home yet (`owl:inverseOf`, `rdfs:subPropertyOf`, the equivalences and disjointness pairs, property characteristics, `owl:deprecated`/`owl:versionInfo`, …) — is inert on push and not persisted to Knowledge Catalog, so `pull` never recovers it. It does survive the OSI *document* round-trip verbatim, so it stays intact in your authored file. See [Constructs carried as custom extensions](owl-import.md#constructs-carried-as-custom-extensions-not-yet-native) for the full list and shape.
 
 ## To BigQuery
 
