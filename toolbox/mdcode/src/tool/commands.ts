@@ -17,6 +17,7 @@ import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {transpileModels} from '../libts/semantic/transpile';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
 import {serializeModel} from '../libts/semantic/osi_converter';
+import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import {validateBigQueryDataSources, validatePushRequirements} from '../libts/semantic/validate';
 
 
@@ -89,7 +90,7 @@ const TARGET_ALIASES: Record<string, PushTarget> = {
 // Resolves a --target flag value to its ordered, de-duplicated destinations, or
 // undefined if any token is unrecognized (the caller reports the error).
 // Accepts a comma-separated list ('bq,kc'), the keyword 'all' (every
-// destination), and defaults to 'bq'. The result is always in canonical
+// destination), and defaults to 'all'. The result is always in canonical
 // DESTINATIONS order.
 export function resolveTargets(target?: string | boolean): PushTarget[] | undefined {
   // cac yields boolean `true` for a bare `--target` (no value); treat any
@@ -532,4 +533,106 @@ async function pullSemanticModel(
     ? `Dry run: would write ${created} new and ${updated} updated model document(s).`
     : `Wrote ${created} new and ${updated} updated model document(s).`);
   return 0;
+}
+
+
+export interface OwlImportOptions {
+  // Write the generated OSI document to this path instead of the semantic-model
+  // layout dir. When omitted, the model lands in the scope's model layout so the
+  // next `kcmd push` picks it up.
+  out?: string;
+}
+
+// Recognized OWL source extensions, stripped to derive the model name from the
+// filename: `sales.owl.ttl` -> `sales`.
+const OWL_EXTENSIONS = /\.owl\.ttl$|\.ttl$|\.owl$/i;
+
+// Handles `kcmd owl <action> <file>`. The only action is `import`: convert a
+// Turtle OWL ontology into an OSI model document that then rides the normal
+// `kcmd push` / `kcmd pull`. The converted model is UNBOUND (see the OWL
+// converter): its sources / join columns must be bound and a BigQuery
+// deployment target added before `kcmd push` will deploy it (to either
+// destination). Returns a process exit code.
+export async function owl(
+  action: string, file: string, options: OwlImportOptions): Promise<number> {
+  if (action !== 'import') {
+    console.error(
+      `Error: unknown owl action '${action}'; the only action is 'import' `
+      + `(usage: kcmd owl import <file.ttl>).`);
+    return 1;
+  }
+
+  if (!fs.existsSync(file)) {
+    console.error(`Error: file not found: ${file}`);
+    return 1;
+  }
+
+  const turtle = fs.readFileSync(file, 'utf8');
+  const modelName = path.basename(file).replace(OWL_EXTENSIONS, '');
+  if (!modelName) {
+    console.error(`Error: could not derive a model name from '${file}'.`);
+    return 1;
+  }
+
+  // convertOwlToOsi throws only on malformed Turtle; main.ts's try/catch
+  // reports it.
+  const result = convertOwlToOsi(turtle, modelName);
+  for (const w of result.warnings) {
+    console.warn(`Warning: ${w}`);
+  }
+
+  const { classes, datatypeProperties, objectProperties } = result.stats;
+
+  // Guard: an ontology with no owl:Class yields a model with no datasets, which
+  // is not a loadable OSI model. Fail clearly -- before the summary, so we do
+  // not print a "converted 0 classes" line for a model we are about to reject --
+  // rather than writing an empty artifact that only errors on a later push/pull.
+  if (classes === 0) {
+    console.error(
+      `Error: no owl:Class declarations found in '${file}'; nothing to import.`);
+    return 1;
+  }
+
+  console.log(
+    `converted ${classes} ${plural(classes, 'class', 'classes')}, `
+    + `${objectProperties} `
+    + `${plural(objectProperties, 'object property', 'object properties')}, `
+    + `${datatypeProperties} `
+    + `${plural(datatypeProperties, 'datatype property', 'datatype properties')}`);
+
+  // Sink: an explicit --out path writes directly; otherwise the semantic-model
+  // layout places the document under the scope's entry group so `kcmd push`
+  // finds it.
+  let writtenPath: string;
+  if (options.out) {
+    fs.mkdirSync(path.dirname(path.resolve(options.out)), { recursive: true });
+    fs.writeFileSync(options.out, result.yaml);
+    writtenPath = options.out;
+  }
+  else {
+    const ctx = context.ApiContext.default();
+    const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+    if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {
+      console.error(
+        `Error: this catalog is not a semantic-model scope, so there is no `
+        + `model layout to write into. Run \`kcmd init --semantic-model ...\` `
+        + `first, or pass --out <path> to write the OSI document directly.`);
+      return 1;
+    }
+    const layout = snapshot.layout as SemanticModelLayout;
+    layout.writeModelDocument(modelName, result.yaml);
+    writtenPath = layout.modelPath(modelName);
+  }
+
+  console.log(`wrote ${writtenPath}`);
+  console.log(
+    `note: this model is UNBOUND (placeholder \`unbound:\` sources, no deployment target).\n`
+    + `      \`kcmd push\` is rejected until you bind each entity's source table and add\n`
+    + `      a BigQuery deployment target -- validation needs both, for every --target.`);
+  return 0;
+}
+
+// Selects the singular or plural form based on `n` (English count agreement).
+function plural(n: number, one: string, many: string): string {
+  return n === 1 ? one : many;
 }

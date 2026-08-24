@@ -1,0 +1,83 @@
+# An ontology exercising every OWL construct that has no native OSI home and so
+# rides along verbatim as a GOOGLE custom extension (see the user guide's
+# "Constructs carried as custom extensions (not yet native)"). It covers both
+# WHERE each construct attaches and HOW cross-references are namespaced.
+#
+# Attachment level:
+#   - owl:equivalentClass / owl:disjointWith on a class -> entity extension
+#   - rdfs:subPropertyOf / owl:equivalentProperty / owl:FunctionalProperty and
+#     the rdfs:seeAlso / owl:deprecated / owl:versionInfo annotations on a
+#     datatype property -> field extension
+#   - rdfs:subPropertyOf / owl:inverseOf / owl:propertyDisjointWith and the
+#     reflexive / irreflexive / symmetric / transitive / asymmetric
+#     characteristics on an object property -> relationship extension
+#
+# Namespace handling: this ontology's base namespace is
+# http://example.com/people# (ex:); it also references the external FOAF and
+# schema.org vocabularies. A cross-reference is carried as the FULL IRI when it
+# points OUTSIDE this ontology and shortened to a local name when it points at
+# an ex: term (the base IRI rides on the model as owl:baseIri so the short form
+# is reversible):
+#   - owl:equivalentClass foaf:Person       -> full IRI    (cross-namespace)
+#   - owl:disjointWith ex:Robot             -> "Robot"     (in-namespace)
+#   - owl:equivalentProperty foaf:name      -> full IRI    (cross-namespace)
+#   - rdfs:subPropertyOf ex:relatedTo       -> "relatedTo" (in-namespace)
+#
+# Each construct is carried under the GOOGLE vendor with the source construct AS
+# the key (prefixed with its vocabulary), the value mirroring it faithfully.
+# Carriage is inert on push and lossless on the OSI-document round-trip; it does
+# not change the graph.
+
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+@prefix ex:   <http://example.com/people#> .
+
+# Person is equivalent to the EXTERNAL foaf:Person (carried as a full IRI) and
+# disjoint with the IN-NAMESPACE ex:Robot (carried as the local name "Robot").
+# rdfs:seeAlso / rdfs:isDefinedBy point outside the model, so they ride verbatim.
+ex:Person a owl:Class ;
+    rdfs:comment "A human being." ;
+    owl:equivalentClass foaf:Person ;
+    owl:disjointWith ex:Robot ;
+    rdfs:seeAlso <https://schema.org/Person> ;
+    rdfs:isDefinedBy <http://example.com/people> ;
+    owl:hasKey ( ex:personId ) .
+ex:Robot a owl:Class ;
+    rdfs:comment "A machine, never a person." .
+
+ex:personId a owl:DatatypeProperty ;
+    rdfs:domain ex:Person ; rdfs:range xsd:string .
+
+# name is the base property legalName refines (rdfs:subPropertyOf, in-namespace).
+ex:name a owl:DatatypeProperty ;
+    rdfs:domain ex:Person ; rdfs:range xsd:string .
+
+# legalName refines the in-namespace ex:name (-> "name"), is equivalent to the
+# external foaf:name (full IRI), single-valued (owl:FunctionalProperty),
+# deprecated, versioned, and carries a literal seeAlso note.
+ex:legalName a owl:DatatypeProperty, owl:FunctionalProperty ;
+    rdfs:domain ex:Person ; rdfs:range xsd:string ;
+    rdfs:subPropertyOf ex:name ;
+    owl:equivalentProperty foaf:name ;
+    rdfs:seeAlso "See the naming policy doc." ;
+    owl:deprecated true ;
+    owl:versionInfo "2.0" .
+
+# ancestorOf chains and is one-directional: transitive + irreflexive +
+# asymmetric. It refines the in-namespace ex:relatedTo (-> "relatedTo"), is the
+# inverse of ex:descendantOf, and is disjoint with that same inverse.
+ex:ancestorOf a owl:ObjectProperty, owl:TransitiveProperty,
+                owl:IrreflexiveProperty, owl:AsymmetricProperty ;
+    rdfs:domain ex:Person ; rdfs:range ex:Person ;
+    rdfs:subPropertyOf ex:relatedTo ;
+    owl:inverseOf ex:descendantOf ;
+    owl:propertyDisjointWith ex:descendantOf ;
+    rdfs:isDefinedBy <http://example.com/people> .
+
+# relatedTo holds both ways and of everyone with themselves: symmetric +
+# reflexive. It is equivalent to the external foaf:knows (full IRI).
+ex:relatedTo a owl:ObjectProperty, owl:SymmetricProperty, owl:ReflexiveProperty ;
+    rdfs:domain ex:Person ; rdfs:range ex:Person ;
+    owl:equivalentProperty foaf:knows .

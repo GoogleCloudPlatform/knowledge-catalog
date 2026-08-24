@@ -8,7 +8,90 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { parseArgs as nodeParseArgs } from 'node:util';
 import * as yaml from 'yaml';
+
+export const DEFAULT_ENTRY_GROUP = 'okf_demo';
+
+// Relative to the repo root. The demo runs from toolbox/mdcode/demo/okf, so the
+// root is four levels up.
+export const DEFAULT_BUNDLE = 'okf/bundles/acme_retail';
+const REPO_ROOT_FROM_DEMO = '../../../..';
+
+// Parse argv against an exact set of accepted flags. Handles both
+// `--flag value` and `--flag=value`. An unknown flag, a missing value, or a
+// bare positional stops the run rather than being ignored, so a mistyped flag
+// can never be dropped in silence.
+function parseFlags(argv: string[], accepted: string[]): Record<string, string | undefined> {
+  const options: Record<string, { type: 'string' }> = {};
+  for (const name of accepted) {
+    options[name] = { type: 'string' };
+  }
+  try {
+    const parsed = nodeParseArgs({ args: argv, options, strict: true, allowPositionals: false });
+    return parsed.values as Record<string, string | undefined>;
+  } catch (e) {
+    throw new Error(`Invalid arguments: ${(e as Error).message}`);
+  }
+}
+
+/**
+ * Parse setup.ts's argv into { entryGroup }. `--entry-group` names the entry
+ * group to create; setup.ts is the only script that takes it, because every
+ * other script reads the entry group back out of the manifest it writes.
+ * Validates the name against Dataplex's own naming rule.
+ */
+export function parseDemoArgs(argv: string[] = process.argv.slice(2)): { entryGroup: string } {
+  const values = parseFlags(argv, ['entry-group']);
+  const entryGroup = values['entry-group'] ?? DEFAULT_ENTRY_GROUP;
+  if (!/^[a-z][a-z0-9_-]{0,61}[a-z0-9]$/.test(entryGroup)) {
+    throw new Error(`Invalid entry-group name: '${entryGroup}'. Must match /^[a-z][a-z0-9_-]{0,61}[a-z0-9]$/`);
+  }
+  return { entryGroup };
+}
+
+/** Stop if argv carries any flag at all. For the scripts that take none. */
+export function rejectArgs(argv: string[] = process.argv.slice(2)): void {
+  parseFlags(argv, []);
+}
+
+// Hidden state directory for the demo's per-run manifest. A `catalog.yaml` beside
+// a `catalog/` directory is the shape of a canonical snapshot root, so a manifest
+// written into the demo directory itself invited readers inspecting that directory
+// after a push to mistake this demo for one.
+const STATE_DIR = '.state';
+
+/** Where setup.ts writes this demo's manifest, and every later script finds it. */
+export function manifestFile(root: string): string {
+  return path.join(root, STATE_DIR, 'catalog.yaml');
+}
+
+// The manifest setup.ts writes. Every later script addresses the entry group it
+// names, so without it there is nothing to act on.
+function manifestPath(root: string): string {
+  const file = manifestFile(root);
+  if (!fs.existsSync(file)) {
+    throw new Error('catalog.yaml not found; run setup.ts first.');
+  }
+  return file;
+}
+
+/** Stop unless setup.ts has written a manifest for this demo to act on. */
+export function requireManifest(root: string): void {
+  manifestPath(root);
+}
+
+// cleanup deletes an entry group outright, so the name comes from the manifest
+// that setup.ts wrote rather than from a flag a caller could mistype.
+export function manifestEntryGroup(root: string): string {
+  const file = manifestPath(root);
+  const scope = yaml.parse(fs.readFileSync(file, 'utf8'))?.scope;
+  const entryGroup = String(scope ?? '').split('.').pop() ?? '';
+  if (!entryGroup) {
+    throw new Error(`catalog.yaml has no usable scope to read an entry group from: ${JSON.stringify(scope)}`);
+  }
+  return entryGroup;
+}
 
 export interface Split { meta: any | null; body: string; }
 
@@ -18,16 +101,28 @@ export interface Split { meta: any | null; body: string; }
 type Path = (string | number)[];
 type Extra = [Path, any];
 
-// `--bundle <dir>` selects which OKF bundle to operate on, so the demo can run
-// against a bundle elsewhere in the repo instead of only its own catalog/.
+// `--bundle <dir>` selects which OKF bundle push and pull operate on, so the
+// demo can run against a bundle elsewhere in the repo. Without it they operate
+// on the in-repo Acme Retail bundle, which exercises the full v0.2 signal
+// layer. It is the only flag these two scripts take: the entry group comes from
+// the manifest, not from the command line.
 export function bundleDir(root: string, argv: string[] = process.argv.slice(2)): string {
-  const i = argv.indexOf('--bundle');
-  if (i === -1) {
-    return path.join(root, 'catalog');
+  const value = parseFlags(argv, ['bundle'])['bundle'];
+  if (value === undefined) {
+    return path.resolve(root, REPO_ROOT_FROM_DEMO, DEFAULT_BUNDLE);
   }
-  const value = argv[i + 1];
-  if (!value) {
-    throw new Error('--bundle requires a directory path');
+  return path.resolve(root, value);
+}
+
+// Pull writes files, so it defaults to a gitignored scratch directory instead of
+// the bundle push reads. Defaulting both to the same place would let a stray
+// `bun pull.ts` overwrite the canonical Acme Retail source in the repo.
+export const DEFAULT_PULL_TARGET = 'pulled';
+
+export function pullTargetDir(root: string, argv: string[] = process.argv.slice(2)): string {
+  const value = parseFlags(argv, ['bundle'])['bundle'];
+  if (value === undefined) {
+    return path.join(root, DEFAULT_PULL_TARGET);
   }
   return path.resolve(root, value);
 }

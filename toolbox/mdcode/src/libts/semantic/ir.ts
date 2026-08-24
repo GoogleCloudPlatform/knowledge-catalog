@@ -81,6 +81,31 @@ export interface Entity {
   // Additional uniqueness constraints beyond the primary key; each inner array
   // is one unique column set (maps to the Schema aspect's uniqueConstraints).
   uniqueKeys?: string[][];
+  // Names of supertype entities this entity inherits from -- Apache Ossie's
+  // `extends` (see ontology/ontology.md), the target of OWL `rdfs:subClassOf`.
+  // Inheritance is ENTITY-LEVEL ONLY: only entities carry `extends`;
+  // relationships never do (there is no relationship-inheritance field), so OWL
+  // `rdfs:subPropertyOf` has no representation here by design.
+  //
+  // This is the hierarchy AS DECLARED: it records the fact, it does not itself
+  // flatten anything. Resolving `extends` into inherited fields (so an emitter
+  // sees a self-contained entity) is a separate pass (see resolve_inheritance);
+  // the BigQuery leg runs it, so a consumer of the raw IR may still observe
+  // `extends` on an entity whose `fields` do NOT yet include the supertype's.
+  extends?: string[];
+  // Marks a conceptual (abstract) entity with NO physical table: a class used
+  // only to group its subtypes (e.g. an abstract `Party` over `Person` and
+  // `Organization`). It is never materialized, so it forms no NODE TABLE in the
+  // BigQuery graph -- it survives only as a LABEL on its concrete descendants
+  // (its fields still flatten down so that shared label's signature is present).
+  // An abstract entity therefore has no meaningful `dataSource` or `keys`.
+  //
+  // This is an EXPLICIT marker, deliberately distinct from the OWL importer's
+  // `unbound:<Name>` source placeholder: an unbound source means "should be
+  // bound but isn't yet" and must fail the push loudly, whereas `abstract`
+  // asserts "intentionally has no table". Overloading one for the other would
+  // silently drop an entity someone merely forgot to bind.
+  abstract?: boolean;
   description?: string;
   aiContext?: AiContext;
   fields: Field[];       // dimensions / attributes

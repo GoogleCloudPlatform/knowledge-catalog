@@ -1,0 +1,86 @@
+version: 0.2.0.dev0
+semantic_model:
+  - name: hierarchy
+    description: Imported from OWL ontology http://example.com/hr#
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: |-
+          {
+            "owl:baseIri": "http://example.com/hr#"
+          }
+    datasets:
+      - name: Person
+        source: unbound:Person
+        description: A human being.
+        fields:
+          - name: fullName
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: fullName
+            datatype: String
+      - name: Employee
+        source: unbound:Employee
+        description: A person employed by the organization.
+        fields:
+          - name: employeeId
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: employeeId
+            datatype: String
+          - name: legalName
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: legalName
+            datatype: String
+            custom_extensions:
+              - vendor_name: GOOGLE
+                data: |-
+                  {
+                    "rdfs:subPropertyOf": [
+                      "fullName"
+                    ]
+                  }
+      - name: Customer
+        source: unbound:Customer
+        extends:
+          - Person
+        description: A person who buys.
+        fields:
+          - name: loyaltyTier
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: loyaltyTier
+            datatype: String
+      - name: Manager
+        source: unbound:Manager
+        extends:
+          - Person
+          - Employee
+        description: An employee who manages others.
+    relationships:
+      - name: managedBy
+        from: Employee
+        to: Manager
+        from_columns:
+          - TODO_BIND
+        to_columns:
+          - TODO_BIND
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: |-
+              {
+                "rdfs:subPropertyOf": [
+                  "worksWith"
+                ]
+              }
+      - name: worksWith
+        from: Employee
+        to: Employee
+        from_columns:
+          - TODO_BIND
+        to_columns:
+          - TODO_BIND

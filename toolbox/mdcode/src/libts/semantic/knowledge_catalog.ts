@@ -140,6 +140,19 @@ export function generateCatalogResources(
   // actually emitted (not skipped for a duplicate id) are recorded.
   const entityEntryName = new Map<string, string>();
   for (const entity of entities) {
+    // An abstract entity is a conceptual (table-less) supertype: it has no
+    // physical resource to catalog. The Knowledge Catalog leg does not model
+    // inheritance (that is BigQuery-only today, via resolveInheritance), so
+    // rather than publish a malformed entry -- an empty linked resource and no
+    // key -- skip it with a warning. Its concrete subtypes are published
+    // normally, and any edge naming it as an endpoint is dropped downstream
+    // (its name never enters `entityEntryName`).
+    if (entity.abstract) {
+      warnings.push(
+          `entity '${entity.name}' is abstract (no physical table); skipped ` +
+          `for Knowledge Catalog (KC does not yet model class hierarchies)`);
+      continue;
+    }
     const entityId = names.entityId(model, entity);
     if (!claim(seen, entityId, 'entry', `entity '${entity.name}'`, warnings))
       continue;

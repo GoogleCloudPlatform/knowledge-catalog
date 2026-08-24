@@ -8,20 +8,20 @@ generated: { by: reference_agent/gemini-2.5-pro, at: 2026-06-30T14:00:00Z }
 verified:
   - { by: human:kliu@acme, at: 2026-07-01T16:00:00Z }
 status: stable
-stale_after: 2026-12-31
+stale_after: 2026-12-31T00:00:00Z
 sources:
   - id: warehouse-schema
     resource: https://wiki.acme.internal/data/warehouse/schemas/sales
     title: Acme Retail warehouse schema — sales dataset
     author: team:data-platform
     usage_count: 1240
-    last_modified: 2026-06-15
+    last_modified: 2026-06-15T00:00:00Z
   - id: revenue-policy
     resource: policies/revenue-recognition.md
     title: Revenue Recognition Policy (FY2026)
     author: human:jsmith@acme
-    last_modified: 2026-06-15
-usage_window: { from: 2026-04-01, to: 2026-06-30 }
+    last_modified: 2026-06-15T00:00:00Z
+usage_window: { from: 2026-04-01T00:00:00Z, to: 2026-06-30T00:00:00Z }
 ---
 
 # Schema
