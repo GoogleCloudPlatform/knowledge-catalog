@@ -689,7 +689,23 @@ canonical form. A model authored natively can hold things OWL has no shape for
 `importedExpression`, a bound `source`, a many-to-many `association`, a composite
 `unique_key`). Those have no OWL representation, so they are **dropped with a
 warning** rather than misrepresented; the class/property/edge they hang off is
-still exported. The physical `xsd` width of a datatype is not restored either
+still exported. A handful of finer mismatches warn the same way — OWL simply
+cannot state them, so the exporter keeps the representable part and says what it
+could not carry:
+
+- a field whose `dimension` flag disagrees with what its datatype implies — OWL
+  carries no dimension metadata, so re-import infers the time-dimension role
+  purely from the type (a temporal type becomes a time dimension, nothing else
+  does);
+- the same field name defined differently on two entities, or a single-column
+  `unique_key` on only one of them — OWL has one property per name, so the first
+  entity's definition wins;
+- a relationship carrying both `ai_context.instructions` and a `description` — an
+  object property has a single `rdfs:comment`, so the instructions win;
+- a model with no `description` — re-import synthesizes a placeholder, so the
+  round-trip is not byte-identical.
+
+The physical `xsd` width of a datatype is not restored either
 (every integer width came in as `Integer`, so it goes back out as `xsd:integer`)
 — the logical type round-trips, the width does not, exactly as on import.
 

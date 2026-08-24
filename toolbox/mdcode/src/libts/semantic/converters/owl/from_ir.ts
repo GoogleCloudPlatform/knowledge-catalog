@@ -35,9 +35,10 @@
 // any of those constructs. This is the deliberate boundary of the round-trip
 // scope (see the user guide's "Limitations").
 
-import {CustomExtension, DataType, Entity, Field, Relationship, SemanticModel,} from '../../ir';
+import {CustomExtension, DataType, Entity, Field, isTimeDimension, Relationship, SemanticModel,} from '../../ir';
 
 import {OwlClass, OwlCommonAnnotations, OwlDatatypeProperty, OwlModel, OwlObjectProperty, OwlOntology,} from './model';
+import {DEFAULT_BASE} from './serialize';
 
 export interface FromIrResult {
   owl: OwlModel;
@@ -74,6 +75,14 @@ const XSD_FOR_TYPE: Partial<Record<DataType, string>> = {
   DateTime: `${XSD}dateTime`,
   DateTimeTz: `${XSD}dateTimeStamp`,
 };
+
+// The temporal OSI datatypes (mirrors ir.ts's private TEMPORAL_TYPES). The
+// importer marks a field of one of these as a time dimension (and nothing
+// else), so on export a dimension flag round-trips only when it agrees with
+// this inference; a flag that disagrees is lost or flipped (see
+// checkFieldRepresentable).
+const TEMPORAL_TYPES: ReadonlySet<DataType> =
+    new Set<DataType>(['Date', 'Time', 'DateTime', 'DateTimeTz']);
 
 // The `unbound:<Name>` source placeholder the importer stamps on every entity
 // (see to_ir.unboundSource). An entity carrying it has no real table -- exactly
@@ -227,6 +236,47 @@ function orderFields(
   return ordered;
 }
 
+// Builds the OwlDatatypeProperty for a single (entity, field): the property's
+// definition as seen on ONE domain. A field shared across entities produces one
+// of these per entity; irToOwl compares them (see datatypeFactsKey) and merges
+// the domains, keeping the first and warning on any divergence.
+function buildDatatypeProperty(
+    field: Field, entityName: string, terms: CarriedTerms,
+    inverseFunctional: boolean,
+    effectiveBase: string|undefined): OwlDatatypeProperty {
+  return {
+    localName: field.name,
+    domains: [entityName],
+    rangeIri: field.type ? XSD_FOR_TYPE[field.type] : undefined,
+    // The datatype property owns the OSI label slot, so emit it as the primary
+    // rdfs:label; synonyms follow as skos:altLabel.
+    label: field.label,
+    comment: field.description,
+    synonyms: field.aiContext?.synonyms ?? [],
+    examples: field.aiContext?.examples ?? [],
+    inverseFunctional,
+    functional: terms.owl['owl:FunctionalProperty'] === true,
+    subPropertyOf: expandRefs(terms.owl['rdfs:subPropertyOf'], effectiveBase),
+    equivalentProperty:
+        expandRefs(terms.owl['owl:equivalentProperty'], effectiveBase),
+    propertyDisjointWith:
+        expandRefs(terms.owl['owl:propertyDisjointWith'], effectiveBase),
+    ...commonAnnotations(terms.owl),
+  };
+}
+
+// A stable signature of a datatype property's intrinsic OWL facts, EXCLUDING
+// its domain list and its inverse-functional flag: the definition every entity
+// sharing the field name must agree on. `domains` legitimately differ (that is
+// what makes a property multi-domain) and `inverseFunctional` is an
+// entity-level fact compared on its own, so both are dropped here. Every
+// property is built by buildDatatypeProperty with a fixed key order, so
+// JSON.stringify is a sound equality check.
+function datatypeFactsKey(p: OwlDatatypeProperty): string {
+  const {domains, inverseFunctional, ...facts} = p;
+  return JSON.stringify(facts);
+}
+
 /**
  * Maps a Semantic Model IR back to an OwlModel (see ../../ir.ts and model.ts).
  *
@@ -244,6 +294,14 @@ export function irToOwl(model: SemanticModel): FromIrResult {
   const baseIri = typeof modelTerms.owl['owl:baseIri'] === 'string' ?
       modelTerms.owl['owl:baseIri'] as string :
       undefined;
+  // The base used to re-expand a carried BARE local name to a full IRI. When
+  // the model carries no owl:baseIri (a hand-authored model, or one with no
+  // shortened reference), fall back to the same DEFAULT_BASE the serializer
+  // emits this ontology's own terms under, so a bare reference expands to a
+  // valid absolute IRI in that namespace rather than a broken relative <name>
+  // (a full, scheme-bearing cross-namespace IRI is kept verbatim regardless;
+  // see expandRef).
+  const effectiveBase = baseIri ?? DEFAULT_BASE;
   for (const key of modelTerms.other) {
     warnings.push(
         `model '${model.name}' carries a GOOGLE '${
@@ -255,6 +313,17 @@ export function irToOwl(model: SemanticModel): FromIrResult {
         `model '${model.name}' has ${
             model.metrics.length} metric(s); OWL has ` +
         `no metric concept, so they are not exported.`);
+  }
+  if (!model.description) {
+    // The importer always synthesizes a model description (the ontology
+    // header's rdfs:comment, or a provenance line naming the base IRI), so a
+    // model with none re-imports with a fabricated one. OWL requires no
+    // description, so the exported ontology is honest -- but the round-trip is
+    // not identical, so say so rather than let the placeholder appear silently.
+    warnings.push(
+        `model '${model.name}' has no description; re-importing the exported ` +
+        `ontology synthesizes a placeholder description, so the round-trip is ` +
+        `not identical.`);
   }
 
   const entityNames = new Set(model.entities.map(e => e.name));
@@ -307,12 +376,13 @@ export function irToOwl(model: SemanticModel): FromIrResult {
       synonyms: entity.aiContext?.synonyms ?? [],
       examples: entity.aiContext?.examples ?? [],
       keys: entity.keys ?? [],
-      subClassOf: entity.extends ?? [],
-                                 equivalentClass: expandRefs(
-                                     terms.owl['owl:equivalentClass'], baseIri),
-                                 disjointWith: expandRefs(
-                                     terms.owl['owl:disjointWith'], baseIri),
-                                 ...commonAnnotations(terms.owl),
+      subClassOf:
+          entity.extends ?? [],
+                         equivalentClass: expandRefs(
+                             terms.owl['owl:equivalentClass'], effectiveBase),
+                         disjointWith: expandRefs(
+                             terms.owl['owl:disjointWith'], effectiveBase),
+                         ...commonAnnotations(terms.owl),
     });
   }
 
@@ -342,14 +412,11 @@ export function irToOwl(model: SemanticModel): FromIrResult {
     const fields = entity.fields ?? [];
     fields.forEach((field, i) => {
       if (i > 0) addEdge(fields[i - 1].name, field.name);
-      const existing = datatypeByName.get(field.name);
-      if (existing) {
-        // Multi-domain: extend the domain list (entity order preserved). The
-        // importer builds one property and attaches it to each domain, so the
-        // definitions are assumed identical.
-        existing.domains.push(entity.name);
-        return;
-      }
+      // Run per (entity, field), not once per property: each field INSTANCE can
+      // carry its own un-exportable bits (a non-column expression, a dimension
+      // flag, an unrecognized carried key), and the warnings are qualified by
+      // the entity name, so a multi-domain field is reported per divergent
+      // domain rather than double-reported for identical ones.
       checkFieldRepresentable(field, entity.name, warnings);
       const terms = carriedTerms(field.customExtensions);
       for (const key of terms.other) {
@@ -357,26 +424,47 @@ export function irToOwl(model: SemanticModel): FromIrResult {
             `field '${entity.name}.${field.name}' carries an unrecognized ` +
             `GOOGLE '${key}' extension; it is not exported.`);
       }
-      datatypeByName.set(field.name, {
-        localName: field.name,
-        domains: [entity.name],
-        rangeIri: field.type ? XSD_FOR_TYPE[field.type] : undefined,
-        // The datatype property owns the OSI label slot, so emit it as the
-        // primary rdfs:label; synonyms follow as skos:altLabel.
-        label: field.label,
-        comment: field.description,
-        synonyms: field.aiContext?.synonyms ?? [],
-        examples: field.aiContext?.examples ?? [],
-        inverseFunctional:
-            singleColUniqueByEntity.get(entity.name)?.has(field.name) ?? false,
-        functional: terms.owl['owl:FunctionalProperty'] === true,
-        subPropertyOf: expandRefs(terms.owl['rdfs:subPropertyOf'], baseIri),
-        equivalentProperty:
-            expandRefs(terms.owl['owl:equivalentProperty'], baseIri),
-        propertyDisjointWith:
-            expandRefs(terms.owl['owl:propertyDisjointWith'], baseIri),
-        ...commonAnnotations(terms.owl),
-      });
+      const inverseFunctional =
+          singleColUniqueByEntity.get(entity.name)?.has(field.name) ?? false;
+      const property = buildDatatypeProperty(
+          field, entity.name, terms, inverseFunctional, effectiveBase);
+      const existing = datatypeByName.get(field.name);
+      if (existing) {
+        // Multi-domain: the same field name appears on more than one entity.
+        // OWL has ONE property per name, so every domain must agree on its
+        // definition -- the FIRST domain's is the one exported. An OWL-origin
+        // model never diverges (the importer attaches an identical property to
+        // each domain), but a hand-authored model can, so compare and warn
+        // rather than silently export the wrong shape.
+        if (datatypeFactsKey(existing) !== datatypeFactsKey(property)) {
+          warnings.push(
+              `field '${field.name}' is defined differently on '${
+                  entity.name}' than on '${existing.domains[0]}' (range, ` +
+              `label, description, or a carried OWL fact differs); OWL has one ` +
+              `property per name, so '${
+                  existing.domains[0]}'s definition is exported and '${
+                  entity.name}'s is dropped.`);
+        }
+        // inverse-functionality is an entity-level fact (a single-column unique
+        // key), so it is compared separately from the property definition
+        // above. owl:InverseFunctionalProperty applies to the whole property,
+        // so it cannot say "unique on one domain, not another"; keep the first
+        // domain's status and warn on disagreement.
+        if (existing.inverseFunctional !== inverseFunctional) {
+          const uniqueOn =
+              inverseFunctional ? entity.name : existing.domains[0];
+          const notOn = inverseFunctional ? existing.domains[0] : entity.name;
+          warnings.push(
+              `field '${field.name}' is a single-column unique key on '${
+                  uniqueOn}' but not on '${
+                  notOn}'; OWL owl:InverseFunctionalProperty applies to the ` +
+              `whole property, so the first domain '${
+                  existing.domains[0]}'s status is used.`);
+        }
+        existing.domains.push(entity.name);
+        return;
+      }
+      datatypeByName.set(field.name, property);
       firstSeen.push(field.name);
     });
   }
@@ -403,12 +491,12 @@ export function irToOwl(model: SemanticModel): FromIrResult {
       comment: rel.aiContext?.instructions ?? rel.description,
       synonyms: rel.aiContext?.synonyms ?? [],
       examples: rel.aiContext?.examples ?? [],
-      subPropertyOf: expandRefs(terms.owl['rdfs:subPropertyOf'], baseIri),
-      inverseOf: expandRefSingle(terms.owl['owl:inverseOf'], baseIri),
+      subPropertyOf: expandRefs(terms.owl['rdfs:subPropertyOf'], effectiveBase),
+      inverseOf: expandRefSingle(terms.owl['owl:inverseOf'], effectiveBase),
       equivalentProperty:
-          expandRefs(terms.owl['owl:equivalentProperty'], baseIri),
+          expandRefs(terms.owl['owl:equivalentProperty'], effectiveBase),
       propertyDisjointWith:
-          expandRefs(terms.owl['owl:propertyDisjointWith'], baseIri),
+          expandRefs(terms.owl['owl:propertyDisjointWith'], effectiveBase),
       symmetric: terms.owl['owl:SymmetricProperty'] === true,
       transitive: terms.owl['owl:TransitiveProperty'] === true,
       functional: terms.owl['owl:FunctionalProperty'] === true,
@@ -463,8 +551,8 @@ function ontologyHeader(model: SemanticModel): OwlOntology|undefined {
 
 // Warns about a field whose semantics OWL cannot carry. A datatype property is
 // just a name + range in OWL, so a real SQL expression, an imported vendor
-// expression, or a non-temporal / negative dimension flag is dropped (the
-// property name and datatype are still exported).
+// expression, or a dimension flag that will not survive re-import is dropped
+// (the property name and datatype are still exported).
 function checkFieldRepresentable(
     field: Field, entityName: string, warnings: string[]): void {
   const where = `field '${entityName}.${field.name}'`;
@@ -478,6 +566,21 @@ function checkFieldRepresentable(
     warnings.push(
         `${where} has an imported vendor expression, which OWL cannot carry; ` +
         `it is not exported.`);
+  }
+  // OWL carries no dimension metadata. On re-import the importer regenerates
+  // the time-dimension role purely from the datatype -- a temporal type becomes
+  // a time dimension, anything else does not -- so a flag that disagrees with
+  // that inference (a non-temporal field marked a time dimension, a temporal
+  // one marked not, or a temporal one with no flag at all) is lost or flipped.
+  // Warn; the property name and datatype are still exported. A flag that
+  // already agrees with the inference round-trips, so it is not reported.
+  const temporal = field.type !== undefined && TEMPORAL_TYPES.has(field.type);
+  if (isTimeDimension(field) !== temporal) {
+    warnings.push(
+        `${where} is${
+            isTimeDimension(field) ? '' : ' not'} a time dimension, ` +
+        `but OWL carries no dimension metadata; re-importing infers it from the ` +
+        `datatype (isTime=${temporal}), so the flag changes.`);
   }
 }
 
@@ -501,8 +604,22 @@ function checkRelationshipRepresentable(
         `entity in this model; the object property is exported but its ` +
         `domain/range will dangle.`);
   }
+  // An object property carries a single rdfs:comment, sourced from
+  // ai_context.instructions when present, else description (see the export
+  // loop). When BOTH are set and differ, only the instructions survive, so warn
+  // that the description is dropped. (An OWL-origin relationship never has a
+  // description -- the importer routes the comment into instructions -- so this
+  // fires only on a hand-authored model.)
+  if (rel.aiContext?.instructions !== undefined &&
+      rel.description !== undefined &&
+      rel.aiContext.instructions !== rel.description) {
+    warnings.push(
+        `relationship '${rel.name}' has both ai_context.instructions and a ` +
+        `description; OWL object properties carry a single rdfs:comment, so the ` +
+        `instructions are exported and the description is dropped.`);
+  }
   const bound = [...rel.source.columns, ...rel.destination.columns].some(
-      c => c !== TODO_BIND && !isDestKeyColumn(c, rel, entityNames));
+      c => c !== TODO_BIND && !isDestKeyColumn(c, rel));
   if (bound) {
     warnings.push(
         `relationship '${rel.name}' has bound join columns; OWL object ` +
@@ -512,8 +629,7 @@ function checkRelationshipRepresentable(
 
 // True when a column is one the importer would regenerate on its own (the
 // destination entity's key), so it is not a "bound" column worth warning about.
-function isDestKeyColumn(
-    column: string, rel: Relationship, entityNames: Set<string>): boolean {
+function isDestKeyColumn(column: string, rel: Relationship): boolean {
   // The importer sets the destination columns to the destination entity's key
   // and pads the source with TODO_BIND; a column equal to a destination key is
   // therefore regenerated, not authored. We accept it without the model's

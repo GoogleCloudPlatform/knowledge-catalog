@@ -17,7 +17,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import {convertOsiToOwl, convertOwlToOsi} from '../../../src/libts/semantic/converters/owl/convert';
-import {SemanticModel} from '../../../src/libts/semantic/ir';
+import {Field, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
 
 const FIXTURES = path.join(__dirname, 'fixtures', 'owl');
@@ -185,5 +185,134 @@ describe('constructs OWL cannot express are dropped with a warning', () => {
         const {warnings, turtle} = convertOsiToOwl(model);
         expect(warnings.some(w => /deploymentTargets/.test(w))).toBe(true);
         expect(turtle).not.toContain('deploymentTargets');
+      });
+});
+
+// A second entity carrying a same-named field, so a hand-authored model can
+// make a multi-domain datatype property diverge across its domains (which an
+// OWL-origin model never does).
+function twoEntityModel(orderField: Field): SemanticModel {
+  const model = baseModel();
+  model.entities.push({
+    name: 'Order',
+    dataSource: 'unbound:Order',
+    keys: ['orderId'],
+    fields:
+        [{name: 'orderId', expression: 'orderId', type: 'String'}, orderField],
+  });
+  return model;
+}
+
+describe('hand-authored constructs OWL cannot faithfully carry warn', () => {
+  test(
+      'a field defined differently on two entities keeps the first and warns',
+      () => {
+        const model = twoEntityModel(
+            {name: 'status', expression: 'status', type: 'Integer'});
+        model.entities[0].fields.push(
+            {name: 'status', expression: 'status', type: 'String'});
+        const {warnings, turtle} = convertOsiToOwl(model);
+        expect(warnings.some(w => /defined differently/.test(w))).toBe(true);
+        // Customer is the first domain, so its String range wins; Order's
+        // Integer is dropped, not misrepresented as a second property.
+        expect(turtle).toContain('rdfs:range xsd:string');
+        expect(turtle).not.toContain('xsd:integer');
+      });
+
+  test('a field unique on one entity but not another warns', () => {
+    const model =
+        twoEntityModel({name: 'email', expression: 'email', type: 'String'});
+    model.entities[0].fields.push(
+        {name: 'email', expression: 'email', type: 'String'});
+    model.entities[0].uniqueKeys = [['email']];
+    const {warnings} = convertOsiToOwl(model);
+    // Same definition on both domains (no "defined differently"), but the
+    // inverse-functional status diverges.
+    expect(warnings.some(w => /defined differently/.test(w))).toBe(false);
+    expect(warnings.some(w => /single-column unique key/.test(w))).toBe(true);
+  });
+
+  test('a non-temporal field marked a time dimension warns', () => {
+    const model = baseModel();
+    model.entities[0].fields.push({
+      name: 'code',
+      expression: 'code',
+      type: 'String',
+      dimension: {isTime: true},
+    });
+    const {warnings} = convertOsiToOwl(model);
+    expect(warnings.some(w => /time dimension/.test(w))).toBe(true);
+  });
+
+  test(
+      'a temporal field with no dimension flag warns (re-import adds one)',
+      () => {
+        const model = baseModel();
+        model.entities[0].fields.push(
+            {name: 'created', expression: 'created', type: 'Date'});
+        const {warnings} = convertOsiToOwl(model);
+        expect(warnings.some(w => /time dimension/.test(w))).toBe(true);
+      });
+
+  test(
+      'a temporal field flagged is_time:true round-trips without a warning',
+      () => {
+        const model = baseModel();
+        model.entities[0].fields.push({
+          name: 'created',
+          expression: 'created',
+          type: 'Date',
+          dimension: {isTime: true},
+        });
+        const {warnings} = convertOsiToOwl(model);
+        expect(warnings.some(w => /time dimension/.test(w))).toBe(false);
+      });
+
+  test(
+      'a model with no description warns about the synthesized placeholder',
+      () => {
+        const model = baseModel();
+        delete model.description;
+        const {warnings} = convertOsiToOwl(model);
+        expect(warnings.some(w => /no description/.test(w))).toBe(true);
+      });
+
+  test('a relationship with both instructions and a description warns', () => {
+    const model = twoEntityModel(
+        {name: 'placedAt', expression: 'placedAt', type: 'Date'});
+    model.relationships = [{
+      name: 'placedBy',
+      source: {entity: 'Order', columns: ['TODO_BIND']},
+      destination: {entity: 'Customer', columns: ['customerId']},
+      description: 'FK to customer.',
+      aiContext: {instructions: 'Links an order to its customer.'},
+    }];
+    const {warnings, turtle} = convertOsiToOwl(model);
+    expect(warnings.some(w => /description is dropped/.test(w))).toBe(true);
+    // The instructions win as the single rdfs:comment; the description is gone.
+    expect(turtle).toContain('Links an order to its customer.');
+    expect(turtle).not.toContain('FK to customer.');
+  });
+
+  test(
+      'a carried bare cross-reference with no base IRI exports as a valid IRI',
+      () => {
+        const model = twoEntityModel(
+            {name: 'placedAt', expression: 'placedAt', type: 'Date'});
+        model.relationships = [{
+          name: 'placedBy',
+          source: {entity: 'Order', columns: ['TODO_BIND']},
+          destination: {entity: 'Customer', columns: ['customerId']},
+          customExtensions: [{
+            vendorName: 'GOOGLE',
+            data: JSON.stringify({'owl:inverseOf': 'placed'}),
+          }],
+        }];
+        const {turtle} = convertOsiToOwl(model);
+        // No owl:baseIri is carried, so the bare local name expands against the
+        // serializer's DEFAULT_BASE and renders prefixed -- never as a broken
+        // relative <placed>.
+        expect(turtle).toContain('owl:inverseOf ex:placed');
+        expect(turtle).not.toContain('<placed>');
       });
 });

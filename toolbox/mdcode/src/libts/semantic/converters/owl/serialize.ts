@@ -37,7 +37,7 @@ const XSD = 'http://www.w3.org/2001/XMLSchema#';
 // consistent value works: parse's dominantNamespace recovers it as the base,
 // and because nothing is shortened against it, it never leaks into the
 // re-imported IR (the model name comes from the file, not the namespace).
-const DEFAULT_BASE = 'http://example.com/ontology#';
+export const DEFAULT_BASE = 'http://example.com/ontology#';
 
 // A `predicate object` pair to emit under a subject, pre-rendered. Kept as a
 // tuple so a subject block is just an ordered list the writer joins.
