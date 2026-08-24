@@ -89,9 +89,13 @@ describe('sales export matches the documented Turtle (golden)', () => {
 // positions on its domains and the single exported property order must be a
 // linear extension of every entity's order.
 describe('OSI-origin models round-trip OSI -> OWL -> OSI unchanged', () => {
+  // The hand-authored source model (not a derived golden, hence no `.golden`
+  // in the name and no paired `.owl.ttl`); loaded fresh per test.
+  const directory = () =>
+      loadModels(readFixture('directory.osi.yaml')).models[0];
+
   test('directory is stable across a full round-trip', () => {
-    const model =
-        loadModels(readFixture('directory.osi.golden.yaml')).models[0];
+    const model = directory();
 
     const exported = convertOsiToOwl(model);
     // Fully OWL-expressible, so export drops nothing: no warnings.
@@ -104,9 +108,8 @@ describe('OSI-origin models round-trip OSI -> OWL -> OSI unchanged', () => {
   });
 
   test('the cross-entity field order is preserved on both domains', () => {
-    const model =
-        loadModels(readFixture('directory.osi.golden.yaml')).models[0];
-    const reimported = importToIr(convertOsiToOwl(model).turtle, 'directory');
+    const reimported =
+        importToIr(convertOsiToOwl(directory()).turtle, 'directory');
     const names = (e: string) =>
         reimported.entities.find(x => x.name === e)!.fields.map(f => f.name);
     // `name` and `createdAt` are multi-domain and sit at different absolute
@@ -359,7 +362,8 @@ describe('export warns on the remaining constructs with no OWL home', () => {
     const model = baseModel();
     model.entities[0].abstract = true;
     const {warnings, turtle} = convertOsiToOwl(model);
-    expect(warnings.some(w => /abstract/.test(w))).toBe(true);
+    expect(warnings.some(w => /entity 'Customer' is abstract/.test(w)))
+        .toBe(true);
     expect(turtle).toContain('ex:Customer a owl:Class');
   });
 
@@ -394,8 +398,10 @@ describe('export warns on the remaining constructs with no OWL home', () => {
   });
 
   test('bound join columns are dropped with a warning', () => {
+    // A non-temporal field, so the only construct under test is the bound
+    // column below (a Date field would emit its own time-dimension warning).
     const model = twoEntityModel(
-        {name: 'placedAt', expression: 'placedAt', type: 'Date'});
+        {name: 'placedAtLabel', expression: 'placedAtLabel', type: 'String'});
     model.relationships = [{
       name: 'placedBy',
       // A real FK column on the source -- not the TODO_BIND placeholder, not
@@ -405,21 +411,24 @@ describe('export warns on the remaining constructs with no OWL home', () => {
       destination: {entity: 'Customer', columns: ['customerId']},
     }];
     const {warnings} = convertOsiToOwl(model);
-    expect(warnings.some(w => /bound join columns/.test(w))).toBe(true);
+    expect(warnings.some(
+               w => /relationship 'placedBy' has bound join columns/.test(w)))
+        .toBe(true);
   });
 
   test('a non-GOOGLE vendor extension on the model warns', () => {
     const model = baseModel();
     model.customExtensions = [{vendorName: 'ACME', data: '{}'}];
     const {warnings} = convertOsiToOwl(model);
-    expect(warnings.some(w => /vendor extension/.test(w))).toBe(true);
+    expect(warnings.some(w => /ACME \(vendor extension\)/.test(w))).toBe(true);
   });
 
   test('an unparseable GOOGLE extension on the model warns', () => {
     const model = baseModel();
     model.customExtensions = [{vendorName: 'GOOGLE', data: '{ not json'}];
     const {warnings} = convertOsiToOwl(model);
-    expect(warnings.some(w => /unparseable/.test(w))).toBe(true);
+    expect(warnings.some(w => /GOOGLE \(unparseable data\)/.test(w)))
+        .toBe(true);
   });
 
   test(

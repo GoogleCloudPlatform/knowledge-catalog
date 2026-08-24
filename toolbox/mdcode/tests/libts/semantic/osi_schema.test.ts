@@ -98,11 +98,13 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
         // A dataset `extends`/`abstract` is a deliberate superset of released
         // OSI (OWL rdfs:subClassOf -> entity-level inheritance, plus the
         // abstract marker); tolerate exactly those extra properties and nothing
-        // else, and only on the OWL import goldens (.osi.golden.yaml) and the
-        // hand-authored hierarchy fixture that legitimately carry them -- so a
-        // stray `extends` slipping into any other fixture still fails.
+        // else, and only on the OWL import goldens (.osi.golden.yaml), the
+        // hand-authored hierarchy fixture, and the OSI-origin round-trip fixture
+        // that legitimately carry them -- so a stray `extends` slipping into any
+        // other fixture still fails.
         if ((rel.endsWith('.osi.golden.yaml') ||
-             rel === 'hierarchy_graph.yaml') &&
+             rel === 'hierarchy_graph.yaml' ||
+             rel === 'owl/directory.osi.yaml') &&
             onlyExtendsExtension(validate.errors)) {
           return;
         }
