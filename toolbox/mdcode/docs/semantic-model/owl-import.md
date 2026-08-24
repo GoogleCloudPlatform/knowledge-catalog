@@ -708,18 +708,11 @@ import:
   extensions](#constructs-carried-as-custom-extensions-not-yet-native)). They are
   inert on push; promoting any to a native concept is the follow-on.
 
-**Not read yet — the next candidate for carriage.** Stated as an anonymous
-axiom node whose predicates the converter does not recognize today:
-
-- Cardinality / required (`owl:minCardinality` / `owl:maxCardinality`
-  restrictions). A cardinality lives on an anonymous `owl:Restriction` reached
-  through `rdfs:subClassOf`, so reaching it needs a `owl:Restriction` reader
-  joined back to its class — the last blank-node shape the converter does not yet
-  read. (The set-level axioms `owl:AllDisjointClasses` / `AllDisjointProperties`
-  / `AllDifferent`, also free-standing anonymous nodes, *are* now carried on the
-  model; the pairwise `owl:disjointWith` / `owl:propertyDisjointWith`, the
-  enumeration `owl:oneOf`, and the chain `owl:propertyChainAxiom`, which hang off
-  a named term, are carried too.)
+**Not read yet — the next candidate for carriage.** Cardinality
+(`owl:minCardinality` / `owl:maxCardinality`) lives on an anonymous
+`owl:Restriction` reached through `rdfs:subClassOf` — the last blank-node shape
+the converter does not yet read. Carrying it needs an `owl:Restriction` reader
+joined back to its class.
 
 **Not read — out of scope.** Richer OWL/RDF beyond the schema-shaped subset this
 converter targets:
