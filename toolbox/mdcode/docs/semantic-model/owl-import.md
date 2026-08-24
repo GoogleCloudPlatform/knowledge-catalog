@@ -688,25 +688,27 @@ importer handles them today, and the remaining work is a later step, not in the
 import:
 
 - **Class hierarchy** (`rdfs:subClassOf`) maps to dataset `extends` (see
-  [Class hierarchies](#class-hierarchies-rdfssubclassof)); a **BigQuery** push
-  resolves it into node-table labels with inherited fields flattened down (see
-  [Class hierarchies (`extends` →
-  labels)](reference.md#class-hierarchies-extends--labels)). Resolving the same
-  inheritance into **Knowledge Catalog** entries is the follow-on — KC push still
-  publishes each entry with only its own fields.
-- **Constructs with no native home** — property inheritance
-  (`rdfs:subPropertyOf`), the cross-references (`owl:inverseOf`,
-  `owl:equivalentClass`, `owl:disjointWith`, `owl:equivalentProperty`,
-  `owl:propertyDisjointWith`), every property characteristic (symmetric /
-  transitive / functional / reflexive / irreflexive / asymmetric), enumerations
-  (`owl:oneOf`) and property chains (`owl:propertyChainAxiom`), the set-level
-  axioms (`owl:AllDisjointClasses`, `owl:AllDisjointProperties`,
-  `owl:AllDifferent` — carried on the model), and the per-term annotations
-  (`rdfs:seeAlso`, `rdfs:isDefinedBy`, `owl:deprecated`, `owl:versionInfo`) are
-  **carried verbatim** as `custom_extensions` rather than dropped (see
-  [Constructs carried as custom
-  extensions](#constructs-carried-as-custom-extensions-not-yet-native)). They are
-  inert on push; promoting any to a native concept is the follow-on.
+  [Class hierarchies](#class-hierarchies-rdfssubclassof)). Downstream:
+  - **BigQuery** push resolves it into node-table labels, inherited fields
+    flattened down (see [Class hierarchies (`extends` →
+    labels)](reference.md#class-hierarchies-extends--labels)).
+  - **Knowledge Catalog** is the follow-on — KC push still publishes each entry
+    with only its own fields.
+- **Constructs with no native home** are **carried verbatim** as
+  `custom_extensions` rather than dropped — inert on push, and promoting any to a
+  native concept is the follow-on (see [Constructs carried as custom
+  extensions](#constructs-carried-as-custom-extensions-not-yet-native)):
+  - **Property inheritance** — `rdfs:subPropertyOf`.
+  - **Cross-references** — `owl:inverseOf`, `owl:equivalentClass`,
+    `owl:disjointWith`, `owl:equivalentProperty`, `owl:propertyDisjointWith`.
+  - **Property characteristics** — symmetric / transitive / functional /
+    reflexive / irreflexive / asymmetric.
+  - **Enumerations** (`owl:oneOf`) and **property chains**
+    (`owl:propertyChainAxiom`).
+  - **Set-level axioms** — `owl:AllDisjointClasses`,
+    `owl:AllDisjointProperties`, `owl:AllDifferent` (carried on the model).
+  - **Per-term annotations** — `rdfs:seeAlso`, `rdfs:isDefinedBy`,
+    `owl:deprecated`, `owl:versionInfo`.
 
 **Not read yet — the next candidate for carriage.** Cardinality
 (`owl:minCardinality` / `owl:maxCardinality`) lives on an anonymous
