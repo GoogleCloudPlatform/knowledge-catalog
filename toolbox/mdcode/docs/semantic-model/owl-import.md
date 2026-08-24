@@ -442,24 +442,27 @@ original construct is lost in translation.
 
 **What is carried, and where it attaches:**
 
-| OWL construct | Key | Attaches to | Value | Meaning |
-|---|---|---|---|---|
-| `rdfs:subPropertyOf` | `rdfs:subPropertyOf` | field / relationship | `string[]` (super-property refs) | this property refines a broader one |
-| `owl:inverseOf` | `owl:inverseOf` | relationship | `string` (the inverse edge's ref) | the same edge read the other way |
-| `owl:equivalentClass` | `owl:equivalentClass` | entity | `string[]` (equivalent class refs) | this class denotes the same set as another |
-| `owl:disjointWith` | `owl:disjointWith` | entity | `string[]` (disjoint class refs) | no individual is in both classes |
-| `owl:equivalentProperty` | `owl:equivalentProperty` | field / relationship | `string[]` (equivalent property refs) | this property means the same as another |
-| `owl:propertyDisjointWith` | `owl:propertyDisjointWith` | field / relationship | `string[]` (disjoint property refs) | the two properties never both hold |
-| `owl:SymmetricProperty` | `owl:SymmetricProperty` | relationship | `true` | the edge holds both ways (`a→b` ⇒ `b→a`) |
-| `owl:TransitiveProperty` | `owl:TransitiveProperty` | relationship | `true` | the edge chains (`a→b`, `b→c` ⇒ `a→c`) |
-| `owl:FunctionalProperty` | `owl:FunctionalProperty` | field / relationship | `true` | at most one value / destination per subject |
-| `owl:ReflexiveProperty` | `owl:ReflexiveProperty` | relationship | `true` | every subject relates to itself (`a→a`) |
-| `owl:IrreflexiveProperty` | `owl:IrreflexiveProperty` | relationship | `true` | no subject relates to itself |
-| `owl:AsymmetricProperty` | `owl:AsymmetricProperty` | relationship | `true` | `a→b` rules out `b→a` |
-| `rdfs:seeAlso` | `rdfs:seeAlso` | any | `string[]` of N-Triples terms — an IRI as `<iri>`, a literal as `"text"` (with any `@lang` / `^^<datatype>` preserved) | pointer to further information (kept distinguishable, see below) |
-| `rdfs:isDefinedBy` | `rdfs:isDefinedBy` | any | `string[]` (IRIs, verbatim) | the resource that defines this term |
-| `owl:deprecated` | `owl:deprecated` | any | `true` | the term is deprecated (carried only when true) |
-| `owl:versionInfo` | `owl:versionInfo` | any | `string` | a term-level version string |
+The JSON key is the OWL construct itself (see **The shape** above), so it is not
+repeated as its own column. Rows are grouped by what they attach to.
+
+| OWL construct | Attaches to | Value | Meaning |
+|---|---|---|---|
+| `owl:equivalentClass` | entity | `string[]` (equivalent class refs) | this class denotes the same set as another |
+| `owl:disjointWith` | entity | `string[]` (disjoint class refs) | no individual is in both classes |
+| `rdfs:subPropertyOf` | field / relationship | `string[]` (super-property refs) | this property refines a broader one |
+| `owl:equivalentProperty` | field / relationship | `string[]` (equivalent property refs) | this property means the same as another |
+| `owl:propertyDisjointWith` | field / relationship | `string[]` (disjoint property refs) | the two properties never both hold |
+| `owl:FunctionalProperty` | field / relationship | `true` | at most one value / destination per subject |
+| `owl:inverseOf` | relationship | `string` (the inverse edge's ref) | the same edge read the other way |
+| `owl:SymmetricProperty` | relationship | `true` | the edge holds both ways (`a→b` ⇒ `b→a`) |
+| `owl:TransitiveProperty` | relationship | `true` | the edge chains (`a→b`, `b→c` ⇒ `a→c`) |
+| `owl:ReflexiveProperty` | relationship | `true` | every subject relates to itself (`a→a`) |
+| `owl:IrreflexiveProperty` | relationship | `true` | no subject relates to itself |
+| `owl:AsymmetricProperty` | relationship | `true` | `a→b` rules out `b→a` |
+| `rdfs:seeAlso` | any | `string[]` of N-Triples terms — an IRI as `<iri>`, a literal as `"text"` (with any `@lang` / `^^<datatype>` preserved) | pointer to further information (kept distinguishable, see below) |
+| `rdfs:isDefinedBy` | any | `string[]` (IRIs, verbatim) | the resource that defines this term |
+| `owl:deprecated` | any | `true` | the term is deprecated (carried only when true) |
+| `owl:versionInfo` | any | `string` | a term-level version string |
 
 When more than one fact applies to the same object they share **one** block, in a
 fixed key order (cross-references, then characteristics, then the per-term
