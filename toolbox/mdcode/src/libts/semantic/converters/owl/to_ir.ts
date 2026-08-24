@@ -658,12 +658,13 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   // base IRI -- computed before the check below relies on that side effect.
   const modelTerms: Record<string, unknown> = {};
   if (owl.allDisjointClasses.length)
-    modelTerms['owl:AllDisjointClasses'] = owl.allDisjointClasses.map(refs);
+    modelTerms['owl:AllDisjointClasses'] =
+        owl.allDisjointClasses.map(set => refs(set));
   if (owl.allDisjointProperties.length)
     modelTerms['owl:AllDisjointProperties'] =
-        owl.allDisjointProperties.map(refs);
+        owl.allDisjointProperties.map(set => refs(set));
   if (owl.allDifferent.length)
-    modelTerms['owl:AllDifferent'] = owl.allDifferent.map(refs);
+    modelTerms['owl:AllDifferent'] = owl.allDifferent.map(set => refs(set));
   if (shortenedRef && owl.baseIri) modelTerms['owl:baseIri'] = owl.baseIri;
   attachOntology(model, modelTerms);
 

@@ -1270,6 +1270,34 @@ describe('OWL constructs carried as custom extensions', () => {
         });
       });
 
+  test('owl:distinctMembers is ignored on a non-AllDifferent axiom', () => {
+    // owl:distinctMembers is the legacy OWL 1 spelling for owl:AllDifferent
+    // only; it has no meaning on owl:AllDisjointClasses. A node that carries it
+    // there (and no owl:members) contributes no member set, so nothing is
+    // carried at all (no shortened reference, hence no owl:baseIri either).
+    const ttl = `${PREFIXES}
+      ex:Cat a owl:Class . ex:Dog a owl:Class .
+      [] a owl:AllDisjointClasses ; owl:distinctMembers ( ex:Cat ex:Dog ) .`;
+    expect(ontologyTerms(loadOwl(ttl).customExtensions)).toBeUndefined();
+  });
+
+  test(
+      'an anonymous node typed as two axiom kinds is carried under both',
+      () => {
+        // A single blank node typed as both owl:AllDisjointClasses and
+        // owl:AllDifferent is unusual but legal RDF; its one owl:members list
+        // must surface under each kind, not be dropped for the second.
+        const ttl = `${PREFIXES}
+      ex:Cat a owl:Class . ex:Dog a owl:Class .
+      [] a owl:AllDisjointClasses, owl:AllDifferent ;
+         owl:members ( ex:Cat ex:Dog ) .`;
+        expect(ontologyTerms(loadOwl(ttl).customExtensions)).toEqual({
+          'owl:AllDisjointClasses': [['Cat', 'Dog']],
+          'owl:AllDifferent': [['Cat', 'Dog']],
+          'owl:baseIri': 'http://example.com/x#',
+        });
+      });
+
   test(
       'reflexive / irreflexive / asymmetric characteristics -> relationship',
       () => {

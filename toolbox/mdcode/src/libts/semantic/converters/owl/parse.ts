@@ -269,13 +269,17 @@ export function parseOwl(turtle: string): OwlModel {
   const reflexive = new Set<string>();
   const irreflexive = new Set<string>();
   const asymmetric = new Set<string>();
-  // Anonymous set-level-axiom nodes, in document order, deduped by node id (a
-  // node carries exactly one of these types, so one shared seen-set suffices).
-  // Their `owl:members` list is resolved after the list structure is known.
+  // Anonymous set-level-axiom nodes, in document order, deduped by node id
+  // within each kind (a duplicate type triple must not list the node twice). A
+  // node typed as two different kinds -- legal, if unusual, RDF -- is recorded
+  // under each, so the dedup is per-kind rather than one shared seen-set. Their
+  // `owl:members` list is resolved after the list structure is known.
   const allDisjointClassesNodes: string[] = [];
   const allDisjointPropertiesNodes: string[] = [];
   const allDifferentNodes: string[] = [];
-  const seenAxiomNode = new Set<string>();
+  const seenDisjointClasses = new Set<string>();
+  const seenDisjointProperties = new Set<string>();
+  const seenDifferent = new Set<string>();
   let ontologyIri: string|undefined;
   for (const q of quads) {
     if (q.predicate.value !== RDF_TYPE) continue;
@@ -314,22 +318,22 @@ export function parseOwl(turtle: string): OwlModel {
       continue;
     }
     if (type === OWL_ALL_DISJOINT_CLASSES) {
-      if (!seenAxiomNode.has(subject)) {
-        seenAxiomNode.add(subject);
+      if (!seenDisjointClasses.has(subject)) {
+        seenDisjointClasses.add(subject);
         allDisjointClassesNodes.push(subject);
       }
       continue;
     }
     if (type === OWL_ALL_DISJOINT_PROPERTIES) {
-      if (!seenAxiomNode.has(subject)) {
-        seenAxiomNode.add(subject);
+      if (!seenDisjointProperties.has(subject)) {
+        seenDisjointProperties.add(subject);
         allDisjointPropertiesNodes.push(subject);
       }
       continue;
     }
     if (type === OWL_ALL_DIFFERENT) {
-      if (!seenAxiomNode.has(subject)) {
-        seenAxiomNode.add(subject);
+      if (!seenDifferent.has(subject)) {
+        seenDifferent.add(subject);
         allDifferentNodes.push(subject);
       }
       continue;
@@ -350,6 +354,10 @@ export function parseOwl(turtle: string): OwlModel {
   // The `owl:members` list head of each set-level-axiom node. owl:members (OWL
   // 2) wins over the legacy owl:distinctMembers (OWL 1, owl:AllDifferent only)
   // when a node carries both, regardless of the order the two triples appear.
+  // owl:distinctMembers is honored ONLY on an owl:AllDifferent node, matching
+  // the OWL spec (it has no meaning on the disjointness axioms), so a stray
+  // owl:distinctMembers on an owl:AllDisjoint* node is ignored rather than
+  // carried.
   const membersHead = new Map<string, string>();
   for (const q of quads) {
     if (q.predicate.value === RDF_FIRST)
@@ -360,7 +368,7 @@ export function parseOwl(turtle: string): OwlModel {
       membersHead.set(q.subject.value, q.object.value);
     else if (
         q.predicate.value === OWL_DISTINCT_MEMBERS &&
-        !membersHead.has(q.subject.value))
+        seenDifferent.has(q.subject.value) && !membersHead.has(q.subject.value))
       membersHead.set(q.subject.value, q.object.value);
   }
   // Resolves an RDF collection to its member IRIs, following rdf:rest to nil.
