@@ -16,8 +16,9 @@ the property characteristics, and per-term annotations (`rdfs:seeAlso`,
 `owl:deprecated`, …) — are not dropped: they **ride along verbatim** as custom
 extensions, lossless and inert, until they earn a first-class concept (see
 [Constructs carried as custom extensions](#constructs-carried-as-custom-extensions-not-yet-native)).
-Richer OWL still not read at all (SHACL, cardinality restrictions, `owl:oneOf`,
-individuals) is listed in [Limitations](#limitations).
+Richer OWL still not read at all (SHACL, cardinality restrictions, the set-level
+disjointness / identity axioms, individuals) is listed in
+[Limitations](#limitations).
 
 ## 1. The OWL file
 
@@ -246,7 +247,7 @@ appears nowhere above.
 | `owl:DatatypeProperty` | `fields[]` on **each** domain's dataset | a property with several `rdfs:domain` values lands on each; `expression` defaults to the property's local name (a valid column ref once bound) |
 | `owl:ObjectProperty` | `relationships[]` | `from` = domain, `to` = range; join columns bound to the destination key when it has one, else `TODO_BIND` (see [binding](#4-going-from-ontology-to-a-running-graph-binding)); with several `rdfs:domain`/`rdfs:range` values only the first of each is kept (a relationship is one source → one destination) and the rest are warned |
 | `rdfs:subClassOf` (named superclass) | dataset `extends[]` | **entity-level inheritance only** — records the parent(s) in document order; not read on object properties (see [Class hierarchies](#class-hierarchies-rdfssubclassof)) |
-| `rdfs:subPropertyOf`, `owl:inverseOf`, `owl:equivalentClass`, `owl:disjointWith`, `owl:equivalentProperty`, `owl:propertyDisjointWith`, the property characteristics, `rdfs:seeAlso`, `rdfs:isDefinedBy`, `owl:deprecated`, `owl:versionInfo` | `custom_extensions` (GOOGLE) | **no native home yet** — carried verbatim, inert on push (see [Constructs carried as custom extensions](#constructs-carried-as-custom-extensions-not-yet-native)) |
+| `rdfs:subPropertyOf`, `owl:inverseOf`, `owl:equivalentClass`, `owl:disjointWith`, `owl:oneOf`, `owl:equivalentProperty`, `owl:propertyDisjointWith`, `owl:propertyChainAxiom`, the property characteristics, `rdfs:seeAlso`, `rdfs:isDefinedBy`, `owl:deprecated`, `owl:versionInfo` | `custom_extensions` (GOOGLE) | **no native home yet** — carried verbatim, inert on push (see [Constructs carried as custom extensions](#constructs-carried-as-custom-extensions-not-yet-native)) |
 | `rdfs:range xsd:*` | field `datatype` | see [Datatypes](#datatypes-rdfsrange) |
 | `owl:hasKey ( ... )` | dataset `primary_key` | single or composite, in list order |
 | `owl:InverseFunctionalProperty` | dataset `unique_keys` | a uniquely-identifying property; omitted when it is already the `primary_key`; a lone one on a keyless class is promoted to `primary_key` instead |
@@ -449,6 +450,8 @@ repeated as its own column. Rows are grouped by what they attach to.
 |---|---|---|---|
 | `owl:equivalentClass` | entity | `string[]` (equivalent class refs) | this class denotes the same set as another |
 | `owl:disjointWith` | entity | `string[]` (disjoint class refs) | no individual is in both classes |
+| `owl:oneOf` | entity | `string[]` (member refs, in list order) | the class is exactly this enumerated set of members |
+| `owl:propertyChainAxiom` | relationship | `string[]` (property refs, **in chain order, duplicates kept**) | this edge is the ordered composition of the listed ones (`hasParent` then `hasBrother` ⇒ `hasUncle`) |
 | `rdfs:subPropertyOf` | field / relationship | `string[]` (super-property refs) | this property refines a broader one |
 | `owl:equivalentProperty` | field / relationship | `string[]` (equivalent property refs) | this property means the same as another |
 | `owl:propertyDisjointWith` | field / relationship | `string[]` (disjoint property refs) | the two properties never both hold |
@@ -692,16 +695,21 @@ import:
   extensions](#constructs-carried-as-custom-extensions-not-yet-native)). They are
   inert on push; promoting any to a native concept is the follow-on.
 
-**Not read yet — the next candidates for carriage.** Each is stated as a
-blank-node axiom (an RDF list or an anonymous node) whose predicates the
-converter does not recognize today; the RDF-list walker itself already exists (it
-reads `owl:hasKey`), so these are within reach:
+**Not read yet — the next candidates for carriage.** Each is stated as an
+anonymous axiom node (a blank node, sometimes carrying an RDF list) whose
+predicates the converter does not recognize today; the RDF-list walker itself
+already exists (it reads `owl:hasKey`, `owl:oneOf`, and `owl:propertyChainAxiom`),
+so these are within reach:
 
 - Cardinality / required (`owl:minCardinality` / `owl:maxCardinality`
-  restrictions), enumerations (`owl:oneOf`), and the *set* disjointness / identity
-  axioms (`owl:AllDisjointClasses` / `AllDisjointProperties` / `AllDifferent`,
-  `owl:propertyChainAxiom`). (Pairwise `owl:disjointWith` /
-  `owl:propertyDisjointWith`, which name a term directly, *are* carried.)
+  restrictions) and the *set* disjointness / identity axioms
+  (`owl:AllDisjointClasses` / `AllDisjointProperties` / `AllDifferent`). Unlike
+  the carried axioms above, none hangs off a named term: a cardinality lives on an
+  anonymous `owl:Restriction` reached through `rdfs:subClassOf`, and the set
+  axioms are free-standing anonymous nodes — so reaching them needs a new scan,
+  not just the list walker. (Pairwise `owl:disjointWith` /
+  `owl:propertyDisjointWith` and the enumeration `owl:oneOf` / chain
+  `owl:propertyChainAxiom`, which hang off a named term, *are* carried.)
 
 **Not read — out of scope.** Richer OWL/RDF beyond the schema-shaped subset this
 converter targets:

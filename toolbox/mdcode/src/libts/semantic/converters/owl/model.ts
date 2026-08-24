@@ -16,12 +16,14 @@
 // cross-references (owl:inverseOf, owl:equivalentClass, owl:disjointWith,
 // owl:equivalentProperty, owl:propertyDisjointWith), the full set of property
 // characteristics (symmetric / transitive / functional / reflexive /
-// irreflexive / asymmetric), and per-term annotations (rdfs:seeAlso,
-// rdfs:isDefinedBy, owl:deprecated, owl:versionInfo). A carried cross-reference
-// keeps the FULL referent IRI; the mapper shortens it to a local name only when
-// it lives in this ontology's own namespace (see to_ir.refValue). Richer OWL
-// still absent (SHACL, cardinality restrictions, owl:oneOf, individuals); see
-// the "What is not covered yet" note in the guide.
+// irreflexive / asymmetric), per-term annotations (rdfs:seeAlso,
+// rdfs:isDefinedBy, owl:deprecated, owl:versionInfo), enumerations
+// (owl:oneOf), and property chains (owl:propertyChainAxiom). A carried
+// cross-reference keeps the FULL referent IRI; the mapper shortens it to a
+// local name only when it lives in this ontology's own namespace (see
+// to_ir.refValue). Richer OWL still absent (SHACL, cardinality restrictions,
+// the set-level disjointness/identity axioms, individuals); see the "What is
+// not covered yet" note in the guide.
 
 /**
  * Per-term annotations carried verbatim on any class or property -- links to
@@ -82,6 +84,13 @@ export interface OwlClass extends OwlCommonAnnotations {
   // expression is out of scope). Full IRIs (see equivalentClass). Empty when
   // none.
   disjointWith: string[];
+  // Referent IRIs of the members of an `owl:oneOf` enumeration (the class is
+  // defined by listing its members), in list order. No native OSI home -- the
+  // members are usually individuals, which the converter does not model -- so
+  // the enumeration is carried verbatim as a custom extension, keeping the
+  // member names. Full IRIs -- the mapper shortens an in-namespace one to its
+  // local name. Empty when the class is not an enumeration.
+  oneOf: string[];
 }
 
 /**
@@ -163,6 +172,15 @@ export interface OwlObjectProperty extends OwlCommonAnnotations {
   // No native OSI home; carried verbatim. Named properties only. Full IRIs.
   // Empty when none.
   propertyDisjointWith: string[];
+  // Referent IRIs of the properties in an `owl:propertyChainAxiom` (this
+  // property is the composition of the listed ones, e.g. hasParent then
+  // hasBrother == hasUncle), in chain order. No native OSI home, so it is
+  // carried verbatim. Order is significant AND repetition is meaningful (a
+  // chain may name the same property twice, e.g. hasParent/hasParent for a
+  // grandparent), so it is neither reordered nor deduped. Full IRIs -- the
+  // mapper shortens an in-namespace one to its local name. Empty when the
+  // property is not a chain.
+  propertyChain: string[];
   // owl:SymmetricProperty -- the edge holds both ways (`a rel b` implies
   // `b rel a`). Carried verbatim; no native OSI home.
   symmetric: boolean;
