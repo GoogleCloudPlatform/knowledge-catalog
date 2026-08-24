@@ -136,7 +136,9 @@ semantic_model:
             data: |-
               {
                 "owl:propertyChainAxiom": [
-                  "ancestorOf",
-                  "relatedTo"
+                  [
+                    "ancestorOf",
+                    "relatedTo"
+                  ]
                 ]
               }

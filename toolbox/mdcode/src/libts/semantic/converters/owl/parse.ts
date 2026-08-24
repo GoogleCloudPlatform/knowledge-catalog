@@ -392,9 +392,10 @@ export function parseOwl(turtle: string): OwlModel {
       case OWL_ONE_OF:
         // Enumerated class -> no native OSI home; carried verbatim. The object
         // is an RDF collection head; the members (usually individuals) are
-        // resolved with the list walker at build time. On a subject that is not
-        // a class (e.g. a datatype-defining node) this never runs -- only typed
-        // classes/properties are annotated.
+        // resolved with the list walker at build time. This is recorded for any
+        // annotated subject, but only the class build reads it -- if the
+        // subject is typed a property instead, the heads are collected here and
+        // then dropped (an owl:oneOf on a property is not meaningful).
         a.oneOfListHeads.push(q.object.value);
         break;
       case OWL_PROPERTY_CHAIN_AXIOM:
@@ -514,8 +515,10 @@ export function parseOwl(turtle: string): OwlModel {
           subClassOf: a.subClassOf,
           equivalentClass: a.equivalentClass,
           disjointWith: a.disjointWith,
-          // Full member IRIs (a carried cross-reference); the mapper shortens
-          // an in-namespace one. flatMap over resolveList keeps list order.
+          // Full member IRIs of the enumeration set (a carried cross-reference;
+          // the mapper shortens an in-namespace one). flatMap unions the
+          // members across every oneOf head -- an enumeration is a set, so the
+          // mapper dedupes and order does not matter (contrast propertyChain).
           oneOf: a.oneOfListHeads.flatMap(resolveList),
           ...commonAnnotations(a),
         });
@@ -553,9 +556,15 @@ export function parseOwl(turtle: string): OwlModel {
           inverseOf: a.inverseOf,
           equivalentProperty: a.equivalentProperty,
           propertyDisjointWith: a.propertyDisjointWith,
-          // Full property IRIs in chain order (the mapper shortens in-namespace
-          // ones); order and repetition are preserved, so no dedupe here.
-          propertyChain: a.chainListHeads.flatMap(resolveList),
+          // One resolved chain per owl:propertyChainAxiom (map, NOT flatMap):
+          // OWL 2 permits several chain axioms on one property, and fusing them
+          // would be indistinguishable from a single longer chain. Full
+          // property IRIs in chain order (the mapper shortens in-namespace
+          // ones); within a chain order and repetition are preserved, so no
+          // dedupe. An empty chain (a broken/gapped list) is dropped rather
+          // than carried as [].
+          propertyChain:
+              a.chainListHeads.map(resolveList).filter(c => c.length),
           symmetric: symmetric.has(iri),
           transitive: transitive.has(iri),
           functional: functional.has(iri),

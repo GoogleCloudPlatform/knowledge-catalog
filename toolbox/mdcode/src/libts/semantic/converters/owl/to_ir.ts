@@ -399,9 +399,11 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     // fixed key order. owl:equivalentClass / owl:disjointWith are class
     // cross-references (a class is one entity, so these are facts ABOUT it, not
     // structural links); owl:oneOf enumerates the class's members (usually
-    // individuals, which are not modeled, so only the names are kept);
-    // blank-node class expressions were dropped in the parser. commonTerms adds
-    // any per-term annotations (seeAlso, deprecated, ...).
+    // individuals, which are not modeled, so only the names are kept) -- an
+    // enumeration is a set, so refs() (which dedupes) is correct here, unlike
+    // the ordered propertyChainAxiom which uses refSeq; blank-node class
+    // expressions were dropped in the parser. commonTerms adds any per-term
+    // annotations (seeAlso, deprecated, ...).
     const entityTerms: Record<string, unknown> = {};
     if (c.equivalentClass.length)
       entityTerms['owl:equivalentClass'] = refs(c.equivalentClass);
@@ -576,10 +578,12 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     const relTerms: Record<string, unknown> = {};
     if (p.subPropertyOf.length)
       relTerms['rdfs:subPropertyOf'] = refs(p.subPropertyOf);
-    // Ordered and repetition-sensitive, so refSeq (not refs): a chain may name
-    // the same property twice (e.g. hasParent/hasParent for a grandparent).
+    // One list per chain axiom (a property may carry several). Each is ordered
+    // and repetition-sensitive, so refSeq (not refs): a chain may name the same
+    // property twice (e.g. hasParent/hasParent for a grandparent). Emitted as a
+    // list of chains so distinct axioms are not fused into one flat sequence.
     if (p.propertyChain.length)
-      relTerms['owl:propertyChainAxiom'] = refSeq(p.propertyChain);
+      relTerms['owl:propertyChainAxiom'] = p.propertyChain.map(refSeq);
     if (p.inverseOf.length) {
       // owl:inverseOf pairs two properties; one DISTINCT statement is the norm.
       // refs() shortens and dedupes first, so a repeated identical triple isn't

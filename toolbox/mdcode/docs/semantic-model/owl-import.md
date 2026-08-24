@@ -450,8 +450,8 @@ repeated as its own column. Rows are grouped by what they attach to.
 |---|---|---|---|
 | `owl:equivalentClass` | entity | `string[]` (equivalent class refs) | this class denotes the same set as another |
 | `owl:disjointWith` | entity | `string[]` (disjoint class refs) | no individual is in both classes |
-| `owl:oneOf` | entity | `string[]` (member refs, in list order) | the class is exactly this enumerated set of members |
-| `owl:propertyChainAxiom` | relationship | `string[]` (property refs, **in chain order, duplicates kept**) | this edge is the ordered composition of the listed ones (`hasParent` then `hasBrother` ⇒ `hasUncle`) |
+| `owl:oneOf` | entity | `string[]` (member refs; an enumeration is a **set** — deduped, order not significant) | the class is exactly this enumerated set of members |
+| `owl:propertyChainAxiom` | relationship | `string[][]` (one ordered chain per axiom — **in chain order, duplicates kept**; a property may carry several chain axioms) | this edge is the ordered composition of the listed ones (`hasParent` then `hasBrother` ⇒ `hasUncle`) |
 | `rdfs:subPropertyOf` | field / relationship | `string[]` (super-property refs) | this property refines a broader one |
 | `owl:equivalentProperty` | field / relationship | `string[]` (equivalent property refs) | this property means the same as another |
 | `owl:propertyDisjointWith` | field / relationship | `string[]` (disjoint property refs) | the two properties never both hold |

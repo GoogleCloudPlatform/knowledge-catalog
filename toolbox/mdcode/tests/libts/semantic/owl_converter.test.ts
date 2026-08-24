@@ -1129,7 +1129,9 @@ describe('OWL constructs carried as custom extensions', () => {
 
   test('owl:propertyChainAxiom -> relationship (ordered composition)', () => {
     // hasUncle == hasParent then hasBrother. Chain order is significant, so the
-    // members are kept in document order.
+    // members are kept in document order. A single axiom is carried as a list
+    // of one chain (a chain is itself a list), so the shape is stable whether a
+    // property has one axiom or several.
     const ttl = `${PREFIXES}
       ex:Person a owl:Class .
       ex:hasParent a owl:ObjectProperty ; rdfs:domain ex:Person ; rdfs:range ex:Person .
@@ -1139,7 +1141,7 @@ describe('OWL constructs carried as custom extensions', () => {
           owl:propertyChainAxiom ( ex:hasParent ex:hasBrother ) .`;
     const rel = loadOwl(ttl).relationships.find(r => r.name === 'hasUncle')!;
     expect(ontologyTerms(rel.customExtensions)).toEqual({
-      'owl:propertyChainAxiom': ['hasParent', 'hasBrother']
+      'owl:propertyChainAxiom': [['hasParent', 'hasBrother']]
     });
   });
 
@@ -1156,7 +1158,28 @@ describe('OWL constructs carried as custom extensions', () => {
     const rel =
         loadOwl(ttl).relationships.find(r => r.name === 'hasGrandparent')!;
     expect(ontologyTerms(rel.customExtensions)).toEqual({
-      'owl:propertyChainAxiom': ['hasParent', 'hasParent']
+      'owl:propertyChainAxiom': [['hasParent', 'hasParent']]
+    });
+  });
+
+  test('multiple owl:propertyChainAxiom axioms are kept separate', () => {
+    // OWL 2 lets one property carry several chain axioms: an uncle is a
+    // father's brother OR a mother's brother. The two chains must not be fused
+    // into one flat list (that would be indistinguishable from a single 4-link
+    // chain), so each rides as its own ordered chain, in declaration order.
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class .
+      ex:hasFather a owl:ObjectProperty ; rdfs:domain ex:Person ; rdfs:range ex:Person .
+      ex:hasMother a owl:ObjectProperty ; rdfs:domain ex:Person ; rdfs:range ex:Person .
+      ex:hasBrother a owl:ObjectProperty ; rdfs:domain ex:Person ; rdfs:range ex:Person .
+      ex:hasUncle a owl:ObjectProperty ;
+          rdfs:domain ex:Person ; rdfs:range ex:Person ;
+          owl:propertyChainAxiom ( ex:hasFather ex:hasBrother ) ;
+          owl:propertyChainAxiom ( ex:hasMother ex:hasBrother ) .`;
+    const rel = loadOwl(ttl).relationships.find(r => r.name === 'hasUncle')!;
+    expect(ontologyTerms(rel.customExtensions)).toEqual({
+      'owl:propertyChainAxiom':
+          [['hasFather', 'hasBrother'], ['hasMother', 'hasBrother']]
     });
   });
 
