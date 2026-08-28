@@ -63,6 +63,10 @@ each order out into many line-item rows, so the model includes `lineitem`. Step
 extension names the BigQuery Graph deployment target.
 
 ```bash
+# BigQuery Graph deployment target named by the GOOGLE extension below.
+BQ_DS=projects/$PROJECT/datasets/$DATASET
+TARGET=//bigquery.googleapis.com/$BQ_DS/propertyGraphs/$GRAPH
+
 cat > catalog/EntryGroups/$DATASET/sales.yaml <<YAML
 version: "0.2.0.dev0"
 semantic_model:
@@ -70,34 +74,64 @@ semantic_model:
     description: Orders, line items, and customers for the codelab
     custom_extensions:
       - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["//bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/$GRAPH"]}'
+        data: '{"deploymentTargets": ["$TARGET"]}'
     datasets:
       - name: orders
         source: $PROJECT.$DATASET.orders
         primary_key: [o_orderkey]
         fields:
-          - { name: o_orderkey, datatype: Integer, expression: { dialects: [{ dialect: BIGQUERY, expression: o_orderkey }] } }
-          - { name: o_custkey,  datatype: Integer, expression: { dialects: [{ dialect: BIGQUERY, expression: o_custkey }] } }
-          - { name: net_amount, datatype: Decimal, expression: { dialects: [{ dialect: BIGQUERY, expression: net_amount }] } }
+          - name: o_orderkey
+            datatype: Integer
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: o_orderkey }]
+          - name: o_custkey
+            datatype: Integer
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: o_custkey }]
+          - name: net_amount
+            datatype: Decimal
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: net_amount }]
       - name: customer
         source: $PROJECT.$DATASET.customer
         primary_key: [c_custkey]
         fields:
-          - { name: c_custkey, datatype: Integer, expression: { dialects: [{ dialect: BIGQUERY, expression: c_custkey }] } }
-          - { name: c_name,    datatype: String,  expression: { dialects: [{ dialect: BIGQUERY, expression: c_name }] } }
+          - name: c_custkey
+            datatype: Integer
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: c_custkey }]
+          - name: c_name
+            datatype: String
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: c_name }]
       - name: lineitem
         source: $PROJECT.$DATASET.lineitem
         primary_key: [l_linekey]
         fields:
-          - { name: l_linekey,  datatype: Integer, expression: { dialects: [{ dialect: BIGQUERY, expression: l_linekey }] } }
-          - { name: l_orderkey, datatype: Integer, expression: { dialects: [{ dialect: BIGQUERY, expression: l_orderkey }] } }
+          - name: l_linekey
+            datatype: Integer
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: l_linekey }]
+          - name: l_orderkey
+            datatype: Integer
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: l_orderkey }]
     relationships:
-      - { name: orders_to_customer, from: orders, to: customer, from_columns: [o_custkey], to_columns: [c_custkey] }
-      - { name: lineitem_to_orders, from: lineitem, to: orders, from_columns: [l_orderkey], to_columns: [o_orderkey] }
+      - name: orders_to_customer
+        from: orders
+        to: customer
+        from_columns: [o_custkey]
+        to_columns: [c_custkey]
+      - name: lineitem_to_orders
+        from: lineitem
+        to: orders
+        from_columns: [l_orderkey]
+        to_columns: [o_orderkey]
     metrics:
       - name: revenue
         datatype: Decimal
-        expression: { dialects: [{ dialect: BIGQUERY, expression: SUM(orders.net_amount) }] }
+        expression:
+          dialects: [{ dialect: BIGQUERY, expression: SUM(orders.net_amount) }]
 YAML
 ```
 
