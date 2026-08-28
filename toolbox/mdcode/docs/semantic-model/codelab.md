@@ -93,11 +93,98 @@ YAML
 > `SUM(o_extendedprice * (1 - o_discount))` is rejected at deploy. Any arithmetic
 > must be materialized into a column first (step 2 does that for `net_amount`).
 
+### Import existing semantics instead of authoring
+
 You can also start from an existing OWL ontology instead of hand-authoring this
-YAML — `kcmd owl import` converts classes to entities, datatype properties to
-fields, and object properties to relationships. See
-[Importing an OWL ontology](owl-import.md). The rest of this codelab uses the
-hand-authored `sales` model above.
+YAML. `kcmd owl import` converts an ontology (`.ttl`) into a semantic model:
+classes become entities, datatype properties become fields, and object
+properties become relationships. Write a tiny ontology and import it:
+
+```bash
+cat > /tmp/parts.ttl <<'TTL'
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex:   <http://example.com/commerce#> .
+
+ex:Part a owl:Class ;
+    rdfs:label "Part" ;
+    rdfs:comment "A sellable part" .
+ex:Supplier a owl:Class ;
+    rdfs:label "Supplier" .
+
+ex:partName a owl:DatatypeProperty ;
+    rdfs:domain ex:Part ;
+    rdfs:range xsd:string .
+ex:partPrice a owl:DatatypeProperty ;
+    rdfs:domain ex:Part ;
+    rdfs:range xsd:decimal .
+ex:suppliedBy a owl:ObjectProperty ;
+    rdfs:domain ex:Part ;
+    rdfs:range ex:Supplier .
+TTL
+
+kcmd owl import /tmp/parts.ttl --out /tmp/parts_osi.yaml
+```
+
+```
+converted 2 classes, 1 object property, 2 datatype properties
+wrote /tmp/parts_osi.yaml
+note: this model is UNBOUND (placeholder `unbound:` sources, no deployment target).
+      `kcmd push` is rejected until you bind each entity's source table and add
+      a BigQuery deployment target -- validation needs both, for every --target.
+```
+
+Look at what it produced:
+
+```bash
+cat /tmp/parts_osi.yaml
+```
+
+```yaml
+version: 0.2.0.dev0
+semantic_model:
+  - name: parts
+    description: Imported from OWL ontology http://example.com/commerce#
+    datasets:
+      - name: Part
+        source: unbound:Part
+        description: A sellable part
+        fields:
+          - name: partName
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: partName
+            datatype: String
+          - name: partPrice
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: partPrice
+            datatype: Decimal
+      - name: Supplier
+        source: unbound:Supplier
+    relationships:
+      - name: suppliedBy
+        from: Part
+        to: Supplier
+        from_columns:
+          - TODO_BIND
+        to_columns:
+          - TODO_BIND
+```
+
+The classes became `Part` and `Supplier` entities, the datatype properties
+became `Part`'s fields, and the object property became the `suppliedBy`
+relationship. The `source: unbound:*` and `TODO_BIND` join columns are
+placeholders: the import gives you structure, and you bind it to physical tables
+and a deployment target before pushing, which is what the hand-authored `sales`
+model above already has. For the full OWL mapping — class hierarchies, unique
+keys, and the constructs carried as custom extensions — see
+[Importing an OWL ontology](owl-import.md).
+
+The rest of this codelab uses the hand-authored `sales` model above.
 
 ---
 
