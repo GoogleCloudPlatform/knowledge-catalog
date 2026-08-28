@@ -336,7 +336,8 @@ a diagram of node and edge tables — easier to read than the DDL above. Print t
 BigQuery Studio link to the dataset:
 
 ```bash
-echo "https://console.cloud.google.com/bigquery?project=$PROJECT&ws=!1m4!1m3!3m2!1s$PROJECT!2s$DATASET"
+# printf with a single-quoted format string: the `!` are literal, not bash history expansion.
+printf 'https://console.cloud.google.com/bigquery?project=%s&ws=!1m4!1m3!3m2!1s%s!2s%s\n' "$PROJECT" "$PROJECT" "$DATASET"
 ```
 
 Open the link, expand the `$DATASET` dataset in the Explorer, and click the
