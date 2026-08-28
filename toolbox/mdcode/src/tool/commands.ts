@@ -387,6 +387,10 @@ async function pushKnowledgeCatalog(
     validateOnly: options.validateOnly,
     forceRemove: options.forceRemove,
     emitExpressions: options.emitExpressions,
+    // The semantic-* system types live in `dataplex-types/global` on prod.
+    // Override via KC_TYPE_PROJECT to reference them from another project
+    // (e.g. `dataplex-autopush-types` on the autopush/sandbox EAP).
+    systemTypeProject: process.env.KC_TYPE_PROJECT,
   });
 
   for (const w of result.warnings) {
