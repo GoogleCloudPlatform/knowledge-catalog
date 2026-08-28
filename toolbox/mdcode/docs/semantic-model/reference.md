@@ -169,6 +169,10 @@ Each element of your model maps to one catalog resource. Every resource type
 below is a built-in system type under `dataplex-types/global` — push references
 them, it never creates them.
 
+> Set `KC_TYPE_PROJECT` to read these system types from another project, and
+> `DATAPLEX_ENDPOINT` to target a non-prod Dataplex host; both default to
+> production (`dataplex-types` / `https://dataplex.googleapis.com`).
+
 | Model element | Catalog resource | Kind | Id |
 |---|---|---|---|
 | Model | `semantic-model` | entry — anchor / parent of the rest | `<model>` |
