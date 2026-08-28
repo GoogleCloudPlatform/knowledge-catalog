@@ -13,8 +13,9 @@ For the deploy mechanics on their own (author, push, update, pull), see the
 
 ## Setup
 
-You need the `gcloud` and `bq` CLIs, and `kcmd` on your `PATH`. `kcmd` uses your
-`gcloud` configuration for credentials, project, and region:
+You need the `gcloud` and `bq` CLIs, and `kcmd` on your `PATH` (build it from
+source: see [Build](../../README.md#build)). `kcmd` uses your `gcloud`
+configuration for credentials, project, and region:
 
 ```bash
 gcloud auth application-default login
