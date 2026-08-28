@@ -194,6 +194,16 @@ models.
 
 NOTE: The CLI uses `gcloud` to obtain authentication tokens, so ensure you are authenticated via `gcloud auth application-default login`.
 
+#### Environment variables
+
+Two optional variables override where `kcmd` talks to the catalog. Both default
+to production, so you normally leave them unset.
+
+| Variable | Effect |
+|----------|--------|
+| `DATAPLEX_ENDPOINT` | Base URL for the Knowledge Catalog (Dataplex) API. Defaults to `https://dataplex.googleapis.com`. Set it to reach a non-prod host. |
+| `KC_TYPE_PROJECT` | Project the built-in `semantic-*` system types are read from on a semantic-model push. Defaults to `dataplex-types`. |
+
 ### MCP Server
 
 To use the Metadata as Code tools as MCP tools in an agentic system such as the Gemini CLI, add the following to your MCP settings file:
