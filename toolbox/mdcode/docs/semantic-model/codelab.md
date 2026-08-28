@@ -5,9 +5,6 @@ Knowledge Catalog, hydrate its data, and query a metric through BigQuery Graph.
 The metric is defined once and computed the same way at every step. The expected
 output is shown after each command so you can check as you go.
 
-The operational-agent step at the end is the one part not yet runnable: there is
-no building block for it, so it is described rather than scripted.
-
 For the deploy mechanics on their own (author, push, update, pull), see the
 [deploy guide](README.md); for every flag and permission, see the
 [reference](reference.md).
@@ -311,19 +308,7 @@ query, so the correct answer is the default one.
 
 ---
 
-## 5. Act through operational agents (not yet scripted)
-
-The read side is complete; the write side is an operational agent. It would bind
-the same model to an operational database (AlloyDB or Spanner) for fresh,
-low-latency reads. It would also expose the model's `actions` as tools, each call
-dispatching to the action's `executor` (for example, an MCP tool in Agent
-Registry). Entity-typed parameters keep the agent in the model's vocabulary: it
-resolves "Acme" to a `customer` rather than inventing an ID. There is no building
-block for this step yet, so it is described here rather than run.
-
----
-
-## 6. Clean up
+## 5. Clean up
 
 Drop the BigQuery dataset (tables + property graph):
 
