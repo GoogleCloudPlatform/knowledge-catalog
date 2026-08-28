@@ -51,7 +51,7 @@ export KC_TYPE_PROJECT=dataplex-autopush-types                             # pro
 `init` provisions the Knowledge Catalog entry group and a local workspace:
 
 ```bash
-mkdir -p ~/datacloud-codelab && cd ~/datacloud-codelab
+mkdir -p ~/semantic-model-codelab && cd ~/semantic-model-codelab
 kcmd init --semantic-model $PROJECT.$LOCATION.$DATASET
 # -> scope: semantic-model.$PROJECT.$LOCATION.$DATASET
 ```
@@ -433,5 +433,5 @@ curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "${DATAPLEX_ENDPOINT:-https:
 Remove the local workspace that step 1 created:
 
 ```bash
-rm -rf ~/datacloud-codelab
+rm -rf ~/semantic-model-codelab
 ```
