@@ -429,3 +429,9 @@ for E in sales sales.entities.orders sales.entities.customer sales.entities.line
 done
 curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "${DATAPLEX_ENDPOINT:-https://dataplex.googleapis.com}/v1/$EG"
 ```
+
+Remove the local workspace that step 1 created:
+
+```bash
+rm -rf ~/datacloud-codelab
+```
