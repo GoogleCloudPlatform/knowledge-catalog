@@ -31,6 +31,18 @@ export DATASET=datacloud_demo                       # BigQuery dataset + KC entr
 export GRAPH=sales                                  # property-graph name
 ```
 
+The Knowledge Catalog step (step 3) writes the `semantic-model` /
+`semantic-entity` / `semantic-metric` entry types. These are not yet generally
+available on production Dataplex, so point `kcmd` at the staging (autopush)
+instance where they already exist. Once the types reach GA, delete this block —
+`kcmd` then defaults to production and every other command stays the same:
+
+```bash
+# Staging (autopush) EAP -- only needed until the semantic-* types are GA on prod.
+export DATAPLEX_ENDPOINT=https://autopush-dataplex.sandbox.googleapis.com  # Knowledge Catalog API host
+export KC_TYPE_PROJECT=dataplex-autopush-types                             # project the semantic-* types live in
+```
+
 ---
 
 ## 1. Author the semantic model
@@ -411,7 +423,7 @@ EG=projects/$PROJECT/locations/$LOCATION/entryGroups/$DATASET
 
 for E in sales sales.entities.orders sales.entities.customer sales.entities.lineitem sales.metrics.revenue; do
   curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
-    "https://dataplex.googleapis.com/v1/$EG/entries/$E" >/dev/null
+    "${DATAPLEX_ENDPOINT:-https://dataplex.googleapis.com}/v1/$EG/entries/$E" >/dev/null
 done
-curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "https://dataplex.googleapis.com/v1/$EG"
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "${DATAPLEX_ENDPOINT:-https://dataplex.googleapis.com}/v1/$EG"
 ```
