@@ -13,25 +13,26 @@ from, never what the model means. Because every profile shares one model,
 `Customer`, `revenue`, and each relationship mean the same thing whichever
 profile serves them.
 
-## One model, many stores
+## Why a model gets more than one binding
 
-The same concept usually lives in more than one system. A `Customer` sits in a
-live operational database and in a day-stale analytics warehouse; an `Order` is
-written transactionally in one store and reported on in another. A profile lets
-one model serve both kinds of consumer from a single definition:
+The same concept usually lives in more than one system, and a profile binds the
+model to one of them. The systems differ along whatever axis matters to you:
 
-- **An operational profile** reads from the live operational stores, such as
-  AlloyDB or Spanner. An operational agent uses it to check current state before
-  it acts — a customer's balance, a part's availability — and write actions run
-  against it.
-- **An analytical profile** reads from the analytics warehouse, such as
-  BigQuery: a copy scaled and shaped for reporting. Dashboards, BI tools, and
-  conversational analytics agents read through it, and each inherits the same
-  metric definitions, so `revenue` is computed the same way across all of them.
+- **Different backends for different consumers.** A live operational store —
+  AlloyDB, Spanner, a SaaS API — holds the `Customer` an agent reads to check
+  current state before it acts, and writes back to. An analytics warehouse such
+  as BigQuery holds a copy of that same `Customer`, scaled for reporting, that
+  dashboards and conversational-analytics agents read. One profile binds each,
+  and every consumer inherits the same metric definitions, so `revenue` is
+  computed the same way wherever it is asked.
+- **Different environments of one backend.** A dev, staging, and prod copy of one
+  store are three profiles that differ only in the project they point at.
+- **Different physical layouts.** The same model can bind a table exported to
+  files in a lake, an Iceberg copy, or a partner's differently-named schema.
 
-You author the model once and choose the profile when you deploy or query. The
-same mechanism also covers a narrower case: a dev, staging, and prod copy of one
-store are three profiles that differ only in the project they point at.
+A profile is a named binding, and its meaning is yours to decide; the cases above
+only illustrate the range. You author the model once and choose the profile when
+you deploy or query.
 
 ## How it works: a logical model and its bindings
 
