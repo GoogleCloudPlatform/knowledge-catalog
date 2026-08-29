@@ -250,7 +250,7 @@
     const html = marked.parse(body, { breaks: false, gfm: true });
     const bodyEl = document.getElementById("detail-body");
     bodyEl.innerHTML = html;
-    rewriteInternalLinks(bodyEl);
+    rewriteInternalLinks(bodyEl, conceptId);
 
     const bl = backlinks[conceptId] || [];
     const blSection = document.getElementById("detail-backlinks");
@@ -290,21 +290,42 @@
     return event.at ? `${event.by} · ${event.at}` : String(event.by);
   }
 
-  function rewriteInternalLinks(root) {
+  function resolveRelative(href, conceptId) {
+    // Resolve a bundle-relative href (e.g. ../entities/Foo%20Bar.md) against
+    // the directory of the current concept, returning a concept id or null.
+    try { href = decodeURIComponent(href); } catch (e) { /* keep raw */ }
+    const baseParts = conceptId.split("/");
+    baseParts.pop(); // drop the file name, keep the directory
+    const segs = href.split("/");
+    for (const seg of segs) {
+      if (seg === "." ) continue;
+      else if (seg === "..") baseParts.pop();
+      else baseParts.push(seg);
+    }
+    let id = baseParts.join("/");
+    if (id.endsWith(".md")) id = id.slice(0, -3);
+    return id;
+  }
+
+  function rewriteInternalLinks(root, conceptId) {
     root.querySelectorAll("a[href]").forEach((a) => {
       const href = a.getAttribute("href");
       if (!href) return;
+      let target = null;
       if (href.startsWith("/") && href.endsWith(".md")) {
-        const target = href.slice(1, -3);
-        if (nodeIndex[target]) {
-          a.className = "internal";
-          a.setAttribute("href", "javascript:void(0)");
-          a.addEventListener("click", (e) => {
-            e.preventDefault();
-            showDetail(target);
-          });
-          return;
-        }
+        target = href.slice(1, -3);
+      } else if (!href.startsWith("#") && !/^[a-z][a-z0-9+.-]*:/i.test(href) && href.endsWith(".md")) {
+        // relative link — resolve against the current concept's directory
+        target = resolveRelative(href, conceptId);
+      }
+      if (target && nodeIndex[target]) {
+        a.className = "internal";
+        a.setAttribute("href", "javascript:void(0)");
+        a.addEventListener("click", (e) => {
+          e.preventDefault();
+          showDetail(target);
+        });
+        return;
       }
       a.className = "external";
       a.setAttribute("target", "_blank");
