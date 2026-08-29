@@ -642,11 +642,19 @@ async function createEntryLinks(
   return {linked: links.length};
 }
 
-// Writes one entry link: create, then fall back to an in-place aspect update if
-// it already exists. A link's entry references and type are immutable, so a
-// re-push only refreshes the aspect (the join detail). A relationship whose id
-// changed writes a new link and leaves the old one; reconcileLinks deletes such
-// orphaned links after this model's links are written.
+// Writes one entry link: create, then fall back to a best-effort in-place aspect
+// update if it already exists. A link's entry references and type are immutable,
+// so a re-push only refreshes the aspect (the join detail). A relationship whose
+// id changed writes a new link and leaves the old one; reconcileLinks deletes
+// such orphaned links after this model's links are written.
+//
+// A 409 means the link is already present with its correct (immutable) endpoints
+// and type, so the re-push has succeeded regardless of whether the aspect can be
+// refreshed. Some Dataplex surfaces expose only createEntryLink and
+// :lookupEntryLinks for entry links -- get/update/delete by resource name return
+// NOT_FOUND (404) or a masked PERMISSION_DENIED (403) even for a link that
+// :lookupEntryLinks returns -- so an update failure there must not turn a
+// present, correct link into a push failure.
 async function writeEntryLink(
     cat: CatalogClient, opts: KcDeployOptions,
     link: EntryLink): Promise<{error?: string}> {
@@ -657,7 +665,9 @@ async function writeEntryLink(
     const upd = await cat.updateEntryLink(
         {name: link.name, aspects: link.aspects} as EntryLink,
         Object.keys(link.aspects ?? {}));
-    if (!isOk(upd)) return {error: `entry link '${linkId}': ${errText(upd)}`};
+    if (!isOk(upd) && !isLinkNotAddressable(upd)) {
+      return {error: `entry link '${linkId}': ${errText(upd)}`};
+    }
     return {};
   }
   if (!isOk(res)) return {error: `entry link '${linkId}': ${errText(res)}`};
@@ -770,6 +780,16 @@ function isOk(res: {status: number}): boolean {
 // need to match the error text.
 function isExists(res: {status: number}): boolean {
   return res.status === 409;
+}
+
+// An entry link that create reports already exists (409) but which get/update/
+// delete by resource name cannot address: NOT_FOUND (404) or a masked
+// PERMISSION_DENIED (403). Some Dataplex surfaces expose only createEntryLink
+// and :lookupEntryLinks for entry links, so an in-place aspect update of an
+// existing link fails this way even though the link is present and correct.
+// Treated as a successful (un-refreshable) re-push, not an error.
+function isLinkNotAddressable(res: {status: number}): boolean {
+  return res.status === 404 || res.status === 403;
 }
 
 // A transient "not visible yet" error worth retrying, matching the propagation

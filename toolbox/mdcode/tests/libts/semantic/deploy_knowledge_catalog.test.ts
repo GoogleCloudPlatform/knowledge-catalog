@@ -240,6 +240,30 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
     expect(result.details).toContain('sales-orders-to-customer');
   });
 
+  // Some Dataplex surfaces (e.g. the autopush EAP endpoint) expose only
+  // createEntryLink and :lookupEntryLinks for entry links, so an in-place update
+  // of an already-existing link returns NOT_FOUND (404) -- or a masked
+  // PERMISSION_DENIED (403) -- even though the link is present and correct. The
+  // re-push must still succeed: the link's endpoints and type are immutable, so
+  // only the (un-refreshable) aspect is affected.
+  for (const status of [404, 403]) {
+    test(`an existing link whose aspect update ${status}s is a no-op success`,
+         async () => {
+           const {createLink, updateLink} = stubClient({
+             createLink: () => err(409, 'entry link already exists'),
+             updateLink: err(status, 'Entry Link does not exist'),
+           });
+
+           const result =
+               await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+           expect(result.success).toBe(true);
+           expect(result.linked).toBe(1);
+           expect(createLink).toHaveBeenCalledTimes(1);
+           expect(updateLink).toHaveBeenCalledTimes(1);
+         });
+  }
+
   test('a model with no relationships writes no links', async () => {
     const {createLink} = stubClient();
 
