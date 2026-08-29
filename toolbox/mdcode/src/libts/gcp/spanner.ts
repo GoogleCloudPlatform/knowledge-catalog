@@ -30,13 +30,15 @@ export class SpannerClient extends api.ApiClient {
 
   // Applies DDL statements to a database. This is asynchronous: the response is
   // a long-running Operation whose `name` the caller polls with getOperation
-  // until `done`. Statements are applied in order.
+  // until `done`. Statements are applied in order. The REST binding for
+  // updateDatabaseDdl is PATCH on the `.../ddl` collection (a POST 404s --
+  // verified live), so this uses PATCH, not the more common POST-to-create.
   async updateDatabaseDdl(
       project: string, instance: string, database: string,
       statements: string[]): Promise<api.ApiResult<Operation>> {
     const name =
         `projects/${project}/instances/${instance}/databases/${database}/ddl`;
-    return await this._post<Operation>(name, {statements});
+    return await this._patch<Operation>(name, {statements});
   }
 
   // Fetches a long-running operation by its resource name (as returned in

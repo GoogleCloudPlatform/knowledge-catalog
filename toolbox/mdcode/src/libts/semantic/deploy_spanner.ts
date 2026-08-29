@@ -168,8 +168,14 @@ export async function deploySpanner(
         continue;
       }
 
+      // updateDatabaseDdl takes each statement WITHOUT a trailing semicolon:
+      // Spanner's DDL parser rejects one ("Expecting 'EOF' but found ';'" --
+      // verified live), unlike BigQuery's jobs.query, which accepts it. The
+      // generator terminates its DDL with `;` for the printed/golden artifact,
+      // so strip it here for the wire statement only.
+      const statement = gen.ddl.replace(/;\s*$/, '');
       const started = await spanner.updateDatabaseDdl(
-          target.project, target.instance, target.database, [gen.ddl]);
+          target.project, target.instance, target.database, [statement]);
       const outcome =
           await awaitOperationDone(spanner, started, maxPolls, backoffMs);
       if (!outcome.ok) {

@@ -141,6 +141,12 @@ describe('deploySpanner', () => {
           expect(database).toBe('commerce');
           expect(statements[0])
               .toContain('CREATE OR REPLACE PROPERTY GRAPH sales_graph');
+          // Spanner's updateDatabaseDdl rejects a statement ending in ';'
+          // (verified live); the leg strips the generator's trailing semicolon
+          // for the wire, but the returned/printed DDL keeps it for
+          // readability.
+          expect(statements[0].trimEnd().endsWith(';')).toBe(false);
+          expect(res.ddl[0].trimEnd().endsWith(';')).toBe(true);
 
           // The returned operation was polled by name until done.
           expect(opSpy).toHaveBeenCalledTimes(1);
