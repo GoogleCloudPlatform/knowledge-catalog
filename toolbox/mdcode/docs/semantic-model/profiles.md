@@ -38,17 +38,17 @@ store are three profiles that differ only in the project they point at.
 A model and its profiles form a class hierarchy, the same way an entity
 `extends` a supertype:
 
-- The **model file** (`<model>.yaml`) is the **base** — a complete model whose
-  inline sources are the profile named `default`.
+- The **model file** (`<model>.yaml`) is the **base** — the complete
+  declaration, whose inline bindings are the profile named `default`.
 - A **profile** is a **subclass**: a document in the *identical schema* as the
-  model, carrying only the parts it changes.
+  model, carrying only the bindings it changes.
 - `kcmd push --profile <name>` **merges** the profile onto the base — matching
   entities, fields, relationships, and metrics **by name** — and deploys the
-  result. A profile is never deployed alone; base + profile must together form a
-  complete, valid model.
+  result. A profile is never deployed alone: the base supplies every
+  declaration, and the profile supplies the bindings its store provides.
 
 A profile is a model document with holes, so there is one schema to learn.
-Authoring a profile is "copy the model file, keep only what changes."
+Authoring a profile is "copy the model file, keep only the bindings that change."
 
 ## Sources are URIs
 
@@ -63,38 +63,82 @@ field reads.
 
 ## What a profile may change — the contract
 
-A profile may set only the **physical** facets of a model. Everything else is
-owned by the base and is rejected if a profile sets it. This is the guarantee:
-switching profiles moves where the data is read, and can never change what the
-model means, so an operational agent and an analytics dashboard compute the same
-`revenue`.
+A model separates two things. **Declaration** is logical: which entities,
+fields, relationships, and metrics exist, what each means, and how each metric
+computes. The base owns all of it. **Binding** is physical: which store each
+entity reads from, and which column each field reads. A profile sets binding and
+leaves declaration alone.
 
-| A profile **may** override (physical) | A profile **may not** touch (logical, base-only) |
+| A profile **may** set (binding) | A profile **may not** touch (declaration, base-only) |
 |---|---|
 | an entity's `source` (its store URI) | adding or removing entities, fields, or metrics |
 | a field's column (its `expression`, **as a bare column reference**) | a field's `label`, `description`, `dimension`, `datatype` |
-| an entity's `primary_key` / `unique_keys` | any `ai_context` / synonyms |
-| a relationship's `from_columns` / `to_columns` | a field `expression` that is arbitrary SQL, which changes the computation rather than the binding |
-| a table-backed relationship's `source` / `keys` | a relationship's `from` / `to` (the shape of the graph) |
-| the deployment target (for a profile that deploys a graph) | any `metric` definition |
+| whether a field is bound at all under this profile | any `ai_context` / synonyms |
+| an entity's `primary_key` / `unique_keys` | a field `expression` that is arbitrary SQL, which changes the computation rather than the binding |
+| a relationship's `from_columns` / `to_columns` | a relationship's `from` / `to` (the shape of the graph) |
+| a table-backed relationship's `source` / `keys` | any `metric` definition |
+| the deployment target | |
 
 An element's `name` is not overridden — it is the key that pairs a profile
 element with the base element it refines.
 
 **Why metrics never appear in a profile.** A metric like
 `SUM(OrderedAs.extendedPrice * (1 - OrderedAs.discount))` references field
-*names* rather than columns. Field names are stable across profiles — only their column
-bindings change — so the metric is correct under every profile without being
-restated.
+*names* rather than columns. Field names are stable across profiles — only their
+column bindings change — so the metric is correct under every profile where its
+fields are bound, without being restated. Where a field it references is not
+bound, the metric is unavailable under that profile; the next section explains
+why.
+
+## Availability follows the bindings
+
+A store holds what it holds. An operational database keeps a customer's live
+credit; a warehouse keeps a modeled lifetime value; neither carries the other's
+column. A profile binds whatever subset its store serves, and leaves the rest
+unbound.
+
+What a profile can answer is therefore derived from what it binds, by one rule.
+**A building block is available under a profile when every field it depends on is
+bound there. When any input is unbound, the block is unbound too, and so is
+anything built on it.** Availability propagates up the dependency graph from the
+fields a profile binds. The chain runs as far as the model does:
+
+- a field is bound when the profile gives its column;
+- a metric is available when every field its expression references is bound;
+- an action is available when every field it reads or writes is bound;
+- a relationship is available when the join columns on both ends are bound, and
+  a traversal or cross-entity metric over it is available only when the
+  relationship is.
+
+So an operational-only field such as live credit carries its operational-only
+metrics and actions with it, and a warehouse-only field such as lifetime value
+carries its reports; each is present where its inputs are, and unavailable
+everywhere else. The base still declares each thing once; a profile
+answers the part of the model its store can back.
+
+**Unbound is not null.** A bound field whose data happens to be empty — a
+customer with no phone on file — is null: the field exists and the value is
+missing. An unbound field does not exist under that profile at all, and anything
+that reads it is unavailable there rather than reading a null. Keeping the two
+apart is what lets a query fail against a store that cannot answer it instead of
+returning a blank that reads like real data.
+
+**Leaving a field unbound is explicit.** A profile leaves a field unbound in one
+of two ways. The base declares the field but gives it no column, so no profile
+has it until one binds it. Alternatively, a profile that would otherwise inherit
+the base's column sets `unbound: true` on the field to drop it. Silently omitting
+a field does neither — an omitted field inherits the base's column, and if that
+column is absent from the profile's store, validation fails and names it. So a
+forgotten binding is caught, and an intentional non-binding is written down.
 
 ## File layout
 
 Profiles live in a directory next to the model, one file per profile. Each file
-is a `semantic_model` document carrying only that profile's deltas:
+is a `semantic_model` document carrying only that profile's bindings:
 
 ```
 catalog/EntryGroups/commerce_eg/
-  commerce.yaml                  # base model + inline `default` binding
+  commerce.yaml                  # base declaration + inline `default` binding
   commerce.profiles/
     operational.yaml             # a semantic_model subclass — same schema as commerce.yaml
     analytics.yaml
@@ -107,7 +151,9 @@ in `commerce.yaml`, so a model with a single binding needs no directory.
 
 ## Example — an operational and an analytical binding
 
-The base holds the model and its analytics binding in BigQuery:
+The base holds the declaration and its analytics binding in BigQuery.
+`lifetimeValue` is a warehouse-only field, bound here; `availableCredit` is a
+live operational-only field, declared but left unbound (no column):
 
 ```yaml
 # commerce.yaml
@@ -120,8 +166,10 @@ semantic_model:
         source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer
         primary_key: [key]
         fields:
-          - { name: key,  expression: c_custkey }
-          - { name: name, expression: c_name, label: Customer Name }
+          - { name: key,             expression: c_custkey }
+          - { name: name,            expression: c_name, label: Customer Name }
+          - { name: lifetimeValue,   expression: c_ltv, label: Lifetime Value }
+          - { name: availableCredit, label: Available Credit }
       - name: Order
         source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
         primary_key: [key]
@@ -138,28 +186,32 @@ semantic_model:
     metrics:
       - name: order_count
         expression: COUNT(Order.key)
+      - name: avg_lifetime_value
+        expression: AVG(Customer.lifetimeValue)
 ```
 
 The operational profile points the same model at the live Spanner store. Spanner
-holds the same data under different table and column names, so the profile
-overrides the sources *and* the columns. The `label: Customer Name`, the time
-dimension on `orderDate`, the `PlacedBy` relationship, and the `order_count`
-metric all stay in the base:
+holds the same customers under different table and column names, binds the live
+`availableCredit`, and does not carry the modeled `lifetimeValue`, so the profile
+marks it `unbound`:
 
 ```yaml
 # commerce.profiles/operational.yaml
 version: "0.2.0.dev0"
 semantic_model:
   - name: commerce
+    deployment_target: //spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/propertyGraphs/commerce
     entities:
       - name: Customer
-        source: //spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/customers/tables/Customer
+        source: //spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/tables/Customer
         primary_key: [CustomerId]
         fields:
-          - { name: key,  expression: CustomerId }
-          - { name: name, expression: FullName }
+          - { name: key,             expression: CustomerId }
+          - { name: name,            expression: FullName }
+          - { name: availableCredit, expression: AvailableCredit }
+          - { name: lifetimeValue,   unbound: true }
       - name: Order
-        source: //spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/orders/tables/Orders
+        source: //spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/tables/Orders
         primary_key: [OrderId]
         fields:
           - { name: key,         expression: OrderId }
@@ -171,9 +223,21 @@ semantic_model:
         to_columns: [CustomerId]
 ```
 
-`kcmd push --profile operational` deploys the merged model against Spanner.
-`orderDate` flips only its column; it keeps its time-dimension role from the
-base. `order_count` and `Customer Name` are never restated.
+`kcmd push --profile operational` deploys the merged model against Spanner. The
+two stores hold different facts, so the profiles answer different parts of the
+same model:
+
+- `order_count` depends only on `Order.key`, bound under both profiles, so it is
+  available under either.
+- `avg_lifetime_value` depends on `Customer.lifetimeValue`. The warehouse binds
+  it, so the metric is available analytically; the operational store marks it
+  unbound, so the metric is unavailable there.
+- `availableCredit` is unbound in the base and bound only operationally, so it —
+  and a live credit-limit action written on top of it — is available under the
+  operational profile and absent under the analytical one.
+
+`orderDate` flips only its column and keeps its time-dimension role from the
+base. `Customer Name` and every metric definition are never restated.
 
 ## Merge rules
 
@@ -182,8 +246,11 @@ base. `order_count` and `Customer Name` are never restated.
 - Scalars — `source`, `expression`, `deployment_target` — **replace**.
 - Key tuples — `primary_key`, `from_columns`, `to_columns` — **replace as a
   whole**; they are atomic rather than merged element by element.
-- Profiles are **override-only**: a profile refines physical facets of things
-  that exist in the base. It cannot add new entities, fields, or metrics.
+- A field with `unbound: true` in a profile **drops** the base's binding for
+  that field under that profile.
+- Profiles are **binding-only**: a profile sets physical facets and may leave a
+  field unbound. It cannot add or remove entities, fields, or metrics, and
+  cannot change what any of them mean.
 
 ## Command line
 
@@ -192,7 +259,7 @@ kcmd push                                 # the default profile (base as-is)
 kcmd push --profile operational           # merge operational onto base, deploy the result
 kcmd push --profile analytics             # deploy against the analytics warehouse
 kcmd push --profile analytics --target kc # profile and destination-type are independent
-kcmd profiles                             # list profiles and their resolved sources
+kcmd profiles                             # list profiles, their resolved sources, and what each cannot answer
 ```
 
 `--profile` chooses **which physical binding**. The existing `--target
@@ -217,21 +284,18 @@ writes nothing.
   the profiles that are.
 - **Missing or ambiguous target** — a profile that deploys a graph must resolve
   to one `deployment_target` (from the base or the profile).
-- **Logical override** — a profile that sets a `label`, `dimension`,
+- **Declaration override** — a profile that sets a `label`, `dimension`,
   `ai_context`, a `metric`, a relationship `from`/`to`, or a field `expression`
   that is not a bare column reference is rejected, naming the offending path.
 - **Unknown name** — a profile element whose `name` is not in the base is
-  rejected. Profiles override; they do not add.
-
-## Partial binding (under consideration)
-
-A store need not serve every attribute of an entity. Under partial binding, a
-profile maps whatever subset a source can provide, and attributes it does not
-bind resolve to null in that profile. An entity then does not have to bind fully
-under every profile — an operational store can expose live balances that the
-warehouse lacks, and a warehouse can expose derived attributes the operational
-store never stores. This relaxes the rule that base + profile must bind every
-field, and is gated on real usage before it ships.
+  rejected. Profiles refine declarations; they do not add them.
+- **Unresolvable column** — a column a profile binds, or inherits from the base,
+  that the profile's store does not have fails and names it. This is what turns a
+  forgotten binding into a loud error rather than an accidental unbinding.
+- **Availability report** — push resolves the dependency graph and reports, per
+  profile, each metric, action, and traversal it cannot answer, together with
+  the unbound field that stops it. Withheld coverage is stated rather than
+  discovered later.
 
 ## Notes
 
@@ -245,10 +309,11 @@ string (`expression: c_name`) instead of the full per-dialect object. The two
 forms mean the same thing and expand to the same wire representation.
 
 **An abstract base.** Validation runs on base + profile, so the base need not
-carry sources. A base that omits `source` and `deployment_target` is abstract: it
-does not deploy on its own, and every profile supplies the physical bindings.
-This is the same mechanism as the inline `default`, with the base left empty, and
-matches the `abstract` marker an entity can already carry.
+carry sources. A base that omits every `source` and `deployment_target` is
+abstract: it declares the model, deploys on its own for nothing, and each profile
+supplies the physical bindings. Leaving a single field unbound in the base is the
+same idea at field granularity, and both match the `abstract` marker an entity
+can already carry.
 
 **Dialect comes from the store.** A profile carries no SQL dialect. The
 dialect follows from the store a profile binds to; the engine lowers each
