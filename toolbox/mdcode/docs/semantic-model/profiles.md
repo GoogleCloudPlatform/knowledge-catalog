@@ -17,8 +17,8 @@ profile serves them.
 
 The same concept usually lives in more than one system. A `Customer` sits in a
 live operational database and in a day-stale analytics warehouse; an `Order` is
-written transactionally and reported on in BigQuery. A profile lets one model
-serve both kinds of consumer from a single definition:
+written transactionally in one store and reported on in another. A profile lets
+one model serve both kinds of consumer from a single definition:
 
 - **An operational profile** reads from the live operational stores, such as
   AlloyDB or Spanner. An operational agent uses it to check current state before
@@ -140,21 +140,27 @@ intentional non-binding is written down.
 
 ## File layout
 
-The logical model is one file. Its bindings live beside it, one file per
+A binding may also sit inline in the logical model — logical and physical in a
+single file — which is how the `default` profile works, and a model with one
+binding needs nothing more. Keeping them in separate files, as below, is one
+layout among several: it keeps the logical model reusable across bindings and
+lets each binding be reviewed and owned on its own.
+
+The logical model is one file, and its bindings live beside it, one file per
 profile:
 
 ```
 catalog/EntryGroups/commerce_eg/
   commerce.yaml                  # the logical model — declarations only, no bindings
   commerce.profiles/
-    analytical.yaml              # BigQuery bindings
-    operational.yaml             # Spanner bindings
+    analytical.yaml              # bindings for the analytics warehouse
+    operational.yaml             # bindings for the operational store
 ```
 
 Each binding file is a `semantic_model` document in the same schema as the
 logical model, carrying only physical facets. `--profile analytical` reads
 `commerce.yaml` plus `analytical.yaml`, so nothing in one binding can affect
-another, and each binding can be reviewed and owned on its own.
+another.
 
 ## Example — one model, an analytical and an operational binding
 
