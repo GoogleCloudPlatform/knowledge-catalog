@@ -141,6 +141,16 @@ export interface Field {
   expression?: string;             // target/canonical (GoogleSQL-valid) SQL
   importedExpression?: string;     // original vendor SQL, verbatim
   importedDialect?: string;        // dialect of `importedExpression` (e.g. 'SNOWFLAKE')
+  // Marks a field declared logically but with NO physical column under the
+  // current binding: structurally absent, not null. A metric, relationship, or
+  // action that reads it is unavailable here rather than reading a null (see
+  // the binding-profiles guide). An unbound field carries no `expression`.
+  //
+  // This is the field-level analogue of an entity's `abstract` (a whole class
+  // with no table) and, like the OWL importer's `unbound:` source placeholder,
+  // means "should be bound by some binding, and reading it where it is not is an
+  // error" -- distinct from a bound field whose value merely happens to be null.
+  unbound?: boolean;
   dimension?: Dimension;           // dimension metadata (e.g. temporal role)
   label?: string;                  // human display label (distinct from name/description)
   description?: string;
