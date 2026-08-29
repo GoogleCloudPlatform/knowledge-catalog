@@ -9,6 +9,7 @@
 // they read the GOOGLE deployment-target extension the BigQuery leg owns.
 
 import {BigQueryClient} from '../gcp/bigquery';
+
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {SemanticModel} from './ir';
 import {LoadedModel} from './loader';
@@ -32,27 +33,33 @@ export function validatePushRequirements(models: LoadedModel[]): string[] {
     }
 
     // Every model must declare exactly one deployment target -- a single
-    // BigQuery Graph URI (we do not support zero or several graphs per model).
+    // BigQuery Graph OR Spanner Graph URI (we do not support zero or several
+    // graphs per model). The target's host selects which deploy leg runs.
     if (deployInfo.uris.length !== 1) {
       errors.push(
           `model '${model.name}' (${document}) declares ${
-              deployInfo.uris.length} deploymentTargets; exactly one BigQuery ` +
-          `Graph target is required under its GOOGLE custom_extension.`);
-    } else if (deployInfo.malformed.length) {
-      // The single target is present but is not a valid BigQuery Graph URI.
+              deployInfo.uris
+                  .length} deploymentTargets; exactly one BigQuery ` +
+          `Graph or Spanner Graph target is required under its GOOGLE ` +
+          `custom_extension.`);
+    } else if (deployInfo.bigQuery.length + deployInfo.spanner.length === 0) {
+      // The single target is present but is not a supported graph URI.
       errors.push(
           `model '${model.name}' (${document}) deploymentTarget '${
-              deployInfo.malformed[0]}' is not a valid BigQuery Graph URI; ` +
-          `expected //bigquery.googleapis.com/projects/<p>/datasets/<d>/` +
-          `propertyGraphs/<g>.`);
+              deployInfo.malformed[0]}' is not a valid BigQuery Graph or ` +
+          `Spanner Graph URI; expected //bigquery.googleapis.com/projects/<p>/` +
+          `datasets/<d>/propertyGraphs/<g> or //spanner.googleapis.com/` +
+          `projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>.`);
     }
 
     // A model that targets a BigQuery graph must have every metric resolve to a
     // single entity, or the metric cannot lower to a MEASURE and would be
     // silently dropped from the graph. The loader sets metric.entity only when
     // the expression resolves to exactly one entity, so an unset entity is the
-    // "references zero or multiple entities" case.
-    if (deployInfo.targets.length > 0) {
+    // "references zero or multiple entities" case. Spanner Graph has no
+    // MEASURE, so it imposes no such requirement (its metrics are dropped by
+    // design).
+    if (deployInfo.bigQuery.length > 0) {
       for (const metric of model.metrics ?? []) {
         if (!metric.entity) {
           errors.push(
@@ -68,12 +75,13 @@ export function validatePushRequirements(models: LoadedModel[]): string[] {
 }
 
 
-// Live pre-flight over the same models: confirms every entity's BigQuery source
-// table is reachable BEFORE any destination leg runs, so a push -- to BigQuery
-// or to Knowledge Catalog -- fails fast when the model could not deploy, rather
-// than surfacing a missing table only once the BigQuery leg executes its DDL.
-// The entity sources are BigQuery tables regardless of --target, so this runs
-// for every destination and for --validate-only.
+// Live pre-flight over the BigQuery-targeting models: confirms every entity's
+// BigQuery source table is reachable BEFORE any destination leg runs, so a push
+// fails fast when the model could not deploy, rather than surfacing a missing
+// table only once the BigQuery leg executes its DDL. The caller passes only the
+// models whose deployment target is a BigQuery Graph; a Spanner-targeting
+// model's sources are Spanner tables (probed against a different system) and
+// are not checked here.
 //
 // Each distinct source is probed with a dry-run query (`SELECT 1 FROM <ref>`,
 // suffixed `WHERE FALSE` so it scans no data),
@@ -81,22 +89,26 @@ export function validatePushRequirements(models: LoadedModel[]): string[] {
 // covers every reference form the generator emits -- a three-part
 // `project.dataset.table`, a four-part federated REST-catalog / Lakehouse name
 // (e.g. an Apache Iceberg table via BigLake), and quoted identifiers -- rather
-// than only a three-part name. A source the loader kept verbatim because it is a
-// query (contains whitespace) is not a table and is skipped. The dry-run is
-// billed to the model's BigQuery deployment-target project (the same project the
-// deploy runs against), falling back to `defaultProject`. Each distinct (billing
-// project, reference) pair is probed once. Returns one message per unreachable
-// table (empty when all pass).
+// than only a three-part name. A source the loader kept verbatim because it is
+// a query (contains whitespace) is not a table and is skipped. The dry-run is
+// billed to the model's BigQuery deployment-target project (the same project
+// the deploy runs against), falling back to `defaultProject`. Each distinct
+// (billing project, reference) pair is probed once. Returns one message per
+// unreachable table (empty when all pass).
 export async function validateBigQueryDataSources(
     models: LoadedModel[], bq: BigQueryClient,
     defaultProject: string): Promise<string[]> {
   // Dedup by billing project + reference so a table shared across
   // entities/models is probed once; keep the first reference for a locatable
   // error message.
-  const refs = new Map<string, {
-    project: string; ref: string; document: string; model: string;
+  const refs = new Map < string, {
+    project: string;
+    ref: string;
+    document: string;
+    model: string;
     entity: string;
-  }>();
+  }
+  >();
   for (const {document, model} of models) {
     const project = billingProject(model, defaultProject);
     for (const entity of model.entities ?? []) {
@@ -105,7 +117,11 @@ export async function validateBigQueryDataSources(
       const key = `${project}\u0000${ref}`;
       if (!refs.has(key)) {
         refs.set(key, {
-          project, ref, document, model: model.name, entity: entity.name,
+          project,
+          ref,
+          document,
+          model: model.name,
+          entity: entity.name,
         });
       }
     }
@@ -113,20 +129,20 @@ export async function validateBigQueryDataSources(
 
   const errors: string[] = [];
   for (const {project, ref, document, model, entity} of refs.values()) {
-    const res =
-        await bq.query(
+    const res = await bq.query(
         project, `SELECT 1 FROM \`${ref}\` WHERE FALSE`, undefined, true);
     if (res.status === 200) continue;
     const msg = res.message?.trim() || `HTTP ${res.status}`;
     const why = /not found/i.test(msg) ?
         'does not exist' :
         /access denied|permission denied|not authorized|does not have permission/i
-                .test(msg) ?
+            .test(msg) ?
         'is not accessible (permission denied)' :
         `could not be verified (${msg})`;
     errors.push(
         `entity '${entity}' in model '${model}' (${document}) references ` +
-        `BigQuery table '${ref}', which ${why}; the model cannot be deployed. ` +
+        `BigQuery table '${ref}', which ${
+            why}; the model cannot be deployed. ` +
         `Create the table or grant access to it, or fix the entity's source.`);
   }
   return errors;
@@ -141,7 +157,8 @@ export async function validateBigQueryDataSources(
 // already rejected a malformed GOOGLE extension.
 function billingProject(model: SemanticModel, defaultProject: string): string {
   try {
-    return googleDeploymentTargets(model).targets[0]?.project ?? defaultProject;
+    return googleDeploymentTargets(model).bigQuery[0]?.project ??
+        defaultProject;
   } catch {
     return defaultProject;
   }

@@ -17,31 +17,17 @@ import {BigQueryClient, QueryResponse} from '../gcp/bigquery';
 import * as context from '../gcp/context';
 
 import {generatePropertyGraph} from './bigquery';
-import {SemanticModel} from './ir';
+// The GOOGLE deployment-target reader lives in its own module so both deploy
+// legs (BigQuery, Spanner) and the push-time validator share one parse. The
+// BigQuery-facing views are re-exported here so existing importers
+// (validate.ts, knowledge_catalog.ts, and the deploy tests) keep their
+// historical import path.
+import {BigQueryGraphTarget, bigQueryGraphTargets, deploymentTargetUris, googleDeploymentTargets} from './deployment_target';
 import {LoadedModel} from './loader';
 
+export {bigQueryGraphTargets, deploymentTargetUris, googleDeploymentTargets};
+export type {BigQueryGraphTarget};
 
-// Our own vendor tag in the Ossie `custom_extensions` list.
-const GOOGLE_VENDOR = 'GOOGLE';
-
-// A BigQuery Graph deployment target, e.g.
-// //bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>
-// The capture groups are restricted to valid BigQuery identifier characters:
-// the components are interpolated into DDL unescaped (see qualifyGraph), so a
-// permissive `[^/]+` would let backticks or semicolons through. A URI that
-// fails this full match is collected as `malformed` (see
-// googleDeploymentTargets) and named in the deploy/validation error, rather than
-// being silently skipped and later misreported as "no target declared".
-const BQ_GRAPH_TARGET =
-    /^\/\/bigquery\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/datasets\/([A-Za-z0-9_-]+)\/propertyGraphs\/([A-Za-z0-9_-]+)$/;
-
-
-export interface BigQueryGraphTarget {
-  project: string;
-  dataset: string;
-  graphName: string;
-  uri: string;
-}
 
 export interface DeployOptions {
   validateOnly?: boolean;
@@ -63,81 +49,6 @@ export interface DeployResult {
   warnings: string[];
   // Number of graphs actually executed against BigQuery (0 for validateOnly).
   deployed: number;
-}
-
-
-// Reads a model's GOOGLE custom_extension(s) in a single pass and returns the
-// deployment-target facts every caller derives from them: every declared
-// deploymentTarget URI (`uris`), the subset that parse as BigQuery Graph targets
-// (`targets`), and the URIs that did not parse as a BigQuery Graph target
-// (`malformed`, kept so a caller can name a typo instead of silently skipping).
-// The extension `data` is an opaque, vendor-serialized JSON string (the loader
-// keeps it verbatim); we own its `deploymentTargets` shape. Throws on malformed
-// extension JSON. bigQueryGraphTargets and deploymentTargetUris are thin views
-// over this, and validation calls it directly so a push parses each extension
-// once rather than once per reader.
-export function googleDeploymentTargets(model: SemanticModel):
-    {uris: string[]; targets: BigQueryGraphTarget[]; malformed: string[]} {
-  const uris: string[] = [];
-  const targets: BigQueryGraphTarget[] = [];
-  const malformed: string[] = [];
-
-  for (const ext of model.customExtensions ?? []) {
-    if (ext.vendorName !== GOOGLE_VENDOR) {
-      continue;
-    }
-
-    let data: any;
-    try {
-      data = JSON.parse(ext.data);
-    } catch {
-      throw new Error(`Model '${
-          model.name}': GOOGLE custom_extension 'data' is not valid JSON.`);
-    }
-
-    const list = data?.deploymentTargets;
-    if (!Array.isArray(list)) {
-      continue;
-    }
-
-    for (const uri of list) {
-      if (typeof uri !== 'string') {
-        continue;
-      }
-      uris.push(uri);
-      const m = uri.match(BQ_GRAPH_TARGET);
-      if (m) {
-        targets.push({project: m[1], dataset: m[2], graphName: m[3], uri});
-      } else {
-        // We only support BigQuery Graph deployment targets, so any URI that
-        // does not parse as one -- a host/scheme/segment/identifier typo, or an
-        // unrelated destination -- is collected as malformed and rejected
-        // (validate.ts, and the deploy leg) rather than silently ignored.
-        malformed.push(uri);
-      }
-    }
-  }
-
-  return {uris, targets, malformed};
-}
-
-
-// The BigQuery Graph deployment targets a model declares in its GOOGLE custom
-// extension, plus any BigQuery-prefixed URIs that failed to parse. A view over
-// googleDeploymentTargets.
-export function bigQueryGraphTargets(model: SemanticModel):
-    {targets: BigQueryGraphTarget[]; malformed: string[]} {
-  const {targets, malformed} = googleDeploymentTargets(model);
-  return {targets, malformed};
-}
-
-
-// Every deploymentTarget URI a model declares, regardless of whether each parses
-// as a BigQuery Graph target. Validation uses this to require that a model
-// declares at least one deployment target; bigQueryGraphTargets narrows to the
-// BigQuery graphs. Throws on malformed extension JSON.
-export function deploymentTargetUris(model: SemanticModel): string[] {
-  return googleDeploymentTargets(model).uris;
 }
 
 
@@ -258,11 +169,11 @@ async function datasetLocation(
 }
 
 
-// Deploys the BigQuery Graph for each pre-loaded model. Emits no console output;
-// the generated DDL and any warnings are returned for the caller to print. The
-// models are parsed once by the caller (loadSemanticModels) and shared with the
-// Knowledge Catalog leg; each carries its originating document name for
-// diagnostics.
+// Deploys the BigQuery Graph for each pre-loaded model. Emits no console
+// output; the generated DDL and any warnings are returned for the caller to
+// print. The models are parsed once by the caller (loadSemanticModels) and
+// shared with the Knowledge Catalog leg; each carries its originating document
+// name for diagnostics.
 export async function deployBigQuery(
     models: LoadedModel[], ctx: context.ApiContext,
     options: DeployOptions = {}): Promise<DeployResult> {
@@ -299,8 +210,7 @@ export async function deployBigQuery(
     try {
       ({targets, malformed} = bigQueryGraphTargets(model));
     } catch (err: any) {
-      return fail(
-          `Model '${model.name}' (${document}): ${err.message || err}`);
+      return fail(`Model '${model.name}' (${document}): ${err.message || err}`);
     }
     if (!targets.length) {
       // A malformed-but-present target must not be reported as "none
@@ -320,8 +230,8 @@ export async function deployBigQuery(
     // Malformed targets alongside valid ones: surface them so a typo'd URI is
     // not silently dropped when the deploy otherwise succeeds.
     for (const bad of malformed) {
-      warnings.push(`[${
-          model.name}] ignoring unparseable BigQuery Graph target: ${bad}`);
+      warnings.push(
+          `[${model.name}] ignoring unparseable BigQuery Graph target: ${bad}`);
     }
 
     for (const target of targets) {
@@ -357,8 +267,8 @@ export async function deployBigQuery(
             ` (${deployed} graph(s) already deployed in this run; ` +
                 `CREATE OR REPLACE changes are not rolled back)` :
             '';
-        return fail(`Failed to deploy '${target.graphName}': ${
-            outcome.error}${partial}`);
+        return fail(`Failed to deploy '${target.graphName}': ${outcome.error}${
+            partial}`);
       }
 
       deployed++;
