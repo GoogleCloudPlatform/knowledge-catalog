@@ -66,6 +66,21 @@ cli.command('push', 'Push catalog entries')
    });
 
 
+cli.command('profiles', 'List a semantic model\'s binding profiles and what each can answer')
+   .action(async () => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.profiles();
+      }
+      catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+
+      process.exit(exitCode);
+   });
+
+
 cli.command('owl <action> <file>', 'OWL ontology tools (action: import a .ttl ontology into an OSI model)')
    .option('--out <path>', 'Write the generated OSI document to this path instead of the semantic-model layout dir')
    .action(async (action, file, options) => {

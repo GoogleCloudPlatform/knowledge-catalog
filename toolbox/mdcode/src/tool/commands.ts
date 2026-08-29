@@ -251,7 +251,8 @@ export async function push(options: PushOptions): Promise<number> {
     // `<model>.profiles/<name>.yaml`; the implicit 'default' means the inline
     // bindings already in the model document, so it is never merged (a bare
     // push behaves as it always has). Orthogonal to --target.
-    const profileName = options.profile ?? DEFAULT_PROFILE;
+    const profileName =
+        options.profile ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
     let docs = layout.modelDocuments();
     if (profileName !== DEFAULT_PROFILE) {
       const merged: {name: string; text: string}[] = [];
@@ -420,6 +421,98 @@ export async function push(options: PushOptions): Promise<number> {
     console.error('Error pushing catalog entries:', result.details);
     return 1;
   }
+}
+
+
+// Lists a semantic model's binding profiles and, per profile, its resolved
+// deployment target and sources plus what it cannot answer (the availability
+// report). Read-only: it merges and prunes each profile the way push does, but
+// deploys nothing and runs no live probe, so a user can see coverage before
+// choosing a profile. Returns a process exit code (0 on success).
+export async function profiles(): Promise<number> {
+  const ctx = context.ApiContext.default();
+  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+  if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {
+    console.error(
+        'Error: `kcmd profiles` applies only to a semantic-model scope.');
+    return 1;
+  }
+  const layout = snapshot.layout as SemanticModelLayout;
+  const source = snapshot.manifest.source as SemanticModelSource;
+  const defaultProfile = snapshot.manifest.defaultProfile;
+
+  const docs = layout.modelDocuments();
+  if (!docs.length) {
+    console.log('No semantic model documents found.');
+    return 0;
+  }
+
+  for (const doc of docs) {
+    console.log(`Model '${doc.name}' (${source.entryGroup}):`);
+    const available = layout.profileDocuments(doc.name);
+    if (!available.length) {
+      console.log(
+          `  no binding profiles; the model document is its own inline ` +
+          `'default' binding.`);
+      continue;
+    }
+    for (const {name, text} of available) {
+      let logicalDoc: unknown;
+      let profileDoc: unknown;
+      try {
+        logicalDoc = yaml.parse(doc.text);
+        profileDoc = yaml.parse(text);
+      } catch (err: any) {
+        console.error(`  profile '${name}': parse error: ${err?.message ?? err}`);
+        continue;
+      }
+      const merged = mergeProfile(logicalDoc, profileDoc, name);
+      if (merged.error) {
+        console.error(`  profile '${name}': ${merged.error}`);
+        continue;
+      }
+      const loaded = loadSemanticModels(
+          [{name: doc.name, text: yaml.stringify(merged.doc)}],
+          {defaultProject: source.project ?? ctx.project});
+      if (loaded.error) {
+        console.error(`  profile '${name}': ${loaded.error}`);
+        continue;
+      }
+      const model = loaded.models[0].model;
+      const {report} = pruneUnavailable(model, name);
+      const marker = name === defaultProfile ? ' (default)' : '';
+      console.log(`  profile '${name}'${marker}`);
+
+      let targets: string[] = [];
+      try {
+        targets = deploy.deploymentTargetUris(model);
+      } catch {
+        // A malformed deployment target is a push-time error; here just show
+        // none rather than abort the listing.
+      }
+      console.log(`    target: ${targets.length ? targets.join(', ') : '(none)'}`);
+      console.log('    sources:');
+      for (const e of model.entities ?? []) {
+        console.log(`      ${e.name} -> ${e.dataSource || '(unbound)'}`);
+      }
+
+      const withheld: string[] = [];
+      for (const f of report.unboundFields) withheld.push(`field ${f} (unbound)`);
+      for (const d of report.droppedRelationships) {
+        withheld.push(`relationship ${d.name} (${d.reason})`);
+      }
+      for (const d of report.droppedMetrics) {
+        withheld.push(`metric ${d.name} (${d.reason})`);
+      }
+      if (withheld.length) {
+        console.log('    cannot answer:');
+        for (const w of withheld) console.log(`      ${w}`);
+      } else {
+        console.log('    cannot answer: nothing withheld.');
+      }
+    }
+  }
+  return 0;
 }
 
 
