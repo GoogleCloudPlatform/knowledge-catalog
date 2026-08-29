@@ -1,4 +1,4 @@
-# Binding a model to different sources with profiles
+# One logical model, many physical bindings
 
 > **Status: proposed.** This page is the design for an upcoming feature, written
 > as the user guide first so we can iterate on how it reads. Nothing here is
@@ -33,22 +33,27 @@ You author the model once and choose the profile when you deploy or query. The
 same mechanism also covers a narrower case: a dev, staging, and prod copy of one
 store are three profiles that differ only in the project they point at.
 
-## How it works: a base and its overrides
+## How it works: a logical model and its bindings
 
 A model and its profiles form a class hierarchy, the same way an entity
 `extends` a supertype:
 
-- The **model file** (`<model>.yaml`) is the **base** — the complete
-  declaration, whose inline bindings are the profile named `default`.
-- A **profile** is a **subclass**: a document in the *identical schema* as the
-  model, carrying only the bindings it changes.
-- `kcmd push --profile <name>` **merges** the profile onto the base — matching
-  entities, fields, relationships, and metrics **by name** — and deploys the
-  result. A profile is never deployed alone: the base supplies every
-  declaration, and the profile supplies the bindings its store provides.
+- The **logical model** (`<model>.yaml`) is the **base**: the complete
+  declaration — entities, fields, relationships, metrics, the grain, and the
+  graph shape — with no physical binding.
+- A **binding profile** is a **subclass**: a document in the *identical schema*
+  that supplies the physical facets the logical model leaves open — each entity's
+  `source`, each field's column, and the deployment target.
+- `kcmd push --profile <name>` **merges** the profile onto the logical model —
+  matching entities, fields, relationships, and metrics **by name** — and
+  deploys the result. A profile is never deployed alone: the logical model
+  supplies every declaration, and the profile supplies the bindings its store
+  provides.
 
-A profile is a model document with holes, so there is one schema to learn.
-Authoring a profile is "copy the model file, keep only the bindings that change."
+Because the two share one schema, a binding may also sit inline in the logical
+model as a profile named `default`. The layout on this page keeps the logical
+model standalone and each binding in its own file, so the split between logical
+and physical is visible on disk.
 
 ## Sources are URIs
 
@@ -64,23 +69,23 @@ field reads.
 ## What a profile may change — the contract
 
 A model separates two things. **Declaration** is logical: which entities,
-fields, relationships, and metrics exist, what each means, and how each metric
-computes. The base owns all of it. **Binding** is physical: which store each
-entity reads from, and which column each field reads. A profile sets binding and
-leaves declaration alone.
+fields, relationships, and metrics exist, what each means, how each metric
+computes, the grain, and the graph shape. The logical model owns all of it.
+**Binding** is physical: which store each entity reads from, and which column
+each field reads. A profile sets binding and leaves declaration alone.
 
-| A profile **may** set (binding) | A profile **may not** touch (declaration, base-only) |
+| A profile **may** set (physical binding) | A profile **may not** touch (logical, in the model) |
 |---|---|
-| an entity's `source` (its store URI) | adding or removing entities, fields, or metrics |
-| a field's column (its `expression`, **as a bare column reference**) | a field's `label`, `description`, `dimension`, `datatype` |
-| whether a field is bound at all under this profile | any `ai_context` / synonyms |
-| an entity's `primary_key` / `unique_keys` | a field `expression` that is arbitrary SQL, which changes the computation rather than the binding |
-| a relationship's `from_columns` / `to_columns` | a relationship's `from` / `to` (the shape of the graph) |
-| a table-backed relationship's `source` / `keys` | any `metric` definition |
-| the deployment target | |
+| an entity's `source` (its store URI) | which entities, fields, relationships, or metrics exist, and what each means |
+| a field's column (its `expression`, a bare column reference) | a field's `label`, `description`, `dimension`, `datatype` |
+| whether a field is bound at all under this profile | the grain (`primary_key` / `unique_keys`) and graph shape (`from`/`to`, `from_columns`/`to_columns`) |
+| the deployment target | a field `expression` that is arbitrary SQL, which changes the computation |
+| a many-to-many relationship's junction `source` | any `metric` definition; any `ai_context` / synonyms |
 
 An element's `name` is not overridden — it is the key that pairs a profile
-element with the base element it refines.
+element with the model element it binds. The grain and the join columns name
+*fields* rather than physical columns, so they belong to the logical model; each
+field's column is resolved per profile from its `expression`.
 
 **Why metrics never appear in a profile.** A metric like
 `SUM(OrderedAs.extendedPrice * (1 - OrderedAs.discount))` references field
@@ -113,8 +118,8 @@ fields a profile binds. The chain runs as far as the model does:
 So an operational-only field such as live credit carries its operational-only
 metrics and actions with it, and a warehouse-only field such as lifetime value
 carries its reports; each is present where its inputs are, and unavailable
-everywhere else. The base still declares each thing once; a profile
-answers the part of the model its store can back.
+everywhere else. The logical model still declares each thing once; a profile
+answers the part of it that its store can back.
 
 **Unbound is not null.** A bound field whose data happens to be empty — a
 customer with no phone on file — is null: the field exists and the value is
@@ -124,59 +129,58 @@ apart is what lets a query fail against a store that cannot answer it instead of
 returning a blank that reads like real data.
 
 **Leaving a field unbound is explicit.** A profile leaves a field unbound in one
-of two ways. The base declares the field but gives it no column, so no profile
-has it until one binds it. Alternatively, a profile that would otherwise inherit
-the base's column sets `unbound: true` on the field to drop it. Silently omitting
-a field does neither — an omitted field inherits the base's column, and if that
-column is absent from the profile's store, validation fails and names it. So a
-forgotten binding is caught, and an intentional non-binding is written down.
+of two ways. The logical model declares the field, and no profile that omits a
+column for it has it until one binds it. Alternatively, a profile that would
+otherwise inherit a column sets `unbound: true` on the field to drop it. Silently
+omitting a field that another profile binds does neither — the field stays
+declared and simply has no column under the omitting profile, which is caught if
+a metric needs it. When a bound column is absent from the profile's store,
+validation fails and names it. So a forgotten binding is caught, and an
+intentional non-binding is written down.
 
 ## File layout
 
-Profiles live in a directory next to the model, one file per profile. Each file
-is a `semantic_model` document carrying only that profile's bindings:
+The logical model is one file. Its bindings live beside it, one file per
+profile:
 
 ```
 catalog/EntryGroups/commerce_eg/
-  commerce.yaml                  # base declaration + inline `default` binding
+  commerce.yaml                  # the logical model — declarations only, no bindings
   commerce.profiles/
-    operational.yaml             # a semantic_model subclass — same schema as commerce.yaml
-    analytics.yaml
+    analytical.yaml              # BigQuery bindings
+    operational.yaml             # Spanner bindings
 ```
 
-One file per profile keeps them isolated: `--profile operational` reads only
-`operational.yaml`, so an edit to one profile cannot break another, and each
-profile can be reviewed and owned on its own. The `default` binding stays inline
-in `commerce.yaml`, so a model with a single binding needs no directory.
+Each binding file is a `semantic_model` document in the same schema as the
+logical model, carrying only physical facets. `--profile analytical` reads
+`commerce.yaml` plus `analytical.yaml`, so nothing in one binding can affect
+another, and each binding can be reviewed and owned on its own.
 
-## Example — an operational and an analytical binding
+## Example — one model, an analytical and an operational binding
 
-The base holds the declaration and its analytics binding in BigQuery.
-`lifetimeValue` is a warehouse-only field, bound here; `availableCredit` is a
-live operational-only field, declared but left unbound (no column):
+The logical model declares the business and nothing physical: no sources, no
+columns, no deployment target. `lifetimeValue` and `availableCredit` are both
+declared here, though no single store carries both:
 
 ```yaml
-# commerce.yaml
+# commerce.yaml — logical model
 version: "0.2.0.dev0"
 semantic_model:
   - name: commerce
-    deployment_target: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/propertyGraphs/commerce
     entities:
       - name: Customer
-        source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer
         primary_key: [key]
         fields:
-          - { name: key,             expression: c_custkey }
-          - { name: name,            expression: c_name, label: Customer Name }
-          - { name: lifetimeValue,   expression: c_ltv, label: Lifetime Value }
+          - { name: key,             label: Customer ID }
+          - { name: name,            label: Customer Name }
+          - { name: lifetimeValue,   label: Lifetime Value }
           - { name: availableCredit, label: Available Credit }
       - name: Order
-        source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
         primary_key: [key]
         fields:
-          - { name: key,         expression: o_orderkey }
-          - { name: customerKey, expression: o_custkey }
-          - { name: orderDate,   expression: o_orderdate, dimension: {is_time: true} }
+          - { name: key }
+          - { name: customerKey }
+          - { name: orderDate, dimension: {is_time: true} }
     relationships:
       - name: PlacedBy
         from: Order
@@ -190,13 +194,38 @@ semantic_model:
         expression: AVG(Customer.lifetimeValue)
 ```
 
-The operational profile points the same model at the live Spanner store. Spanner
-holds the same customers under different table and column names, binds the live
-`availableCredit`, and does not carry the modeled `lifetimeValue`, so the profile
-marks it `unbound`:
+The analytical binding points the model at the BigQuery warehouse. The warehouse
+carries the modeled `lifetimeValue` and does not hold live credit, so
+`availableCredit` is `unbound`:
 
 ```yaml
-# commerce.profiles/operational.yaml
+# commerce.profiles/analytical.yaml — BigQuery bindings
+version: "0.2.0.dev0"
+semantic_model:
+  - name: commerce
+    deployment_target: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/propertyGraphs/commerce
+    entities:
+      - name: Customer
+        source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer
+        fields:
+          - { name: key,             expression: c_custkey }
+          - { name: name,            expression: c_name }
+          - { name: lifetimeValue,   expression: c_ltv }
+          - { name: availableCredit, unbound: true }
+      - name: Order
+        source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
+        fields:
+          - { name: key,         expression: o_orderkey }
+          - { name: customerKey, expression: o_custkey }
+          - { name: orderDate,   expression: o_orderdate }
+```
+
+The operational binding points the same model at the live Spanner store. Spanner
+holds the same customers under different table and column names, binds the live
+`availableCredit`, and does not carry the modeled `lifetimeValue`:
+
+```yaml
+# commerce.profiles/operational.yaml — Spanner bindings
 version: "0.2.0.dev0"
 semantic_model:
   - name: commerce
@@ -204,7 +233,6 @@ semantic_model:
     entities:
       - name: Customer
         source: //spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/tables/Customer
-        primary_key: [CustomerId]
         fields:
           - { name: key,             expression: CustomerId }
           - { name: name,            expression: FullName }
@@ -212,53 +240,44 @@ semantic_model:
           - { name: lifetimeValue,   unbound: true }
       - name: Order
         source: //spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/tables/Orders
-        primary_key: [OrderId]
         fields:
           - { name: key,         expression: OrderId }
           - { name: customerKey, expression: CustomerId }
           - { name: orderDate,   expression: OrderDate }
-    relationships:
-      - name: PlacedBy
-        from_columns: [CustomerId]
-        to_columns: [CustomerId]
 ```
 
-`kcmd push --profile operational` deploys the merged model against Spanner. The
-two stores hold different facts, so the profiles answer different parts of the
-same model:
+Neither binding restates the grain, the `PlacedBy` relationship, the labels, or
+the metric definitions; those live once in the logical model. `kcmd push
+--profile operational` deploys the merged model against Spanner, and the two
+bindings answer different parts of the same model:
 
-- `order_count` depends only on `Order.key`, bound under both profiles, so it is
+- `order_count` depends only on `Order.key`, bound under both bindings, so it is
   available under either.
 - `avg_lifetime_value` depends on `Customer.lifetimeValue`. The warehouse binds
   it, so the metric is available analytically; the operational store marks it
   unbound, so the metric is unavailable there.
-- `availableCredit` is unbound in the base and bound only operationally, so it —
-  and a live credit-limit action written on top of it — is available under the
-  operational profile and absent under the analytical one.
-
-`orderDate` flips only its column and keeps its time-dimension role from the
-base. `Customer Name` and every metric definition are never restated.
+- `availableCredit` is bound only operationally, so it — and a live credit-limit
+  action written on top of it — is available under the operational binding and
+  absent under the analytical one.
 
 ## Merge rules
 
 - `entities`, `fields`, `relationships`, and `metrics` merge **by `name`**. A
-  name present only in the base is inherited unchanged.
+  name present only in the logical model is carried through unchanged.
 - Scalars — `source`, `expression`, `deployment_target` — **replace**.
-- Key tuples — `primary_key`, `from_columns`, `to_columns` — **replace as a
-  whole**; they are atomic rather than merged element by element.
-- A field with `unbound: true` in a profile **drops** the base's binding for
-  that field under that profile.
+- A field with `unbound: true` in a profile **drops** any column for that field
+  under that profile.
 - Profiles are **binding-only**: a profile sets physical facets and may leave a
-  field unbound. It cannot add or remove entities, fields, or metrics, and
-  cannot change what any of them mean.
+  field unbound. It cannot add or remove entities, fields, or metrics, change
+  the grain or graph shape, or change what anything means.
 
 ## Command line
 
 ```bash
-kcmd push                                 # the default profile (base as-is)
-kcmd push --profile operational           # merge operational onto base, deploy the result
-kcmd push --profile analytics             # deploy against the analytics warehouse
-kcmd push --profile analytics --target kc # profile and destination-type are independent
+kcmd push --profile analytical            # merge analytical bindings onto the model, deploy
+kcmd push --profile operational           # deploy against the operational store
+kcmd push --profile analytical --target kc # profile and destination-type are independent
+kcmd push                                 # uses default_profile from catalog.yaml
 kcmd profiles                             # list profiles, their resolved sources, and what each cannot answer
 ```
 
@@ -272,7 +291,7 @@ Set the default so a bare `kcmd push` in CI does the right thing, in
 
 ```yaml
 scope: semantic-model.acme.us.commerce_eg
-default_profile: analytics
+default_profile: analytical
 ```
 
 ## Validation
@@ -283,15 +302,16 @@ writes nothing.
 - **Unknown profile** — `--profile stg` when `stg` is not defined fails and lists
   the profiles that are.
 - **Missing or ambiguous target** — a profile that deploys a graph must resolve
-  to one `deployment_target` (from the base or the profile).
+  to one `deployment_target`.
 - **Declaration override** — a profile that sets a `label`, `dimension`,
-  `ai_context`, a `metric`, a relationship `from`/`to`, or a field `expression`
-  that is not a bare column reference is rejected, naming the offending path.
-- **Unknown name** — a profile element whose `name` is not in the base is
-  rejected. Profiles refine declarations; they do not add them.
-- **Unresolvable column** — a column a profile binds, or inherits from the base,
-  that the profile's store does not have fails and names it. This is what turns a
-  forgotten binding into a loud error rather than an accidental unbinding.
+  `ai_context`, a `metric`, the grain, a relationship's `from`/`to`, or a field
+  `expression` that is not a bare column reference is rejected, naming the
+  offending path.
+- **Unknown name** — a profile element whose `name` is not in the logical model
+  is rejected. Profiles bind declarations; they do not add them.
+- **Unresolvable column** — a column a profile binds that the profile's store
+  does not have fails and names it. This is what turns a mistyped binding into a
+  loud error.
 - **Availability report** — push resolves the dependency graph and reports, per
   profile, each metric, action, and traversal it cannot answer, together with
   the unbound field that stops it. Withheld coverage is stated rather than
@@ -299,23 +319,16 @@ writes nothing.
 
 ## Notes
 
-**The deployment target is a first-class key.** So a profile can override it
-readably, `deployment_target:` is a model key rather than a JSON string inside a
-`GOOGLE custom_extensions` block. The custom-extension form is still accepted and
-means the same thing.
+**The deployment target is a first-class key.** So a profile can set it readably,
+`deployment_target:` is a model key rather than a JSON string inside a `GOOGLE
+custom_extensions` block. The custom-extension form is still accepted and means
+the same thing.
 
 **Bare-string expressions.** A field's `expression` may be written as a one-line
 string (`expression: c_name`) instead of the full per-dialect object. The two
 forms mean the same thing and expand to the same wire representation.
 
-**An abstract base.** Validation runs on base + profile, so the base need not
-carry sources. A base that omits every `source` and `deployment_target` is
-abstract: it declares the model, deploys on its own for nothing, and each profile
-supplies the physical bindings. Leaving a single field unbound in the base is the
-same idea at field granularity, and both match the `abstract` marker an entity
-can already carry.
-
-**Dialect comes from the store.** A profile carries no SQL dialect. The
-dialect follows from the store a profile binds to; the engine lowers each
-`expression` to that store's query language when it runs. A profile chooses the
-data, and the execution engine chooses the dialect.
+**Dialect comes from the store.** A profile carries no SQL dialect. The dialect
+follows from the store a profile binds to; the engine lowers each `expression` to
+that store's query language when it runs. A profile chooses the data, and the
+execution engine chooses the dialect.
