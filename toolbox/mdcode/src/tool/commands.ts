@@ -19,6 +19,13 @@ import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import {validateBigQueryDataSources, validatePushRequirements} from '../libts/semantic/validate';
+import {
+  AvailabilityReport,
+  DEFAULT_PROFILE,
+  mergeProfile,
+  pruneUnavailable,
+} from '../libts/semantic/resolve_profiles';
+import * as yaml from 'yaml';
 
 
 export interface InitOptions {
@@ -66,6 +73,12 @@ export interface PushOptions {
   // so both the BigQuery and Knowledge Catalog legs see the filled expressions.
   // Semantic-model push only. See ../libts/semantic/transpile.
   transpile?: boolean;
+  // Binding profile to merge onto the logical model before deploying: reads
+  // `<model>.profiles/<name>.yaml` and overlays its physical bindings by name.
+  // Orthogonal to `target` (which destination) -- this chooses which physical
+  // binding. Omitted means the inline bindings in the model document (the
+  // implicit 'default' profile). Semantic-model push only.
+  profile?: string;
 }
 
 
@@ -233,7 +246,51 @@ export async function push(options: PushOptions): Promise<number> {
     // fails the whole push before any destination runs. defaultProject is the
     // scope's declared project (deterministic) rather than the ambient gcloud
     // project, which can drift from where the model's tables live.
-    const docs = layout.modelDocuments();
+    // Resolve the binding profile -- which physical binding to merge onto the
+    // logical model. A named profile is merged from its
+    // `<model>.profiles/<name>.yaml`; the implicit 'default' means the inline
+    // bindings already in the model document, so it is never merged (a bare
+    // push behaves as it always has). Orthogonal to --target.
+    const profileName = options.profile ?? DEFAULT_PROFILE;
+    let docs = layout.modelDocuments();
+    if (profileName !== DEFAULT_PROFILE) {
+      const merged: {name: string; text: string}[] = [];
+      for (const doc of docs) {
+        const available = layout.profileDocuments(doc.name);
+        const chosen = available.find(p => p.name === profileName);
+        if (!chosen) {
+          const names = available.map(p => p.name);
+          console.error(
+              `Error: unknown profile '${profileName}' for model '${
+                  doc.name}'; ` +
+              (names.length ?
+                   `defined profiles: ${names.join(', ')}.` :
+                   `no profiles are defined for this model.`));
+          return 1;
+        }
+        let logicalDoc: unknown;
+        let profileDoc: unknown;
+        try {
+          logicalDoc = yaml.parse(doc.text);
+          profileDoc = yaml.parse(chosen.text);
+        } catch (err: any) {
+          console.error(
+              `Error: could not parse model '${doc.name}' or profile '${
+                  profileName}': ${err?.message ?? err}`);
+          return 1;
+        }
+        const res = mergeProfile(logicalDoc, profileDoc, profileName);
+        if (res.error) {
+          console.error(`Error: ${res.error}`);
+          return 1;
+        }
+        for (const w of res.warnings) {
+          console.warn(`Warning: [${doc.name}] ${w}`);
+        }
+        merged.push({name: doc.name, text: yaml.stringify(res.doc)});
+      }
+      docs = merged;
+    }
     const loaded = loadSemanticModels(
         docs, {defaultProject: source.project ?? ctx.project});
     if (loaded.error) {
@@ -260,6 +317,32 @@ export async function push(options: PushOptions): Promise<number> {
       models = transpiled.models;
       for (const w of transpiled.warnings) {
         console.warn(`Warning: ${w}`);
+      }
+    }
+
+    // Prune what the chosen binding cannot answer: drop each unbound field and
+    // everything that depends on it (a metric that reads it, a relationship
+    // whose join column is unbound), so the deployed graph presents only what
+    // the profile binds. Availability propagates up the dependency graph. Runs
+    // for every profile, including 'default' (a no-op when nothing is unbound).
+    const availability: AvailabilityReport[] = [];
+    models = models.map(({document, model}) => {
+      const {model: pruned, report} = pruneUnavailable(model, profileName);
+      availability.push(report);
+      return {document, model: pruned};
+    });
+    for (const r of availability) {
+      const dropped = r.droppedMetrics.length + r.droppedRelationships.length;
+      if (r.unboundFields.length || dropped) {
+        console.warn(
+            `Note: profile '${r.profile}' leaves ${
+                r.unboundFields.length} field(s) unbound` +
+            (dropped ?
+                 `; ${r.droppedMetrics.length} metric(s) and ${
+                     r.droppedRelationships.length} relationship(s) ` +
+                     `unavailable` :
+                 '') +
+            '.');
       }
     }
 
@@ -305,6 +388,7 @@ export async function push(options: PushOptions): Promise<number> {
   // catalog snapshot they are inert. Warn rather than silently ignore them, so
   // a user who expected (say) --transpile to run isn't misled by a clean exit.
   const semanticOnlyFlags: Array<[boolean, string]> = [
+    [options.profile !== undefined, '--profile'],
     [!!options.transpile, '--transpile'],
     [options.target !== undefined, '--target'],
     [!!options.print, '--print'],

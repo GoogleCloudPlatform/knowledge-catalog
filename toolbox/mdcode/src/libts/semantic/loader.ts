@@ -630,6 +630,21 @@ function parseSource(source: string, opts: LoadOptions,
     return trimmed;
   }
 
+  // A BigQuery resource-name URI (AIP-122) is the readable way to name a
+  // source; rewrite it to the canonical project.dataset.table the generator
+  // emits.
+  const bq = trimmed.match(
+      /^\/\/bigquery\.googleapis\.com\/projects\/([^/]+)\/datasets\/([^/]+)\/tables\/(.+)$/);
+  if (bq) return `${bq[1]}.${bq[2]}.${bq[3]}`;
+
+  // Any other resource URI (Spanner, AlloyDB, an iceberg:// table, ...) is not
+  // a BigQuery table and is not dotted-qualified; keep it verbatim. It rides
+  // through to the consumer that binds it (the BigQuery path does not probe or
+  // emit a non-BigQuery source).
+  if (trimmed.startsWith('//') || /^[a-z][\w+.-]*:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+
   const parts = trimmed.split('.').map(unquote);
   if (parts.length === 1 && opts.defaultDataset) parts.unshift(opts.defaultDataset);
   if (parts.length < 3 && opts.defaultProject) parts.unshift(opts.defaultProject);

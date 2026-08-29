@@ -1,0 +1,373 @@
+// Merges a logical semantic model with a chosen binding profile, and prunes what
+// the resulting binding cannot answer.
+//
+// A model is authored as ONE logical declaration (entities, fields,
+// relationships, metrics, the grain, and the graph shape) plus zero or more
+// BINDING PROFILES that supply the physical facets it leaves open: each entity's
+// `source`, each field's column (`expression`), and the deployment target.
+// `kcmd push --profile <name>` merges the selected profile onto the logical
+// model BY NAME and deploys the result. See docs/semantic-model/profiles.md.
+//
+// Two passes live here:
+//   - mergeProfile overlays one profile document onto the logical document,
+//     enforcing the binding-only contract: a profile may set physical facets and
+//     may leave a field unbound, but it may not add or remove elements or change
+//     what anything means. It runs on the parsed authoring documents (the
+//     readable, sugared form) before schema validation, so a profile is written
+//     in the same syntax as the model.
+//   - pruneUnavailable runs over the loaded IR and drops each field left unbound
+//     plus everything that depends on it -- a metric whose expression reads it, a
+//     relationship whose join column is unbound, a cross-entity metric over a
+//     dropped relationship -- returning the pruned model and a per-profile
+//     availability report. Availability propagates UP the dependency graph from
+//     the fields a profile binds.
+
+import {Metric, Relationship, SemanticModel} from './ir';
+import {
+  blankStringLiterals,
+  escapeRegExp,
+  referencedEntityNames,
+} from './sql_expr_utils';
+
+// The implicit profile: the inline bindings already in the model document (the
+// combined single-file form). It is never merged -- it IS the document as
+// authored -- so a bare `kcmd push` behaves as it always has.
+export const DEFAULT_PROFILE = 'default';
+
+export interface MergeResult {
+  // The merged authoring document (still in the sugared form), ready to feed
+  // through the normal loader.
+  doc: unknown;
+  warnings: string[];
+  // A binding-only or unknown-name violation, naming the offending path. When
+  // set, `doc` should not be deployed.
+  error?: string;
+}
+
+// Keys a profile may carry at each level. Everything else is a logical
+// declaration the model owns; setting it in a profile is rejected so swapping a
+// profile can move data but never change what the model means.
+const PROFILE_MODEL_KEYS = new Set([
+  'name', 'version', 'deployment_target', 'entities', 'datasets',
+]);
+const PROFILE_ENTITY_KEYS = new Set(['name', 'source', 'fields']);
+const PROFILE_FIELD_KEYS = new Set(['name', 'expression', 'unbound']);
+
+/**
+ * Overlays `profileDoc` onto `logicalDoc`, matching models, entities, fields by
+ * `name`, and returns the merged document. The inputs are never mutated. A
+ * profile supplies physical bindings only; a violation of that contract (setting
+ * a declaration, or naming an element the logical model does not declare) is
+ * returned as `error`, naming the path.
+ */
+export function mergeProfile(
+    logicalDoc: unknown, profileDoc: unknown,
+    profileName: string): MergeResult {
+  const warnings: string[] = [];
+  const merged = structuredClone(logicalDoc) as any;
+  const profile = profileDoc as any;
+
+  if (!merged || typeof merged !== 'object' ||
+      !Array.isArray(merged.semantic_model)) {
+    return {
+      doc: merged, warnings,
+      error: 'the logical model is not a semantic_model document',
+    };
+  }
+  if (!profile || typeof profile !== 'object' ||
+      !Array.isArray(profile.semantic_model)) {
+    return {
+      doc: merged, warnings,
+      error: `profile '${profileName}' is not a semantic_model document`,
+    };
+  }
+
+  const logicalByName = new Map<string, any>();
+  for (const m of merged.semantic_model) {
+    if (m && typeof m === 'object' && typeof m.name === 'string') {
+      logicalByName.set(m.name, m);
+    }
+  }
+
+  for (const pm of profile.semantic_model) {
+    if (!pm || typeof pm !== 'object') continue;
+    const lm = logicalByName.get(pm.name);
+    if (!lm) {
+      return {
+        doc: merged, warnings,
+        error: `profile '${profileName}': model '${
+            pm.name}' is not in the logical model`,
+      };
+    }
+    const err = mergeModel(lm, pm, profileName);
+    if (err) return {doc: merged, warnings, error: err};
+  }
+
+  // A field the profile neither bound nor marked unbound is carried through from
+  // the logical model with no column -- unbound under this profile. Mark it so
+  // the merged document is self-describing and the availability pass sees it.
+  markOmittedFieldsUnbound(merged);
+  return {doc: merged, warnings};
+}
+
+function mergeModel(lm: any, pm: any, profileName: string): string|undefined {
+  for (const k of Object.keys(pm)) {
+    if (!PROFILE_MODEL_KEYS.has(k)) {
+      return declError(profileName, `model '${pm.name}'`, k);
+    }
+  }
+  if (pm.deployment_target !== undefined) {
+    lm.deployment_target = pm.deployment_target;
+  }
+
+  const pEntities = pm.entities ?? pm.datasets;
+  if (pEntities === undefined) return undefined;
+  if (!Array.isArray(pEntities)) {
+    return `profile '${profileName}': 'entities' must be a list`;
+  }
+  const lByName = indexByName(lm.entities ?? lm.datasets);
+  for (const pe of pEntities) {
+    if (!pe || typeof pe !== 'object') continue;
+    const le = lByName.get(pe.name);
+    if (!le) {
+      return `profile '${profileName}': entity '${
+          pe.name}' is not in the logical model`;
+    }
+    const err = mergeEntity(le, pe, profileName);
+    if (err) return err;
+  }
+  return undefined;
+}
+
+function mergeEntity(le: any, pe: any, profileName: string): string|undefined {
+  for (const k of Object.keys(pe)) {
+    if (!PROFILE_ENTITY_KEYS.has(k)) {
+      return declError(profileName, `entity '${pe.name}'`, k);
+    }
+  }
+  if (pe.source !== undefined) le.source = pe.source;
+
+  if (pe.fields === undefined) return undefined;
+  if (!Array.isArray(pe.fields)) {
+    return `profile '${profileName}': entity '${pe.name}' 'fields' must be a list`;
+  }
+  const lByName = indexByName(le.fields ?? []);
+  for (const pf of pe.fields) {
+    if (!pf || typeof pf !== 'object') continue;
+    const lf = lByName.get(pf.name);
+    if (!lf) {
+      return `profile '${profileName}': field '${pe.name}.${
+          pf.name}' is not in the logical model`;
+    }
+    const err = mergeField(lf, pf, pe.name, profileName);
+    if (err) return err;
+  }
+  return undefined;
+}
+
+function mergeField(
+    lf: any, pf: any, entityName: string,
+    profileName: string): string|undefined {
+  for (const k of Object.keys(pf)) {
+    if (!PROFILE_FIELD_KEYS.has(k)) {
+      return declError(profileName, `field '${entityName}.${pf.name}'`, k);
+    }
+  }
+  if (pf.unbound === true) {
+    lf.unbound = true;
+    delete lf.expression;
+    return undefined;
+  }
+  if (pf.expression !== undefined) {
+    if (!isBareColumnRef(pf.expression)) {
+      return `profile '${profileName}': field '${entityName}.${
+          pf.name}' expression must be a bare column reference, not arbitrary ` +
+          `SQL; the computation is the logical model's to define`;
+    }
+    lf.expression = pf.expression;
+    delete lf.unbound;
+  }
+  return undefined;
+}
+
+function declError(profileName: string, where: string, key: string): string {
+  return `profile '${profileName}': ${where} sets '${key}', a logical ` +
+      `declaration the model owns; a profile may set only physical bindings ` +
+      `(source, expression, unbound, deployment_target)`;
+}
+
+// A profile's field expression must be a BARE column reference (e.g. `c_name`),
+// never arbitrary SQL: the computation belongs to the logical model, and only
+// the column it reads may vary per profile. Accepts the bare-string form and the
+// per-dialect object; rejects any variant that contains whitespace or a call.
+function isBareColumnRef(expr: unknown): boolean {
+  const parts: string[] = [];
+  if (typeof expr === 'string') {
+    parts.push(expr);
+  } else if (expr && typeof expr === 'object' &&
+             Array.isArray((expr as any).dialects)) {
+    for (const d of (expr as any).dialects) {
+      if (d && typeof d.expression === 'string') parts.push(d.expression);
+    }
+  } else {
+    return false;
+  }
+  if (!parts.length) return false;
+  return parts.every(s => !/[\s()]/.test(s.trim()));
+}
+
+function indexByName(list: unknown): Map<string, any> {
+  const m = new Map<string, any>();
+  if (Array.isArray(list)) {
+    for (const item of list) {
+      if (item && typeof item === 'object' && typeof item.name === 'string') {
+        m.set(item.name, item);
+      }
+    }
+  }
+  return m;
+}
+
+function markOmittedFieldsUnbound(doc: any): void {
+  for (const m of doc.semantic_model ?? []) {
+    if (!m || typeof m !== 'object') continue;
+    const entities = m.entities ?? m.datasets ?? [];
+    for (const e of entities) {
+      if (!e || typeof e !== 'object' || !Array.isArray(e.fields)) continue;
+      for (const f of e.fields) {
+        if (!f || typeof f !== 'object') continue;
+        if (f.expression === undefined && f.unbound !== true) {
+          f.unbound = true;
+        }
+      }
+    }
+  }
+}
+
+
+// One profile's availability outcome: the fields it leaves unbound, and the
+// building blocks that fall with them.
+export interface AvailabilityReport {
+  profile: string;
+  unboundFields: string[];  // "Entity.field"
+  droppedMetrics: {name: string; reason: string}[];
+  droppedRelationships: {name: string; reason: string}[];
+}
+
+/**
+ * Returns a clone of `model` reduced to what `profileName` can answer: unbound
+ * fields removed from their entities, and every metric or relationship that
+ * depends on an unbound field dropped. The input is never mutated. The report
+ * names each dropped block and the unbound field that stops it, so a caller can
+ * state the withheld coverage. A model with nothing unbound resolves unchanged.
+ */
+export function pruneUnavailable(model: SemanticModel, profileName: string):
+    {model: SemanticModel; report: AvailabilityReport} {
+  const clone: SemanticModel = structuredClone(model);
+  const report: AvailabilityReport = {
+    profile: profileName,
+    unboundFields: [],
+    droppedMetrics: [],
+    droppedRelationships: [],
+  };
+
+  // A field is bound when it has a column (expression) and is not marked
+  // unbound; otherwise it is unbound (structurally absent under this profile).
+  const unbound = new Set<string>();
+  for (const e of clone.entities ?? []) {
+    for (const f of e.fields ?? []) {
+      if (f.unbound || f.expression === undefined) {
+        unbound.add(`${e.name}.${f.name}`);
+      }
+    }
+  }
+  report.unboundFields = [...unbound];
+
+  // Drop unbound fields: they have no column, so the graph emits none. (A bound
+  // field whose value is null still emits a column -- unbound is not null.)
+  for (const e of clone.entities ?? []) {
+    e.fields = (e.fields ?? []).filter(
+        f => !(f.unbound || f.expression === undefined));
+  }
+
+  // A relationship is available only when the join columns on BOTH ends are
+  // bound (its endpoints' `columns` name fields on those entities).
+  const keptRels: Relationship[] = [];
+  for (const r of clone.relationships ?? []) {
+    const missing = unboundJoinField(r, unbound);
+    if (missing) {
+      report.droppedRelationships.push(
+          {name: r.name, reason: `join column ${missing} is unbound`});
+    } else {
+      keptRels.push(r);
+    }
+  }
+  clone.relationships = keptRels;
+
+  // A metric is available only when every field it references is bound and --
+  // when it spans entities -- a relationship connecting them survives.
+  const entityNames = (clone.entities ?? []).map(e => e.name);
+  const keptMetrics: Metric[] = [];
+  for (const mt of clone.metrics ?? []) {
+    const expr = mt.expression ?? '';
+    const hit = firstUnboundReferenced(expr, unbound);
+    if (hit) {
+      report.droppedMetrics.push(
+          {name: mt.name, reason: `field ${hit} is unbound`});
+      continue;
+    }
+    const refs = referencedEntityNames(expr, entityNames);
+    if (refs.length > 1 && !connectingRelationshipKept(refs, keptRels)) {
+      report.droppedMetrics.push({
+        name: mt.name,
+        reason: `no available relationship connects ${refs.join(', ')}`,
+      });
+      continue;
+    }
+    keptMetrics.push(mt);
+  }
+  clone.metrics = keptMetrics;
+
+  return {model: clone, report};
+}
+
+// The first unbound "Entity.field" a metric expression references (qualified),
+// or null. Text inside string literals is ignored.
+function firstUnboundReferenced(
+    expr: string, unbound: Set<string>): string|null {
+  const scannable = blankStringLiterals(expr);
+  for (const key of unbound) {
+    const dot = key.indexOf('.');
+    const entity = key.slice(0, dot);
+    const field = key.slice(dot + 1);
+    const re = new RegExp(
+        `(?<![\\w\`])\`?${escapeRegExp(entity)}\`?\\.\`?${
+            escapeRegExp(field)}\`?(?![\\w])`);
+    if (re.test(scannable)) return key;
+  }
+  return null;
+}
+
+// The first join field of a relationship that is unbound on its own end, or
+// null when both ends' join columns are bound.
+function unboundJoinField(r: Relationship, unbound: Set<string>): string|null {
+  for (const c of r.source?.columns ?? []) {
+    const key = `${r.source.entity}.${c}`;
+    if (unbound.has(key)) return key;
+  }
+  for (const c of r.destination?.columns ?? []) {
+    const key = `${r.destination.entity}.${c}`;
+    if (unbound.has(key)) return key;
+  }
+  return null;
+}
+
+// Whether any surviving relationship directly connects two of the referenced
+// entities -- the minimal check that a cross-entity metric still has a join path
+// after unavailable relationships were dropped.
+function connectingRelationshipKept(
+    refEntities: string[], kept: Relationship[]): boolean {
+  const set = new Set(refEntities);
+  return kept.some(
+      r => set.has(r.source.entity) && set.has(r.destination.entity));
+}
