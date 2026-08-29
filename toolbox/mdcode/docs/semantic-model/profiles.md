@@ -25,8 +25,8 @@ profile you pick.
 | A **differently-shaped copy** (different table and column names) | remap sources *and* columns *and* join keys, while the metrics and labels stay put |
 
 Profiles do **not** change how the model is computed or what it means. They
-relocate data; they don't redefine it. Pointing a model at a genuinely
-different execution engine (say Spanner instead of BigQuery), where the SQL
+relocate data; they don't redefine it. Pointing a model at a different
+execution engine (say Spanner instead of BigQuery), where the SQL
 dialect and deploy mechanism differ, is out of scope for profiles — that's a
 separate, larger capability.
 
@@ -36,7 +36,7 @@ Think of it as a class hierarchy, the same way an entity `extends` a supertype:
 
 - Your **model file** (`<model>.yaml`) is the **base** — a complete model whose
   inline bindings are the profile named `default`. With no profile selected, this
-  is exactly what deploys.
+  is what deploys.
 - A **profile** is a **subclass**: a document in the *identical schema* as the
   model, with only the parts it changes filled in.
 - `kcmd push --profile <name>` **merges** the profile onto the base — matching
@@ -60,7 +60,7 @@ model means, so `dev` and `prod` always compute the same answer.
 | the model's `deployment_target` | adding or removing entities, fields, or metrics |
 | an entity's `source` | a field's `label`, `description`, `dimension`, `datatype` |
 | an entity's `primary_key` / `unique_keys` | any `ai_context` / synonyms |
-| a field's column (its `expression`, **as a bare column reference**) | a field `expression` that is arbitrary SQL (that's computation, not binding) |
+| a field's column (its `expression`, **as a bare column reference**) | a field `expression` that is arbitrary SQL, which changes the computation rather than the binding |
 | a relationship's `from_columns` / `to_columns` | a relationship's `from` / `to` (the shape of the graph) |
 | a junction table's `source` / keys / columns | any `metric` definition |
 
@@ -68,8 +68,8 @@ An element's `name` is not "overridden" — it's the key that pairs a profile
 element with the base element it refines.
 
 **Why metrics never appear in a profile.** A metric like
-`SUM(orders.o_totalprice)` references the field *name* `o_totalprice`, not a
-column. Field names are stable across profiles — only their column bindings
+`SUM(orders.o_totalprice)` references the field *name* `o_totalprice` rather
+than a column. Field names are stable across profiles — only their column bindings
 change — so the metric is correct under every profile without being restated.
 The contract and the arithmetic line up for free.
 
@@ -158,7 +158,7 @@ keys, the relationship, and the metric all come from the base.
 A copy imported from Snowflake: different table names, different column names,
 different key columns. The profile overrides down to the column and the join
 keys — and the base model above is untouched, so `total_revenue` and the
-`Order Date` label still mean exactly what they did.
+`Order Date` label still mean what they did.
 
 ```yaml
 # sales.profiles/snowflake_export.yaml
@@ -202,7 +202,7 @@ so the SQL dialect is unchanged.
   name present only in the base is inherited unchanged.
 - Scalars — `source`, `expression`, `deployment_target` — **replace**.
 - Key tuples — `primary_key`, `from_columns`, `to_columns` — **replace as a
-  whole**; they are atomic, not merged element by element.
+  whole**; they are atomic rather than merged element by element.
 - Profiles are **override-only**: a profile can refine physical facets of things
   that exist in the base. It cannot add new entities/fields/metrics or delete
   them.
@@ -264,5 +264,5 @@ with the base left empty — the same way an entity can be `abstract`.
 is a property of the execution backend, which the deployment target implies —
 every profile today targets a BigQuery Graph, so there is one dialect and nothing
 to choose. When a non-BigQuery execution backend is supported, the dialect will
-be derived from that backend (and transpiled), not authored per profile, so the
+be derived from that backend (and transpiled) rather than authored per profile, so the
 profile schema won't change.
