@@ -15,6 +15,7 @@
 
 import {describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
 
@@ -22,6 +23,7 @@ import {convertOwlToOsi} from '../../../src/libts/semantic/converters/owl/conver
 import {googleOntologyExtension} from '../../../src/libts/semantic/converters/owl/to_ir';
 import {isTimeDimension} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
+import {owl} from '../../../src/tool/commands';
 
 const FIXTURES = path.join(__dirname, 'fixtures', 'owl');
 
@@ -1507,7 +1509,39 @@ describe('the --compact flag controls layout only', () => {
     // Leaf collections render inline (flow), not as block lists.
     expect(compact).toContain('primary_key: [customerId]');
     expect(compact).toContain('{name: customerId, datatype: String}');
-    // The default keeps the block layout.
-    expect(block).toContain('primary_key:\n          - customerId');
+    // The default keeps the block layout: primary_key as a block sequence and
+    // fields as block maps. Indentation depth is intentionally not pinned --
+    // matching the shape, not a literal column, so a benign nesting change
+    // does not break this with a confusing substring miss.
+    expect(block).toMatch(/primary_key:\n\s+- customerId/);
+    expect(block).toMatch(/- name: customerId\n\s+datatype: String/);
+  });
+});
+
+
+describe('the owl import handler wires --compact through to the serializer', () => {
+  // Covers the CLI seam commands.ts owns -- OwlImportOptions.compact ->
+  // convertOwlToOsi({compactFlow}) -- which the direct converter tests above
+  // bypass. A regression there would silently emit block YAML for
+  // `kcmd owl import --compact` and break the codelab's reproducibility.
+  test('--out with --compact writes flow YAML; without it writes block', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'owl-compact-'));
+    const src = path.join(dir, 'sales.owl.ttl');
+    fs.writeFileSync(src, readFixture('sales.owl.ttl'));
+
+    const compactOut = path.join(dir, 'compact.yaml');
+    expect(await owl('import', src, {out: compactOut, compact: true})).toBe(0);
+    const compact = fs.readFileSync(compactOut, 'utf8');
+
+    const blockOut = path.join(dir, 'block.yaml');
+    expect(await owl('import', src, {out: blockOut})).toBe(0);
+    const block = fs.readFileSync(blockOut, 'utf8');
+
+    // The flag reaches the serializer: compact is flow, the default is block.
+    expect(compact).toContain('primary_key: [customerId]');
+    expect(block).toMatch(/primary_key:\n\s+- customerId/);
+    // Layout differs, content does not.
+    expect(compact).not.toEqual(block);
+    expect(yaml.parse(compact)).toEqual(yaml.parse(block));
   });
 });
