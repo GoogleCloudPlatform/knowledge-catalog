@@ -72,10 +72,29 @@ cli.command('push', 'Push catalog entries')
     .option(
         '--transpile',
         'Rewrite vendor-dialect (e.g. Snowflake/Databricks) expressions to GoogleSQL before deploying, filling target expressions the loader left unset; semantic-model push only')
+    .option(
+        '--profile <name>',
+        'Binding profile to merge onto the logical model before deploying (reads <model>.profiles/<name>.yaml); orthogonal to --target; defaults to the inline bindings; semantic-model push only')
     .action(async (options) => {
       let exitCode = 1;
       try {
         exitCode = await commands.push(options);
+      } catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+
+      process.exit(exitCode);
+    });
+
+
+cli.command(
+       'profiles',
+       'List a semantic model\'s binding profiles and what each can answer')
+    .action(async () => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.profiles();
       } catch (err: any) {
         console.error('Error:', err.message || err);
         exitCode = 1;

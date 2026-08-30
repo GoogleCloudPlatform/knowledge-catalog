@@ -1,8 +1,9 @@
 # One logical model, many physical bindings
 
-> **Status: proposed.** This page is the design for an upcoming feature, written
-> as the user guide first so we can iterate on how it reads. Nothing here is
-> implemented yet.
+> **Scope.** `kcmd` deploys a merged model to BigQuery Graph and Knowledge
+> Catalog only. A profile may bind an entity to any store — BigQuery, Spanner,
+> AlloyDB, a lake table — and `kcmd` merges it and reports its availability, but
+> deploying a binding to a non-BigQuery store is not yet supported.
 
 A semantic model describes a business logically — its entities, the
 relationships between them, and the metrics over them — independent of where the
@@ -80,8 +81,7 @@ each field reads. A profile sets binding and leaves declaration alone.
 | an entity's `source` (its store URI) | which entities, fields, relationships, or metrics exist, and what each means |
 | a field's column (its `expression`, a bare column reference) | a field's `label`, `description`, `dimension`, `datatype` |
 | whether a field is bound at all under this profile | the grain (`primary_key` / `unique_keys`) and graph shape (`from`/`to`, `from_columns`/`to_columns`) |
-| the deployment target | a field `expression` that is arbitrary SQL, which changes the computation |
-| a many-to-many relationship's junction `source` | any `metric` definition; any `ai_context` / synonyms |
+| the deployment target | a field `expression` that is arbitrary SQL, which changes the computation; any `metric` definition; any `ai_context` / synonyms; a relationship or its junction `source` |
 
 An element's `name` is not overridden — it is the key that pairs a profile
 element with the model element it binds. The grain and the join columns name
@@ -110,17 +110,20 @@ anything built on it.** Availability propagates up the dependency graph from the
 fields a profile binds. The chain runs as far as the model does:
 
 - a field is bound when the profile gives its column;
-- a metric is available when every field its expression references is bound;
-- an action is available when every field it reads or writes is bound;
-- a relationship is available when the join columns on both ends are bound, and
-  a traversal or cross-entity metric over it is available only when the
-  relationship is.
+- an entity is available when its key fields are bound — a graph node must be
+  keyed, so an entity whose key is unbound is dropped whole, and every
+  relationship and metric that touches it falls with it;
+- a metric is available when every field its expression references is bound and
+  every entity it spans is available;
+- a relationship is available when both endpoint entities are available and the
+  join columns on both ends are bound; a cross-entity metric over it is available
+  only when the relationship is.
 
 So an operational-only field such as live credit carries its operational-only
-metrics and actions with it, and a warehouse-only field such as lifetime value
-carries its reports; each is present where its inputs are, and unavailable
-everywhere else. The logical model still declares each thing once; a profile
-answers the part of it that its store can back.
+metrics with it, and a warehouse-only field such as lifetime value carries its
+reports; each is present where its inputs are, and unavailable everywhere else.
+The logical model still declares each thing once; a profile answers the part of
+it that its store can back.
 
 **Unbound is not null.** A bound field whose data happens to be empty — a
 customer with no phone on file — is null: the field exists and the value is
@@ -135,9 +138,10 @@ column for it has it until one binds it. Alternatively, a profile that would
 otherwise inherit a column sets `unbound: true` on the field to drop it. Silently
 omitting a field that another profile binds does neither — the field stays
 declared and simply has no column under the omitting profile, which is caught if
-a metric needs it. When a bound column is absent from the profile's store,
-validation fails and names it. So a forgotten binding is caught, and an
-intentional non-binding is written down.
+a metric needs it. When the source table a profile binds is missing or
+inaccessible, validation fails and names it; a mistyped column name resolves to a
+real table and so surfaces at deploy, when BigQuery rejects the generated graph.
+So a forgotten binding is caught, and an intentional non-binding is written down.
 
 ## File layout
 
@@ -255,22 +259,28 @@ semantic_model:
 
 Neither binding restates the grain, the `PlacedBy` relationship, the labels, or
 the metric definitions; those live once in the logical model. `kcmd push
---profile operational` deploys the merged model against Spanner, and the two
-bindings answer different parts of the same model:
+--profile operational` merges the operational bindings and reports what they
+answer; today only the BigQuery-bound `analytical` profile deploys (see
+**Scope** above). The two bindings answer different parts of the same model:
 
 - `order_count` depends only on `Order.key`, bound under both bindings, so it is
   available under either.
 - `avg_lifetime_value` depends on `Customer.lifetimeValue`. The warehouse binds
   it, so the metric is available analytically; the operational store marks it
   unbound, so the metric is unavailable there.
-- `availableCredit` is bound only operationally, so it — and a live credit-limit
-  action written on top of it — is available under the operational binding and
-  absent under the analytical one.
+- `availableCredit` is bound only operationally, so it — and any metric written
+  on top of it — is available under the operational binding and absent under the
+  analytical one.
 
 ## Merge rules
 
-- `entities`, `fields`, `relationships`, and `metrics` merge **by `name`**. A
-  name present only in the logical model is carried through unchanged.
+- A profile carries only `entities` (its alias `datasets` also works) and their
+  `fields`; these merge onto the logical model **by `name`**. A profile never
+  carries a `relationship` or a `metric` — those are logical, so they live once
+  in the model and a profile that sets one is rejected.
+- An entity or field named only in the logical model is carried through
+  unchanged; a profile element whose `name` is not in the logical model is
+  rejected.
 - Scalars — `source`, `expression`, `deployment_target` — **replace**.
 - A field with `unbound: true` in a profile **drops** any column for that field
   under that profile.
@@ -281,8 +291,8 @@ bindings answer different parts of the same model:
 ## Command line
 
 ```bash
-kcmd push --profile analytical            # merge analytical bindings onto the model, deploy
-kcmd push --profile operational           # deploy against the operational store
+kcmd push --profile analytical            # merge the analytical (BigQuery) bindings and deploy
+kcmd push --profile operational           # merge the operational bindings and report availability
 kcmd push --profile analytical --target kc # profile and destination-type are independent
 kcmd push                                 # uses default_profile from catalog.yaml
 kcmd profiles                             # list profiles, their resolved sources, and what each cannot answer
@@ -316,13 +326,14 @@ writes nothing.
   offending path.
 - **Unknown name** — a profile element whose `name` is not in the logical model
   is rejected. Profiles bind declarations; they do not add them.
-- **Unresolvable column** — a column a profile binds that the profile's store
-  does not have fails and names it. This is what turns a mistyped binding into a
-  loud error.
-- **Availability report** — push resolves the dependency graph and reports, per
-  profile, each metric, action, and traversal it cannot answer, together with
-  the unbound field that stops it. Withheld coverage is stated rather than
-  discovered later.
+- **Unresolvable source** — the BigQuery table a profile binds is probed with a
+  dry run; a table that is missing or inaccessible fails and names it. Column
+  names are not probed here — a mistyped column resolves to a real table and is
+  caught at deploy, when BigQuery rejects the generated graph.
+- **Availability summary** — push resolves the dependency graph and prints, per
+  profile, how many entities, metrics, and relationships the binding leaves
+  unavailable. `kcmd profiles` lists each one with the unbound field that stops
+  it, so withheld coverage is stated rather than discovered later.
 
 ## Notes
 

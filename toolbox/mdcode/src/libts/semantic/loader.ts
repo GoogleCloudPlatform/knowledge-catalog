@@ -38,12 +38,23 @@ const SUPPORTED_VERSION = '0.2.0.dev0';
 // An expression is supplied as one or more per-dialect variants; we collapse it
 // to at most two forms (target/canonical + imported) by picking dialects.
 // Unknown sibling keys are ignored.
-const expressionSchema = z.object({
+//
+// A one-line string is accepted as shorthand for a single target-dialect
+// variant (`expression: c_name` == `{dialects: [{dialect: BIGQUERY, expression:
+// c_name}]}`) and normalized to the object form here, so the rest of the loader
+// only ever sees the per-dialect object.
+const expressionObjectSchema = z.object({
   dialects: z.array(z.object({
     dialect: z.string(),
     expression: z.string(),
   })).min(1),
 });
+const expressionSchema = z.union([
+  z.string().transform((s): z.infer<typeof expressionObjectSchema> => ({
+    dialects: [{ dialect: DEFAULT_DIALECT, expression: s }],
+  })),
+  expressionObjectSchema,
+]);
 
 // The format's AI-first annotation. It appears at every level (model, dataset,
 // field, relationship, metric) and is either a bare instructions string or a
@@ -75,13 +86,35 @@ const dimensionSchema = z.object({
 
 const fieldSchema = z.object({
   name: z.string(),
-  expression: expressionSchema,
+  // A bound field names its physical column via `expression`; an `unbound`
+  // field has no column under this binding. Exactly one of the two holds
+  // (enforced below), so a field is never both, and a field that is neither -- a
+  // forgotten binding -- is caught here rather than silently dropped.
+  expression: expressionSchema.optional(),
+  unbound: z.boolean().optional(),
   datatype: z.enum(DATA_TYPES).optional(),   // closed, case-sensitive vocabulary; see DATA_TYPES
   description: z.string().optional(),
   label: z.string().optional(),
   dimension: dimensionSchema.optional(),
   ai_context: aiContextSchema.optional(),
   custom_extensions: z.array(customExtensionSchema).optional(),
+}).superRefine((f, ctx) => {
+  if (f.unbound && f.expression !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['expression'],
+      message: `field '${f.name}': an unbound field has no column; remove ` +
+          `'expression', or drop 'unbound: true' to bind it to that column`,
+    });
+  }
+  if (!f.unbound && f.expression === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['expression'],
+      message: `field '${f.name}': requires an expression; set 'expression', ` +
+          `or mark it 'unbound: true' if this binding has no column for it`,
+    });
+  }
 });
 
 const datasetSchema = z.object({
@@ -221,6 +254,85 @@ function composeDescription(...parts: (string | undefined)[]): string | undefine
 }
 
 
+// The vendor tag for Google-specific extension blocks (kept in sync with the
+// deploy leg's reader). A model-level `deployment_target:` folds into one.
+const GOOGLE_VENDOR = 'GOOGLE';
+
+// Rewrites the author-friendly sugar forms into the canonical wire shape the
+// schema validates, so the guide's readable syntax and the underlying format
+// are one code path: `entities:` is an alias for `datasets:`, and a model-level
+// `deployment_target:` URI folds into a GOOGLE `custom_extensions` block (the
+// form the deploy leg reads). Conflicts -- both `entities` and `datasets`, or a
+// `deployment_target` that disagrees with an existing GOOGLE block -- are load
+// errors, named here. Operates on the parsed document before schema validation.
+function normalizeDocumentSugars(doc: unknown): unknown {
+  if (!doc || typeof doc !== 'object') return doc;
+  const cloned = structuredClone(doc) as any;
+  const models = cloned.semantic_model;
+  if (!Array.isArray(models)) return cloned;
+  for (const m of models) {
+    if (m && typeof m === 'object') normalizeModelSugars(m);
+  }
+  return cloned;
+}
+
+function normalizeModelSugars(m: any): void {
+  const label = typeof m.name === 'string' ? `model '${m.name}'` : 'model';
+
+  if (m.entities !== undefined) {
+    if (m.datasets !== undefined) {
+      throw new Error(`Semantic model load error: ${label}: set either ` +
+          `'entities' or 'datasets', not both (they are the same key).`);
+    }
+    m.datasets = m.entities;
+    delete m.entities;
+  }
+
+  if (m.deployment_target !== undefined) {
+    const target = m.deployment_target;
+    if (typeof target !== 'string') {
+      throw new Error(`Semantic model load error: ${label}: ` +
+          `'deployment_target' must be a URI string.`);
+    }
+    foldDeploymentTarget(m, target, label);
+    delete m.deployment_target;
+  }
+}
+
+// Merges a `deployment_target` URI into the model's GOOGLE custom_extensions.
+// If a GOOGLE block already declares deploymentTargets, the URI must be among
+// them (the two forms mean the same thing and must agree); otherwise a fresh
+// GOOGLE block is appended.
+function foldDeploymentTarget(m: any, target: string, label: string): void {
+  const exts = Array.isArray(m.custom_extensions) ? m.custom_extensions : [];
+  for (const ext of exts) {
+    if (!ext || ext.vendor_name !== GOOGLE_VENDOR ||
+        typeof ext.data !== 'string') {
+      continue;
+    }
+    let data: any;
+    try {
+      data = JSON.parse(ext.data);
+    } catch {
+      continue;  // a malformed block is the deploy leg's error to report
+    }
+    const list = data?.deploymentTargets;
+    if (Array.isArray(list) && list.length) {
+      if (!list.includes(target)) {
+        throw new Error(`Semantic model load error: ${label}: ` +
+            `'deployment_target' disagrees with the GOOGLE custom_extension ` +
+            `already on this model; set one, or make them match.`);
+      }
+      return;  // agree: nothing to add
+    }
+  }
+  exts.push({
+    vendor_name: GOOGLE_VENDOR,
+    data: JSON.stringify({ deploymentTargets: [target] }),
+  });
+  m.custom_extensions = exts;
+}
+
 /**
  * Loads YAML or JSON text (a document in the AI-first semantics format) into the
  * Semantic Model IR. `yaml.parse` accepts JSON too, so both are supported.
@@ -241,7 +353,8 @@ export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
  * `warnings` rather than thrown.
  */
 export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
-  const result = documentSchema.safeParse(doc);
+  const normalized = normalizeDocumentSugars(doc);
+  const result = documentSchema.safeParse(normalized);
   if (!result.success) {
     throw new Error(`Semantic model load error: ${result.error.message}`);
   }
@@ -337,18 +450,24 @@ function convertDataset(ds: DatasetDoc, opts: LoadOptions,
 }
 
 function convertField(f: FieldDoc, entityName: string, warnings: string[], dialect: string): Field {
-  const picked = pickDialect(f.expression, dialect, `field '${entityName}.${f.name}'`, warnings);
-
   // `label`, `dimension`, and AI-first annotations are carried structurally on
   // the IR (not folded into `description`) so an emitter can route each to its
   // own destination and a 1P round-trip stays lossless.
   const description = composeDescription(f.description);
 
   const field: Field = { name: f.name };
-  if (picked.expression !== undefined) field.expression = picked.expression;
-  if (picked.importedExpression !== undefined) {
-    field.importedExpression = picked.importedExpression;
-    field.importedDialect = picked.importedDialect;
+  if (f.unbound) {
+    // Declared but not bound under this binding: no column, no expression (the
+    // schema guarantees `expression` is absent here). See Field.unbound.
+    field.unbound = true;
+  } else {
+    const picked = pickDialect(
+      f.expression!, dialect, `field '${entityName}.${f.name}'`, warnings);
+    if (picked.expression !== undefined) field.expression = picked.expression;
+    if (picked.importedExpression !== undefined) {
+      field.importedExpression = picked.importedExpression;
+      field.importedDialect = picked.importedDialect;
+    }
   }
   if (f.datatype) field.type = f.datatype;
   if (f.label) field.label = f.label;
@@ -508,6 +627,21 @@ function parseSource(source: string, opts: LoadOptions,
 
   if (/\s/.test(trimmed)) {
     warnings.push(`${ctx}: source looks like a query, not a table reference; keeping it verbatim`);
+    return trimmed;
+  }
+
+  // A BigQuery resource-name URI (AIP-122) is the readable way to name a
+  // source; rewrite it to the canonical project.dataset.table the generator
+  // emits.
+  const bq = trimmed.match(
+      /^\/\/bigquery\.googleapis\.com\/projects\/([^/]+)\/datasets\/([^/]+)\/tables\/(.+)$/);
+  if (bq) return `${bq[1]}.${bq[2]}.${bq[3]}`;
+
+  // Any other resource URI (Spanner, AlloyDB, an iceberg:// table, ...) is not
+  // a BigQuery table and is not dotted-qualified; keep it verbatim. It rides
+  // through to the consumer that binds it (the BigQuery path does not probe or
+  // emit a non-BigQuery source).
+  if (trimmed.startsWith('//') || /^[a-z][\w+.-]*:\/\//i.test(trimmed)) {
     return trimmed;
   }
 

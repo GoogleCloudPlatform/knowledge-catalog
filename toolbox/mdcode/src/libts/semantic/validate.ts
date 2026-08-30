@@ -174,5 +174,12 @@ function billingProject(model: SemanticModel, defaultProject: string): string {
 function probeableRef(dataSource: string|undefined): string|null {
   const trimmed = (dataSource ?? '').trim();
   if (!trimmed || /\s/.test(trimmed)) return null;
+  // A non-BigQuery resource URI (Spanner/AlloyDB/iceberg/...) is not a
+  // BigQuery table, so the BigQuery pre-flight does not probe it. (BigQuery
+  // source URIs are normalized to project.dataset.table by the loader, so a
+  // URI reaching here is non-BigQuery.)
+  if (trimmed.startsWith('//') || /^[a-z][\w+.-]*:\/\//i.test(trimmed)) {
+    return null;
+  }
   return trimmed;
 }

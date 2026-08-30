@@ -977,3 +977,139 @@ describe('field label and time-dimension role align with the format models', () 
     expect(isTimeDimension(f)).toBe(false);
   });
 });
+
+
+describe('authoring sugars: entities alias, bare-string expression, deployment_target', () => {
+  const URI =
+    '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+
+  test("'entities:' is an alias for 'datasets:'", () => {
+    const { models } = fromDocument({
+      semantic_model: [{
+        name: 'm',
+        entities: [
+          { name: 'a', source: 'proj.ds.tbl', primary_key: ['id'],
+            fields: [{ name: 'id', expression: expr('id') }] },
+        ],
+      }],
+    });
+    expect(models[0].entities.map(e => e.name)).toEqual(['a']);
+    expect(models[0].entities[0].dataSource).toBe('proj.ds.tbl');
+  });
+
+  test("declaring both 'entities' and 'datasets' is an error", () => {
+    expect(() => fromDocument({
+      semantic_model: [{
+        name: 'm',
+        entities: [{ name: 'a', source: 's', fields: [] }],
+        datasets: [{ name: 'b', source: 's', fields: [] }],
+      }],
+    })).toThrow(/set either 'entities' or 'datasets', not both/);
+  });
+
+  test('a bare-string expression expands to the target-dialect object', () => {
+    const { models } = fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [{
+          name: 'a', source: 'proj.ds.tbl', primary_key: ['id'],
+          fields: [{ name: 'id', expression: 'id_col' }],
+        }],
+      }],
+    });
+    expect(models[0].entities[0].fields[0].expression).toBe('id_col');
+  });
+
+  test("a top-level 'deployment_target' folds into the GOOGLE block form", () => {
+    const sugar = fromDocument({
+      semantic_model: [{
+        name: 'm', deployment_target: URI,
+        datasets: [{ name: 'a', source: 's', primary_key: ['id'],
+          fields: [{ name: 'id', expression: 'id' }] }],
+      }],
+    });
+    const explicit = fromDocument({
+      semantic_model: [{
+        name: 'm',
+        custom_extensions: [{ vendor_name: 'GOOGLE',
+          data: JSON.stringify({ deploymentTargets: [URI] }) }],
+        datasets: [{ name: 'a', source: 's', primary_key: ['id'],
+          fields: [{ name: 'id', expression: 'id' }] }],
+      }],
+    });
+    expect(sugar.models[0].customExtensions)
+      .toEqual(explicit.models[0].customExtensions);
+    expect(sugar.models[0].customExtensions).toEqual([
+      { vendorName: 'GOOGLE',
+        data: JSON.stringify({ deploymentTargets: [URI] }) },
+    ]);
+  });
+
+  test("'deployment_target' agreeing with a GOOGLE block adds no duplicate", () => {
+    const { models } = fromDocument({
+      semantic_model: [{
+        name: 'm', deployment_target: URI,
+        custom_extensions: [{ vendor_name: 'GOOGLE',
+          data: JSON.stringify({ deploymentTargets: [URI] }) }],
+        datasets: [{ name: 'a', source: 's', primary_key: ['id'],
+          fields: [{ name: 'id', expression: 'id' }] }],
+      }],
+    });
+    expect(models[0].customExtensions).toEqual([
+      { vendorName: 'GOOGLE',
+        data: JSON.stringify({ deploymentTargets: [URI] }) },
+    ]);
+  });
+
+  test("'deployment_target' disagreeing with a GOOGLE block is an error", () => {
+    expect(() => fromDocument({
+      semantic_model: [{
+        name: 'm', deployment_target: URI,
+        custom_extensions: [{ vendor_name: 'GOOGLE',
+          data: JSON.stringify({ deploymentTargets: ['//other/target'] }) }],
+        datasets: [{ name: 'a', source: 's', fields: [] }],
+      }],
+    })).toThrow(/disagrees with the GOOGLE custom_extension/);
+  });
+});
+
+describe('fields may be declared unbound (no physical column)', () => {
+  test('an unbound field loads with no expression', () => {
+    const { models } = fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [{
+          name: 'a', source: 's', primary_key: ['id'],
+          fields: [
+            { name: 'id', expression: 'id' },
+            { name: 'credit', unbound: true },
+          ],
+        }],
+      }],
+    });
+    const [id, credit] = models[0].entities[0].fields;
+    expect(id.unbound).toBeUndefined();
+    expect(credit.unbound).toBe(true);
+    expect(credit.expression).toBeUndefined();
+  });
+
+  test('a field that is both bound and unbound is an error', () => {
+    expect(() => fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [{ name: 'a', source: 's', primary_key: ['id'],
+          fields: [{ name: 'credit', unbound: true, expression: 'c' }] }],
+      }],
+    })).toThrow(/an unbound field has no column/);
+  });
+
+  test('a field that is neither bound nor unbound is an error naming the field', () => {
+    expect(() => fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [{ name: 'a', source: 's', primary_key: ['id'],
+          fields: [{ name: 'credit' }] }],
+      }],
+    })).toThrow(/field 'credit': requires an expression/);
+  });
+});

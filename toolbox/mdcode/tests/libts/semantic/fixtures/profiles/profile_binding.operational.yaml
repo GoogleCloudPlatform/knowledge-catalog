@@ -1,0 +1,24 @@
+# A SECOND binding profile over the same logical model (profile_binding.yaml),
+# so one logical declaration yields two physical realizations. The operational
+# store lays the data out differently -- different tables, different column
+# names, a different deployment target. It binds `segment` (so `segment_count`,
+# pruned under `analytical`, is available here) and leaves `amount` unbound (so
+# `total_amount`, available under `analytical`, is pruned here). Read this golden
+# beside the analytical one: the two answer different questions from one model.
+version: "0.2.0.dev0"
+semantic_model:
+  - name: commerce
+    deployment_target: //bigquery.googleapis.com/projects/acme-ops/datasets/ops/propertyGraphs/commerce
+    entities:
+      - name: Customer
+        source: //bigquery.googleapis.com/projects/acme-ops/datasets/ops/tables/dim_customer
+        fields:
+          - { name: id, expression: cust_key }
+          - { name: name, expression: cust_name }
+          - { name: segment, expression: cust_segment }
+      - name: Order
+        source: //bigquery.googleapis.com/projects/acme-ops/datasets/ops/tables/fct_order
+        fields:
+          - { name: id, expression: order_key }
+          - { name: customerId, expression: cust_key }
+          - { name: amount, unbound: true }
