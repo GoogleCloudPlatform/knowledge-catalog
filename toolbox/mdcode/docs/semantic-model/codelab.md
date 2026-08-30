@@ -33,18 +33,6 @@ export DATASET=datacloud_demo                       # BigQuery dataset + KC entr
 export GRAPH=sales                                  # property-graph name
 ```
 
-The Knowledge Catalog step (step 2) writes the `semantic-model` /
-`semantic-entity` / `semantic-metric` entry types. These are not yet generally
-available on production Dataplex, so point `kcmd` at the staging (autopush)
-instance where they already exist. Once the types reach GA, delete this block —
-`kcmd` then defaults to production and every other command stays the same:
-
-```bash
-# Staging (autopush) EAP -- only needed until the semantic-* types are GA on prod.
-export DATAPLEX_ENDPOINT=https://autopush-dataplex.sandbox.googleapis.com  # Knowledge Catalog API host
-export KC_TYPE_PROJECT=dataplex-autopush-types                             # project the semantic-* types live in
-```
-
 ---
 
 ## 1. Author the logical model
@@ -57,15 +45,14 @@ kcmd init --semantic-model $PROJECT.$LOCATION.$DATASET
 # -> scope: semantic-model.$PROJECT.$LOCATION.$DATASET
 ```
 
-Author the model in two parts — this is what lets one model serve many stores.
-The **logical model** (this step) declares the business: three entities
-(`orders`, `customer`, `lineitem`), the relationships between them, and one
-metric (`revenue`). It names nothing physical. A **binding profile** then says
-where each entity reads from and which column each field is — you write one when
-you deploy to BigQuery (step 3) and another for Spanner (step 4); the logical
-model never changes. (A real sales schema fans each order out into many
-line-item rows, so the model includes `lineitem` — step 3 uses that fan-out to
-show where hand-written SQL goes wrong.)
+Author the model in two parts — this is what lets one model serve many stores:
+
+- The **logical model** (this step) declares the business: three entities
+  (`orders`, `customer`, `lineitem`), the relationships between them, and one
+  metric (`revenue`). It names nothing physical.
+- A **binding profile** then says where each entity reads from and which column
+  each field is. You write one when you deploy to BigQuery (step 3) and another
+  for Spanner (step 4); the logical model never changes.
 
 Write the logical model — declarations only, no sources, no columns, no
 deployment target:
@@ -111,12 +98,6 @@ semantic_model:
           dialects: [{ dialect: BIGQUERY, expression: SUM(orders.net_amount) }]
 YAML
 ```
-
-> **Metric constraint.** A BigQuery Graph measure can only aggregate a
-> **single column** — `SUM(orders.net_amount)` is fine, but
-> `SUM(o_extendedprice * (1 - o_discount))` is rejected at deploy. Any arithmetic
-> must be materialized into a column first (the Deploy-to-BigQuery step does that
-> for `net_amount`).
 
 ### Import existing semantics instead of authoring
 
@@ -217,10 +198,9 @@ The rest of this codelab uses the hand-authored `sales` model above.
 
 ## 2. Govern it in Knowledge Catalog
 
-You can govern the model right now, before binding it to any store or loading a
-single row. The push writes the logical model as catalog entries; it needs no
-`source` tables, no column bindings, and no data. First preview the plan without
-writing anything:
+You can govern the model right now — the push writes the logical model straight
+to the catalog as entries, so there is nothing to bind or load first. Preview
+the plan without writing anything:
 
 ```bash
 kcmd push --target kc --validate-only --print
@@ -261,7 +241,7 @@ Pushing semantic model (Knowledge Catalog)...
 Wrote 5 new and 0 updated Knowledge Catalog entries; linked 2 relationships.
 ```
 
-(The write repeats the same two warnings, dropped here.) Each entity, the metric,
+Each entity, the metric,
 and the model itself are now governed entries, joined by a schema-join link —
 discoverable, access-controlled, and the single definition every downstream step
 reads from. `kcmd pull` reconstructs the model YAML from these entries, confirming
@@ -277,9 +257,9 @@ too.
 
 ## 3. Deploy to BigQuery and get reliable insights
 
-Governing the model didn't touch a table. Deploying it to a query engine does:
-you add a **binding profile** — the table each entity reads and the column each
-field maps to — then create the data and deploy.
+Governing the model created catalog entries but no tables. Deploying it to a
+query engine creates the tables and the graph. You add a **binding profile**,
+create the data, and deploy.
 
 Write the **analytical** binding: the BigQuery table each entity reads, the
 column each field maps to, and the BigQuery graph to deploy to. The
@@ -328,7 +308,7 @@ echo 'default_profile: analytical' >> catalog.yaml
 ```
 
 > **Simple case — one binding, one file.** If a model only ever binds to one
-> store, you don't need a separate profile. Put the `deployment_target`, each
+> store, you do not need a separate profile. Put the `deployment_target`, each
 > entity's `source`, and each field's `expression` directly on the model in
 > `sales.yaml` — that is the `default` profile — and run a bare `kcmd push`. An
 > `orders` entity then reads:
@@ -517,7 +497,7 @@ and deployed the `analytical` profile — the BigQuery warehouse. An operational
 Spanner database holds the same business, but its tables are named differently
 (`Customers`, `Orders`, `LineItems`), its columns are named differently
 (`FullName`, `OrderId`), and it does not carry `net_amount` — a settled figure
-the warehouse computes, not something the live store keeps.
+the warehouse computes rather than one the live store keeps.
 
 Add a **second profile** beside the first. Like the `analytical` one, it changes
 only where each entity reads from and which column each field binds to; it never
@@ -594,7 +574,7 @@ DDL below shows.)
 
 `revenue` is `SUM(orders.net_amount)`, and the operational store does not bind
 `net_amount`, so the profile reports `revenue` as unavailable there — computed
-from the bindings, not declared. The `analytical` profile binds `net_amount`, so
+from the bindings rather than declared. The `analytical` profile binds `net_amount`, so
 the same metric is available under the binding step 3 used. One model; each store
 answers the part of it that its data can back.
 
@@ -649,7 +629,7 @@ The graph still speaks the model's vocabulary — the properties are `o_orderkey
 `c_name`, and the rest — but each is now backed by the profile's Spanner column
 (`OrderId AS o_orderkey`, `FullName AS c_name`). The key and reference clauses
 name the physical columns (`KEY(OrderId)`), because a Spanner graph keys on the
-table's real column, not the property alias. Three things also differ from the
+table's real column rather than the property alias. Three things also differ from the
 BigQuery DDL in step 3:
 
 - **Bare table and graph names.** A Spanner property graph names tables inside
@@ -737,9 +717,9 @@ EG=projects/$PROJECT/locations/$LOCATION/entryGroups/$DATASET
 
 for E in sales sales.entities.orders sales.entities.customer sales.entities.lineitem sales.metrics.revenue; do
   curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
-    "${DATAPLEX_ENDPOINT:-https://dataplex.googleapis.com}/v1/$EG/entries/$E" >/dev/null
+    "https://dataplex.googleapis.com/v1/$EG/entries/$E" >/dev/null
 done
-curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "${DATAPLEX_ENDPOINT:-https://dataplex.googleapis.com}/v1/$EG"
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "https://dataplex.googleapis.com/v1/$EG"
 ```
 
 Remove the local workspace that step 1 created:
