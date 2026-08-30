@@ -694,8 +694,8 @@ contract, see [binding profiles](profiles.md)). Write the operational binding
 into the same `sales.profiles/` directory:
 
 ```bash
-export SPANNER_INSTANCE="<your-spanner-instance>"   # a Spanner ENTERPRISE-edition instance
-export SPANNER_DB="<your-googlesql-database>"
+export SPANNER_INSTANCE="${SPANNER_INSTANCE:-<your-spanner-instance>}"   # a Spanner ENTERPRISE-edition instance
+export SPANNER_DB="${SPANNER_DB:-<your-googlesql-database>}"
 SPANNER_TARGET=//spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/propertyGraphs/$GRAPH
 
 mkdir -p catalog/EntryGroups/$DATASET/sales.profiles
