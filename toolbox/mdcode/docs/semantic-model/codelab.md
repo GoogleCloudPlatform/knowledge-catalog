@@ -241,7 +241,7 @@ Pushing semantic model (Knowledge Catalog)...
 Wrote 5 new and 0 updated Knowledge Catalog entries; linked 2 relationships.
 ```
 
-(The write repeats the same two warnings, dropped here.) Each entity, the metric,
+Each entity, the metric,
 and the model itself are now governed entries, joined by a schema-join link —
 discoverable, access-controlled, and the single definition every downstream step
 reads from. `kcmd pull` reconstructs the model YAML from these entries, confirming
