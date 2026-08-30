@@ -198,10 +198,9 @@ The rest of this codelab uses the hand-authored `sales` model above.
 
 ## 2. Govern it in Knowledge Catalog
 
-You can govern the model right now, before binding it to any store or loading a
-single row. The push writes the logical model as catalog entries; it needs no
-`source` tables, no column bindings, and no data. First preview the plan without
-writing anything:
+You can govern the model right now — the push writes the logical model straight
+to the catalog as entries, so there is nothing to bind or load first. Preview
+the plan without writing anything:
 
 ```bash
 kcmd push --target kc --validate-only --print
