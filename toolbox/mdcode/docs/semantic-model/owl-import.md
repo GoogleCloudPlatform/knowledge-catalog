@@ -133,7 +133,7 @@ $ kcmd owl import sales.owl.ttl
 converted 2 classes, 1 object property, 9 datatype properties
 wrote catalog/EntryGroups/<entryGroup>/sales.yaml
 note: this is a LOGICAL model (no physical binding).
-      `kcmd push --target kc` publishes it to Knowledge Catalog as-is.
+      `kcmd push` publishes it to Knowledge Catalog as-is.
       A BigQuery or Spanner Graph deploy needs each relationship's join
       columns added to the model, plus a binding profile (sources, field
       columns) and a deployment target.
@@ -601,12 +601,12 @@ is out of scope (see [Limitations](#limitations)).
 ## 4. Going from ontology to a running graph (binding)
 
 The import gives you a **logical model**: what the domain means, with no physical
-binding. That is directly useful — `kcmd push --target kc` publishes it to
+binding. That is directly useful — `kcmd push` publishes it to
 Knowledge Catalog as-is, so the ontology becomes catalog metadata (entities,
 fields, and keys) with nothing more to fill in:
 
 ```console
-$ kcmd push --target kc      # publishes the logical model to Knowledge Catalog
+$ kcmd push                  # publishes the logical model to Knowledge Catalog
 ```
 
 A relationship publishes as a catalog link only once it has join columns (added

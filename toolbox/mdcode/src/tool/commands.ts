@@ -55,13 +55,16 @@ export interface PushOptions {
   // Unlike `force` above, this authorizes a destructive delete rather
   // than overriding a conflict.
   forceRemove?: boolean;
-  // Semantic-model push destination(s): 'bq', 'kc', 'all' (default), or a
-  // comma-separated list (e.g. 'bq,kc'). Ignored for non-semantic-model scopes.
-  target?: string;
+  // Whether to push the Knowledge Catalog metadata alongside the graph. On by
+  // default; `--no-kc` sets it false to deploy only the graph backend each
+  // model's deployment target names. A logical model that declares no graph
+  // target deploys to Knowledge Catalog alone, so `--no-kc` leaves it nowhere
+  // to go. Ignored for non-semantic-model scopes.
+  kc?: boolean;
   // Print each pushed destination's generated artifact in that destination's
-  // native format (BigQuery Graph -> SQL DDL, Knowledge Catalog -> the entry
-  // plan), each block labeled by destination. Scope which destinations run with
-  // --target. Works with or without --validate-only. Semantic-model push only.
+  // native format (BigQuery/Spanner Graph -> SQL DDL, Knowledge Catalog -> the
+  // entry plan), each block labeled by destination. Works with or without
+  // --validate-only. Semantic-model push only.
   print?: boolean;
   // Emit the SQL-expression fields not yet supported by the published Knowledge
   // Catalog system-type templates (per-field schema semantics and the metric
@@ -77,74 +80,88 @@ export interface PushOptions {
   transpile?: boolean;
   // Binding profile to merge onto the logical model before deploying: reads
   // `<model>.profiles/<name>.yaml` and overlays its physical bindings by name.
-  // Orthogonal to `target` (which destination) -- this chooses which physical
-  // binding. Omitted means the inline bindings in the model document (the
-  // implicit 'default' profile). Semantic-model push only.
+  // The merged binding's deployment target selects the graph backend, so the
+  // profile -- not a flag -- decides where the graph deploys. Omitted means the
+  // inline bindings in the model document (the implicit 'default' profile).
+  // Semantic-model push only.
   profile?: string;
 }
 
 
-export type PushTarget = 'bigquery'|'spanner'|'kc';
+// A semantic-model push destination, in canonical run order. The two graph
+// backends are NOT chosen on the command line: each model deploys to whichever
+// its deployment target names, so the graph legs follow the models. Knowledge
+// Catalog records the logical model unless the user opts out with --no-kc.
+export type PushDestination = 'bigquery'|'spanner'|'kc';
 
-// All known semantic-model push destinations, in canonical run order. `all`
-// expands to this list, and resolveTargets always emits in this order so the
-// run is deterministic and BigQuery-first fail-fast holds regardless of how the
-// user ordered the flag. Append new destinations here as they land.
-const DESTINATIONS: PushTarget[] = ['bigquery', 'spanner', 'kc'];
-
-// The default when --target is omitted: push to every destination.
-const DEFAULT_TARGET = 'all';
-
-// User-typeable aliases for a single destination.
-const TARGET_ALIASES: Record<string, PushTarget> = {
-  bq: 'bigquery',
-  bigquery: 'bigquery',
-  spanner: 'spanner',
-  sp: 'spanner',
-  kc: 'kc',
-};
-
-// Resolves a --target flag value to its ordered, de-duplicated destinations, or
-// undefined if any token is unrecognized (the caller reports the error).
-// Accepts a comma-separated list ('bq,kc'), the keyword 'all' (every
-// destination), and defaults to 'all'. The result is always in canonical
-// DESTINATIONS order.
-export function resolveTargets(target?: string|boolean): PushTarget[]|
-    undefined {
-  // cac yields boolean `true` for a bare `--target` (no value); treat any
-  // non-string as an invalid selection so the caller reports it rather than
-  // throwing on `.toLowerCase()`.
-  if (target !== undefined && typeof target !== 'string') return undefined;
-  const tokens = (target ?? DEFAULT_TARGET)
-                     .toLowerCase()
-                     .split(',')
-                     .map(t => t.trim())
-                     .filter(t => t.length);
-  if (!tokens.length) return undefined;
-  const selected = new Set<PushTarget>();
-  for (const tok of tokens) {
-    if (tok === 'all') {
-      DESTINATIONS.forEach(d => selected.add(d));
-      continue;
-    }
-    const dest = TARGET_ALIASES[tok];
-    if (!dest) return undefined;
-    selected.add(dest);
+// Decides which destination legs a push runs, from what the loaded models
+// declare and whether Knowledge Catalog is enabled. The graph backend is not a
+// user choice -- a model deploys to BigQuery Graph or Spanner Graph according to
+// its own deployment target -- so a leg runs exactly when some model targets it.
+// Knowledge Catalog runs whenever enabled (the default), recording every model.
+//
+// Returns the legs to run in canonical order (BigQuery first, so a fail-fast
+// push stops before the later legs), or an error when a model has nowhere to go:
+// it declares no graph target, and --no-kc removed its only other destination.
+export function planPush(facts: {
+  hasBigQuery: boolean; hasSpanner: boolean; hasUntargeted: boolean;
+  kcEnabled: boolean;
+}): {destinations: PushDestination[]}|{error: string} {
+  if (facts.hasUntargeted && !facts.kcEnabled) {
+    return {
+      error: 'a model declares no deployment target, so it can only deploy to ' +
+          'Knowledge Catalog; drop --no-kc to push it, or give it a deployment ' +
+          'target.',
+    };
   }
-  return DESTINATIONS.filter(d => selected.has(d));
+  const destinations: PushDestination[] = [];
+  if (facts.hasBigQuery) destinations.push('bigquery');
+  if (facts.hasSpanner) destinations.push('spanner');
+  if (facts.kcEnabled) destinations.push('kc');
+  return {destinations};
 }
 
 
-// Whether the user explicitly named destinations (a comma-separated list), as
-// opposed to the omitted default or the `all` keyword. A graph leg the user
-// named directly but that no model targets is a misconfiguration (hard error);
-// the same leg pulled in only by `all`/default is a clean skip, because the
-// model is simply bound to a different backend.
-export function isExplicitSelection(target?: string|boolean): boolean {
-  if (typeof target !== 'string') return false;
-  const tokens =
-      target.toLowerCase().split(',').map(t => t.trim()).filter(t => t.length);
-  return tokens.length > 0 && !tokens.includes('all');
+// Whether a model document (already profile-merged) declares a graph deployment
+// target, without a full strict load. True when the model names one via the
+// `deployment_target:` sugar or a GOOGLE custom_extension `deploymentTargets`.
+// Drives the push mode: a push whose models all declare no target governs the
+// logical model only -- it deploys no graph, so bindings and a target are not
+// required and pruning is skipped (Knowledge Catalog publishes the whole model).
+// On any ambiguity (unparseable YAML, malformed GOOGLE data) it returns true, so
+// the strict load reports the problem rather than silently taking the logical
+// path.
+export function declaresGraphTarget(text: string): boolean {
+  let doc: any;
+  try {
+    doc = yaml.parse(text);
+  } catch {
+    return true;  // let the strict loader report the parse error
+  }
+  const models = Array.isArray(doc?.semantic_model) ? doc.semantic_model : [];
+  for (const m of models) {
+    if (typeof m?.deployment_target === 'string' &&
+        m.deployment_target.trim()) {
+      return true;
+    }
+    const exts = Array.isArray(m?.custom_extensions) ? m.custom_extensions : [];
+    for (const ext of exts) {
+      if (ext?.vendor_name !== 'GOOGLE' || typeof ext?.data !== 'string') {
+        continue;
+      }
+      let data: any;
+      try {
+        data = JSON.parse(ext.data);
+      } catch {
+        return true;  // malformed GOOGLE data: strict load will name it
+      }
+      if (Array.isArray(data?.deploymentTargets) &&
+          data.deploymentTargets.length) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 
@@ -291,24 +308,15 @@ export async function push(options: PushOptions): Promise<number> {
     const layout = snapshot.layout as SemanticModelLayout;
     const source = snapshot.manifest.source as SemanticModelSource;
 
-    const targets = resolveTargets(options.target);
-    if (!targets) {
-      console.error(
-          `Error: invalid --target '${
-              options.target}'; expected bq, spanner, kc, all, ` +
-          `or a comma-separated list (e.g. bq,kc).`);
-      return 1;
-    }
-
-    // A push whose only destination is Knowledge Catalog governs the logical
-    // model (its meaning) and deploys no graph, so it neither needs physical
-    // bindings nor a deployment target. Relax both requirements for that case;
-    // any push that includes a graph leg keeps requiring them.
-    const kcOnly = targets.length === 1 && targets[0] === 'kc';
+    // Knowledge Catalog is pushed by default; --no-kc (cac sets options.kc to
+    // false) deploys only the graph backend each model's deployment target
+    // names.
+    const kcEnabled = options.kc !== false;
 
     // Load + validate every model ONCE, then fan the parsed models out to each
-    // destination leg. Both legs consume the same IR, so a `--target all` push
-    // parses each document a single time instead of once per leg. A parse error
+    // destination leg. Both legs consume the same IR, so a push over multiple
+    // destinations parses each document a single time instead of once per leg. A
+    // parse error
     // fails the whole push before any destination runs. defaultProject is the
     // scope's declared project (deterministic) rather than the ambient gcloud
     // project, which can drift from where the model's tables live.
@@ -316,7 +324,7 @@ export async function push(options: PushOptions): Promise<number> {
     // logical model. A named profile is merged from its
     // `<model>.profiles/<name>.yaml`; the implicit 'default' means the inline
     // bindings already in the model document, so it is never merged (a bare
-    // push behaves as it always has). Orthogonal to --target.
+    // push behaves as it always has).
     const profileName =
         options.profile ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
     let docs = layout.modelDocuments();
@@ -347,9 +355,20 @@ export async function push(options: PushOptions): Promise<number> {
       }
       docs = merged;
     }
-    const loaded = loadSemanticModels(
-        docs,
-        {defaultProject: source.project ?? ctx.project, bindingOptional: kcOnly});
+
+    // A push whose models all declare no graph deployment target (a purely
+    // logical model, or one whose profile binds nothing) governs the logical
+    // model only: it deploys no graph, so it needs neither physical bindings nor
+    // a target and skips pruning. Detected from the profile-merged documents so
+    // the loader and validator relax exactly as they must for a Knowledge-
+    // Catalog-only push. A push that names any graph keeps requiring bindings and
+    // a target.
+    const graphless = docs.every((d) => !declaresGraphTarget(d.text));
+
+    const loaded = loadSemanticModels(docs, {
+      defaultProject: source.project ?? ctx.project,
+      bindingOptional: graphless,
+    });
     if (loaded.error) {
       console.error('Error:', loaded.error);
       return 1;
@@ -383,10 +402,11 @@ export async function push(options: PushOptions): Promise<number> {
     // the profile binds. Availability propagates up the dependency graph. Runs
     // for every profile, including 'default' (a no-op when nothing is unbound).
     //
-    // A KC-only push governs the whole logical model -- meaning, not a physical
-    // binding -- so pruning would wrongly drop every unbound entity/metric the
-    // author declared. Skip it: Knowledge Catalog publishes the full model.
-    if (!kcOnly) {
+    // A graphless push governs the whole logical model -- meaning, not a
+    // physical binding -- so pruning would wrongly drop every unbound
+    // entity/metric the author declared. Skip it: Knowledge Catalog publishes
+    // the full model.
+    if (!graphless) {
       const availability: AvailabilityReport[] = [];
       models = models.map(({document, model}) => {
         const {model: pruned, report} = pruneUnavailable(model, profileName);
@@ -417,7 +437,7 @@ export async function push(options: PushOptions): Promise<number> {
     // This is also the --validate-only path, so a dry run reports the same
     // failures.
     const validationErrors =
-        validatePushRequirements(models, {targetOptional: kcOnly});
+        validatePushRequirements(models, {targetOptional: graphless});
     if (validationErrors.length) {
       for (const e of validationErrors) {
         console.error(`Error: ${e}`);
@@ -425,23 +445,35 @@ export async function push(options: PushOptions): Promise<number> {
       return 1;
     }
 
-    // A model declares exactly one deployment target (enforced above); its host
-    // selects which graph leg deploys it. Partition the shared models by target
-    // type so each leg only sees the models it can deploy, and Knowledge
-    // Catalog (which records every model regardless of graph backend) sees them
-    // all.
+    // Each model deploys to the graph backend its deployment target names (a
+    // graph push requires exactly one; a logical model declares none). Partition
+    // the shared models by target type so each graph leg sees only the models it
+    // can deploy, while Knowledge Catalog records every model.
     const bqModels = models.filter(m => hasTargetType(m, 'bigquery'));
     const spannerModels = models.filter(m => hasTargetType(m, 'spanner'));
 
+    // Decide which destination legs run: the graph legs follow the models (each
+    // deploys to the backend its own deployment target names), Knowledge Catalog
+    // runs unless --no-kc. A logical model that targets no graph can only reach
+    // Knowledge Catalog, so --no-kc would leave it nowhere to go -- a hard error.
+    const plan = planPush({
+      hasBigQuery: bqModels.length > 0,
+      hasSpanner: spannerModels.length > 0,
+      hasUntargeted: models.some(
+          (m) => !hasTargetType(m, 'bigquery') && !hasTargetType(m, 'spanner')),
+      kcEnabled,
+    });
+    if ('error' in plan) {
+      console.error(`Error: ${plan.error}`);
+      return 1;
+    }
+
     // Live pre-flight, before any destination runs: every BigQuery-targeting
     // model's source table must be reachable, so a push fails fast when the
-    // model could not deploy. Scoped to a run that actually touches BigQuery:
-    // only when the BigQuery leg is requested (default `all` includes it) and a
-    // model targets it -- a Spanner-only or kc-only push does not query
-    // BigQuery tables, so probing them would fail a run on a target the user
-    // did not request. A Spanner model's sources live in Spanner and are not
-    // checked here. Runs for --validate-only too.
-    if (targets.includes('bigquery') && bqModels.length) {
+    // model could not deploy. Runs only when the BigQuery leg will run (some
+    // model targets BigQuery Graph); a Spanner model's sources live in Spanner
+    // and are not checked here. Runs for --validate-only too.
+    if (bqModels.length) {
       const accessErrors = await validateBigQueryDataSources(
           bqModels, new BigQueryClient(ctx), source.project ?? ctx.project);
       if (accessErrors.length) {
@@ -452,39 +484,15 @@ export async function push(options: PushOptions): Promise<number> {
       }
     }
 
-    // A graph leg the user named explicitly (not via `all`/default) but that no
-    // model targets is a misconfiguration, not a no-op: fail rather than report
-    // success having deployed nothing. A leg pulled in only by `all`/default is
-    // skipped quietly, since the model is simply bound to another backend.
-    const explicit = isExplicitSelection(options.target);
-
-    // Run the resolved destinations in canonical order (BigQuery first); the
+    // Run the planned destinations in canonical order (BigQuery first); the
     // early return below fails fast, skipping later legs when an earlier one
     // fails.
-    for (const target of targets) {
+    for (const destination of plan.destinations) {
       let code = 0;
-      if (target === 'bigquery') {
-        if (bqModels.length) {
-          code = await pushBigQuery(bqModels, ctx, options);
-        } else if (explicit) {
-          console.error(
-              'Error: --target requested BigQuery Graph, but no model declares ' +
-              'a BigQuery Graph deployment target.');
-          return 1;
-        } else {
-          console.log('No model targets BigQuery Graph; skipping.');
-        }
-      } else if (target === 'spanner') {
-        if (spannerModels.length) {
-          code = await pushSpanner(spannerModels, ctx, options);
-        } else if (explicit) {
-          console.error(
-              'Error: --target requested Spanner Graph, but no model declares ' +
-              'a Spanner Graph deployment target.');
-          return 1;
-        } else {
-          console.log('No model targets Spanner Graph; skipping.');
-        }
+      if (destination === 'bigquery') {
+        code = await pushBigQuery(bqModels, ctx, options);
+      } else if (destination === 'spanner') {
+        code = await pushSpanner(spannerModels, ctx, options);
       } else {
         code = await pushKnowledgeCatalog(models, ctx, options, source);
       }
@@ -499,7 +507,7 @@ export async function push(options: PushOptions): Promise<number> {
   const semanticOnlyFlags: Array<[boolean, string]> = [
     [options.profile !== undefined, '--profile'],
     [!!options.transpile, '--transpile'],
-    [options.target !== undefined, '--target'],
+    [options.kc === false, '--no-kc'],
     [!!options.print, '--print'],
     [!!options.emitExpressions, '--emit-expressions'],
     [!!options.forceRemove, '--force-remove'],
@@ -876,7 +884,7 @@ const OWL_EXTENSIONS = /\.owl\.ttl$|\.ttl$|\.owl$/i;
 // Handles `kcmd owl <action> <file>`. The only action is `import`: convert a
 // Turtle OWL ontology into an OSI model document that then rides the normal
 // `kcmd push` / `kcmd pull`. The converted model is purely LOGICAL (see the OWL
-// converter): `kcmd push --target kc` publishes it as-is; a BigQuery or Spanner
+// converter): `kcmd push` publishes it as-is; a BigQuery or Spanner
 // Graph deploy needs each relationship's join columns added to the model (a
 // logical fact the model owns) plus a binding profile (sources, field columns)
 // and a deployment target. Returns a process exit code.
@@ -957,7 +965,7 @@ export async function owl(
   console.log(`wrote ${writtenPath}`);
   console.log(
       `note: this is a LOGICAL model (no physical binding).\n` +
-      `      \`kcmd push --target kc\` publishes it to Knowledge Catalog as-is.\n` +
+      `      \`kcmd push\` publishes it to Knowledge Catalog as-is.\n` +
       `      A BigQuery or Spanner Graph deploy needs each relationship's join\n` +
       `      columns added to the model, plus a binding profile (sources, field\n` +
       `      columns) and a deployment target.`);

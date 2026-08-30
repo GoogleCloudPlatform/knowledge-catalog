@@ -24,11 +24,15 @@ kcmd push
 ```
 
 With no flags, deploys to every destination — the model's graph backend and
-Knowledge Catalog — the graph first.
+Knowledge Catalog — the graph first. You do not choose the graph backend: each
+model deploys to whichever its deployment target names (BigQuery Graph or Spanner
+Graph). A `--profile` selects the physical binding, and the binding's deployment
+target selects the backend.
 
 | Flag | Effect |
 |------|--------|
-| `--target <bq\|spanner\|kc\|all>` | Which destination(s) to deploy to; accepts a comma-separated list (`bq,kc`). Default `all`. `bq` and `spanner` are the two graph backends; each model routes to whichever its deployment target names, so `--target spanner` on a BigQuery-targeting model reports it has nothing to do. |
+| `--no-kc` | Skip the Knowledge Catalog metadata push and deploy only the graph backend the model's deployment target names. Knowledge Catalog is pushed by default. A logical model that declares no graph target can only reach Knowledge Catalog, so `--no-kc` on it is an error. |
+| `--profile <name>` | Merge the named binding profile (`<model>.profiles/<name>.yaml`) before deploying; its deployment target selects the graph backend. Defaults to the model's inline bindings. See [Binding profiles](profiles.md). |
 | `--validate-only` | Run every validation check and report pass/fail, but write nothing. |
 | `--print` | Print each destination's generated artifact (BigQuery or Spanner Graph SQL DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
 | `--force-remove` | Delete models in the entry group that this push no longer includes (see [Updating and removing models](README.md#updating-and-removing-models)). |
@@ -232,15 +236,17 @@ of your model. For exactly what is stored, what is gated behind
 `push` and `--validate-only` run the same checks, **before either destination is
 touched**, so a model that cannot deploy fails fast instead of half-deploying:
 
-* **Exactly one deployment target per model, and it must be a valid BigQuery
-  Graph or Spanner Graph URI.** A model with no target — or with more than one —
-  is rejected, and so is a single target whose URI matches neither
+* **A graph push declares exactly one deployment target per model, and it must
+  be a valid BigQuery Graph or Spanner Graph URI.** A model with more than one is
+  rejected, and so is a single target whose URI matches neither
   `//bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>` nor
   `//spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>`
   (for example a `propertyGraph`/`propertyGraphs` typo, or a
   `…/entryGroups/@bigquery/entries/…` entry form). The error names the offending
-  URI and the expected forms. This gate runs before any destination leg and for
-  every `--target`, so a malformed target writes **nothing** — not to the graph
+  URI and the expected forms. A **logical model that declares no target** is
+  allowed: it deploys no graph and records to Knowledge Catalog only (so `--no-kc`
+  on it is an error — it would have nowhere to go). This gate runs before any
+  destination leg, so a malformed target writes **nothing** — not to the graph
   and **not to Knowledge Catalog**; the push aborts with a non-zero exit and no
   entries are created. *(static)*
 * **Every metric on a BigQuery Graph model resolves to exactly one entity** —
@@ -258,17 +264,16 @@ touched**, so a model that cannot deploy fails fast instead of half-deploying:
   (a different system) and are **not** probed here. *(live — needs BigQuery
   access)*
 
-The live table check runs for **every** `--target` over the BigQuery-targeting
-models, because the same tables back both a BigQuery graph and its Knowledge
-Catalog entries — so even a Knowledge-Catalog-only push of a BigQuery-targeting
-model confirms it could deploy to BigQuery.
+The live table check runs whenever the BigQuery leg runs (some model targets
+BigQuery Graph), including under `--no-kc`, because the same tables back both a
+BigQuery graph and its Knowledge Catalog entries.
 
 ## Permissions
 
 `push` needs access to whichever destinations you deploy to.
 
-**BigQuery** — for `--target bq` (or `all`) on a BigQuery-targeting model, and
-for the validation pre-flight:
+**BigQuery** — for a BigQuery-targeting model (the BigQuery leg runs whenever
+such a model is present), and for the validation pre-flight:
 
 * `bigquery.jobs.create` in the deployment-target project — to run the deploy's
   `CREATE OR REPLACE PROPERTY GRAPH` and the validation dry-run query
@@ -276,15 +281,16 @@ for the validation pre-flight:
 * `bigquery.datasets.get` on the target dataset (region detection; optional —
   push degrades gracefully without it)
 
-**Spanner** — for `--target spanner` (or `all`) on a Spanner-targeting model, on
-the database the target names:
+**Spanner** — for a Spanner-targeting model (the Spanner leg runs whenever such a
+model is present), on the database the target names:
 
 * `spanner.databases.updateDdl` — to apply the `CREATE OR REPLACE PROPERTY GRAPH`
   through `updateDatabaseDdl`
 * `spanner.databaseOperations.get` — to poll the long-running operation to
   completion
 
-**Knowledge Catalog / Dataplex** — for `--target kc` or `all`:
+**Knowledge Catalog / Dataplex** — for the Knowledge Catalog push (on by
+default; skip it with `--no-kc`):
 
 Writing an entry with aspects needs permission on **both** the entry operation
 and each aspect type attached, so a push needs, on the destination entry group:

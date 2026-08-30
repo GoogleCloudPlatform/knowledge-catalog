@@ -64,17 +64,17 @@ cli.command('push', 'Push catalog entries')
         'Emit SQL-expression fields not yet in the published Knowledge Catalog system-type templates (per-field schema semantics, metric expression); off by default, enable once the templates support them; semantic-model push only')
     .option('--validate-only', 'Only validate changes without applying')
     .option(
-        '--target <targets>',
-        'Semantic-model push destination(s): bq, spanner, kc, all (default), or a comma-separated list (e.g. bq,kc)')
+        '--no-kc',
+        'Skip the Knowledge Catalog metadata push; deploy only the graph backend each model\'s deployment target names (Knowledge Catalog is pushed by default); semantic-model push only')
     .option(
         '--print',
-        'Print each pushed destination\'s generated artifact in its native format (BigQuery/Spanner Graph SQL DDL, Knowledge Catalog entry plan); scope with --target (semantic-model push only)')
+        'Print each pushed destination\'s generated artifact in its native format (BigQuery/Spanner Graph SQL DDL, Knowledge Catalog entry plan); semantic-model push only')
     .option(
         '--transpile',
         'Rewrite vendor-dialect (e.g. Snowflake/Databricks) expressions to GoogleSQL before deploying, filling target expressions the loader left unset; semantic-model push only')
     .option(
         '--profile <name>',
-        'Binding profile to merge onto the logical model before deploying (reads <model>.profiles/<name>.yaml); orthogonal to --target; defaults to the inline bindings; semantic-model push only')
+        'Binding profile to merge onto the logical model before deploying (reads <model>.profiles/<name>.yaml); the profile\'s deployment target selects the graph backend; defaults to the inline bindings; semantic-model push only')
     .action(async (options) => {
       let exitCode = 1;
       try {

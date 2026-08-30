@@ -3,7 +3,7 @@
 // This is the Knowledge Catalog leg of `kcmd push` for the semantic-model
 // scope, the counterpart to `deploy_bigquery.ts`. It consumes models already
 // parsed into the semantic IR (see loadSemanticModels, shared with the BigQuery
-// leg so a `--target all` push parses each document once), maps each to catalog
+// leg so a multi-destination push parses each document once), maps each to catalog
 // Entries + Aspects (the pure emitter in knowledge_catalog.ts), and writes them
 // through the Knowledge Catalog client.
 //

@@ -245,7 +245,7 @@ kcmd owl import /tmp/sales.ttl --out /tmp/sales_osi.yaml --compact
 converted 3 classes, 2 object properties, 7 datatype properties
 wrote /tmp/sales_osi.yaml
 note: this is a LOGICAL model (no physical binding).
-      `kcmd push --target kc` publishes it to Knowledge Catalog as-is.
+      `kcmd push` publishes it to Knowledge Catalog as-is.
       A BigQuery or Spanner Graph deploy needs each relationship's join
       columns added to the model, plus a binding profile (sources, field
       columns) and a deployment target.
@@ -308,8 +308,8 @@ an ontology has no way to state either:
 Both gaps are logical facts you fill in on the model itself. The *physical*
 facts — the table each entity reads, the column each field maps to — stay out of
 the logical model entirely; a [binding profile](profiles.md) supplies them at
-deploy time (step 3), which is why neither model carries a `source`. `kcmd push
---target kc` publishes the logical model to Knowledge Catalog as-is. For the full
+deploy time (step 3), which is why neither model carries a `source`. `kcmd push`
+publishes the logical model to Knowledge Catalog as-is. For the full
 OWL mapping — class hierarchies, unique keys, and the constructs carried as
 custom extensions — see [Importing an OWL ontology](owl-import.md).
 
@@ -328,8 +328,11 @@ first.
 Preview the plan without writing anything:
 
 ```bash
-kcmd push --target kc --validate-only --print
+kcmd push --validate-only --print
 ```
+
+The model has no deployment target yet, so there is no graph to build — a bare
+`kcmd push` governs the logical model to Knowledge Catalog alone.
 
 ```
 Validating semantic model for Knowledge Catalog...
@@ -360,7 +363,7 @@ normalized link id. Nothing is wrong — the graph itself keeps the authored
 Then drop `--validate-only` to perform the write:
 
 ```bash
-kcmd push --target kc
+kcmd push
 ```
 
 ```
@@ -512,17 +515,20 @@ SELECT * FROM UNNEST([                 -- order 100: 2 lines, 101: 1, 102: 3
 ```
 
 > **Why the tables come before the BigQuery push.** Unlike the Knowledge Catalog
-> step, `kcmd push --target bq` validates that every entity's `source` table
+> step, deploying the BigQuery graph validates that every entity's `source` table
 > resolves in BigQuery — even under `--validate-only` — and builds the graph over
 > these tables. So the tables must exist first. (Step 2 needed none of this: it
 > governed the logical model, no tables required.)
 
 ### Deploy the semantic model
 
-Now deploy the bound model to BigQuery. `--print` shows the generated DDL:
+Now deploy the bound model to BigQuery. The graph backend comes from the model's
+deployment target — you don't name it on the command line. You already governed
+the model in Knowledge Catalog in step 2, so `--no-kc` deploys just the graph;
+`--print` shows the generated DDL:
 
 ```bash
-kcmd push --target bq --print
+kcmd push --no-kc --print
 ```
 
 The generated graph turns each entity into a node table, each relationship into an
@@ -794,16 +800,19 @@ gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
   --sql="INSERT INTO LineItems (LineId, OrderId) VALUES (1,100),(2,100),(3,101),(4,102),(5,102),(6,102)"
 ```
 
-> **Why the tables come before the Spanner push.** `kcmd push --target spanner`
+> **Why the tables come before the Spanner push.** Deploying the Spanner graph
 > applies the DDL through the `updateDatabaseDdl` long-running operation; it does
 > not create or pre-check the tables. So the tables must exist first.
 
 ### Deploy the semantic model
 
-Now deploy the bound model to Spanner. `--print` shows the generated DDL:
+Now deploy the bound model to Spanner. The `operational` profile's deployment
+target is a Spanner Graph, so merging that profile is what sends the model to
+Spanner — no backend flag needed. `--no-kc` deploys just the graph, and `--print`
+shows the generated DDL:
 
 ```bash
-kcmd push --profile operational --target spanner --print
+kcmd push --profile operational --no-kc --print
 ```
 
 ```

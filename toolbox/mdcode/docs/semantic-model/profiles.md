@@ -1,9 +1,10 @@
 # One logical model, many physical bindings
 
-> **Scope.** `kcmd` deploys a merged model to BigQuery Graph and Knowledge
-> Catalog only. A profile may bind an entity to any store — BigQuery, Spanner,
-> AlloyDB, a lake table — and `kcmd` merges it and reports its availability, but
-> deploying a binding to a non-BigQuery store is not yet supported.
+> **Scope.** `kcmd` deploys a merged model to the graph backend its
+> `deployment_target` names — BigQuery Graph or Spanner Graph — and to Knowledge
+> Catalog. A profile may bind an entity to another store (AlloyDB, a lake table)
+> and `kcmd` merges it and reports its availability, but deploying a binding to a
+> store other than BigQuery or Spanner is not yet supported.
 
 A semantic model describes a business logically — its entities, the
 relationships between them, and the metrics over them — independent of where the
@@ -259,9 +260,9 @@ semantic_model:
 
 Neither binding restates the grain, the `PlacedBy` relationship, the labels, or
 the metric definitions; those live once in the logical model. `kcmd push
---profile operational` merges the operational bindings and reports what they
-answer; today only the BigQuery-bound `analytical` profile deploys (see
-**Scope** above). The two bindings answer different parts of the same model:
+--profile operational` merges the operational bindings and deploys to their
+Spanner backend, while `--profile analytical` deploys to BigQuery — each profile
+picks its own backend. The two bindings answer different parts of the same model:
 
 - `order_count` depends only on `Order.key`, bound under both bindings, so it is
   available under either.
@@ -291,17 +292,18 @@ answer; today only the BigQuery-bound `analytical` profile deploys (see
 ## Command line
 
 ```bash
-kcmd push --profile analytical            # merge the analytical (BigQuery) bindings and deploy
-kcmd push --profile operational           # merge the operational bindings and report availability
-kcmd push --profile analytical --target kc # profile and destination-type are independent
+kcmd push --profile analytical            # merge the analytical bindings; deploy to their backend (BigQuery) + Knowledge Catalog
+kcmd push --profile operational           # merge the operational bindings; deploy to their backend (Spanner) + Knowledge Catalog
+kcmd push --profile analytical --no-kc    # deploy only the graph, skip Knowledge Catalog
 kcmd push                                 # uses default_profile from catalog.yaml
 kcmd profiles                             # list profiles, their resolved sources, and what each cannot answer
 ```
 
-`--profile` chooses **which physical binding**. The existing `--target
-bq|kc|all` chooses **which destination type** (BigQuery Graph, Knowledge
-Catalog, or both). They are orthogonal — any profile can go to either
-destination.
+`--profile` chooses **which physical binding**, and the binding's
+`deployment_target` selects **which graph backend** the model deploys to
+(BigQuery Graph or Spanner Graph). You never name the backend on the command line
+— picking the profile is picking the backend. Knowledge Catalog is pushed
+alongside the graph by default; `--no-kc` deploys the graph alone.
 
 Set the default so a bare `kcmd push` in CI does the right thing, in
 `catalog.yaml`:
