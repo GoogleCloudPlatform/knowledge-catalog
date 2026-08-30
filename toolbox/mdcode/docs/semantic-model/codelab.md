@@ -35,7 +35,7 @@ export GRAPH=sales                                  # property-graph name
 
 ---
 
-## 1. Author the logical model
+## 1. Author the semantic model
 
 `init` provisions the Knowledge Catalog entry group and a local workspace:
 
