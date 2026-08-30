@@ -64,13 +64,10 @@ version: "0.2.0.dev0"
 
 semantic_model:
   - name: sales                              # keep equal to the <model>.yaml filename (pull round-trips to that name)
-    # Required: the deployment target, in a GOOGLE custom extension. `data` is a
-    # JSON string whose deploymentTargets holds the target graph URI (for now,
-    # exactly one).
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["//bigquery.googleapis.com/projects/my-project/datasets/sales/propertyGraphs/sales_graph"]}'
-    datasets:                                # each dataset becomes an entity
+    # The graph this model deploys to. `deployment_target` is a model key whose
+    # value is the target graph URI — its host selects the backend (see below).
+    deployment_target: //bigquery.googleapis.com/projects/my-project/datasets/sales/propertyGraphs/sales_graph
+    entities:                                # each entity is backed by one table
       - name: orders
         source: my-project.sales.orders      # the backing BigQuery table
         primary_key: [o_orderkey]
@@ -91,9 +88,9 @@ rules.
 
 ### Deployment targets (required)
 
-Every model must declare exactly one **deployment target** — the property graph
-it deploys to — in a `GOOGLE` custom extension, as shown above. The target's
-**host selects the graph backend**:
+Every model that deploys a graph declares exactly one **deployment target** — the
+property graph it deploys to — with the model-level `deployment_target` key, as
+shown above. The target's **host selects the graph backend**:
 
 ```
 # BigQuery Graph
@@ -109,7 +106,10 @@ other is all it takes to deploy the same model to the other backend. The target
 is also recorded on the model's Knowledge Catalog entry. Deploying a graph needs
 exactly one target: a model with none, or more than one, is rejected when a graph
 leg runs. A Knowledge-Catalog-only push (`--target kc`) deploys no graph, so the
-target is optional there (see [Validation](reference.md#validation)).
+target is optional there (see [Validation](reference.md#validation)). The
+equivalent `GOOGLE` `custom_extensions` block with a `deploymentTargets` list
+still works and means the same thing — see [profiles](profiles.md) for both
+forms.
 
 ### Table sources
 

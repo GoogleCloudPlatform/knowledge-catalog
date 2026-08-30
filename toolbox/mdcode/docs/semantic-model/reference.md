@@ -90,7 +90,7 @@ You author only each entity's **own** fields plus the one `extends` keyword; the
 push does the rest:
 
 ```yaml
-datasets:
+entities:
   - name: Person
     source: proj.ds.person
     primary_key: [id]
