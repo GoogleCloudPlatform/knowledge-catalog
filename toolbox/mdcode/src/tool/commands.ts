@@ -19,6 +19,13 @@ import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import {validateBigQueryDataSources, validatePushRequirements} from '../libts/semantic/validate';
+import {
+  AvailabilityReport,
+  DEFAULT_PROFILE,
+  mergeProfile,
+  pruneUnavailable,
+} from '../libts/semantic/resolve_profiles';
+import * as yaml from 'yaml';
 
 
 export interface InitOptions {
@@ -66,6 +73,12 @@ export interface PushOptions {
   // so both the BigQuery and Knowledge Catalog legs see the filled expressions.
   // Semantic-model push only. See ../libts/semantic/transpile.
   transpile?: boolean;
+  // Binding profile to merge onto the logical model before deploying: reads
+  // `<model>.profiles/<name>.yaml` and overlays its physical bindings by name.
+  // Orthogonal to `target` (which destination) -- this chooses which physical
+  // binding. Omitted means the inline bindings in the model document (the
+  // implicit 'default' profile). Semantic-model push only.
+  profile?: string;
 }
 
 
@@ -209,6 +222,31 @@ export async function pull(options: PullOptions = {}): Promise<number> {
 }
 
 
+// Parses a logical model document and a binding profile document, merges the
+// profile onto the model by name, and returns the merged authoring text plus any
+// merge warnings. Shared by `push` and `profiles` so the two paths parse, merge,
+// warn, and fail identically; on a parse error or a binding-contract violation
+// it returns `error` for the caller to surface.
+function mergeProfileOntoDoc(
+    logicalText: string, profileText: string,
+    profileName: string): {text: string; warnings: string[]}|{error: string} {
+  let logicalDoc: unknown;
+  let profileDoc: unknown;
+  try {
+    logicalDoc = yaml.parse(logicalText);
+    profileDoc = yaml.parse(profileText);
+  } catch (err: any) {
+    return {
+      error: `could not parse the model or profile '${profileName}': ${
+          err?.message ?? err}`,
+    };
+  }
+  const merged = mergeProfile(logicalDoc, profileDoc, profileName);
+  if (merged.error) return {error: merged.error};
+  return {text: yaml.stringify(merged.doc), warnings: merged.warnings};
+}
+
+
 export async function push(options: PushOptions): Promise<number> {
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
@@ -233,7 +271,41 @@ export async function push(options: PushOptions): Promise<number> {
     // fails the whole push before any destination runs. defaultProject is the
     // scope's declared project (deterministic) rather than the ambient gcloud
     // project, which can drift from where the model's tables live.
-    const docs = layout.modelDocuments();
+    // Resolve the binding profile -- which physical binding to merge onto the
+    // logical model. A named profile is merged from its
+    // `<model>.profiles/<name>.yaml`; the implicit 'default' means the inline
+    // bindings already in the model document, so it is never merged (a bare
+    // push behaves as it always has). Orthogonal to --target.
+    const profileName =
+        options.profile ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
+    let docs = layout.modelDocuments();
+    if (profileName !== DEFAULT_PROFILE) {
+      const merged: {name: string; text: string}[] = [];
+      for (const doc of docs) {
+        const available = layout.profileDocuments(doc.name);
+        const chosen = available.find(p => p.name === profileName);
+        if (!chosen) {
+          const names = available.map(p => p.name);
+          console.error(
+              `Error: unknown profile '${profileName}' for model '${
+                  doc.name}'; ` +
+              (names.length ?
+                   `defined profiles: ${names.join(', ')}.` :
+                   `no profiles are defined for this model.`));
+          return 1;
+        }
+        const res = mergeProfileOntoDoc(doc.text, chosen.text, profileName);
+        if ('error' in res) {
+          console.error(`Error: [${doc.name}] ${res.error}`);
+          return 1;
+        }
+        for (const w of res.warnings) {
+          console.warn(`Warning: [${doc.name}] ${w}`);
+        }
+        merged.push({name: doc.name, text: res.text});
+      }
+      docs = merged;
+    }
     const loaded = loadSemanticModels(
         docs, {defaultProject: source.project ?? ctx.project});
     if (loaded.error) {
@@ -260,6 +332,34 @@ export async function push(options: PushOptions): Promise<number> {
       models = transpiled.models;
       for (const w of transpiled.warnings) {
         console.warn(`Warning: ${w}`);
+      }
+    }
+
+    // Prune what the chosen binding cannot answer: drop each unbound field and
+    // everything that depends on it (a metric that reads it, a relationship
+    // whose join column is unbound), so the deployed graph presents only what
+    // the profile binds. Availability propagates up the dependency graph. Runs
+    // for every profile, including 'default' (a no-op when nothing is unbound).
+    const availability: AvailabilityReport[] = [];
+    models = models.map(({document, model}) => {
+      const {model: pruned, report} = pruneUnavailable(model, profileName);
+      availability.push(report);
+      return {document, model: pruned};
+    });
+    for (const r of availability) {
+      const dropped = r.droppedEntities.length + r.droppedMetrics.length +
+          r.droppedRelationships.length;
+      if (r.unboundFields.length || dropped) {
+        console.warn(
+            `Note: profile '${r.profile}' leaves ${
+                r.unboundFields.length} field(s) unbound` +
+            (dropped ?
+                 `; ${r.droppedEntities.length} entity(ies), ${
+                     r.droppedMetrics.length} metric(s) and ${
+                     r.droppedRelationships.length} relationship(s) ` +
+                     `unavailable` :
+                 '') +
+            '.');
       }
     }
 
@@ -305,6 +405,7 @@ export async function push(options: PushOptions): Promise<number> {
   // catalog snapshot they are inert. Warn rather than silently ignore them, so
   // a user who expected (say) --transpile to run isn't misled by a clean exit.
   const semanticOnlyFlags: Array<[boolean, string]> = [
+    [options.profile !== undefined, '--profile'],
     [!!options.transpile, '--transpile'],
     [options.target !== undefined, '--target'],
     [!!options.print, '--print'],
@@ -336,6 +437,95 @@ export async function push(options: PushOptions): Promise<number> {
     console.error('Error pushing catalog entries:', result.details);
     return 1;
   }
+}
+
+
+// Lists a semantic model's binding profiles and, per profile, its resolved
+// deployment target and sources plus what it cannot answer (the availability
+// report). Read-only: it merges and prunes each profile the way push does, but
+// deploys nothing and runs no live probe, so a user can see coverage before
+// choosing a profile. Returns a process exit code (0 on success).
+export async function profiles(): Promise<number> {
+  const ctx = context.ApiContext.default();
+  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+  if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {
+    console.error(
+        'Error: `kcmd profiles` applies only to a semantic-model scope.');
+    return 1;
+  }
+  const layout = snapshot.layout as SemanticModelLayout;
+  const source = snapshot.manifest.source as SemanticModelSource;
+  const defaultProfile = snapshot.manifest.defaultProfile;
+
+  const docs = layout.modelDocuments();
+  if (!docs.length) {
+    console.log('No semantic model documents found.');
+    return 0;
+  }
+
+  for (const doc of docs) {
+    console.log(`Model '${doc.name}' (${source.entryGroup}):`);
+    const available = layout.profileDocuments(doc.name);
+    if (!available.length) {
+      console.log(
+          `  no binding profiles; the model document is its own inline ` +
+          `'default' binding.`);
+      continue;
+    }
+    for (const {name, text} of available) {
+      const res = mergeProfileOntoDoc(doc.text, text, name);
+      if ('error' in res) {
+        console.error(`  profile '${name}': ${res.error}`);
+        continue;
+      }
+      for (const w of res.warnings) {
+        console.warn(`  profile '${name}': warning: ${w}`);
+      }
+      const loaded = loadSemanticModels(
+          [{name: doc.name, text: res.text}],
+          {defaultProject: source.project ?? ctx.project});
+      if (loaded.error) {
+        console.error(`  profile '${name}': ${loaded.error}`);
+        continue;
+      }
+      const model = loaded.models[0].model;
+      const {report} = pruneUnavailable(model, name);
+      const marker = name === defaultProfile ? ' (default)' : '';
+      console.log(`  profile '${name}'${marker}`);
+
+      let targets: string[] = [];
+      try {
+        targets = deploy.deploymentTargetUris(model);
+      } catch {
+        // A malformed deployment target is a push-time error; here just show
+        // none rather than abort the listing.
+      }
+      console.log(`    target: ${targets.length ? targets.join(', ') : '(none)'}`);
+      console.log('    sources:');
+      for (const e of model.entities ?? []) {
+        console.log(`      ${e.name} -> ${e.dataSource || '(unbound)'}`);
+      }
+
+      const withheld: string[] = [];
+      for (const d of report.droppedEntities) {
+        withheld.push(`entity ${d.name} (${d.reason})`);
+      }
+      for (const f of report.unboundFields) withheld.push(`field ${f} (unbound)`);
+      for (const d of report.droppedRelationships) {
+        withheld.push(`relationship ${d.name} (${d.reason})`);
+      }
+      for (const d of report.droppedMetrics) {
+        withheld.push(`metric ${d.name} (${d.reason})`);
+      }
+      if (withheld.length) {
+        console.log('    cannot answer:');
+        for (const w of withheld) console.log(`      ${w}`);
+      } else {
+        console.log('    cannot answer: nothing withheld.');
+      }
+    }
+  }
+  return 0;
 }
 
 

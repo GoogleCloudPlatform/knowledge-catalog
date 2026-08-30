@@ -19,7 +19,7 @@
 // See: https://docs.cloud.google.com/bigquery/docs/graph-measures
 //
 
-import {AiContext, Association, Entity, Field, isTimeDimension, Metric, Relationship, SemanticModel,} from './ir';
+import {AiContext, Association, Entity, Field, fieldBinding, isTimeDimension, Metric, Relationship, SemanticModel,} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
 import {referencedEntityNames, stripQualifier} from './sql_expr_utils';
 
@@ -221,6 +221,7 @@ export function generatePropertyGraph(
 interface MeasureLowering {
   derivedProperties: string[];  // extra property lines to emit on the node
   taken: Set<string>;           // property names already in use on the node
+  fieldNames: Set<string>;      // declared field names (each an exposed property)
   byLocalExpr: Map<string, string>;  // existing field local-expression -> its
                                      // property name
   operandToName:
@@ -232,15 +233,23 @@ interface MeasureLowering {
 // duplicating.
 function newLowering(entity: Entity): MeasureLowering {
   const taken = new Set<string>();
+  const fieldNames = new Set<string>();
   const byLocalExpr = new Map<string, string>();
   for (const f of entity.fields) {
     taken.add(f.name);
+    fieldNames.add(f.name);
     const expr = fieldExpression(f);
     if (expr === undefined) continue;
     const local = stripQualifier(expr, entity.name);
     if (!byLocalExpr.has(local)) byLocalExpr.set(local, f.name);
   }
-  return {derivedProperties: [], taken, byLocalExpr, operandToName: new Map()};
+  return {
+    derivedProperties: [],
+    taken,
+    fieldNames,
+    byLocalExpr,
+    operandToName: new Map()
+  };
 }
 
 // Assigns a metric to the node table of the single entity its aggregate
@@ -412,6 +421,16 @@ function exposeOperand(
   const existing = lowering.byLocalExpr.get(operandExpr) ??
       lowering.operandToName.get(operandExpr);
   if (existing) return existing;
+
+  // An operand that names a declared field is already an exposed property, so a
+  // MEASURE may aggregate it directly by name -- even when a profile bound that
+  // field to a differently named physical column (the property is
+  // `<column> AS <field>`, and a MEASURE may reference a sibling alias).
+  // Synthesizing an input property here would emit `<field> AS ..._input`, and
+  // an alias is illegal inside a property expression -- BigQuery rejects it with
+  // "Unrecognized name". (A raw column that is not a field still falls through
+  // to be exposed under its own name, which BigQuery requires.)
+  if (lowering.fieldNames.has(operandExpr)) return operandExpr;
 
   let name: string;
   if (isSimpleIdentifier(operandExpr) && !lowering.taken.has(operandExpr)) {
@@ -614,7 +633,7 @@ function renderNodeTable(
 
   const lines = [
     line(1, `${table} AS ${entity.name}`),
-    line(2, `KEY(${entity.keys.join(', ')})`),
+    line(2, `KEY(${physicalColumns(entity, entity.keys, warnings, `entity '${entity.name}'`).join(', ')})`),
   ];
   // Element-table description and synonyms attach to the node's DEFAULT LABEL
   // -- UNLESS this entity is a supertype whose label is shared by subclass
@@ -710,6 +729,41 @@ function renderFieldPropertyCore(field: Field, entity: string): string {
 }
 
 
+// Resolves a logical field name to the physical column it binds to on
+// `entity`'s table. A structural key reference -- node KEY, edge KEY, SOURCE
+// KEY, DESTINATION KEY, and each REFERENCES target -- must name a real column,
+// never the property alias exposed under the field's name: BigQuery rejects an
+// alias there ("Column '<alias>' not found"). A profile that binds a field to a
+// differently named column makes name != column common. Falls back to the name
+// itself when it is not a declared field (already a raw column) or the entity is
+// unknown.
+function physicalColumn(entity: Entity|undefined, fieldName: string): string {
+  const field = entity?.fields.find(f => f.name === fieldName);
+  if (entity === undefined || field === undefined) return fieldName;
+  const expr = fieldExpression(field);
+  return expr !== undefined ? stripQualifier(expr, entity.name) : fieldName;
+}
+
+function physicalColumns(
+    entity: Entity|undefined, fieldNames: string[], warnings?: string[],
+    ctx?: string): string[] {
+  return fieldNames.map(n => {
+    const col = physicalColumn(entity, n);
+    // A structural site (KEY / SOURCE KEY / DESTINATION KEY / REFERENCES) must
+    // name a bare column. A field bound to a computed expression resolves to
+    // SQL, not a column, which BigQuery rejects at deploy; warn here so the
+    // problem is named statically rather than surfacing as opaque DDL.
+    if (warnings && !isSimpleIdentifier(col)) {
+      warnings.push(
+          `${ctx ?? `entity '${entity?.name ?? '?'}'`}: field '${n}' is bound ` +
+          `to a non-column expression (${col}); a KEY/REFERENCES site requires ` +
+          `a bare column, so BigQuery will reject the generated DDL`);
+    }
+    return col;
+  });
+}
+
+
 function renderEdgeTable(
     rel: Relationship, entitiesByName: Map<string, Entity>,
     opts: GenerateOptions, warnings: string[]): string {
@@ -726,6 +780,7 @@ function renderEdgeTable(
   // source node through, the source entity's own key (looked up here rather
   // than duplicated onto the relationship).
   const sourceEntity = entitiesByName.get(rel.source.entity);
+  const destEntity = entitiesByName.get(rel.destination.entity);
   let backing: string;
   let sourceKey: string[];
   if (!sourceEntity) {
@@ -739,15 +794,26 @@ function renderEdgeTable(
     sourceKey = sourceEntity.keys;
   }
 
-  const key = sourceKey.join(', ');
+  // Every key clause names physical columns: the edge is the source entity's own
+  // table, so its KEY / SOURCE KEY / the FK in DESTINATION KEY all resolve
+  // against the source entity, while the destination REFERENCES resolves against
+  // the destination entity's key.
+  const relCtx = `relationship '${rel.name}'`;
+  const key = physicalColumns(sourceEntity, sourceKey, warnings, relCtx).join(', ');
+  const destFk =
+      physicalColumns(sourceEntity, rel.source.columns, warnings, relCtx)
+          .join(', ');
+  const destRef =
+      physicalColumns(destEntity, rel.destination.columns, warnings, relCtx)
+          .join(', ');
   const lines = [
     line(1, `${backing} AS ${rel.name}`),
     line(2, `KEY(${key})`),
     line(2, `SOURCE KEY(${key}) REFERENCES ${rel.source.entity}(${key})`),
     line(
         2,
-        `DESTINATION KEY(${rel.source.columns.join(', ')}) REFERENCES ${
-            rel.destination.entity}(${rel.destination.columns.join(', ')})`),
+        `DESTINATION KEY(${destFk}) REFERENCES ${
+            rel.destination.entity}(${destRef})`),
   ];
 
   // Edge description and synonyms attach to the DEFAULT LABEL: after the
@@ -785,7 +851,8 @@ function renderAssociationEdge(
           `relationship '${rel.name}': unknown entity '${end.entity}'`);
       return end.columns.join(', ');
     }
-    return entity.keys.join(', ');
+    return physicalColumns(entity, entity.keys, warnings, `relationship '${rel.name}'`)
+        .join(', ');
   };
 
   const lines = [
@@ -822,7 +889,10 @@ function renderAssociationEdge(
 // that is all the IR carries (see the Field/Metric expression-fidelity
 // contract).
 function fieldExpression(f: Field): string|undefined {
-  return f.expression ?? f.importedExpression;
+  // Delegates to the canonical accessor so the generator's notion of "bound"
+  // matches availability pruning's (an unbound field yields undefined; a field
+  // awaiting transpilation stays bound via its imported expression).
+  return fieldBinding(f);
 }
 function metricExpression(m: Metric): string|undefined {
   return m.expression ?? m.importedExpression;

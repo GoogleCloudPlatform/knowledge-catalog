@@ -25,8 +25,17 @@ function yamlFixtures(dir: string): string[] {
   const out: string[] = [];
   for (const ent of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, ent.name);
-    if (ent.isDirectory()) out.push(...yamlFixtures(p));
-    else if (ent.name.endsWith('.yaml') || ent.name.endsWith('.yml')) out.push(p);
+    // The profiles/ subtree holds binding-profile authoring input, a
+    // deliberate pre-OSI superset -- a logical model declares fields with no
+    // `expression`, and a profile carries `deployment_target`/`unbound` sugars
+    // -- so it is not a standalone OSI document. The loader, merge, and
+    // profile-golden tests validate it instead.
+    if (ent.isDirectory()) {
+      if (ent.name === 'profiles') continue;
+      out.push(...yamlFixtures(p));
+    } else if (ent.name.endsWith('.yaml') || ent.name.endsWith('.yml')) {
+      out.push(p);
+    }
   }
   return out;
 }

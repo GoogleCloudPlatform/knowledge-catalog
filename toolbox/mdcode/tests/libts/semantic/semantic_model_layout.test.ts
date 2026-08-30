@@ -94,3 +94,41 @@ describe('SemanticModelLayout write path', () => {
     expect(() => l.removeModelDocument('ghost')).not.toThrow();
   });
 });
+
+
+describe('SemanticModelLayout profile discovery', () => {
+  function writeModel(eg: string, name: string, text: string): void {
+    const dir = path.join(catalogPath, 'EntryGroups', eg);
+    fs.mkdirSync(dir, {recursive: true});
+    fs.writeFileSync(path.join(dir, `${name}.yaml`), text);
+  }
+  function writeProfile(eg: string, model: string, name: string): void {
+    const dir = path.join(catalogPath, 'EntryGroups', eg, `${model}.profiles`);
+    fs.mkdirSync(dir, {recursive: true});
+    fs.writeFileSync(path.join(dir, `${name}.yaml`), `# ${name}\n`);
+  }
+
+  test('profileDocuments reads <model>.profiles/*.yaml by name', async () => {
+    writeModel('eg', 'commerce', 'version: x\n');
+    writeProfile('eg', 'commerce', 'analytical');
+    writeProfile('eg', 'commerce', 'operational');
+    const l = await layout('eg');
+    expect(l.profileDocuments('commerce').map(p => p.name)).toEqual(
+        ['analytical', 'operational']);
+    expect(l.profileDocuments('commerce')[0].text).toBe('# analytical\n');
+  });
+
+  test('a model with no profiles directory yields none', async () => {
+    writeModel('eg', 'commerce', 'version: x\n');
+    const l = await layout('eg');
+    expect(l.profileDocuments('commerce')).toEqual([]);
+  });
+
+  test('a .profiles directory is not discovered as a model document', async () => {
+    writeModel('eg', 'commerce', 'version: x\n');
+    writeProfile('eg', 'commerce', 'analytical');
+    const l = await layout('eg');
+    // Only the logical model, never the profile files, surfaces as a model.
+    expect(l.modelDocuments().map(d => d.name)).toEqual(['commerce']);
+  });
+});

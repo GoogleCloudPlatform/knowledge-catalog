@@ -51,6 +51,7 @@ cli.command('push', 'Push catalog entries')
    .option('--target <targets>', 'Semantic-model push destination(s): bq, kc, all (default), or a comma-separated list (e.g. bq,kc)')
    .option('--print', 'Print each pushed destination\'s generated artifact in its native format (BigQuery Graph SQL DDL, Knowledge Catalog entry plan); scope with --target (semantic-model push only)')
    .option('--transpile', 'Rewrite vendor-dialect (e.g. Snowflake/Databricks) expressions to GoogleSQL before deploying, filling target expressions the loader left unset; semantic-model push only')
+   .option('--profile <name>', 'Binding profile to merge onto the logical model before deploying (reads <model>.profiles/<name>.yaml); orthogonal to --target; defaults to the inline bindings; semantic-model push only')
    .action(async (options) => {
       let exitCode = 1;
       try {
@@ -61,6 +62,21 @@ cli.command('push', 'Push catalog entries')
         exitCode = 1;
       }
       
+      process.exit(exitCode);
+   });
+
+
+cli.command('profiles', 'List a semantic model\'s binding profiles and what each can answer')
+   .action(async () => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.profiles();
+      }
+      catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+
       process.exit(exitCode);
    });
 
