@@ -26,7 +26,7 @@
 import {Association, Entity, Field, Relationship, SemanticModel} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
 import {stripQualifier} from './sql_expr_utils';
-import {isReservedKeyword, quoteIfReserved} from './sql_identifiers';
+import {isSimpleIdentifier, quoteIdentifier, quoteIfReserved} from './sql_identifiers';
 
 export interface GenerateOptions {
   graphName?: string;  // default: model.name
@@ -252,7 +252,7 @@ function renderEdgeTable(
   if (!sourceEntity) {
     warnings.push(`relationship '${rel.name}': unknown source entity '${
         rel.source.entity}'`);
-    backing = quoteIdent(rel.source.entity);
+    backing = quoteIdentifier(rel.source.entity);
     sourceKey = rel.source.columns;
   } else {
     backing = spannerTable(
@@ -395,10 +395,6 @@ function physicalColumns(
   });
 }
 
-function isSimpleIdentifier(s: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(s);
-}
-
 
 // Maps the IR's `dataSource` to the BARE Spanner table name the graph
 // references. A property graph names input tables within its own database, so
@@ -416,7 +412,7 @@ function spannerTable(
   if (!trimmed) {
     warnings.push(
         `${context}: empty data source; the table reference will be invalid`);
-    return quoteIdent('');
+    return quoteIdentifier('');
   }
   if (/\s/.test(trimmed)) {
     warnings.push(
@@ -431,7 +427,7 @@ function spannerTable(
   // dotted reduction below.
   const source = isResourceUri(trimmed) ? finalPathSegment(trimmed) : trimmed;
   const last = splitDotted(source).map(unquote).pop() ?? source;
-  return quoteIdent(last);
+  return quoteIdentifier(last);
 }
 
 
@@ -481,20 +477,9 @@ function splitDotted(source: string): string[] {
 // graph name is `project.dataset.name` -- a Spanner graph lives in one database
 // and is named by a single identifier.
 function qualifyGraph(model: SemanticModel, opts: GenerateOptions): string {
-  return quoteIdent(opts.graphName ?? model.name);
+  return quoteIdentifier(opts.graphName ?? model.name);
 }
 
-
-// Renders a Spanner GoogleSQL identifier: bare when it is a simple identifier,
-// else backtick-quoted (with any backtick escaped). Graph names, table names,
-// and the like flow through here so a hyphenated or otherwise non-simple name
-// does not produce invalid DDL.
-function quoteIdent(name: string): string {
-  if (isSimpleIdentifier(name)) {
-    return isReservedKeyword(name) ? `\`${name}\`` : name;
-  }
-  return `\`${name.replace(/`/g, '\\`')}\``;
-}
 
 function unquote(part: string): string {
   return part.replace(/^[`"]/, '').replace(/[`"]$/, '');

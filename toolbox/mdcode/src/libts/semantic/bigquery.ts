@@ -22,7 +22,7 @@
 import {AiContext, Association, Entity, Field, fieldBinding, isTimeDimension, Metric, Relationship, SemanticModel,} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
 import {referencedEntityNames, stripQualifier} from './sql_expr_utils';
-import {quoteIfReserved} from './sql_identifiers';
+import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
 
 export interface GenerateOptions {
   project?: string;    // fills the project for the graph name + under-qualified
@@ -539,9 +539,6 @@ function hasTopLevelComma(expr: string): boolean {
   return false;
 }
 
-function isSimpleIdentifier(s: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(s);
-}
 
 // Returns `base` if free, else the first `base_2`, `base_3`, ... not in
 // `taken`.

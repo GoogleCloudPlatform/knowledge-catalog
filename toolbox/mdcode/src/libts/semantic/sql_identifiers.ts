@@ -11,15 +11,23 @@
 // reserved set serves both.
 
 // The GoogleSQL reserved keywords. A reserved keyword may not appear as an
-// identifier unless quoted. Non-reserved keywords (e.g. KEY, VALUE, SOURCE) are
-// deliberately absent: they are legal bare identifiers, so quoting them would
-// churn existing output for no reason. Kept uppercase; lookups uppercase first.
-// Source of truth: the GoogleSQL reserved-keyword list (BigQuery lexical
-// structure docs), shared by BigQuery and Spanner Graph. NOTE: the
-// @polyglot-sql/sdk transpiler is deliberately NOT the oracle -- its reserved
-// set diverges from BigQuery's in both directions (misses EXTRACT, over-quotes
-// user/view/column), so delegating would emit incorrect DDL. See
-// sql_identifiers.test.ts.
+// identifier unless quoted. Non-reserved keywords are deliberately absent: they
+// are legal bare identifiers, so quoting them would churn existing output for no
+// reason. That absence extends to the graph-DDL CONTEXTUAL keywords (KEY, VALUE,
+// SOURCE, DESTINATION, LABEL, NODE, EDGE, PROPERTIES, MEASURE): they are
+// keywords only inside a CREATE PROPERTY GRAPH clause, and BigQuery accepts them
+// bare in every identifier position -- alias, property, KEY/SOURCE
+// KEY/DESTINATION KEY column, and REFERENCES label (verified live 2026-08-30).
+// Kept uppercase; lookups uppercase first.
+//
+// Source of truth: the GoogleSQL reserved-keyword lists published for BigQuery
+// and Spanner (their lexical-structure docs). This set is their UNION so one
+// table serves both generators: the two lists differ only in QUALIFY (BigQuery
+// reserves it; Spanner does not, and over-quoting it on Spanner is harmless),
+// and both reserve GRAPH_TABLE. NOTE: the @polyglot-sql/sdk transpiler is
+// deliberately NOT the oracle -- its reserved set diverges from BigQuery's in
+// both directions (misses EXTRACT, over-quotes user/view/column), so delegating
+// would emit incorrect DDL. See sql_identifiers.test.ts.
 const RESERVED_KEYWORDS = new Set<string>([
   'ALL',
   'AND',
@@ -57,6 +65,7 @@ const RESERVED_KEYWORDS = new Set<string>([
   'FOR',
   'FROM',
   'FULL',
+  'GRAPH_TABLE',
   'GROUP',
   'GROUPING',
   'GROUPS',

@@ -921,3 +921,48 @@ describe('inherited property rendering (shared-label consistency)', () => {
         expect(ddl).toContain('email');
       });
 });
+
+describe('reserved-word names in an M:N association edge are quoted', () => {
+  // The open format has no association-table syntax, so this hand-built IR is
+  // the only path that exercises renderAssociationEdge's identifier quoting: the
+  // edge alias, KEY, SOURCE KEY / DESTINATION KEY columns, and both REFERENCES
+  // labels, each named with a GoogleSQL reserved keyword.
+  const RW_ASSOC: SemanticModel = {
+    name: 'rw_assoc',
+    entities: [
+      {
+        name: 'Order',
+        dataSource: 'proj.ds.orders',
+        keys: ['order'],
+        fields: [{name: 'order', expression: 'Order.order'}],
+      },
+      {
+        name: 'Group',
+        dataSource: 'proj.ds.groups',
+        keys: ['id'],
+        fields: [{name: 'id', expression: 'Group.id'}],
+      },
+    ],
+    relationships: [{
+      name: 'from',
+      source: {entity: 'Order', columns: ['order']},
+      destination: {entity: 'Group', columns: ['id']},
+      association: {
+        dataSource: 'proj.ds.order_group',
+        keys: ['order'],
+        sourceColumns: ['order'],
+        destinationColumns: ['id'],
+        fields: [],
+      },
+    }],
+    metrics: [],
+  };
+
+  test('every reserved identifier position in the edge is backtick-quoted', () => {
+    const {ddl} = generatePropertyGraph(RW_ASSOC, GEN_OPTS);
+    expect(ddl).toContain('`proj.ds.order_group` AS `from`');
+    expect(ddl).toContain('KEY(`order`)');
+    expect(ddl).toContain('SOURCE KEY(`order`) REFERENCES `Order`(`order`)');
+    expect(ddl).toContain('DESTINATION KEY(id) REFERENCES `Group`(id)');
+  });
+});

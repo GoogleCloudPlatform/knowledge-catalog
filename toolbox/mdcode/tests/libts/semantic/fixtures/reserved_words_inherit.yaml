@@ -1,0 +1,33 @@
+# Inheritance where the ANCESTOR's name is a GoogleSQL reserved keyword, so the
+# subclass node table must emit `LABEL `Order`` (backtick-quoted) rather than a
+# bare `LABEL Order` that would be a syntax error. Complements reserved_words.yaml
+# (which covers the direct-FK edge, property, and measure positions) with the
+# inheritance-LABEL position.
+version: "0.2.0.dev0"
+semantic_model:
+  - name: reserved_words_inherit
+    datasets:
+      # `Order` is reserved -> the ancestor label is quoted everywhere it appears.
+      - name: Order
+        source: proj.ds.orders
+        primary_key: [id]
+        fields:
+          - name: id
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: order_id }]
+          - name: total
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: amount }]
+      # A concrete subclass -> its node table declares `LABEL `Order`` and
+      # re-lists the ancestor's flattened properties under that quoted label.
+      - name: Vip
+        source: proj.ds.vip_orders
+        primary_key: [id]
+        extends: [Order]
+        fields:
+          - name: id
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: order_id }]
+          - name: tier
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: vip_tier }]

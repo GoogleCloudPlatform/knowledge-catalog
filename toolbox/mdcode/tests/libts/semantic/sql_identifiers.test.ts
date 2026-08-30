@@ -61,16 +61,21 @@ describe('quoteIdentifier', () => {
   });
 });
 
-describe('pins to the authoritative BigQuery reserved set (not the transpiler)',
+describe('pins to the authoritative GoogleSQL reserved set (not the transpiler)',
          () => {
-           // The @polyglot-sql/sdk engine's reserved set diverges from BigQuery's
-           // published one in BOTH directions -- it misses EXTRACT and over-quotes
+           // The set is the UNION of the BigQuery and Spanner GoogleSQL reserved
+           // lists so one table serves both generators. Both were checked
+           // against the published lexical-structure docs (2026-08-30); they
+           // differ only in QUALIFY (BigQuery reserves it, Spanner does not --
+           // over-quoting on Spanner is harmless) and both reserve GRAPH_TABLE.
+           // GRAPH_TABLE was verified live: rejected bare, accepted quoted. The
+           // @polyglot-sql/sdk engine's reserved set diverges from this in BOTH
+           // directions -- it misses EXTRACT and over-quotes
            // user/view/column/references -- so it is deliberately not the oracle.
-           // These cases pin our set to the BigQuery spec so the hand-kept list
-           // cannot silently drift away from it.
+           // These cases pin our set so the hand-kept list cannot silently drift.
            const MUST_QUOTE = [
              'Order', 'Group', 'From', 'Select', 'End', 'Range', 'Hash', 'All',
-             'Extract', 'Within', 'Qualify', 'Rollup',
+             'Extract', 'Within', 'Qualify', 'Rollup', 'Graph_Table',
            ];
            const MUST_STAY_BARE = [
              'Customer', 'order_id', 'segment', 'revenue',

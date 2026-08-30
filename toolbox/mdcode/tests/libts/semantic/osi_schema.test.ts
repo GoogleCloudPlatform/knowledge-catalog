@@ -141,9 +141,10 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
             onlyLogicalGoldenDeviations(validate.errors)) {
           return;
         }
-        // The hand-authored bound graph fixture carries only the
-        // extends/abstract superset (its sources/expressions are present).
-        if (rel === 'hierarchy_graph.yaml' &&
+        // The hand-authored bound graph fixtures carry only the
+        // extends/abstract superset (their sources/expressions are present).
+        if ((rel === 'hierarchy_graph.yaml' ||
+             rel === 'reserved_words_inherit.yaml') &&
             onlyExtendsExtension(validate.errors)) {
           return;
         }
