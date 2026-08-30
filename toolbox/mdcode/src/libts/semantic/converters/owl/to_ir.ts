@@ -45,7 +45,7 @@
 // The result is a purely LOGICAL model: an ontology declares meaning, not
 // physical tables, so entities carry no source, fields no expression, and
 // relationships no join columns -- only the logical shape (entities, fields,
-// keys, and edges by direction). `kcmd push --target kc` publishes it as-is.
+// keys, and edges by direction). `kcmd push` publishes it as-is.
 // A BigQuery or Spanner Graph deploy needs each edge's join columns added to
 // the model (logical grain the model owns) plus a physical binding (sources,
 // field columns) and a deployment target; that binding is a separate step (a

@@ -903,6 +903,15 @@ entities and relationships are queried live and `revenue` is computed in SQL or
 the application rather than by the graph. `Customer`, `orders_to_customer`, and
 every field mean the same thing in both; only the bindings differ.
 
+> **Deploy every binding in one run.** This codelab pushed the two
+> profiles in separate steps to show each backend. With both defined,
+> `kcmd push --all-profiles` deploys every profile at once — the
+> analytical graph to BigQuery and the operational graph to Spanner —
+> and still records the default binding to Knowledge Catalog once. At the
+> other end, `kcmd push --no-profile` deploys no graph and publishes only
+> to Knowledge Catalog. Neither names a backend: each profile's
+> `deployment_target` selects it.
+
 ---
 
 ## 5. Clean up
