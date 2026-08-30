@@ -118,10 +118,12 @@ YAML
 > must be materialized into a column first (the Deploy-to-BigQuery step does that
 > for `net_amount`).
 
-That is the whole model — enough to govern in Knowledge Catalog. It carries no
-`source` table, no field `expression`, and no `deployment_target`: those are
-physical bindings, and Knowledge Catalog governs meaning, not storage. You add a
-binding only when you deploy to a query engine (steps 3 and 4).
+That is already enough to govern in Knowledge Catalog. It carries no `source`
+table, no field `expression`, and no `deployment_target` yet — those are physical
+bindings, which you add when you deploy to a query engine (steps 3 and 4). This
+codelab governs the logical model first and binds it afterward, but that is just
+the order it happens to take: Knowledge Catalog can hold the physical bindings
+too once you have them.
 
 ### Import existing semantics instead of authoring
 
@@ -220,11 +222,12 @@ The rest of this codelab uses the hand-authored `sales` model above.
 
 ## 2. Govern it in Knowledge Catalog
 
-Knowledge Catalog governs *meaning*, which is entirely logical — so you can
+A Knowledge Catalog push does not require any physical binding — so you can
 govern the model right now, before binding it to any store or loading a single
 row. The push writes the logical model as catalog entries; it needs no `source`
-tables, no column bindings, and no data. First preview the plan without writing
-anything:
+tables, no column bindings, and no data. (Once you do bind it, those bindings can
+be governed here too; this step just shows the earliest point at which governance
+is possible.) First preview the plan without writing anything:
 
 ```bash
 kcmd push --target kc --validate-only --print
