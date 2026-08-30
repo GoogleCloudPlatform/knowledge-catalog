@@ -56,64 +56,41 @@ kcmd init --semantic-model $PROJECT.$LOCATION.$DATASET
 # -> scope: semantic-model.$PROJECT.$LOCATION.$DATASET
 ```
 
-Author the model: three entities (`orders`, `customer`, `lineitem`), the
-relationships between them, and one metric (`revenue`). A real sales schema fans
-each order out into many line-item rows, so the model includes `lineitem`. Step
-4 uses that fan-out to show where hand-written SQL goes wrong. The
-`deployment_target` key names the BigQuery Graph the model deploys to.
+Author the model in two parts — this is what lets one model serve many stores.
+The **logical model** declares the business: three entities (`orders`,
+`customer`, `lineitem`), the relationships between them, and one metric
+(`revenue`). It names nothing physical. A **binding profile** then says where
+each entity reads from and which column each field is. Section 5 adds a second
+profile for a different store; the logical model never changes. (A real sales
+schema fans each order out into many line-item rows, so the model includes
+`lineitem` — step 4 uses that fan-out to show where hand-written SQL goes wrong.)
+
+Write the logical model first — declarations only, no sources, no columns, no
+deployment target:
 
 ```bash
-# BigQuery Graph deployment target, named by the model's deployment_target key.
-BQ_DS=projects/$PROJECT/datasets/$DATASET
-TARGET=//bigquery.googleapis.com/$BQ_DS/propertyGraphs/$GRAPH
-
-cat > catalog/EntryGroups/$DATASET/sales.yaml <<YAML
+cat > catalog/EntryGroups/$DATASET/sales.yaml <<'YAML'
 version: "0.2.0.dev0"
 semantic_model:
   - name: sales
     description: Orders, line items, and customers for the codelab
-    deployment_target: $TARGET
     datasets:
       - name: orders
-        source: $PROJECT.$DATASET.orders
         primary_key: [o_orderkey]
         fields:
-          - name: o_orderkey
-            datatype: Integer
-            expression:
-              dialects: [{ dialect: BIGQUERY, expression: o_orderkey }]
-          - name: o_custkey
-            datatype: Integer
-            expression:
-              dialects: [{ dialect: BIGQUERY, expression: o_custkey }]
-          - name: net_amount
-            datatype: Decimal
-            expression:
-              dialects: [{ dialect: BIGQUERY, expression: net_amount }]
+          - { name: o_orderkey, datatype: Integer }
+          - { name: o_custkey,  datatype: Integer }
+          - { name: net_amount, datatype: Decimal }
       - name: customer
-        source: $PROJECT.$DATASET.customer
         primary_key: [c_custkey]
         fields:
-          - name: c_custkey
-            datatype: Integer
-            expression:
-              dialects: [{ dialect: BIGQUERY, expression: c_custkey }]
-          - name: c_name
-            datatype: String
-            expression:
-              dialects: [{ dialect: BIGQUERY, expression: c_name }]
+          - { name: c_custkey, datatype: Integer }
+          - { name: c_name,    datatype: String }
       - name: lineitem
-        source: $PROJECT.$DATASET.lineitem
         primary_key: [l_linekey]
         fields:
-          - name: l_linekey
-            datatype: Integer
-            expression:
-              dialects: [{ dialect: BIGQUERY, expression: l_linekey }]
-          - name: l_orderkey
-            datatype: Integer
-            expression:
-              dialects: [{ dialect: BIGQUERY, expression: l_orderkey }]
+          - { name: l_linekey,  datatype: Integer }
+          - { name: l_orderkey, datatype: Integer }
     relationships:
       - name: orders_to_customer
         from: orders
@@ -137,6 +114,74 @@ YAML
 > **single column** — `SUM(orders.net_amount)` is fine, but
 > `SUM(o_extendedprice * (1 - o_discount))` is rejected at deploy. Any arithmetic
 > must be materialized into a column first (step 2 does that for `net_amount`).
+
+Now write the **analytical** binding: the BigQuery table each entity reads, the
+column each field maps to, and the BigQuery Graph to deploy to. The
+`deployment_target` key names that graph. A binding lives beside the model in
+`sales.profiles/`:
+
+```bash
+# BigQuery Graph deployment target, named by the profile's deployment_target key.
+BQ_DS=projects/$PROJECT/datasets/$DATASET
+TARGET=//bigquery.googleapis.com/$BQ_DS/propertyGraphs/$GRAPH
+
+mkdir -p catalog/EntryGroups/$DATASET/sales.profiles
+cat > catalog/EntryGroups/$DATASET/sales.profiles/analytical.yaml <<YAML
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    deployment_target: $TARGET
+    datasets:
+      - name: orders
+        source: $PROJECT.$DATASET.orders
+        fields:
+          - { name: o_orderkey, expression: o_orderkey }
+          - { name: o_custkey,  expression: o_custkey }
+          - { name: net_amount, expression: net_amount }
+      - name: customer
+        source: $PROJECT.$DATASET.customer
+        fields:
+          - { name: c_custkey, expression: c_custkey }
+          - { name: c_name,    expression: c_name }
+      - name: lineitem
+        source: $PROJECT.$DATASET.lineitem
+        fields:
+          - { name: l_linekey,  expression: l_linekey }
+          - { name: l_orderkey, expression: l_orderkey }
+YAML
+```
+
+The binding restates no relationship, no metric, and no grain — those are logical
+and live once in the model. It carries only bindings: each entity's table and
+each field's column. Make it the default so a bare `kcmd push` selects it (steps
+3–4 rely on this); section 5 selects the other profile explicitly with
+`--profile`:
+
+```bash
+echo 'default_profile: analytical' >> catalog.yaml
+```
+
+> **Simple case — one binding, one file.** If a model only ever binds to one
+> store, you don't need a separate profile. Put the `deployment_target`, each
+> entity's `source`, and each field's `expression` directly on the model in
+> `sales.yaml` — that is the `default` profile — and run a bare `kcmd push`. An
+> `orders` entity then reads:
+>
+> ```yaml
+> semantic_model:
+>   - name: sales
+>     deployment_target: //bigquery.googleapis.com/.../propertyGraphs/sales
+>     datasets:
+>       - name: orders
+>         source: $PROJECT.$DATASET.orders
+>         primary_key: [o_orderkey]
+>         fields:
+>           - { name: o_orderkey, datatype: Integer, expression: o_orderkey }
+>           # ...
+> ```
+>
+> This codelab splits them from the start because section 5 adds a second store,
+> and that split is what lets one model back both.
 
 ### Import existing semantics instead of authoring
 
@@ -224,8 +269,8 @@ The classes became `Part` and `Supplier` entities, the datatype properties
 became `Part`'s fields, and the object property became the `suppliedBy`
 relationship. The `source: unbound:*` and `TODO_BIND` join columns are
 placeholders: the import gives you structure, and you bind it to physical tables
-and a deployment target before pushing, which is what the hand-authored `sales`
-model above already has. For the full OWL mapping — class hierarchies, unique
+and a deployment target before pushing — which is exactly what the `analytical`
+binding above adds to the hand-authored `sales` model. For the full OWL mapping — class hierarchies, unique
 keys, and the constructs carried as custom extensions — see
 [Importing an OWL ontology](owl-import.md).
 
@@ -271,8 +316,10 @@ SELECT * FROM UNNEST([                 -- order 100: 2 lines, 101: 1, 102: 3
 
 ## 3. Govern it in Knowledge Catalog
 
-The same model becomes governed catalog entries. First preview the plan without
-writing anything:
+The same model becomes governed catalog entries. Steps 3 and 4 deploy the
+`analytical` binding — the default profile you set in step 1 — so a bare `kcmd
+push` selects it; you never repeat `--profile` until section 5 needs the other
+one. First preview the plan without writing anything:
 
 ```bash
 kcmd push --target kc --validate-only --print
@@ -444,17 +491,17 @@ query, so the correct answer is the default one.
 ## 5. Deploy the same model to Spanner Graph
 
 The same customers and orders usually live in more than one store. Steps 1–4
-used the model's built-in binding — the BigQuery warehouse. An operational
+deployed the `analytical` profile — the BigQuery warehouse. An operational
 Spanner database holds the same business, but its tables are named differently
 (`Customers`, `Orders`, `LineItems`), its columns are named differently
 (`FullName`, `OrderId`), and it does not carry `net_amount` — a settled figure
 the warehouse computes, not something the live store keeps.
 
-A **binding profile** maps the one logical model onto that store. It changes only
-where each entity reads from and which column each field binds to; it never
+Add a **second profile** beside the first. Like the `analytical` one, it changes
+only where each entity reads from and which column each field binds to; it never
 changes what an entity, a relationship, or a metric *means* (for the full
 contract, see [binding profiles](profiles.md)). Write the operational binding
-beside the model, in `sales.profiles/`:
+into the same `sales.profiles/` directory:
 
 ```bash
 export SPANNER_INSTANCE=<your-spanner-instance>   # a Spanner ENTERPRISE-edition instance
@@ -497,9 +544,16 @@ kcmd profiles
 ```
 
 ```
-Model 'sales' (kcmd_codelab):
+Model 'sales' ($DATASET):
+  profile 'analytical' (default)
+    target: //bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/sales
+    sources:
+      orders -> $PROJECT.$DATASET.orders
+      customer -> $PROJECT.$DATASET.customer
+      lineitem -> $PROJECT.$DATASET.lineitem
+    cannot answer: nothing withheld.
   profile 'operational'
-    target: //spanner.googleapis.com/projects/.../databases/.../propertyGraphs/sales
+    target: //spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/propertyGraphs/sales
     sources:
       orders -> $PROJECT.Orders
       customer -> $PROJECT.Customers
@@ -509,14 +563,17 @@ Model 'sales' (kcmd_codelab):
       metric revenue (field orders.net_amount is unbound)
 ```
 
-(`kcmd profiles` resolves each source against your project for display; the
-Spanner graph itself references the bare table — `Orders` — as the DDL below
-shows.)
+Both profiles now show side by side: `analytical` binds every field, so it
+withholds nothing; `operational` leaves `net_amount` unbound. (`kcmd profiles`
+resolves each source against your project for display — the `analytical` sources
+are fully qualified, and each `operational` bare table such as `Orders` is shown
+project-prefixed; the Spanner graph itself references the bare `Orders`, as the
+DDL below shows.)
 
 `revenue` is `SUM(orders.net_amount)`, and the operational store does not bind
 `net_amount`, so the profile reports `revenue` as unavailable there — computed
-from the bindings, not declared. The warehouse binds `net_amount`, so the same
-metric is available under the default binding steps 1–4 used. One model; each
+from the bindings, not declared. The `analytical` profile binds `net_amount`, so
+the same metric is available under the binding steps 1–4 used. One model; each
 store answers the part of it that its data can back.
 
 Preview the Spanner DDL the profile generates (`--validate-only` runs the
