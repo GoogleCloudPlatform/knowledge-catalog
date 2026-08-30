@@ -1,9 +1,11 @@
 # One logical model, many physical bindings
 
-> **Scope.** `kcmd` deploys a merged model to BigQuery Graph and Knowledge
-> Catalog only. A profile may bind an entity to any store — BigQuery, Spanner,
-> AlloyDB, a lake table — and `kcmd` merges it and reports its availability, but
-> deploying a binding to a non-BigQuery store is not yet supported.
+> **Scope.** `kcmd` deploys a merged model to a property graph — **BigQuery
+> Graph or Spanner Graph**, whichever the profile's deployment target names — and
+> to Knowledge Catalog. A profile may bind an entity to any store — BigQuery,
+> Spanner, AlloyDB, a lake table — and `kcmd` merges it and reports its
+> availability; a binding to a store with no graph backend yet (AlloyDB, a SaaS
+> API, a lake table) is merged and reported, not deployed.
 
 A semantic model describes a business logically — its entities, the
 relationships between them, and the metrics over them — independent of where the
@@ -67,6 +69,14 @@ source is an [AIP-122](https://google.aip.dev/122) resource name —
 resolves to an endpoint. A profile moves an entity between stores by swapping
 this URI, and — when the two stores shape the data differently — the column each
 field reads.
+
+A graph references a source by its **final segment** — the table name in the
+target store. A **BigQuery** `source` may be written as this resource name or as
+a plain `project.dataset.table`; both resolve identically. A **Spanner** graph
+lives inside one database and names its tables directly, so both
+`//spanner.googleapis.com/…/tables/Customer` and the equivalent dotted
+`acme.commerce.Customer` resolve to the table `Customer`. One authored form
+therefore serves either backend.
 
 ## What a profile may change — the contract
 
@@ -138,10 +148,12 @@ column for it has it until one binds it. Alternatively, a profile that would
 otherwise inherit a column sets `unbound: true` on the field to drop it. Silently
 omitting a field that another profile binds does neither — the field stays
 declared and simply has no column under the omitting profile, which is caught if
-a metric needs it. When the source table a profile binds is missing or
-inaccessible, validation fails and names it; a mistyped column name resolves to a
-real table and so surfaces at deploy, when BigQuery rejects the generated graph.
-So a forgotten binding is caught, and an intentional non-binding is written down.
+a metric needs it. When a BigQuery source table a profile binds is missing or
+inaccessible, validation fails and names it (the live source probe is
+BigQuery-only; a Spanner source is not probed, so a bad Spanner table surfaces at
+deploy instead); a mistyped column name resolves to a real table and so surfaces
+at deploy, when the graph backend rejects the generated graph. So a forgotten
+binding is caught, and an intentional non-binding is written down.
 
 ## File layout
 
@@ -259,9 +271,11 @@ semantic_model:
 
 Neither binding restates the grain, the `PlacedBy` relationship, the labels, or
 the metric definitions; those live once in the logical model. `kcmd push
---profile operational` merges the operational bindings and reports what they
-answer; today only the BigQuery-bound `analytical` profile deploys (see
-**Scope** above). The two bindings answer different parts of the same model:
+--profile analytical` deploys to BigQuery Graph and `kcmd push --profile
+operational` deploys to Spanner Graph — each profile routes to the backend its
+deployment target names (see **Scope** above); on Spanner the metrics are
+dropped, since Spanner Graph has no `MEASURE`. The two bindings answer different
+parts of the same model:
 
 - `order_count` depends only on `Order.key`, bound under both bindings, so it is
   available under either.
@@ -291,8 +305,8 @@ answer; today only the BigQuery-bound `analytical` profile deploys (see
 ## Command line
 
 ```bash
-kcmd push --profile analytical            # merge the analytical (BigQuery) bindings and deploy
-kcmd push --profile operational           # merge the operational bindings and report availability
+kcmd push --profile analytical            # merge the analytical bindings and deploy to BigQuery Graph
+kcmd push --profile operational           # merge the operational bindings and deploy to Spanner Graph
 kcmd push --profile analytical --target kc # profile and destination-type are independent
 kcmd push                                 # uses default_profile from catalog.yaml
 kcmd profiles                             # list profiles, their resolved sources, and what each cannot answer
@@ -326,10 +340,12 @@ writes nothing.
   offending path.
 - **Unknown name** — a profile element whose `name` is not in the logical model
   is rejected. Profiles bind declarations; they do not add them.
-- **Unresolvable source** — the BigQuery table a profile binds is probed with a
-  dry run; a table that is missing or inaccessible fails and names it. Column
-  names are not probed here — a mistyped column resolves to a real table and is
-  caught at deploy, when BigQuery rejects the generated graph.
+- **Unresolvable source** — a BigQuery table a profile binds is probed with a
+  dry run; a table that is missing or inaccessible fails and names it. The probe
+  is BigQuery-only: a Spanner source is not probed, so a bad Spanner table
+  surfaces at deploy rather than in validation. Column names are not probed
+  either — a mistyped column resolves to a real table and is caught at deploy,
+  when the graph backend rejects the generated graph.
 - **Availability summary** — push resolves the dependency graph and prints, per
   profile, how many entities, metrics, and relationships the binding leaves
   unavailable. `kcmd profiles` lists each one with the unbound field that stops
