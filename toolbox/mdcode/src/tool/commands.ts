@@ -871,10 +871,11 @@ const OWL_EXTENSIONS = /\.owl\.ttl$|\.ttl$|\.owl$/i;
 
 // Handles `kcmd owl <action> <file>`. The only action is `import`: convert a
 // Turtle OWL ontology into an OSI model document that then rides the normal
-// `kcmd push` / `kcmd pull`. The converted model is logical only (see the OWL
-// converter): `kcmd push --target kc` publishes it to Knowledge Catalog as-is,
-// while a graph deploy needs its sources / join columns bound and a deployment
-// target added first. Returns a process exit code.
+// `kcmd push` / `kcmd pull`. The converted model is purely LOGICAL (see the OWL
+// converter): `kcmd push --target kc` publishes it as-is; a BigQuery or Spanner
+// Graph deploy needs each relationship's join columns added to the model (a
+// logical fact the model owns) plus a binding profile (sources, field columns)
+// and a deployment target. Returns a process exit code.
 export async function owl(
     action: string, file: string, options: OwlImportOptions): Promise<number> {
   if (action !== 'import') {
@@ -951,10 +952,11 @@ export async function owl(
 
   console.log(`wrote ${writtenPath}`);
   console.log(
-      `note: this is a logical model -- entities, fields, and relationships, with no\n` +
-      `      physical bindings. \`kcmd push --target kc\` publishes it to Knowledge Catalog\n` +
-      `      as-is. To deploy a graph, bind each entity's source table and add a\n` +
-      `      deployment target first.`);
+      `note: this is a LOGICAL model (no physical binding).\n` +
+      `      \`kcmd push --target kc\` publishes it to Knowledge Catalog as-is.\n` +
+      `      A BigQuery or Spanner Graph deploy needs each relationship's join\n` +
+      `      columns added to the model, plus a binding profile (sources, field\n` +
+      `      columns) and a deployment target.`);
   return 0;
 }
 

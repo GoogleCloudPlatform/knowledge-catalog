@@ -5,16 +5,18 @@
 // that then rides the normal kcmd push/pull. The guarantees pinned here mirror
 // the user-guide section "Importing an OWL ontology":
 //   1. the sales example produces exactly the documented OSI (golden), and
-//   2. that OSI loads through the OSI loader (the placeholder sources satisfy
-//      the schema, so the document is well-formed -- loadable, and pushable to
-//      Knowledge Catalog as-is via `kcmd push --target kc`; a graph deploy needs
-//      its sources bound and a deployment target set first), and
+//   2. that OSI loads as a purely LOGICAL model (no sources, no field
+//      expressions, no relationship join columns): it loads under
+//      bindingOptional and `kcmd push --target kc` publishes it as-is, while
+//      the strict loader (a graph push) rejects it until a binding profile adds
+//      sources/columns and a deployment target, and
 //   3. each mapped construct behaves as documented.
 // The scope is exactly the user guide; richer OWL is out of scope by design.
 
 import {describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as yaml from 'yaml';
 
 import {convertOwlToOsi} from '../../../src/libts/semantic/converters/owl/convert';
 import {googleOntologyExtension} from '../../../src/libts/semantic/converters/owl/to_ir';
@@ -27,10 +29,17 @@ function readFixture(name: string): string {
   return fs.readFileSync(path.join(FIXTURES, name), 'utf8');
 }
 
+// Loads an OSI document as the logical model an OWL import produces: no sources
+// or field expressions, so bindingOptional is required (the strict loader would
+// reject it -- pinned by 'the OWL import is a purely logical model' below).
+function load(yaml: string) {
+  return loadModels(yaml, {bindingOptional: true});
+}
+
 // Converts an inline ontology and loads the result, the common path for the
 // focused rule tests below.
 function loadOwl(ttl: string) {
-  return loadModels(convertOwlToOsi(ttl, 'x').yaml).models[0];
+  return load(convertOwlToOsi(ttl, 'x').yaml).models[0];
 }
 
 // The carried OWL facts on an IR object: the parsed payload of its single
@@ -73,10 +82,10 @@ describe('sales ontology matches the user-guide CUJ', () => {
 
   test('the generated OSI loads and carries the guide highlights', () => {
     const {yaml} = convertOwlToOsi(ttl, 'sales');
-    // loadModels throws on a schema violation; a clean return proves the model
-    // is schema-valid and loadable -- not that it is pushable, since an unbound
-    // model still fails push validation until its sources are bound.
-    const model = loadModels(yaml).models[0];
+    // load() throws on a schema violation; a clean return proves the logical
+    // model is schema-valid and loadable (under bindingOptional). It is not yet
+    // graph-pushable -- a binding profile must add sources/columns first.
+    const model = load(yaml).models[0];
     expect(model.name).toBe('sales');
     expect(model.entities.map(e => e.name)).toEqual(['Customer', 'Order']);
 
@@ -95,11 +104,51 @@ describe('sales ontology matches the user-guide CUJ', () => {
     expect(customer.keys).toEqual(['customerId']);
     expect(customer.uniqueKeys).toEqual([['email']]);
 
-    // The edge's destination binds to Customer's key; only the source FK stays
-    // a placeholder.
+    // The edge is logical: direction only, no join columns (added to the model
+    // before a graph deploy).
     const placedBy = model.relationships.find(r => r.name === 'placedBy')!;
-    expect(placedBy.destination.columns).toEqual(['customerId']);
-    expect(placedBy.source.columns).toEqual(['TODO_BIND']);
+    expect(placedBy.source.entity).toBe('Order');
+    expect(placedBy.destination.entity).toBe('Customer');
+    expect(placedBy.destination.columns).toEqual([]);
+    expect(placedBy.source.columns).toEqual([]);
+  });
+});
+
+
+describe('the OWL import is a purely logical model', () => {
+  const ttl = readFixture('sales.owl.ttl');
+
+  // The emitted document carries no physical binding at all: no dataset
+  // `source`, no field `expression`, and no relationship `from_columns` /
+  // `to_columns`. Asserted structurally on the parsed document (not a substring
+  // scan, which would false-positive on those words inside a description) so the
+  // guarantee holds regardless of formatting. Sources and expressions come from
+  // a binding profile later; join columns are added to the model; an ontology
+  // has none of the three.
+  test('the emitted document has no source, expression, or join columns', () => {
+    const {yaml: text} = convertOwlToOsi(ttl, 'sales');
+    const doc = yaml.parse(text);
+    for (const model of doc.semantic_model ?? []) {
+      for (const ds of model.datasets ?? []) {
+        expect(ds).not.toHaveProperty('source');
+        for (const f of ds.fields ?? []) {
+          expect(f).not.toHaveProperty('expression');
+        }
+      }
+      for (const rel of model.relationships ?? []) {
+        expect(rel).not.toHaveProperty('from_columns');
+        expect(rel).not.toHaveProperty('to_columns');
+      }
+    }
+  });
+
+  // The counterpart to the "loads under bindingOptional" test: the STRICT
+  // loader (what a BigQuery/Spanner graph push uses) rejects the same document,
+  // because a graph cannot be generated without sources/expressions. This is
+  // what makes it a logical model rather than a half-bound one.
+  test('the strict loader rejects it (no bindings)', () => {
+    const {yaml} = convertOwlToOsi(ttl, 'sales');
+    expect(() => loadModels(yaml)).toThrow();
   });
 });
 
@@ -126,7 +175,7 @@ describe('sales-advanced is the user-guide unified advanced example', () => {
 
   test(
       'carries the guide highlights: extends, carriage, both ref forms', () => {
-        const model = loadModels(convertOwlToOsi(ttl, 'sales').yaml).models[0];
+        const model = load(convertOwlToOsi(ttl, 'sales').yaml).models[0];
         const byName = Object.fromEntries(model.entities.map(e => [e.name, e]));
 
         // Class hierarchy: Customer extends Person, own fields only (Person's
@@ -185,7 +234,7 @@ describe('org ontology exercises datatypes, keys, and binding', () => {
   });
 
   test('the generated OSI loads and covers the mapping', () => {
-    const model = loadModels(convertOwlToOsi(ttl, 'org').yaml).models[0];
+    const model = load(convertOwlToOsi(ttl, 'org').yaml).models[0];
     expect(model.entities.map(e => e.name)).toEqual([
       'Employee', 'Department', 'Project'
     ]);
@@ -232,20 +281,16 @@ describe('org ontology exercises datatypes, keys, and binding', () => {
     expect(isTimeDimension(employee.fields.find(f => f.name === 'salary')!))
         .toBe(false);
 
-    // Edges bind their destination columns to the destination's key: single,
-    // self-referential, and composite (two columns, two source placeholders).
+    // Edges are logical: direction only, no join columns -- including the
+    // self-referential reportsTo. A binding profile fills the columns later.
     const byName =
         Object.fromEntries(model.relationships.map(r => [r.name, r]));
-    expect(byName['worksIn'].destination.columns).toEqual(['deptCode']);
+    expect(byName['worksIn'].destination.columns).toEqual([]);
     expect(byName['reportsTo'].source.entity).toBe('Employee');
     expect(byName['reportsTo'].destination.entity).toBe('Employee');
-    expect(byName['reportsTo'].destination.columns).toEqual(['employeeId']);
-    expect(byName['worksOn'].destination.columns).toEqual([
-      'portfolio', 'projectNo'
-    ]);
-    expect(byName['worksOn'].source.columns).toEqual([
-      'TODO_BIND', 'TODO_BIND'
-    ]);
+    expect(byName['reportsTo'].destination.columns).toEqual([]);
+    expect(byName['worksOn'].source.columns).toEqual([]);
+    expect(byName['worksOn'].destination.columns).toEqual([]);
   });
 });
 
@@ -266,7 +311,7 @@ describe('class hierarchies map rdfs:subClassOf to entity extends', () => {
         // throw or drop it; a clean reload with the parents present proves the
         // round trip.
         const {yaml} = convertOwlToOsi(ttl, 'hierarchy');
-        const model = loadModels(yaml).models[0];
+        const model = load(yaml).models[0];
         const byName = Object.fromEntries(model.entities.map(e => [e.name, e]));
         // Single-parent subclass.
         expect(byName['Customer'].extends).toEqual(['Person']);
@@ -282,7 +327,7 @@ describe('class hierarchies map rdfs:subClassOf to entity extends', () => {
     // This cut only RECORDS the hierarchy; it does not resolve it. A subclass
     // keeps exactly its own fields -- Person's fullName does NOT appear on
     // Customer. Resolving inherited fields is a follow-on.
-    const model = loadModels(convertOwlToOsi(ttl, 'hierarchy').yaml).models[0];
+    const model = load(convertOwlToOsi(ttl, 'hierarchy').yaml).models[0];
     const customer = model.entities.find(e => e.name === 'Customer')!;
     expect(customer.fields.map(f => f.name)).toEqual(['loyaltyTier']);
     const manager = model.entities.find(e => e.name === 'Manager')!;
@@ -298,8 +343,7 @@ describe('class hierarchies map rdfs:subClassOf to entity extends', () => {
         // warning, nothing lost.
         const {warnings} = convertOwlToOsi(ttl, 'hierarchy');
         expect(warnings).toEqual([]);
-        const model =
-            loadModels(convertOwlToOsi(ttl, 'hierarchy').yaml).models[0];
+        const model = load(convertOwlToOsi(ttl, 'hierarchy').yaml).models[0];
 
         // The field survives AND carries its superproperty as a fact.
         const employee = model.entities.find(e => e.name === 'Employee')!;
@@ -334,7 +378,7 @@ describe('class hierarchies map rdfs:subClassOf to entity extends', () => {
         .toBe(true);
     // Still recorded as declared -- the warning does not drop the link.
     const customer =
-        loadModels(yaml).models[0].entities.find(e => e.name === 'Customer')!;
+        load(yaml).models[0].entities.find(e => e.name === 'Customer')!;
     expect(customer.extends).toEqual(['Persn']);
   });
 
@@ -353,7 +397,7 @@ describe('class hierarchies map rdfs:subClassOf to entity extends', () => {
         const {yaml, warnings} = convertOwlToOsi(ttl, 'top');
         expect(warnings).toEqual([]);
         const person =
-            loadModels(yaml).models[0].entities.find(e => e.name === 'Person')!;
+            load(yaml).models[0].entities.find(e => e.name === 'Person')!;
         expect(person.extends).toBeUndefined();
       });
 });
@@ -465,31 +509,37 @@ describe('keys and edge binding', () => {
     expect(person.uniqueKeys).toBeUndefined();
   });
 
-  // An edge into a class with a key binds its destination columns to that
-  // key; the source foreign-key columns stay placeholders (one per key
-  // column).
-  test('an edge binds its destination to the destination key', () => {
+  // An edge is a logical edge regardless of whether the destination declares a
+  // key: neither end carries join columns (a binding profile fills them before
+  // a graph deploy). The destination's own key is unaffected -- it is entity
+  // grain, not a binding -- so a keyed destination still exposes its
+  // primary_key.
+  test('an edge carries no join columns, keyed destination or not', () => {
     const ttl = `${PREFIXES}
       ex:Order a owl:Class .
       ex:Customer a owl:Class ; owl:hasKey ( ex:cid ) .
       ex:cid a owl:DatatypeProperty ; rdfs:domain ex:Customer ; rdfs:range xsd:string .
       ex:placedBy a owl:ObjectProperty ; rdfs:domain ex:Order ; rdfs:range ex:Customer .
     `;
-    const edge = loadOwl(ttl).relationships[0];
-    expect(edge.destination.columns).toEqual(['cid']);
-    expect(edge.source.columns).toEqual(['TODO_BIND']);
+    const model = loadOwl(ttl);
+    const edge = model.relationships[0];
+    expect(edge.source.columns).toEqual([]);
+    expect(edge.destination.columns).toEqual([]);
+    // The keyed destination keeps its grain (owl:hasKey -> primary_key).
+    const customer = model.entities.find(e => e.name === 'Customer')!;
+    expect(customer.keys).toEqual(['cid']);
   });
 
-  // Without a key on the destination, both ends stay fully unbound.
-  test('an edge into a keyless class is fully unbound', () => {
+  // A keyless destination is no different: the edge is still column-less.
+  test('an edge into a keyless class is also column-less', () => {
     const ttl = `${PREFIXES}
       ex:Order a owl:Class .
       ex:Customer a owl:Class .
       ex:placedBy a owl:ObjectProperty ; rdfs:domain ex:Order ; rdfs:range ex:Customer .
     `;
     const edge = loadOwl(ttl).relationships[0];
-    expect(edge.destination.columns).toEqual(['TODO_BIND']);
-    expect(edge.source.columns).toEqual(['TODO_BIND']);
+    expect(edge.destination.columns).toEqual([]);
+    expect(edge.source.columns).toEqual([]);
   });
 
   // A relationship maps ONE source to ONE destination. An object property with
@@ -754,7 +804,7 @@ describe('mapping table rules (labels, comments, skips)', () => {
     expect(warnings).toHaveLength(2);
     expect(warnings.some(w => w.includes('orphan'))).toBe(true);
     expect(warnings.some(w => w.includes('danglingEdge'))).toBe(true);
-    const model = loadModels(yaml).models[0];
+    const model = load(yaml).models[0];
     expect(model.entities[0].fields).toHaveLength(0);
     expect(model.relationships).toHaveLength(0);
   });
@@ -818,9 +868,7 @@ describe('mapping table rules (labels, comments, skips)', () => {
     const {yaml, warnings} = convertOwlToOsi(ttl, 'x');
     expect(warnings.some(w => w.includes('stray') && w.includes('NotAClass')))
         .toBe(true);
-    expect(
-        loadModels(yaml).models[0].entities.find(
-                                               e => e.name === 'Thing')!.fields)
+    expect(load(yaml).models[0].entities.find(e => e.name === 'Thing')!.fields)
         .toHaveLength(0);
   });
 
@@ -841,7 +889,7 @@ describe('mapping table rules (labels, comments, skips)', () => {
     expect(warnings.some(
                w => w.includes('Customer') && w.includes('more than once')))
         .toBe(true);
-    const model = loadModels(yaml).models[0];
+    const model = load(yaml).models[0];
     expect(model.entities.map(e => e.name)).toEqual(['Customer']);
     expect(model.entities[0].description).toBe('from a');
   });
@@ -909,8 +957,8 @@ describe('OWL constructs carried as custom extensions', () => {
         expect(stats).toEqual(
             {classes: 3, datatypeProperties: 3, objectProperties: 3});
         // And the result stays schema-valid and loadable with the blocks
-        // attached (loadable, not yet pushable -- sources are still unbound).
-        expect(() => loadModels(yaml)).not.toThrow();
+        // attached (a logical model, loaded under bindingOptional).
+        expect(() => load(yaml)).not.toThrow();
       });
 
   test('owl:inverseOf on an object property -> relationship', () => {
@@ -935,7 +983,7 @@ describe('OWL constructs carried as custom extensions', () => {
     const {yaml, warnings} = convertOwlToOsi(ttl, 'x');
     expect(warnings.some(w => w.includes('inverseOf') && w.includes('inv1')))
         .toBe(true);
-    const rel = loadModels(yaml).models[0].relationships[0];
+    const rel = load(yaml).models[0].relationships[0];
     expect(ontologyTerms(rel.customExtensions)).toEqual({
       'owl:inverseOf': 'inv1'
     });
@@ -951,7 +999,7 @@ describe('OWL constructs carried as custom extensions', () => {
           owl:inverseOf ex:inv ; owl:inverseOf ex:inv .`;
     const {yaml, warnings} = convertOwlToOsi(ttl, 'x');
     expect(warnings.some(w => w.includes('inverseOf'))).toBe(false);
-    const rel = loadModels(yaml).models[0].relationships[0];
+    const rel = load(yaml).models[0].relationships[0];
     expect(ontologyTerms(rel.customExtensions)).toEqual({
       'owl:inverseOf': 'inv'
     });
@@ -1038,7 +1086,7 @@ describe('OWL constructs carried as custom extensions', () => {
       ex:Person a owl:Class ; owl:equivalentClass ex:Human .
       ex:Human a owl:Class .`;
     const yaml = convertOwlToOsi(ttl, 'x').yaml;
-    const reloaded = loadModels(yaml).models[0];
+    const reloaded = load(yaml).models[0];
     const person = reloaded.entities.find(e => e.name === 'Person')!;
     expect(ontologyTerms(person.customExtensions)).toEqual({
       'owl:equivalentClass': ['Human']

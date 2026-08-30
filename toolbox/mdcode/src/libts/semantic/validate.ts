@@ -43,9 +43,10 @@ export function validatePushRequirements(
     // BigQuery Graph OR Spanner Graph URI (we do not support zero or several
     // graphs per model). The target's host selects which deploy leg runs.
     //
-    // A KC-only push (targetOptional) deploys no graph, so its deployment target
-    // is irrelevant: skip the check entirely. Such a push may carry no target (a
-    // logical model), one, or even both backends (whose KC aspect records both)
+    // A KC-only push (targetOptional) deploys no graph, so its deployment
+    // target is irrelevant: skip the check entirely. Such a push may carry no
+    // target (a logical model), one, or even both backends (whose KC aspect
+    // records both)
     // -- none of that affects the Knowledge Catalog write.
     if (!opts.targetOptional) {
       if (deployInfo.uris.length !== 1) {
@@ -81,6 +82,30 @@ export function validatePushRequirements(
                   document}) targets a BigQuery graph but does not resolve to a ` +
               `single entity; set its attach entity or scope its expression to ` +
               `one entity.`);
+        }
+      }
+    }
+
+    // A model that targets a graph (BigQuery OR Spanner) must have every
+    // relationship's join columns bound. The loader accepts a column-less
+    // relationship so a purely logical model (an OWL import) loads and pushes
+    // to Knowledge Catalog, but a graph deploy would emit an invalid
+    // `DESTINATION KEY () REFERENCES Dest ()` for such an edge -- so reject it
+    // here rather than generate broken DDL. A KC-only push declares no graph
+    // target (both arrays empty), so this is skipped.
+    if (deployInfo.bigQuery.length + deployInfo.spanner.length > 0) {
+      for (const rel of model.relationships ?? []) {
+        // An M:N edge binds through its junction table (association), so its
+        // direct source/destination columns are empty by design -- bigquery.ts
+        // renders it from `rel.association`. Only a plain FK edge needs direct
+        // join columns.
+        if (rel.association) continue;
+        if (!rel.source.columns.length || !rel.destination.columns.length) {
+          errors.push(
+              `relationship '${rel.name}' in model '${model.name}' (${
+                  document}) targets a graph but has no join columns; add its ` +
+              `from_columns and to_columns to the relationship in the model ` +
+              `before a BigQuery or Spanner Graph deploy.`);
         }
       }
     }

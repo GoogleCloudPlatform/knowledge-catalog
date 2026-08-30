@@ -244,10 +244,11 @@ kcmd owl import /tmp/sales.ttl --out /tmp/sales_osi.yaml
 ```
 converted 3 classes, 2 object properties, 7 datatype properties
 wrote /tmp/sales_osi.yaml
-note: this is a logical model -- entities, fields, and relationships, with no
-      physical bindings. `kcmd push --target kc` publishes it to Knowledge Catalog
-      as-is. To deploy a graph, bind each entity's source table and add a
-      deployment target first.
+note: this is a LOGICAL model (no physical binding).
+      `kcmd push --target kc` publishes it to Knowledge Catalog as-is.
+      A BigQuery or Spanner Graph deploy needs each relationship's join
+      columns added to the model, plus a binding profile (sources, field
+      columns) and a deployment target.
 ```
 
 Look at what it produced:
@@ -263,101 +264,68 @@ semantic_model:
     description: Imported from OWL ontology http://example.com/sales#
     datasets:
       - name: orders
-        source: unbound:orders
         primary_key:
           - o_orderkey
         description: A customer order
         fields:
           - name: o_orderkey
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: o_orderkey
             datatype: Integer
           - name: o_custkey
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: o_custkey
             datatype: Integer
           - name: net_amount
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: net_amount
             datatype: Decimal
       - name: customer
-        source: unbound:customer
         primary_key:
           - c_custkey
         description: A customer who places orders
         fields:
           - name: c_custkey
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: c_custkey
             datatype: Integer
           - name: c_name
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: c_name
             datatype: String
       - name: lineitem
-        source: unbound:lineitem
         primary_key:
           - l_linekey
         description: A line on an order
         fields:
           - name: l_linekey
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: l_linekey
             datatype: Integer
           - name: l_orderkey
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: l_orderkey
             datatype: Integer
     relationships:
       - name: orders_to_customer
         from: orders
         to: customer
-        from_columns:
-          - TODO_BIND
-        to_columns:
-          - c_custkey
       - name: lineitem_to_orders
         from: lineitem
         to: orders
-        from_columns:
-          - TODO_BIND
-        to_columns:
-          - o_orderkey
 ```
 
-This is the same logical model you wrote by hand: the same three entities, the
-same fields and datatypes, and the same two relationships. (The importer writes
-them under `datasets:`, the original spelling of the `entities:` key this codelab
-uses — the two are interchangeable.) Two things the ontology does not carry, both
-of which you supply when you bind the model to a query engine:
+This is the hand-authored `sales` model above, reproduced from the ontology: the
+same three entities, the same fields and datatypes, the same primary keys, and
+the same two relationships. (The importer writes entities under `datasets:`, the
+original spelling of the `entities:` key this codelab uses — the two are
+interchangeable.)
 
-- **The `revenue` metric.** An ontology describes structure, so OWL has no metric
-  concept; the imported model has none.
-- **Physical bindings.** Each entity reads from a placeholder `unbound:*` source,
-  and each relationship's foreign-key column comes through as `TODO_BIND`. The
-  importer does fill each relationship's destination columns from the target
-  class's `owl:hasKey`, so `orders_to_customer` already points at `c_custkey` and
-  `lineitem_to_orders` at `o_orderkey`; only the source-side foreign keys stay
-  open.
+Two things from the hand-authored model are missing, and both are inherent —
+an ontology has no way to state either:
 
-Supplying the metric, the real source tables, and the join columns is exactly
-what a binding profile adds to the model.
-For the full OWL mapping — class hierarchies, unique keys, and the constructs
-carried as custom extensions — see [Importing an OWL ontology](owl-import.md).
+- **The `revenue` metric.** OWL describes structure — classes, properties,
+  relationships — not aggregations, so the importer emits no metrics. Add the
+  metric to the model by hand.
+- **The relationship join columns.** An object property states a direction
+  (`orders` → `customer`), not which foreign-key column joins to which key, so
+  each edge arrives as a pure logical edge — `from`/`to` only. Add the
+  `from_columns`/`to_columns` to each relationship by hand, as in the
+  hand-authored model above.
+
+Both gaps are logical facts you fill in on the model itself. The *physical*
+facts — the table each entity reads, the column each field maps to — stay out of
+the logical model entirely; a [binding profile](profiles.md) supplies them at
+deploy time (step 3), which is why neither model carries a `source`. `kcmd push
+--target kc` publishes the logical model to Knowledge Catalog as-is. For the full
+OWL mapping — class hierarchies, unique keys, and the constructs carried as
+custom extensions — see [Importing an OWL ontology](owl-import.md).
 
 The rest of this codelab uses the hand-authored `sales` model above.
 
