@@ -14,63 +14,59 @@ import {describe, expect, test} from 'bun:test';
 import {declaresGraphTarget, planPush} from '../../../src/tool/commands';
 
 describe('planPush', () => {
-  test('a BigQuery model with KC on deploys BigQuery then Knowledge Catalog',
-       () => {
-         expect(planPush({
-           hasBigQuery: true,
-           hasSpanner: false,
-           hasUntargeted: false,
-           kcEnabled: true,
-         })).toEqual({destinations: ['bigquery', 'kc']});
-       });
+  // The graph and Knowledge Catalog legs are two symmetric toggles, both on by
+  // default. `on` is the common case; individual tests override a field.
+  const on = {
+    hasBigQuery: false,
+    hasSpanner: false,
+    hasUntargeted: false,
+    graphEnabled: true,
+    kcEnabled: true,
+  };
 
-  test('a Spanner model with KC on deploys Spanner then Knowledge Catalog',
-       () => {
-         expect(planPush({
-           hasBigQuery: false,
-           hasSpanner: true,
-           hasUntargeted: false,
-           kcEnabled: true,
-         })).toEqual({destinations: ['spanner', 'kc']});
-       });
+  test('a BigQuery model deploys BigQuery then Knowledge Catalog', () => {
+    expect(planPush({...on, hasBigQuery: true}))
+        .toEqual({destinations: ['bigquery', 'kc']});
+  });
 
-  test('a logical model (no graph target) with KC on deploys only Knowledge Catalog',
-       () => {
-         expect(planPush({
-           hasBigQuery: false,
-           hasSpanner: false,
-           hasUntargeted: true,
-           kcEnabled: true,
-         })).toEqual({destinations: ['kc']});
-       });
+  test('a Spanner model deploys Spanner then Knowledge Catalog', () => {
+    expect(planPush({...on, hasSpanner: true}))
+        .toEqual({destinations: ['spanner', 'kc']});
+  });
+
+  test('a logical model (no graph target) deploys only Knowledge Catalog', () => {
+    expect(planPush({...on, hasUntargeted: true}))
+        .toEqual({destinations: ['kc']});
+  });
 
   test('the legs run in canonical order: BigQuery, then Spanner, then KC', () => {
     // Fail-fast runs BigQuery first regardless of how models are declared.
-    expect(planPush({
-      hasBigQuery: true,
-      hasSpanner: true,
-      hasUntargeted: false,
-      kcEnabled: true,
-    })).toEqual({destinations: ['bigquery', 'spanner', 'kc']});
+    expect(planPush({...on, hasBigQuery: true, hasSpanner: true}))
+        .toEqual({destinations: ['bigquery', 'spanner', 'kc']});
   });
 
   test('--no-kc deploys only the graph backend the model names', () => {
-    expect(planPush({
-      hasBigQuery: true,
-      hasSpanner: false,
-      hasUntargeted: false,
-      kcEnabled: false,
-    })).toEqual({destinations: ['bigquery']});
+    expect(planPush({...on, hasBigQuery: true, kcEnabled: false}))
+        .toEqual({destinations: ['bigquery']});
+  });
+
+  test('--no-graph publishes only to Knowledge Catalog, leaving the graph alone',
+       () => {
+         // The bound model still has a graph target, but --no-graph skips the
+         // graph leg -- a catalog-only push of the same model.
+         expect(planPush({...on, hasBigQuery: true, graphEnabled: false}))
+             .toEqual({destinations: ['kc']});
+       });
+
+  test('--no-graph and --no-kc together are an error: nothing to deploy', () => {
+    const plan =
+        planPush({...on, hasBigQuery: true, graphEnabled: false, kcEnabled: false});
+    expect('error' in plan).toBe(true);
   });
 
   test('--no-kc on a logical model (no graph target) is an error: nowhere to go',
        () => {
-         const plan = planPush({
-           hasBigQuery: false,
-           hasSpanner: false,
-           hasUntargeted: true,
-           kcEnabled: false,
-         });
+         const plan = planPush({...on, hasUntargeted: true, kcEnabled: false});
          expect('error' in plan).toBe(true);
        });
 
@@ -78,12 +74,8 @@ describe('planPush', () => {
        () => {
          // The untargeted model can only reach Knowledge Catalog, so dropping it
          // fails the whole push rather than silently skipping that model.
-         const plan = planPush({
-           hasBigQuery: true,
-           hasSpanner: false,
-           hasUntargeted: true,
-           kcEnabled: false,
-         });
+         const plan =
+             planPush({...on, hasBigQuery: true, hasUntargeted: true, kcEnabled: false});
          expect('error' in plan).toBe(true);
        });
 });

@@ -55,11 +55,17 @@ export interface PushOptions {
   // Unlike `force` above, this authorizes a destructive delete rather
   // than overriding a conflict.
   forceRemove?: boolean;
+  // Whether to deploy the graph. On by default; `--no-graph` sets it false to
+  // publish only the logical model to Knowledge Catalog, leaving the deployed
+  // graph untouched. Orthogonal to which backend the graph deploys to (that
+  // comes from the model's deployment target). Ignored for non-semantic-model
+  // scopes.
+  graph?: boolean;
   // Whether to push the Knowledge Catalog metadata alongside the graph. On by
   // default; `--no-kc` sets it false to deploy only the graph backend each
-  // model's deployment target names. A logical model that declares no graph
-  // target deploys to Knowledge Catalog alone, so `--no-kc` leaves it nowhere
-  // to go. Ignored for non-semantic-model scopes.
+  // model's deployment target names. The two toggles are symmetric: `--no-graph`
+  // gives a catalog-only push, `--no-kc` a graph-only push, and both together are
+  // an error (nothing to deploy). Ignored for non-semantic-model scopes.
   kc?: boolean;
   // Print each pushed destination's generated artifact in that destination's
   // native format (BigQuery/Spanner Graph -> SQL DDL, Knowledge Catalog -> the
@@ -105,8 +111,11 @@ export type PushDestination = 'bigquery'|'spanner'|'kc';
 // it declares no graph target, and --no-kc removed its only other destination.
 export function planPush(facts: {
   hasBigQuery: boolean; hasSpanner: boolean; hasUntargeted: boolean;
-  kcEnabled: boolean;
+  graphEnabled: boolean; kcEnabled: boolean;
 }): {destinations: PushDestination[]}|{error: string} {
+  if (!facts.graphEnabled && !facts.kcEnabled) {
+    return {error: '--no-graph and --no-kc together leave nothing to deploy.'};
+  }
   if (facts.hasUntargeted && !facts.kcEnabled) {
     return {
       error: 'a model declares no deployment target, so it can only deploy to ' +
@@ -115,8 +124,8 @@ export function planPush(facts: {
     };
   }
   const destinations: PushDestination[] = [];
-  if (facts.hasBigQuery) destinations.push('bigquery');
-  if (facts.hasSpanner) destinations.push('spanner');
+  if (facts.graphEnabled && facts.hasBigQuery) destinations.push('bigquery');
+  if (facts.graphEnabled && facts.hasSpanner) destinations.push('spanner');
   if (facts.kcEnabled) destinations.push('kc');
   return {destinations};
 }
@@ -308,10 +317,17 @@ export async function push(options: PushOptions): Promise<number> {
     const layout = snapshot.layout as SemanticModelLayout;
     const source = snapshot.manifest.source as SemanticModelSource;
 
-    // Knowledge Catalog is pushed by default; --no-kc (cac sets options.kc to
-    // false) deploys only the graph backend each model's deployment target
-    // names.
+    // Two symmetric destination toggles, both on by default (cac sets the flag
+    // to false when passed): --no-graph publishes only to Knowledge Catalog,
+    // --no-kc deploys only the graph. Neither picks the graph backend -- that
+    // still comes from each model's deployment target.
+    const graphEnabled = options.graph !== false;
     const kcEnabled = options.kc !== false;
+    if (!graphEnabled && !kcEnabled) {
+      console.error(
+          'Error: --no-graph and --no-kc together leave nothing to deploy.');
+      return 1;
+    }
 
     // Load + validate every model ONCE, then fan the parsed models out to each
     // destination leg. Both legs consume the same IR, so a push over multiple
@@ -356,18 +372,19 @@ export async function push(options: PushOptions): Promise<number> {
       docs = merged;
     }
 
-    // A push whose models all declare no graph deployment target (a purely
-    // logical model, or one whose profile binds nothing) governs the logical
-    // model only: it deploys no graph, so it needs neither physical bindings nor
-    // a target and skips pruning. Detected from the profile-merged documents so
-    // the loader and validator relax exactly as they must for a Knowledge-
-    // Catalog-only push. A push that names any graph keeps requiring bindings and
-    // a target.
+    // Whether this push actually deploys a graph: some model must declare a
+    // deployment target (detected from the profile-merged documents) AND the
+    // graph leg must be enabled (--no-graph turns it off). When it does not --
+    // a purely logical model, or a catalog-only `--no-graph` push -- the push
+    // governs the logical model only: it needs neither physical bindings nor a
+    // target and skips pruning, so the loader and validator relax accordingly
+    // and Knowledge Catalog publishes the whole model.
     const graphless = docs.every((d) => !declaresGraphTarget(d.text));
+    const deploysGraph = graphEnabled && !graphless;
 
     const loaded = loadSemanticModels(docs, {
       defaultProject: source.project ?? ctx.project,
-      bindingOptional: graphless,
+      bindingOptional: !deploysGraph,
     });
     if (loaded.error) {
       console.error('Error:', loaded.error);
@@ -402,11 +419,11 @@ export async function push(options: PushOptions): Promise<number> {
     // the profile binds. Availability propagates up the dependency graph. Runs
     // for every profile, including 'default' (a no-op when nothing is unbound).
     //
-    // A graphless push governs the whole logical model -- meaning, not a
-    // physical binding -- so pruning would wrongly drop every unbound
+    // A push that deploys no graph governs the whole logical model -- meaning,
+    // not a physical binding -- so pruning would wrongly drop every unbound
     // entity/metric the author declared. Skip it: Knowledge Catalog publishes
     // the full model.
-    if (!graphless) {
+    if (deploysGraph) {
       const availability: AvailabilityReport[] = [];
       models = models.map(({document, model}) => {
         const {model: pruned, report} = pruneUnavailable(model, profileName);
@@ -437,7 +454,7 @@ export async function push(options: PushOptions): Promise<number> {
     // This is also the --validate-only path, so a dry run reports the same
     // failures.
     const validationErrors =
-        validatePushRequirements(models, {targetOptional: graphless});
+        validatePushRequirements(models, {targetOptional: !deploysGraph});
     if (validationErrors.length) {
       for (const e of validationErrors) {
         console.error(`Error: ${e}`);
@@ -461,6 +478,7 @@ export async function push(options: PushOptions): Promise<number> {
       hasSpanner: spannerModels.length > 0,
       hasUntargeted: models.some(
           (m) => !hasTargetType(m, 'bigquery') && !hasTargetType(m, 'spanner')),
+      graphEnabled,
       kcEnabled,
     });
     if ('error' in plan) {
@@ -470,10 +488,11 @@ export async function push(options: PushOptions): Promise<number> {
 
     // Live pre-flight, before any destination runs: every BigQuery-targeting
     // model's source table must be reachable, so a push fails fast when the
-    // model could not deploy. Runs only when the BigQuery leg will run (some
-    // model targets BigQuery Graph); a Spanner model's sources live in Spanner
-    // and are not checked here. Runs for --validate-only too.
-    if (bqModels.length) {
+    // model could not deploy. Runs only when the BigQuery leg will run (the
+    // graph is enabled and some model targets BigQuery Graph); a catalog-only
+    // `--no-graph` push deploys no graph, so it skips the probe, as does a
+    // Spanner model (its sources live in Spanner). Runs for --validate-only too.
+    if (graphEnabled && bqModels.length) {
       const accessErrors = await validateBigQueryDataSources(
           bqModels, new BigQueryClient(ctx), source.project ?? ctx.project);
       if (accessErrors.length) {
@@ -507,6 +526,7 @@ export async function push(options: PushOptions): Promise<number> {
   const semanticOnlyFlags: Array<[boolean, string]> = [
     [options.profile !== undefined, '--profile'],
     [!!options.transpile, '--transpile'],
+    [options.graph === false, '--no-graph'],
     [options.kc === false, '--no-kc'],
     [!!options.print, '--print'],
     [!!options.emitExpressions, '--emit-expressions'],

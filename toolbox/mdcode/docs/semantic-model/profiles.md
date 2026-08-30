@@ -295,6 +295,7 @@ picks its own backend. The two bindings answer different parts of the same model
 kcmd push --profile analytical            # merge the analytical bindings; deploy to their backend (BigQuery) + Knowledge Catalog
 kcmd push --profile operational           # merge the operational bindings; deploy to their backend (Spanner) + Knowledge Catalog
 kcmd push --profile analytical --no-kc    # deploy only the graph, skip Knowledge Catalog
+kcmd push --profile analytical --no-graph # publish only to Knowledge Catalog, leave the graph alone
 kcmd push                                 # uses default_profile from catalog.yaml
 kcmd profiles                             # list profiles, their resolved sources, and what each cannot answer
 ```
@@ -302,8 +303,10 @@ kcmd profiles                             # list profiles, their resolved source
 `--profile` chooses **which physical binding**, and the binding's
 `deployment_target` selects **which graph backend** the model deploys to
 (BigQuery Graph or Spanner Graph). You never name the backend on the command line
-— picking the profile is picking the backend. Knowledge Catalog is pushed
-alongside the graph by default; `--no-kc` deploys the graph alone.
+— picking the profile is picking the backend. The graph and Knowledge Catalog are
+two symmetric destinations, both pushed by default: `--no-kc` deploys the graph
+alone, `--no-graph` publishes to Knowledge Catalog alone, and both together are an
+error.
 
 Set the default so a bare `kcmd push` in CI does the right thing, in
 `catalog.yaml`:

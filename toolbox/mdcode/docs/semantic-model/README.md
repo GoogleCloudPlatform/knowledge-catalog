@@ -144,10 +144,14 @@ most common flags:
 ```bash
 kcmd push                      # deploy the graph backend + Knowledge Catalog
 kcmd push --no-kc              # deploy only the graph, skip Knowledge Catalog
+kcmd push --no-graph           # publish only to Knowledge Catalog, leave the graph alone
 kcmd push --profile analytical # merge a binding profile; its target picks the backend
 kcmd push --validate-only      # run all checks, write nothing
 kcmd push --print              # also print the generated DDL / entry plan
 ```
+
+The graph and Knowledge Catalog are two symmetric destinations, both on by
+default; `--no-graph` and `--no-kc` each turn one off.
 
 A logical model that declares no deployment target has no graph to deploy, so a
 bare `kcmd push` records it to Knowledge Catalog alone (and `--no-kc` on such a

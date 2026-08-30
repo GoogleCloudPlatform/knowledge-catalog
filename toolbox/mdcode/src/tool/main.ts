@@ -64,8 +64,11 @@ cli.command('push', 'Push catalog entries')
         'Emit SQL-expression fields not yet in the published Knowledge Catalog system-type templates (per-field schema semantics, metric expression); off by default, enable once the templates support them; semantic-model push only')
     .option('--validate-only', 'Only validate changes without applying')
     .option(
+        '--no-graph',
+        'Skip the graph deploy and publish only the logical model to Knowledge Catalog; the graph is deployed by default to the backend each model\'s deployment target names; semantic-model push only')
+    .option(
         '--no-kc',
-        'Skip the Knowledge Catalog metadata push; deploy only the graph backend each model\'s deployment target names (Knowledge Catalog is pushed by default); semantic-model push only')
+        'Skip the Knowledge Catalog metadata push and deploy only the graph; Knowledge Catalog is pushed by default; semantic-model push only')
     .option(
         '--print',
         'Print each pushed destination\'s generated artifact in its native format (BigQuery/Spanner Graph SQL DDL, Knowledge Catalog entry plan); semantic-model push only')
