@@ -440,7 +440,7 @@ Open the link, expand the `$DATASET` dataset in the Explorer, and click the
 `$GRAPH` property graph. Its schema renders as a visual graph of the nodes and
 the edges that connect them.
 
-### Query the semantic model
+### Core Semantic Model: Metrics
 
 Now ask the same question — revenue by customer — two ways.
 
@@ -504,6 +504,34 @@ query, so the correct answer is the default one.
 > **Tips.** Use `--nouse_cache` — `GRAPH_EXPAND` result caches are not
 > invalidated by graph edits. To see the exact output column names for a graph:
 > `DECLARE s STRING; CALL BQ.SHOW_GRAPH_EXPAND_SCHEMA("$PROJECT.$DATASET.$GRAPH", s); SELECT s;`
+
+### Core Semantic Model: GQL
+
+Metrics answer aggregate questions. To follow the relationships between entities,
+query the graph with graph pattern matching (GQL). This walks the
+`orders_to_customer` edge to count each customer's orders:
+
+```bash
+bq query --use_legacy_sql=false --nouse_cache '
+GRAPH `'"$PROJECT.$DATASET.$GRAPH"'`
+MATCH (o:orders)-[:orders_to_customer]->(c:customer)
+RETURN c.c_name AS customer, COUNT(o.o_orderkey) AS orders
+GROUP BY customer ORDER BY customer'
+```
+
+```
++----------+--------+
+| customer | orders |
++----------+--------+
+| Acme     |      2 |
+| Globex   |      1 |
++----------+--------+
+```
+
+This is the same GQL query you run against Spanner in step 4. The pattern, the
+model's property names, and the result are identical. Only the graph reference
+changes: BigQuery takes the fully qualified `$PROJECT.$DATASET.$GRAPH`, Spanner
+the bare `sales`.
 
 ---
 
@@ -693,11 +721,12 @@ kcmd push --profile operational --target spanner
 > profile changes nothing logical — bindings are not governed in Knowledge
 > Catalog. The single set of entries from step 2 already describes this graph too.
 
-### Query the semantic model
+### Core Semantic Model: GQL
 
-Query it with Spanner's Graph Query Language. The query names the model's
-properties (`c_name`, `o_orderkey`); the profile's column bindings are invisible
-to it:
+Query it with graph pattern matching. This is the same GQL query you ran on
+BigQuery in step 3, now against the bare `sales` graph. The query names the
+model's properties (`c_name`, `o_orderkey`); the profile's column bindings are
+invisible to it:
 
 ```bash
 gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
