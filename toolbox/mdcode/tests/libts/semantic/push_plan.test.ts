@@ -1,9 +1,10 @@
-// Tests the semantic-model push routing (src/tool/commands.ts): which
-// destination legs run, and how a model document's deployment target is
+// Tests the semantic-model push flag logic (src/tool/commands.ts): which flag
+// combinations are coherent, and how a model document's deployment target is
 // detected. The graph backend is NOT a command-line choice -- a model deploys
-// to whichever backend its deployment target names -- so these pin the two
-// pure decisions that drive dispatch: planPush (models + KC flag -> legs) and
-// declaresGraphTarget (does a document name a graph at all).
+// to whichever backend its deployment target names -- so these pin the two pure
+// decisions that gate a push: checkPushSelection (are the leg toggles and
+// binding-profile selection consistent?) and declaresGraphTarget (does a
+// document name a graph at all).
 //
 // The deploy legs themselves are covered end to end elsewhere
 // (deploy_bigquery.test.ts, deploy_spanner.test.ts,
@@ -11,74 +12,66 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import {declaresGraphTarget, planPush} from '../../../src/tool/commands';
+import {checkPushSelection, declaresGraphTarget} from '../../../src/tool/commands';
 
-describe('planPush', () => {
-  // The graph and Knowledge Catalog legs are two symmetric toggles, both on by
-  // default. `on` is the common case; individual tests override a field.
-  const on = {
-    hasBigQuery: false,
-    hasSpanner: false,
-    hasUntargeted: false,
+describe('checkPushSelection', () => {
+  // Both legs on, no binding-profile selection: the default `kcmd push`. Each
+  // test overrides the field it exercises.
+  const base = {
     graphEnabled: true,
     kcEnabled: true,
+    allProfiles: false,
+    namedProfile: false,
   };
 
-  test('a BigQuery model deploys BigQuery then Knowledge Catalog', () => {
-    expect(planPush({...on, hasBigQuery: true}))
-        .toEqual({destinations: ['bigquery', 'kc']});
+  test('the default push (both legs, default profile) is coherent', () => {
+    expect(checkPushSelection(base)).toBeNull();
   });
 
-  test('a Spanner model deploys Spanner then Knowledge Catalog', () => {
-    expect(planPush({...on, hasSpanner: true}))
-        .toEqual({destinations: ['spanner', 'kc']});
+  test('--no-kc (graph only) is coherent', () => {
+    expect(checkPushSelection({...base, kcEnabled: false})).toBeNull();
   });
 
-  test('a logical model (no graph target) deploys only Knowledge Catalog', () => {
-    expect(planPush({...on, hasUntargeted: true}))
-        .toEqual({destinations: ['kc']});
+  test('--no-graph (catalog only) is coherent', () => {
+    expect(checkPushSelection({...base, graphEnabled: false})).toBeNull();
   });
 
-  test('the legs run in canonical order: BigQuery, then Spanner, then KC', () => {
-    // Fail-fast runs BigQuery first regardless of how models are declared.
-    expect(planPush({...on, hasBigQuery: true, hasSpanner: true}))
-        .toEqual({destinations: ['bigquery', 'spanner', 'kc']});
+  test('--profile selects one binding profile', () => {
+    expect(checkPushSelection({...base, namedProfile: true})).toBeNull();
   });
 
-  test('--no-kc deploys only the graph backend the model names', () => {
-    expect(planPush({...on, hasBigQuery: true, kcEnabled: false}))
-        .toEqual({destinations: ['bigquery']});
+  test('--all-profiles fans out over every binding profile', () => {
+    expect(checkPushSelection({...base, allProfiles: true})).toBeNull();
   });
 
-  test('--no-graph publishes only to Knowledge Catalog, leaving the graph alone',
-       () => {
-         // The bound model still has a graph target, but --no-graph skips the
-         // graph leg -- a catalog-only push of the same model.
-         expect(planPush({...on, hasBigQuery: true, graphEnabled: false}))
-             .toEqual({destinations: ['kc']});
-       });
-
-  test('--no-graph and --no-kc together are an error: nothing to deploy', () => {
-    const plan =
-        planPush({...on, hasBigQuery: true, graphEnabled: false, kcEnabled: false});
-    expect('error' in plan).toBe(true);
+  test('--no-graph --no-kc is an error: nothing to deploy', () => {
+    const r = checkPushSelection({...base, graphEnabled: false, kcEnabled: false});
+    expect(r).not.toBeNull();
+    expect(r!.error).toContain('nothing to deploy');
   });
 
-  test('--no-kc on a logical model (no graph target) is an error: nowhere to go',
-       () => {
-         const plan = planPush({...on, hasUntargeted: true, kcEnabled: false});
-         expect('error' in plan).toBe(true);
-       });
+  test('--no-graph --profile is an error: no graph leg to bind', () => {
+    const r =
+        checkPushSelection({...base, graphEnabled: false, namedProfile: true});
+    expect(r).not.toBeNull();
+    expect(r!.error).toContain('no graph leg to bind');
+  });
 
-  test('--no-kc errors when any model is untargeted, even alongside a graph model',
-       () => {
-         // The untargeted model can only reach Knowledge Catalog, so dropping it
-         // fails the whole push rather than silently skipping that model.
-         const plan =
-             planPush({...on, hasBigQuery: true, hasUntargeted: true, kcEnabled: false});
-         expect('error' in plan).toBe(true);
-       });
+  test('--no-graph --all-profiles is an error: no graph leg to bind', () => {
+    const r =
+        checkPushSelection({...base, graphEnabled: false, allProfiles: true});
+    expect(r).not.toBeNull();
+    expect(r!.error).toContain('no graph leg to bind');
+  });
+
+  test('--profile --all-profiles is an error: one profile or every profile', () => {
+    const r =
+        checkPushSelection({...base, namedProfile: true, allProfiles: true});
+    expect(r).not.toBeNull();
+    expect(r!.error).toContain('use one or the other');
+  });
 });
+
 
 
 describe('declaresGraphTarget', () => {

@@ -142,16 +142,20 @@ the model's deployment target (or the [profile](profiles.md) you merge) does. Th
 most common flags:
 
 ```bash
-kcmd push                      # deploy the graph backend + Knowledge Catalog
+kcmd push                      # deploy the graph (default binding) + Knowledge Catalog
 kcmd push --no-kc              # deploy only the graph, skip Knowledge Catalog
 kcmd push --no-graph           # publish only to Knowledge Catalog, leave the graph alone
-kcmd push --profile analytical # merge a binding profile; its target picks the backend
+kcmd push --profile analytical # deploy the graph with one binding profile; its target picks the backend
+kcmd push --all-profiles       # deploy the graph once per binding profile
 kcmd push --validate-only      # run all checks, write nothing
 kcmd push --print              # also print the generated DDL / entry plan
 ```
 
-The graph and Knowledge Catalog are two symmetric destinations, both on by
-default; `--no-graph` and `--no-kc` each turn one off.
+A push has two independent legs, both on by default — the **graph** deploy and
+the **Knowledge Catalog** push; `--no-graph` and `--no-kc` each turn one off. A
+separate axis chooses which **binding profile** feeds the graph: the default
+binding, a single `--profile`, or every one with `--all-profiles`. See
+[Binding profiles](profiles.md).
 
 A logical model that declares no deployment target has no graph to deploy, so a
 bare `kcmd push` records it to Knowledge Catalog alone (and `--no-kc` on such a

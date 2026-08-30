@@ -26,18 +26,21 @@ kcmd push
 With no flags, deploys to every destination — the model's graph backend and
 Knowledge Catalog — the graph first. You do not choose the graph backend: each
 model deploys to whichever its deployment target names (BigQuery Graph or Spanner
-Graph). A `--profile` selects the physical binding, and the binding's deployment
-target selects the backend.
+Graph). The binding profile selects which physical binding feeds the graph, and
+that binding's deployment target selects the backend.
 
-The graph and Knowledge Catalog are two symmetric destinations, both deployed by
-default; turn off either with `--no-graph` (catalog only) or `--no-kc` (graph
-only).
+The push has two independent legs, both on by default: the **graph** deploy and
+the **Knowledge Catalog** push. Turn off either with `--no-graph` (catalog only)
+or `--no-kc` (graph only). A separate axis chooses which **binding profile** feeds
+the graph leg: the default binding, a single `--profile`, or every one with
+`--all-profiles`.
 
 | Flag | Effect |
 |------|--------|
-| `--no-graph` | Skip the graph deploy and publish only the logical model to Knowledge Catalog, leaving the deployed graph untouched. The graph is deployed by default. |
-| `--no-kc` | Skip the Knowledge Catalog metadata push and deploy only the graph backend the model's deployment target names. Knowledge Catalog is pushed by default. A logical model that declares no graph target can only reach Knowledge Catalog, so `--no-kc` on it is an error, as is `--no-graph --no-kc` (nothing left to deploy). |
-| `--profile <name>` | Merge the named binding profile (`<model>.profiles/<name>.yaml`) before deploying; its deployment target selects the graph backend. Defaults to the model's inline bindings. See [Binding profiles](profiles.md). |
+| `--no-graph` | Skip the graph deploy and publish only the logical model to Knowledge Catalog, leaving any deployed graph untouched. The graph is deployed by default. |
+| `--no-kc` | Skip the Knowledge Catalog metadata push and deploy only the graph backend the model's deployment target names. Knowledge Catalog is pushed by default. A model that declares no graph target (no binding profile has a deployment target) can only reach Knowledge Catalog, so `--no-kc` on it is an error, as is `--no-graph --no-kc` (nothing left to deploy). |
+| `--profile <name>` | Deploy the graph with the named binding profile (`<model>.profiles/<name>.yaml`); its deployment target selects the backend. Defaults to `default_profile` from `catalog.yaml`, else the model's inline bindings. Mutually exclusive with `--all-profiles`. See [Binding profiles](profiles.md). |
+| `--all-profiles` | Deploy the graph once per defined binding profile (plus the inline bindings when the document itself declares a target), instead of a single one. The Knowledge Catalog leg still records one canonical view — the default binding. Mutually exclusive with `--profile`; combining it with `--no-graph` is an error (there is no graph leg to bind). |
 | `--validate-only` | Run every validation check and report pass/fail, but write nothing. |
 | `--print` | Print each destination's generated artifact (BigQuery or Spanner Graph SQL DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
 | `--force-remove` | Delete models in the entry group that this push no longer includes (see [Updating and removing models](README.md#updating-and-removing-models)). |

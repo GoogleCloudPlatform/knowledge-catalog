@@ -292,24 +292,35 @@ picks its own backend. The two bindings answer different parts of the same model
 ## Command line
 
 ```bash
-kcmd push --profile analytical            # merge the analytical bindings; deploy to their backend (BigQuery) + Knowledge Catalog
-kcmd push --profile operational           # merge the operational bindings; deploy to their backend (Spanner) + Knowledge Catalog
+kcmd push                                 # deploy the graph with the default binding + Knowledge Catalog
+kcmd push --profile analytical            # deploy the graph with the analytical bindings (BigQuery target)
+kcmd push --profile operational           # deploy the graph with the operational bindings (Spanner target)
+kcmd push --all-profiles                  # deploy the graph once per binding profile
 kcmd push --profile analytical --no-kc    # deploy only the graph, skip Knowledge Catalog
-kcmd push --profile analytical --no-graph # publish only to Knowledge Catalog, leave the graph alone
-kcmd push                                 # uses default_profile from catalog.yaml
+kcmd push --no-graph                      # publish only to Knowledge Catalog, leave the graph alone
 kcmd profiles                             # list profiles, their resolved sources, and what each cannot answer
 ```
 
-`--profile` chooses **which physical binding**, and the binding's
+`--profile` chooses **which physical binding** feeds the graph, and that binding's
 `deployment_target` selects **which graph backend** the model deploys to
 (BigQuery Graph or Spanner Graph). You never name the backend on the command line
-— picking the profile is picking the backend. The graph and Knowledge Catalog are
-two symmetric destinations, both pushed by default: `--no-kc` deploys the graph
-alone, `--no-graph` publishes to Knowledge Catalog alone, and both together are an
-error.
+— picking the profile is picking the backend. Choosing the profile is a separate
+axis from choosing the legs: the two legs are the **graph** deploy and the
+**Knowledge Catalog** push, both on by default, and `--no-kc` / `--no-graph` each
+turn one off (both together are an error).
 
-Set the default so a bare `kcmd push` in CI does the right thing, in
-`catalog.yaml`:
+**Deploying to more than one binding at once.** `--all-profiles` deploys the graph
+once for every defined profile — for example the analytical (BigQuery) and
+operational (Spanner) graphs in a single run. Knowledge Catalog still records one
+canonical view of the logical model — the default binding — so a bare `kcmd push`
+and a `kcmd push --all-profiles` write the same catalog entries and differ only in
+how many graphs deploy.
+
+There is always a **default binding profile**: whatever `default_profile` names,
+or — if it is unset — the model's inline bindings (the implicit `default`
+profile). Because `default` names those inline bindings, it is reserved: a
+`<model>.profiles/default.yaml` is rejected rather than silently ignored. Set the
+default so a bare `kcmd push` in CI does the right thing, in `catalog.yaml`:
 
 ```yaml
 scope: semantic-model.acme.us.commerce_eg

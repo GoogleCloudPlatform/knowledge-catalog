@@ -55,17 +55,17 @@ export interface PushOptions {
   // Unlike `force` above, this authorizes a destructive delete rather
   // than overriding a conflict.
   forceRemove?: boolean;
-  // Whether to deploy the graph. On by default; `--no-graph` sets it false to
-  // publish only the logical model to Knowledge Catalog, leaving the deployed
-  // graph untouched. Orthogonal to which backend the graph deploys to (that
-  // comes from the model's deployment target). Ignored for non-semantic-model
-  // scopes.
+  // Whether to deploy the graph leg. On by default; `--no-graph` sets it false
+  // to publish only the logical model to Knowledge Catalog, leaving any deployed
+  // graph untouched. Independent of which binding profile feeds the graph and of
+  // which backend it targets (the profile's deployment target names that).
+  // Ignored for non-semantic-model scopes.
   graph?: boolean;
-  // Whether to push the Knowledge Catalog metadata alongside the graph. On by
-  // default; `--no-kc` sets it false to deploy only the graph backend each
-  // model's deployment target names. The two toggles are symmetric: `--no-graph`
-  // gives a catalog-only push, `--no-kc` a graph-only push, and both together are
-  // an error (nothing to deploy). Ignored for non-semantic-model scopes.
+  // Whether to push the Knowledge Catalog metadata leg. On by default; `--no-kc`
+  // sets it false to deploy only the graph. The two leg toggles are symmetric:
+  // `--no-graph` gives a catalog-only push, `--no-kc` a graph-only push, and both
+  // together are an error (nothing to deploy). Ignored for non-semantic-model
+  // scopes.
   kc?: boolean;
   // Print each pushed destination's generated artifact in that destination's
   // native format (BigQuery/Spanner Graph -> SQL DDL, Knowledge Catalog -> the
@@ -80,54 +80,56 @@ export interface PushOptions {
   // Rewrite vendor-dialect expressions (e.g. Snowflake/Databricks) to GoogleSQL
   // before deploying, filling any target `expression` the loader left unset
   // because only an `importedExpression` was supplied. Off by default (a model
-  // authored in GoogleSQL/ANSI needs nothing). Runs once over the shared
-  // models, so both the BigQuery and Knowledge Catalog legs see the filled
-  // expressions. Semantic-model push only. See ../libts/semantic/transpile.
+  // authored in GoogleSQL/ANSI needs nothing). Runs per prepared binding, so
+  // both the graph and Knowledge Catalog legs see the filled expressions.
+  // Semantic-model push only. See ../libts/semantic/transpile.
   transpile?: boolean;
-  // Binding profile to merge onto the logical model before deploying: reads
-  // `<model>.profiles/<name>.yaml` and overlays its physical bindings by name.
-  // The merged binding's deployment target selects the graph backend, so the
-  // profile -- not a flag -- decides where the graph deploys. Omitted means the
-  // inline bindings in the model document (the implicit 'default' profile).
-  // Semantic-model push only.
+  // The binding profile whose physical bindings feed the graph leg: reads
+  // `<model>.profiles/<name>.yaml` and overlays it onto the logical model. The
+  // merged binding's deployment target selects the graph backend, so the profile
+  // -- not a flag -- decides where the graph deploys. Omitted means the model's
+  // default binding: `default_profile` from catalog.yaml, else the inline
+  // bindings in the document (the implicit 'default' profile). Mutually exclusive
+  // with allProfiles. Semantic-model push only.
   profile?: string;
+  // Deploy the graph once per defined binding profile (plus the inline 'default'
+  // when the document itself declares a target), instead of a single profile.
+  // `--all-profiles`. The Knowledge Catalog leg still records one canonical view
+  // (the default binding). Mutually exclusive with profile. Semantic-model push
+  // only.
+  allProfiles?: boolean;
 }
 
 
-// A semantic-model push destination, in canonical run order. The two graph
-// backends are NOT chosen on the command line: each model deploys to whichever
-// its deployment target names, so the graph legs follow the models. Knowledge
-// Catalog records the logical model unless the user opts out with --no-kc.
-export type PushDestination = 'bigquery'|'spanner'|'kc';
-
-// Decides which destination legs a push runs, from what the loaded models
-// declare and whether Knowledge Catalog is enabled. The graph backend is not a
-// user choice -- a model deploys to BigQuery Graph or Spanner Graph according to
-// its own deployment target -- so a leg runs exactly when some model targets it.
-// Knowledge Catalog runs whenever enabled (the default), recording every model.
-//
-// Returns the legs to run in canonical order (BigQuery first, so a fail-fast
-// push stops before the later legs), or an error when a model has nowhere to go:
-// it declares no graph target, and --no-kc removed its only other destination.
-export function planPush(facts: {
-  hasBigQuery: boolean; hasSpanner: boolean; hasUntargeted: boolean;
-  graphEnabled: boolean; kcEnabled: boolean;
-}): {destinations: PushDestination[]}|{error: string} {
-  if (!facts.graphEnabled && !facts.kcEnabled) {
+// Guard the push flag combination before any work. The graph deploy and the
+// Knowledge Catalog push are two independent legs (--no-graph / --no-kc); the
+// graph backend is never a command-line choice (each model's deployment target
+// names it). --profile / --all-profiles select WHICH binding profile the graph
+// leg deploys with, so they are meaningless once the graph leg is off, and
+// mutually exclusive with each other. Returns an error to report, or null when
+// the combination is coherent.
+export function checkPushSelection(sel: {
+  graphEnabled: boolean;
+  kcEnabled: boolean;
+  allProfiles: boolean;
+  namedProfile: boolean;
+}): {error: string}|null {
+  if (!sel.graphEnabled && !sel.kcEnabled) {
     return {error: '--no-graph and --no-kc together leave nothing to deploy.'};
   }
-  if (facts.hasUntargeted && !facts.kcEnabled) {
+  if (!sel.graphEnabled && (sel.allProfiles || sel.namedProfile)) {
     return {
-      error: 'a model declares no deployment target, so it can only deploy to ' +
-          'Knowledge Catalog; drop --no-kc to push it, or give it a deployment ' +
-          'target.',
+      error: '--no-graph deploys no graph, so it cannot be combined with ' +
+          '--profile or --all-profiles (there is no graph leg to bind).',
     };
   }
-  const destinations: PushDestination[] = [];
-  if (facts.graphEnabled && facts.hasBigQuery) destinations.push('bigquery');
-  if (facts.graphEnabled && facts.hasSpanner) destinations.push('spanner');
-  if (facts.kcEnabled) destinations.push('kc');
-  return {destinations};
+  if (sel.allProfiles && sel.namedProfile) {
+    return {
+      error: '--profile names one binding profile and --all-profiles deploys ' +
+          'every one; use one or the other.',
+    };
+  }
+  return null;
 }
 
 
@@ -317,205 +319,229 @@ export async function push(options: PushOptions): Promise<number> {
     const layout = snapshot.layout as SemanticModelLayout;
     const source = snapshot.manifest.source as SemanticModelSource;
 
-    // Two symmetric destination toggles, both on by default (cac sets the flag
-    // to false when passed): --no-graph publishes only to Knowledge Catalog,
-    // --no-kc deploys only the graph. Neither picks the graph backend -- that
-    // still comes from each model's deployment target.
+    // The graph deploy and the Knowledge Catalog push are two independent legs,
+    // both on by default (cac sets the flag to false when passed): --no-graph
+    // gives a catalog-only push, --no-kc a graph-only push. Neither names the
+    // graph backend -- that comes from each model's deployment target.
     const graphEnabled = options.graph !== false;
     const kcEnabled = options.kc !== false;
-    if (!graphEnabled && !kcEnabled) {
-      console.error(
-          'Error: --no-graph and --no-kc together leave nothing to deploy.');
-      return 1;
-    }
 
-    // Load + validate every model ONCE, then fan the parsed models out to each
-    // destination leg. Both legs consume the same IR, so a push over multiple
-    // destinations parses each document a single time instead of once per leg. A
-    // parse error
-    // fails the whole push before any destination runs. defaultProject is the
-    // scope's declared project (deterministic) rather than the ambient gcloud
-    // project, which can drift from where the model's tables live.
-    // Resolve the binding profile -- which physical binding to merge onto the
-    // logical model. A named profile is merged from its
-    // `<model>.profiles/<name>.yaml`; the implicit 'default' means the inline
-    // bindings already in the model document, so it is never merged (a bare
-    // push behaves as it always has).
-    const profileName =
-        options.profile ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
-    let docs = layout.modelDocuments();
-    if (profileName !== DEFAULT_PROFILE) {
-      const merged: {name: string; text: string}[] = [];
-      for (const doc of docs) {
-        const available = layout.profileDocuments(doc.name);
-        const chosen = available.find(p => p.name === profileName);
-        if (!chosen) {
-          const names = available.map(p => p.name);
-          console.error(
-              `Error: unknown profile '${profileName}' for model '${
-                  doc.name}'; ` +
-              (names.length ?
-                   `defined profiles: ${names.join(', ')}.` :
-                   `no profiles are defined for this model.`));
-          return 1;
-        }
-        const res = mergeProfileOntoDoc(doc.text, chosen.text, profileName);
-        if ('error' in res) {
-          console.error(`Error: [${doc.name}] ${res.error}`);
-          return 1;
-        }
-        for (const w of res.warnings) {
-          console.warn(`Warning: [${doc.name}] ${w}`);
-        }
-        merged.push({name: doc.name, text: res.text});
-      }
-      docs = merged;
-    }
-
-    // Whether this push actually deploys a graph: some model must declare a
-    // deployment target (detected from the profile-merged documents) AND the
-    // graph leg must be enabled (--no-graph turns it off). When it does not --
-    // a purely logical model, or a catalog-only `--no-graph` push -- the push
-    // governs the logical model only: it needs neither physical bindings nor a
-    // target and skips pruning, so the loader and validator relax accordingly
-    // and Knowledge Catalog publishes the whole model.
-    const graphless = docs.every((d) => !declaresGraphTarget(d.text));
-    const deploysGraph = graphEnabled && !graphless;
-
-    const loaded = loadSemanticModels(docs, {
-      defaultProject: source.project ?? ctx.project,
-      bindingOptional: !deploysGraph,
-    });
-    if (loaded.error) {
-      console.error('Error:', loaded.error);
-      return 1;
-    }
-    for (const w of loaded.warnings) {
-      // When transpiling, the loader's "needs transpilation to ..." notes are
-      // superseded by the transpile pass's own per-expression outcome lines
-      // (transpiled / left imported); printing both is contradictory, so drop
-      // the loader note here and let the pass report the result below.
-      if (options.transpile && w.includes('needs transpilation')) continue;
-      console.warn(`Warning: ${w}`);
-    }
-
-    // Rewrite vendor-dialect expressions to GoogleSQL once over the shared
-    // models, before validation, so both destination legs and every downstream
-    // check see the filled target expressions. Off unless --transpile: a model
-    // authored in GoogleSQL/ANSI needs nothing, and the pass degrades to the
-    // imported form (with a warning) if any expression fails to transpile.
-    let models = loaded.models;
-    if (options.transpile) {
-      const transpiled = await transpileModels(models);
-      models = transpiled.models;
-      for (const w of transpiled.warnings) {
-        console.warn(`Warning: ${w}`);
-      }
-    }
-
-    // Prune what the chosen binding cannot answer: drop each unbound field and
-    // everything that depends on it (a metric that reads it, a relationship
-    // whose join column is unbound), so the deployed graph presents only what
-    // the profile binds. Availability propagates up the dependency graph. Runs
-    // for every profile, including 'default' (a no-op when nothing is unbound).
-    //
-    // A push that deploys no graph governs the whole logical model -- meaning,
-    // not a physical binding -- so pruning would wrongly drop every unbound
-    // entity/metric the author declared. Skip it: Knowledge Catalog publishes
-    // the full model.
-    if (deploysGraph) {
-      const availability: AvailabilityReport[] = [];
-      models = models.map(({document, model}) => {
-        const {model: pruned, report} = pruneUnavailable(model, profileName);
-        availability.push(report);
-        return {document, model: pruned};
-      });
-      for (const r of availability) {
-        const dropped = r.droppedEntities.length + r.droppedMetrics.length +
-            r.droppedRelationships.length;
-        if (r.unboundFields.length || dropped) {
-          console.warn(
-              `Note: profile '${r.profile}' leaves ${
-                  r.unboundFields.length} field(s) unbound` +
-              (dropped ?
-                   `; ${r.droppedEntities.length} entity(ies), ${
-                       r.droppedMetrics.length} metric(s) and ${
-                       r.droppedRelationships.length} relationship(s) ` +
-                       `unavailable` :
-                   '') +
-              '.');
-        }
-      }
-    }
-
-    // Enforce push-time requirements once over the shared models, before any
-    // destination runs: every model must declare a deployment target, and a
-    // BigQuery-graph-targeting model's metrics must each resolve to one entity.
-    // This is also the --validate-only path, so a dry run reports the same
-    // failures.
-    const validationErrors =
-        validatePushRequirements(models, {targetOptional: !deploysGraph});
-    if (validationErrors.length) {
-      for (const e of validationErrors) {
-        console.error(`Error: ${e}`);
-      }
-      return 1;
-    }
-
-    // Each model deploys to the graph backend its deployment target names (a
-    // graph push requires exactly one; a logical model declares none). Partition
-    // the shared models by target type so each graph leg sees only the models it
-    // can deploy, while Knowledge Catalog records every model.
-    const bqModels = models.filter(m => hasTargetType(m, 'bigquery'));
-    const spannerModels = models.filter(m => hasTargetType(m, 'spanner'));
-
-    // Decide which destination legs run: the graph legs follow the models (each
-    // deploys to the backend its own deployment target names), Knowledge Catalog
-    // runs unless --no-kc. A logical model that targets no graph can only reach
-    // Knowledge Catalog, so --no-kc would leave it nowhere to go -- a hard error.
-    const plan = planPush({
-      hasBigQuery: bqModels.length > 0,
-      hasSpanner: spannerModels.length > 0,
-      hasUntargeted: models.some(
-          (m) => !hasTargetType(m, 'bigquery') && !hasTargetType(m, 'spanner')),
+    // Binding-profile selection feeds the graph leg only. --profile names one
+    // profile, --all-profiles deploys every defined one, and the default is the
+    // model's default binding (`default_profile` from catalog.yaml, else the
+    // inline bindings in the document -- the implicit 'default' profile). These
+    // choose WHICH physical binding the graph deploys with; they never turn the
+    // graph leg on or off (that is --no-graph) and never pick the backend (the
+    // profile's deployment target does).
+    const allProfiles = options.allProfiles === true;
+    const namedProfile =
+        typeof options.profile === 'string' ? options.profile : undefined;
+    const selectionError = checkPushSelection({
       graphEnabled,
       kcEnabled,
+      allProfiles,
+      namedProfile: namedProfile !== undefined,
     });
-    if ('error' in plan) {
-      console.error(`Error: ${plan.error}`);
+    if (selectionError) {
+      console.error(`Error: ${selectionError.error}`);
       return 1;
     }
 
-    // Live pre-flight, before any destination runs: every BigQuery-targeting
-    // model's source table must be reachable, so a push fails fast when the
-    // model could not deploy. Runs only when the BigQuery leg will run (the
-    // graph is enabled and some model targets BigQuery Graph); a catalog-only
-    // `--no-graph` push deploys no graph, so it skips the probe, as does a
-    // Spanner model (its sources live in Spanner). Runs for --validate-only too.
-    if (graphEnabled && bqModels.length) {
-      const accessErrors = await validateBigQueryDataSources(
-          bqModels, new BigQueryClient(ctx), source.project ?? ctx.project);
-      if (accessErrors.length) {
-        for (const e of accessErrors) {
-          console.error(`Error: ${e}`);
-        }
+    const layoutDocs = layout.modelDocuments();
+    const defaultProject = source.project ?? ctx.project;
+
+    // Reserve the profile name 'default': it is the sentinel for the inline
+    // bindings (never merged onto the document), so a
+    // `<model>.profiles/default.yaml` would be silently unreachable. Reject it
+    // rather than let it sit there doing nothing.
+    for (const doc of layoutDocs) {
+      const clash =
+          layout.profileDocuments(doc.name).some(p => p.name === DEFAULT_PROFILE);
+      if (clash) {
+        console.error(
+            `Error: [${doc.name}] a binding profile may not be named '${
+                DEFAULT_PROFILE}' -- that name refers to the model's inline ` +
+            `bindings. Rename the profile file.`);
         return 1;
       }
     }
 
-    // Run the planned destinations in canonical order (BigQuery first); the
-    // early return below fails fast, skipping later legs when an earlier one
-    // fails.
-    for (const destination of plan.destinations) {
-      let code = 0;
-      if (destination === 'bigquery') {
-        code = await pushBigQuery(bqModels, ctx, options);
-      } else if (destination === 'spanner') {
-        code = await pushSpanner(spannerModels, ctx, options);
+    // Merge one binding profile onto every model document, returning the merged
+    // docs (or null after reporting an error). The implicit 'default' profile is
+    // the inline document as authored, so nothing is merged.
+    const mergeForProfile =
+        (profileName: string): Array<{name: string; text: string}>|null => {
+          if (profileName === DEFAULT_PROFILE) return layoutDocs;
+          const merged: Array<{name: string; text: string}> = [];
+          for (const doc of layoutDocs) {
+            const available = layout.profileDocuments(doc.name);
+            const chosen = available.find(p => p.name === profileName);
+            if (!chosen) {
+              const names = available.map(p => p.name);
+              console.error(
+                  `Error: unknown binding profile '${profileName}' for model '${
+                      doc.name}'; ` +
+                  (names.length ?
+                       `defined profiles: ${names.join(', ')}.` :
+                       `no profiles are defined for this model.`));
+              return null;
+            }
+            const res = mergeProfileOntoDoc(doc.text, chosen.text, profileName);
+            if ('error' in res) {
+              console.error(`Error: [${doc.name}] ${res.error}`);
+              return null;
+            }
+            for (const w of res.warnings) {
+              console.warn(`Warning: [${doc.name}] ${w}`);
+            }
+            merged.push({name: doc.name, text: res.text});
+          }
+          return merged;
+        };
+
+    // Load + validate a profile's merged documents into deployable models,
+    // sharing one IR across both legs. `prune` drops each unbound field (and
+    // whatever depends on it) so a deployed graph presents only what its binding
+    // answers; a catalog-only push leaves it off to publish the whole logical
+    // model. Returns the models and the target partition the graph legs need, or
+    // null after reporting an error.
+    const prepareModels =
+        async(docs: Array<{name: string; text: string}>, profileName: string,
+              {prune}: {prune: boolean}):
+            Promise<{models: LoadedModel[]; bqModels: LoadedModel[];
+                     spannerModels: LoadedModel[]}|null> => {
+          const loaded = loadSemanticModels(
+              docs, {defaultProject, bindingOptional: !prune});
+          if (loaded.error) {
+            console.error('Error:', loaded.error);
+            return null;
+          }
+          for (const w of loaded.warnings) {
+            if (options.transpile && w.includes('needs transpilation')) continue;
+            console.warn(`Warning: ${w}`);
+          }
+          let models = loaded.models;
+          if (options.transpile) {
+            const transpiled = await transpileModels(models);
+            models = transpiled.models;
+            for (const w of transpiled.warnings) console.warn(`Warning: ${w}`);
+          }
+          if (prune) {
+            const availability: AvailabilityReport[] = [];
+            models = models.map(({document, model}) => {
+              const {model: pruned, report} = pruneUnavailable(model, profileName);
+              availability.push(report);
+              return {document, model: pruned};
+            });
+            for (const r of availability) {
+              const dropped = r.droppedEntities.length + r.droppedMetrics.length +
+                  r.droppedRelationships.length;
+              if (r.unboundFields.length || dropped) {
+                console.warn(
+                    `Note: profile '${r.profile}' leaves ${
+                        r.unboundFields.length} field(s) unbound` +
+                    (dropped ?
+                         `; ${r.droppedEntities.length} entity(ies), ${
+                             r.droppedMetrics.length} metric(s) and ${
+                             r.droppedRelationships.length} relationship(s) ` +
+                             `unavailable` :
+                         '') +
+                    '.');
+              }
+            }
+          }
+          const validationErrors =
+              validatePushRequirements(models, {targetOptional: !prune});
+          if (validationErrors.length) {
+            for (const e of validationErrors) console.error(`Error: ${e}`);
+            return null;
+          }
+          const bqModels = models.filter(m => hasTargetType(m, 'bigquery'));
+          const spannerModels = models.filter(m => hasTargetType(m, 'spanner'));
+          return {models, bqModels, spannerModels};
+        };
+
+    // The graph binding profiles to deploy, in a deterministic order (named
+    // profiles first, sorted, then the inline 'default'). --all-profiles fans
+    // out over every defined profile, plus the inline 'default' when the
+    // document itself declares a target; a single push deploys the named or the
+    // default profile. Empty when --no-graph.
+    const graphProfileNames: string[] = [];
+    if (graphEnabled) {
+      if (allProfiles) {
+        const names = new Set<string>();
+        for (const doc of layoutDocs) {
+          for (const p of layout.profileDocuments(doc.name)) names.add(p.name);
+          if (declaresGraphTarget(doc.text)) names.add(DEFAULT_PROFILE);
+        }
+        for (const n of [...names].filter(n => n !== DEFAULT_PROFILE).sort()) {
+          graphProfileNames.push(n);
+        }
+        if (names.has(DEFAULT_PROFILE)) graphProfileNames.push(DEFAULT_PROFILE);
+        if (!graphProfileNames.length) {
+          console.warn(
+              'Warning: --all-profiles found no binding profiles and no inline ' +
+              'deployment target; no graph will be deployed.');
+        }
       } else {
-        code = await pushKnowledgeCatalog(models, ctx, options, source);
+        graphProfileNames.push(
+            namedProfile ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE);
       }
+    }
+
+    // Deploy each selected profile's graph (BigQuery first within a profile, so
+    // a fail-fast push stops before later legs). A profile whose merged model
+    // declares no deployment target contributes no graph -- skip it. The live
+    // BigQuery pre-flight runs before each BigQuery deploy so a push fails fast
+    // when a source table is unreachable; it also runs under --validate-only.
+    let deployedGraphs = 0;
+    for (const profileName of graphProfileNames) {
+      const docs = mergeForProfile(profileName);
+      if (!docs) return 1;
+      if (docs.every(d => !declaresGraphTarget(d.text))) continue;
+      const prepared = await prepareModels(docs, profileName, {prune: true});
+      if (!prepared) return 1;
+      if (prepared.bqModels.length) {
+        const accessErrors = await validateBigQueryDataSources(
+            prepared.bqModels, new BigQueryClient(ctx), defaultProject);
+        if (accessErrors.length) {
+          for (const e of accessErrors) console.error(`Error: ${e}`);
+          return 1;
+        }
+        const code = await pushBigQuery(prepared.bqModels, ctx, options);
+        if (code !== 0) return code;
+        deployedGraphs += prepared.bqModels.length;
+      }
+      if (prepared.spannerModels.length) {
+        const code = await pushSpanner(prepared.spannerModels, ctx, options);
+        if (code !== 0) return code;
+        deployedGraphs += prepared.spannerModels.length;
+      }
+    }
+
+    // Knowledge Catalog records one canonical view of the logical model: the
+    // single --profile selection, else the default binding. Alongside a graph
+    // deploy the entries reflect that binding (pruned to what it answers); a
+    // catalog-only --no-graph push publishes the whole logical model unpruned.
+    if (kcEnabled) {
+      const kcProfileName =
+          namedProfile ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
+      const docs = mergeForProfile(kcProfileName);
+      if (!docs) return 1;
+      const prune = graphEnabled && docs.some(d => declaresGraphTarget(d.text));
+      const prepared = await prepareModels(docs, kcProfileName, {prune});
+      if (!prepared) return 1;
+      const code =
+          await pushKnowledgeCatalog(prepared.models, ctx, options, source);
       if (code !== 0) return code;
+    } else if (deployedGraphs === 0) {
+      // Graph-only push (--no-kc) whose selected profile(s) declare no target:
+      // there is nothing to deploy and nowhere else to record the model.
+      console.error(
+          'Error: no selected binding profile declares a deployment target, ' +
+          'so there is no graph to deploy; give the model a deployment target, ' +
+          'or drop --no-kc to publish it to Knowledge Catalog.');
+      return 1;
     }
     return 0;
   }
@@ -525,6 +551,7 @@ export async function push(options: PushOptions): Promise<number> {
   // a user who expected (say) --transpile to run isn't misled by a clean exit.
   const semanticOnlyFlags: Array<[boolean, string]> = [
     [options.profile !== undefined, '--profile'],
+    [!!options.allProfiles, '--all-profiles'],
     [!!options.transpile, '--transpile'],
     [options.graph === false, '--no-graph'],
     [options.kc === false, '--no-kc'],

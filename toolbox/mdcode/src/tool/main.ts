@@ -77,7 +77,10 @@ cli.command('push', 'Push catalog entries')
         'Rewrite vendor-dialect (e.g. Snowflake/Databricks) expressions to GoogleSQL before deploying, filling target expressions the loader left unset; semantic-model push only')
     .option(
         '--profile <name>',
-        'Binding profile to merge onto the logical model before deploying (reads <model>.profiles/<name>.yaml); the profile\'s deployment target selects the graph backend; defaults to the inline bindings; semantic-model push only')
+        'Binding profile whose physical bindings feed the graph leg (reads <model>.profiles/<name>.yaml); its deployment target selects the graph backend; defaults to default_profile, else the inline bindings; mutually exclusive with --all-profiles; semantic-model push only')
+    .option(
+        '--all-profiles',
+        'Deploy the graph once per defined binding profile (plus the inline bindings when the document declares a target); Knowledge Catalog still records the default binding; mutually exclusive with --profile; semantic-model push only')
     .action(async (options) => {
       let exitCode = 1;
       try {
