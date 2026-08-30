@@ -27,8 +27,9 @@ export interface ConvertResult {
  * Converts a Turtle (.ttl) OWL ontology to an OSI YAML document.
  *
  * `modelName` names the resulting semantic model (the CLI derives it from the
- * source filename). The output is UNBOUND -- see to_ir.ts and the user guide --
- * but loads and pushes to Knowledge Catalog as-is.
+ * source filename). The output is a purely LOGICAL model -- see to_ir.ts and
+ * the user guide -- with no physical binding; it loads and pushes to Knowledge
+ * Catalog as-is, and a graph deploy adds bindings on top.
  *
  * Throws only on malformed Turtle (the parser's error); mapping gaps are
  * reported as warnings, not failures.
@@ -37,7 +38,10 @@ export function convertOwlToOsi(
     turtle: string, modelName: string): ConvertResult {
   const owl = parseOwl(turtle);
   const {model, warnings: mapWarnings, stats} = owlToIr(owl, modelName);
-  const {yaml, warnings: serializeWarnings} = serializeModel(model);
+  // An OWL import is always logical (no source/expression), so tell the
+  // serializer not to warn about the missing physical binding.
+  const {yaml, warnings: serializeWarnings} =
+      serializeModel(model, {logical: true});
   return {
     yaml,
     stats,

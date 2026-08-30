@@ -138,9 +138,10 @@ kcmd owl import /tmp/parts.ttl --out /tmp/parts_osi.yaml
 ```
 converted 2 classes, 1 object property, 2 datatype properties
 wrote /tmp/parts_osi.yaml
-note: this model is UNBOUND (placeholder `unbound:` sources, no deployment target).
-      `kcmd push` is rejected until you bind each entity's source table and add
-      a BigQuery deployment target -- validation needs both, for every --target.
+note: this is a LOGICAL model (no physical binding).
+      `kcmd push --target kc` publishes it to Knowledge Catalog as-is.
+      A BigQuery or Spanner Graph deploy needs a binding profile (sources,
+      field and join columns) and a deployment target added on top.
 ```
 
 Look at what it produced:
@@ -156,43 +157,31 @@ semantic_model:
     description: Imported from OWL ontology http://example.com/commerce#
     datasets:
       - name: Part
-        source: unbound:Part
         description: A sellable part
         fields:
           - name: partName
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: partName
             datatype: String
           - name: partPrice
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: partPrice
             datatype: Decimal
       - name: Supplier
-        source: unbound:Supplier
     relationships:
       - name: suppliedBy
         from: Part
         to: Supplier
-        from_columns:
-          - TODO_BIND
-        to_columns:
-          - TODO_BIND
 ```
 
 The classes became `Part` and `Supplier` entities, the datatype properties
 became `Part`'s fields, and the object property became the `suppliedBy`
 relationship. (The importer writes them under `datasets:`, the original spelling
 of the `entities:` key this codelab uses — the two are interchangeable.) The
-`source: unbound:*` and `TODO_BIND` join columns are
-placeholders: the import gives you structure, and you bind it to physical tables
-and a deployment target before deploying to a query engine — which is exactly
-what the `analytical` binding adds to the hand-authored `sales` model in step 3.
-For the full OWL mapping — class hierarchies, unique keys, and the constructs
-carried as custom extensions — see [Importing an OWL ontology](owl-import.md).
+result is a purely **logical model**: an ontology declares meaning, not physical
+tables, so entities carry no `source`, fields no `expression`, and the edge no
+join columns. `kcmd push --target kc` publishes it to Knowledge Catalog as-is; a
+BigQuery or Spanner Graph deploy adds those physical facts through a
+[binding profile](profiles.md) — exactly what the `analytical` binding adds to
+the hand-authored `sales` model in step 3. For the full OWL mapping — class
+hierarchies, unique keys, and the constructs carried as custom extensions — see
+[Importing an OWL ontology](owl-import.md).
 
 The rest of this codelab uses the hand-authored `sales` model above.
 

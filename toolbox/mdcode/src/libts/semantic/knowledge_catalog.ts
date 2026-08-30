@@ -279,27 +279,35 @@ function relationshipLink(
 // because the join is author-declared, and `userManaged` stops Dataplex from
 // overwriting it. Field names/nesting mirror the schema-join aspect type's
 // metadataTemplate.
+//
+// A purely logical edge (an OWL import) carries no join columns; each endpoint
+// then omits `fields` and names the entity, so the aspect records the join's
+// direction and endpoints without a column binding. (schema-join is a server
+// CLOSED metadataTemplate; if it REQUIRES `fields`, skip the link for a
+// column-less edge with a warning instead -- see the PR's open item.)
 function schemaJoinAspectData(
     model: SemanticModel, rel: Relationship): Record<string, any> {
   const srcEntity = entityByName(model, rel.source.entity);
   const dstEntity = entityByName(model, rel.destination.entity);
   return {
     joins: [compact({
-      source: {
+      source: compact({
         // Name each side by its SQL table (dataSource); fall back to the entity
         // name when the model is logical-only (no binding, so dataSource is
-        // empty), matching the entity-not-found fallback.
+        // empty), matching the entity-not-found fallback. `fields` is omitted
+        // for a column-less (logical) edge rather than emitted empty.
         name: srcEntity && srcEntity.dataSource ?
             srcEntity.dataSource :
             rel.source.entity,
-        fields: rel.source.columns,
-      },
-      target: {
+        fields: rel.source.columns.length ? rel.source.columns : undefined,
+      }),
+      target: compact({
         name: dstEntity && dstEntity.dataSource ?
             dstEntity.dataSource :
             rel.destination.entity,
-        fields: rel.destination.columns,
-      },
+        fields: rel.destination.columns.length ? rel.destination.columns :
+                                                 undefined,
+      }),
       description: rel.description,
       type: 'FOREIGN_KEY',
       inferenceSource: 'USER',

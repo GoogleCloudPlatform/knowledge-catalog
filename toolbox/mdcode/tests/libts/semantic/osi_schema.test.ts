@@ -86,6 +86,34 @@ function onlyExtendsExtension(errors: typeof validate.errors): boolean {
         /\/datasets\/\d+$/.test(e.instancePath));
 }
 
+// The OWL import goldens (.osi.golden.yaml) are purely LOGICAL models -- a
+// deliberate pre-OSI superset, the same shape the profiles/ subtree is exempted
+// for: an ontology has no physical tables, so they omit every binding facet the
+// released schema requires (dataset `source`, field `expression`, relationship
+// `from_columns`/`to_columns`; a binding profile supplies them later) and also
+// carry the `extends`/`abstract` dataset supersets. Tolerate EXACTLY those
+// omissions and extra properties on these goldens and nothing else, so real
+// drift (a bad enum, a misspelled key, an unexpected shape) still fails.
+function onlyLogicalGoldenDeviations(errors: typeof validate.errors): boolean {
+  const missingOk = new Set(
+    ['source', 'expression', 'from_columns', 'to_columns']);
+  const extraOk = new Set(['extends', 'abstract']);
+  return !!errors && errors.length > 0 &&
+    errors.every(e => {
+      if (e.keyword === 'required') {
+        return missingOk.has(
+          (e.params as {missingProperty?: string}).missingProperty ?? '');
+      }
+      if (e.keyword === 'additionalProperties') {
+        return extraOk.has(
+          (e.params as {additionalProperty?: string}).additionalProperty ??
+          '') &&
+          /\/datasets\/\d+$/.test(e.instancePath);
+      }
+      return false;
+    });
+}
+
 describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () => {
   test('at least one fixture is discovered', () => {
     expect(fixtures.length).toBeGreaterThan(0);
@@ -104,14 +132,17 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
             onlyMissingExpression(validate.errors)) {
           return;
         }
-        // A dataset `extends`/`abstract` is a deliberate superset of released
-        // OSI (OWL rdfs:subClassOf -> entity-level inheritance, plus the
-        // abstract marker); tolerate exactly those extra properties and nothing
-        // else, and only on the OWL import goldens (.osi.golden.yaml) and the
-        // hand-authored hierarchy fixture that legitimately carry them -- so a
-        // stray `extends` slipping into any other fixture still fails.
-        if ((rel.endsWith('.osi.golden.yaml') ||
-             rel === 'hierarchy_graph.yaml') &&
+        // The OWL import goldens are purely logical models (a pre-OSI superset,
+        // like profiles/): they omit source/expression/join-columns and carry
+        // the extends/abstract supersets. Tolerate exactly those deviations on
+        // them, so any other drift still fails.
+        if (rel.endsWith('.osi.golden.yaml') &&
+            onlyLogicalGoldenDeviations(validate.errors)) {
+          return;
+        }
+        // The hand-authored bound graph fixture carries only the
+        // extends/abstract superset (its sources/expressions are present).
+        if (rel === 'hierarchy_graph.yaml' &&
             onlyExtendsExtension(validate.errors)) {
           return;
         }

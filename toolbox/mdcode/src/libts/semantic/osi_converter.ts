@@ -74,10 +74,19 @@ export interface SerializeResult {
  *
  * Warnings flag IR content that has no loadable representation (an association
  * relationship's junction detail), so the caller can surface the lossy edge.
+ *
+ * `logical` marks the model as a purely logical one (no physical binding), so
+ * the missing-source and missing-expression warnings -- which flag a lossy pull
+ * of a bound model -- are suppressed. An OWL import sets it; `pull` does not.
  */
-export function serializeModel(model: SemanticModel): SerializeResult {
+export interface SerializeOptions {
+  logical?: boolean;
+}
+
+export function serializeModel(
+    model: SemanticModel, opts: SerializeOptions = {}): SerializeResult {
   const warnings: string[] = [];
-  const text = yaml.stringify(modelDocument(model, warnings));
+  const text = yaml.stringify(modelDocument(model, warnings, opts.logical));
   return {yaml: text, warnings: [...new Set(warnings)]};
 }
 
@@ -85,23 +94,26 @@ export function serializeModel(model: SemanticModel): SerializeResult {
 // renders. Kept separate so tests can assert the structure without parsing
 // YAML.
 export function modelDocument(
-    model: SemanticModel, warnings: string[] = []): Record<string, any> {
+    model: SemanticModel, warnings: string[] = [],
+    logical = false): Record<string, any> {
   return {
     version: SERIALIZED_VERSION,
-    semantic_model: [modelDoc(model, warnings)],
+    semantic_model: [modelDoc(model, warnings, logical)],
   };
 }
 
-function modelDoc(
-    model: SemanticModel, warnings: string[]): Record<string, any> {
+function modelDoc(model: SemanticModel, warnings: string[], logical: boolean):
+    Record<string, any> {
   // `datasets` is required (min 1) by the loader. A reconstructed model with no
   // entities (e.g. every entity fetch failed during a pull) would serialize to
   // a document the loader rejects; emit the (empty) array but flag it so the
   // lossy edge is visible rather than surfacing later as an opaque load error.
-  const datasets = (model.entities ?? []).map(e => datasetDoc(e, warnings));
+  const datasets =
+      (model.entities ?? []).map(e => datasetDoc(e, warnings, logical));
   if (!datasets.length) {
     warnings.push(
-        `model '${model.name}': no datasets (entities); the document requires ` +
+        `model '${
+            model.name}': no datasets (entities); the document requires ` +
         `at least one and will not load until an entity is present.`);
   }
   return compact({
@@ -117,21 +129,23 @@ function modelDoc(
 }
 
 function datasetDoc(
-    entity: Entity, warnings: string[]): Record<string, any> {
+    entity: Entity, warnings: string[], logical: boolean): Record<string, any> {
   // A concrete (non-abstract) entity with no source cannot be reloaded -- the
   // loader requires `source` unless the dataset is abstract -- so surface the
   // gap at write time instead of emitting a document that fails to load. This
   // never fires for a well-formed IR; it catches a lossy pull that dropped a
-  // binding without marking the entity abstract.
-  if (!entity.abstract && !entity.dataSource) {
+  // binding without marking the entity abstract. Suppressed for a logical
+  // model, where a missing source is intended (a binding profile supplies it
+  // later).
+  if (!logical && !entity.abstract && !entity.dataSource) {
     warnings.push(
         `entity '${entity.name}' has no source and is not abstract; the ` +
         `serialized document will not reload until a source is set`);
   }
   return compact({
     name: entity.name,
-    // An abstract entity has no physical table, so its source is empty; omit the
-    // key rather than emit `source: ""` (which the loader reads as a
+    // An abstract entity has no physical table, so its source is empty; omit
+    // the key rather than emit `source: ""` (which the loader reads as a
     // concrete-but-empty reference).
     source: entity.dataSource || undefined,
     // Supertype entities (entity-level inheritance); omitted when none.
@@ -142,15 +156,20 @@ function datasetDoc(
     unique_keys: nonEmpty(entity.uniqueKeys),
     description: entity.description,
     ai_context: aiContextDoc(entity.aiContext),
-    fields: nonEmpty((entity.fields ?? []).map(f => fieldDoc(f, warnings))),
+    fields: nonEmpty(
+        (entity.fields ?? []).map(f => fieldDoc(f, warnings, logical))),
     custom_extensions: customExtensionsDoc(entity.customExtensions),
   });
 }
 
-function fieldDoc(field: Field, warnings: string[]): Record<string, any> {
+function fieldDoc(
+    field: Field, warnings: string[], logical: boolean): Record<string, any> {
   const expression = expressionDoc(
       field.expression, field.importedExpression, field.importedDialect);
-  if (!expression) {
+  // A logical field intentionally has no expression (a binding profile maps it
+  // to a column later), so the missing-expression warning is suppressed there;
+  // for a bound model it still flags a lossy pull.
+  if (!logical && !expression) {
     warnings.push(
         `field '${field.name}': no expression; the loader requires one per ` +
         `field and the document will not load until it is set.`);

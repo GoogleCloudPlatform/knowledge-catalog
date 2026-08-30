@@ -141,11 +141,26 @@ const relationshipSchema = z.object({
   name: z.string(),
   from: z.string(),
   to: z.string(),
-  from_columns: z.array(z.string()).min(1),
-  to_columns: z.array(z.string()).min(1),
+  // Join columns are the physical binding of the edge and are OPTIONAL, so a
+  // purely logical relationship (an ontology edge, direction only) loads. When
+  // present they must be non-empty; either both endpoints are bound or neither
+  // is (a half-bound edge is a malformed join, caught below). A graph push still
+  // requires both (see validatePushRequirements).
+  from_columns: z.array(z.string()).min(1).optional(),
+  to_columns: z.array(z.string()).min(1).optional(),
   description: z.string().optional(),
   ai_context: aiContextSchema.optional(),
   custom_extensions: z.array(customExtensionSchema).optional(),
+}).superRefine((r, ctx) => {
+  if ((r.from_columns === undefined) !== (r.to_columns === undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        `relationship '${r.name}': from_columns and to_columns must be given ` +
+        `together (both bind the edge) or both omitted (a logical edge); one ` +
+        `without the other is a half-bound join.`,
+    });
+  }
 });
 
 const metricSchema = z.object({
@@ -527,6 +542,8 @@ function convertField(f: FieldDoc, entityName: string, warnings: string[], diale
 // Maps an OSI foreign-key relationship onto the IR edge. `source.columns` are the
 // FK columns on the `from` table (`from_columns`); `destination.columns` are the
 // referenced key columns on the `to` table (`to_columns`), paired positionally.
+// A logical relationship carries no columns (both endpoints empty); a graph
+// push requires them and rejects a column-less edge (see validatePushRequirements).
 // The source entity's own primary key is not duplicated here -- downstream
 // consumers look it up from the entity. A malformed relationship (an endpoint not
 // declared in the model, or mismatched column arity) is a hard error, not a
@@ -539,16 +556,18 @@ function convertRelationship(r: RelationshipDoc, entityNames: Set<string>): Rela
   if (!entityNames.has(r.to)) {
     throw new Error(`${ctx}: 'to' dataset '${r.to}' is not defined in the model`);
   }
-  if (r.from_columns.length !== r.to_columns.length) {
+  const fromColumns = r.from_columns ?? [];
+  const toColumns = r.to_columns ?? [];
+  if (fromColumns.length !== toColumns.length) {
     throw new Error(
-      `${ctx}: from_columns (${r.from_columns.length}) and to_columns ` +
-      `(${r.to_columns.length}) have different lengths; the join keys are mismatched`);
+      `${ctx}: from_columns (${fromColumns.length}) and to_columns ` +
+      `(${toColumns.length}) have different lengths; the join keys are mismatched`);
   }
 
   const relationship: Relationship = {
     name: r.name,
-    source: { entity: r.from, columns: r.from_columns },
-    destination: { entity: r.to, columns: r.to_columns },
+    source: { entity: r.from, columns: fromColumns },
+    destination: { entity: r.to, columns: toColumns },
   };
   const description = composeDescription(r.description);
   if (description) relationship.description = description;

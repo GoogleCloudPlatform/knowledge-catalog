@@ -6,7 +6,7 @@
 //
 // The mapping (see the user guide's table). Each line is one construct, kept
 // short so a comment reflow cannot run the columns together:
-//   owl:Class                     -> dataset (entity) + unbound source
+//   owl:Class                     -> dataset (entity), no source (logical)
 //   owl:DatatypeProperty          -> field on each domain class's dataset
 //   owl:ObjectProperty            -> relationship (edge), domain -> range
 //   rdfs:range xsd:*              -> field datatype (see XSD_DATATYPES)
@@ -42,13 +42,14 @@
 // A carried cross-reference keeps the full referent IRI unless it is in this
 // ontology's own namespace, when it shortens to a local name (see refValue).
 //
-// The result is UNBOUND: entities carry an `unbound:<Name>` source placeholder
-// and relationships carry `TODO_BIND` join columns, because an ontology has no
-// physical tables. A declared key sharpens this -- an edge into a class with a
-// key binds its destination columns to that key, leaving only the source
-// foreign-key columns to fill. The model loads and pushes to Knowledge Catalog
-// as-is; binding real sources/columns is a manual follow-up before a BigQuery
-// push (see the user guide, "Going from ontology to a running graph").
+// The result is a purely LOGICAL model: an ontology declares meaning, not
+// physical tables, so entities carry no source, fields no expression, and
+// relationships no join columns -- only the logical shape (entities, fields,
+// keys, and edges by direction). `kcmd push --target kc` publishes it as-is.
+// A BigQuery or Spanner Graph deploy needs physical binding (sources, field
+// columns, edge join columns) and a deployment target added on top; that is a
+// separate step (a binding profile, see the user guide, "Going from ontology
+// to a running graph").
 
 import {AiContext, CustomExtension, Entity, Field, Relationship, SemanticModel,} from '../../ir';
 
@@ -155,18 +156,6 @@ function commonTerms(a: OwlCommonAnnotations): Record<string, unknown> {
   if (a.versionInfo) terms['owl:versionInfo'] = a.versionInfo;
   return terms;
 }
-
-// The placeholder source for an unbound entity: an ontology class has no
-// backing table, so the entity is emitted with this sentinel until a real
-// source is bound. Chosen so it is obviously not a real table reference.
-function unboundSource(name: string): string {
-  return `unbound:${name}`;
-}
-
-// The placeholder join column for an unbound relationship: the real foreign-key
-// / key columns are unknown until sources are bound. The loader requires at
-// least one column per endpoint, so a sentinel stands in until binding.
-const TODO_BIND = 'TODO_BIND';
 
 // --- Datatype mapping. ------------------------------------------------------
 
@@ -372,7 +361,9 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     }
     const entity: Entity = {
       name: c.localName,
-      dataSource: unboundSource(c.localName),
+      // No source: a class is a logical entity. A binding profile supplies the
+      // backing table before a graph deploy; KC push needs none.
+      dataSource: '',
       keys: dedupe(c.keys),  // owl:hasKey -> primary_key (grain)
       description: c.comment,
       aiContext: synonymAiContext(c.label, c.localName, c.synonyms, c.examples),
@@ -467,9 +458,8 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
       const type = datatypeFor(p.rangeIri);
       const field: Field = {
         name: p.localName,
-        // The property's local name is a valid column reference once the entity
-        // is bound to a real table; it is the default binding target.
-        expression: p.localName,
+        // No expression: the field is logical. A binding profile maps it to a
+        // column when a real source is bound.
         type,
         // A temporal field is a time dimension by OSI's own rule; mark it so
         // downstream (BigQuery Graph, BI) treats it as one.
@@ -528,9 +518,9 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   }
 
   // Object properties -> relationships (edges). Both endpoints must be known
-  // classes. When the destination class declares a key, the edge's destination
-  // columns bind to it and only the source foreign-key columns stay unbound;
-  // otherwise both ends are placeholders.
+  // classes. The edge is logical: it carries only its direction (source entity
+  // -> destination entity), no join columns. The physical foreign-key / key
+  // columns are supplied by a binding profile before a graph deploy.
   const relationships: Relationship[] = [];
   for (const p of owl.objectProperties) {
     const domain = p.domains[0];
@@ -614,22 +604,13 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     if (p.asymmetric) relTerms['owl:AsymmetricProperty'] = true;
     Object.assign(relTerms, commonTerms(p));
 
-    const destKeys = entitiesByName.get(range)?.keys ?? [];
-    const bound = destKeys.length > 0;
     const relationship: Relationship = {
       name: p.localName,
-      // Source FK columns are unknown until binding; keep the count aligned
-      // with the destination key so the positional join is well-formed.
-      source: {
-        entity: domain,
-        columns: bound ? destKeys.map(() => TODO_BIND) : [TODO_BIND],
-      },
-      destination: {
-        // Copy the key so the destination columns render inline rather than as
-        // a YAML alias of the entity's primary_key (same array object).
-        entity: range,
-        columns: bound ? [...destKeys] : [TODO_BIND],
-      },
+      // A logical edge: direction only, no join columns. A binding profile
+      // supplies the source foreign-key and destination key columns before a
+      // graph deploy.
+      source: {entity: domain, columns: []},
+      destination: {entity: range, columns: []},
       // No `description`: the OSI relationship has no such slot, so the comment
       // rides in ai_context.instructions (see relationshipAiContext).
       aiContext: relationshipAiContext(

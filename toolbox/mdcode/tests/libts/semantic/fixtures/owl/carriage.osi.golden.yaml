@@ -29,28 +29,15 @@ semantic_model:
           }
     datasets:
       - name: Person
-        source: unbound:Person
         primary_key:
           - personId
         description: A human being.
         fields:
           - name: personId
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: personId
             datatype: String
           - name: name
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: name
             datatype: String
           - name: legalName
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: legalName
             datatype: String
             custom_extensions:
               - vendor_name: GOOGLE
@@ -87,10 +74,8 @@ semantic_model:
                 ]
               }
       - name: Robot
-        source: unbound:Robot
         description: A machine, never a person.
       - name: LifeStage
-        source: unbound:LifeStage
         custom_extensions:
           - vendor_name: GOOGLE
             data: |-
@@ -104,10 +89,6 @@ semantic_model:
       - name: ancestorOf
         from: Person
         to: Person
-        from_columns:
-          - TODO_BIND
-        to_columns:
-          - personId
         custom_extensions:
           - vendor_name: GOOGLE
             data: |-
@@ -129,10 +110,6 @@ semantic_model:
       - name: relatedTo
         from: Person
         to: Person
-        from_columns:
-          - TODO_BIND
-        to_columns:
-          - personId
         custom_extensions:
           - vendor_name: GOOGLE
             data: |-
@@ -146,10 +123,6 @@ semantic_model:
       - name: uncleOf
         from: Person
         to: Person
-        from_columns:
-          - TODO_BIND
-        to_columns:
-          - personId
         custom_extensions:
           - vendor_name: GOOGLE
             data: |-
