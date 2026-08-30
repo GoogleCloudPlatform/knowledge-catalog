@@ -96,12 +96,14 @@ computes, the grain, and the graph shape. The logical model owns all of it.
 **Binding** is physical: which store each entity reads from, and which column
 each field reads. A profile sets binding and leaves declaration alone.
 
-| A profile **may** set (physical binding) | A profile **may not** touch (logical, in the model) |
-|---|---|
-| an entity's `source` (its store URI) | which entities, fields, relationships, or metrics exist, and what each means |
-| a field's column (its `expression`, a bare column reference) | a field's `label`, `description`, `dimension`, `datatype` |
-| whether a field is bound at all under this profile | the grain (`primary_key` / `unique_keys`) and graph shape (`from`/`to`, `from_columns`/`to_columns`) |
-| the deployment target | a field `expression` that is arbitrary SQL, which changes the computation; any `metric` definition; any `ai_context` / synonyms; a relationship or its junction `source` |
+| Model element | Physical — a profile **may** bind | Logical — a profile **may not** change |
+|---|---|---|
+| Entity | its `source` (store URI) | that it exists and what it means; its grain (`primary_key` / `unique_keys`) |
+| Field | its column — `expression` as a bare column reference; whether it is bound at all | `label`, `description`, `dimension`, `datatype`; an `expression` that is arbitrary SQL (the computation itself) |
+| Relationship | — | that it exists; its join columns (`from`/`to`, `from_columns`/`to_columns`); its junction `source` |
+| Metric | — | its definition (refers to field *names*, stable across profiles) |
+| Deployment target | the target URI | — |
+| AI metadata | — | `ai_context`, synonyms |
 
 An element's `name` is not overridden — it is the key that pairs a profile
 element with the model element it binds. The grain and the join columns name
