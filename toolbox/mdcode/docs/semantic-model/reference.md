@@ -23,18 +23,19 @@ existing group is fine) and creates its local directory,
 kcmd push
 ```
 
-With no flags, deploys to every destination, BigQuery first.
+With no flags, deploys to every destination — the model's graph backend and
+Knowledge Catalog — the graph first.
 
 | Flag | Effect |
 |------|--------|
-| `--target <bq\|kc\|all>` | Which destination(s) to deploy to; accepts a comma-separated list (`bq,kc`). Default `all`. |
+| `--target <bq\|spanner\|kc\|all>` | Which destination(s) to deploy to; accepts a comma-separated list (`bq,kc`). Default `all`. `bq` and `spanner` are the two graph backends; each model routes to whichever its deployment target names, so `--target spanner` on a BigQuery-targeting model reports it has nothing to do. |
 | `--validate-only` | Run every validation check and report pass/fail, but write nothing. |
-| `--print` | Print each destination's generated artifact (BigQuery DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
+| `--print` | Print each destination's generated artifact (BigQuery or Spanner Graph SQL DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
 | `--force-remove` | Delete models in the entry group that this push no longer includes (see [Updating and removing models](README.md#updating-and-removing-models)). |
 | `--emit-expressions` | Also write the SQL-expression fields (per-field `schema.semantics` and `semantic-metric.expression`) to Knowledge Catalog. Off by default: the published system-type templates do not carry them yet. Knowledge Catalog push only. |
 
-Destinations always deploy BigQuery-first and fail fast, so a rejected model
-never half-deploys.
+The graph leg deploys first and fails fast, so a rejected model never
+half-deploys.
 
 ### pull
 
@@ -163,6 +164,40 @@ model inheritance today, so an abstract entity has no physical resource to
 catalog and is skipped there (with a warning); its concrete subtypes are
 published normally.
 
+## What gets created in Spanner
+
+When the deployment target is a Spanner Graph URI, `push` executes the same
+`CREATE OR REPLACE PROPERTY GRAPH` — but generated for Spanner Graph, which
+differs from BigQuery Graph in four ways:
+
+| Model element | Spanner construct | Notes |
+|---|---|---|
+| Model | `PROPERTY GRAPH` | named by the URI's `propertyGraphs/<g>` segment, **bare** (no backticked `project.dataset.` prefix) |
+| Entity | `NODE TABLE` | backed by the entity's `source` reduced to its final segment (`proj.ds.Orders` → `Orders`), a table in the target database |
+| Relationship | `EDGE TABLE` | connects the two entities' node tables |
+| Metric | — dropped | Spanner Graph has no `MEASURE`, so every model-level metric is skipped with a warning; the graph structure still deploys |
+| Entity `extends` | extra `LABEL` clauses on the subclass node table | same label-and-flatten handling as BigQuery (see [Class hierarchies](#class-hierarchies-extends--labels)) |
+
+- **Bare table and graph names.** A Spanner property graph lives inside one
+  database and names tables in that same database, so the generator emits bare
+  names — no `project.dataset.` qualifier on either the tables or the graph.
+- **No `MEASURE`.** Metrics are dropped (warned per metric), never errored. The
+  BigQuery-only rule that a metric must resolve to a single entity therefore does
+  not apply to a Spanner target (see [Validation](#validation)).
+- **No per-element `OPTIONS`.** `description` / `synonyms` are not emitted into
+  the Spanner DDL; they ride into Knowledge Catalog instead — mirroring how
+  BigQuery's graph-level `OPTIONS` is dropped. See
+  [What push and pull preserve](fidelity.md#to-spanner-graph).
+- **Async DDL.** The statement is applied through the Spanner Admin
+  `updateDatabaseDdl` long-running operation, polled to completion (BigQuery runs
+  its DDL through `jobs.query`). No region detection is needed — the DDL runs in
+  the database the target names.
+
+Under `--validate-only` nothing is applied; add `--print` to see the generated
+Spanner DDL. Unlike the BigQuery leg, a Spanner-targeting model's source tables
+are **not** probed before deploy — the live pre-flight is BigQuery-only (see
+[Validation](#validation)).
+
 ## What gets created in Knowledge Catalog
 
 Each element of your model maps to one catalog resource. Every resource type
@@ -198,41 +233,56 @@ of your model. For exactly what is stored, what is gated behind
 touched**, so a model that cannot deploy fails fast instead of half-deploying:
 
 * **Exactly one deployment target per model, and it must be a valid BigQuery
-  Graph URI.** A model with no target — or with more than one — is rejected, and
-  so is a single target whose URI does not match
-  `//bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>` (for
-  example a `propertyGraph`/`propertyGraphs` typo, or a
+  Graph or Spanner Graph URI.** A model with no target — or with more than one —
+  is rejected, and so is a single target whose URI matches neither
+  `//bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>` nor
+  `//spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>`
+  (for example a `propertyGraph`/`propertyGraphs` typo, or a
   `…/entryGroups/@bigquery/entries/…` entry form). The error names the offending
-  URI and the expected form. This gate runs before any destination leg and for
-  every `--target`, so a malformed target writes **nothing** — not to BigQuery
+  URI and the expected forms. This gate runs before any destination leg and for
+  every `--target`, so a malformed target writes **nothing** — not to the graph
   and **not to Knowledge Catalog**; the push aborts with a non-zero exit and no
   entries are created. *(static)*
 * **Every metric on a BigQuery Graph model resolves to exactly one entity** —
   otherwise it would be dropped from the BigQuery Graph. Set the metric's attach
-  entity, or scope its expression to a single entity. *(static)*
-* **Every entity's source table is reachable.** Each `source` is probed with a
-  dry-run query, so BigQuery resolves it exactly as the deploy will — a
-  three-part `project.dataset.table`, a four-part federated REST-catalog name
-  (e.g. an Iceberg table via BigLake), or a quoted identifier all work. A table
-  that does not exist or that you cannot access fails the push, naming the table
-  and the entity; a `source` that is a query (not a table) is skipped. *(live —
-  needs BigQuery access)*
+  entity, or scope its expression to a single entity. This rule is
+  BigQuery-only: Spanner Graph has no `MEASURE`, so a Spanner target drops its
+  metrics by design and imposes no such requirement. *(static)*
+* **Every entity's source table is reachable.** For a **BigQuery-targeting**
+  model, each `source` is probed with a dry-run query, so BigQuery resolves it
+  exactly as the deploy will — a three-part `project.dataset.table`, a four-part
+  federated REST-catalog name (e.g. an Iceberg table via BigLake), or a quoted
+  identifier all work. A table that does not exist or that you cannot access fails
+  the push, naming the table and the entity; a `source` that is a query (not a
+  table) is skipped. A **Spanner-targeting** model's sources live in Spanner
+  (a different system) and are **not** probed here. *(live — needs BigQuery
+  access)*
 
-The live table check runs for **every** `--target`, because the same tables back
-both destinations — so even a Knowledge-Catalog-only push confirms the model
-could deploy to BigQuery.
+The live table check runs for **every** `--target` over the BigQuery-targeting
+models, because the same tables back both a BigQuery graph and its Knowledge
+Catalog entries — so even a Knowledge-Catalog-only push of a BigQuery-targeting
+model confirms it could deploy to BigQuery.
 
 ## Permissions
 
 `push` needs access to whichever destinations you deploy to.
 
-**BigQuery** — for `--target bq` or `all`, and for the validation pre-flight:
+**BigQuery** — for `--target bq` (or `all`) on a BigQuery-targeting model, and
+for the validation pre-flight:
 
 * `bigquery.jobs.create` in the deployment-target project — to run the deploy's
   `CREATE OR REPLACE PROPERTY GRAPH` and the validation dry-run query
 * read access on each entity's source table, so the dry-run can resolve it
 * `bigquery.datasets.get` on the target dataset (region detection; optional —
   push degrades gracefully without it)
+
+**Spanner** — for `--target spanner` (or `all`) on a Spanner-targeting model, on
+the database the target names:
+
+* `spanner.databases.updateDdl` — to apply the `CREATE OR REPLACE PROPERTY GRAPH`
+  through `updateDatabaseDdl`
+* `spanner.databaseOperations.get` — to poll the long-running operation to
+  completion
 
 **Knowledge Catalog / Dataplex** — for `--target kc` or `all`:
 
