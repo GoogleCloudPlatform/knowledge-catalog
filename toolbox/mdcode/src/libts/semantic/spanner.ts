@@ -181,7 +181,12 @@ function renderNodeTable(
 
   const lines = [
     line(1, `${table} AS ${entity.name}`),
-    line(2, `KEY(${entity.keys.join(', ')})`),
+    line(
+        2,
+        `KEY(${
+            physicalColumns(
+                entity, entity.keys, warnings, `entity '${entity.name}'`)
+                .join(', ')})`),
   ];
 
   // A node participating in the hierarchy -- as a subclass (it declares
@@ -226,6 +231,7 @@ function renderEdgeTable(
   // columns; the edge is keyed by, and references its source node through, the
   // source entity's own key.
   const sourceEntity = entitiesByName.get(rel.source.entity);
+  const destEntity = entitiesByName.get(rel.destination.entity);
   let backing: string;
   let sourceKey: string[];
   if (!sourceEntity) {
@@ -239,15 +245,28 @@ function renderEdgeTable(
     sourceKey = sourceEntity.keys;
   }
 
-  const key = sourceKey.join(', ');
+  // Every key clause names physical columns: the edge is the source entity's
+  // own table, so its KEY / SOURCE KEY / the FK in DESTINATION KEY all resolve
+  // against the source entity, while the destination REFERENCES resolves
+  // against the destination entity's key. A profile that remaps any of these
+  // columns must reach the physical name here or Spanner rejects the DDL.
+  const relCtx = `relationship '${rel.name}'`;
+  const key =
+      physicalColumns(sourceEntity, sourceKey, warnings, relCtx).join(', ');
+  const destFk =
+      physicalColumns(sourceEntity, rel.source.columns, warnings, relCtx)
+          .join(', ');
+  const destRef =
+      physicalColumns(destEntity, rel.destination.columns, warnings, relCtx)
+          .join(', ');
   const lines = [
     line(1, `${backing} AS ${rel.name}`),
     line(2, `KEY(${key})`),
     line(2, `SOURCE KEY(${key}) REFERENCES ${rel.source.entity}(${key})`),
     line(
         2,
-        `DESTINATION KEY(${rel.source.columns.join(', ')}) REFERENCES ${
-            rel.destination.entity}(${rel.destination.columns.join(', ')})`),
+        `DESTINATION KEY(${destFk}) REFERENCES ${rel.destination.entity}(${
+            destRef})`),
   ];
   return lines.join('\n');
 }
@@ -275,7 +294,9 @@ function renderAssociationEdge(
           `relationship '${rel.name}': unknown entity '${end.entity}'`);
       return end.columns.join(', ');
     }
-    return entity.keys.join(', ');
+    return physicalColumns(
+               entity, entity.keys, warnings, `relationship '${rel.name}'`)
+        .join(', ');
   };
 
   const lines = [
@@ -313,6 +334,46 @@ function renderFieldProperty(field: Field, entity: string): string {
 // that is all the IR carries (see the Field expression-fidelity contract).
 function fieldExpression(f: Field): string|undefined {
   return f.expression ?? f.importedExpression;
+}
+
+
+// Resolves a logical field name to the physical column it binds to on
+// `entity`'s table. A structural key reference -- node KEY, edge KEY, SOURCE
+// KEY, DESTINATION KEY, and each REFERENCES target -- must name a real column,
+// never the property alias exposed under the field's name: Spanner rejects an
+// alias there ("Column '<alias>' not found in table"). A profile that binds a
+// field to a differently named column (a warehouse's `o_orderkey` vs an
+// operational store's `OrderId`) makes name != column common, so this mirrors
+// the BigQuery leg. Falls back to the name itself when it is not a declared
+// field (already a raw column) or the entity is unknown.
+function physicalColumn(entity: Entity|undefined, fieldName: string): string {
+  const field = entity?.fields.find(f => f.name === fieldName);
+  if (entity === undefined || field === undefined) return fieldName;
+  const expr = fieldExpression(field);
+  return expr !== undefined ? stripQualifier(expr, entity.name) : fieldName;
+}
+
+function physicalColumns(
+    entity: Entity|undefined, fieldNames: string[], warnings: string[],
+    context: string): string[] {
+  return fieldNames.map(n => {
+    const col = physicalColumn(entity, n);
+    // A structural site (KEY / SOURCE KEY / DESTINATION KEY / REFERENCES) must
+    // name a bare column. A field bound to a computed expression resolves to
+    // SQL, not a column, which Spanner rejects at deploy; warn here so the
+    // problem is named statically rather than surfacing as opaque DDL.
+    if (!isSimpleIdentifier(col)) {
+      warnings.push(
+          `${context}: field '${n}' is bound to a non-column expression (${
+              col}); a KEY/REFERENCES site requires a bare column, so Spanner ` +
+          `will reject the generated DDL`);
+    }
+    return col;
+  });
+}
+
+function isSimpleIdentifier(s: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(s);
 }
 
 
