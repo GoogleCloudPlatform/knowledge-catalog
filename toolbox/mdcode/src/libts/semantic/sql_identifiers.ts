@@ -14,8 +14,12 @@
 // identifier unless quoted. Non-reserved keywords (e.g. KEY, VALUE, SOURCE) are
 // deliberately absent: they are legal bare identifiers, so quoting them would
 // churn existing output for no reason. Kept uppercase; lookups uppercase first.
-// Source: GoogleSQL lexical structure (reserved keywords), shared by BigQuery
-// and Spanner.
+// Source of truth: the GoogleSQL reserved-keyword list (BigQuery lexical
+// structure docs), shared by BigQuery and Spanner Graph. NOTE: the
+// @polyglot-sql/sdk transpiler is deliberately NOT the oracle -- its reserved
+// set diverges from BigQuery's in both directions (misses EXTRACT, over-quotes
+// user/view/column), so delegating would emit incorrect DDL. See
+// sql_identifiers.test.ts.
 const RESERVED_KEYWORDS = new Set<string>([
   'ALL',
   'AND',

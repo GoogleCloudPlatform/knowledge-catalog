@@ -60,3 +60,30 @@ describe('quoteIdentifier', () => {
     expect(quoteIdentifier('we`ird')).toBe('`we\\`ird`');
   });
 });
+
+describe('pins to the authoritative BigQuery reserved set (not the transpiler)',
+         () => {
+           // The @polyglot-sql/sdk engine's reserved set diverges from BigQuery's
+           // published one in BOTH directions -- it misses EXTRACT and over-quotes
+           // user/view/column/references -- so it is deliberately not the oracle.
+           // These cases pin our set to the BigQuery spec so the hand-kept list
+           // cannot silently drift away from it.
+           const MUST_QUOTE = [
+             'Order', 'Group', 'From', 'Select', 'End', 'Range', 'Hash', 'All',
+             'Extract', 'Within', 'Qualify', 'Rollup',
+           ];
+           const MUST_STAY_BARE = [
+             'Customer', 'order_id', 'segment', 'revenue',
+             // keywords that are NOT reserved in BigQuery and must stay bare,
+             // including ones the transpiler wrongly quotes:
+             'key', 'value', 'source', 'user', 'view', 'column', 'references',
+           ];
+           test('reserved words are quoted', () => {
+             for (const n of MUST_QUOTE) {
+               expect(quoteIfReserved(n)).toBe(`\`${n}\``);
+             }
+           });
+           test('non-reserved identifiers stay bare', () => {
+             for (const n of MUST_STAY_BARE) expect(quoteIfReserved(n)).toBe(n);
+           });
+         });
