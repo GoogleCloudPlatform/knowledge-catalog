@@ -381,9 +381,12 @@ function isSimpleIdentifier(s: string): boolean {
 // references. A property graph names input tables within its own database, so
 // only the final segment of a qualified `project.dataset.table` (or any dotted
 // source) is meaningful; the leading qualifiers name where a BigQuery copy
-// lives and have no bearing on the Spanner table. A verbatim query (contains
-// whitespace) cannot back a graph element table, so it is passed through
-// parenthesized with a warning.
+// lives and have no bearing on the Spanner table. A resource-name URI
+// (`//spanner.googleapis.com/.../tables/<t>`, or any other `scheme://.../<t>`)
+// names its table by the final PATH segment for the same reason — the leading
+// path locates the store, not the table. A verbatim query (contains whitespace)
+// cannot back a graph element table, so it is passed through parenthesized with
+// a warning.
 function spannerTable(
     dataSource: string, warnings: string[], context: string): string {
   const trimmed = (dataSource ?? '').trim();
@@ -399,8 +402,28 @@ function spannerTable(
         `emitting it verbatim (a graph element table requires a table)`);
     return `(${trimmed})`;
   }
-  const last = splitDotted(trimmed).map(unquote).pop() ?? trimmed;
+  // A BigQuery resource URI is rewritten to `project.dataset.table` upstream in
+  // the loader, but a Spanner-native (or other `scheme://`) URI is kept
+  // verbatim there, so reduce it to its final path segment here before the
+  // dotted reduction below.
+  const source = isResourceUri(trimmed) ? finalPathSegment(trimmed) : trimmed;
+  const last = splitDotted(source).map(unquote).pop() ?? source;
   return quoteIdent(last);
+}
+
+
+// A Google Cloud resource name (`//host/...`) or any `scheme://...` URI, as
+// opposed to a bare or dotted table reference. Mirrors the loader's source
+// parsing so the two agree on what counts as a URI.
+function isResourceUri(source: string): boolean {
+  return source.startsWith('//') || /^[a-z][\w+.-]*:\/\//i.test(source);
+}
+
+// The final non-empty path segment of a URI (`.../tables/Customer` →
+// `Customer`).
+function finalPathSegment(uri: string): string {
+  const segments = uri.split('/').filter(s => s.length > 0);
+  return segments.pop() ?? uri;
 }
 
 
