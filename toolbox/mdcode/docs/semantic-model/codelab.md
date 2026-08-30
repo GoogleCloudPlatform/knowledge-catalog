@@ -118,10 +118,6 @@ YAML
 > must be materialized into a column first (the Deploy-to-BigQuery step does that
 > for `net_amount`).
 
-That is already enough to govern in Knowledge Catalog. It carries no `source`
-table, no field `expression`, and no `deployment_target` yet — you add those
-physical bindings when you deploy to a query engine (steps 3 and 4).
-
 ### Import existing semantics instead of authoring
 
 You can also start from an existing OWL ontology instead of hand-authoring this
