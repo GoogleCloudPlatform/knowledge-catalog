@@ -158,6 +158,20 @@ def _parser() -> argparse.ArgumentParser:
         "--name", default=None,
         help="Display name for the bundle (default: bundle directory name).",
     )
+
+    validate = sub.add_parser(
+        "validate",
+        help="Check an OKF bundle against the SPEC v0.1 §9 conformance rules.",
+    )
+    validate.add_argument(
+        "--bundle", required=True, type=Path,
+        help="Path to the bundle root directory.",
+    )
+    validate.add_argument(
+        "--strict", action="store_true",
+        help="Also enforce the producer-level recommended keys "
+        "(title, description, timestamp) from §4.1, on top of §9.",
+    )
     return p
 
 
@@ -181,6 +195,34 @@ def main(argv: list[str] | None = None) -> int:
             f"Wrote {stats['concepts']} concept(s), "
             f"{stats['edges']} edge(s), "
             f"{stats['bytes']} bytes → {out}",
+            file=sys.stderr,
+        )
+        return 0
+
+    if args.command == "validate":
+        from reference_agent.bundle.conformance import check_bundle
+        try:
+            violations = check_bundle(args.bundle, strict=args.strict)
+        except FileNotFoundError as exc:
+            # A bad --bundle path is a usage error, not a conformance failure;
+            # report it cleanly (exit 2) instead of dumping a traceback.
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+        for v in violations:
+            print(str(v), file=sys.stderr)
+        if violations:
+            print(
+                f"FAIL: {len(violations)} conformance violation(s) in "
+                f"{args.bundle}",
+                file=sys.stderr,
+            )
+            return 1
+        # Scoped to the rules check_bundle enforces (§9.1, §9.2, index.md
+        # §6/§11); log.md §7 and index.md body structure are not validated, so
+        # this does not assert full v0.1 conformance.
+        print(
+            f"OK: {args.bundle} — no OKF v0.1 violations found "
+            "(§9.1, §9.2, index.md §6/§11)",
             file=sys.stderr,
         )
         return 0
