@@ -70,13 +70,23 @@ resolves to an endpoint. A profile moves an entity between stores by swapping
 this URI, and — when the two stores shape the data differently — the column each
 field reads.
 
-A graph references a source by its **final segment** — the table name in the
-target store. A **BigQuery** `source` may be written as this resource name or as
-a plain `project.dataset.table`; both resolve identically. A **Spanner** graph
-lives inside one database and names its tables directly, so both
-`//spanner.googleapis.com/…/tables/Customer` and the equivalent dotted
-`acme.commerce.Customer` resolve to the table `Customer`. One authored form
-therefore serves either backend.
+How that `source` becomes a table reference in the generated graph depends on
+the backend:
+
+* **BigQuery** keeps the source **fully qualified**. The resource name
+  `//bigquery.googleapis.com/projects/acme/datasets/commerce/tables/Customer` and
+  the plain `acme.commerce.Customer` name the same table, and the graph
+  references it as `acme.commerce.Customer` — a BigQuery graph can read tables
+  across projects and datasets, so the whole path is kept.
+* **Spanner** keeps only the **table name**. The graph and all its tables live in
+  the one database the deployment target names, so the source is reduced to its
+  last segment: both
+  `//spanner.googleapis.com/…/databases/…/tables/Customer` and a dotted
+  `acme.commerce.Customer` become the bare table `Customer`.
+
+Either URI form works for either backend, so the same authored `source` can
+target both — and a profile can swap it for a differently named table when a
+store doesn't line up.
 
 ## What a profile may change — the contract
 
