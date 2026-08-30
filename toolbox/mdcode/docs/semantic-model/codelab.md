@@ -105,6 +105,7 @@ The model describes three entities joined by two relationships:
 
 ```mermaid
 classDiagram
+    direction LR
     class orders {
         order_id : integer
         customer_id : integer
@@ -126,15 +127,18 @@ classDiagram
 
 You can also start from an existing OWL ontology instead of hand-authoring this
 YAML. `kcmd owl import` converts an ontology (`.ttl`) into a semantic model:
-classes become entities, datatype properties become fields, and object
-properties become relationships. Here is the same `sales` domain written as an
-ontology. An ontology is an RDF graph: the classes, the properties, and the
-datatypes are all nodes, wired together by labeled arcs. Each property is its
-own node that points to the class it describes (`rdfs:domain`) and to the type
-of its values (`rdfs:range`); a datatype property ranges over a datatype such as
-`xsd:integer`, while an object property ranges over another class, which is what
-makes it a relationship. Node color marks each resource's `rdf:type` — class,
-datatype property, or object property:
+
+- an OWL **class** becomes an **entity**;
+- a **datatype property** — a class attribute typed by an `xsd:` datatype such
+  as `xsd:integer` — becomes a **field**;
+- an **object property** — one whose values are another class — becomes a
+  **relationship**.
+
+Here is the same `sales` domain written as an ontology. An ontology is an RDF
+graph: classes, properties, and datatypes are all nodes wired together by
+labeled arcs. Each property is its own node, pointing to the class it describes
+(`rdfs:domain`) and to the type of its values (`rdfs:range`). Node color marks
+each resource's `rdf:type`:
 
 ```mermaid
 graph LR
