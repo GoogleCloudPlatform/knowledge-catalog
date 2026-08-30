@@ -133,8 +133,8 @@ $ kcmd owl import sales.owl.ttl
 converted 2 classes, 1 object property, 9 datatype properties
 wrote catalog/EntryGroups/<entryGroup>/sales.yaml
 note: this model is UNBOUND (placeholder `unbound:` sources, no deployment target).
-      `kcmd push` is rejected until you bind each entity's source table and add
-      a BigQuery deployment target -- validation needs both, for every --target.
+      `kcmd push --target kc` publishes it to Knowledge Catalog as-is. To deploy a
+      graph, bind each entity's source table and add a deployment target first.
 ```
 
 The model name comes from the file (`sales.owl.ttl` → `sales`). By default the
@@ -626,18 +626,18 @@ is out of scope (see [Limitations](#limitations)).
 ## 4. Going from ontology to a running graph (binding)
 
 The import gets you an **unbound** model — placeholder `unbound:<Name>` sources,
-`TODO_BIND` join columns, and no deployment target — so it is **not deployable
-yet**. `kcmd push` is rejected for *any* `--target` (including `kc`) until the
-model passes [validation](reference.md#validation): every entity `source` must
-resolve to a real BigQuery table, and the model must declare exactly one BigQuery
-deployment target. Both checks run before either destination leg, so there is no
-Knowledge-Catalog-only shortcut around them today.
+`TODO_BIND` join columns, and no deployment target. You can **publish it to
+Knowledge Catalog right away**: `kcmd push --target kc` governs the logical model
+(entities, relationships, metrics, descriptions) and needs no bindings or
+deployment target. **Deploying a graph** is what requires binding — `kcmd push`
+with a graph leg (`bq`/`spanner`/`all`) is rejected until every entity `source`
+resolves to a real table and the model declares exactly one deployment target
+(see [validation](reference.md#validation)).
 
-> **Known limitation — no KC-only publish before binding.** Even
-> `kcmd push --target kc` runs the BigQuery deployment-target and live-source
-> checks first, so you cannot publish the ontology as catalog metadata while the
-> model is still unbound. Letting `--target kc` publish an unbound model is a
-> possible follow-up (see [Limitations](#limitations)).
+> **Governance before binding.** The catalog governs *meaning*, so an unbound
+> ontology can be published as catalog metadata and bound to a physical store
+> later. One caveat: a `--target kc` push records each entity's `source` as its
+> `unbound:<Name>` placeholder verbatim, until you bind a real table below.
 
 To make the model deployable, bind each class to a real table. A
 declared key does half of this for you: an edge into a class that has a key
@@ -678,10 +678,9 @@ in this first cut.
 
 ## Limitations
 
-Four different situations hide in "not covered": constructs already read but not
-yet resolved all the way downstream, constructs not read but reachable next,
-constructs out of scope, and one item that is a push limitation rather than a
-converter gap.
+Three situations hide in "not covered": constructs already read but not yet
+resolved all the way downstream, constructs not read but reachable next, and
+constructs out of scope.
 
 **Read now — only downstream resolution is pending.** These are not dropped; the
 importer handles them today, and the remaining work is a later step, not in the
@@ -724,10 +723,3 @@ converter targets:
   instances), and `owl:sameAs` / `owl:differentFrom` (which relate individuals).
 - OWL serializations other than Turtle (`.ttl`), and the reverse direction —
   semantic model → OWL export. Import is one-way.
-
-**A push limitation, not a converter gap: no Knowledge-Catalog-only publish of an
-unbound model.** A freshly imported model cannot `kcmd push --target kc` until its
-sources are bound and a deployment target is set: push validates the BigQuery
-deployment target and probes every source table before any leg runs (for every
-`--target`), so there is no KC-only path around those checks. Decoupling the KC
-leg from the BigQuery checks is a possible follow-up.

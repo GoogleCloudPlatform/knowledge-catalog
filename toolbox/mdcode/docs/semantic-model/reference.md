@@ -205,6 +205,13 @@ Each element of your model maps to one catalog resource. Every resource type
 below is a built-in system type under `dataplex-types/global` — push references
 them, it never creates them.
 
+A `--target kc` push accepts a **logical-only model** — entities, relationships,
+and metrics with no source bindings, field expressions, or deployment target —
+because the catalog governs meaning, not physical storage. Bindings and a target
+are required only for a graph leg. (An entity with no `source` publishes with no
+linked resource; one whose `source` is still an `unbound:<Name>` placeholder
+publishes that placeholder verbatim until you bind a real table.)
+
 > Set `KC_TYPE_PROJECT` to read these system types from another project, and
 > `DATAPLEX_ENDPOINT` to target a non-prod Dataplex host; both default to
 > production (`dataplex-types` / `https://dataplex.googleapis.com`).
@@ -233,17 +240,19 @@ of your model. For exactly what is stored, what is gated behind
 `push` and `--validate-only` run the same checks, **before either destination is
 touched**, so a model that cannot deploy fails fast instead of half-deploying:
 
-* **Exactly one deployment target per model, and it must be a valid BigQuery
-  or Spanner URI.** A model with no target — or with more than one —
-  is rejected, and so is a single target whose URI matches neither
+* **A graph push declares exactly one deployment target, a valid BigQuery or
+  Spanner URI.** When the push has a graph leg (`bq`/`spanner`/`all`), a model
+  with no target — or with more than one — is rejected, and so is a single target
+  whose URI matches neither
   `//bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>` nor
   `//spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>`
   (for example a `propertyGraph`/`propertyGraphs` typo, or a
   `…/entryGroups/@bigquery/entries/…` entry form). The error names the offending
-  URI and the expected forms. This gate runs before any destination leg and for
-  every `--target`, so a malformed target writes **nothing** — not to the graph
-  and **not to Knowledge Catalog**; the push aborts with a non-zero exit and no
-  entries are created. *(static)*
+  URI and the expected forms, and the gate runs before any leg, so a malformed
+  target writes **nothing**. A **Knowledge-Catalog-only push** (`--target kc`)
+  deploys no graph, so the deployment target is optional and, when present, not
+  checked — a logical model with no target still publishes to the catalog.
+  *(static)*
 * **Every metric on a BigQuery model resolves to exactly one entity** —
   otherwise it would be dropped from the BigQuery graph. Set the metric's attach
   entity, or scope its expression to a single entity. This rule is
@@ -259,10 +268,11 @@ touched**, so a model that cannot deploy fails fast instead of half-deploying:
   (a different system) and are **not** probed here. *(live — needs BigQuery
   access)*
 
-The live table check runs for **every** `--target` over the BigQuery-targeting
-models, because the same tables back both a BigQuery graph and its Knowledge
-Catalog entries — so even a Knowledge-Catalog-only push of a BigQuery-targeting
-model confirms it could deploy to BigQuery.
+The live table check runs only when the push actually touches BigQuery — a graph
+leg is requested (`bq`, or `all`/the default) and a model targets BigQuery. A
+**Spanner-only** or **Knowledge-Catalog-only** push queries no BigQuery tables,
+so it runs no live probe: a `--target kc` push writes catalog metadata without
+reaching any source, and a logical model has no sources to probe.
 
 ## Permissions
 

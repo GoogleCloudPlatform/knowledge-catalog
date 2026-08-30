@@ -106,13 +106,16 @@ it deploys to — in a `GOOGLE` custom extension, as shown above. The target's
 A BigQuery target's project and dataset are where the property graph is created;
 a Spanner target's instance and database are. Swapping one target URI for the
 other is all it takes to deploy the same model to the other backend. The target
-is also recorded on the model's Knowledge Catalog entry. A model with no
-deployment target — or with more than one — is rejected at push time (see
-[Validation](reference.md#validation)).
+is also recorded on the model's Knowledge Catalog entry. Deploying a graph needs
+exactly one target: a model with none, or more than one, is rejected when a graph
+leg runs. A Knowledge-Catalog-only push (`--target kc`) deploys no graph, so the
+target is optional there (see [Validation](reference.md#validation)).
 
 ### Table sources
 
-Each entity's `source` is its backing table.
+Each entity's `source` is its backing table. Sources bind the model to a store
+for a graph deploy; a `--target kc` push governs the logical model and needs
+none.
 
 For a **BigQuery** target, `source` is the BigQuery table. A `source` written as
 `dataset.table` (two parts) is qualified with the scope's project — the
@@ -247,6 +250,7 @@ your authored document as the source of truth.
 Already have an OWL ontology? `kcmd owl import` converts it into a semantic model
 once — classes → entities, object properties → relationships, datatype
 properties → fields. The converted model is **unbound** (placeholder sources, no
-deployment target), so bind each entity's `source`, fill the relationship join
-columns, and add a deployment target before `kcmd push` will deploy it — then it
-rides the normal push / pull above. See [Importing an OWL ontology](owl-import.md).
+deployment target). `kcmd push --target kc` can publish it to Knowledge Catalog
+as-is; to deploy a graph, bind each entity's `source`, fill the relationship join
+columns, and add a deployment target first. Either way it rides the normal push /
+pull above. See [Importing an OWL ontology](owl-import.md).
