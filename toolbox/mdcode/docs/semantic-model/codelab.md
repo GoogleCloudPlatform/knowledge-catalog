@@ -545,7 +545,7 @@ Spanner database holds the same business, but its tables are named differently
 (`FullName`, `OrderId`), and it does not carry `net_amount` — a settled figure
 the warehouse computes rather than one the live store keeps.
 
-### Write the operational binding
+### Write the binding profile
 
 Add a **second profile** beside the first. Like the `analytical` one, it changes
 only where each entity reads from and which column each field binds to; it never
@@ -626,18 +626,41 @@ from the bindings rather than declared. The `analytical` profile binds `net_amou
 the same metric is available under the binding step 3 used. One model; each store
 answers the part of it that its data can back.
 
-### Preview the generated DDL
+### Create the tables
 
-Preview the Spanner DDL the profile generates (`--validate-only` runs the
-generator without touching a database):
+Create the operational tables in a Spanner ENTERPRISE-edition database. Spanner
+Graph requires the ENTERPRISE edition. Create the database with its three tables,
+then load a little data:
 
 ```bash
-kcmd push --profile operational --target spanner --validate-only --print
+gcloud spanner databases create $SPANNER_DB --instance=$SPANNER_INSTANCE \
+  --ddl='CREATE TABLE Customers (CustomerId INT64 NOT NULL, FullName STRING(MAX)) PRIMARY KEY(CustomerId)' \
+  --ddl='CREATE TABLE Orders (OrderId INT64 NOT NULL, CustomerId INT64) PRIMARY KEY(OrderId)' \
+  --ddl='CREATE TABLE LineItems (LineId INT64 NOT NULL, OrderId INT64) PRIMARY KEY(LineId)'
+
+gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
+  --sql="INSERT INTO Customers (CustomerId, FullName) VALUES (1,'Acme'),(2,'Globex')"
+gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
+  --sql="INSERT INTO Orders (OrderId, CustomerId) VALUES (100,1),(101,1),(102,2)"
+gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
+  --sql="INSERT INTO LineItems (LineId, OrderId) VALUES (1,100),(2,100),(3,101),(4,102),(5,102),(6,102)"
+```
+
+> **Why the tables come before the Spanner push.** `kcmd push --target spanner`
+> applies the DDL through the `updateDatabaseDdl` long-running operation; it does
+> not create or pre-check the tables. So the tables must exist first.
+
+### Deploy the semantic model
+
+Now deploy the bound model to Spanner. `--print` shows the generated DDL:
+
+```bash
+kcmd push --profile operational --target spanner --print
 ```
 
 ```
 Note: profile 'operational' leaves 1 field(s) unbound; 0 entity(ies), 1 metric(s) and 0 relationship(s) unavailable.
-Validating semantic model for Spanner Graph...
+Pushing semantic model (Spanner Graph)...
 -- Spanner Graph --
 -- //spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/propertyGraphs/sales
 CREATE OR REPLACE PROPERTY GRAPH sales
@@ -672,7 +695,7 @@ EDGE TABLES (
     DESTINATION KEY(OrderId) REFERENCES orders(OrderId)
 );
 
-Validation complete; no changes applied.
+Deployed 1 Spanner Graph(s).
 ```
 
 The graph still speaks the model's vocabulary — the properties are `o_orderkey`,
@@ -691,31 +714,6 @@ BigQuery DDL in step 3:
   them.
 - **No `OPTIONS`.** Descriptions and synonyms are not written into the Spanner
   DDL; they live in Knowledge Catalog instead.
-
-### Create the tables and deploy
-
-To apply it for real, create the operational tables in a Spanner
-ENTERPRISE-edition database (Graph requires ENTERPRISE), load a little data, and
-drop `--validate-only`. The Spanner leg applies the DDL through the
-`updateDatabaseDdl` long-running operation and does not create or pre-check the
-tables, so they must exist first:
-
-```bash
-gcloud spanner databases create $SPANNER_DB --instance=$SPANNER_INSTANCE \
-  --ddl='CREATE TABLE Customers (CustomerId INT64 NOT NULL, FullName STRING(MAX)) PRIMARY KEY(CustomerId)' \
-  --ddl='CREATE TABLE Orders (OrderId INT64 NOT NULL, CustomerId INT64) PRIMARY KEY(OrderId)' \
-  --ddl='CREATE TABLE LineItems (LineId INT64 NOT NULL, OrderId INT64) PRIMARY KEY(LineId)'
-
-gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
-  --sql="INSERT INTO Customers (CustomerId, FullName) VALUES (1,'Acme'),(2,'Globex')"
-gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
-  --sql="INSERT INTO Orders (OrderId, CustomerId) VALUES (100,1),(101,1),(102,2)"
-gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
-  --sql="INSERT INTO LineItems (LineId, OrderId) VALUES (1,100),(2,100),(3,101),(4,102),(5,102),(6,102)"
-
-kcmd push --profile operational --target spanner
-# -> Deployed 1 Spanner Graph(s).
-```
 
 > **Knowledge Catalog is unchanged.** You do not re-push to Knowledge Catalog for
 > the Spanner leg. Step 2 governed the *logical* model, and adding a binding
