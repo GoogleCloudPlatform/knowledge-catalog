@@ -105,18 +105,15 @@ each field reads. A profile sets binding and leaves declaration alone.
 | Deployment target | the target URI | — |
 | AI metadata | — | `ai_context`, synonyms |
 
-An element's `name` is not overridden — it is the key that pairs a profile
-element with the model element it binds. The grain and the join columns name
-*fields* rather than physical columns, so they belong to the logical model; each
-field's column is resolved per profile from its `expression`.
-
-**Why metrics never appear in a profile.** A metric like
-`SUM(OrderedAs.extendedPrice * (1 - OrderedAs.discount))` references field
-*names* rather than columns. Field names are stable across profiles — only their
-column bindings change — so the metric is correct under every profile where its
-fields are bound, without being restated. Where a field it references is not
-bound, the metric is unavailable under that profile; the next section explains
-why.
+An element's `name` is never bound — it is the key that pairs a profile's binding
+to the model element it applies to. Everything logical is defined in terms of
+these names, not physical columns: a metric like `AVG(Customer.lifetimeValue)`,
+the grain, and a relationship's join columns all reference *field names*, which
+are identical under every profile. A profile changes only the column each name
+resolves to. That is why a metric is never restated in a profile: it stays
+correct wherever its fields are bound, and simply becomes unavailable under a
+profile that leaves one of them unbound — the next section explains how that
+propagates.
 
 ## Availability follows the bindings
 
