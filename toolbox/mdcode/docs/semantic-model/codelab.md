@@ -440,7 +440,7 @@ Open the link, expand the `$DATASET` dataset in the Explorer, and click the
 `$GRAPH` property graph. Its schema renders as a visual graph of the nodes and
 the edges that connect them.
 
-### Core Semantic Model: Metrics
+### Query Semantic Model: Metrics
 
 Now ask the same question — revenue by customer — two ways.
 
@@ -505,7 +505,7 @@ query, so the correct answer is the default one.
 > invalidated by graph edits. To see the exact output column names for a graph:
 > `DECLARE s STRING; CALL BQ.SHOW_GRAPH_EXPAND_SCHEMA("$PROJECT.$DATASET.$GRAPH", s); SELECT s;`
 
-### Core Semantic Model: GQL
+### Query Semantic Model: GQL
 
 Metrics answer aggregate questions. To follow the relationships between entities,
 query the graph with graph pattern matching (GQL). This walks the
@@ -721,7 +721,7 @@ kcmd push --profile operational --target spanner
 > profile changes nothing logical — bindings are not governed in Knowledge
 > Catalog. The single set of entries from step 2 already describes this graph too.
 
-### Core Semantic Model: GQL
+### Query Semantic Model: GQL
 
 Query it with graph pattern matching. This is the same GQL query you ran on
 BigQuery in step 3, now against the bare `sales` graph. The query names the
