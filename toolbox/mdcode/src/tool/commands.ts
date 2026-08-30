@@ -122,6 +122,19 @@ export function resolveTargets(target?: string|boolean): PushTarget[]|
 }
 
 
+// Whether the user explicitly named destinations (a comma-separated list), as
+// opposed to the omitted default or the `all` keyword. A graph leg the user
+// named directly but that no model targets is a misconfiguration (hard error);
+// the same leg pulled in only by `all`/default is a clean skip, because the
+// model is simply bound to a different backend.
+export function isExplicitSelection(target?: string|boolean): boolean {
+  if (typeof target !== 'string') return false;
+  const tokens =
+      target.toLowerCase().split(',').map(t => t.trim()).filter(t => t.length);
+  return tokens.length > 0 && !tokens.includes('all');
+}
+
+
 // True when a loaded model declares a deployment target of the given graph type
 // ('bigquery' or 'spanner'). Used to route each model to the leg that can
 // deploy it. Safe by the time it runs: validatePushRequirements has already
@@ -308,33 +321,53 @@ export async function push(options: PushOptions): Promise<number> {
 
     // Live pre-flight, before any destination runs: every BigQuery-targeting
     // model's source table must be reachable, so a push fails fast when the
-    // model could not deploy. Only the BigQuery-targeting models are probed
-    // (their sources are BigQuery tables); a Spanner model's sources live in
-    // Spanner. Runs for every --target and for --validate-only.
-    const accessErrors = await validateBigQueryDataSources(
-        bqModels, new BigQueryClient(ctx), source.project ?? ctx.project);
-    if (accessErrors.length) {
-      for (const e of accessErrors) {
-        console.error(`Error: ${e}`);
+    // model could not deploy. Scoped to a run that actually touches BigQuery:
+    // only when the BigQuery leg is requested (default `all` includes it) and a
+    // model targets it -- a Spanner-only or kc-only push does not query
+    // BigQuery tables, so probing them would fail a run on a target the user
+    // did not request. A Spanner model's sources live in Spanner and are not
+    // checked here. Runs for --validate-only too.
+    if (targets.includes('bigquery') && bqModels.length) {
+      const accessErrors = await validateBigQueryDataSources(
+          bqModels, new BigQueryClient(ctx), source.project ?? ctx.project);
+      if (accessErrors.length) {
+        for (const e of accessErrors) {
+          console.error(`Error: ${e}`);
+        }
+        return 1;
       }
-      return 1;
     }
+
+    // A graph leg the user named explicitly (not via `all`/default) but that no
+    // model targets is a misconfiguration, not a no-op: fail rather than report
+    // success having deployed nothing. A leg pulled in only by `all`/default is
+    // skipped quietly, since the model is simply bound to another backend.
+    const explicit = isExplicitSelection(options.target);
 
     // Run the resolved destinations in canonical order (BigQuery first); the
     // early return below fails fast, skipping later legs when an earlier one
-    // fails. A graph leg with no model targeting it is a clean no-op: the
-    // models are targeted at another backend, not misconfigured.
+    // fails.
     for (const target of targets) {
       let code = 0;
       if (target === 'bigquery') {
         if (bqModels.length) {
           code = await pushBigQuery(bqModels, ctx, options);
+        } else if (explicit) {
+          console.error(
+              'Error: --target requested BigQuery Graph, but no model declares ' +
+              'a BigQuery Graph deployment target.');
+          return 1;
         } else {
           console.log('No model targets BigQuery Graph; skipping.');
         }
       } else if (target === 'spanner') {
         if (spannerModels.length) {
           code = await pushSpanner(spannerModels, ctx, options);
+        } else if (explicit) {
+          console.error(
+              'Error: --target requested Spanner Graph, but no model declares ' +
+              'a Spanner Graph deployment target.');
+          return 1;
         } else {
           console.log('No model targets Spanner Graph; skipping.');
         }

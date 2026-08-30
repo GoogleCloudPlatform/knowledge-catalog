@@ -338,8 +338,35 @@ function spannerTable(
         `emitting it verbatim (a graph element table requires a table)`);
     return `(${trimmed})`;
   }
-  const last = trimmed.split('.').map(unquote).pop() ?? trimmed;
+  const last = splitDotted(trimmed).map(unquote).pop() ?? trimmed;
   return quoteIdent(last);
+}
+
+
+// Splits a dotted source into its segments, treating a backtick- or
+// double-quote-delimited segment as opaque so a dot INSIDE quotes does not
+// split an identifier: `proj.ds.`weird.name`` yields ['proj', 'ds',
+// '`weird.name`'], not a spurious break inside the quoted table name.
+function splitDotted(source: string): string[] {
+  const parts: string[] = [];
+  let cur = '';
+  let quote: string|null = null;
+  for (const ch of source) {
+    if (quote) {
+      cur += ch;
+      if (ch === quote) quote = null;
+    } else if (ch === '`' || ch === '"') {
+      quote = ch;
+      cur += ch;
+    } else if (ch === '.') {
+      parts.push(cur);
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  parts.push(cur);
+  return parts;
 }
 
 

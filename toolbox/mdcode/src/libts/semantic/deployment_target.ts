@@ -69,12 +69,24 @@ export interface GoogleDeploymentTargets {
 }
 
 
+// Memoizes the parse per model object so the several callers within one push
+// (validation, source-project lookup, per-leg routing, each deploy leg) share a
+// single parse rather than re-running JSON.parse + the regexes once per reader.
+// Keyed by model identity: the IR object is stable through a push (the loader,
+// transpile, and inheritance passes each hand on a fixed set of objects) and
+// its customExtensions are not mutated after loading. The returned value is
+// read-only by convention -- no caller mutates its arrays.
+const targetsCache = new WeakMap<SemanticModel, GoogleDeploymentTargets>();
+
 // Reads a model's GOOGLE custom_extension(s) in a single pass and returns the
 // deployment-target facts every caller derives from them. The extension `data`
 // is an opaque, vendor-serialized JSON string (the loader keeps it verbatim);
 // we own its `deploymentTargets` shape. Throws on malformed extension JSON.
 export function googleDeploymentTargets(model: SemanticModel):
     GoogleDeploymentTargets {
+  const cached = targetsCache.get(model);
+  if (cached) return cached;
+
   const uris: string[] = [];
   const bigQuery: BigQueryGraphTarget[] = [];
   const spanner: SpannerGraphTarget[] = [];
@@ -125,7 +137,9 @@ export function googleDeploymentTargets(model: SemanticModel):
     }
   }
 
-  return {uris, bigQuery, spanner, malformed};
+  const result: GoogleDeploymentTargets = {uris, bigQuery, spanner, malformed};
+  targetsCache.set(model, result);
+  return result;
 }
 
 

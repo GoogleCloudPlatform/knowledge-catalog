@@ -7,7 +7,7 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import {resolveTargets} from '../../../src/tool/commands';
+import {isExplicitSelection, resolveTargets} from '../../../src/tool/commands';
 
 describe('resolveTargets', () => {
   test('defaults to every destination when no target is given', () => {
@@ -57,4 +57,31 @@ describe('resolveTargets', () => {
         // than throwing on `.toLowerCase()`.
         expect(resolveTargets(true as unknown as string)).toBeUndefined();
       });
+});
+
+
+describe('isExplicitSelection', () => {
+  test('the omitted default is not an explicit selection', () => {
+    // A leg pulled in only by the default should skip quietly, not hard-fail,
+    // when no model targets it.
+    expect(isExplicitSelection(undefined)).toBe(false);
+  });
+  test('the \'all\' keyword is not an explicit selection', () => {
+    expect(isExplicitSelection('all')).toBe(false);
+    expect(isExplicitSelection('ALL')).toBe(false);
+    // `all` anywhere in the list still means "every backend", so a missing
+    // model for one of them is a skip, not an error.
+    expect(isExplicitSelection('all,spanner')).toBe(false);
+  });
+  test('a named destination (or list) is an explicit selection', () => {
+    expect(isExplicitSelection('spanner')).toBe(true);
+    expect(isExplicitSelection('bq')).toBe(true);
+    expect(isExplicitSelection('bq,kc')).toBe(true);
+    expect(isExplicitSelection(' SPANNER ')).toBe(true);
+  });
+  test('a bare boolean --target is not an explicit selection', () => {
+    // Guarded so an invalid flag is reported by resolveTargets, not treated as
+    // a named target here.
+    expect(isExplicitSelection(true as unknown as string)).toBe(false);
+  });
 });

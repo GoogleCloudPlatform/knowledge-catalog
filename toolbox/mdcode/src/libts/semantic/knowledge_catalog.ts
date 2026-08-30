@@ -48,7 +48,7 @@
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
-import {bigQueryGraphTargets} from './deploy_bigquery';
+import {googleDeploymentTargets} from './deployment_target';
 import {AiContext, DataType, Entity, Metric, Relationship, SemanticModel} from './ir';
 
 // Where the `semantic-*` and `schema` system types live: built-in types in
@@ -312,13 +312,16 @@ function entityByName(model: SemanticModel, name: string): Entity|undefined {
 // these shapes so any schema-driven change is a visible, reviewable diff.
 // ---------------------------------------------------------------------------
 
-// semantic-model: the BigQuery Graph deployment target URIs this model deploys
-// to (the same targets the BigQuery leg executes against). Empty data is valid;
-// the aspect is still attached to satisfy the entry type's required_aspects.
+// semantic-model: every recognized graph deployment target URI this model
+// deploys to -- BigQuery Graph and/or Spanner Graph, the same targets the graph
+// legs execute against. Recording both backends keeps the entry faithful for a
+// Spanner-targeted model (so a later `kcmd pull` reconstructs a bound model).
+// Empty data is valid; the aspect is still attached to satisfy required_aspects.
 function modelAspectData(model: SemanticModel): Record<string, any> {
-  const {targets} = bigQueryGraphTargets(model);
+  const {bigQuery, spanner} = googleDeploymentTargets(model);
+  const uris = [...bigQuery, ...spanner].map(t => t.uri);
   return compact({
-    deploymentTargets: targets.length ? targets.map(t => t.uri) : undefined,
+    deploymentTargets: uris.length ? uris : undefined,
   });
 }
 

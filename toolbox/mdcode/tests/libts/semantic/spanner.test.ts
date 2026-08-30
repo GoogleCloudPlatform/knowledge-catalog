@@ -156,6 +156,23 @@ describe('bare table mapping', () => {
     expect(ddl).toContain('Orders AS orders');
   });
 
+  test('a backtick-quoted final segment is unwrapped to its bare name', () => {
+    const {ddl} = generateSpannerPropertyGraph(withSource('proj.ds.`Orders`'));
+    expect(ddl).toContain('Orders AS orders');
+  });
+
+  test(
+      'a dot INSIDE a quoted final segment does not split the table name',
+      () => {
+        // The naive `split('.')` mangled `weird.name` into `name`; the quoted
+        // segment must survive whole (and be re-quoted, since it is not a
+        // simple identifier).
+        const {ddl} =
+            generateSpannerPropertyGraph(withSource('proj.ds.`weird.name`'));
+        expect(ddl).toContain('`weird.name` AS orders');
+        expect(ddl).not.toContain('name AS orders');
+      });
+
   test(
       'a query source is emitted verbatim (parenthesized) with a warning',
       () => {
