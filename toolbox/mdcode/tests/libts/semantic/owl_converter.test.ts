@@ -5,10 +5,10 @@
 // that then rides the normal kcmd push/pull. The guarantees pinned here mirror
 // the user-guide section "Importing an OWL ontology":
 //   1. the sales example produces exactly the documented OSI (golden), and
-//   2. that OSI loads through the OSI loader (the UNBOUND placeholders satisfy
-//      the schema, so the document is well-formed -- loadable, but not yet
-//      pushable: `kcmd push` rejects an unbound model, for every --target,
-//      until its sources are bound and a deployment target is set), and
+//   2. that OSI loads through the OSI loader (the placeholder sources satisfy
+//      the schema, so the document is well-formed -- loadable, and pushable to
+//      Knowledge Catalog as-is via `kcmd push --target kc`; a graph deploy needs
+//      its sources bound and a deployment target set first), and
 //   3. each mapped construct behaves as documented.
 // The scope is exactly the user guide; richer OWL is out of scope by design.
 

@@ -106,90 +106,197 @@ YAML
 You can also start from an existing OWL ontology instead of hand-authoring this
 YAML. `kcmd owl import` converts an ontology (`.ttl`) into a semantic model:
 classes become entities, datatype properties become fields, and object
-properties become relationships. Write a tiny ontology and import it:
+properties become relationships. Here is the same `sales` domain written as an
+ontology — three classes, each with its datatype properties, joined by two
+object properties:
+
+```mermaid
+classDiagram
+    class orders {
+        o_orderkey : integer
+        o_custkey : integer
+        net_amount : decimal
+    }
+    class customer {
+        c_custkey : integer
+        c_name : string
+    }
+    class lineitem {
+        l_linekey : integer
+        l_orderkey : integer
+    }
+    lineitem --> orders : lineitem_to_orders
+    orders --> customer : orders_to_customer
+```
+
+Write that ontology and import it:
 
 ```bash
-cat > /tmp/parts.ttl <<'TTL'
+cat > /tmp/sales.ttl <<'TTL'
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
-@prefix ex:   <http://example.com/commerce#> .
+@prefix ex:   <http://example.com/sales#> .
 
-ex:Part a owl:Class ;
-    rdfs:label "Part" ;
-    rdfs:comment "A sellable part" .
-ex:Supplier a owl:Class ;
-    rdfs:label "Supplier" .
+ex:orders a owl:Class ;
+    rdfs:comment "A customer order" ;
+    owl:hasKey ( ex:o_orderkey ) .
+ex:customer a owl:Class ;
+    rdfs:comment "A customer who places orders" ;
+    owl:hasKey ( ex:c_custkey ) .
+ex:lineitem a owl:Class ;
+    rdfs:comment "A line on an order" ;
+    owl:hasKey ( ex:l_linekey ) .
 
-ex:partName a owl:DatatypeProperty ;
-    rdfs:domain ex:Part ;
-    rdfs:range xsd:string .
-ex:partPrice a owl:DatatypeProperty ;
-    rdfs:domain ex:Part ;
+ex:o_orderkey a owl:DatatypeProperty ;
+    rdfs:domain ex:orders ;
+    rdfs:range xsd:integer .
+ex:o_custkey a owl:DatatypeProperty ;
+    rdfs:domain ex:orders ;
+    rdfs:range xsd:integer .
+ex:net_amount a owl:DatatypeProperty ;
+    rdfs:domain ex:orders ;
     rdfs:range xsd:decimal .
-ex:suppliedBy a owl:ObjectProperty ;
-    rdfs:domain ex:Part ;
-    rdfs:range ex:Supplier .
+
+ex:c_custkey a owl:DatatypeProperty ;
+    rdfs:domain ex:customer ;
+    rdfs:range xsd:integer .
+ex:c_name a owl:DatatypeProperty ;
+    rdfs:domain ex:customer ;
+    rdfs:range xsd:string .
+
+ex:l_linekey a owl:DatatypeProperty ;
+    rdfs:domain ex:lineitem ;
+    rdfs:range xsd:integer .
+ex:l_orderkey a owl:DatatypeProperty ;
+    rdfs:domain ex:lineitem ;
+    rdfs:range xsd:integer .
+
+ex:orders_to_customer a owl:ObjectProperty ;
+    rdfs:domain ex:orders ;
+    rdfs:range ex:customer .
+ex:lineitem_to_orders a owl:ObjectProperty ;
+    rdfs:domain ex:lineitem ;
+    rdfs:range ex:orders .
 TTL
 
-kcmd owl import /tmp/parts.ttl --out /tmp/parts_osi.yaml
+kcmd owl import /tmp/sales.ttl --out /tmp/sales_osi.yaml
 ```
 
 ```
-converted 2 classes, 1 object property, 2 datatype properties
-wrote /tmp/parts_osi.yaml
-note: this model is UNBOUND (placeholder `unbound:` sources, no deployment target).
-      `kcmd push` is rejected until you bind each entity's source table and add
-      a BigQuery deployment target -- validation needs both, for every --target.
+converted 3 classes, 2 object properties, 7 datatype properties
+wrote /tmp/sales_osi.yaml
+note: this is a logical model -- entities, fields, and relationships, with no
+      physical bindings. `kcmd push --target kc` publishes it to Knowledge Catalog
+      as-is. To deploy a graph, bind each entity's source table and add a
+      deployment target first.
 ```
 
 Look at what it produced:
 
 ```bash
-cat /tmp/parts_osi.yaml
+cat /tmp/sales_osi.yaml
 ```
 
 ```yaml
 version: 0.2.0.dev0
 semantic_model:
-  - name: parts
-    description: Imported from OWL ontology http://example.com/commerce#
+  - name: sales
+    description: Imported from OWL ontology http://example.com/sales#
     datasets:
-      - name: Part
-        source: unbound:Part
-        description: A sellable part
+      - name: orders
+        source: unbound:orders
+        primary_key:
+          - o_orderkey
+        description: A customer order
         fields:
-          - name: partName
+          - name: o_orderkey
             expression:
               dialects:
                 - dialect: BIGQUERY
-                  expression: partName
-            datatype: String
-          - name: partPrice
+                  expression: o_orderkey
+            datatype: Integer
+          - name: o_custkey
             expression:
               dialects:
                 - dialect: BIGQUERY
-                  expression: partPrice
+                  expression: o_custkey
+            datatype: Integer
+          - name: net_amount
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: net_amount
             datatype: Decimal
-      - name: Supplier
-        source: unbound:Supplier
+      - name: customer
+        source: unbound:customer
+        primary_key:
+          - c_custkey
+        description: A customer who places orders
+        fields:
+          - name: c_custkey
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: c_custkey
+            datatype: Integer
+          - name: c_name
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: c_name
+            datatype: String
+      - name: lineitem
+        source: unbound:lineitem
+        primary_key:
+          - l_linekey
+        description: A line on an order
+        fields:
+          - name: l_linekey
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: l_linekey
+            datatype: Integer
+          - name: l_orderkey
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: l_orderkey
+            datatype: Integer
     relationships:
-      - name: suppliedBy
-        from: Part
-        to: Supplier
+      - name: orders_to_customer
+        from: orders
+        to: customer
         from_columns:
           - TODO_BIND
         to_columns:
+          - c_custkey
+      - name: lineitem_to_orders
+        from: lineitem
+        to: orders
+        from_columns:
           - TODO_BIND
+        to_columns:
+          - o_orderkey
 ```
 
-The classes became `Part` and `Supplier` entities, the datatype properties
-became `Part`'s fields, and the object property became the `suppliedBy`
-relationship. (The importer writes them under `datasets:`, the original spelling
-of the `entities:` key this codelab uses — the two are interchangeable.) The
-`source: unbound:*` and `TODO_BIND` join columns are
-placeholders: the import gives you structure, and you bind it to physical tables
-and a deployment target before deploying to a query engine — which is exactly
+This is the same logical model you wrote by hand: the same three entities, the
+same fields and datatypes, and the same two relationships. (The importer writes
+them under `datasets:`, the original spelling of the `entities:` key this codelab
+uses — the two are interchangeable.) Two things the ontology does not carry, both
+of which you supply when you bind the model to BigQuery in step 3:
+
+- **The `revenue` metric.** An ontology describes structure, so OWL has no metric
+  concept; the imported model has none.
+- **Physical bindings.** Each entity reads from a placeholder `unbound:*` source,
+  and each relationship's foreign-key column comes through as `TODO_BIND`. The
+  importer does fill each relationship's destination columns from the target
+  class's `owl:hasKey`, so `orders_to_customer` already points at `c_custkey` and
+  `lineitem_to_orders` at `o_orderkey`; only the source-side foreign keys stay
+  open.
+
+Supplying the metric, the real source tables, and the join columns is exactly
 what the `analytical` binding adds to the hand-authored `sales` model in step 3.
 For the full OWL mapping — class hierarchies, unique keys, and the constructs
 carried as custom extensions — see [Importing an OWL ontology](owl-import.md).
@@ -200,8 +307,9 @@ The rest of this codelab uses the hand-authored `sales` model above.
 
 ## 2. Govern it in Knowledge Catalog
 
-You can govern the model right now — the push writes the logical model straight
-to the catalog as entries, so there is nothing to bind or load first.
+You can govern the model right now. The push writes the logical model straight
+to the catalog as entries; you do not need to connect it to any database tables
+first.
 
 ### Preview the plan
 
@@ -264,9 +372,11 @@ too.
 
 ## 3. Deploy to BigQuery and get reliable insights
 
-Governing the model created catalog entries but no tables. Deploying it to a
-query engine creates the tables and the graph. You add a **binding profile**,
-create the data, and deploy.
+In step 2 you governed the logical model, which created catalog entries but no
+tables and no data. To query it, you give the model a physical home in BigQuery.
+This takes three steps: write a **binding profile** that maps each entity to a
+BigQuery table, create those tables and load a little data, then deploy the model
+to build the graph.
 
 ### Write the binding profile
 
@@ -340,10 +450,11 @@ echo 'default_profile: analytical' >> catalog.yaml
 
 ### Create the tables
 
-Now create the data. An ontology-driven data-engineering agent would produce it
-from raw sources; for a self-contained run, create the three tables directly.
-`net_amount` is materialized on `orders` (the measure aggregates it), and each
-order fans out into several `lineitem` rows:
+Now create the tables and load a little data. In a production pipeline, an agent
+working from the ontology would generate these tables from raw sources; for this
+self-contained codelab, you create them directly. Two things to note for the
+queries ahead: the `orders` table stores `net_amount` as a column, which the
+`revenue` measure sums, and each order has several `lineitem` rows:
 
 ```bash
 bq mk -f --dataset $PROJECT:$DATASET
