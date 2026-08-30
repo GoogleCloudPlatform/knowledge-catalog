@@ -26,6 +26,7 @@ back. For the Ossie document format itself, see
 |---|---|
 | **This page** | author a model and deploy it |
 | [End-to-end codelab](codelab.md) | see the whole lifecycle: author, govern, hydrate, query |
+| [One model, many bindings](profiles.md) | bind one logical model to several stores or environments with profiles |
 | [Reference](reference.md) | look up a flag, what push creates, validation, or permissions |
 | [What push and pull preserve](fidelity.md) | understand why something changed or wasn't recovered |
 | [Importing an OWL ontology](owl-import.md) | start from an OWL ontology instead of hand-authoring |

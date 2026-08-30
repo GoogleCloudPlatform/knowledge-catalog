@@ -28,7 +28,8 @@ Knowledge Catalog — the graph first.
 
 | Flag | Effect |
 |------|--------|
-| `--target <bq\|spanner\|kc\|all>` | Which destination(s) to deploy to; accepts a comma-separated list (`bq,kc`). Default `all`. `bq` and `spanner` are the two graph backends; each model routes to whichever its deployment target names, so `--target spanner` on a BigQuery-targeting model reports it has nothing to do. |
+| `--target <bq\|spanner\|kc\|all>` | Which destination(s) to deploy to; accepts a comma-separated list (`bq,kc`). Default `all`. `bq` and `spanner` are the two graph backends; each model routes to whichever its deployment target names. Naming a graph backend that **no** model targets depends on how you asked: an explicit `--target spanner` (or `bq`) with no matching model is an error (nothing to deploy), while the same backend pulled in only by `all`/the default is skipped quietly, since the model is simply bound to the other backend. |
+| `--profile <name>` | Merge the named [binding profile](profiles.md) onto the logical model before deploying — chooses which physical binding is used, independent of `--target`. Defaults to `default_profile` from `catalog.yaml`, then to the inline (`default`) binding. |
 | `--validate-only` | Run every validation check and report pass/fail, but write nothing. |
 | `--print` | Print each destination's generated artifact (BigQuery or Spanner Graph SQL DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
 | `--force-remove` | Delete models in the entry group that this push no longer includes (see [Updating and removing models](README.md#updating-and-removing-models)). |
