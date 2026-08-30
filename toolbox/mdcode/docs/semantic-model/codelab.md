@@ -141,7 +141,7 @@ labeled arcs. Each property is its own node, pointing to the class it describes
 each resource's `rdf:type`:
 
 ```mermaid
-graph LR
+graph TD
     classDef cls fill:#dae8fc,stroke:#6c8ebf,color:#000;
     classDef dp fill:#d5e8d4,stroke:#82b366,color:#000;
     classDef op fill:#ffe6cc,stroke:#d79b00,color:#000;
