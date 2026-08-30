@@ -1,11 +1,13 @@
 # One logical model, many physical bindings
 
-> **Scope.** `kcmd` deploys a merged model to a property graph — **BigQuery
-> Graph or Spanner Graph**, whichever the profile's deployment target names — and
-> to Knowledge Catalog. A profile may bind an entity to any store — BigQuery,
-> Spanner, AlloyDB, a lake table — and `kcmd` merges it and reports its
-> availability; a binding to a store with no graph backend yet (AlloyDB, a SaaS
-> API, a lake table) is merged and reported, not deployed.
+> **Scope.** `kcmd push --profile <name>` merges a binding onto the logical model
+> and deploys the result to the graph backend the profile's deployment target
+> names — **BigQuery Graph or Spanner Graph**, the two graph backends today — and
+> to Knowledge Catalog. A profile rebinds each entity's `source` and columns and
+> may leave fields unbound; `kcmd` reports, per profile, what the binding can and
+> cannot answer. The deployment target must name one of the two graph backends; a
+> binding whose data lives elsewhere (an operational store reached over another
+> engine, a SaaS API) is a modeling direction, not a deploy target yet.
 
 A semantic model describes a business logically — its entities, the
 relationships between them, and the metrics over them — independent of where the
@@ -316,15 +318,19 @@ parts of the same model:
 ```bash
 kcmd push --profile analytical            # merge the analytical bindings and deploy to BigQuery Graph
 kcmd push --profile operational           # merge the operational bindings and deploy to Spanner Graph
-kcmd push --profile analytical --target kc # profile and destination-type are independent
+kcmd push --profile analytical --target kc # write only Knowledge Catalog, skip the graph
 kcmd push                                 # uses default_profile from catalog.yaml
 kcmd profiles                             # list profiles, their resolved sources, and what each cannot answer
 ```
 
-`--profile` chooses **which physical binding**. The existing `--target
-bq|kc|all` chooses **which destination type** (BigQuery Graph, Knowledge
-Catalog, or both). They are orthogonal — any profile can go to either
-destination.
+`--profile` chooses **which binding** to merge, and that binding's
+`deployment_target` fixes its **graph backend** — BigQuery Graph for the
+analytical binding above, Spanner Graph for the operational one. `--target`
+chooses **which destinations to write**: `bq`, `spanner`, `kc`, or `all` (the
+default). The two are not interchangeable. `--target kc` writes only the catalog
+under any profile, but naming a graph leg the profile does not target — say
+`--target bq` on the Spanner-bound `operational` — is an error, not a redirect:
+the backend is set by the profile's target, never by the flag.
 
 Set the default so a bare `kcmd push` in CI does the right thing, in
 `catalog.yaml`:
@@ -371,7 +377,9 @@ the same thing.
 string (`expression: c_name`) instead of the full per-dialect object. The two
 forms mean the same thing and expand to the same wire representation.
 
-**Dialect comes from the store.** A profile carries no SQL dialect. The dialect
-follows from the store a profile binds to; the engine lowers each `expression` to
-that store's query language when it runs. A profile chooses the data, and the
-execution engine chooses the dialect.
+**Dialect comes from the store, not the profile.** A profile carries no SQL
+dialect. Expressions are GoogleSQL — the language of both BigQuery Graph and
+Spanner Graph — and are emitted into the generated graph as written; the optional
+`kcmd push --transpile` pass converts vendor SQL to GoogleSQL at push time when a
+source was authored in another dialect. A profile chooses the data, and the
+backend it targets fixes the dialect.
