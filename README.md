@@ -10,6 +10,17 @@ This repository features tools, agents, and samples that demonstrate Knowledge C
 [![Open in Cloud Shell](http://gstatic.com/cloudssh/images/open-btn.svg)](https://console.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https%3A%2F%2Fgithub.com%2FGoogleCloudPlatform%2Fknowledge-catalog.git)
 
 
+## Ecosystem / Adopters
+
+Projects and products that produce or consume OKF bundles. To add yours, open a PR.
+
+- **[CATAAM](https://cataam.com)** — GRC and security platform. Its OKF Context Engine
+  compiles an organization's compliance graph — framework requirements, controls,
+  discovered cloud assets, automated tests, and iASM/ASM findings — into signed OKF
+  bundles that AI agents (via the Model Context Protocol) and auditors consume as a
+  portable, vendor-neutral view of compliance posture.
+
+
 ## Contributing
 
 See the contributing [instructions](CONTRIBUTING.md) to get started contributed.
