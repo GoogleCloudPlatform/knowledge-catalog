@@ -213,11 +213,13 @@ export function generateCatalogResources(
 
 
 // Builds the schema-join entry link for one relationship, or undefined when it
-// cannot be published. A many-to-many (association) edge is skipped -- a junction
-// is two joins, which the single source/target schema-join does not model -- and
-// so is an edge whose endpoint entity was not emitted (e.g. skipped for a
-// duplicate id). Both cases warn; the BigQuery property graph still carries the
-// edge.
+// cannot be published. Skipped, each with a warning: a many-to-many
+// (association) edge -- a junction is two joins, which the single source/target
+// schema-join does not model; an edge whose endpoint entity was not emitted
+// (e.g. skipped for a duplicate id); and a column-less (purely logical) edge,
+// whose join columns must be added to the model before it can publish. The
+// BigQuery property graph still carries the association and (once bound) direct
+// edges.
 function relationshipLink(
     names: Namer, model: SemanticModel, rel: Relationship,
     entityEntryName: Map<string, string>, seenLinks: Set<string>,
@@ -236,6 +238,19 @@ function relationshipLink(
     warnings.push(
         `relationship '${rel.name}': endpoint entity '${missing}' is not a ` +
         `published entity; the relationship link is skipped.`);
+    return undefined;
+  }
+  // A purely logical edge (an OWL import) carries no join columns. schema-join
+  // is a server-defined CLOSED metadataTemplate whose `fields` requirement we
+  // cannot depend on, so rather than risk a rejected aspect on a KC push we skip
+  // the link until the edge is bound. Add the relationship's from_columns /
+  // to_columns to the model and it publishes; the edge still lives in the model
+  // (and, once bound, the BigQuery/Spanner graph).
+  if (!rel.source.columns.length || !rel.destination.columns.length) {
+    warnings.push(
+        `relationship '${rel.name}': no join columns, so it is not published ` +
+        `to Knowledge Catalog yet; add its from_columns and to_columns to the ` +
+        `relationship in the model to publish the link.`);
     return undefined;
   }
   const linkId = names.linkId(model, rel);
@@ -280,11 +295,10 @@ function relationshipLink(
 // overwriting it. Field names/nesting mirror the schema-join aspect type's
 // metadataTemplate.
 //
-// A purely logical edge (an OWL import) carries no join columns; each endpoint
-// then omits `fields` and names the entity, so the aspect records the join's
-// direction and endpoints without a column binding. (schema-join is a server
-// CLOSED metadataTemplate; if it REQUIRES `fields`, skip the link for a
-// column-less edge with a warning instead -- see the PR's open item.)
+// Only bound edges reach here -- relationshipLink skips a column-less (logical)
+// edge -- so `fields` is always present. The `name` still falls back to the
+// entity name when the model is logical-only for KC (columns set but no
+// dataSource binding), matching the entity-not-found fallback.
 function schemaJoinAspectData(
     model: SemanticModel, rel: Relationship): Record<string, any> {
   const srcEntity = entityByName(model, rel.source.entity);
@@ -292,21 +306,16 @@ function schemaJoinAspectData(
   return {
     joins: [compact({
       source: compact({
-        // Name each side by its SQL table (dataSource); fall back to the entity
-        // name when the model is logical-only (no binding, so dataSource is
-        // empty), matching the entity-not-found fallback. `fields` is omitted
-        // for a column-less (logical) edge rather than emitted empty.
         name: srcEntity && srcEntity.dataSource ?
             srcEntity.dataSource :
             rel.source.entity,
-        fields: rel.source.columns.length ? rel.source.columns : undefined,
+        fields: rel.source.columns,
       }),
       target: compact({
         name: dstEntity && dstEntity.dataSource ?
             dstEntity.dataSource :
             rel.destination.entity,
-        fields: rel.destination.columns.length ? rel.destination.columns :
-                                                 undefined,
+        fields: rel.destination.columns,
       }),
       description: rel.description,
       type: 'FOREIGN_KEY',

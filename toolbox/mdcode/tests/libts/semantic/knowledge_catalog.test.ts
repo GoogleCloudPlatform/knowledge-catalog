@@ -587,6 +587,23 @@ describe('relationships map to schema-join entry links', () => {
         .toBe(true);
   });
 
+  test('a column-less (purely logical) edge is skipped and warned, no link',
+       () => {
+         // An OWL import leaves an edge with no join columns. schema-join is a
+         // server CLOSED template, so rather than risk a rejected column-less
+         // aspect the emitter skips the link (the edge publishes once join
+         // columns are added to the model).
+         const model = directFkModel();
+         model.relationships[0].source.columns = [];
+         model.relationships[0].destination.columns = [];
+         const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+         expect(entryLinks.length).toBe(0);
+         expect(warnings.some(
+                    w => w.includes('orders-to-customer') &&
+                        w.includes('no join columns')))
+             .toBe(true);
+       });
+
   test(
       'a relationship name that is not link-id-clean warns it will normalize',
       () => {

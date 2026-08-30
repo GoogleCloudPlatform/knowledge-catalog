@@ -46,10 +46,11 @@
 // physical tables, so entities carry no source, fields no expression, and
 // relationships no join columns -- only the logical shape (entities, fields,
 // keys, and edges by direction). `kcmd push --target kc` publishes it as-is.
-// A BigQuery or Spanner Graph deploy needs physical binding (sources, field
-// columns, edge join columns) and a deployment target added on top; that is a
-// separate step (a binding profile, see the user guide, "Going from ontology
-// to a running graph").
+// A BigQuery or Spanner Graph deploy needs each edge's join columns added to
+// the model (logical grain the model owns) plus a physical binding (sources,
+// field columns) and a deployment target; that binding is a separate step (a
+// binding profile, see the user guide, "Going from ontology to a running
+// graph").
 
 import {AiContext, CustomExtension, Entity, Field, Relationship, SemanticModel,} from '../../ir';
 
@@ -519,8 +520,8 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
 
   // Object properties -> relationships (edges). Both endpoints must be known
   // classes. The edge is logical: it carries only its direction (source entity
-  // -> destination entity), no join columns. The physical foreign-key / key
-  // columns are supplied by a binding profile before a graph deploy.
+  // -> destination entity), no join columns. The foreign-key / key columns are
+  // added to the model (logical grain, not a binding) before a graph deploy.
   const relationships: Relationship[] = [];
   for (const p of owl.objectProperties) {
     const domain = p.domains[0];
@@ -606,9 +607,9 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
 
     const relationship: Relationship = {
       name: p.localName,
-      // A logical edge: direction only, no join columns. A binding profile
-      // supplies the source foreign-key and destination key columns before a
-      // graph deploy.
+      // A logical edge: direction only, no join columns. The source
+      // foreign-key and destination key columns are added to the model (logical
+      // grain, not a binding) before a graph deploy.
       source: {entity: domain, columns: []},
       destination: {entity: range, columns: []},
       // No `description`: the OSI relationship has no such slot, so the comment

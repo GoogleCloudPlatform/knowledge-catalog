@@ -873,8 +873,9 @@ const OWL_EXTENSIONS = /\.owl\.ttl$|\.ttl$|\.owl$/i;
 // Turtle OWL ontology into an OSI model document that then rides the normal
 // `kcmd push` / `kcmd pull`. The converted model is purely LOGICAL (see the OWL
 // converter): `kcmd push --target kc` publishes it as-is; a BigQuery or Spanner
-// Graph deploy needs a binding profile (sources, field and join columns) and a
-// deployment target added on top. Returns a process exit code.
+// Graph deploy needs each relationship's join columns added to the model (a
+// logical fact the model owns) plus a binding profile (sources, field columns)
+// and a deployment target. Returns a process exit code.
 export async function owl(
     action: string, file: string, options: OwlImportOptions): Promise<number> {
   if (action !== 'import') {
@@ -953,8 +954,9 @@ export async function owl(
   console.log(
       `note: this is a LOGICAL model (no physical binding).\n` +
       `      \`kcmd push --target kc\` publishes it to Knowledge Catalog as-is.\n` +
-      `      A BigQuery or Spanner Graph deploy needs a binding profile (sources,\n` +
-      `      field and join columns) and a deployment target added on top.`);
+      `      A BigQuery or Spanner Graph deploy needs each relationship's join\n` +
+      `      columns added to the model, plus a binding profile (sources, field\n` +
+      `      columns) and a deployment target.`);
   return 0;
 }
 

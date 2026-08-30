@@ -16,6 +16,7 @@
 import {describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as yaml from 'yaml';
 
 import {convertOwlToOsi} from '../../../src/libts/semantic/converters/owl/convert';
 import {googleOntologyExtension} from '../../../src/libts/semantic/converters/owl/to_ir';
@@ -103,8 +104,8 @@ describe('sales ontology matches the user-guide CUJ', () => {
     expect(customer.keys).toEqual(['customerId']);
     expect(customer.uniqueKeys).toEqual([['email']]);
 
-    // The edge is logical: direction only, no join columns (a binding profile
-    // supplies them before a graph deploy).
+    // The edge is logical: direction only, no join columns (added to the model
+    // before a graph deploy).
     const placedBy = model.relationships.find(r => r.name === 'placedBy')!;
     expect(placedBy.source.entity).toBe('Order');
     expect(placedBy.destination.entity).toBe('Customer');
@@ -119,14 +120,26 @@ describe('the OWL import is a purely logical model', () => {
 
   // The emitted document carries no physical binding at all: no dataset
   // `source`, no field `expression`, and no relationship `from_columns` /
-  // `to_columns`. These are the facets a binding profile supplies later; an
-  // ontology has none.
-  test('the emitted YAML has no source, expression, or join columns', () => {
-    const {yaml} = convertOwlToOsi(ttl, 'sales');
-    expect(yaml).not.toContain('source:');
-    expect(yaml).not.toContain('expression:');
-    expect(yaml).not.toContain('from_columns:');
-    expect(yaml).not.toContain('to_columns:');
+  // `to_columns`. Asserted structurally on the parsed document (not a substring
+  // scan, which would false-positive on those words inside a description) so the
+  // guarantee holds regardless of formatting. Sources and expressions come from
+  // a binding profile later; join columns are added to the model; an ontology
+  // has none of the three.
+  test('the emitted document has no source, expression, or join columns', () => {
+    const {yaml: text} = convertOwlToOsi(ttl, 'sales');
+    const doc = yaml.parse(text);
+    for (const model of doc.semantic_model ?? []) {
+      for (const ds of model.datasets ?? []) {
+        expect(ds).not.toHaveProperty('source');
+        for (const f of ds.fields ?? []) {
+          expect(f).not.toHaveProperty('expression');
+        }
+      }
+      for (const rel of model.relationships ?? []) {
+        expect(rel).not.toHaveProperty('from_columns');
+        expect(rel).not.toHaveProperty('to_columns');
+      }
+    }
   });
 
   // The counterpart to the "loads under bindingOptional" test: the STRICT

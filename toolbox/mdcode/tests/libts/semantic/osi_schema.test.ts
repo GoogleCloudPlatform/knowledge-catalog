@@ -89,9 +89,10 @@ function onlyExtendsExtension(errors: typeof validate.errors): boolean {
 // The OWL import goldens (.osi.golden.yaml) are purely LOGICAL models -- a
 // deliberate pre-OSI superset, the same shape the profiles/ subtree is exempted
 // for: an ontology has no physical tables, so they omit every binding facet the
-// released schema requires (dataset `source`, field `expression`, relationship
-// `from_columns`/`to_columns`; a binding profile supplies them later) and also
-// carry the `extends`/`abstract` dataset supersets. Tolerate EXACTLY those
+// released schema requires (dataset `source` and field `expression`, supplied
+// by a binding profile later; relationship `from_columns`/`to_columns`, added
+// to the model later) and also carry the `extends`/`abstract` dataset
+// supersets. Tolerate EXACTLY those
 // omissions and extra properties on these goldens and nothing else, so real
 // drift (a bad enum, a misspelled key, an unexpected shape) still fails.
 function onlyLogicalGoldenDeviations(errors: typeof validate.errors): boolean {

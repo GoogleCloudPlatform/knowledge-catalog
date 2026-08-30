@@ -95,12 +95,17 @@ export function validatePushRequirements(
     // target (both arrays empty), so this is skipped.
     if (deployInfo.bigQuery.length + deployInfo.spanner.length > 0) {
       for (const rel of model.relationships ?? []) {
+        // An M:N edge binds through its junction table (association), so its
+        // direct source/destination columns are empty by design -- bigquery.ts
+        // renders it from `rel.association`. Only a plain FK edge needs direct
+        // join columns.
+        if (rel.association) continue;
         if (!rel.source.columns.length || !rel.destination.columns.length) {
           errors.push(
               `relationship '${rel.name}' in model '${model.name}' (${
-                  document}) targets a graph but has no join columns; bind its ` +
-              `source and destination columns (via a binding profile) before a ` +
-              `BigQuery or Spanner Graph deploy.`);
+                  document}) targets a graph but has no join columns; add its ` +
+              `from_columns and to_columns to the relationship in the model ` +
+              `before a BigQuery or Spanner Graph deploy.`);
         }
       }
     }

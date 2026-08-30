@@ -134,8 +134,9 @@ converted 2 classes, 1 object property, 9 datatype properties
 wrote catalog/EntryGroups/<entryGroup>/sales.yaml
 note: this is a LOGICAL model (no physical binding).
       `kcmd push --target kc` publishes it to Knowledge Catalog as-is.
-      A BigQuery or Spanner Graph deploy needs a binding profile (sources,
-      field and join columns) and a deployment target added on top.
+      A BigQuery or Spanner Graph deploy needs each relationship's join
+      columns added to the model, plus a binding profile (sources, field
+      columns) and a deployment target.
 ```
 
 The model name comes from the file (`sales.owl.ttl` → `sales`). By default the
@@ -197,8 +198,9 @@ semantic_model:
 
 This is a purely **logical model**: an ontology declares meaning, not physical
 tables, so entities carry no `source`, fields no `expression`, and relationships
-no join columns — a [binding profile](profiles.md) supplies those before a graph
-deploy. It is also the **clean mapping**: every construct here has a native
+no join columns. Before a graph deploy a [binding profile](profiles.md) supplies
+the sources and field expressions, and you add each edge's join columns to the
+model (they are logical, not a binding). It is also the **clean mapping**: every construct here has a native
 semantic-model home, so the output carries no term IRIs and no
 `custom_extensions`. Two kinds of
 ontology go further — a **class hierarchy** (`rdfs:subClassOf`) and constructs
@@ -225,7 +227,7 @@ appears nowhere above.
 | `owl:Ontology` header | model `description`, `ai_context`, version | comment → `description`; labels → `ai_context.synonyms`; `skos:example` → `ai_context.examples`; `owl:versionInfo` → appended to `description` |
 | `owl:Class` | `datasets[]` entry | a logical entity — **no `source`** (a binding profile adds one before a graph deploy) |
 | `owl:DatatypeProperty` | `fields[]` on **each** domain's dataset | a property with several `rdfs:domain` values lands on each; a logical field — **no `expression`** (a binding profile maps it to a column) |
-| `owl:ObjectProperty` | `relationships[]` | `from` = domain, `to` = range; a **logical edge with no join columns** (a binding profile supplies them, see [binding](#4-going-from-ontology-to-a-running-graph-binding)); with several `rdfs:domain`/`rdfs:range` values only the first of each is kept (a relationship is one source → one destination) and the rest are warned |
+| `owl:ObjectProperty` | `relationships[]` | `from` = domain, `to` = range; a **logical edge with no join columns** (you add `from_columns`/`to_columns` to the model before a graph deploy, see [binding](#4-going-from-ontology-to-a-running-graph-binding)); with several `rdfs:domain`/`rdfs:range` values only the first of each is kept (a relationship is one source → one destination) and the rest are warned |
 | `rdfs:subClassOf` (named superclass) | dataset `extends[]` | **entity-level inheritance only** — records the parent(s) in document order; not read on object properties (see [Class hierarchies](#class-hierarchies-rdfssubclassof)) |
 | `rdfs:subPropertyOf`, `owl:inverseOf`, `owl:equivalentClass`, `owl:disjointWith`, `owl:oneOf`, `owl:equivalentProperty`, `owl:propertyDisjointWith`, `owl:propertyChainAxiom`, `owl:AllDisjointClasses`, `owl:AllDisjointProperties`, `owl:AllDifferent`, the property characteristics, `rdfs:seeAlso`, `rdfs:isDefinedBy`, `owl:deprecated`, `owl:versionInfo` | `custom_extensions` (GOOGLE) | **no native home yet** — carried verbatim, inert on push (see [Constructs carried as custom extensions](#constructs-carried-as-custom-extensions-not-yet-native)) |
 | `rdfs:range xsd:*` | field `datatype` | see [Datatypes](#datatypes-rdfsrange) |
@@ -286,9 +288,9 @@ BigQuery Graph / BI treats it as one.
   keys, or a composite one) are left without a `primary_key`.
 
 Keys are **logical grain**, not a binding — they are the entity's identity, so
-they come across even though the model has no physical binding. A binding profile
-uses them later to fill an edge's destination join columns; see
-[binding](#4-going-from-ontology-to-a-running-graph-binding).
+they come across even though the model has no physical binding. They also tell
+you which columns an edge's `to_columns` must reference when you add join columns
+to the model; see [binding](#4-going-from-ontology-to-a-running-graph-binding).
 
 ### Class hierarchies (`rdfs:subClassOf`)
 
@@ -601,47 +603,66 @@ is out of scope (see [Limitations](#limitations)).
 The import gives you a **logical model**: what the domain means, with no physical
 binding. That is directly useful — `kcmd push --target kc` publishes it to
 Knowledge Catalog as-is, so the ontology becomes catalog metadata (entities,
-fields, keys, and edges) with nothing more to fill in:
+fields, and keys) with nothing more to fill in:
 
 ```console
 $ kcmd push --target kc      # publishes the logical model to Knowledge Catalog
 ```
 
-A **BigQuery or Spanner Graph** deploy needs the physical facts an ontology does
-not carry: which table each entity reads, which column each field reads, the join
-columns on each edge, and a deployment target. You supply those in a
-[binding profile](profiles.md) — a document in the same schema, kept beside the
-model as `<model>.profiles/<name>.yaml`, that adds *only* the binding and leaves
-the logical model untouched. The logical model and the profile merge by name at
-push time:
+A relationship publishes as a catalog link only once it has join columns (added
+to the model, below); a column-less edge is skipped with a warning, so the
+entities and fields still publish while the edge waits.
 
-```yaml
-# sales.profiles/warehouse.yaml — physical binding for the sales model
-version: 0.2.0.dev0
-semantic_model:
-  - name: sales
-    deployment_target: //bigquery.googleapis.com/projects/myproj/datasets/sales/propertyGraphs/sales
-    datasets:
-      - name: Customer
-        source: //bigquery.googleapis.com/projects/myproj/datasets/sales/tables/customers
-        fields:
-          - { name: customerId, expression: c_custkey }
-          - { name: email,      expression: c_email }
-          # ... the remaining Customer fields ...
-      - name: Order
-        source: //bigquery.googleapis.com/projects/myproj/datasets/sales/tables/orders
-        fields:
-          - { name: orderId, expression: o_orderkey }
-          # ... the remaining Order fields ...
-    relationships:
-      - name: placedBy
-        from_columns: [o_custkey]        # the Order-side foreign key
-        to_columns: [customerId]         # Customer's key column
-```
+A **BigQuery or Spanner Graph** deploy needs two things the import leaves open,
+and they belong in different places:
 
-The keys the import already recovered (`primary_key`, `unique_keys`) tell you
-which columns an edge's `to_columns` must reference — here `placedBy.to_columns`
-targets Customer's `customerId` key. With the profile in place, a single push
+1. **The join columns on each edge — in the model.** The import gives every
+   relationship its endpoints (`from`/`to`) but no join columns; which columns an
+   edge joins on is a *logical* fact the model owns, not a physical binding, so
+   you add it to the imported model itself. The keys the import already recovered
+   (`primary_key`, `unique_keys`) tell you which columns an edge's `to_columns`
+   must reference:
+
+   ```yaml
+   # sales.yaml — add the join columns to the imported relationship
+   relationships:
+     - name: placedBy
+       from: Order
+       to: Customer
+       from_columns: [o_custkey]   # the Order-side foreign key
+       to_columns: [customerId]    # Customer's key column
+   ```
+
+2. **The physical binding — in a profile.** Which table each entity reads, which
+   column each field reads, and the deployment target go in a
+   [binding profile](profiles.md): a document in the same schema, kept beside the
+   model as `<model>.profiles/<name>.yaml`, that adds *only* the binding and
+   leaves the logical model untouched. A profile may set `source`, field
+   `expression`, `unbound`, and `deployment_target` — nothing logical (a
+   `relationships` block in a profile is rejected). The model and the profile
+   merge by name at push time:
+
+   ```yaml
+   # sales.profiles/warehouse.yaml — physical binding for the sales model
+   version: 0.2.0.dev0
+   semantic_model:
+     - name: sales
+       deployment_target: //bigquery.googleapis.com/projects/myproj/datasets/sales/propertyGraphs/sales
+       datasets:
+         - name: Customer
+           source: //bigquery.googleapis.com/projects/myproj/datasets/sales/tables/customers
+           fields:
+             - { name: customerId, expression: c_custkey }
+             - { name: email,      expression: c_email }
+             # ... the remaining Customer fields ...
+         - name: Order
+           source: //bigquery.googleapis.com/projects/myproj/datasets/sales/tables/orders
+           fields:
+             - { name: orderId, expression: o_orderkey }
+             # ... the remaining Order fields ...
+   ```
+
+With the join columns in the model and the profile in place, a single push
 deploys the graph:
 
 ```console

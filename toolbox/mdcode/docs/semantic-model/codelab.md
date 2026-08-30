@@ -166,8 +166,9 @@ converted 3 classes, 2 object properties, 7 datatype properties
 wrote /tmp/sales_from_owl.yaml
 note: this is a LOGICAL model (no physical binding).
       `kcmd push --target kc` publishes it to Knowledge Catalog as-is.
-      A BigQuery or Spanner Graph deploy needs a binding profile (sources,
-      field and join columns) and a deployment target added on top.
+      A BigQuery or Spanner Graph deploy needs each relationship's join
+      columns added to the model, plus a binding profile (sources, field
+      columns) and a deployment target.
 ```
 
 The imported model:
