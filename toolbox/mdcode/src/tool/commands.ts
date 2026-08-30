@@ -952,8 +952,8 @@ export async function owl(
   console.log(`wrote ${writtenPath}`);
   console.log(
       `note: this model is UNBOUND (placeholder \`unbound:\` sources, no deployment target).\n` +
-      `      \`kcmd push\` is rejected until you bind each entity's source table and add\n` +
-      `      a BigQuery deployment target -- validation needs both, for every --target.`);
+      `      \`kcmd push --target kc\` publishes it to Knowledge Catalog as-is. To deploy a\n` +
+      `      graph, bind each entity's source table and add a deployment target first.`);
   return 0;
 }
 

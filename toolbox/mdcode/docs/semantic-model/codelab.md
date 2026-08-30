@@ -139,8 +139,8 @@ kcmd owl import /tmp/parts.ttl --out /tmp/parts_osi.yaml
 converted 2 classes, 1 object property, 2 datatype properties
 wrote /tmp/parts_osi.yaml
 note: this model is UNBOUND (placeholder `unbound:` sources, no deployment target).
-      `kcmd push` is rejected until you bind each entity's source table and add
-      a BigQuery deployment target -- validation needs both, for every --target.
+      `kcmd push --target kc` publishes it to Knowledge Catalog as-is. To deploy a
+      graph, bind each entity's source table and add a deployment target first.
 ```
 
 Look at what it produced:

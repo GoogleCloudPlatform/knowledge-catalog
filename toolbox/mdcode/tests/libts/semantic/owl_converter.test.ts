@@ -6,9 +6,9 @@
 // the user-guide section "Importing an OWL ontology":
 //   1. the sales example produces exactly the documented OSI (golden), and
 //   2. that OSI loads through the OSI loader (the UNBOUND placeholders satisfy
-//      the schema, so the document is well-formed -- loadable, but not yet
-//      pushable: `kcmd push` rejects an unbound model, for every --target,
-//      until its sources are bound and a deployment target is set), and
+//      the schema, so the document is well-formed -- loadable, and pushable to
+//      Knowledge Catalog as-is (`kcmd push --target kc`), though a graph leg is
+//      rejected until its sources are bound and a deployment target is set), and
 //   3. each mapped construct behaves as documented.
 // The scope is exactly the user guide; richer OWL is out of scope by design.
 
