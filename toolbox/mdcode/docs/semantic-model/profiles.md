@@ -5,7 +5,7 @@ between them, and the metrics over them — independent of where the data
 physically lives. A **binding profile** maps that one logical model onto a
 concrete set of sources. You author the model once as a single canonical
 definition and pick a profile per scenario; a profile changes only *where* each
-entity reads from, never *what* the model means, so `Customer`, `revenue`, and
+entity reads from, never *what* the model means, so `Customer`, `order_count`, and
 every relationship mean the same thing whichever profile serves them.
 
 It works like a class hierarchy (the same way an entity `extends` a supertype):
@@ -31,7 +31,7 @@ model to one of them:
 - **Different backends for different consumers.** A live operational store
   (Spanner) holds the `Customer` an agent reads and writes as it acts; an
   analytics warehouse (BigQuery) holds a scaled copy the dashboards read. Each is
-  a profile, and both inherit the same metric definitions, so `revenue` is
+  a profile, and both inherit the same metric definitions, so `order_count` is
   computed the same way wherever it is asked.
 - **Different environments.** Dev, staging, and prod are three profiles that
   differ only in the project they point at.
