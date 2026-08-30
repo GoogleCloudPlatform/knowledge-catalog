@@ -257,9 +257,9 @@ too.
 
 ## 3. Deploy to BigQuery and get reliable insights
 
-Governing the model didn't touch a table. Deploying it to a query engine does:
-you add a **binding profile** — the table each entity reads and the column each
-field maps to — then create the data and deploy.
+Governing the model created catalog entries but no tables. Deploying it to a
+query engine creates the tables and the graph. You add a **binding profile**,
+create the data, and deploy.
 
 Write the **analytical** binding: the BigQuery table each entity reads, the
 column each field maps to, and the BigQuery graph to deploy to. The
@@ -308,7 +308,7 @@ echo 'default_profile: analytical' >> catalog.yaml
 ```
 
 > **Simple case — one binding, one file.** If a model only ever binds to one
-> store, you don't need a separate profile. Put the `deployment_target`, each
+> store, you do not need a separate profile. Put the `deployment_target`, each
 > entity's `source`, and each field's `expression` directly on the model in
 > `sales.yaml` — that is the `default` profile — and run a bare `kcmd push`. An
 > `orders` entity then reads:
@@ -497,7 +497,7 @@ and deployed the `analytical` profile — the BigQuery warehouse. An operational
 Spanner database holds the same business, but its tables are named differently
 (`Customers`, `Orders`, `LineItems`), its columns are named differently
 (`FullName`, `OrderId`), and it does not carry `net_amount` — a settled figure
-the warehouse computes, not something the live store keeps.
+the warehouse computes rather than one the live store keeps.
 
 Add a **second profile** beside the first. Like the `analytical` one, it changes
 only where each entity reads from and which column each field binds to; it never
@@ -574,7 +574,7 @@ DDL below shows.)
 
 `revenue` is `SUM(orders.net_amount)`, and the operational store does not bind
 `net_amount`, so the profile reports `revenue` as unavailable there — computed
-from the bindings, not declared. The `analytical` profile binds `net_amount`, so
+from the bindings rather than declared. The `analytical` profile binds `net_amount`, so
 the same metric is available under the binding step 3 used. One model; each store
 answers the part of it that its data can back.
 
@@ -629,7 +629,7 @@ The graph still speaks the model's vocabulary — the properties are `o_orderkey
 `c_name`, and the rest — but each is now backed by the profile's Spanner column
 (`OrderId AS o_orderkey`, `FullName AS c_name`). The key and reference clauses
 name the physical columns (`KEY(OrderId)`), because a Spanner graph keys on the
-table's real column, not the property alias. Three things also differ from the
+table's real column rather than the property alias. Three things also differ from the
 BigQuery DDL in step 3:
 
 - **Bare table and graph names.** A Spanner property graph names tables inside
