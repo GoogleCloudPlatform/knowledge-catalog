@@ -859,6 +859,10 @@ async function pullSemanticModel(
 
 
 export interface OwlImportOptions {
+  // Emit the compact flow YAML layout (`primary_key: [id]`, inline field and
+  // relationship maps) instead of the default block layout. Off by default;
+  // the semantic-model codelab turns it on so its shown output is reproducible.
+  compact?: boolean;
   // Write the generated OSI document to this path instead of the semantic-model
   // layout dir. When omitted, the model lands in the scope's model layout so
   // the next `kcmd push` picks it up.
@@ -899,7 +903,7 @@ export async function owl(
 
   // convertOwlToOsi throws only on malformed Turtle; main.ts's try/catch
   // reports it.
-  const result = convertOwlToOsi(turtle, modelName);
+  const result = convertOwlToOsi(turtle, modelName, {compactFlow: options.compact});
   for (const w of result.warnings) {
     console.warn(`Warning: ${w}`);
   }

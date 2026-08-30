@@ -78,16 +78,71 @@ export interface SerializeResult {
  * `logical` marks the model as a purely logical one (no physical binding), so
  * the missing-source and missing-expression warnings -- which flag a lossy pull
  * of a bound model -- are suppressed. An OWL import sets it; `pull` does not.
+ *
+ * `compactFlow` renders leaf collections (scalar sequences, all-scalar maps) in
+ * flow style so the output matches the compact convention the semantic-model
+ * guides author by hand and is byte-for-byte reproducible there. An OWL import
+ * sets it; `pull` does not.
  */
 export interface SerializeOptions {
   logical?: boolean;
+  compactFlow?: boolean;
 }
 
 export function serializeModel(
     model: SemanticModel, opts: SerializeOptions = {}): SerializeResult {
   const warnings: string[] = [];
-  const text = yaml.stringify(modelDocument(model, warnings, opts.logical));
+  const document = modelDocument(model, warnings, opts.logical);
+  const text =
+      opts.compactFlow ? renderCompact(document) : yaml.stringify(document);
   return {yaml: text, warnings: [...new Set(warnings)]};
+}
+
+// Renders "leaf" collections in flow style so the output matches the compact
+// convention the semantic-model guides author by hand: a sequence whose items
+// are all scalars (`primary_key: [id]`, `from_columns: [fk]`) and a map whose
+// values are all scalars (an inline field `{name, datatype}` or a column-less
+// relationship `{name, from, to}`). Nested structures -- a dataset, an
+// expression's `dialects`, an `ai_context` -- always stay block.
+//
+// A leaf collection is inlined ONLY while it stays short: a map or sequence
+// whose flow form would exceed FLOW_WIDTH_BUDGET (a field carrying a long
+// `description`, say) is left block, so `--compact` never emits an unreadable
+// multi-hundred-character line. `lineWidth: 0` disables the wrapper so an
+// inlined collection is never broken mid-braces -- the width gate, not the
+// wrapper, is what bounds line length. Flow and block parse identically, so
+// this only affects layout.
+const FLOW_WIDTH_BUDGET = 80;
+
+// The rendered width of a scalar node (its stringified value length); 0 for a
+// non-scalar, which never contributes because a collection holding one is not
+// inlined in the first place.
+function scalarWidth(node: unknown): number {
+  return yaml.isScalar(node) ?
+      String((node as yaml.Scalar).value ?? '').length :
+      0;
+}
+
+function renderCompact(document: Record<string, any>): string {
+  const doc = new yaml.Document(document);
+  yaml.visit(doc, {
+    Seq(_, node) {
+      if (!node.items.every(item => yaml.isScalar(item))) return;
+      // `[` + each `item, ` + `]`, approximated for the width gate.
+      const width = node.items.reduce((n, item) => n + scalarWidth(item) + 2, 2);
+      if (width <= FLOW_WIDTH_BUDGET) node.flow = true;
+    },
+    Map(_, node) {
+      const pairs = node.items as yaml.Pair[];
+      if (!pairs.every(pair => yaml.isScalar(pair.value))) return;
+      // `{` + each `key: value, ` + `}`, approximated for the width gate.
+      const width = pairs.reduce(
+          (n, pair) => n + scalarWidth(pair.key) + scalarWidth(pair.value) + 4,
+          2);
+      if (width <= FLOW_WIDTH_BUDGET) node.flow = true;
+    },
+  });
+  return doc.toString({flowCollectionPadding: false, lineWidth: 0});
 }
 
 // Builds the plain document object (version + one model) that yaml.stringify
