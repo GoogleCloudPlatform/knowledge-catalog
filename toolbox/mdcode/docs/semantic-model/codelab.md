@@ -51,9 +51,7 @@ The **logical model** (this step) declares the business: three entities
 metric (`revenue`). It names nothing physical. A **binding profile** then says
 where each entity reads from and which column each field is — you write one when
 you deploy to BigQuery (step 3) and another for Spanner (step 4); the logical
-model never changes. (A real sales schema fans each order out into many
-line-item rows, so the model includes `lineitem` — step 3 uses that fan-out to
-show where hand-written SQL goes wrong.)
+model never changes.
 
 Write the logical model — declarations only, no sources, no columns, no
 deployment target:
