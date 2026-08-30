@@ -448,6 +448,31 @@ echo 'default_profile: analytical' >> catalog.yaml
 > This codelab splits them because step 4 adds a second store, and that split is
 > what lets one model back both.
 
+### Inspect the binding profile
+
+`kcmd profiles` lists the model's binding profiles and reports what each one can
+answer. Run it to confirm the binding before you deploy:
+
+```bash
+kcmd profiles
+```
+
+```
+Model 'sales' ($DATASET):
+  profile 'analytical' (default)
+    target: //bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/sales
+    sources:
+      orders -> $PROJECT.$DATASET.orders
+      customer -> $PROJECT.$DATASET.customer
+      lineitem -> $PROJECT.$DATASET.lineitem
+    cannot answer: nothing withheld.
+```
+
+Only the `analytical` profile exists so far, and it binds every field, so it
+withholds nothing: the whole model, including the `revenue` metric, is answerable
+under this binding. Step 4 adds a second profile, and the same command then shows
+both side by side.
+
 ### Create the tables
 
 Now create the tables and load a little data. In a production pipeline, an agent
@@ -698,7 +723,12 @@ YAML
 The profile restates no relationship, no metric, no label, and no grain — those
 are logical and live once in the model. It carries only bindings: each entity's
 Spanner table, each field's Spanner column, and the one field the store does not
-have. `kcmd profiles` reports what each binding can answer:
+have.
+
+### Inspect the binding profiles
+
+The model now has two profiles. `kcmd profiles` lists them both and reports what
+each one can answer:
 
 ```bash
 kcmd profiles
