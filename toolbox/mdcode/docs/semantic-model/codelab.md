@@ -45,13 +45,14 @@ kcmd init --semantic-model $PROJECT.$LOCATION.$DATASET
 # -> scope: semantic-model.$PROJECT.$LOCATION.$DATASET
 ```
 
-Author the model in two parts — this is what lets one model serve many stores.
-The **logical model** (this step) declares the business: three entities
-(`orders`, `customer`, `lineitem`), the relationships between them, and one
-metric (`revenue`). It names nothing physical. A **binding profile** then says
-where each entity reads from and which column each field is — you write one when
-you deploy to BigQuery (step 3) and another for Spanner (step 4); the logical
-model never changes.
+Author the model in two parts — this is what lets one model serve many stores:
+
+- The **logical model** (this step) declares the business: three entities
+  (`orders`, `customer`, `lineitem`), the relationships between them, and one
+  metric (`revenue`). It names nothing physical.
+- A **binding profile** then says where each entity reads from and which column
+  each field is. You write one when you deploy to BigQuery (step 3) and another
+  for Spanner (step 4); the logical model never changes.
 
 Write the logical model — declarations only, no sources, no columns, no
 deployment target:
