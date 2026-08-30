@@ -297,17 +297,17 @@ kcmd push --profile analytical            # deploy the graph with the analytical
 kcmd push --profile operational           # deploy the graph with the operational bindings (Spanner target)
 kcmd push --all-profiles                  # deploy the graph once per binding profile
 kcmd push --profile analytical --no-kc    # deploy only the graph, skip Knowledge Catalog
-kcmd push --no-graph                      # publish only to Knowledge Catalog, leave the graph alone
+kcmd push --no-profile                    # publish only to Knowledge Catalog, deploy no graph
 kcmd profiles                             # list profiles, their resolved sources, and what each cannot answer
 ```
 
 `--profile` chooses **which physical binding** feeds the graph, and that binding's
 `deployment_target` selects **which graph backend** the model deploys to
 (BigQuery Graph or Spanner Graph). You never name the backend on the command line
-— picking the profile is picking the backend. Choosing the profile is a separate
-axis from choosing the legs: the two legs are the **graph** deploy and the
-**Knowledge Catalog** push, both on by default, and `--no-kc` / `--no-graph` each
-turn one off (both together are an error).
+— picking the profile is picking the backend. The binding-profile axis (how many
+profiles the graph deploys for: `--no-profile`, the default, `--profile`, or
+`--all-profiles`) is separate from the **Knowledge Catalog** axis (`--no-kc`).
+Both default on; `--no-profile --no-kc` together is an error (nothing to deploy).
 
 **Deploying to more than one binding at once.** `--all-profiles` deploys the graph
 once for every defined profile — for example the analytical (BigQuery) and

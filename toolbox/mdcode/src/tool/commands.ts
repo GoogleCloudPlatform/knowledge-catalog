@@ -55,17 +55,11 @@ export interface PushOptions {
   // Unlike `force` above, this authorizes a destructive delete rather
   // than overriding a conflict.
   forceRemove?: boolean;
-  // Whether to deploy the graph leg. On by default; `--no-graph` sets it false
-  // to publish only the logical model to Knowledge Catalog, leaving any deployed
-  // graph untouched. Independent of which binding profile feeds the graph and of
-  // which backend it targets (the profile's deployment target names that).
-  // Ignored for non-semantic-model scopes.
-  graph?: boolean;
   // Whether to push the Knowledge Catalog metadata leg. On by default; `--no-kc`
-  // sets it false to deploy only the graph. The two leg toggles are symmetric:
-  // `--no-graph` gives a catalog-only push, `--no-kc` a graph-only push, and both
-  // together are an error (nothing to deploy). Ignored for non-semantic-model
-  // scopes.
+  // sets it false to deploy only the graph. The catalog toggle is symmetric with
+  // the profile axis below: `--no-profile` gives a catalog-only push, `--no-kc` a
+  // graph-only push, and both together are an error (nothing to deploy). Ignored
+  // for non-semantic-model scopes.
   kc?: boolean;
   // Print each pushed destination's generated artifact in that destination's
   // native format (BigQuery/Spanner Graph -> SQL DDL, Knowledge Catalog -> the
@@ -84,30 +78,33 @@ export interface PushOptions {
   // both the graph and Knowledge Catalog legs see the filled expressions.
   // Semantic-model push only. See ../libts/semantic/transpile.
   transpile?: boolean;
-  // The binding profile whose physical bindings feed the graph leg: reads
-  // `<model>.profiles/<name>.yaml` and overlays it onto the logical model. The
-  // merged binding's deployment target selects the graph backend, so the profile
-  // -- not a flag -- decides where the graph deploys. Omitted means the model's
-  // default binding: `default_profile` from catalog.yaml, else the inline
-  // bindings in the document (the implicit 'default' profile). Mutually exclusive
-  // with allProfiles. Semantic-model push only.
-  profile?: string;
+  // How many binding profiles the graph leg deploys for -- the graph axis. cac
+  // folds three flags onto this one key: `--no-profile` sets it false (deploy no
+  // graph, publish only to Knowledge Catalog); `--profile <name>` sets the string
+  // (deploy that one, reading `<model>.profiles/<name>.yaml`); omitted leaves it
+  // undefined (the model's default binding: `default_profile` from catalog.yaml,
+  // else the inline bindings -- the implicit 'default' profile). A profile's
+  // deployment target selects the graph backend, so the profile -- not a flag --
+  // decides where the graph deploys. Mutually exclusive with allProfiles.
+  // Semantic-model push only.
+  profile?: string|boolean;
   // Deploy the graph once per defined binding profile (plus the inline 'default'
-  // when the document itself declares a target), instead of a single profile.
-  // `--all-profiles`. The Knowledge Catalog leg still records one canonical view
-  // (the default binding). Mutually exclusive with profile. Semantic-model push
-  // only.
+  // when the document itself declares a target), instead of a single profile:
+  // the "all" end of the profile axis. `--all-profiles`. The Knowledge Catalog
+  // leg still records one canonical view (the default binding). Mutually exclusive
+  // with profile and with --no-profile. Semantic-model push only.
   allProfiles?: boolean;
 }
 
 
-// Guard the push flag combination before any work. The graph deploy and the
-// Knowledge Catalog push are two independent legs (--no-graph / --no-kc); the
-// graph backend is never a command-line choice (each model's deployment target
-// names it). --profile / --all-profiles select WHICH binding profile the graph
-// leg deploys with, so they are meaningless once the graph leg is off, and
-// mutually exclusive with each other. Returns an error to report, or null when
-// the combination is coherent.
+// Guard the push flag combination before any work. A push has two axes: how many
+// binding profiles the graph deploys for (--no-profile = none, default = the
+// default one, --profile = one, --all-profiles = all) and whether the Knowledge
+// Catalog leg runs (--no-kc). The graph backend is never a command-line choice
+// (each model's deployment target names it). --no-profile deploys no graph, so it
+// cannot also ask for a profile, and --profile / --all-profiles are mutually
+// exclusive. Returns an error to report, or null when the combination is
+// coherent.
 export function checkPushSelection(sel: {
   graphEnabled: boolean;
   kcEnabled: boolean;
@@ -115,12 +112,12 @@ export function checkPushSelection(sel: {
   namedProfile: boolean;
 }): {error: string}|null {
   if (!sel.graphEnabled && !sel.kcEnabled) {
-    return {error: '--no-graph and --no-kc together leave nothing to deploy.'};
+    return {error: '--no-profile and --no-kc together leave nothing to deploy.'};
   }
   if (!sel.graphEnabled && (sel.allProfiles || sel.namedProfile)) {
     return {
-      error: '--no-graph deploys no graph, so it cannot be combined with ' +
-          '--profile or --all-profiles (there is no graph leg to bind).',
+      error: '--no-profile deploys no graph, so it cannot be combined with ' +
+          '--profile or --all-profiles (there is no graph to bind).',
     };
   }
   if (sel.allProfiles && sel.namedProfile) {
@@ -319,23 +316,18 @@ export async function push(options: PushOptions): Promise<number> {
     const layout = snapshot.layout as SemanticModelLayout;
     const source = snapshot.manifest.source as SemanticModelSource;
 
-    // The graph deploy and the Knowledge Catalog push are two independent legs,
-    // both on by default (cac sets the flag to false when passed): --no-graph
-    // gives a catalog-only push, --no-kc a graph-only push. Neither names the
-    // graph backend -- that comes from each model's deployment target.
-    const graphEnabled = options.graph !== false;
+    // The push has two axes. The profile axis says how many binding profiles the
+    // graph deploys for: --no-profile (options.profile === false) deploys none --
+    // a catalog-only push; --profile <name> deploys that one; --all-profiles every
+    // one; and the default (undefined) the model's default binding
+    // (`default_profile` from catalog.yaml, else the inline bindings -- the
+    // implicit 'default' profile). A profile's deployment target names the
+    // backend; the command line never does. The catalog axis is --no-kc.
     const kcEnabled = options.kc !== false;
-
-    // Binding-profile selection feeds the graph leg only. --profile names one
-    // profile, --all-profiles deploys every defined one, and the default is the
-    // model's default binding (`default_profile` from catalog.yaml, else the
-    // inline bindings in the document -- the implicit 'default' profile). These
-    // choose WHICH physical binding the graph deploys with; they never turn the
-    // graph leg on or off (that is --no-graph) and never pick the backend (the
-    // profile's deployment target does).
     const allProfiles = options.allProfiles === true;
     const namedProfile =
         typeof options.profile === 'string' ? options.profile : undefined;
+    const graphEnabled = options.profile !== false;
     const selectionError = checkPushSelection({
       graphEnabled,
       kcEnabled,
@@ -465,7 +457,7 @@ export async function push(options: PushOptions): Promise<number> {
     // profiles first, sorted, then the inline 'default'). --all-profiles fans
     // out over every defined profile, plus the inline 'default' when the
     // document itself declares a target; a single push deploys the named or the
-    // default profile. Empty when --no-graph.
+    // default profile. Empty when --no-profile.
     const graphProfileNames: string[] = [];
     if (graphEnabled) {
       if (allProfiles) {
@@ -522,7 +514,7 @@ export async function push(options: PushOptions): Promise<number> {
     // Knowledge Catalog records one canonical view of the logical model: the
     // single --profile selection, else the default binding. Alongside a graph
     // deploy the entries reflect that binding (pruned to what it answers); a
-    // catalog-only --no-graph push publishes the whole logical model unpruned.
+    // catalog-only --no-profile push publishes the whole logical model unpruned.
     if (kcEnabled) {
       const kcProfileName =
           namedProfile ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
@@ -550,10 +542,10 @@ export async function push(options: PushOptions): Promise<number> {
   // catalog snapshot they are inert. Warn rather than silently ignore them, so
   // a user who expected (say) --transpile to run isn't misled by a clean exit.
   const semanticOnlyFlags: Array<[boolean, string]> = [
-    [options.profile !== undefined, '--profile'],
+    [typeof options.profile === 'string', '--profile'],
     [!!options.allProfiles, '--all-profiles'],
     [!!options.transpile, '--transpile'],
-    [options.graph === false, '--no-graph'],
+    [options.profile === false, '--no-profile'],
     [options.kc === false, '--no-kc'],
     [!!options.print, '--print'],
     [!!options.emitExpressions, '--emit-expressions'],

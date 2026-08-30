@@ -32,7 +32,7 @@ describe('checkPushSelection', () => {
     expect(checkPushSelection({...base, kcEnabled: false})).toBeNull();
   });
 
-  test('--no-graph (catalog only) is coherent', () => {
+  test('--no-profile (catalog only) is coherent', () => {
     expect(checkPushSelection({...base, graphEnabled: false})).toBeNull();
   });
 
@@ -44,24 +44,24 @@ describe('checkPushSelection', () => {
     expect(checkPushSelection({...base, allProfiles: true})).toBeNull();
   });
 
-  test('--no-graph --no-kc is an error: nothing to deploy', () => {
+  test('--no-profile --no-kc is an error: nothing to deploy', () => {
     const r = checkPushSelection({...base, graphEnabled: false, kcEnabled: false});
     expect(r).not.toBeNull();
     expect(r!.error).toContain('nothing to deploy');
   });
 
-  test('--no-graph --profile is an error: no graph leg to bind', () => {
+  test('--no-profile --profile is an error: no graph to bind', () => {
     const r =
         checkPushSelection({...base, graphEnabled: false, namedProfile: true});
     expect(r).not.toBeNull();
-    expect(r!.error).toContain('no graph leg to bind');
+    expect(r!.error).toContain('no graph to bind');
   });
 
-  test('--no-graph --all-profiles is an error: no graph leg to bind', () => {
+  test('--no-profile --all-profiles is an error: no graph to bind', () => {
     const r =
         checkPushSelection({...base, graphEnabled: false, allProfiles: true});
     expect(r).not.toBeNull();
-    expect(r!.error).toContain('no graph leg to bind');
+    expect(r!.error).toContain('no graph to bind');
   });
 
   test('--profile --all-profiles is an error: one profile or every profile', () => {

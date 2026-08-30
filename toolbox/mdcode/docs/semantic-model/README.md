@@ -144,17 +144,18 @@ most common flags:
 ```bash
 kcmd push                      # deploy the graph (default binding) + Knowledge Catalog
 kcmd push --no-kc              # deploy only the graph, skip Knowledge Catalog
-kcmd push --no-graph           # publish only to Knowledge Catalog, leave the graph alone
+kcmd push --no-profile         # publish only to Knowledge Catalog, deploy no graph
 kcmd push --profile analytical # deploy the graph with one binding profile; its target picks the backend
 kcmd push --all-profiles       # deploy the graph once per binding profile
 kcmd push --validate-only      # run all checks, write nothing
 kcmd push --print              # also print the generated DDL / entry plan
 ```
 
-A push has two independent legs, both on by default — the **graph** deploy and
-the **Knowledge Catalog** push; `--no-graph` and `--no-kc` each turn one off. A
-separate axis chooses which **binding profile** feeds the graph: the default
-binding, a single `--profile`, or every one with `--all-profiles`. See
+A push has two axes. The **binding-profile axis** sets how many profiles the
+graph deploys for: the default binding, `--no-profile` (none — catalog only), a
+single `--profile`, or every one with `--all-profiles`. The **Knowledge Catalog
+axis** is `--no-kc` (skip the catalog leg). Both default on, so a bare push
+deploys the default graph and records to the catalog. See
 [Binding profiles](profiles.md).
 
 A logical model that declares no deployment target has no graph to deploy, so a

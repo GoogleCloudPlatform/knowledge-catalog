@@ -64,8 +64,8 @@ cli.command('push', 'Push catalog entries')
         'Emit SQL-expression fields not yet in the published Knowledge Catalog system-type templates (per-field schema semantics, metric expression); off by default, enable once the templates support them; semantic-model push only')
     .option('--validate-only', 'Only validate changes without applying')
     .option(
-        '--no-graph',
-        'Skip the graph deploy and publish only the logical model to Knowledge Catalog; the graph is deployed by default to the backend each model\'s deployment target names; semantic-model push only')
+        '--no-profile',
+        'Deploy the graph for no binding profile: publish only the logical model to Knowledge Catalog, leaving any deployed graph untouched; the graph is deployed by default for the default binding profile; semantic-model push only')
     .option(
         '--no-kc',
         'Skip the Knowledge Catalog metadata push and deploy only the graph; Knowledge Catalog is pushed by default; semantic-model push only')
@@ -76,11 +76,11 @@ cli.command('push', 'Push catalog entries')
         '--transpile',
         'Rewrite vendor-dialect (e.g. Snowflake/Databricks) expressions to GoogleSQL before deploying, filling target expressions the loader left unset; semantic-model push only')
     .option(
-        '--profile <name>',
-        'Binding profile whose physical bindings feed the graph leg (reads <model>.profiles/<name>.yaml); its deployment target selects the graph backend; defaults to default_profile, else the inline bindings; mutually exclusive with --all-profiles; semantic-model push only')
+        '--profile [name]',
+        'Deploy the graph for one binding profile (reads <model>.profiles/<name>.yaml); its deployment target selects the graph backend; defaults to default_profile, else the inline bindings; mutually exclusive with --all-profiles and --no-profile; semantic-model push only')
     .option(
         '--all-profiles',
-        'Deploy the graph once per defined binding profile (plus the inline bindings when the document declares a target); Knowledge Catalog still records the default binding; mutually exclusive with --profile; semantic-model push only')
+        'Deploy the graph for every defined binding profile (plus the inline bindings when the document declares a target); Knowledge Catalog still records the default binding; mutually exclusive with --profile and --no-profile; semantic-model push only')
     .action(async (options) => {
       let exitCode = 1;
       try {
