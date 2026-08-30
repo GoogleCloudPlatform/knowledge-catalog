@@ -56,8 +56,8 @@ Author the model in two parts — this is what lets one model serve many stores:
 
 ### Author by hand
 
-Write the logical model — declarations only, no sources, no columns, no
-deployment target:
+Write the logical model. It declares the entities, their fields, the
+relationships between them, and the metric:
 
 ```bash
 cat > catalog/EntryGroups/$DATASET/sales.yaml <<'YAML'
