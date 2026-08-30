@@ -508,8 +508,9 @@ query, so the correct answer is the default one.
 ### Query Semantic Model: GQL
 
 Metrics answer aggregate questions. To follow the relationships between entities,
-query the graph with graph pattern matching (GQL). This walks the
-`orders_to_customer` edge to count each customer's orders:
+query the graph with graph query language (GQL), which matches a pattern of nodes
+and edges. This walks the `orders_to_customer` edge to count each customer's
+orders:
 
 ```bash
 bq query --use_legacy_sql=false --nouse_cache '
@@ -723,8 +724,8 @@ kcmd push --profile operational --target spanner
 
 ### Query Semantic Model: GQL
 
-Query it with graph pattern matching. This is the same GQL query you ran on
-BigQuery in step 3, now against the bare `sales` graph. The query names the
+Query it with the same GQL query you ran on BigQuery in step 3, now against the
+bare `sales` graph. The query names the
 model's properties (`c_name`, `o_orderkey`); the profile's column bindings are
 invisible to it:
 
