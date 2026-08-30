@@ -174,7 +174,7 @@ const modelBase = z.object({
 // Knowledge-Catalog-only push, which governs the logical model), those two
 // requirements are dropped so a purely logical model loads. The contradiction
 // checks (unbound+expression, abstract+source) are enforced either way.
-function makeDocumentSchema(bindingOptional: boolean) {
+function buildDocumentSchema(bindingOptional: boolean) {
   const field = fieldBase.superRefine((f, ctx) => {
     if (f.unbound && f.expression !== undefined) {
       ctx.addIssue({
@@ -223,6 +223,16 @@ function makeDocumentSchema(bindingOptional: boolean) {
     version: z.string().optional(),
     semantic_model: z.array(model).min(1),
   });
+}
+
+// Only two schema shapes exist (strict vs binding-optional) and each is
+// immutable, so build both once at module load and select between them rather
+// than reconstructing the whole field/dataset/model/document graph -- with fresh
+// superRefine closures -- on every fromDocument call.
+const strictDocumentSchema = buildDocumentSchema(false);
+const logicalDocumentSchema = buildDocumentSchema(true);
+function makeDocumentSchema(bindingOptional: boolean) {
+  return bindingOptional ? logicalDocumentSchema : strictDocumentSchema;
 }
 
 type ExpressionDoc = z.infer<typeof expressionSchema>;

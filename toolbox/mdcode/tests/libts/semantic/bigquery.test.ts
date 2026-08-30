@@ -160,6 +160,21 @@ describe('IR-contract metric cases the loader cannot produce', () => {
   });
 
   test(
+      'an unbound field (no column) is omitted from the node table with a warning',
+      () => {
+        // Availability pruning normally removes unbound fields; generating DDL
+        // without pruning (e.g. straight from a bindingOptional load) must not
+        // emit the field as a phantom bare column.
+        const model = orders();
+        model.entities[0].fields.push({name: 'notes'});  // no expression/binding
+        const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+        expect(ddl).not.toContain('notes');
+        expect(warnings.some(
+                   w => w.includes('notes') && w.includes('no column')))
+            .toBe(true);
+      });
+
+  test(
       'a metric whose declared entity disagrees with its expression is reported',
       () => {
         // Declared entity:'orders' but the expression aggregates a different

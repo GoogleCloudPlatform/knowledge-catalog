@@ -21,8 +21,8 @@ import {LoadedModel} from './loader';
 // `targetOptional` permits a model with NO deployment target -- the case for a
 // Knowledge-Catalog-only push, which governs the logical model and deploys no
 // graph. A graph leg never sets it, so a bq/spanner/all push still requires
-// exactly one target. A model that declares more than one target is a
-// misconfiguration either way.
+// exactly one target. A KC-only push ignores its deployment target entirely --
+// it deploys no graph.
 export function validatePushRequirements(
     models: LoadedModel[], opts: {targetOptional?: boolean} = {}): string[] {
   const errors: string[] = [];
@@ -39,12 +39,23 @@ export function validatePushRequirements(
       continue;
     }
 
-    // Every model must declare exactly one deployment target -- a single
-    // BigQuery Graph OR Spanner Graph URI (we do not support several graphs per
-    // model). The target's host selects which deploy leg runs. A KC-only push
-    // (targetOptional) also accepts zero targets, since it deploys no graph.
-    if (deployInfo.uris.length === 1) {
-      if (deployInfo.bigQuery.length + deployInfo.spanner.length === 0) {
+    // A graph push must declare exactly one deployment target -- a single
+    // BigQuery Graph OR Spanner Graph URI (we do not support zero or several
+    // graphs per model). The target's host selects which deploy leg runs.
+    //
+    // A KC-only push (targetOptional) deploys no graph, so its deployment target
+    // is irrelevant: skip the check entirely. Such a push may carry no target (a
+    // logical model), one, or even both backends (whose KC aspect records both)
+    // -- none of that affects the Knowledge Catalog write.
+    if (!opts.targetOptional) {
+      if (deployInfo.uris.length !== 1) {
+        errors.push(
+            `model '${model.name}' (${document}) declares ${
+                deployInfo.uris
+                    .length} deploymentTargets; exactly one BigQuery ` +
+            `Graph or Spanner Graph target is required under its GOOGLE ` +
+            `custom_extension.`);
+      } else if (deployInfo.bigQuery.length + deployInfo.spanner.length === 0) {
         // The single target is present but is not a supported graph URI.
         errors.push(
             `model '${model.name}' (${document}) deploymentTarget '${
@@ -53,13 +64,6 @@ export function validatePushRequirements(
             `<p>/datasets/<d>/propertyGraphs/<g> or //spanner.googleapis.com/` +
             `projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>.`);
       }
-    } else if (!(opts.targetOptional && deployInfo.uris.length === 0)) {
-      errors.push(
-          `model '${model.name}' (${document}) declares ${
-              deployInfo.uris
-                  .length} deploymentTargets; exactly one BigQuery ` +
-          `Graph or Spanner Graph target is required under its GOOGLE ` +
-          `custom_extension.`);
     }
 
     // A model that targets a BigQuery graph must have every metric resolve to a

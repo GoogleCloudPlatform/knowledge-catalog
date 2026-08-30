@@ -645,11 +645,14 @@ describe('a purely logical model (no physical binding) emits cleanly', () => {
     expect(warnings).toEqual([]);
   });
 
-  test('a logical entity emits an empty resources array (no bogus empty element)', () => {
+  test('a logical entity omits the physical source block (no bogus empty element)', () => {
     const {entries} = generateCatalogResources(logicalModel(), OPTS);
     const orders = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
-    expect(orders.aspects!['dataplex-types.global.semantic-entity'].data!.source)
-        .toEqual({resources: []});
+    // No table -> no `source` at all (empty aspect data is valid, like the
+    // model aspect's deploymentTargets), rather than source:{resources:[]} or
+    // the old bogus source:{resources:['']}.
+    const data = orders.aspects!['dataplex-types.global.semantic-entity'].data!;
+    expect(data.source).toBeUndefined();
   });
 
   test(

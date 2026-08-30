@@ -125,15 +125,21 @@ describe('validatePushRequirements', () => {
         expect(validatePushRequirements([loaded(m)]).length).toBe(1);
       });
 
-  test('targetOptional still rejects more than one deployment target', () => {
-    // Optional means zero-or-one; a model that declares two targets is a
-    // misconfiguration regardless of the destination.
+  test('targetOptional ignores the deployment target entirely (KC-only)', () => {
+    // A KC-only push deploys no graph, so its deployment target is irrelevant:
+    // more than one target -- and even a single malformed one -- is accepted,
+    // where a graph push rejects both. (Zero targets is covered above.)
     const other =
         '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
-    const m = model({}, [googleExt([BQ_TARGET, other])]);
-    const errs = validatePushRequirements([loaded(m)], {targetOptional: true});
-    expect(errs.length).toBe(1);
-    expect(errs[0]).toContain('exactly one');
+    const many = model({}, [googleExt([BQ_TARGET, other])]);
+    expect(validatePushRequirements([loaded(many)], {targetOptional: true}))
+        .toEqual([]);
+    expect(validatePushRequirements([loaded(many)]).length).toBe(1);
+
+    const malformed = model({}, [googleExt(['//example.com/not/a/graph'])]);
+    expect(validatePushRequirements([loaded(malformed)], {targetOptional: true}))
+        .toEqual([]);
+    expect(validatePushRequirements([loaded(malformed)]).length).toBe(1);
   });
 });
 
