@@ -192,6 +192,18 @@ export function isTimeDimension(field: Field): boolean {
   return field.type !== undefined && TEMPORAL_TYPES.has(field.type);
 }
 
+// The physical column (or SQL) a field binds to under the current binding, or
+// undefined when the field is unbound (structurally absent -- no column). A
+// field's target/canonical `expression` wins; a field awaiting transpilation
+// falls back to its imported vendor expression, which still names a real column,
+// so it is bound rather than unbound. `unbound: true` means no column at all.
+// This is the single source of truth for "is this field bound"; availability
+// pruning and the BigQuery generator both consult it so they never disagree.
+export function fieldBinding(field: Field): string | undefined {
+  if (field.unbound) return undefined;
+  return field.expression ?? field.importedExpression;
+}
+
 /**
  * A relationship: a directed foreign-key edge in the semantic graph, from
  * `source` to `destination`. The join pairs the endpoints' columns positionally

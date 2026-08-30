@@ -146,6 +146,19 @@ describe('IR-contract metric cases the loader cannot produce', () => {
         expect(ddl).toContain('MEASURE(COUNT(o_orderkey)) AS order_count');
       });
 
+  test('a key field bound to a computed expression warns at the structural site', () => {
+    // A KEY / SOURCE KEY / REFERENCES site must name a bare column. A key bound
+    // to a computed expression resolves to SQL, not a column, which BigQuery
+    // rejects; the generator must warn statically rather than emit broken DDL.
+    const model = orders();
+    model.entities[0].fields[0].expression = 'CONCAT(orders.a, orders.b)';
+    const {warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(warnings.some(
+               w => w.includes('o_orderkey') &&
+                   w.includes('non-column expression')))
+        .toBe(true);
+  });
+
   test(
       'a metric whose declared entity disagrees with its expression is reported',
       () => {

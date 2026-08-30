@@ -252,4 +252,42 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     pruneUnavailable(m, 'operational');
     expect(JSON.stringify(m)).toBe(before);
   });
+
+  test('a field carrying only an imported (untranspiled) expression is bound', () => {
+    // A vendor-dialect field's column lives on `importedExpression` until
+    // transpilation fills `expression`. It is bound -- it names a column -- so
+    // pruning must not mistake it for unbound and drop it (or its metric).
+    const m = irModel();
+    const ltv = m.entities.find(e => e.name === 'Customer')!.fields.find(
+        f => f.name === 'lifetimeValue')!;
+    delete ltv.unbound;
+    delete ltv.expression;
+    ltv.importedExpression = 'c_ltv';
+    ltv.importedDialect = 'SNOWFLAKE';
+    const {model, report} = pruneUnavailable(m, 'operational');
+    expect(fieldNames(model, 'Customer')).toContain('lifetimeValue');
+    expect(report.unboundFields).not.toContain('Customer.lifetimeValue');
+    expect(metricNames(model)).toContain('avg_lifetime_value');
+  });
+
+  test('an unbound KEY field drops the whole entity and everything on it', () => {
+    // A graph node must be keyed, so unbinding a key field makes the entire
+    // entity unavailable; the relationship into it and the metric over it fall
+    // with it, while the other entity survives.
+    const m = irModel();
+    const key = m.entities.find(e => e.name === 'Customer')!.fields.find(
+        f => f.name === 'key')!;
+    key.unbound = true;
+    delete key.expression;
+    const {model, report} = pruneUnavailable(m, 'operational');
+    expect(model.entities.map(e => e.name)).toEqual(['Order']);
+    expect(report.droppedEntities.map(d => d.name)).toEqual(['Customer']);
+    expect(report.droppedEntities[0].reason).toMatch(/key field key is unbound/);
+    // The relationship into Customer and the metric over it are gone; a metric
+    // confined to the surviving entity stays.
+    expect(relNames(model)).toEqual([]);
+    expect(report.droppedRelationships[0].reason).toMatch(/Customer is unavailable/);
+    expect(metricNames(model)).toEqual(['order_count']);
+    expect(report.droppedMetrics.map(d => d.name)).toContain('avg_lifetime_value');
+  });
 });

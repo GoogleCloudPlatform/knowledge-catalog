@@ -401,6 +401,9 @@ function renderProfile(logicalFixture: string, profile: string): string {
   const {ddl, report, loadWarnings, genWarnings} =
       buildProfile(logicalFixture, profile);
   const lines: string[] = [];
+  for (const d of report.droppedEntities) {
+    lines.push(`dropped entity: ${d.name} (${d.reason})`);
+  }
   for (const fld of report.unboundFields) lines.push(`unbound field: ${fld}`);
   for (const d of report.droppedMetrics) {
     lines.push(`dropped metric: ${d.name} (${d.reason})`);

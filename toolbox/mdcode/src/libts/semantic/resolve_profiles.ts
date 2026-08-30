@@ -22,7 +22,7 @@
 //     availability report. Availability propagates UP the dependency graph from
 //     the fields a profile binds.
 
-import {Metric, Relationship, SemanticModel} from './ir';
+import {fieldBinding, Metric, Relationship, SemanticModel} from './ir';
 import {
   blankStringLiterals,
   escapeRegExp,
@@ -250,6 +250,9 @@ function markOmittedFieldsUnbound(doc: any): void {
 export interface AvailabilityReport {
   profile: string;
   unboundFields: string[];  // "Entity.field"
+  // An entity dropped whole because its key names an unbound field: a graph node
+  // must be keyed, so an unbound key makes the entire entity unavailable.
+  droppedEntities: {name: string; reason: string}[];
   droppedMetrics: {name: string; reason: string}[];
   droppedRelationships: {name: string; reason: string}[];
 }
@@ -267,33 +270,64 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
   const report: AvailabilityReport = {
     profile: profileName,
     unboundFields: [],
+    droppedEntities: [],
     droppedMetrics: [],
     droppedRelationships: [],
   };
 
-  // A field is bound when it has a column (expression) and is not marked
-  // unbound; otherwise it is unbound (structurally absent under this profile).
+  // A field is bound when fieldBinding resolves it to a column; otherwise it is
+  // unbound (structurally absent under this profile). fieldBinding is the shared
+  // predicate the generator also uses, so a field awaiting transpilation (its
+  // column carried on the imported expression) counts as bound, not dropped.
   const unbound = new Set<string>();
   for (const e of clone.entities ?? []) {
     for (const f of e.fields ?? []) {
-      if (f.unbound || f.expression === undefined) {
-        unbound.add(`${e.name}.${f.name}`);
-      }
+      if (fieldBinding(f) === undefined) unbound.add(`${e.name}.${f.name}`);
     }
   }
   report.unboundFields = [...unbound];
 
-  // Drop unbound fields: they have no column, so the graph emits none. (A bound
-  // field whose value is null still emits a column -- unbound is not null.)
+  // An entity whose key names an unbound field cannot be a node -- a graph node
+  // must be keyed -- so the WHOLE entity is unavailable and everything on it (its
+  // relationships and the metrics over it) falls with it. This is availability
+  // propagating up from the unbound key. Record the entity, and add every one of
+  // its fields to the unbound set so the relationship and metric passes below
+  // cascade over it. Entity names are captured before any drop so a metric or
+  // relationship that references a dropped entity is still detected.
+  const allEntityNames = (clone.entities ?? []).map(e => e.name);
+  const unavailableEntities = new Set<string>();
   for (const e of clone.entities ?? []) {
-    e.fields = (e.fields ?? []).filter(
-        f => !(f.unbound || f.expression === undefined));
+    const missingKey =
+        (e.keys ?? []).find(k => unbound.has(`${e.name}.${k}`));
+    if (missingKey !== undefined) {
+      unavailableEntities.add(e.name);
+      report.droppedEntities.push(
+          {name: e.name, reason: `key field ${missingKey} is unbound`});
+      for (const f of e.fields ?? []) unbound.add(`${e.name}.${f.name}`);
+    }
   }
 
-  // A relationship is available only when the join columns on BOTH ends are
-  // bound (its endpoints' `columns` name fields on those entities).
+  // Drop unavailable entities whole, then drop unbound fields from the entities
+  // that remain. (A bound field whose value is null still emits a column --
+  // unbound is not null.)
+  clone.entities =
+      (clone.entities ?? []).filter(e => !unavailableEntities.has(e.name));
+  for (const e of clone.entities) {
+    e.fields = (e.fields ?? []).filter(f => fieldBinding(f) !== undefined);
+  }
+
+  // A relationship is available only when both endpoint entities are available
+  // and the join columns on both ends are bound (its endpoints' `columns` name
+  // fields on those entities).
   const keptRels: Relationship[] = [];
   for (const r of clone.relationships ?? []) {
+    const deadEnd = [r.source.entity, r.destination.entity].find(
+        n => unavailableEntities.has(n));
+    if (deadEnd !== undefined) {
+      report.droppedRelationships.push(
+          {name: r.name, reason: `entity ${deadEnd} is unavailable`});
+      continue;
+    }
     const missing = unboundJoinField(r, unbound);
     if (missing) {
       report.droppedRelationships.push(
@@ -304,19 +338,25 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
   }
   clone.relationships = keptRels;
 
-  // A metric is available only when every field it references is bound and --
-  // when it spans entities -- a relationship connecting them survives.
-  const entityNames = (clone.entities ?? []).map(e => e.name);
+  // A metric is available only when no entity it spans is unavailable, every
+  // field it references is bound, and -- when it spans entities -- a relationship
+  // connecting them survives.
   const keptMetrics: Metric[] = [];
   for (const mt of clone.metrics ?? []) {
     const expr = mt.expression ?? '';
+    const refs = referencedEntityNames(expr, allEntityNames);
+    const deadEntity = refs.find(n => unavailableEntities.has(n));
+    if (deadEntity !== undefined) {
+      report.droppedMetrics.push(
+          {name: mt.name, reason: `entity ${deadEntity} is unavailable`});
+      continue;
+    }
     const hit = firstUnboundReferenced(expr, unbound);
     if (hit) {
       report.droppedMetrics.push(
           {name: mt.name, reason: `field ${hit} is unbound`});
       continue;
     }
-    const refs = referencedEntityNames(expr, entityNames);
     if (refs.length > 1 && !connectingRelationshipKept(refs, keptRels)) {
       report.droppedMetrics.push({
         name: mt.name,

@@ -222,6 +222,31 @@ export async function pull(options: PullOptions = {}): Promise<number> {
 }
 
 
+// Parses a logical model document and a binding profile document, merges the
+// profile onto the model by name, and returns the merged authoring text plus any
+// merge warnings. Shared by `push` and `profiles` so the two paths parse, merge,
+// warn, and fail identically; on a parse error or a binding-contract violation
+// it returns `error` for the caller to surface.
+function mergeProfileOntoDoc(
+    logicalText: string, profileText: string,
+    profileName: string): {text: string; warnings: string[]}|{error: string} {
+  let logicalDoc: unknown;
+  let profileDoc: unknown;
+  try {
+    logicalDoc = yaml.parse(logicalText);
+    profileDoc = yaml.parse(profileText);
+  } catch (err: any) {
+    return {
+      error: `could not parse the model or profile '${profileName}': ${
+          err?.message ?? err}`,
+    };
+  }
+  const merged = mergeProfile(logicalDoc, profileDoc, profileName);
+  if (merged.error) return {error: merged.error};
+  return {text: yaml.stringify(merged.doc), warnings: merged.warnings};
+}
+
+
 export async function push(options: PushOptions): Promise<number> {
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
@@ -269,26 +294,15 @@ export async function push(options: PushOptions): Promise<number> {
                    `no profiles are defined for this model.`));
           return 1;
         }
-        let logicalDoc: unknown;
-        let profileDoc: unknown;
-        try {
-          logicalDoc = yaml.parse(doc.text);
-          profileDoc = yaml.parse(chosen.text);
-        } catch (err: any) {
-          console.error(
-              `Error: could not parse model '${doc.name}' or profile '${
-                  profileName}': ${err?.message ?? err}`);
-          return 1;
-        }
-        const res = mergeProfile(logicalDoc, profileDoc, profileName);
-        if (res.error) {
-          console.error(`Error: ${res.error}`);
+        const res = mergeProfileOntoDoc(doc.text, chosen.text, profileName);
+        if ('error' in res) {
+          console.error(`Error: [${doc.name}] ${res.error}`);
           return 1;
         }
         for (const w of res.warnings) {
           console.warn(`Warning: [${doc.name}] ${w}`);
         }
-        merged.push({name: doc.name, text: yaml.stringify(res.doc)});
+        merged.push({name: doc.name, text: res.text});
       }
       docs = merged;
     }
@@ -333,13 +347,15 @@ export async function push(options: PushOptions): Promise<number> {
       return {document, model: pruned};
     });
     for (const r of availability) {
-      const dropped = r.droppedMetrics.length + r.droppedRelationships.length;
+      const dropped = r.droppedEntities.length + r.droppedMetrics.length +
+          r.droppedRelationships.length;
       if (r.unboundFields.length || dropped) {
         console.warn(
             `Note: profile '${r.profile}' leaves ${
                 r.unboundFields.length} field(s) unbound` +
             (dropped ?
-                 `; ${r.droppedMetrics.length} metric(s) and ${
+                 `; ${r.droppedEntities.length} entity(ies), ${
+                     r.droppedMetrics.length} metric(s) and ${
                      r.droppedRelationships.length} relationship(s) ` +
                      `unavailable` :
                  '') +
@@ -457,22 +473,16 @@ export async function profiles(): Promise<number> {
       continue;
     }
     for (const {name, text} of available) {
-      let logicalDoc: unknown;
-      let profileDoc: unknown;
-      try {
-        logicalDoc = yaml.parse(doc.text);
-        profileDoc = yaml.parse(text);
-      } catch (err: any) {
-        console.error(`  profile '${name}': parse error: ${err?.message ?? err}`);
+      const res = mergeProfileOntoDoc(doc.text, text, name);
+      if ('error' in res) {
+        console.error(`  profile '${name}': ${res.error}`);
         continue;
       }
-      const merged = mergeProfile(logicalDoc, profileDoc, name);
-      if (merged.error) {
-        console.error(`  profile '${name}': ${merged.error}`);
-        continue;
+      for (const w of res.warnings) {
+        console.warn(`  profile '${name}': warning: ${w}`);
       }
       const loaded = loadSemanticModels(
-          [{name: doc.name, text: yaml.stringify(merged.doc)}],
+          [{name: doc.name, text: res.text}],
           {defaultProject: source.project ?? ctx.project});
       if (loaded.error) {
         console.error(`  profile '${name}': ${loaded.error}`);
@@ -497,6 +507,9 @@ export async function profiles(): Promise<number> {
       }
 
       const withheld: string[] = [];
+      for (const d of report.droppedEntities) {
+        withheld.push(`entity ${d.name} (${d.reason})`);
+      }
       for (const f of report.unboundFields) withheld.push(`field ${f} (unbound)`);
       for (const d of report.droppedRelationships) {
         withheld.push(`relationship ${d.name} (${d.reason})`);

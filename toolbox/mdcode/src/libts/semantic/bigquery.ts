@@ -19,7 +19,7 @@
 // See: https://docs.cloud.google.com/bigquery/docs/graph-measures
 //
 
-import {AiContext, Association, Entity, Field, isTimeDimension, Metric, Relationship, SemanticModel,} from './ir';
+import {AiContext, Association, Entity, Field, fieldBinding, isTimeDimension, Metric, Relationship, SemanticModel,} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
 import {referencedEntityNames, stripQualifier} from './sql_expr_utils';
 
@@ -633,7 +633,7 @@ function renderNodeTable(
 
   const lines = [
     line(1, `${table} AS ${entity.name}`),
-    line(2, `KEY(${physicalColumns(entity, entity.keys).join(', ')})`),
+    line(2, `KEY(${physicalColumns(entity, entity.keys, warnings, `entity '${entity.name}'`).join(', ')})`),
   ];
   // Element-table description and synonyms attach to the node's DEFAULT LABEL
   // -- UNLESS this entity is a supertype whose label is shared by subclass
@@ -745,8 +745,22 @@ function physicalColumn(entity: Entity|undefined, fieldName: string): string {
 }
 
 function physicalColumns(
-    entity: Entity|undefined, fieldNames: string[]): string[] {
-  return fieldNames.map(n => physicalColumn(entity, n));
+    entity: Entity|undefined, fieldNames: string[], warnings?: string[],
+    ctx?: string): string[] {
+  return fieldNames.map(n => {
+    const col = physicalColumn(entity, n);
+    // A structural site (KEY / SOURCE KEY / DESTINATION KEY / REFERENCES) must
+    // name a bare column. A field bound to a computed expression resolves to
+    // SQL, not a column, which BigQuery rejects at deploy; warn here so the
+    // problem is named statically rather than surfacing as opaque DDL.
+    if (warnings && !isSimpleIdentifier(col)) {
+      warnings.push(
+          `${ctx ?? `entity '${entity?.name ?? '?'}'`}: field '${n}' is bound ` +
+          `to a non-column expression (${col}); a KEY/REFERENCES site requires ` +
+          `a bare column, so BigQuery will reject the generated DDL`);
+    }
+    return col;
+  });
 }
 
 
@@ -784,10 +798,14 @@ function renderEdgeTable(
   // table, so its KEY / SOURCE KEY / the FK in DESTINATION KEY all resolve
   // against the source entity, while the destination REFERENCES resolves against
   // the destination entity's key.
-  const key = physicalColumns(sourceEntity, sourceKey).join(', ');
-  const destFk = physicalColumns(sourceEntity, rel.source.columns).join(', ');
+  const relCtx = `relationship '${rel.name}'`;
+  const key = physicalColumns(sourceEntity, sourceKey, warnings, relCtx).join(', ');
+  const destFk =
+      physicalColumns(sourceEntity, rel.source.columns, warnings, relCtx)
+          .join(', ');
   const destRef =
-      physicalColumns(destEntity, rel.destination.columns).join(', ');
+      physicalColumns(destEntity, rel.destination.columns, warnings, relCtx)
+          .join(', ');
   const lines = [
     line(1, `${backing} AS ${rel.name}`),
     line(2, `KEY(${key})`),
@@ -833,7 +851,8 @@ function renderAssociationEdge(
           `relationship '${rel.name}': unknown entity '${end.entity}'`);
       return end.columns.join(', ');
     }
-    return physicalColumns(entity, entity.keys).join(', ');
+    return physicalColumns(entity, entity.keys, warnings, `relationship '${rel.name}'`)
+        .join(', ');
   };
 
   const lines = [
@@ -870,7 +889,10 @@ function renderAssociationEdge(
 // that is all the IR carries (see the Field/Metric expression-fidelity
 // contract).
 function fieldExpression(f: Field): string|undefined {
-  return f.expression ?? f.importedExpression;
+  // Delegates to the canonical accessor so the generator's notion of "bound"
+  // matches availability pruning's (an unbound field yields undefined; a field
+  // awaiting transpilation stays bound via its imported expression).
+  return fieldBinding(f);
 }
 function metricExpression(m: Metric): string|undefined {
   return m.expression ?? m.importedExpression;
