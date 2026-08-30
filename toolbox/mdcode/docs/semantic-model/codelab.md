@@ -54,6 +54,8 @@ Author the model in two parts — this is what lets one model serve many stores:
   each field is. You write one when you deploy to BigQuery (step 3) and another
   for Spanner (step 4); the logical model never changes.
 
+### Author by hand
+
 Write the logical model — declarations only, no sources, no columns, no
 deployment target:
 
@@ -99,7 +101,7 @@ semantic_model:
 YAML
 ```
 
-### Import existing semantics instead of authoring
+### Import from an OWL ontology
 
 You can also start from an existing OWL ontology instead of hand-authoring this
 YAML. `kcmd owl import` converts an ontology (`.ttl`) into a semantic model:
@@ -199,8 +201,11 @@ The rest of this codelab uses the hand-authored `sales` model above.
 ## 2. Govern it in Knowledge Catalog
 
 You can govern the model right now — the push writes the logical model straight
-to the catalog as entries, so there is nothing to bind or load first. Preview
-the plan without writing anything:
+to the catalog as entries, so there is nothing to bind or load first.
+
+### Preview the plan
+
+Preview the plan without writing anything:
 
 ```bash
 kcmd push --target kc --validate-only --print
@@ -229,6 +234,8 @@ them: relationship names come back from a `kcmd pull` lowercased and hyphenated
 (`orders-to-customer`), because Knowledge Catalog keeps the name only in the
 normalized link id. Nothing is wrong — the graph itself keeps the authored
 `orders_to_customer`.
+
+### Write the entries
 
 Then drop `--validate-only` to perform the write:
 
@@ -260,6 +267,8 @@ too.
 Governing the model created catalog entries but no tables. Deploying it to a
 query engine creates the tables and the graph. You add a **binding profile**,
 create the data, and deploy.
+
+### Write the binding profile
 
 Write the **analytical** binding: the BigQuery table each entity reads, the
 column each field maps to, and the BigQuery graph to deploy to. The
@@ -329,6 +338,8 @@ echo 'default_profile: analytical' >> catalog.yaml
 > This codelab splits them because step 4 adds a second store, and that split is
 > what lets one model back both.
 
+### Create the tables
+
 Now create the data. An ontology-driven data-engineering agent would produce it
 from raw sources; for a self-contained run, create the three tables directly.
 `net_amount` is materialized on `orders` (the measure aggregates it), and each
@@ -360,6 +371,8 @@ SELECT * FROM UNNEST([                 -- order 100: 2 lines, 101: 1, 102: 3
 > resolves in BigQuery — even under `--validate-only` — and builds the graph over
 > these tables. So the tables must exist first. (Step 2 needed none of this: it
 > governed the logical model, no tables required.)
+
+### Deploy the graph
 
 Now deploy the bound model to BigQuery. `--print` shows the generated DDL:
 
@@ -412,6 +425,8 @@ EDGE TABLES (
 Deployed 1 BigQuery Graph(s).
 ```
 
+### View the graph in the console
+
 The graph is now a resource in your dataset, and the console draws its schema as
 a diagram of node and edge tables — easier to read than the DDL above. Print the
 BigQuery Studio link to the dataset:
@@ -424,6 +439,8 @@ printf 'https://console.cloud.google.com/bigquery?project=%s&ws=!1m4!1m3!3m2!1s%
 Open the link, expand the `$DATASET` dataset in the Explorer, and click the
 `$GRAPH` property graph. Its schema renders as a visual graph of the nodes and
 the edges that connect them.
+
+### Query the graph two ways
 
 Now ask the same question — revenue by customer — two ways.
 
@@ -498,6 +515,8 @@ Spanner database holds the same business, but its tables are named differently
 (`Customers`, `Orders`, `LineItems`), its columns are named differently
 (`FullName`, `OrderId`), and it does not carry `net_amount` — a settled figure
 the warehouse computes rather than one the live store keeps.
+
+### Write the operational binding
 
 Add a **second profile** beside the first. Like the `analytical` one, it changes
 only where each entity reads from and which column each field binds to; it never
@@ -578,6 +597,8 @@ from the bindings rather than declared. The `analytical` profile binds `net_amou
 the same metric is available under the binding step 3 used. One model; each store
 answers the part of it that its data can back.
 
+### Preview the generated DDL
+
 Preview the Spanner DDL the profile generates (`--validate-only` runs the
 generator without touching a database):
 
@@ -642,6 +663,8 @@ BigQuery DDL in step 3:
 - **No `OPTIONS`.** Descriptions and synonyms are not written into the Spanner
   DDL; they live in Knowledge Catalog instead.
 
+### Create the tables and deploy
+
 To apply it for real, create the operational tables in a Spanner
 ENTERPRISE-edition database (Graph requires ENTERPRISE), load a little data, and
 drop `--validate-only`. The Spanner leg applies the DDL through the
@@ -669,6 +692,8 @@ kcmd push --profile operational --target spanner
 > the Spanner leg. Step 2 governed the *logical* model, and adding a binding
 > profile changes nothing logical — bindings are not governed in Knowledge
 > Catalog. The single set of entries from step 2 already describes this graph too.
+
+### Query the graph
 
 Query it with Spanner's Graph Query Language. The query names the model's
 properties (`c_name`, `o_orderkey`); the profile's column bindings are invisible
