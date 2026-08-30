@@ -1,0 +1,34 @@
+# Logical model for the binding-profile golden: declarations only, no physical
+# sources or columns. It is never deployed alone; a profile supplies the
+# bindings. `segment` is declared but left for a profile to bind (the analytical
+# profile leaves it unbound), and `segment_count` depends on it -- so the golden
+# shows both the field and the metric pruned when the binding withholds it.
+version: "0.2.0.dev0"
+semantic_model:
+  - name: commerce
+    entities:
+      - name: Customer
+        primary_key: [id]
+        fields:
+          - { name: id, label: Customer ID }
+          - { name: name }
+          - { name: segment }
+      - name: Order
+        primary_key: [id]
+        fields:
+          - { name: id }
+          - { name: customerId }
+          - { name: amount }
+    relationships:
+      - name: placed_by
+        from: Order
+        to: Customer
+        from_columns: [customerId]
+        to_columns: [id]
+    metrics:
+      - name: order_count
+        expression: COUNT(Order.id)
+      - name: total_amount
+        expression: SUM(Order.amount)
+      - name: segment_count
+        expression: COUNT(Customer.segment)

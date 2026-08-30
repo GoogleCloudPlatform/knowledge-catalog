@@ -26,8 +26,11 @@ import {describe, expect, test} from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import * as yaml from 'yaml';
+
 import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
-import {loadModels, LoadOptions} from '../../../src/libts/semantic/loader';
+import {loadModels, loadSemanticModels, LoadOptions} from '../../../src/libts/semantic/loader';
+import {mergeProfile, pruneUnavailable} from '../../../src/libts/semantic/resolve_profiles';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
@@ -344,4 +347,104 @@ describe(
           }
         });
       }
+    });
+
+
+// A binding-profile pair is two files -- a logical model plus a profile that
+// supplies the physical bindings -- so it does not fit the single-file CORPUS
+// loop above. It runs the same file -> merge -> prune -> IR -> DDL path push
+// takes, against its own golden. The profile renames every physical column, so
+// this golden is the offline guard for physical-column resolution at the node
+// KEY, edge SOURCE KEY / DESTINATION KEY / REFERENCES, and MEASURE-operand
+// sites -- the sites a name == column fixture cannot exercise.
+function buildProfile(logicalFixture: string, profile: string) {
+  const dir = path.join(FIXTURES, 'profiles');
+  const logicalText = fs.readFileSync(path.join(dir, logicalFixture), 'utf8');
+  const profileText = fs.readFileSync(
+      path.join(dir, logicalFixture.replace(/\.yaml$/, `.${profile}.yaml`)),
+      'utf8');
+  const merged = mergeProfile(yaml.parse(logicalText), yaml.parse(profileText), profile);
+  if (merged.error) throw new Error(merged.error);
+  const loaded = loadSemanticModels(
+      [{name: logicalFixture.replace(/\.yaml$/, ''), text: yaml.stringify(merged.doc)}],
+      {defaultProject: 'acme', defaultDataset: 'sales'});
+  if (loaded.error) throw new Error(loaded.error);
+  const {model, report} = pruneUnavailable(loaded.models[0].model, profile);
+  const {ddl, warnings: genWarnings} = generatePropertyGraph(
+      model, {project: 'acme', dataset: 'sales'});
+  return {model, report, ddl, loadWarnings: loaded.warnings, genWarnings};
+}
+
+// The golden for a merged profile: the DDL, then the availability report (what
+// the binding withheld) and every warning, so a reviewer sees the pruned field
+// and metric alongside the emitted physical columns.
+function renderProfile(logicalFixture: string, profile: string): string {
+  const {ddl, report, loadWarnings, genWarnings} = buildProfile(logicalFixture, profile);
+  const lines: string[] = [];
+  for (const fld of report.unboundFields) lines.push(`unbound field: ${fld}`);
+  for (const d of report.droppedMetrics) lines.push(`dropped metric: ${d.name} (${d.reason})`);
+  for (const d of report.droppedRelationships) {
+    lines.push(`dropped relationship: ${d.name} (${d.reason})`);
+  }
+  const reportBlock = lines.length ? lines.join('\n') : '(nothing withheld)';
+  const warnings = [...loadWarnings, ...genWarnings];
+  const warnBlock =
+      warnings.length ? warnings.map(w => `-- ${w}`).join('\n') : '-- (none)';
+  return `${ddl}\n-- availability --\n${reportBlock}\n-- warnings --\n${warnBlock}\n`;
+}
+
+const profileGoldenPath = (logicalFixture: string, profile: string) =>
+    path.join(
+        FIXTURES, 'profiles',
+        logicalFixture.replace(/\.yaml$/, `.${profile}.bigquery.golden.sql`));
+
+
+describe(
+    'golden DDL: a merged binding profile generates its exact property graph',
+    () => {
+      test('profile_binding.yaml + analytical', () => {
+        const actual = renderProfile('profile_binding.yaml', 'analytical');
+        const golden = profileGoldenPath('profile_binding.yaml', 'analytical');
+        if (process.env.UPDATE_GOLDENS) {
+          fs.writeFileSync(golden, actual);
+          return;
+        }
+        if (!fs.existsSync(golden)) {
+          throw new Error(`missing golden ${
+              path.basename(golden)} -- run UPDATE_GOLDENS=1 to create it`);
+        }
+        expect(actual).toBe(fs.readFileSync(golden, 'utf8'));
+      });
+
+      test('the renamed profile emits physical columns, never logical names', () => {
+        const {ddl} = buildProfile('profile_binding.yaml', 'analytical');
+        // Structural sites carry the bound physical column.
+        expect(ddl).toContain('KEY(cust_id)');
+        expect(ddl).toContain('KEY(order_id)');
+        expect(ddl).toContain('DESTINATION KEY(fk_customer) REFERENCES Customer(cust_id)');
+        // A renamed column is exposed under its logical name (`gross_amount AS
+        // amount`), and the MEASURE aggregates that exposed property -- the one
+        // position where the logical name is correct, because it names a
+        // sibling property, not a raw column. This is the shape live BigQuery
+        // accepts (verified: `MEASURE(SUM(item_count))` over `num_of_item AS
+        // item_count`).
+        expect(ddl).toContain('gross_amount AS amount');
+        expect(ddl).toContain('MEASURE(SUM(amount)) AS total_amount');
+        // No logical field name leaks into a structural (KEY/REFERENCES)
+        // position, where BigQuery requires the physical column.
+        expect(ddl).not.toContain('KEY(id)');
+        expect(ddl).not.toContain('KEY(customerId)');
+        expect(ddl).not.toContain('REFERENCES Customer(id)');
+        expect(ddl).not.toContain('(customerId)');
+      });
+
+      test('an unbound field prunes it and the metric that reads it', () => {
+        const {model, report} = buildProfile('profile_binding.yaml', 'analytical');
+        const customer = model.entities.find(e => e.name === 'Customer')!;
+        expect(customer.fields.map(f => f.name)).toEqual(['id', 'name']);
+        expect((model.metrics ?? []).map(m => m.name).sort()).toEqual(
+            ['order_count', 'total_amount']);
+        expect(report.unboundFields).toContain('Customer.segment');
+        expect(report.droppedMetrics.some(d => d.name === 'segment_count')).toBe(true);
+      });
     });
