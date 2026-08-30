@@ -1,9 +1,10 @@
 # End-to-end codelab: one semantic model, from authoring to query
 
-A self-contained walkthrough. You author one semantic model, govern it in
-Knowledge Catalog, hydrate its data, and query a metric through BigQuery Graph.
-The metric is defined once and computed the same way at every step. The expected
-output is shown after each command so you can check as you go.
+A self-contained walkthrough. You author one *logical* semantic model, govern it
+in Knowledge Catalog, then bind it to physical stores — BigQuery and Spanner —
+and query the same metric in each. The metric is defined once and computed the
+same way at every step. The expected output is shown after each command so you
+can check as you go.
 
 For the deploy mechanics on their own (author, push, update, pull), see the
 [deploy guide](README.md); for every flag and permission, see the
@@ -32,7 +33,7 @@ export DATASET=datacloud_demo                       # BigQuery dataset + KC entr
 export GRAPH=sales                                  # property-graph name
 ```
 
-The Knowledge Catalog step (step 3) writes the `semantic-model` /
+The Knowledge Catalog step (step 2) writes the `semantic-model` /
 `semantic-entity` / `semantic-metric` entry types. These are not yet generally
 available on production Dataplex, so point `kcmd` at the staging (autopush)
 instance where they already exist. Once the types reach GA, delete this block —
@@ -46,7 +47,7 @@ export KC_TYPE_PROJECT=dataplex-autopush-types                             # pro
 
 ---
 
-## 1. Author the semantic model
+## 1. Author the logical model
 
 `init` provisions the Knowledge Catalog entry group and a local workspace:
 
@@ -57,15 +58,16 @@ kcmd init --semantic-model $PROJECT.$LOCATION.$DATASET
 ```
 
 Author the model in two parts — this is what lets one model serve many stores.
-The **logical model** declares the business: three entities (`orders`,
-`customer`, `lineitem`), the relationships between them, and one metric
-(`revenue`). It names nothing physical. A **binding profile** then says where
-each entity reads from and which column each field is. Section 5 adds a second
-profile for a different store; the logical model never changes. (A real sales
-schema fans each order out into many line-item rows, so the model includes
-`lineitem` — step 4 uses that fan-out to show where hand-written SQL goes wrong.)
+The **logical model** (this step) declares the business: three entities
+(`orders`, `customer`, `lineitem`), the relationships between them, and one
+metric (`revenue`). It names nothing physical. A **binding profile** then says
+where each entity reads from and which column each field is — you write one when
+you deploy to BigQuery (step 3) and another for Spanner (step 4); the logical
+model never changes. (A real sales schema fans each order out into many
+line-item rows, so the model includes `lineitem` — step 3 uses that fan-out to
+show where hand-written SQL goes wrong.)
 
-Write the logical model first — declarations only, no sources, no columns, no
+Write the logical model — declarations only, no sources, no columns, no
 deployment target:
 
 ```bash
@@ -113,75 +115,13 @@ YAML
 > **Metric constraint.** A BigQuery Graph measure can only aggregate a
 > **single column** — `SUM(orders.net_amount)` is fine, but
 > `SUM(o_extendedprice * (1 - o_discount))` is rejected at deploy. Any arithmetic
-> must be materialized into a column first (step 2 does that for `net_amount`).
+> must be materialized into a column first (the Deploy-to-BigQuery step does that
+> for `net_amount`).
 
-Now write the **analytical** binding: the BigQuery table each entity reads, the
-column each field maps to, and the BigQuery Graph to deploy to. The
-`deployment_target` key names that graph. A binding lives beside the model in
-`sales.profiles/`:
-
-```bash
-# BigQuery Graph deployment target, named by the profile's deployment_target key.
-BQ_DS=projects/$PROJECT/datasets/$DATASET
-TARGET=//bigquery.googleapis.com/$BQ_DS/propertyGraphs/$GRAPH
-
-mkdir -p catalog/EntryGroups/$DATASET/sales.profiles
-cat > catalog/EntryGroups/$DATASET/sales.profiles/analytical.yaml <<YAML
-version: "0.2.0.dev0"
-semantic_model:
-  - name: sales
-    deployment_target: $TARGET
-    datasets:
-      - name: orders
-        source: $PROJECT.$DATASET.orders
-        fields:
-          - { name: o_orderkey, expression: o_orderkey }
-          - { name: o_custkey,  expression: o_custkey }
-          - { name: net_amount, expression: net_amount }
-      - name: customer
-        source: $PROJECT.$DATASET.customer
-        fields:
-          - { name: c_custkey, expression: c_custkey }
-          - { name: c_name,    expression: c_name }
-      - name: lineitem
-        source: $PROJECT.$DATASET.lineitem
-        fields:
-          - { name: l_linekey,  expression: l_linekey }
-          - { name: l_orderkey, expression: l_orderkey }
-YAML
-```
-
-The binding restates no relationship, no metric, and no grain — those are logical
-and live once in the model. It carries only bindings: each entity's table and
-each field's column. Make it the default so a bare `kcmd push` selects it (steps
-3–4 rely on this); section 5 selects the other profile explicitly with
-`--profile`:
-
-```bash
-echo 'default_profile: analytical' >> catalog.yaml
-```
-
-> **Simple case — one binding, one file.** If a model only ever binds to one
-> store, you don't need a separate profile. Put the `deployment_target`, each
-> entity's `source`, and each field's `expression` directly on the model in
-> `sales.yaml` — that is the `default` profile — and run a bare `kcmd push`. An
-> `orders` entity then reads:
->
-> ```yaml
-> semantic_model:
->   - name: sales
->     deployment_target: //bigquery.googleapis.com/.../propertyGraphs/sales
->     datasets:
->       - name: orders
->         source: $PROJECT.$DATASET.orders
->         primary_key: [o_orderkey]
->         fields:
->           - { name: o_orderkey, datatype: Integer, expression: o_orderkey }
->           # ...
-> ```
->
-> This codelab splits them from the start because section 5 adds a second store,
-> and that split is what lets one model back both.
+That is the whole model — enough to govern in Knowledge Catalog. It carries no
+`source` table, no field `expression`, and no `deployment_target`: those are
+physical bindings, and Knowledge Catalog governs meaning, not storage. You add a
+binding only when you deploy to a query engine (steps 3 and 4).
 
 ### Import existing semantics instead of authoring
 
@@ -269,57 +209,22 @@ The classes became `Part` and `Supplier` entities, the datatype properties
 became `Part`'s fields, and the object property became the `suppliedBy`
 relationship. The `source: unbound:*` and `TODO_BIND` join columns are
 placeholders: the import gives you structure, and you bind it to physical tables
-and a deployment target before pushing — which is exactly what the `analytical`
-binding above adds to the hand-authored `sales` model. For the full OWL mapping — class hierarchies, unique
-keys, and the constructs carried as custom extensions — see
-[Importing an OWL ontology](owl-import.md).
+and a deployment target before deploying to a query engine — which is exactly
+what the `analytical` binding adds to the hand-authored `sales` model in step 3.
+For the full OWL mapping — class hierarchies, unique keys, and the constructs
+carried as custom extensions — see [Importing an OWL ontology](owl-import.md).
 
 The rest of this codelab uses the hand-authored `sales` model above.
 
 ---
 
-## 2. Hydrate the data
+## 2. Govern it in Knowledge Catalog
 
-An ontology-driven data-engineering agent would produce this data from raw
-sources. For a self-contained run, create the three tables directly. `net_amount`
-is materialized on `orders` (the measure aggregates it), and each order fans out
-into several `lineitem` rows:
-
-```bash
-bq mk -f --dataset $PROJECT:$DATASET
-
-bq query --use_legacy_sql=false '
-CREATE OR REPLACE TABLE `'"$PROJECT.$DATASET"'.customer` AS
-SELECT * FROM UNNEST([STRUCT(1 AS c_custkey, "Acme" AS c_name),
-                      STRUCT(2, "Globex")]);
-CREATE OR REPLACE TABLE `'"$PROJECT.$DATASET"'.orders` AS
-SELECT * FROM UNNEST([
-  STRUCT(100 AS o_orderkey, 1 AS o_custkey,  90.0 AS net_amount),
-  STRUCT(101, 1, 200.0),
-  STRUCT(102, 2,  40.0)
-]);
-CREATE OR REPLACE TABLE `'"$PROJECT.$DATASET"'.lineitem` AS
-SELECT * FROM UNNEST([                 -- order 100: 2 lines, 101: 1, 102: 3
-  STRUCT(1 AS l_linekey, 100 AS l_orderkey), STRUCT(2, 100),
-  STRUCT(3, 101),
-  STRUCT(4, 102), STRUCT(5, 102), STRUCT(6, 102)
-]);'
-```
-
-> **Why data comes before the pushes.** `kcmd push` does more than register the
-> model. It validates that every entity's `source` table resolves in BigQuery,
-> even under `--validate-only`, and the BigQuery graph is built over these
-> tables. So the tables must exist before the Knowledge Catalog push (step 3) and
-> the BigQuery push (step 4).
-
----
-
-## 3. Govern it in Knowledge Catalog
-
-The same model becomes governed catalog entries. Steps 3 and 4 deploy the
-`analytical` binding — the default profile you set in step 1 — so a bare `kcmd
-push` selects it; you never repeat `--profile` until section 5 needs the other
-one. First preview the plan without writing anything:
+Knowledge Catalog governs *meaning*, which is entirely logical — so you can
+govern the model right now, before binding it to any store or loading a single
+row. The push writes the logical model as catalog entries; it needs no `source`
+tables, no column bindings, and no data. First preview the plan without writing
+anything:
 
 ```bash
 kcmd push --target kc --validate-only --print
@@ -352,7 +257,8 @@ Wrote 5 new and 0 updated Knowledge Catalog entries; linked 2 relationships.
 Each entity, the metric, and the model itself are now governed entries, joined by
 a schema-join link — discoverable, access-controlled, and the single definition
 every downstream step reads from. `kcmd pull` reconstructs the model YAML from
-these entries, confirming the round-trip.
+these entries, confirming the round-trip. None of this required a physical store:
+the model is governed first, then bound.
 
 > This write needs the `semantic-model` / `semantic-entity` / `semantic-metric`
 > entry types and write access to the entry group. See
@@ -360,9 +266,113 @@ these entries, confirming the round-trip.
 
 ---
 
-## 4. Get reliable insights with BigQuery
+## 3. Deploy to BigQuery and get reliable insights
 
-Deploy the model to BigQuery Graph. `--print` shows the generated DDL:
+Governing the model didn't touch a table. Deploying it to a query engine does:
+you add a **binding profile** — the table each entity reads and the column each
+field maps to — then create the data and deploy.
+
+Write the **analytical** binding: the BigQuery table each entity reads, the
+column each field maps to, and the BigQuery graph to deploy to. The
+`deployment_target` key names that graph. A binding lives beside the model in
+`sales.profiles/`:
+
+```bash
+# BigQuery deployment target, named by the profile's deployment_target key.
+BQ_DS=projects/$PROJECT/datasets/$DATASET
+TARGET=//bigquery.googleapis.com/$BQ_DS/propertyGraphs/$GRAPH
+
+mkdir -p catalog/EntryGroups/$DATASET/sales.profiles
+cat > catalog/EntryGroups/$DATASET/sales.profiles/analytical.yaml <<YAML
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    deployment_target: $TARGET
+    datasets:
+      - name: orders
+        source: $PROJECT.$DATASET.orders
+        fields:
+          - { name: o_orderkey, expression: o_orderkey }
+          - { name: o_custkey,  expression: o_custkey }
+          - { name: net_amount, expression: net_amount }
+      - name: customer
+        source: $PROJECT.$DATASET.customer
+        fields:
+          - { name: c_custkey, expression: c_custkey }
+          - { name: c_name,    expression: c_name }
+      - name: lineitem
+        source: $PROJECT.$DATASET.lineitem
+        fields:
+          - { name: l_linekey,  expression: l_linekey }
+          - { name: l_orderkey, expression: l_orderkey }
+YAML
+```
+
+The binding restates no relationship, no metric, and no grain — those are logical
+and live once in the model. It carries only bindings: each entity's table and
+each field's column. Make it the default so a bare `kcmd push` selects it (the
+rest of this step relies on this); step 4 selects the other profile explicitly
+with `--profile`:
+
+```bash
+echo 'default_profile: analytical' >> catalog.yaml
+```
+
+> **Simple case — one binding, one file.** If a model only ever binds to one
+> store, you don't need a separate profile. Put the `deployment_target`, each
+> entity's `source`, and each field's `expression` directly on the model in
+> `sales.yaml` — that is the `default` profile — and run a bare `kcmd push`. An
+> `orders` entity then reads:
+>
+> ```yaml
+> semantic_model:
+>   - name: sales
+>     deployment_target: //bigquery.googleapis.com/.../propertyGraphs/sales
+>     datasets:
+>       - name: orders
+>         source: $PROJECT.$DATASET.orders
+>         primary_key: [o_orderkey]
+>         fields:
+>           - { name: o_orderkey, datatype: Integer, expression: o_orderkey }
+>           # ...
+> ```
+>
+> This codelab splits them because step 4 adds a second store, and that split is
+> what lets one model back both.
+
+Now create the data. An ontology-driven data-engineering agent would produce it
+from raw sources; for a self-contained run, create the three tables directly.
+`net_amount` is materialized on `orders` (the measure aggregates it), and each
+order fans out into several `lineitem` rows:
+
+```bash
+bq mk -f --dataset $PROJECT:$DATASET
+
+bq query --use_legacy_sql=false '
+CREATE OR REPLACE TABLE `'"$PROJECT.$DATASET"'.customer` AS
+SELECT * FROM UNNEST([STRUCT(1 AS c_custkey, "Acme" AS c_name),
+                      STRUCT(2, "Globex")]);
+CREATE OR REPLACE TABLE `'"$PROJECT.$DATASET"'.orders` AS
+SELECT * FROM UNNEST([
+  STRUCT(100 AS o_orderkey, 1 AS o_custkey,  90.0 AS net_amount),
+  STRUCT(101, 1, 200.0),
+  STRUCT(102, 2,  40.0)
+]);
+CREATE OR REPLACE TABLE `'"$PROJECT.$DATASET"'.lineitem` AS
+SELECT * FROM UNNEST([                 -- order 100: 2 lines, 101: 1, 102: 3
+  STRUCT(1 AS l_linekey, 100 AS l_orderkey), STRUCT(2, 100),
+  STRUCT(3, 101),
+  STRUCT(4, 102), STRUCT(5, 102), STRUCT(6, 102)
+]);'
+```
+
+> **Why the tables come before the BigQuery push.** Unlike the Knowledge Catalog
+> step, `kcmd push --target bq` validates that every entity's `source` table
+> resolves in BigQuery — even under `--validate-only` — and builds the graph over
+> these tables. So the tables must exist first. (Step 2 needed none of this: it
+> governed the logical model, no tables required.)
+
+Now deploy the bound model to BigQuery. `--print` shows the generated DDL:
 
 ```bash
 kcmd push --target bq --print
@@ -488,10 +498,10 @@ query, so the correct answer is the default one.
 
 ---
 
-## 5. Deploy the same model to Spanner Graph
+## 4. Deploy the same model to Spanner
 
-The same customers and orders usually live in more than one store. Steps 1–4
-deployed the `analytical` profile — the BigQuery warehouse. An operational
+The same customers and orders usually live in more than one store. Step 3 bound
+and deployed the `analytical` profile — the BigQuery warehouse. An operational
 Spanner database holds the same business, but its tables are named differently
 (`Customers`, `Orders`, `LineItems`), its columns are named differently
 (`FullName`, `OrderId`), and it does not carry `net_amount` — a settled figure
@@ -573,8 +583,8 @@ DDL below shows.)
 `revenue` is `SUM(orders.net_amount)`, and the operational store does not bind
 `net_amount`, so the profile reports `revenue` as unavailable there — computed
 from the bindings, not declared. The `analytical` profile binds `net_amount`, so
-the same metric is available under the binding steps 1–4 used. One model; each
-store answers the part of it that its data can back.
+the same metric is available under the binding step 3 used. One model; each store
+answers the part of it that its data can back.
 
 Preview the Spanner DDL the profile generates (`--validate-only` runs the
 generator without touching a database):
@@ -628,7 +638,7 @@ The graph still speaks the model's vocabulary — the properties are `o_orderkey
 (`OrderId AS o_orderkey`, `FullName AS c_name`). The key and reference clauses
 name the physical columns (`KEY(OrderId)`), because a Spanner graph keys on the
 table's real column, not the property alias. Three things also differ from the
-BigQuery DDL in step 4:
+BigQuery DDL in step 3:
 
 - **Bare table and graph names.** A Spanner property graph names tables inside
   one database, so there is no backticked `project.dataset.` qualifier — each
@@ -663,6 +673,11 @@ kcmd push --profile operational --target spanner
 # -> Deployed 1 Spanner Graph(s).
 ```
 
+> **Knowledge Catalog is unchanged.** You do not re-push to Knowledge Catalog for
+> the Spanner leg. Step 2 governed the *logical* model, and adding a binding
+> profile changes nothing logical — bindings are not governed in Knowledge
+> Catalog. The single set of entries from step 2 already describes this graph too.
+
 Query it with Spanner's Graph Query Language. The query names the model's
 properties (`c_name`, `o_orderkey`); the profile's column bindings are invisible
 to it:
@@ -680,7 +695,7 @@ Acme      2
 Globex    1
 ```
 
-The one model now backs two stores: the BigQuery warehouse from steps 1–4, where
+The one model now backs two stores: the BigQuery warehouse from step 3, where
 `revenue` is a measure, and this operational Spanner graph, where the same
 entities and relationships are queried live and `revenue` is computed in SQL or
 the application rather than by the graph. `Customer`, `orders_to_customer`, and
@@ -688,7 +703,7 @@ every field mean the same thing in both; only the bindings differ.
 
 ---
 
-## 6. Clean up
+## 5. Clean up
 
 Drop the BigQuery dataset (tables + property graph):
 
@@ -696,7 +711,7 @@ Drop the BigQuery dataset (tables + property graph):
 bq rm -r -f -d $PROJECT:$DATASET
 ```
 
-Drop the Spanner database from section 5 (its tables and the graph go with it):
+Drop the Spanner database from step 4 (its tables and the graph go with it):
 
 ```bash
 gcloud spanner databases delete $SPANNER_DB --instance=$SPANNER_INSTANCE --quiet
