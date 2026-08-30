@@ -229,6 +229,38 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
     expect(aspectKeys.some((k: string) => k.endsWith('schema-join'))).toBe(true);
   });
 
+  test('an existing link whose update is not addressable still succeeds',
+       async () => {
+         // The link exists (409), but this catalog surface exposes only create
+         // + lookup for entry links, so the by-name aspect-refresh update comes
+         // back NOT_FOUND. The link is fully present; only the aspect refresh is
+         // unavailable, so the push must not fail on it.
+         const {createLink, updateLink} = stubClient({
+           createLink: () => err(409, 'entry link already exists'),
+           updateLink: err(404, 'entry link not found'),
+         });
+
+         const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+         expect(result.success).toBe(true);
+         expect(result.linked).toBe(1);
+         expect(createLink).toHaveBeenCalledTimes(1);
+         expect(updateLink).toHaveBeenCalledTimes(1);
+       });
+
+  test('a masked PERMISSION_DENIED on the link update also succeeds', async () => {
+    const {updateLink} = stubClient({
+      createLink: () => err(409, 'entry link already exists'),
+      updateLink: err(403, 'permission denied'),
+    });
+
+    const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(true);
+    expect(result.linked).toBe(1);
+    expect(updateLink).toHaveBeenCalledTimes(1);
+  });
+
   test('a failed link write fails the push, naming the link', async () => {
     stubClient({
       createLink: () => err(500, 'boom'),

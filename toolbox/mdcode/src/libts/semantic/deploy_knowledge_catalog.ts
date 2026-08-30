@@ -657,7 +657,16 @@ async function writeEntryLink(
     const upd = await cat.updateEntryLink(
         {name: link.name, aspects: link.aspects} as EntryLink,
         Object.keys(link.aspects ?? {}));
-    if (!isOk(upd)) return {error: `entry link '${linkId}': ${errText(upd)}`};
+    // A 409 already proved the link is present, and its entry references and type
+    // are immutable, so this follow-up only refreshes the aspect. Some catalog
+    // surfaces expose only create + lookup for an entry link and cannot address
+    // it by name for an update -- there the link is still fully written and only
+    // the aspect refresh is unavailable, so treat a not-addressable response as a
+    // no-op success rather than failing an otherwise-complete push. (This mirrors
+    // deleteOwnedLinks tolerating a 404 on delete.)
+    if (!isOk(upd) && !isLinkNotAddressable(upd)) {
+      return {error: `entry link '${linkId}': ${errText(upd)}`};
+    }
     return {};
   }
   if (!isOk(res)) return {error: `entry link '${linkId}': ${errText(res)}`};
@@ -770,6 +779,15 @@ function isOk(res: {status: number}): boolean {
 // need to match the error text.
 function isExists(res: {status: number}): boolean {
   return res.status === 409;
+}
+
+// An entry link that a create reported as already existing (409) but that the
+// by-name UpdateEntryLink then could not address: NOT_FOUND (404) or a masked
+// PERMISSION_DENIED (403). Some catalog surfaces expose only create + lookup for
+// entry links, so the aspect-refresh update is unavailable there even though the
+// link itself is present -- writeEntryLink treats this as a no-op success.
+function isLinkNotAddressable(res: {status: number}): boolean {
+  return res.status === 404 || res.status === 403;
 }
 
 // A transient "not visible yet" error worth retrying, matching the propagation
