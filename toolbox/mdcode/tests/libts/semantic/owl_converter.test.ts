@@ -7,7 +7,7 @@
 //   1. the sales example produces exactly the documented OSI (golden), and
 //   2. that OSI loads as a purely LOGICAL model (no sources, no field
 //      expressions, no relationship join columns): it loads under
-//      bindingOptional and `kcmd push --target kc` publishes it as-is, while
+//      bindingOptional and `kcmd push` publishes it as-is, while
 //      the strict loader (a graph push) rejects it until a binding profile adds
 //      sources/columns and a deployment target, and
 //   3. each mapped construct behaves as documented.

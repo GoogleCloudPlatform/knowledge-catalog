@@ -2,7 +2,7 @@
 //
 // This is the Spanner leg of `kcmd push` for the semantic-model scope, a
 // sibling to deploy_bigquery: it consumes models already parsed into the
-// semantic IR (see loadSemanticModels, shared across legs so a `--target all`
+// semantic IR (see loadSemanticModels, shared across legs so a multi-destination
 // push parses each document once), lowers each to `CREATE OR REPLACE PROPERTY
 // GRAPH` DDL (generator: ./spanner), and applies that DDL to the Spanner
 // database named by the model's GOOGLE deployment target.

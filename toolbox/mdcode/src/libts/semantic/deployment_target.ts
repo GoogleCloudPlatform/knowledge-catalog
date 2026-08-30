@@ -12,7 +12,7 @@
 //     //spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>
 //
 // The deploy legs (deploy_bigquery, deploy_spanner) and the push-time validator
-// all derive their targets from this one reader, so a `--target all` push
+// all derive their targets from this one reader, so a multi-destination push
 // parses each model's extension once rather than once per reader.
 //
 // The capture groups are restricted to valid identifier characters: the

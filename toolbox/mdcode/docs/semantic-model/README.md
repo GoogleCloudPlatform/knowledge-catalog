@@ -137,15 +137,30 @@ kcmd push
 
 With no flags this deploys to **every** destination — the model's graph backend
 (BigQuery Graph or Spanner Graph, whichever its target names) and Knowledge
-Catalog — the graph first. The most common flags:
+Catalog — the graph first. You don't pick the graph backend on the command line;
+the model's deployment target (or the [profile](profiles.md) you merge) does. The
+most common flags:
 
 ```bash
-kcmd push --target bq          # BigQuery Graph only
-kcmd push --target spanner     # Spanner Graph only
-kcmd push --target kc          # Knowledge Catalog only
+kcmd push                      # deploy the graph (default binding) + Knowledge Catalog
+kcmd push --no-kc              # deploy only the graph, skip Knowledge Catalog
+kcmd push --no-profile         # publish only to Knowledge Catalog, deploy no graph
+kcmd push --profile analytical # deploy the graph with one binding profile; its target picks the backend
+kcmd push --all-profiles       # deploy the graph once per binding profile
 kcmd push --validate-only      # run all checks, write nothing
 kcmd push --print              # also print the generated DDL / entry plan
 ```
+
+A push has two axes. The **binding-profile axis** sets how many profiles the
+graph deploys for: the default binding, `--no-profile` (none — catalog only), a
+single `--profile`, or every one with `--all-profiles`. The **Knowledge Catalog
+axis** is `--no-kc` (skip the catalog leg). Both default on, so a bare push
+deploys the default graph and records to the catalog. See
+[Binding profiles](profiles.md).
+
+A logical model that declares no deployment target has no graph to deploy, so a
+bare `kcmd push` records it to Knowledge Catalog alone (and `--no-kc` on such a
+model is an error — it would have nowhere to go).
 
 See [Reference → push flags](reference.md#push) for the full list. The graph leg
 deploys first and fails fast, so a rejected model never half-deploys — the checks
@@ -195,8 +210,8 @@ reports `No semantic model documents found; nothing to deploy` and touches
 nothing — so remove a model while other models in its group remain, or delete
 its catalog entries directly.
 
-Every push prints one line per destination summarizing what it did. For a
-`--target all` push:
+Every push prints one line per destination summarizing what it did. For a push
+that deploys both the graph and Knowledge Catalog:
 
 ```
 Deployed 1 BigQuery Graph(s).

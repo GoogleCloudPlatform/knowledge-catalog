@@ -2,7 +2,7 @@
 //
 // This is the BigQuery leg of `kcmd push` for the semantic-model scope: it
 // consumes models already parsed into the semantic IR (see loadSemanticModels,
-// shared with the Knowledge Catalog leg so a `--target all` push parses each
+// shared with the Knowledge Catalog leg so a multi-destination push parses each
 // document once), lowers each to `CREATE OR REPLACE PROPERTY GRAPH` DDL
 // (generator), and executes that DDL against the BigQuery project named by the
 // model's GOOGLE deployment target.

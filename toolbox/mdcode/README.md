@@ -188,8 +188,11 @@ to its final segment, and Spanner Graph has no `MEASURE`, so metrics are dropped
 with a warning.)
 
 `kcmd push` also deploys the model to Knowledge Catalog (entries for the model,
-its entities and metrics, and `schema-join` links for its relationships). Use
-`--target bq|spanner|kc|all` (default `all`) to choose destinations, `--print` to
+its entities and metrics, and `schema-join` links for its relationships). A push
+has two axes: the binding-profile axis picks how many binding profiles the graph
+deploys for (`--no-profile` for none, the default binding, `--profile <name>` for
+one, or `--all-profiles` for every one), and each profile's `deployment_target`
+selects its backend; `--no-kc` skips the Knowledge Catalog leg. Use `--print` to
 dump each destination's generated artifact, and `--force-remove` to delete models
 left in the entry group that the push no longer includes. See
 [docs/semantic-model/](docs/semantic-model/README.md) for the full guide,
