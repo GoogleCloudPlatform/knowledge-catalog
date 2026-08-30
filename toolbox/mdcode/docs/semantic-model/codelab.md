@@ -101,14 +101,7 @@ semantic_model:
 YAML
 ```
 
-### Import from an OWL ontology
-
-You can also start from an existing OWL ontology instead of hand-authoring this
-YAML. `kcmd owl import` converts an ontology (`.ttl`) into a semantic model:
-classes become entities, datatype properties become fields, and object
-properties become relationships. Here is the same `sales` domain written as an
-ontology — three classes, each with its datatype properties, joined by two
-object properties:
+The model describes three entities joined by two relationships:
 
 ```mermaid
 classDiagram
@@ -127,6 +120,71 @@ classDiagram
     }
     lineitem --> orders : lineitem_to_orders
     orders --> customer : orders_to_customer
+```
+
+### Import from an OWL ontology
+
+You can also start from an existing OWL ontology instead of hand-authoring this
+YAML. `kcmd owl import` converts an ontology (`.ttl`) into a semantic model:
+classes become entities, datatype properties become fields, and object
+properties become relationships. Here is the same `sales` domain written as an
+ontology. An ontology is an RDF graph: the classes, the properties, and the
+datatypes are all nodes, wired together by labeled arcs. Each property is its
+own node that points to the class it describes (`rdfs:domain`) and to the type
+of its values (`rdfs:range`); a datatype property ranges over a datatype such as
+`xsd:integer`, while an object property ranges over another class, which is what
+makes it a relationship. Node color marks each resource's `rdf:type` — class,
+datatype property, or object property:
+
+```mermaid
+graph LR
+    classDef cls fill:#dae8fc,stroke:#6c8ebf,color:#000;
+    classDef dp fill:#d5e8d4,stroke:#82b366,color:#000;
+    classDef op fill:#ffe6cc,stroke:#d79b00,color:#000;
+    classDef dt fill:#f5f5f5,stroke:#999,color:#333;
+
+    orders["ex:orders"]:::cls
+    customer["ex:customer"]:::cls
+    lineitem["ex:lineitem"]:::cls
+
+    o_orderkey(["ex:o_orderkey"]):::dp
+    o_custkey(["ex:o_custkey"]):::dp
+    net_amount(["ex:net_amount"]):::dp
+    c_custkey(["ex:c_custkey"]):::dp
+    c_name(["ex:c_name"]):::dp
+    l_linekey(["ex:l_linekey"]):::dp
+    l_orderkey(["ex:l_orderkey"]):::dp
+
+    orders_to_customer(["ex:orders_to_customer"]):::op
+    lineitem_to_orders(["ex:lineitem_to_orders"]):::op
+
+    xInt["xsd:integer"]:::dt
+    xDec["xsd:decimal"]:::dt
+    xStr["xsd:string"]:::dt
+
+    orders -. owl:hasKey .-> o_orderkey
+    customer -. owl:hasKey .-> c_custkey
+    lineitem -. owl:hasKey .-> l_linekey
+
+    o_orderkey -->|rdfs:domain| orders
+    o_orderkey -->|rdfs:range| xInt
+    o_custkey -->|rdfs:domain| orders
+    o_custkey -->|rdfs:range| xInt
+    net_amount -->|rdfs:domain| orders
+    net_amount -->|rdfs:range| xDec
+    c_custkey -->|rdfs:domain| customer
+    c_custkey -->|rdfs:range| xInt
+    c_name -->|rdfs:domain| customer
+    c_name -->|rdfs:range| xStr
+    l_linekey -->|rdfs:domain| lineitem
+    l_linekey -->|rdfs:range| xInt
+    l_orderkey -->|rdfs:domain| lineitem
+    l_orderkey -->|rdfs:range| xInt
+
+    orders_to_customer -->|rdfs:domain| orders
+    orders_to_customer -->|rdfs:range| customer
+    lineitem_to_orders -->|rdfs:domain| lineitem
+    lineitem_to_orders -->|rdfs:range| orders
 ```
 
 Write that ontology and import it:
@@ -343,7 +401,7 @@ them: relationship names come back from a `kcmd pull` lowercased and hyphenated
 normalized link id. Nothing is wrong — the graph itself keeps the authored
 `orders_to_customer`.
 
-### Write the entries
+### Write the entries (available later)
 
 Then drop `--validate-only` to perform the write:
 
