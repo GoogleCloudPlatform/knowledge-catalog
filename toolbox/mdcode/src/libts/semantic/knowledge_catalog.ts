@@ -286,11 +286,18 @@ function schemaJoinAspectData(
   return {
     joins: [compact({
       source: {
-        name: srcEntity ? srcEntity.dataSource : rel.source.entity,
+        // Name each side by its SQL table (dataSource); fall back to the entity
+        // name when the model is logical-only (no binding, so dataSource is
+        // empty), matching the entity-not-found fallback.
+        name: srcEntity && srcEntity.dataSource ?
+            srcEntity.dataSource :
+            rel.source.entity,
         fields: rel.source.columns,
       },
       target: {
-        name: dstEntity ? dstEntity.dataSource : rel.destination.entity,
+        name: dstEntity && dstEntity.dataSource ?
+            dstEntity.dataSource :
+            rel.destination.entity,
         fields: rel.destination.columns,
       },
       description: rel.description,
@@ -329,9 +336,12 @@ function modelAspectData(model: SemanticModel): Record<string, any> {
 // `resources` array are required by the aspect type. importedSystem/
 // importedResource have no IR source today and are left unset.
 function entityAspectData(entity: Entity): Record<string, any> {
+  // A logical-only entity has no physical table (empty dataSource); emit an
+  // empty resources array rather than a bogus [''] element.
+  const path = resourcePath(entity.dataSource);
   return {
     source: compact({
-      resources: [resourcePath(entity.dataSource)],
+      resources: path ? [path] : [],
     }),
   };
 }

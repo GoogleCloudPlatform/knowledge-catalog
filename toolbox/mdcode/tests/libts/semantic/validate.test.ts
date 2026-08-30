@@ -111,6 +111,30 @@ describe('validatePushRequirements', () => {
     const errs = validatePushRequirements([a, b]);
     expect(errs.length).toBe(2);
   });
+
+  test(
+      'targetOptional accepts a model with no deployment target (KC-only)',
+      () => {
+        // A Knowledge-Catalog-only push governs the logical model and deploys
+        // no graph, so it needs no deployment target. The same model without
+        // the option is rejected (proving the option is what relaxed it).
+        const m = model();
+        expect(validatePushRequirements([loaded(m)], {
+          targetOptional: true
+        })).toEqual([]);
+        expect(validatePushRequirements([loaded(m)]).length).toBe(1);
+      });
+
+  test('targetOptional still rejects more than one deployment target', () => {
+    // Optional means zero-or-one; a model that declares two targets is a
+    // misconfiguration regardless of the destination.
+    const other =
+        '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
+    const m = model({}, [googleExt([BQ_TARGET, other])]);
+    const errs = validatePushRequirements([loaded(m)], {targetOptional: true});
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain('exactly one');
+  });
 });
 
 

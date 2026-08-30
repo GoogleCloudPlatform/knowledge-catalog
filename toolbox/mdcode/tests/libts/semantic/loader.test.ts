@@ -1113,3 +1113,63 @@ describe('fields may be declared unbound (no physical column)', () => {
     })).toThrow(/field 'credit': requires an expression/);
   });
 });
+
+
+describe('a purely logical model loads only under bindingOptional', () => {
+  // A logical-only model declares meaning (entities, fields, keys) with no
+  // physical binding: no dataset `source`, no field `expression`. It is the
+  // Knowledge-Catalog-only push case -- KC governs the logical layer and needs
+  // no table or column to point at.
+  const logicalOnly = {
+    semantic_model: [{
+      name: 'm',
+      datasets: [{
+        name: 'orders', primary_key: ['id'],
+        fields: [{ name: 'amount' }, { name: 'status' }],
+      }],
+    }],
+  };
+
+  test('under bindingOptional it loads with an empty source and unbound fields', () => {
+    const { models } = fromDocument(logicalOnly, { bindingOptional: true });
+    const orders = models[0].entities[0];
+    // No source -> empty dataSource (the emitter tolerates this); the fields
+    // carry no expression because there is no binding.
+    expect(orders.dataSource).toBe('');
+    expect(orders.keys).toEqual(['id']);
+    expect(orders.fields.map(f => f.name)).toEqual(['amount', 'status']);
+    expect(orders.fields.every(f => f.expression === undefined)).toBe(true);
+  });
+
+  test('without bindingOptional the same model fails for the missing source and expression', () => {
+    let message = '';
+    try {
+      fromDocument(logicalOnly);
+    } catch (e: any) {
+      message = String(e.message ?? e);
+    }
+    // Both binding-completeness checks fire in the default (strict) mode.
+    expect(message).toContain("dataset 'orders': a non-abstract dataset requires a source");
+    expect(message).toContain("field 'amount': requires an expression");
+  });
+
+  test('bindingOptional still rejects an unbound field that also has an expression', () => {
+    // The contradiction check is independent of binding-completeness, so it
+    // fires even when a source/expression is otherwise optional.
+    expect(() => fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [{ name: 'a', fields: [{ name: 'c', unbound: true, expression: 'c' }] }],
+      }],
+    }, { bindingOptional: true })).toThrow(/an unbound field has no column/);
+  });
+
+  test('bindingOptional still rejects an abstract dataset that also names a source', () => {
+    expect(() => fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [{ name: 'Party', abstract: true, source: 'p.d.party', fields: [] }],
+      }],
+    }, { bindingOptional: true })).toThrow(/an abstract dataset has no table/);
+  });
+});

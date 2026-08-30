@@ -17,7 +17,14 @@ import {LoadedModel} from './loader';
 // Checks every model against the push requirements and returns the collected
 // error messages (empty when all models pass), each tagged with the model's
 // source document so the author can find it.
-export function validatePushRequirements(models: LoadedModel[]): string[] {
+//
+// `targetOptional` permits a model with NO deployment target -- the case for a
+// Knowledge-Catalog-only push, which governs the logical model and deploys no
+// graph. A graph leg never sets it, so a bq/spanner/all push still requires
+// exactly one target. A model that declares more than one target is a
+// misconfiguration either way.
+export function validatePushRequirements(
+    models: LoadedModel[], opts: {targetOptional?: boolean} = {}): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
     let deployInfo: ReturnType<typeof googleDeploymentTargets>;
@@ -33,23 +40,26 @@ export function validatePushRequirements(models: LoadedModel[]): string[] {
     }
 
     // Every model must declare exactly one deployment target -- a single
-    // BigQuery Graph OR Spanner Graph URI (we do not support zero or several
-    // graphs per model). The target's host selects which deploy leg runs.
-    if (deployInfo.uris.length !== 1) {
+    // BigQuery Graph OR Spanner Graph URI (we do not support several graphs per
+    // model). The target's host selects which deploy leg runs. A KC-only push
+    // (targetOptional) also accepts zero targets, since it deploys no graph.
+    if (deployInfo.uris.length === 1) {
+      if (deployInfo.bigQuery.length + deployInfo.spanner.length === 0) {
+        // The single target is present but is not a supported graph URI.
+        errors.push(
+            `model '${model.name}' (${document}) deploymentTarget '${
+                deployInfo.malformed[0]}' is not a valid BigQuery Graph or ` +
+            `Spanner Graph URI; expected //bigquery.googleapis.com/projects/` +
+            `<p>/datasets/<d>/propertyGraphs/<g> or //spanner.googleapis.com/` +
+            `projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>.`);
+      }
+    } else if (!(opts.targetOptional && deployInfo.uris.length === 0)) {
       errors.push(
           `model '${model.name}' (${document}) declares ${
               deployInfo.uris
                   .length} deploymentTargets; exactly one BigQuery ` +
           `Graph or Spanner Graph target is required under its GOOGLE ` +
           `custom_extension.`);
-    } else if (deployInfo.bigQuery.length + deployInfo.spanner.length === 0) {
-      // The single target is present but is not a supported graph URI.
-      errors.push(
-          `model '${model.name}' (${document}) deploymentTarget '${
-              deployInfo.malformed[0]}' is not a valid BigQuery Graph or ` +
-          `Spanner Graph URI; expected //bigquery.googleapis.com/projects/<p>/` +
-          `datasets/<d>/propertyGraphs/<g> or //spanner.googleapis.com/` +
-          `projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>.`);
     }
 
     // A model that targets a BigQuery graph must have every metric resolve to a
