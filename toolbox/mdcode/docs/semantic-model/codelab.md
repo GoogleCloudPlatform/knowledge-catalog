@@ -119,11 +119,8 @@ YAML
 > for `net_amount`).
 
 That is already enough to govern in Knowledge Catalog. It carries no `source`
-table, no field `expression`, and no `deployment_target` yet — those are physical
-bindings, which you add when you deploy to a query engine (steps 3 and 4). This
-codelab governs the logical model first and binds it afterward, but that is just
-the order it happens to take: Knowledge Catalog can hold the physical bindings
-too once you have them.
+table, no field `expression`, and no `deployment_target` yet — you add those
+physical bindings when you deploy to a query engine (steps 3 and 4).
 
 ### Import existing semantics instead of authoring
 
@@ -222,12 +219,10 @@ The rest of this codelab uses the hand-authored `sales` model above.
 
 ## 2. Govern it in Knowledge Catalog
 
-A Knowledge Catalog push does not require any physical binding — so you can
-govern the model right now, before binding it to any store or loading a single
-row. The push writes the logical model as catalog entries; it needs no `source`
-tables, no column bindings, and no data. (Once you do bind it, those bindings can
-be governed here too; this step just shows the earliest point at which governance
-is possible.) First preview the plan without writing anything:
+You can govern the model right now, before binding it to any store or loading a
+single row. The push writes the logical model as catalog entries; it needs no
+`source` tables, no column bindings, and no data. First preview the plan without
+writing anything:
 
 ```bash
 kcmd push --target kc --validate-only --print
@@ -260,8 +255,9 @@ Wrote 5 new and 0 updated Knowledge Catalog entries; linked 2 relationships.
 Each entity, the metric, and the model itself are now governed entries, joined by
 a schema-join link — discoverable, access-controlled, and the single definition
 every downstream step reads from. `kcmd pull` reconstructs the model YAML from
-these entries, confirming the round-trip. None of this required a physical store:
-the model is governed first, then bound.
+these entries, confirming the round-trip. You develop the model, govern it here,
+and bind it in the sections that follow — and those physical bindings can be
+governed in Knowledge Catalog too.
 
 > This write needs the `semantic-model` / `semantic-entity` / `semantic-metric`
 > entry types and write access to the entry group. See
