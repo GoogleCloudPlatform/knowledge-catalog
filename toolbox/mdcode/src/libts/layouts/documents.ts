@@ -209,10 +209,10 @@ export function parseMarkdown(content: string): { entry: md.Entry|null; body: st
       entry.resource.labels[tag] = 'true';
     }
   }
-  if (metadata.timeStamp) {
-    entry.resource.updateTime = metadata.timeStamp;
+  if (metadata.timestamp) {
+    entry.resource.updateTime = metadata.timestamp;
     if (!entry.resource.createTime) {
-      entry.resource.createTime = metadata.timeStamp;
+      entry.resource.createTime = metadata.timestamp;
     }
   }
 
@@ -237,7 +237,7 @@ export function toMarkdown(entry: md.Entry, body: string): string {
     title: entry.resource.displayName ?? entry.resource.name,
     description: entry.resource.description ?? undefined,
     tags: tags.length ? tags : undefined,
-    timeStamp: entry.resource.updateTime ?? entry.resource.createTime ?? undefined,
+    timestamp: entry.resource.updateTime ?? entry.resource.createTime ?? undefined,
     catalogEntry: entryClone
   };
 
