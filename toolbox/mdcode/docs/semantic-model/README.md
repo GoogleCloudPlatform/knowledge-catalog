@@ -5,8 +5,11 @@ them, and the relationships between them, authored as a single
 [Apache Ossie](https://ossie.apache.org/) document. `kcmd push` deploys one
 model to two destinations at once:
 
-* **BigQuery** — a queryable `CREATE OR REPLACE PROPERTY GRAPH` over the model's
-  tables, so the model can be traversed and its metrics computed in SQL.
+* **A property graph** — a queryable `CREATE OR REPLACE PROPERTY GRAPH` over the
+  model's tables, so the model can be traversed (and, on BigQuery, its metrics
+  computed) in SQL. The graph backend is **BigQuery Graph** or **Spanner
+  Graph**, chosen by the deployment target you declare — the same authored model
+  deploys to either (see [Deployment targets](#deployment-targets-required)).
 * **Knowledge Catalog** — catalog entries and links that make the
   model discoverable as metadata.
 
@@ -87,32 +90,44 @@ rules.
 
 ### Deployment targets (required)
 
-Every model must declare exactly one **deployment target** — the BigQuery
-property graph it deploys to — in a `GOOGLE` custom extension, as shown above. A
-target is a URI of the form:
+Every model must declare exactly one **deployment target** — the property graph
+it deploys to — in a `GOOGLE` custom extension, as shown above. The target's
+**host selects the graph backend**:
 
 ```
+# BigQuery Graph
 //bigquery.googleapis.com/projects/<project>/datasets/<dataset>/propertyGraphs/<graphName>
+
+# Spanner Graph
+//spanner.googleapis.com/projects/<project>/instances/<instance>/databases/<database>/propertyGraphs/<graphName>
 ```
 
-The target's project and dataset are where the property graph is created; the
-same URIs are also recorded on the model's Knowledge Catalog entry. A model with
-no deployment target — or with more than one — is rejected at push time (see
+A BigQuery target's project and dataset are where the property graph is created;
+a Spanner target's instance and database are. Swapping one target URI for the
+other is all it takes to deploy the same model to the other backend. The target
+is also recorded on the model's Knowledge Catalog entry. A model with no
+deployment target — or with more than one — is rejected at push time (see
 [Validation](reference.md#validation)).
 
 ### Table sources
 
-Each entity's `source` is its backing BigQuery table. A `source` written as
+Each entity's `source` is its backing table.
+
+For a **BigQuery** target, `source` is the BigQuery table. A `source` written as
 `dataset.table` (two parts) is qualified with the scope's project — the
 `<projectId>` from `init`. Write the full `project.dataset.table` when a table
-lives in another project.
+lives in another project. Sources are not limited to native BigQuery tables: a
+name with more than three parts — for example a four-part
+`catalog.database.schema.table` reference — points at a table in a **federated
+REST catalog**, such as an Apache Iceberg table exposed through BigLake. Write it
+exactly as BigQuery resolves the name, and validation resolves it the same way
+the deploy does (see [Validation](reference.md#validation)).
 
-Sources are not limited to native BigQuery tables. A name with more than
-three parts — for example a four-part `catalog.database.schema.table`
-reference — points at a table in a **federated REST catalog**, such as an
-Apache Iceberg table exposed through BigLake. Write it exactly as BigQuery
-resolves the name, and validation resolves it the same way the deploy does (see
-[Validation](reference.md#validation)).
+For a **Spanner** target, the graph and its tables live inside the one Spanner
+database the target names, so a `source` is reduced to its **final segment** —
+the table name in that database (`demo.sales.Orders` → `Orders`). That lets one
+authored `source` serve both backends; a Spanner-native `source` form is a
+planned [profiles](profiles.md) feature.
 
 ## 2. Push
 
@@ -120,27 +135,34 @@ resolves the name, and validation resolves it the same way the deploy does (see
 kcmd push
 ```
 
-With no flags this deploys to **every** destination, BigQuery first. The most
-common flags:
+With no flags this deploys to **every** destination — the model's graph backend
+(BigQuery Graph or Spanner Graph, whichever its target names) and Knowledge
+Catalog — the graph first. The most common flags:
 
 ```bash
-kcmd push --target bq          # BigQuery only
+kcmd push --target bq          # BigQuery Graph only
+kcmd push --target spanner     # Spanner Graph only
+kcmd push --target kc          # Knowledge Catalog only
 kcmd push --validate-only      # run all checks, write nothing
 kcmd push --print              # also print the generated DDL / entry plan
 ```
 
-See [Reference → push flags](reference.md#push) for the full list. Destinations
-always deploy BigQuery-first and fail fast, so a rejected model never
-half-deploys — the checks that gate it are in
-[Validation](reference.md#validation).
+See [Reference → push flags](reference.md#push) for the full list. The graph leg
+deploys first and fails fast, so a rejected model never half-deploys — the checks
+that gate it are in [Validation](reference.md#validation).
 
-**What push creates.** In BigQuery, a single `CREATE OR REPLACE PROPERTY GRAPH`
-per deployment target: each entity becomes a node table, each relationship an
-edge table, each metric a measure. In Knowledge Catalog, one entry per model,
-entity, and metric, plus `schema-join` links for relationships. The exact
-mapping — and the class-hierarchy handling — is in
-[Reference → What gets created](reference.md#what-gets-created-in-bigquery); what
-of your metadata survives the trip (and what doesn't) is in
+**What push creates.** In **BigQuery**, a single `CREATE OR REPLACE PROPERTY
+GRAPH` per deployment target: each entity becomes a node table, each relationship
+an edge table, each metric a measure. In **Spanner**, the same
+`CREATE OR REPLACE PROPERTY GRAPH` with bare table names and no measures —
+Spanner Graph has no `MEASURE`, so metrics are dropped with a warning while the
+graph structure (nodes, edges, labels, inheritance) still deploys. In
+**Knowledge Catalog**, one entry per model, entity, and metric, plus
+`schema-join` links for relationships. The exact mapping — and the
+class-hierarchy handling — is in
+[Reference → What gets created](reference.md#what-gets-created-in-bigquery) (and
+[in Spanner](reference.md#what-gets-created-in-spanner)); what of your metadata
+survives the trip (and what doesn't) is in
 [What push and pull preserve](fidelity.md).
 
 ## Updating and removing models
@@ -180,6 +202,9 @@ Every push prints one line per destination summarizing what it did. For a
 Deployed 1 BigQuery Graph(s).
 Wrote 5 new and 2 updated Knowledge Catalog entries; removed 1 orphaned entry; linked 2 relationships; unlinked 1 orphaned link.
 ```
+
+A Spanner-targeting model prints `Deployed 1 Spanner Graph(s).` in place of the
+BigQuery line.
 
 ## Pull
 

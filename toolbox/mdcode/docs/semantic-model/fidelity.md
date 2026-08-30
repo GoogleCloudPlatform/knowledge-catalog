@@ -1,7 +1,7 @@
 # What push and pull preserve
 
-Your model document is the source of truth. Pushing it (to BigQuery and to
-Knowledge Catalog) and pulling it back are each **lossy in specific ways**: the
+Your model document is the source of truth. Pushing it (to a property graph and
+to Knowledge Catalog) and pulling it back are each **lossy in specific ways**: the
 graph keeps what it can query, the catalog keeps metadata, and `pull` can only
 return what the catalog was given. This page is the one authoritative map of what
 survives each direction. Keep your authored document.
@@ -10,7 +10,9 @@ survives each direction. Keep your authored document.
 
 Rows are what you authored; columns are its fate in each direction. `✓` = comes
 back as authored; `—` = not present in that destination. Footnotes carry the
-nuances that don't fit a cell.
+nuances that don't fit a cell. The **→ BigQuery graph** column describes a
+BigQuery target; a Spanner target keeps the same graph *structure* but no
+measures and no `OPTIONS` metadata — see [To Spanner Graph](#to-spanner-graph).
 
 | Authored element | → BigQuery graph | → Knowledge Catalog | Recovered by `pull` |
 |---|---|---|---|
@@ -67,6 +69,30 @@ dropped (only the primary key is emitted). The imported vendor SQL is not carrie
 as a separate form: the graph builds from the canonical `expression` when
 present, and falls back to the imported vendor SQL verbatim only when the model
 was never transpiled to a canonical form.
+
+## To Spanner Graph
+
+A Spanner target keeps the queryable **structure** and drops the descriptive
+metadata. The node tables, edge tables, and labels (including the `extends`
+hierarchy, with fields flattened down) deploy exactly as they do for BigQuery,
+but with bare table and graph names. Two things do not make the trip, both by
+design:
+
+- **Metrics.** Spanner Graph has no `MEASURE`, so every model-level metric is
+  dropped with a warning. The BigQuery-only rule that a metric resolve to one
+  entity does not apply. Author your metrics as usual — a BigQuery target still
+  emits them, and Knowledge Catalog still records each `semantic-metric` entry —
+  they simply have no home in the Spanner graph.
+- **`OPTIONS` metadata.** Spanner Graph carries no per-element `OPTIONS`, so
+  `description`, `synonyms`, `instructions`, `examples`, and field `label` are not
+  written into the Spanner DDL. They still reach Knowledge Catalog on the same
+  push (the model's / entities' / metrics' descriptions and `instructions` land
+  on their entries and the `guidelines` aspect), so the descriptive layer lives in
+  the catalog rather than in the Spanner graph. This mirrors how BigQuery drops
+  its graph-*statement* `OPTIONS` while keeping per-element ones.
+
+Everything else — keys, relationships, the label hierarchy — matches the
+**→ BigQuery graph** column above.
 
 ## To Knowledge Catalog
 

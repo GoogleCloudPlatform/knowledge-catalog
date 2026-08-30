@@ -443,7 +443,104 @@ query, so the correct answer is the default one.
 
 ---
 
-## 5. Clean up
+## 5. Deploy the same model to Spanner Graph
+
+The model you authored is backend-agnostic — the one BigQuery-specific choice in
+it is the deployment target. Swap that target for a Spanner Graph URI and the
+**same document** deploys to Spanner Graph. You can inspect the generated DDL
+without a Spanner database, because the generator runs under `--validate-only`:
+
+```bash
+# Point $GRAPH at a Spanner Graph target instead of the BigQuery one from step 1.
+export SPANNER_INSTANCE=<your-spanner-instance>
+export SPANNER_DB=<your-googlesql-database>
+SPANNER_TARGET=//spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/propertyGraphs/$GRAPH
+
+# Rewrite the deployment target in place (cleanup in step 6 removes the workspace).
+sed -i "s#//bigquery.googleapis.com/[^\"]*#$SPANNER_TARGET#" catalog/EntryGroups/$DATASET/sales.yaml
+
+kcmd push --target spanner --validate-only --print
+```
+
+```
+Validating semantic model for Spanner Graph...
+Warning: metric 'revenue' is not emitted: Spanner Graph has no MEASURE, so model-level metrics have no home in it
+-- Spanner Graph --
+CREATE OR REPLACE PROPERTY GRAPH sales
+NODE TABLES (
+  orders AS orders
+    KEY(o_orderkey)
+    PROPERTIES(
+      o_orderkey,
+      o_custkey,
+      net_amount
+    ),
+  customer AS customer
+    KEY(c_custkey)
+    PROPERTIES(
+      c_custkey,
+      c_name
+    ),
+  lineitem AS lineitem
+    KEY(l_linekey)
+    PROPERTIES(
+      l_linekey,
+      l_orderkey
+    )
+)
+EDGE TABLES (
+  orders AS orders_to_customer
+    KEY(o_orderkey)
+    SOURCE KEY(o_orderkey) REFERENCES orders(o_orderkey)
+    DESTINATION KEY(o_custkey) REFERENCES customer(c_custkey),
+  lineitem AS lineitem_to_orders
+    KEY(l_linekey)
+    SOURCE KEY(l_linekey) REFERENCES lineitem(l_linekey)
+    DESTINATION KEY(l_orderkey) REFERENCES orders(o_orderkey)
+);
+
+Validation complete; no changes applied.
+```
+
+Three things differ from the BigQuery DDL in step 4, and nothing else:
+
+- **Bare table and graph names.** A Spanner property graph names tables inside
+  one database, so there is no backticked `project.dataset.` qualifier — each
+  `source`'s final segment (`$PROJECT.$DATASET.orders` → `orders`) is the table.
+- **No `MEASURE`.** Spanner Graph has no measures, so `revenue` is dropped with
+  the warning above rather than emitted onto the `orders` node. Author metrics as
+  usual — a BigQuery target still emits them, and step 3's Knowledge Catalog
+  entries still record `revenue`.
+- **No `OPTIONS`.** Descriptions and synonyms are not written into the Spanner
+  DDL; they live in Knowledge Catalog instead.
+
+The nodes, edges, and keys are identical to the BigQuery graph.
+
+To actually apply it, drop `--validate-only` and point the target at a Spanner
+database that already holds `orders`, `customer`, and `lineitem` — the Spanner
+leg applies the DDL through the `updateDatabaseDdl` long-running operation and
+does not create or pre-check those tables:
+
+```bash
+kcmd push --target spanner
+# -> Deployed 1 Spanner Graph(s).
+```
+
+Then query it with Spanner's Graph Query Language, for example
+`GRAPH sales MATCH (o:orders)-[:orders_to_customer]->(c:customer) RETURN c.c_name, o.net_amount`.
+Aggregates like `revenue` are computed in your application or in SQL, not by the
+graph, since Spanner Graph has no measure.
+
+Restore the BigQuery target before the rest of the codelab, if you kept the
+workspace:
+
+```bash
+sed -i "s#//spanner.googleapis.com/[^\"]*#//bigquery.googleapis.com/$BQ_DS/propertyGraphs/$GRAPH#" catalog/EntryGroups/$DATASET/sales.yaml
+```
+
+---
+
+## 6. Clean up
 
 Drop the BigQuery dataset (tables + property graph):
 
