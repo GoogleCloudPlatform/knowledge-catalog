@@ -59,11 +59,11 @@ kcmd init --semantic-model $PROJECT.$LOCATION.$DATASET
 Author the model: three entities (`orders`, `customer`, `lineitem`), the
 relationships between them, and one metric (`revenue`). A real sales schema fans
 each order out into many line-item rows, so the model includes `lineitem`. Step
-4 uses that fan-out to show where hand-written SQL goes wrong. The `GOOGLE`
-extension names the BigQuery Graph deployment target.
+4 uses that fan-out to show where hand-written SQL goes wrong. The
+`deployment_target` key names the BigQuery Graph the model deploys to.
 
 ```bash
-# BigQuery Graph deployment target named by the GOOGLE extension below.
+# BigQuery Graph deployment target, named by the model's deployment_target key.
 BQ_DS=projects/$PROJECT/datasets/$DATASET
 TARGET=//bigquery.googleapis.com/$BQ_DS/propertyGraphs/$GRAPH
 
@@ -72,9 +72,7 @@ version: "0.2.0.dev0"
 semantic_model:
   - name: sales
     description: Orders, line items, and customers for the codelab
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["$TARGET"]}'
+    deployment_target: $TARGET
     datasets:
       - name: orders
         source: $PROJECT.$DATASET.orders
@@ -445,98 +443,191 @@ query, so the correct answer is the default one.
 
 ## 5. Deploy the same model to Spanner Graph
 
-The model you authored is backend-agnostic — the one BigQuery-specific choice in
-it is the deployment target. Swap that target for a Spanner Graph URI and the
-**same document** deploys to Spanner Graph. You can inspect the generated DDL
-without a Spanner database, because the generator runs under `--validate-only`:
+The same customers and orders usually live in more than one store. Steps 1–4
+used the model's built-in binding — the BigQuery warehouse. An operational
+Spanner database holds the same business, but its tables are named differently
+(`Customers`, `Orders`, `LineItems`), its columns are named differently
+(`FullName`, `OrderId`), and it does not carry `net_amount` — a settled figure
+the warehouse computes, not something the live store keeps.
+
+A **binding profile** maps the one logical model onto that store. It changes only
+where each entity reads from and which column each field binds to; it never
+changes what an entity, a relationship, or a metric *means* (for the full
+contract, see [binding profiles](profiles.md)). Write the operational binding
+beside the model, in `sales.profiles/`:
 
 ```bash
-# Point $GRAPH at a Spanner Graph target instead of the BigQuery one from step 1.
-export SPANNER_INSTANCE=<your-spanner-instance>
+export SPANNER_INSTANCE=<your-spanner-instance>   # a Spanner ENTERPRISE-edition instance
 export SPANNER_DB=<your-googlesql-database>
 SPANNER_TARGET=//spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/propertyGraphs/$GRAPH
 
-# Rewrite the deployment target in place (cleanup in step 6 removes the workspace).
-sed -i "s#//bigquery.googleapis.com/[^\"]*#$SPANNER_TARGET#" catalog/EntryGroups/$DATASET/sales.yaml
+mkdir -p catalog/EntryGroups/$DATASET/sales.profiles
+cat > catalog/EntryGroups/$DATASET/sales.profiles/operational.yaml <<YAML
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    deployment_target: $SPANNER_TARGET
+    datasets:
+      - name: orders
+        source: Orders                       # a bare table in the Spanner database
+        fields:
+          - { name: o_orderkey, expression: OrderId }
+          - { name: o_custkey,  expression: CustomerId }
+          - { name: net_amount, unbound: true }   # the operational store has no settled total
+      - name: customer
+        source: Customers
+        fields:
+          - { name: c_custkey, expression: CustomerId }
+          - { name: c_name,    expression: FullName }
+      - name: lineitem
+        source: LineItems
+        fields:
+          - { name: l_linekey,  expression: LineId }
+          - { name: l_orderkey, expression: OrderId }
+YAML
+```
 
-kcmd push --target spanner --validate-only --print
+The profile restates no relationship, no metric, no label, and no grain — those
+are logical and live once in the model. It carries only bindings: each entity's
+Spanner table, each field's Spanner column, and the one field the store does not
+have. `kcmd profiles` reports what each binding can answer:
+
+```bash
+kcmd profiles
 ```
 
 ```
+Model 'sales' (kcmd_codelab):
+  profile 'operational'
+    target: //spanner.googleapis.com/projects/.../databases/.../propertyGraphs/sales
+    sources:
+      orders -> $PROJECT.Orders
+      customer -> $PROJECT.Customers
+      lineitem -> $PROJECT.LineItems
+    cannot answer:
+      field orders.net_amount (unbound)
+      metric revenue (field orders.net_amount is unbound)
+```
+
+(`kcmd profiles` resolves each source against your project for display; the
+Spanner graph itself references the bare table — `Orders` — as the DDL below
+shows.)
+
+`revenue` is `SUM(orders.net_amount)`, and the operational store does not bind
+`net_amount`, so the profile reports `revenue` as unavailable there — computed
+from the bindings, not declared. The warehouse binds `net_amount`, so the same
+metric is available under the default binding steps 1–4 used. One model; each
+store answers the part of it that its data can back.
+
+Preview the Spanner DDL the profile generates (`--validate-only` runs the
+generator without touching a database):
+
+```bash
+kcmd push --profile operational --target spanner --validate-only --print
+```
+
+```
+Note: profile 'operational' leaves 1 field(s) unbound; 0 entity(ies), 1 metric(s) and 0 relationship(s) unavailable.
 Validating semantic model for Spanner Graph...
-Warning: metric 'revenue' is not emitted: Spanner Graph has no MEASURE, so model-level metrics have no home in it
 -- Spanner Graph --
+-- //spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/propertyGraphs/sales
 CREATE OR REPLACE PROPERTY GRAPH sales
 NODE TABLES (
-  orders AS orders
-    KEY(o_orderkey)
+  Orders AS orders
+    KEY(OrderId)
     PROPERTIES(
-      o_orderkey,
-      o_custkey,
-      net_amount
+      OrderId AS o_orderkey,
+      CustomerId AS o_custkey
     ),
-  customer AS customer
-    KEY(c_custkey)
+  Customers AS customer
+    KEY(CustomerId)
     PROPERTIES(
-      c_custkey,
-      c_name
+      CustomerId AS c_custkey,
+      FullName AS c_name
     ),
-  lineitem AS lineitem
-    KEY(l_linekey)
+  LineItems AS lineitem
+    KEY(LineId)
     PROPERTIES(
-      l_linekey,
-      l_orderkey
+      LineId AS l_linekey,
+      OrderId AS l_orderkey
     )
 )
 EDGE TABLES (
-  orders AS orders_to_customer
-    KEY(o_orderkey)
-    SOURCE KEY(o_orderkey) REFERENCES orders(o_orderkey)
-    DESTINATION KEY(o_custkey) REFERENCES customer(c_custkey),
-  lineitem AS lineitem_to_orders
-    KEY(l_linekey)
-    SOURCE KEY(l_linekey) REFERENCES lineitem(l_linekey)
-    DESTINATION KEY(l_orderkey) REFERENCES orders(o_orderkey)
+  Orders AS orders_to_customer
+    KEY(OrderId)
+    SOURCE KEY(OrderId) REFERENCES orders(OrderId)
+    DESTINATION KEY(CustomerId) REFERENCES customer(CustomerId),
+  LineItems AS lineitem_to_orders
+    KEY(LineId)
+    SOURCE KEY(LineId) REFERENCES lineitem(LineId)
+    DESTINATION KEY(OrderId) REFERENCES orders(OrderId)
 );
 
 Validation complete; no changes applied.
 ```
 
-Three things differ from the BigQuery DDL in step 4, and nothing else:
+The graph still speaks the model's vocabulary — the properties are `o_orderkey`,
+`c_name`, and the rest — but each is now backed by the profile's Spanner column
+(`OrderId AS o_orderkey`, `FullName AS c_name`). The key and reference clauses
+name the physical columns (`KEY(OrderId)`), because a Spanner graph keys on the
+table's real column, not the property alias. Three things also differ from the
+BigQuery DDL in step 4:
 
 - **Bare table and graph names.** A Spanner property graph names tables inside
   one database, so there is no backticked `project.dataset.` qualifier — each
-  `source`'s final segment (`$PROJECT.$DATASET.orders` → `orders`) is the table.
-- **No `MEASURE`.** Spanner Graph has no measures, so `revenue` is dropped with
-  the warning above rather than emitted onto the `orders` node. Author metrics as
-  usual — a BigQuery target still emits them, and step 3's Knowledge Catalog
-  entries still record `revenue`.
+  `source` is a bare table (`Orders`) in the target database.
+- **No `MEASURE`.** Spanner Graph has no measures. `revenue` is already withheld
+  here because `net_amount` is unbound, but even a bound metric is not emitted
+  onto a Spanner node; author metrics as usual and a BigQuery target still emits
+  them.
 - **No `OPTIONS`.** Descriptions and synonyms are not written into the Spanner
   DDL; they live in Knowledge Catalog instead.
 
-The nodes, edges, and keys are identical to the BigQuery graph.
-
-To actually apply it, drop `--validate-only` and point the target at a Spanner
-database that already holds `orders`, `customer`, and `lineitem` — the Spanner
-leg applies the DDL through the `updateDatabaseDdl` long-running operation and
-does not create or pre-check those tables:
+To apply it for real, create the operational tables in a Spanner
+ENTERPRISE-edition database (Graph requires ENTERPRISE), load a little data, and
+drop `--validate-only`. The Spanner leg applies the DDL through the
+`updateDatabaseDdl` long-running operation and does not create or pre-check the
+tables, so they must exist first:
 
 ```bash
-kcmd push --target spanner
+gcloud spanner databases create $SPANNER_DB --instance=$SPANNER_INSTANCE \
+  --ddl='CREATE TABLE Customers (CustomerId INT64 NOT NULL, FullName STRING(MAX)) PRIMARY KEY(CustomerId)' \
+  --ddl='CREATE TABLE Orders (OrderId INT64 NOT NULL, CustomerId INT64) PRIMARY KEY(OrderId)' \
+  --ddl='CREATE TABLE LineItems (LineId INT64 NOT NULL, OrderId INT64) PRIMARY KEY(LineId)'
+
+gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
+  --sql="INSERT INTO Customers (CustomerId, FullName) VALUES (1,'Acme'),(2,'Globex')"
+gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
+  --sql="INSERT INTO Orders (OrderId, CustomerId) VALUES (100,1),(101,1),(102,2)"
+gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
+  --sql="INSERT INTO LineItems (LineId, OrderId) VALUES (1,100),(2,100),(3,101),(4,102),(5,102),(6,102)"
+
+kcmd push --profile operational --target spanner
 # -> Deployed 1 Spanner Graph(s).
 ```
 
-Then query it with Spanner's Graph Query Language, for example
-`GRAPH sales MATCH (o:orders)-[:orders_to_customer]->(c:customer) RETURN c.c_name, o.net_amount`.
-Aggregates like `revenue` are computed in your application or in SQL, not by the
-graph, since Spanner Graph has no measure.
-
-Restore the BigQuery target before the rest of the codelab, if you kept the
-workspace:
+Query it with Spanner's Graph Query Language. The query names the model's
+properties (`c_name`, `o_orderkey`); the profile's column bindings are invisible
+to it:
 
 ```bash
-sed -i "s#//spanner.googleapis.com/[^\"]*#//bigquery.googleapis.com/$BQ_DS/propertyGraphs/$GRAPH#" catalog/EntryGroups/$DATASET/sales.yaml
+gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
+  --sql="GRAPH sales MATCH (o:orders)-[:orders_to_customer]->(c:customer)
+         RETURN c.c_name AS customer, COUNT(o.o_orderkey) AS orders
+         GROUP BY customer ORDER BY customer"
 ```
+
+```
+customer  orders
+Acme      2
+Globex    1
+```
+
+The one model now backs two stores: the BigQuery warehouse from steps 1–4, where
+`revenue` is a measure, and this operational Spanner graph, where the same
+entities and relationships are queried live and `revenue` is computed in SQL or
+the application rather than by the graph. `Customer`, `orders_to_customer`, and
+every field mean the same thing in both; only the bindings differ.
 
 ---
 
@@ -546,6 +637,12 @@ Drop the BigQuery dataset (tables + property graph):
 
 ```bash
 bq rm -r -f -d $PROJECT:$DATASET
+```
+
+Drop the Spanner database from section 5 (its tables and the graph go with it):
+
+```bash
+gcloud spanner databases delete $SPANNER_DB --instance=$SPANNER_INSTANCE --quiet
 ```
 
 Remove the Knowledge Catalog entries and entry group via REST:
