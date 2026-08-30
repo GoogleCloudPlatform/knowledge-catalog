@@ -3,216 +3,134 @@ semantic_model:
   - name: carriage
     description: Imported from OWL ontology http://example.com/people#
     custom_extensions:
-      - {
-          vendor_name: GOOGLE,
-          data: "{
-
-            \  \"owl:AllDisjointClasses\": [
-
-            \    [
-
-            \      \"Person\",
-
-            \      \"Robot\",
-
-            \      \"LifeStage\"
-
-            \    ]
-
-            \  ],
-
-            \  \"owl:AllDisjointProperties\": [
-
-            \    [
-
-            \      \"personId\",
-
-            \      \"name\"
-
-            \    ]
-
-            \  ],
-
-            \  \"owl:AllDifferent\": [
-
-            \    [
-
-            \      \"Infant\",
-
-            \      \"Adult\"
-
-            \    ]
-
-            \  ],
-
-            \  \"owl:baseIri\": \"http://example.com/people#\"
-
-            }"
-        }
+      - vendor_name: GOOGLE
+        data: |-
+          {
+            "owl:AllDisjointClasses": [
+              [
+                "Person",
+                "Robot",
+                "LifeStage"
+              ]
+            ],
+            "owl:AllDisjointProperties": [
+              [
+                "personId",
+                "name"
+              ]
+            ],
+            "owl:AllDifferent": [
+              [
+                "Infant",
+                "Adult"
+              ]
+            ],
+            "owl:baseIri": "http://example.com/people#"
+          }
     datasets:
       - name: Person
-        primary_key: [personId]
+        primary_key:
+          - personId
         description: A human being.
         fields:
-          - {name: personId, datatype: String}
-          - {name: name, datatype: String}
+          - name: personId
+            datatype: String
+          - name: name
+            datatype: String
           - name: legalName
             datatype: String
             custom_extensions:
-              - {
-                  vendor_name: GOOGLE,
-                  data: "{
-
-                    \  \"rdfs:subPropertyOf\": [
-
-                    \    \"name\"
-
-                    \  ],
-
-                    \  \"owl:equivalentProperty\": [
-
-                    \    \"http://xmlns.com/foaf/0.1/name\"
-
-                    \  ],
-
-                    \  \"owl:FunctionalProperty\": true,
-
-                    \  \"rdfs:seeAlso\": [
-
-                    \    \"\\\"See the naming policy doc.\\\"\"
-
-                    \  ],
-
-                    \  \"owl:deprecated\": true,
-
-                    \  \"owl:versionInfo\": \"2.0\"
-
-                    }"
-                }
+              - vendor_name: GOOGLE
+                data: |-
+                  {
+                    "rdfs:subPropertyOf": [
+                      "name"
+                    ],
+                    "owl:equivalentProperty": [
+                      "http://xmlns.com/foaf/0.1/name"
+                    ],
+                    "owl:FunctionalProperty": true,
+                    "rdfs:seeAlso": [
+                      "\"See the naming policy doc.\""
+                    ],
+                    "owl:deprecated": true,
+                    "owl:versionInfo": "2.0"
+                  }
         custom_extensions:
-          - {
-              vendor_name: GOOGLE,
-              data: "{
-
-                \  \"owl:equivalentClass\": [
-
-                \    \"http://xmlns.com/foaf/0.1/Person\"
-
-                \  ],
-
-                \  \"owl:disjointWith\": [
-
-                \    \"Robot\"
-
-                \  ],
-
-                \  \"rdfs:seeAlso\": [
-
-                \    \"<https://schema.org/Person>\"
-
-                \  ],
-
-                \  \"rdfs:isDefinedBy\": [
-
-                \    \"http://example.com/people\"
-
-                \  ]
-
-                }"
-            }
-      - {name: Robot, description: "A machine, never a person."}
+          - vendor_name: GOOGLE
+            data: |-
+              {
+                "owl:equivalentClass": [
+                  "http://xmlns.com/foaf/0.1/Person"
+                ],
+                "owl:disjointWith": [
+                  "Robot"
+                ],
+                "rdfs:seeAlso": [
+                  "<https://schema.org/Person>"
+                ],
+                "rdfs:isDefinedBy": [
+                  "http://example.com/people"
+                ]
+              }
+      - name: Robot
+        description: A machine, never a person.
       - name: LifeStage
         custom_extensions:
-          - {
-              vendor_name: GOOGLE,
-              data: "{
-
-                \  \"owl:oneOf\": [
-
-                \    \"Infant\",
-
-                \    \"Adult\"
-
-                \  ]
-
-                }"
-            }
+          - vendor_name: GOOGLE
+            data: |-
+              {
+                "owl:oneOf": [
+                  "Infant",
+                  "Adult"
+                ]
+              }
     relationships:
       - name: ancestorOf
         from: Person
         to: Person
         custom_extensions:
-          - {
-              vendor_name: GOOGLE,
-              data: "{
-
-                \  \"rdfs:subPropertyOf\": [
-
-                \    \"relatedTo\"
-
-                \  ],
-
-                \  \"owl:inverseOf\": \"descendantOf\",
-
-                \  \"owl:propertyDisjointWith\": [
-
-                \    \"descendantOf\"
-
-                \  ],
-
-                \  \"owl:TransitiveProperty\": true,
-
-                \  \"owl:IrreflexiveProperty\": true,
-
-                \  \"owl:AsymmetricProperty\": true,
-
-                \  \"rdfs:isDefinedBy\": [
-
-                \    \"http://example.com/people\"
-
-                \  ]
-
-                }"
-            }
+          - vendor_name: GOOGLE
+            data: |-
+              {
+                "rdfs:subPropertyOf": [
+                  "relatedTo"
+                ],
+                "owl:inverseOf": "descendantOf",
+                "owl:propertyDisjointWith": [
+                  "descendantOf"
+                ],
+                "owl:TransitiveProperty": true,
+                "owl:IrreflexiveProperty": true,
+                "owl:AsymmetricProperty": true,
+                "rdfs:isDefinedBy": [
+                  "http://example.com/people"
+                ]
+              }
       - name: relatedTo
         from: Person
         to: Person
         custom_extensions:
-          - {
-              vendor_name: GOOGLE,
-              data: "{
-
-                \  \"owl:equivalentProperty\": [
-
-                \    \"http://xmlns.com/foaf/0.1/knows\"
-
-                \  ],
-
-                \  \"owl:SymmetricProperty\": true,
-
-                \  \"owl:ReflexiveProperty\": true
-
-                }"
-            }
+          - vendor_name: GOOGLE
+            data: |-
+              {
+                "owl:equivalentProperty": [
+                  "http://xmlns.com/foaf/0.1/knows"
+                ],
+                "owl:SymmetricProperty": true,
+                "owl:ReflexiveProperty": true
+              }
       - name: uncleOf
         from: Person
         to: Person
         custom_extensions:
-          - {
-              vendor_name: GOOGLE,
-              data: "{
-
-                \  \"owl:propertyChainAxiom\": [
-
-                \    [
-
-                \      \"ancestorOf\",
-
-                \      \"relatedTo\"
-
-                \    ]
-
-                \  ]
-
-                }"
-            }
+          - vendor_name: GOOGLE
+            data: |-
+              {
+                "owl:propertyChainAxiom": [
+                  [
+                    "ancestorOf",
+                    "relatedTo"
+                  ]
+                ]
+              }

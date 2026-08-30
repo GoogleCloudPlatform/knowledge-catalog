@@ -3,61 +3,56 @@ semantic_model:
   - name: hierarchy
     description: Imported from OWL ontology http://example.com/hr#
     custom_extensions:
-      - {
-          vendor_name: GOOGLE,
-          data: "{
-
-            \  \"owl:baseIri\": \"http://example.com/hr#\"
-
-            }"
-        }
+      - vendor_name: GOOGLE
+        data: |-
+          {
+            "owl:baseIri": "http://example.com/hr#"
+          }
     datasets:
       - name: Person
         description: A human being.
         fields:
-          - {name: fullName, datatype: String}
+          - name: fullName
+            datatype: String
       - name: Employee
         description: A person employed by the organization.
         fields:
-          - {name: employeeId, datatype: String}
+          - name: employeeId
+            datatype: String
           - name: legalName
             datatype: String
             custom_extensions:
-              - {
-                  vendor_name: GOOGLE,
-                  data: "{
-
-                    \  \"rdfs:subPropertyOf\": [
-
-                    \    \"fullName\"
-
-                    \  ]
-
-                    }"
-                }
+              - vendor_name: GOOGLE
+                data: |-
+                  {
+                    "rdfs:subPropertyOf": [
+                      "fullName"
+                    ]
+                  }
       - name: Customer
-        extends: [Person]
+        extends:
+          - Person
         description: A person who buys.
         fields:
-          - {name: loyaltyTier, datatype: String}
+          - name: loyaltyTier
+            datatype: String
       - name: Manager
-        extends: [Person, Employee]
+        extends:
+          - Person
+          - Employee
         description: An employee who manages others.
     relationships:
       - name: managedBy
         from: Employee
         to: Manager
         custom_extensions:
-          - {
-              vendor_name: GOOGLE,
-              data: "{
-
-                \  \"rdfs:subPropertyOf\": [
-
-                \    \"worksWith\"
-
-                \  ]
-
-                }"
-            }
-      - {name: worksWith, from: Employee, to: Employee}
+          - vendor_name: GOOGLE
+            data: |-
+              {
+                "rdfs:subPropertyOf": [
+                  "worksWith"
+                ]
+              }
+      - name: worksWith
+        from: Employee
+        to: Employee

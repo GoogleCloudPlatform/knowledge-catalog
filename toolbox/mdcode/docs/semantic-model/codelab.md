@@ -238,7 +238,7 @@ ex:lineitem_to_orders a owl:ObjectProperty ;
     rdfs:range ex:orders .
 TTL
 
-kcmd owl import /tmp/sales.ttl --out /tmp/sales_osi.yaml
+kcmd owl import /tmp/sales.ttl --out /tmp/sales_osi.yaml --compact
 ```
 
 ```

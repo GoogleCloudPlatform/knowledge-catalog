@@ -110,6 +110,9 @@ cli.command(
     .option(
         '--out <path>',
         'Write the generated OSI document to this path instead of the semantic-model layout dir')
+    .option(
+        '--compact',
+        'Emit compact flow YAML (primary_key: [id], inline field/relationship maps) instead of the default block layout')
     .action(async (action, file, options) => {
       let exitCode = 1;
       try {

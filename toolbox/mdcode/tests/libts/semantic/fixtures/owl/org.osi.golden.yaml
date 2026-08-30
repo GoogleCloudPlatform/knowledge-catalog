@@ -1,56 +1,85 @@
 version: 0.2.0.dev0
 semantic_model:
   - name: org
-    description: "An org chart: employees, the departments they work in, and the projects they staff."
+    description: "An org chart: employees, the departments they work in, and the
+      projects they staff."
     datasets:
       - name: Employee
-        primary_key: [employeeId]
+        primary_key:
+          - employeeId
         description: A person employed by the organization.
         ai_context:
-          synonyms: [Staff member, Worker]
+          synonyms:
+            - Staff member
+            - Worker
         fields:
-          - {name: employeeId, datatype: String, description: The employee's unique staff number.}
-          - {name: fullName, datatype: String, label: name}
+          - name: employeeId
+            datatype: String
+            description: The employee's unique staff number.
+          - name: fullName
+            datatype: String
+            label: name
           - name: hireDate
             datatype: Date
-            dimension: {is_time: true}
-          - {name: salary, datatype: Decimal}
-          - {name: fteRatio, datatype: Float}
-          - {name: level, datatype: Integer}
-          - {name: isManager, datatype: Boolean}
+            dimension:
+              is_time: true
+          - name: salary
+            datatype: Decimal
+          - name: fteRatio
+            datatype: Float
+          - name: level
+            datatype: Integer
+          - name: isManager
+            datatype: Boolean
           - name: lastLogin
             datatype: DateTime
-            dimension: {is_time: true}
+            dimension:
+              is_time: true
           - name: startDate
             datatype: Date
-            dimension: {is_time: true}
+            dimension:
+              is_time: true
       - name: Department
-        primary_key: [deptCode]
+        primary_key:
+          - deptCode
         description: A functional unit that employees belong to.
         ai_context:
-          synonyms: [Org unit]
+          synonyms:
+            - Org unit
         fields:
-          - {name: deptCode, datatype: String}
-          - {name: budget, datatype: Decimal}
+          - name: deptCode
+            datatype: String
+          - name: budget
+            datatype: Decimal
       - name: Project
-        primary_key: [portfolio, projectNo]
+        primary_key:
+          - portfolio
+          - projectNo
         description: A body of work staffed by employees.
         fields:
-          - {name: portfolio, datatype: String}
-          - {name: projectNo, datatype: Integer}
+          - name: portfolio
+            datatype: String
+          - name: projectNo
+            datatype: Integer
           - name: startDate
             datatype: Date
-            dimension: {is_time: true}
-          - {name: notes, datatype: Opaque}
+            dimension:
+              is_time: true
+          - name: notes
+            datatype: Opaque
     relationships:
       - name: worksIn
         from: Employee
         to: Department
         ai_context:
           instructions: The department an employee belongs to.
-          synonyms: [member of]
+          synonyms:
+            - member of
       - name: reportsTo
         from: Employee
         to: Employee
-        ai_context: {instructions: The manager an employee reports to.}
-      - {name: worksOn, from: Employee, to: Project}
+        ai_context:
+          instructions: The manager an employee reports to.
+      - name: worksOn
+        from: Employee
+        to: Project

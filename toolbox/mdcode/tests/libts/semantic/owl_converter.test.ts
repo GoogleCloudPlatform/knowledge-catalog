@@ -1491,3 +1491,23 @@ describe('OWL constructs carried as custom extensions', () => {
         });
       });
 });
+
+
+describe('the --compact flag controls layout only', () => {
+  const ttl = readFixture('sales.owl.ttl');
+
+  // --compact changes YAML layout, not content: the default is block, --compact
+  // is flow, and both parse back to the identical document. The codelab shows
+  // the compact form, so this locks it as reproducible.
+  test('compact output is flow-style yet parses to the same model', () => {
+    const block = convertOwlToOsi(ttl, 'sales').yaml;
+    const compact = convertOwlToOsi(ttl, 'sales', {compactFlow: true}).yaml;
+    expect(compact).not.toEqual(block);
+    expect(yaml.parse(compact)).toEqual(yaml.parse(block));
+    // Leaf collections render inline (flow), not as block lists.
+    expect(compact).toContain('primary_key: [customerId]');
+    expect(compact).toContain('{name: customerId, datatype: String}');
+    // The default keeps the block layout.
+    expect(block).toContain('primary_key:\n          - customerId');
+  });
+});
