@@ -51,8 +51,8 @@ Author the model in two parts — this is what lets one model serve many stores:
   (`orders`, `customer`, `lineitem`), the relationships between them, and one
   metric (`revenue`). It names nothing physical.
 - A **binding profile** then says where each entity reads from and which column
-  each field is. You write one when you deploy to BigQuery (step 3) and another
-  for Spanner (step 4); the logical model never changes.
+  each field is. You write one for each store the model serves, and the logical
+  model itself never changes.
 
 ### Author by hand
 
@@ -285,7 +285,7 @@ This is the same logical model you wrote by hand: the same three entities, the
 same fields and datatypes, and the same two relationships. (The importer writes
 them under `datasets:`, the original spelling of the `entities:` key this codelab
 uses — the two are interchangeable.) Two things the ontology does not carry, both
-of which you supply when you bind the model to BigQuery in step 3:
+of which you supply when you bind the model to a query engine:
 
 - **The `revenue` metric.** An ontology describes structure, so OWL has no metric
   concept; the imported model has none.
@@ -297,7 +297,7 @@ of which you supply when you bind the model to BigQuery in step 3:
   open.
 
 Supplying the metric, the real source tables, and the join columns is exactly
-what the `analytical` binding adds to the hand-authored `sales` model in step 3.
+what a binding profile adds to the model.
 For the full OWL mapping — class hierarchies, unique keys, and the constructs
 carried as custom extensions — see [Importing an OWL ontology](owl-import.md).
 
@@ -358,11 +358,10 @@ Wrote 5 new and 0 updated Knowledge Catalog entries; linked 2 relationships.
 
 Each entity, the metric,
 and the model itself are now governed entries, joined by a schema-join link —
-discoverable, access-controlled, and the single definition every downstream step
+discoverable, access-controlled, and the single definition the rest of your work
 reads from. `kcmd pull` reconstructs the model YAML from these entries, confirming
-the round-trip. You develop the model, govern it here, and bind it in the sections
-that follow — and those physical bindings can be governed in Knowledge Catalog
-too.
+the round-trip. Physical bindings can be governed here too, alongside the logical
+model.
 
 > This write needs the `semantic-model` / `semantic-entity` / `semantic-metric`
 > entry types and write access to the entry group. See
@@ -419,8 +418,7 @@ YAML
 The binding restates no relationship, no metric, and no grain — those are logical
 and live once in the model. It carries only bindings: each entity's table and
 each field's column. Make it the default so a bare `kcmd push` selects it (the
-rest of this step relies on this); step 4 selects the other profile explicitly
-with `--profile`:
+rest of this step relies on this):
 
 ```bash
 echo 'default_profile: analytical' >> catalog.yaml
@@ -445,8 +443,8 @@ echo 'default_profile: analytical' >> catalog.yaml
 >           # ...
 > ```
 >
-> This codelab splits them because step 4 adds a second store, and that split is
-> what lets one model back both.
+> This codelab keeps the binding in a separate profile so one model can back more
+> than one store, each with its own binding.
 
 ### Inspect the binding profile
 
@@ -470,15 +468,14 @@ Model 'sales' ($DATASET):
 
 Only the `analytical` profile exists so far, and it binds every field, so it
 withholds nothing: the whole model, including the `revenue` metric, is answerable
-under this binding. Step 4 adds a second profile, and the same command then shows
-both side by side.
+under this binding.
 
 ### Create the tables
 
 Now create the tables and load a little data. In a production pipeline, an agent
 working from the ontology would generate these tables from raw sources; for this
-self-contained codelab, you create them directly. Two things to note for the
-queries ahead: the `orders` table stores `net_amount` as a column, which the
+self-contained codelab, you create them directly. Two details about the data
+matter here: the `orders` table stores `net_amount` as a column, which the
 `revenue` measure sums, and each order has several `lineitem` rows:
 
 ```bash
@@ -665,10 +662,9 @@ GROUP BY customer ORDER BY customer'
 +----------+--------+
 ```
 
-This is the same GQL query you run against Spanner in step 4. The pattern, the
-model's property names, and the result are identical. Only the graph reference
-changes: BigQuery takes the fully qualified `$PROJECT.$DATASET.$GRAPH`, Spanner
-the bare `sales`.
+This is standalone GQL. The pattern and the model's property names are portable
+across graph query engines; only the graph reference is engine-specific, and here
+BigQuery takes the fully qualified `$PROJECT.$DATASET.$GRAPH`.
 
 ---
 
@@ -758,8 +754,7 @@ Both profiles now show side by side: `analytical` binds every field, so it
 withholds nothing; `operational` leaves `net_amount` unbound. (`kcmd profiles`
 resolves each source against your project for display — the `analytical` sources
 are fully qualified, and each `operational` bare table such as `Orders` is shown
-project-prefixed; the Spanner graph itself references the bare `Orders`, as the
-DDL below shows.)
+project-prefixed; the Spanner graph itself references the bare `Orders`.)
 
 `revenue` is `SUM(orders.net_amount)`, and the operational store does not bind
 `net_amount`, so the profile reports `revenue` as unavailable there — computed
