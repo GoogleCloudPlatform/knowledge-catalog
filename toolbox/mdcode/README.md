@@ -171,22 +171,26 @@ kcmd status
 kcmd push
 ```
 
-For the semantic-model scope, `kcmd push` deploys the model's BigQuery Graph
-(`CREATE OR REPLACE PROPERTY GRAPH`) to the project and dataset named by the
-model's GOOGLE deployment target; pass `--validate-only` to print the generated
-DDL without executing it. This path additionally reads the target dataset's
-metadata (`bigquery.datasets.get`) to pin the query job's processing location.
-The call degrades gracefully when the permission is absent, so a narrower
-service account still works but falls back to BigQuery's own location inference.
-A dataset `source` that omits its project is qualified with the scope's
-declared project (the `<projectId>` in the init scope), not the ambient
-`gcloud` project; write a fully-qualified `project.dataset.table` source when
-the tables live elsewhere.
+For the semantic-model scope, `kcmd push` deploys the model as a property graph
+(`CREATE OR REPLACE PROPERTY GRAPH`) to the backend named by the model's GOOGLE
+deployment target — **BigQuery Graph** or **Spanner Graph**; the same authored
+model deploys to either, and swapping the target URI switches backends. Pass
+`--validate-only` to print the generated DDL without executing it. For a BigQuery
+target this path additionally reads the target dataset's metadata
+(`bigquery.datasets.get`) to pin the query job's processing location; the call
+degrades gracefully when the permission is absent, so a narrower service account
+still works but falls back to BigQuery's own location inference. A dataset
+`source` that omits its project is qualified with the scope's declared project
+(the `<projectId>` in the init scope), not the ambient `gcloud` project; write a
+fully-qualified `project.dataset.table` source when the tables live elsewhere.
+(A Spanner target names its tables inside one database, so a `source` is reduced
+to its final segment, and Spanner Graph has no `MEASURE`, so metrics are dropped
+with a warning.)
 
 `kcmd push` also deploys the model to Knowledge Catalog (entries for the model,
 its entities and metrics, and `schema-join` links for its relationships). Use
-`--target bq|kc|all` (default `all`) to choose destinations, `--print` to dump
-each destination's generated artifact, and `--force-remove` to delete models
+`--target bq|spanner|kc|all` (default `all`) to choose destinations, `--print` to
+dump each destination's generated artifact, and `--force-remove` to delete models
 left in the entry group that the push no longer includes. See
 [docs/semantic-model/](docs/semantic-model/README.md) for the full guide,
 including how re-push reconciles removed entities, metrics, relationships, and

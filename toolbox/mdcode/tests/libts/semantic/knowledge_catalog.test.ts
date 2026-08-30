@@ -408,6 +408,53 @@ describe('model-level structure', () => {
             'model has no entities; only the semantic-model entry will be generated');
       });
 
+  test(
+      'a Spanner-targeted model records its Spanner URI in the semantic-model aspect',
+      () => {
+        // A model bound to Spanner Graph must not lose its deployment target in
+        // Knowledge Catalog (the aspect used to read only BigQuery targets, so a
+        // Spanner-only model round-tripped as UNBOUND).
+        const spannerUri =
+            '//spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g';
+        const model: SemanticModel = {
+          name: 'm',
+          relationships: [],
+          metrics: [],
+          entities: [{name: 'e', dataSource: 'p.d.t', keys: ['k'], fields: []}],
+          customExtensions: [{
+            vendorName: 'GOOGLE',
+            data: JSON.stringify({deploymentTargets: [spannerUri]}),
+          }],
+        };
+        const {entries} = generateCatalogResources(model, OPTS);
+        const anchor = entries[0];
+        expect(anchor.aspects!['dataplex-types.global.semantic-model'].data)
+            .toEqual({deploymentTargets: [spannerUri]});
+      });
+
+  test(
+      'a model targeting both BigQuery and Spanner records both URIs, BigQuery first',
+      () => {
+        const bqUri =
+            '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+        const spannerUri =
+            '//spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g';
+        const model: SemanticModel = {
+          name: 'm',
+          relationships: [],
+          metrics: [],
+          entities: [{name: 'e', dataSource: 'p.d.t', keys: ['k'], fields: []}],
+          customExtensions: [{
+            vendorName: 'GOOGLE',
+            data: JSON.stringify({deploymentTargets: [spannerUri, bqUri]}),
+          }],
+        };
+        const {entries} = generateCatalogResources(model, OPTS);
+        const anchor = entries[0];
+        expect(anchor.aspects!['dataplex-types.global.semantic-model'].data)
+            .toEqual({deploymentTargets: [bqUri, spannerUri]});
+      });
+
   test('the anchor is emitted first and is the parent of every child', () => {
     const model: SemanticModel = {
       name: 'm',

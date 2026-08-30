@@ -1,0 +1,37 @@
+# Test fixture -- AI-first semantics format (v0.2.0.dev0).
+#
+# A minimal, loader-valid model that declares a GOOGLE Spanner Graph deployment
+# target (a `//spanner.googleapis.com/.../propertyGraphs/...` URI). This is the
+# happy-path document for the Spanner deploy leg: loader -> IR -> generator ->
+# Spanner Graph. The target resolves to the graph `sales_graph` in the database
+# `commerce` of instance `prod` in project `demo`. The metric is dropped by the
+# Spanner generator (Spanner Graph has no MEASURE).
+
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: sales
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{"deploymentTargets": ["//spanner.googleapis.com/projects/demo/instances/prod/databases/commerce/propertyGraphs/sales_graph"]}'
+    datasets:
+      - name: orders
+        source: demo.sales.Orders
+        primary_key: [o_orderkey]
+        fields:
+          - name: o_orderkey
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_orderkey
+          - name: o_totalprice
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_totalprice
+    metrics:
+      - name: total_revenue
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(orders.o_totalprice)
