@@ -6,7 +6,7 @@ NODE TABLES (
       customer_id AS id OPTIONS(description="Customer ID"),
       customer_name AS name
     ),
-  `acme-prod.sales.orders` AS Order
+  `acme-prod.sales.orders` AS `Order`
     KEY(order_id)
     PROPERTIES(
       order_id AS id,
@@ -21,7 +21,7 @@ NODE TABLES (
 EDGE TABLES (
   `acme-prod.sales.orders` AS placed_by
     KEY(order_id)
-    SOURCE KEY(order_id) REFERENCES Order(order_id)
+    SOURCE KEY(order_id) REFERENCES `Order`(order_id)
     DESTINATION KEY(customer_id) REFERENCES Customer(customer_id)
 );
 

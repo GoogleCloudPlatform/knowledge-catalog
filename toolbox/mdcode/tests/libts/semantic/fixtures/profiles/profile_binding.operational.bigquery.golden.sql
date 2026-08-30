@@ -8,7 +8,7 @@ NODE TABLES (
       cust_segment AS segment,
       MEASURE(COUNT(segment)) AS segment_count
     ),
-  `acme-ops.ops.fct_order` AS Order
+  `acme-ops.ops.fct_order` AS `Order`
     KEY(order_key)
     PROPERTIES(
       order_key AS id,
@@ -19,7 +19,7 @@ NODE TABLES (
 EDGE TABLES (
   `acme-ops.ops.fct_order` AS placed_by
     KEY(order_key)
-    SOURCE KEY(order_key) REFERENCES Order(order_key)
+    SOURCE KEY(order_key) REFERENCES `Order`(order_key)
     DESTINATION KEY(cust_key) REFERENCES Customer(cust_key)
 );
 

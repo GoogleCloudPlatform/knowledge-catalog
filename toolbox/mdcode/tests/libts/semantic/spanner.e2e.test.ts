@@ -31,6 +31,7 @@ const CORPUS = [
   'star_orders_customer.yaml',
   'hierarchy_graph.yaml',
   'sales_fanout.yaml',
+  'reserved_words.yaml',
 ];
 
 function loadFixture(fixture: string, load: LoadOptions = {}) {

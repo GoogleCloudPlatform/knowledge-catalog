@@ -26,6 +26,7 @@
 import {Association, Entity, Field, Relationship, SemanticModel} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
 import {stripQualifier} from './sql_expr_utils';
+import {isReservedKeyword, quoteIfReserved} from './sql_identifiers';
 
 export interface GenerateOptions {
   graphName?: string;  // default: model.name
@@ -194,7 +195,7 @@ function renderNodeTable(
           .map(f => renderFieldProperty(f, entity.name));
 
   const lines = [
-    line(1, `${table} AS ${entity.name}`),
+    line(1, `${table} AS ${quoteIfReserved(entity.name)}`),
     line(
         2,
         `KEY(${
@@ -224,7 +225,7 @@ function renderNodeTable(
           `KEY); the '${ancestorName}' label is omitted from '${entity.name}'`);
       continue;
     }
-    lines.push(line(2, `LABEL ${ancestorName}`));
+    lines.push(line(2, `LABEL ${quoteIfReserved(ancestorName)}`));
     const signature =
         ancestor.fields.map(f => renderFieldProperty(f, ancestor.name));
     if (signature.length) lines.push(propertiesBlock(signature));
@@ -274,13 +275,16 @@ function renderEdgeTable(
       physicalColumns(destEntity, rel.destination.columns, warnings, relCtx)
           .join(', ');
   const lines = [
-    line(1, `${backing} AS ${rel.name}`),
+    line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
     line(2, `KEY(${key})`),
-    line(2, `SOURCE KEY(${key}) REFERENCES ${rel.source.entity}(${key})`),
     line(
         2,
-        `DESTINATION KEY(${destFk}) REFERENCES ${rel.destination.entity}(${
-            destRef})`),
+        `SOURCE KEY(${key}) REFERENCES ${quoteIfReserved(rel.source.entity)}(${
+            key})`),
+    line(
+        2,
+        `DESTINATION KEY(${destFk}) REFERENCES ${
+            quoteIfReserved(rel.destination.entity)}(${destRef})`),
   ];
   return lines.join('\n');
 }
@@ -306,7 +310,7 @@ function renderAssociationEdge(
     if (!entity) {
       warnings.push(
           `relationship '${rel.name}': unknown entity '${end.entity}'`);
-      return end.columns.join(', ');
+      return end.columns.map(quoteIfReserved).join(', ');
     }
     return physicalColumns(
                entity, entity.keys, warnings, `relationship '${rel.name}'`)
@@ -314,16 +318,19 @@ function renderAssociationEdge(
   };
 
   const lines = [
-    line(1, `${backing} AS ${rel.name}`),
-    line(2, `KEY(${assoc.keys.join(', ')})`),
+    line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
+    line(2, `KEY(${assoc.keys.map(quoteIfReserved).join(', ')})`),
     line(
         2,
-        `SOURCE KEY(${assoc.sourceColumns.join(', ')}) REFERENCES ${
-            rel.source.entity}(${refColumns(rel.source)})`),
+        `SOURCE KEY(${assoc.sourceColumns.map(quoteIfReserved).join(', ')}) ` +
+            `REFERENCES ${quoteIfReserved(rel.source.entity)}(${
+                refColumns(rel.source)})`),
     line(
         2,
-        `DESTINATION KEY(${assoc.destinationColumns.join(', ')}) REFERENCES ${
-            rel.destination.entity}(${refColumns(rel.destination)})`),
+        `DESTINATION KEY(${
+            assoc.destinationColumns.map(quoteIfReserved).join(', ')}) ` +
+            `REFERENCES ${quoteIfReserved(rel.destination.entity)}(${
+                refColumns(rel.destination)})`),
   ];
 
   const properties =
@@ -340,7 +347,9 @@ function renderAssociationEdge(
 function renderFieldProperty(field: Field, entity: string): string {
   const expr = fieldExpression(field);
   const local = expr !== undefined ? stripQualifier(expr, entity) : field.name;
-  return local === field.name ? field.name : `${local} AS ${field.name}`;
+  const alias = quoteIfReserved(field.name);
+  return local === field.name ? alias :
+                                `${quoteIfReserved(local)} AS ${alias}`;
 }
 
 
@@ -382,7 +391,7 @@ function physicalColumns(
               col}); a KEY/REFERENCES site requires a bare column, so Spanner ` +
           `will reject the generated DDL`);
     }
-    return col;
+    return quoteIfReserved(col);
   });
 }
 
@@ -481,7 +490,9 @@ function qualifyGraph(model: SemanticModel, opts: GenerateOptions): string {
 // and the like flow through here so a hyphenated or otherwise non-simple name
 // does not produce invalid DDL.
 function quoteIdent(name: string): string {
-  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return name;
+  if (isSimpleIdentifier(name)) {
+    return isReservedKeyword(name) ? `\`${name}\`` : name;
+  }
   return `\`${name.replace(/`/g, '\\`')}\``;
 }
 

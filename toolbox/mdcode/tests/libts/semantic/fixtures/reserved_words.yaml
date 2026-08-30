@@ -1,0 +1,42 @@
+# Every identifier position a generator emits, exercised with a GoogleSQL
+# RESERVED KEYWORD as the name, to pin that each is backtick-quoted so the DDL
+# is valid (a bare `AS Order` is a syntax error). Non-reserved names in the same
+# positions must stay bare -- see the goldens.
+version: "0.2.0.dev0"
+semantic_model:
+  - name: reserved_words
+    datasets:
+      # `Order` and `Group` are reserved -> quoted node labels + REFERENCES.
+      - name: Order
+        source: proj.ds.orders
+        primary_key: [id]
+        fields:
+          - name: id
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: order_id }]
+          - name: groupId
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: group_fk }]
+          # `order` is a reserved COLUMN -> quoted on the left of `AS`.
+          - name: rank
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: order }]
+      - name: Group
+        source: proj.ds.groups
+        primary_key: [id]
+        fields:
+          - name: id
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: group_id }]
+    relationships:
+      # `from` is a reserved edge label -> quoted alias + REFERENCES targets.
+      - name: from
+        from: Order
+        to: Group
+        from_columns: [groupId]
+        to_columns: [id]
+    metrics:
+      # `range` is a reserved measure name -> quoted `AS` on the MEASURE.
+      - name: range
+        expression:
+          dialects: [{ dialect: BIGQUERY, expression: COUNT(Order.id) }]
