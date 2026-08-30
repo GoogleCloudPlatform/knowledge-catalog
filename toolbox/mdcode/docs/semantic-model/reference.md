@@ -31,7 +31,7 @@ Knowledge Catalog — the graph first.
 | `--target <bq\|spanner\|kc\|all>` | Which destination(s) to deploy to; accepts a comma-separated list (`bq,kc`). Default `all`. `bq` and `spanner` are the two graph backends; each model routes to whichever its deployment target names. Naming a graph backend that **no** model targets depends on how you asked: an explicit `--target spanner` (or `bq`) with no matching model is an error (nothing to deploy), while the same backend pulled in only by `all`/the default is skipped quietly, since the model is simply bound to the other backend. |
 | `--profile <name>` | Merge the named [binding profile](profiles.md) onto the logical model before deploying — chooses which physical binding is used, independent of `--target`. Defaults to `default_profile` from `catalog.yaml`, then to the inline (`default`) binding. |
 | `--validate-only` | Run every validation check and report pass/fail, but write nothing. |
-| `--print` | Print each destination's generated artifact (BigQuery or Spanner Graph SQL DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
+| `--print` | Print each destination's generated artifact (BigQuery or Spanner SQL DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
 | `--force-remove` | Delete models in the entry group that this push no longer includes (see [Updating and removing models](README.md#updating-and-removing-models)). |
 | `--emit-expressions` | Also write the SQL-expression fields (per-field `schema.semantics` and `semantic-metric.expression`) to Knowledge Catalog. Off by default: the published system-type templates do not carry them yet. Knowledge Catalog push only. |
 
@@ -79,7 +79,7 @@ labels, …) lands in the graph and which is dropped, see
 
 ### Class hierarchies (`extends` → labels)
 
-An entity that declares `extends: [Parent]` is a **subclass**. BigQuery Graph has
+An entity that declares `extends: [Parent]` is a **subclass**. BigQuery has
 no inheritance keyword, so the push expresses the hierarchy with **labels**: a
 subclass node table declares its own default label **plus one `LABEL <Ancestor>`
 per supertype**, walking the full transitive chain. A node then matches its
@@ -167,16 +167,16 @@ published normally.
 
 ## What gets created in Spanner
 
-When the deployment target is a Spanner Graph URI, `push` executes the same
-`CREATE OR REPLACE PROPERTY GRAPH` — but generated for Spanner Graph, which
-differs from BigQuery Graph in four ways:
+When the deployment target is a Spanner URI, `push` executes the same
+`CREATE OR REPLACE PROPERTY GRAPH` — but generated for Spanner, which
+differs from BigQuery in four ways:
 
 | Model element | Spanner construct | Notes |
 |---|---|---|
 | Model | `PROPERTY GRAPH` | named by the URI's `propertyGraphs/<g>` segment, **bare** (no backticked `project.dataset.` prefix) |
 | Entity | `NODE TABLE` | backed by the entity's `source` reduced to its final segment (`proj.ds.Orders` → `Orders`), a table in the target database |
 | Relationship | `EDGE TABLE` | connects the two entities' node tables |
-| Metric | — dropped | Spanner Graph has no `MEASURE`, so every model-level metric is skipped with a warning; the graph structure still deploys |
+| Metric | — dropped | Spanner has no `MEASURE`, so every model-level metric is skipped with a warning; the graph structure still deploys |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | same label-and-flatten handling as BigQuery (see [Class hierarchies](#class-hierarchies-extends--labels)) |
 
 - **Bare table and graph names.** A Spanner property graph lives inside one
@@ -188,7 +188,7 @@ differs from BigQuery Graph in four ways:
 - **No per-element `OPTIONS`.** `description` / `synonyms` are not emitted into
   the Spanner DDL; they ride into Knowledge Catalog instead — mirroring how
   BigQuery's graph-level `OPTIONS` is dropped. See
-  [What push and pull preserve](fidelity.md#to-spanner-graph).
+  [What push and pull preserve](fidelity.md#to-spanner).
 - **Async DDL.** The statement is applied through the Spanner Admin
   `updateDatabaseDdl` long-running operation, polled to completion (BigQuery runs
   its DDL through `jobs.query`). No region detection is needed — the DDL runs in
@@ -234,7 +234,7 @@ of your model. For exactly what is stored, what is gated behind
 touched**, so a model that cannot deploy fails fast instead of half-deploying:
 
 * **Exactly one deployment target per model, and it must be a valid BigQuery
-  Graph or Spanner Graph URI.** A model with no target — or with more than one —
+  or Spanner URI.** A model with no target — or with more than one —
   is rejected, and so is a single target whose URI matches neither
   `//bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>` nor
   `//spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>`
@@ -244,10 +244,10 @@ touched**, so a model that cannot deploy fails fast instead of half-deploying:
   every `--target`, so a malformed target writes **nothing** — not to the graph
   and **not to Knowledge Catalog**; the push aborts with a non-zero exit and no
   entries are created. *(static)*
-* **Every metric on a BigQuery Graph model resolves to exactly one entity** —
-  otherwise it would be dropped from the BigQuery Graph. Set the metric's attach
+* **Every metric on a BigQuery model resolves to exactly one entity** —
+  otherwise it would be dropped from the BigQuery graph. Set the metric's attach
   entity, or scope its expression to a single entity. This rule is
-  BigQuery-only: Spanner Graph has no `MEASURE`, so a Spanner target drops its
+  BigQuery-only: Spanner has no `MEASURE`, so a Spanner target drops its
   metrics by design and imposes no such requirement. *(static)*
 * **Every entity's source table is reachable.** For a **BigQuery-targeting**
   model, each `source` is probed with a dry-run query, so BigQuery resolves it

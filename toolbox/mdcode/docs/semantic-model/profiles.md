@@ -17,7 +17,7 @@ deployment target. `kcmd push --profile <name>` merges the two **by name** and
 deploys the result; a profile is never deployed alone.
 
 > **Scope.** A profile deploys to the graph backend its `deployment_target`
-> names — **BigQuery Graph or Spanner Graph**, the two graph backends today —
+> names — **BigQuery or Spanner**, the two backends today —
 > plus Knowledge Catalog. It rebinds sources and columns and may leave fields
 > unbound; `kcmd` reports, per profile, what the binding can and cannot answer. A
 > store with no graph backend (an operational engine reached another way, a SaaS
@@ -227,8 +227,8 @@ kcmd profiles                             # list profiles, their resolved source
 ```
 
 `--profile` chooses **which binding** to merge, and that binding's
-`deployment_target` fixes its **graph backend** — BigQuery Graph for the
-analytical binding above, Spanner Graph for the operational one. `--target`
+`deployment_target` fixes its **backend** — BigQuery for the
+analytical binding above, Spanner for the operational one. `--target`
 chooses **which destinations to write**: `bq`, `spanner`, `kc`, or `all` (the
 default). The two are not interchangeable. `--target kc` writes only the catalog
 under any profile, but naming a graph leg the profile does not target — say
@@ -337,8 +337,8 @@ string (`expression: c_name`) instead of the full per-dialect object. The two
 forms mean the same thing and expand to the same wire representation.
 
 **Dialect comes from the store, not the profile.** A profile carries no SQL
-dialect. Expressions are GoogleSQL — the language of both BigQuery Graph and
-Spanner Graph — and are emitted into the generated graph as written; the optional
+dialect. Expressions are GoogleSQL — the language of both BigQuery and
+Spanner — and are emitted into the generated graph as written; the optional
 `kcmd push --transpile` pass converts vendor SQL to GoogleSQL at push time when a
 source was authored in another dialect. A profile chooses the data, and the
 backend it targets fixes the dialect.

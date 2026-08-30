@@ -7,9 +7,9 @@ model to two destinations at once:
 
 * **A property graph** — a queryable `CREATE OR REPLACE PROPERTY GRAPH` over the
   model's tables, so the model can be traversed (and, on BigQuery, its metrics
-  computed) in SQL. The graph backend is **BigQuery Graph** or **Spanner
-  Graph**, chosen by the deployment target you declare — the same authored model
-  deploys to either (see [Deployment targets](#deployment-targets-required)).
+  computed) in SQL. The graph runs in **BigQuery** or **Spanner**, chosen by the
+  deployment target you declare — the same authored model deploys to either (see
+  [Deployment targets](#deployment-targets-required)).
 * **Knowledge Catalog** — catalog entries and links that make the
   model discoverable as metadata.
 
@@ -139,7 +139,7 @@ kcmd push
 ```
 
 With no flags this deploys to **every** destination — the model's graph backend
-(BigQuery Graph or Spanner Graph, whichever its target names) and Knowledge
+(BigQuery or Spanner, whichever its target names) and Knowledge
 Catalog — the graph first. The most common flags:
 
 ```bash
@@ -158,7 +158,7 @@ that gate it are in [Validation](reference.md#validation).
 GRAPH` per deployment target: each entity becomes a node table, each relationship
 an edge table, each metric a measure. In **Spanner**, the same
 `CREATE OR REPLACE PROPERTY GRAPH` with bare table names and no measures —
-Spanner Graph has no `MEASURE`, so metrics are dropped with a warning while the
+Spanner has no `MEASURE`, so metrics are dropped with a warning while the
 graph structure (nodes, edges, labels, inheritance) still deploys. In
 **Knowledge Catalog**, one entry per model, entity, and metric, plus
 `schema-join` links for relationships. The exact mapping — and the
@@ -172,7 +172,7 @@ survives the trip (and what doesn't) is in
 
 Your model document is the source of truth. To change what is deployed, edit
 the document and run `kcmd push` again — you never edit the catalog or the
-BigQuery Graph by hand. Re-running is safe: each push makes the destinations
+deployed graph by hand. Re-running is safe: each push makes the destinations
 match the document as it stands now.
 
 **When you edit an entity, metric, or relationship** — push overwrites the

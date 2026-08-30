@@ -12,7 +12,7 @@ Rows are what you authored; columns are its fate in each direction. `✓` = come
 back as authored; `—` = not present in that destination. Footnotes carry the
 nuances that don't fit a cell. The **→ BigQuery graph** column describes a
 BigQuery target; a Spanner target keeps the same graph *structure* but no
-measures and no `OPTIONS` metadata — see [To Spanner Graph](#to-spanner-graph).
+measures and no `OPTIONS` metadata — see [To Spanner](#to-spanner).
 
 | Authored element | → BigQuery graph | → Knowledge Catalog | Recovered by `pull` |
 |---|---|---|---|
@@ -70,7 +70,7 @@ as a separate form: the graph builds from the canonical `expression` when
 present, and falls back to the imported vendor SQL verbatim only when the model
 was never transpiled to a canonical form.
 
-## To Spanner Graph
+## To Spanner
 
 A Spanner target keeps the queryable **structure** and drops the descriptive
 metadata. The node tables, edge tables, and labels (including the `extends`
@@ -78,12 +78,12 @@ hierarchy, with fields flattened down) deploy exactly as they do for BigQuery,
 but with bare table and graph names. Two things do not make the trip, both by
 design:
 
-- **Metrics.** Spanner Graph has no `MEASURE`, so every model-level metric is
+- **Metrics.** Spanner has no `MEASURE`, so every model-level metric is
   dropped with a warning. The BigQuery-only rule that a metric resolve to one
   entity does not apply. Author your metrics as usual — a BigQuery target still
   emits them, and Knowledge Catalog still records each `semantic-metric` entry —
   they simply have no home in the Spanner graph.
-- **`OPTIONS` metadata.** Spanner Graph carries no per-element `OPTIONS`, so
+- **`OPTIONS` metadata.** Spanner carries no per-element `OPTIONS`, so
   `description`, `synonyms`, `instructions`, `examples`, and field `label` are not
   written into the Spanner DDL. They still reach Knowledge Catalog on the same
   push (the model's / entities' / metrics' descriptions and `instructions` land

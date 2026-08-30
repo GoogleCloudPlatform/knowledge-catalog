@@ -6,7 +6,7 @@ does not learn a second format — it **converts OWL into a semantic model** onc
 then the ontology rides the normal [`kcmd push` / `kcmd pull`](README.md)
 workflow. The semantic model stays the single canonical form.
 
-The converter maps the OWL constructs that have a clean BigQuery Graph shape to
+The converter maps the OWL constructs that have a clean BigQuery shape to
 **native** semantic-model fields — class → node, object property → edge,
 datatype property → property, plus **class hierarchies** (`rdfs:subClassOf` →
 entity `extends`, see [Class hierarchies](#class-hierarchies-rdfssubclassof)).
@@ -286,7 +286,7 @@ onto one logical type:
 
 A temporal field (`Date` / `Time` / `DateTime` / `DateTimeTz`) is additionally
 marked a **time dimension** (`dimension: { is_time: true }`), so downstream
-BigQuery Graph / BI treats it as one.
+BigQuery / BI treats it as one.
 
 ### Keys (`owl:hasKey`, `owl:InverseFunctionalProperty`)
 
@@ -403,7 +403,7 @@ they describe. Carriage is a holding pattern with three deliberate properties:
   Knowledge Catalog, though, so a `kcmd pull` does not return these facts today
   (push writes no aspect for them — see
   [What push and pull preserve](fidelity.md)).
-- **Inert.** A carried fact changes **nothing** downstream — the BigQuery Graph
+- **Inert.** A carried fact changes **nothing** downstream — the BigQuery
   push and the Knowledge Catalog push read none of it, so it never alters a node,
   an edge, or a query. (Contrast `extends`, which *does* change the graph by
   adding node labels — that is why it earned a native slot and these have not.)
