@@ -76,7 +76,7 @@ version: "0.2.0.dev0"
 semantic_model:
   - name: sales
     description: Orders, line items, and customers for the codelab
-    datasets:
+    entities:
       - name: orders
         primary_key: [o_orderkey]
         fields:
@@ -202,7 +202,9 @@ semantic_model:
 
 The classes became `Part` and `Supplier` entities, the datatype properties
 became `Part`'s fields, and the object property became the `suppliedBy`
-relationship. The `source: unbound:*` and `TODO_BIND` join columns are
+relationship. (The importer writes them under `datasets:`, the original spelling
+of the `entities:` key this codelab uses — the two are interchangeable.) The
+`source: unbound:*` and `TODO_BIND` join columns are
 placeholders: the import gives you structure, and you bind it to physical tables
 and a deployment target before deploying to a query engine — which is exactly
 what the `analytical` binding adds to the hand-authored `sales` model in step 3.
@@ -225,6 +227,10 @@ kcmd push --target kc --validate-only --print
 ```
 
 ```
+Validating semantic model for Knowledge Catalog...
+Warning: [sales] relationship 'orders_to_customer': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'orders-to-customer'), not 'orders_to_customer'.
+Warning: [sales] relationship 'lineitem_to_orders': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'lineitem-to-orders'), not 'lineitem_to_orders'.
+-- Knowledge Catalog --
 Knowledge Catalog plan for 'sales' (destination $PROJECT.$LOCATION.$DATASET):
   5 entries:
     - sales (semantic-model)
@@ -235,7 +241,14 @@ Knowledge Catalog plan for 'sales' (destination $PROJECT.$LOCATION.$DATASET):
   2 schema-join links:
     - sales-orders-to-customer
     - sales-lineitem-to-orders
+Validation complete; no changes applied.
 ```
+
+The two warnings are informational, and every Knowledge Catalog push repeats
+them: relationship names come back from a `kcmd pull` lowercased and hyphenated
+(`orders-to-customer`), because Knowledge Catalog keeps the name only in the
+normalized link id. Nothing is wrong — the graph itself keeps the authored
+`orders_to_customer`.
 
 Then drop `--validate-only` to perform the write:
 
@@ -248,12 +261,13 @@ Pushing semantic model (Knowledge Catalog)...
 Wrote 5 new and 0 updated Knowledge Catalog entries; linked 2 relationships.
 ```
 
-Each entity, the metric, and the model itself are now governed entries, joined by
-a schema-join link — discoverable, access-controlled, and the single definition
-every downstream step reads from. `kcmd pull` reconstructs the model YAML from
-these entries, confirming the round-trip. You develop the model, govern it here,
-and bind it in the sections that follow — and those physical bindings can be
-governed in Knowledge Catalog too.
+(The write repeats the same two warnings, dropped here.) Each entity, the metric,
+and the model itself are now governed entries, joined by a schema-join link —
+discoverable, access-controlled, and the single definition every downstream step
+reads from. `kcmd pull` reconstructs the model YAML from these entries, confirming
+the round-trip. You develop the model, govern it here, and bind it in the sections
+that follow — and those physical bindings can be governed in Knowledge Catalog
+too.
 
 > This write needs the `semantic-model` / `semantic-entity` / `semantic-metric`
 > entry types and write access to the entry group. See
@@ -283,7 +297,7 @@ version: "0.2.0.dev0"
 semantic_model:
   - name: sales
     deployment_target: $TARGET
-    datasets:
+    entities:
       - name: orders
         source: $PROJECT.$DATASET.orders
         fields:
@@ -323,7 +337,7 @@ echo 'default_profile: analytical' >> catalog.yaml
 > semantic_model:
 >   - name: sales
 >     deployment_target: //bigquery.googleapis.com/.../propertyGraphs/sales
->     datasets:
+>     entities:
 >       - name: orders
 >         source: $PROJECT.$DATASET.orders
 >         primary_key: [o_orderkey]
@@ -378,6 +392,9 @@ edge, and the metric into a measure (your `$PROJECT`/`$DATASET` appear in the fu
 qualified names):
 
 ```sql
+Pushing semantic model (BigQuery Graph)...
+-- BigQuery Graph --
+-- //bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/$GRAPH
 CREATE OR REPLACE PROPERTY GRAPH `$PROJECT.$DATASET.$GRAPH`
 NODE TABLES (
   `$PROJECT.$DATASET.orders` AS orders
@@ -519,7 +536,7 @@ version: "0.2.0.dev0"
 semantic_model:
   - name: sales
     deployment_target: $SPANNER_TARGET
-    datasets:
+    entities:
       - name: orders
         source: Orders                       # a bare table in the Spanner database
         fields:
