@@ -1,11 +1,9 @@
 # One logical model, many physical bindings
 
-> **Scope.** `kcmd` deploys a merged model to BigQuery Graph, Spanner Graph, and
-> Knowledge Catalog. A profile may bind an entity to any store — BigQuery,
-> Spanner, AlloyDB, a lake table — and `kcmd` merges it and reports its
-> availability; a profile whose deployment target is a BigQuery or Spanner graph
-> also deploys. Deploying a binding to another store (AlloyDB, a lake) is not yet
-> supported — the merge and the availability report still run.
+> **Scope.** `kcmd` deploys a merged model to BigQuery Graph and Knowledge
+> Catalog only. A profile may bind an entity to any store — BigQuery, Spanner,
+> AlloyDB, a lake table — and `kcmd` merges it and reports its availability, but
+> deploying a binding to a non-BigQuery store is not yet supported.
 
 A semantic model describes a business logically — its entities, the
 relationships between them, and the metrics over them — independent of where the
@@ -69,13 +67,6 @@ source is an [AIP-122](https://google.aip.dev/122) resource name —
 resolves to an endpoint. A profile moves an entity between stores by swapping
 this URI, and — when the two stores shape the data differently — the column each
 field reads.
-
-One exception follows from how a graph names its inputs. A **Spanner** property
-graph references tables *within its own database* (the database named by the
-deployment target), so a Spanner-bound entity names its table by bare name
-(`source: Customer`), not a full `//spanner.googleapis.com/…/tables/Customer`
-resource URI. A **BigQuery** source may be either the `//bigquery.googleapis.com/…`
-resource URI or the equivalent `project.dataset.table`.
 
 ## What a profile may change — the contract
 
@@ -252,14 +243,14 @@ semantic_model:
     deployment_target: //spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/propertyGraphs/commerce
     entities:
       - name: Customer
-        source: Customer                 # a bare table in the target Spanner database
+        source: //spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/tables/Customer
         fields:
           - { name: key,             expression: CustomerId }
           - { name: name,            expression: FullName }
           - { name: availableCredit, expression: AvailableCredit }
           - { name: lifetimeValue,   unbound: true }
       - name: Order
-        source: Orders
+        source: //spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/tables/Orders
         fields:
           - { name: key,         expression: OrderId }
           - { name: customerKey, expression: CustomerId }
@@ -268,9 +259,9 @@ semantic_model:
 
 Neither binding restates the grain, the `PlacedBy` relationship, the labels, or
 the metric definitions; those live once in the logical model. `kcmd push
---profile operational` merges the operational bindings, reports what they answer,
-and deploys the Spanner graph; `--profile analytical` deploys the BigQuery one.
-The two bindings answer different parts of the same model:
+--profile operational` merges the operational bindings and reports what they
+answer; today only the BigQuery-bound `analytical` profile deploys (see
+**Scope** above). The two bindings answer different parts of the same model:
 
 - `order_count` depends only on `Order.key`, bound under both bindings, so it is
   available under either.
@@ -300,19 +291,17 @@ The two bindings answer different parts of the same model:
 ## Command line
 
 ```bash
-kcmd push --profile analytical            # merge the analytical bindings and deploy the BigQuery graph
-kcmd push --profile operational --target spanner  # merge the operational bindings and deploy the Spanner graph
+kcmd push --profile analytical            # merge the analytical (BigQuery) bindings and deploy
+kcmd push --profile operational           # merge the operational bindings and report availability
 kcmd push --profile analytical --target kc # profile and destination-type are independent
 kcmd push                                 # uses default_profile from catalog.yaml
 kcmd profiles                             # list profiles, their resolved sources, and what each cannot answer
 ```
 
 `--profile` chooses **which physical binding**. The existing `--target
-bq|spanner|kc|all` chooses **which destination type** (BigQuery Graph, Spanner
-Graph, Knowledge Catalog, or all). They are orthogonal — though a graph target
-must match the store the profile binds: a profile with a Spanner
-`deployment_target` deploys under `--target spanner`, one with a BigQuery target
-under `--target bq`, and either under `--target kc`.
+bq|kc|all` chooses **which destination type** (BigQuery Graph, Knowledge
+Catalog, or both). They are orthogonal — any profile can go to either
+destination.
 
 Set the default so a bare `kcmd push` in CI does the right thing, in
 `catalog.yaml`:
