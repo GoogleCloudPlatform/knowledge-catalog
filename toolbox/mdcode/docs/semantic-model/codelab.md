@@ -103,85 +103,141 @@ YAML
 
 ### Import from an OWL ontology
 
-You can also start from an existing OWL ontology instead of hand-authoring this
-YAML. `kcmd owl import` converts an ontology (`.ttl`) into a semantic model:
-classes become entities, datatype properties become fields, and object
-properties become relationships. Write a tiny ontology and import it:
+You do not have to write that YAML by hand. If you already describe this domain
+in an OWL ontology, `kcmd owl import` converts it to the same kind of logical
+model: classes become entities, datatype properties become fields, object
+properties become relationships, and an `owl:hasKey` becomes a primary key. Here
+is the sales domain as a small ontology:
 
 ```bash
-cat > /tmp/parts.ttl <<'TTL'
+cat > /tmp/sales.ttl <<'TTL'
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
-@prefix ex:   <http://example.com/commerce#> .
+@prefix ex:   <http://example.com/sales#> .
 
-ex:Part a owl:Class ;
-    rdfs:label "Part" ;
-    rdfs:comment "A sellable part" .
-ex:Supplier a owl:Class ;
-    rdfs:label "Supplier" .
+<http://example.com/sales> a owl:Ontology ;
+    rdfs:comment "Orders, line items, and customers for the codelab." .
 
-ex:partName a owl:DatatypeProperty ;
-    rdfs:domain ex:Part ;
-    rdfs:range xsd:string .
-ex:partPrice a owl:DatatypeProperty ;
-    rdfs:domain ex:Part ;
+ex:orders a owl:Class ;
+    owl:hasKey ( ex:o_orderkey ) .
+ex:customer a owl:Class ;
+    owl:hasKey ( ex:c_custkey ) .
+ex:lineitem a owl:Class ;
+    owl:hasKey ( ex:l_linekey ) .
+
+ex:o_orderkey a owl:DatatypeProperty ;
+    rdfs:domain ex:orders ;
+    rdfs:range xsd:integer .
+ex:o_custkey a owl:DatatypeProperty ;
+    rdfs:domain ex:orders ;
+    rdfs:range xsd:integer .
+ex:net_amount a owl:DatatypeProperty ;
+    rdfs:domain ex:orders ;
     rdfs:range xsd:decimal .
-ex:suppliedBy a owl:ObjectProperty ;
-    rdfs:domain ex:Part ;
-    rdfs:range ex:Supplier .
+
+ex:c_custkey a owl:DatatypeProperty ;
+    rdfs:domain ex:customer ;
+    rdfs:range xsd:integer .
+ex:c_name a owl:DatatypeProperty ;
+    rdfs:domain ex:customer ;
+    rdfs:range xsd:string .
+
+ex:l_linekey a owl:DatatypeProperty ;
+    rdfs:domain ex:lineitem ;
+    rdfs:range xsd:integer .
+ex:l_orderkey a owl:DatatypeProperty ;
+    rdfs:domain ex:lineitem ;
+    rdfs:range xsd:integer .
+
+ex:orders_to_customer a owl:ObjectProperty ;
+    rdfs:domain ex:orders ;
+    rdfs:range ex:customer .
+ex:lineitem_to_orders a owl:ObjectProperty ;
+    rdfs:domain ex:lineitem ;
+    rdfs:range ex:orders .
 TTL
 
-kcmd owl import /tmp/parts.ttl --out /tmp/parts_osi.yaml
+kcmd owl import /tmp/sales.ttl --out /tmp/sales_from_owl.yaml
 ```
 
 ```
-converted 2 classes, 1 object property, 2 datatype properties
-wrote /tmp/parts_osi.yaml
+converted 3 classes, 2 object properties, 7 datatype properties
+wrote /tmp/sales_from_owl.yaml
 note: this is a LOGICAL model (no physical binding).
       `kcmd push --target kc` publishes it to Knowledge Catalog as-is.
       A BigQuery or Spanner Graph deploy needs a binding profile (sources,
       field and join columns) and a deployment target added on top.
 ```
 
-Look at what it produced:
-
-```bash
-cat /tmp/parts_osi.yaml
-```
+The imported model:
 
 ```yaml
 version: 0.2.0.dev0
 semantic_model:
-  - name: parts
-    description: Imported from OWL ontology http://example.com/commerce#
+  - name: sales
+    description: Orders, line items, and customers for the codelab.
     datasets:
-      - name: Part
-        description: A sellable part
+      - name: orders
+        primary_key:
+          - o_orderkey
         fields:
-          - name: partName
-            datatype: String
-          - name: partPrice
+          - name: o_orderkey
+            datatype: Integer
+          - name: o_custkey
+            datatype: Integer
+          - name: net_amount
             datatype: Decimal
-      - name: Supplier
+      - name: customer
+        primary_key:
+          - c_custkey
+        fields:
+          - name: c_custkey
+            datatype: Integer
+          - name: c_name
+            datatype: String
+      - name: lineitem
+        primary_key:
+          - l_linekey
+        fields:
+          - name: l_linekey
+            datatype: Integer
+          - name: l_orderkey
+            datatype: Integer
     relationships:
-      - name: suppliedBy
-        from: Part
-        to: Supplier
+      - name: orders_to_customer
+        from: orders
+        to: customer
+      - name: lineitem_to_orders
+        from: lineitem
+        to: orders
 ```
 
-The classes became `Part` and `Supplier` entities, the datatype properties
-became `Part`'s fields, and the object property became the `suppliedBy`
-relationship. (The importer writes them under `datasets:`, the original spelling
-of the `entities:` key this codelab uses — the two are interchangeable.) The
-result is a purely **logical model**: an ontology declares meaning, not physical
-tables, so entities carry no `source`, fields no `expression`, and the edge no
-join columns. `kcmd push --target kc` publishes it to Knowledge Catalog as-is; a
-BigQuery or Spanner Graph deploy adds those physical facts through a
-[binding profile](profiles.md) — exactly what the `analytical` binding adds to
-the hand-authored `sales` model in step 3. For the full OWL mapping — class
-hierarchies, unique keys, and the constructs carried as custom extensions — see
-[Importing an OWL ontology](owl-import.md).
+This is the hand-authored `sales` model above, reproduced from the ontology: the
+same three entities, the same fields and datatypes, the same primary keys, and
+the same two relationships. (The importer writes entities under `datasets:`, the
+original spelling of the `entities:` key this codelab uses — the two are
+interchangeable.)
+
+Two things from the hand-authored model are missing, and both are inherent —
+an ontology has no way to state either:
+
+- **The `revenue` metric.** OWL describes structure — classes, properties,
+  relationships — not aggregations, so the importer emits no metrics. Add the
+  metric to the model by hand.
+- **The relationship join columns.** An object property states a direction
+  (`orders` → `customer`), not which foreign-key column joins to which key, so
+  each edge arrives as a pure logical edge — `from`/`to` only. Add the
+  `from_columns`/`to_columns` to each relationship by hand, as in the
+  hand-authored model above.
+
+Both gaps are logical facts you fill in on the model itself. The *physical*
+facts — the table each entity reads, the column each field maps to — stay out of
+the logical model entirely; a [binding profile](profiles.md) supplies them at
+deploy time (step 3), which is why neither model carries a `source`. `kcmd push
+--target kc` publishes the logical model to Knowledge Catalog as-is. For the full
+OWL mapping — class hierarchies, unique keys, and the constructs carried as
+custom extensions — see [Importing an OWL ontology](owl-import.md).
 
 The rest of this codelab uses the hand-authored `sales` model above.
 
