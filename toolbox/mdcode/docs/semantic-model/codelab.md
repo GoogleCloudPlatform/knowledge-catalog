@@ -244,11 +244,6 @@ kcmd owl import /tmp/sales.ttl --out /tmp/sales_osi.yaml --compact
 ```
 converted 3 classes, 2 object properties, 7 datatype properties
 wrote /tmp/sales_osi.yaml
-note: this is a LOGICAL model (no physical binding).
-      `kcmd push` publishes it to Knowledge Catalog as-is.
-      A BigQuery or Spanner Graph deploy needs each relationship's join
-      columns added to the model, plus a binding profile (sources, field
-      columns) and a deployment target.
 ```
 
 Look at what it produced:
@@ -331,8 +326,7 @@ Preview the plan without writing anything:
 kcmd push --validate-only --print
 ```
 
-The model has no deployment target yet, so there is no graph to build — a bare
-`kcmd push` governs the logical model to Knowledge Catalog alone.
+A bare `kcmd push` governs the logical model in Knowledge Catalog.
 
 ```
 Validating semantic model for Knowledge Catalog...

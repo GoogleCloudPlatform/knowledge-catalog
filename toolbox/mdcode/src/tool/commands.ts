@@ -1092,12 +1092,6 @@ export async function owl(
   }
 
   console.log(`wrote ${writtenPath}`);
-  console.log(
-      `note: this is a LOGICAL model (no physical binding).\n` +
-      `      \`kcmd push\` publishes it to Knowledge Catalog as-is.\n` +
-      `      A BigQuery or Spanner Graph deploy needs each relationship's join\n` +
-      `      columns added to the model, plus a binding profile (sources, field\n` +
-      `      columns) and a deployment target.`);
   return 0;
 }
 
