@@ -132,16 +132,17 @@ literal types that become each field's `datatype`.
 $ kcmd owl import sales.owl.ttl
 converted 2 classes, 1 object property, 9 datatype properties
 wrote catalog/EntryGroups/<entryGroup>/sales.yaml
-note: this is a LOGICAL model (no physical binding).
-      `kcmd push` publishes it to Knowledge Catalog as-is.
-      A BigQuery or Spanner Graph deploy needs each relationship's join
-      columns added to the model, plus a binding profile (sources, field
-      columns) and a deployment target.
 ```
 
 The model name comes from the file (`sales.owl.ttl` → `sales`). By default the
 document is written into the semantic-model layout dir so the next `kcmd push`
-picks it up; pass `--out <path>` to write it elsewhere.
+picks it up; pass `--out <path>` to write it elsewhere. The output uses the
+block layout shown below; pass `--compact` for the compact flow layout
+(`primary_key: [id]`, inline `{ name, datatype }` field and relationship maps)
+instead. Either way it is a purely **logical** model — `kcmd push` publishes it
+to Knowledge Catalog as-is, while a BigQuery or Spanner Graph deploy needs each
+relationship's join columns added to the model plus a [binding
+profile](profiles.md) (see [§4](#4-going-from-ontology-to-a-running-graph-binding)).
 
 ## 3. The semantic model it produces — `sales.yaml`
 
