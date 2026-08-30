@@ -22,6 +22,7 @@
 import {AiContext, Association, Entity, Field, fieldBinding, isTimeDimension, Metric, Relationship, SemanticModel,} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
 import {referencedEntityNames, stripQualifier} from './sql_expr_utils';
+import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
 
 export interface GenerateOptions {
   project?: string;    // fills the project for the graph name + under-qualified
@@ -400,12 +401,13 @@ function placeMetric(
   lowering.taken.add(metric.name);
 
   const propName = exposeOperand(lowering, operandExpr, metric.name);
-  const aggregate = `${agg.fn}(${agg.distinct ? 'DISTINCT ' : ''}${propName})`;
+  const aggregate =
+      `${agg.fn}(${agg.distinct ? 'DISTINCT ' : ''}${quoteIfReserved(propName)})`;
 
   const opts = optionsClause(
       elementDescription(metric.description, metric.aiContext),
       metric.aiContext?.synonyms);
-  const measure = `MEASURE(${aggregate}) AS ${metric.name}`;
+  const measure = `MEASURE(${aggregate}) AS ${quoteIfReserved(metric.name)}`;
   const lines = metricsByEntity.get(entityName) ?? [];
   lines.push(opts ? `${measure} ${opts}` : measure);
   metricsByEntity.set(entityName, lines);
@@ -436,10 +438,10 @@ function exposeOperand(
   if (isSimpleIdentifier(operandExpr) && !lowering.taken.has(operandExpr)) {
     // A bare column not already declared: expose it under its own name.
     name = operandExpr;
-    lowering.derivedProperties.push(name);
+    lowering.derivedProperties.push(quoteIfReserved(name));
   } else {
     name = uniqueName(`${metricName}_input`, lowering.taken);
-    lowering.derivedProperties.push(`${operandExpr} AS ${name}`);
+    lowering.derivedProperties.push(`${quoteIfReserved(operandExpr)} AS ${name}`);
   }
   lowering.taken.add(name);
   lowering.operandToName.set(operandExpr, name);
@@ -537,9 +539,6 @@ function hasTopLevelComma(expr: string): boolean {
   return false;
 }
 
-function isSimpleIdentifier(s: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(s);
-}
 
 // Returns `base` if free, else the first `base_2`, `base_3`, ... not in
 // `taken`.
@@ -647,7 +646,7 @@ function renderNodeTable(
   ];
 
   const lines = [
-    line(1, `${table} AS ${entity.name}`),
+    line(1, `${table} AS ${quoteIfReserved(entity.name)}`),
     line(2, `KEY(${physicalColumns(entity, entity.keys, warnings, `entity '${entity.name}'`).join(', ')})`),
   ];
   // Element-table description and synonyms attach to the node's DEFAULT LABEL
@@ -706,7 +705,7 @@ function renderNodeTable(
           `KEY); the '${ancestorName}' label is omitted from '${entity.name}'`);
       continue;
     }
-    lines.push(line(2, `LABEL ${ancestorName}`));
+    lines.push(line(2, `LABEL ${quoteIfReserved(ancestorName)}`));
     const signature =
         ancestor.fields.map(f => renderFieldProperty(f, ancestor.name));
     if (signature.length) lines.push(propertiesBlock(signature));
@@ -740,7 +739,9 @@ function renderFieldProperty(field: Field, entity: string): string {
 function renderFieldPropertyCore(field: Field, entity: string): string {
   const expr = fieldExpression(field);
   const local = expr !== undefined ? stripQualifier(expr, entity) : field.name;
-  return local === field.name ? field.name : `${local} AS ${field.name}`;
+  const alias = quoteIfReserved(field.name);
+  return local === field.name ? alias :
+                                `${quoteIfReserved(local)} AS ${alias}`;
 }
 
 
@@ -774,7 +775,7 @@ function physicalColumns(
           `to a non-column expression (${col}); a KEY/REFERENCES site requires ` +
           `a bare column, so BigQuery will reject the generated DDL`);
     }
-    return col;
+    return quoteIfReserved(col);
   });
 }
 
@@ -822,13 +823,16 @@ function renderEdgeTable(
       physicalColumns(destEntity, rel.destination.columns, warnings, relCtx)
           .join(', ');
   const lines = [
-    line(1, `${backing} AS ${rel.name}`),
+    line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
     line(2, `KEY(${key})`),
-    line(2, `SOURCE KEY(${key}) REFERENCES ${rel.source.entity}(${key})`),
+    line(
+        2,
+        `SOURCE KEY(${key}) REFERENCES ${quoteIfReserved(rel.source.entity)}(${
+            key})`),
     line(
         2,
         `DESTINATION KEY(${destFk}) REFERENCES ${
-            rel.destination.entity}(${destRef})`),
+            quoteIfReserved(rel.destination.entity)}(${destRef})`),
   ];
 
   // Edge description and synonyms attach to the DEFAULT LABEL: after the
@@ -864,23 +868,26 @@ function renderAssociationEdge(
     if (!entity) {
       warnings.push(
           `relationship '${rel.name}': unknown entity '${end.entity}'`);
-      return end.columns.join(', ');
+      return end.columns.map(quoteIfReserved).join(', ');
     }
     return physicalColumns(entity, entity.keys, warnings, `relationship '${rel.name}'`)
         .join(', ');
   };
 
   const lines = [
-    line(1, `${backing} AS ${rel.name}`),
-    line(2, `KEY(${assoc.keys.join(', ')})`),
+    line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
+    line(2, `KEY(${assoc.keys.map(quoteIfReserved).join(', ')})`),
     line(
         2,
-        `SOURCE KEY(${assoc.sourceColumns.join(', ')}) REFERENCES ${
-            rel.source.entity}(${refColumns(rel.source)})`),
+        `SOURCE KEY(${assoc.sourceColumns.map(quoteIfReserved).join(', ')}) ` +
+            `REFERENCES ${quoteIfReserved(rel.source.entity)}(${
+                refColumns(rel.source)})`),
     line(
         2,
-        `DESTINATION KEY(${assoc.destinationColumns.join(', ')}) REFERENCES ${
-            rel.destination.entity}(${refColumns(rel.destination)})`),
+        `DESTINATION KEY(${
+            assoc.destinationColumns.map(quoteIfReserved).join(', ')}) ` +
+            `REFERENCES ${quoteIfReserved(rel.destination.entity)}(${
+                refColumns(rel.destination)})`),
   ];
 
   // Edge description and synonyms attach to the DEFAULT LABEL: after the

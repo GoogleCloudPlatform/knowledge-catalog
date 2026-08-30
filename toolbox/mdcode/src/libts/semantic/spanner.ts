@@ -26,6 +26,7 @@
 import {Association, Entity, Field, Relationship, SemanticModel} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
 import {stripQualifier} from './sql_expr_utils';
+import {isSimpleIdentifier, quoteIdentifier, quoteIfReserved} from './sql_identifiers';
 
 export interface GenerateOptions {
   graphName?: string;  // default: model.name
@@ -194,7 +195,7 @@ function renderNodeTable(
           .map(f => renderFieldProperty(f, entity.name));
 
   const lines = [
-    line(1, `${table} AS ${entity.name}`),
+    line(1, `${table} AS ${quoteIfReserved(entity.name)}`),
     line(
         2,
         `KEY(${
@@ -224,7 +225,7 @@ function renderNodeTable(
           `KEY); the '${ancestorName}' label is omitted from '${entity.name}'`);
       continue;
     }
-    lines.push(line(2, `LABEL ${ancestorName}`));
+    lines.push(line(2, `LABEL ${quoteIfReserved(ancestorName)}`));
     const signature =
         ancestor.fields.map(f => renderFieldProperty(f, ancestor.name));
     if (signature.length) lines.push(propertiesBlock(signature));
@@ -251,7 +252,7 @@ function renderEdgeTable(
   if (!sourceEntity) {
     warnings.push(`relationship '${rel.name}': unknown source entity '${
         rel.source.entity}'`);
-    backing = quoteIdent(rel.source.entity);
+    backing = quoteIdentifier(rel.source.entity);
     sourceKey = rel.source.columns;
   } else {
     backing = spannerTable(
@@ -274,13 +275,16 @@ function renderEdgeTable(
       physicalColumns(destEntity, rel.destination.columns, warnings, relCtx)
           .join(', ');
   const lines = [
-    line(1, `${backing} AS ${rel.name}`),
+    line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
     line(2, `KEY(${key})`),
-    line(2, `SOURCE KEY(${key}) REFERENCES ${rel.source.entity}(${key})`),
     line(
         2,
-        `DESTINATION KEY(${destFk}) REFERENCES ${rel.destination.entity}(${
-            destRef})`),
+        `SOURCE KEY(${key}) REFERENCES ${quoteIfReserved(rel.source.entity)}(${
+            key})`),
+    line(
+        2,
+        `DESTINATION KEY(${destFk}) REFERENCES ${
+            quoteIfReserved(rel.destination.entity)}(${destRef})`),
   ];
   return lines.join('\n');
 }
@@ -306,7 +310,7 @@ function renderAssociationEdge(
     if (!entity) {
       warnings.push(
           `relationship '${rel.name}': unknown entity '${end.entity}'`);
-      return end.columns.join(', ');
+      return end.columns.map(quoteIfReserved).join(', ');
     }
     return physicalColumns(
                entity, entity.keys, warnings, `relationship '${rel.name}'`)
@@ -314,16 +318,19 @@ function renderAssociationEdge(
   };
 
   const lines = [
-    line(1, `${backing} AS ${rel.name}`),
-    line(2, `KEY(${assoc.keys.join(', ')})`),
+    line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
+    line(2, `KEY(${assoc.keys.map(quoteIfReserved).join(', ')})`),
     line(
         2,
-        `SOURCE KEY(${assoc.sourceColumns.join(', ')}) REFERENCES ${
-            rel.source.entity}(${refColumns(rel.source)})`),
+        `SOURCE KEY(${assoc.sourceColumns.map(quoteIfReserved).join(', ')}) ` +
+            `REFERENCES ${quoteIfReserved(rel.source.entity)}(${
+                refColumns(rel.source)})`),
     line(
         2,
-        `DESTINATION KEY(${assoc.destinationColumns.join(', ')}) REFERENCES ${
-            rel.destination.entity}(${refColumns(rel.destination)})`),
+        `DESTINATION KEY(${
+            assoc.destinationColumns.map(quoteIfReserved).join(', ')}) ` +
+            `REFERENCES ${quoteIfReserved(rel.destination.entity)}(${
+                refColumns(rel.destination)})`),
   ];
 
   const properties =
@@ -340,7 +347,9 @@ function renderAssociationEdge(
 function renderFieldProperty(field: Field, entity: string): string {
   const expr = fieldExpression(field);
   const local = expr !== undefined ? stripQualifier(expr, entity) : field.name;
-  return local === field.name ? field.name : `${local} AS ${field.name}`;
+  const alias = quoteIfReserved(field.name);
+  return local === field.name ? alias :
+                                `${quoteIfReserved(local)} AS ${alias}`;
 }
 
 
@@ -382,12 +391,8 @@ function physicalColumns(
               col}); a KEY/REFERENCES site requires a bare column, so Spanner ` +
           `will reject the generated DDL`);
     }
-    return col;
+    return quoteIfReserved(col);
   });
-}
-
-function isSimpleIdentifier(s: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(s);
 }
 
 
@@ -407,7 +412,7 @@ function spannerTable(
   if (!trimmed) {
     warnings.push(
         `${context}: empty data source; the table reference will be invalid`);
-    return quoteIdent('');
+    return quoteIdentifier('');
   }
   if (/\s/.test(trimmed)) {
     warnings.push(
@@ -422,7 +427,7 @@ function spannerTable(
   // dotted reduction below.
   const source = isResourceUri(trimmed) ? finalPathSegment(trimmed) : trimmed;
   const last = splitDotted(source).map(unquote).pop() ?? source;
-  return quoteIdent(last);
+  return quoteIdentifier(last);
 }
 
 
@@ -472,18 +477,9 @@ function splitDotted(source: string): string[] {
 // graph name is `project.dataset.name` -- a Spanner graph lives in one database
 // and is named by a single identifier.
 function qualifyGraph(model: SemanticModel, opts: GenerateOptions): string {
-  return quoteIdent(opts.graphName ?? model.name);
+  return quoteIdentifier(opts.graphName ?? model.name);
 }
 
-
-// Renders a Spanner GoogleSQL identifier: bare when it is a simple identifier,
-// else backtick-quoted (with any backtick escaped). Graph names, table names,
-// and the like flow through here so a hyphenated or otherwise non-simple name
-// does not produce invalid DDL.
-function quoteIdent(name: string): string {
-  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return name;
-  return `\`${name.replace(/`/g, '\\`')}\``;
-}
 
 function unquote(part: string): string {
   return part.replace(/^[`"]/, '').replace(/[`"]$/, '');
