@@ -67,32 +67,32 @@ semantic_model:
     description: Orders, line items, and customers for the codelab
     entities:
       - name: orders
-        primary_key: [o_orderkey]
+        primary_key: [order_id]
         fields:
-          - { name: o_orderkey, datatype: Integer }
-          - { name: o_custkey,  datatype: Integer }
-          - { name: net_amount, datatype: Decimal }
+          - { name: order_id,    datatype: Integer }
+          - { name: customer_id, datatype: Integer }
+          - { name: net_amount,  datatype: Decimal }
       - name: customer
-        primary_key: [c_custkey]
+        primary_key: [customer_id]
         fields:
-          - { name: c_custkey, datatype: Integer }
-          - { name: c_name,    datatype: String }
+          - { name: customer_id, datatype: Integer }
+          - { name: name,        datatype: String }
       - name: lineitem
-        primary_key: [l_linekey]
+        primary_key: [line_id]
         fields:
-          - { name: l_linekey,  datatype: Integer }
-          - { name: l_orderkey, datatype: Integer }
+          - { name: line_id,  datatype: Integer }
+          - { name: order_id, datatype: Integer }
     relationships:
-      - name: orders_to_customer
+      - name: placed_by
         from: orders
         to: customer
-        from_columns: [o_custkey]
-        to_columns: [c_custkey]
-      - name: lineitem_to_orders
+        from_columns: [customer_id]
+        to_columns: [customer_id]
+      - name: part_of
         from: lineitem
         to: orders
-        from_columns: [l_orderkey]
-        to_columns: [o_orderkey]
+        from_columns: [order_id]
+        to_columns: [order_id]
     metrics:
       - name: revenue
         datatype: Decimal
@@ -106,20 +106,20 @@ The model describes three entities joined by two relationships:
 ```mermaid
 classDiagram
     class orders {
-        o_orderkey : integer
-        o_custkey : integer
+        order_id : integer
+        customer_id : integer
         net_amount : decimal
     }
     class customer {
-        c_custkey : integer
-        c_name : string
+        customer_id : integer
+        name : string
     }
     class lineitem {
-        l_linekey : integer
-        l_orderkey : integer
+        line_id : integer
+        order_id : integer
     }
-    lineitem --> orders : lineitem_to_orders
-    orders --> customer : orders_to_customer
+    lineitem --> orders : part_of
+    orders --> customer : placed_by
 ```
 
 ### Import from an OWL ontology
@@ -147,44 +147,40 @@ graph LR
     customer["ex:customer"]:::cls
     lineitem["ex:lineitem"]:::cls
 
-    o_orderkey(["ex:o_orderkey"]):::dp
-    o_custkey(["ex:o_custkey"]):::dp
+    order_id(["ex:order_id"]):::dp
+    customer_id(["ex:customer_id"]):::dp
     net_amount(["ex:net_amount"]):::dp
-    c_custkey(["ex:c_custkey"]):::dp
-    c_name(["ex:c_name"]):::dp
-    l_linekey(["ex:l_linekey"]):::dp
-    l_orderkey(["ex:l_orderkey"]):::dp
+    name(["ex:name"]):::dp
+    line_id(["ex:line_id"]):::dp
 
-    orders_to_customer(["ex:orders_to_customer"]):::op
-    lineitem_to_orders(["ex:lineitem_to_orders"]):::op
+    placed_by(["ex:placed_by"]):::op
+    part_of(["ex:part_of"]):::op
 
     xInt["xsd:integer"]:::dt
     xDec["xsd:decimal"]:::dt
     xStr["xsd:string"]:::dt
 
-    orders -. owl:hasKey .-> o_orderkey
-    customer -. owl:hasKey .-> c_custkey
-    lineitem -. owl:hasKey .-> l_linekey
+    orders -. owl:hasKey .-> order_id
+    customer -. owl:hasKey .-> customer_id
+    lineitem -. owl:hasKey .-> line_id
 
-    o_orderkey -->|rdfs:domain| orders
-    o_orderkey -->|rdfs:range| xInt
-    o_custkey -->|rdfs:domain| orders
-    o_custkey -->|rdfs:range| xInt
+    order_id -->|rdfs:domain| orders
+    order_id -->|rdfs:domain| lineitem
+    order_id -->|rdfs:range| xInt
+    customer_id -->|rdfs:domain| orders
+    customer_id -->|rdfs:domain| customer
+    customer_id -->|rdfs:range| xInt
     net_amount -->|rdfs:domain| orders
     net_amount -->|rdfs:range| xDec
-    c_custkey -->|rdfs:domain| customer
-    c_custkey -->|rdfs:range| xInt
-    c_name -->|rdfs:domain| customer
-    c_name -->|rdfs:range| xStr
-    l_linekey -->|rdfs:domain| lineitem
-    l_linekey -->|rdfs:range| xInt
-    l_orderkey -->|rdfs:domain| lineitem
-    l_orderkey -->|rdfs:range| xInt
+    name -->|rdfs:domain| customer
+    name -->|rdfs:range| xStr
+    line_id -->|rdfs:domain| lineitem
+    line_id -->|rdfs:range| xInt
 
-    orders_to_customer -->|rdfs:domain| orders
-    orders_to_customer -->|rdfs:range| customer
-    lineitem_to_orders -->|rdfs:domain| lineitem
-    lineitem_to_orders -->|rdfs:range| orders
+    placed_by -->|rdfs:domain| orders
+    placed_by -->|rdfs:range| customer
+    part_of -->|rdfs:domain| lineitem
+    part_of -->|rdfs:range| orders
 ```
 
 Write that ontology and import it:
@@ -198,42 +194,36 @@ cat > /tmp/sales.ttl <<'TTL'
 
 ex:orders a owl:Class ;
     rdfs:comment "A customer order" ;
-    owl:hasKey ( ex:o_orderkey ) .
+    owl:hasKey ( ex:order_id ) .
 ex:customer a owl:Class ;
     rdfs:comment "A customer who places orders" ;
-    owl:hasKey ( ex:c_custkey ) .
+    owl:hasKey ( ex:customer_id ) .
 ex:lineitem a owl:Class ;
     rdfs:comment "A line on an order" ;
-    owl:hasKey ( ex:l_linekey ) .
+    owl:hasKey ( ex:line_id ) .
 
-ex:o_orderkey a owl:DatatypeProperty ;
-    rdfs:domain ex:orders ;
+ex:line_id a owl:DatatypeProperty ;
+    rdfs:domain ex:lineitem ;
     rdfs:range xsd:integer .
-ex:o_custkey a owl:DatatypeProperty ;
-    rdfs:domain ex:orders ;
+# order_id and customer_id each apply to two classes; a datatype property with
+# more than one rdfs:domain becomes a field on each of them.
+ex:order_id a owl:DatatypeProperty ;
+    rdfs:domain ex:orders, ex:lineitem ;
+    rdfs:range xsd:integer .
+ex:customer_id a owl:DatatypeProperty ;
+    rdfs:domain ex:orders, ex:customer ;
     rdfs:range xsd:integer .
 ex:net_amount a owl:DatatypeProperty ;
     rdfs:domain ex:orders ;
     rdfs:range xsd:decimal .
-
-ex:c_custkey a owl:DatatypeProperty ;
-    rdfs:domain ex:customer ;
-    rdfs:range xsd:integer .
-ex:c_name a owl:DatatypeProperty ;
+ex:name a owl:DatatypeProperty ;
     rdfs:domain ex:customer ;
     rdfs:range xsd:string .
 
-ex:l_linekey a owl:DatatypeProperty ;
-    rdfs:domain ex:lineitem ;
-    rdfs:range xsd:integer .
-ex:l_orderkey a owl:DatatypeProperty ;
-    rdfs:domain ex:lineitem ;
-    rdfs:range xsd:integer .
-
-ex:orders_to_customer a owl:ObjectProperty ;
+ex:placed_by a owl:ObjectProperty ;
     rdfs:domain ex:orders ;
     rdfs:range ex:customer .
-ex:lineitem_to_orders a owl:ObjectProperty ;
+ex:part_of a owl:ObjectProperty ;
     rdfs:domain ex:lineitem ;
     rdfs:range ex:orders .
 TTL
@@ -242,7 +232,7 @@ kcmd owl import /tmp/sales.ttl --out /tmp/sales_osi.yaml --compact
 ```
 
 ```
-converted 3 classes, 2 object properties, 7 datatype properties
+converted 3 classes, 2 object properties, 5 datatype properties
 wrote /tmp/sales_osi.yaml
 ```
 
@@ -259,27 +249,27 @@ semantic_model:
     description: Imported from OWL ontology http://example.com/sales#
     datasets:
       - name: orders
-        primary_key: [o_orderkey]
+        primary_key: [order_id]
         description: A customer order
         fields:
-          - {name: o_orderkey, datatype: Integer}
-          - {name: o_custkey, datatype: Integer}
+          - {name: order_id, datatype: Integer}
+          - {name: customer_id, datatype: Integer}
           - {name: net_amount, datatype: Decimal}
       - name: customer
-        primary_key: [c_custkey]
+        primary_key: [customer_id]
         description: A customer who places orders
         fields:
-          - {name: c_custkey, datatype: Integer}
-          - {name: c_name, datatype: String}
+          - {name: customer_id, datatype: Integer}
+          - {name: name, datatype: String}
       - name: lineitem
-        primary_key: [l_linekey]
+        primary_key: [line_id]
         description: A line on an order
         fields:
-          - {name: l_linekey, datatype: Integer}
-          - {name: l_orderkey, datatype: Integer}
+          - {name: line_id, datatype: Integer}
+          - {name: order_id, datatype: Integer}
     relationships:
-      - {name: orders_to_customer, from: orders, to: customer}
-      - {name: lineitem_to_orders, from: lineitem, to: orders}
+      - {name: placed_by, from: orders, to: customer}
+      - {name: part_of, from: lineitem, to: orders}
 ```
 
 This is the hand-authored `sales` model above, reproduced from the ontology: the
@@ -330,8 +320,8 @@ A bare `kcmd push` governs the logical model in Knowledge Catalog.
 
 ```
 Validating semantic model for Knowledge Catalog...
-Warning: [sales] relationship 'orders_to_customer': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'orders-to-customer'), not 'orders_to_customer'.
-Warning: [sales] relationship 'lineitem_to_orders': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'lineitem-to-orders'), not 'lineitem_to_orders'.
+Warning: [sales] relationship 'placed_by': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'placed-by'), not 'placed_by'.
+Warning: [sales] relationship 'part_of': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'part-of'), not 'part_of'.
 -- Knowledge Catalog --
 Knowledge Catalog plan for 'sales' (destination $PROJECT.$LOCATION.$DATASET):
   5 entries:
@@ -341,16 +331,16 @@ Knowledge Catalog plan for 'sales' (destination $PROJECT.$LOCATION.$DATASET):
     - sales.entities.lineitem (semantic-entity)
     - sales.metrics.revenue (semantic-metric)
   2 schema-join links:
-    - sales-orders-to-customer
-    - sales-lineitem-to-orders
+    - sales-placed-by
+    - sales-part-of
 Validation complete; no changes applied.
 ```
 
 The two warnings are informational, and every Knowledge Catalog push repeats
 them: relationship names come back from a `kcmd pull` lowercased and hyphenated
-(`orders-to-customer`), because Knowledge Catalog keeps the name only in the
+(`placed-by`), because Knowledge Catalog keeps the name only in the
 normalized link id. Nothing is wrong — the graph itself keeps the authored
-`orders_to_customer`.
+`placed_by`.
 
 ### Write the entries (available later)
 
@@ -408,19 +398,19 @@ semantic_model:
       - name: orders
         source: $PROJECT.$DATASET.orders
         fields:
-          - { name: o_orderkey, expression: o_orderkey }
-          - { name: o_custkey,  expression: o_custkey }
-          - { name: net_amount, expression: net_amount }
+          - { name: order_id,    expression: o_orderkey }
+          - { name: customer_id, expression: o_custkey }
+          - { name: net_amount,  expression: net_amount }
       - name: customer
         source: $PROJECT.$DATASET.customer
         fields:
-          - { name: c_custkey, expression: c_custkey }
-          - { name: c_name,    expression: c_name }
+          - { name: customer_id, expression: c_custkey }
+          - { name: name,        expression: c_name }
       - name: lineitem
         source: $PROJECT.$DATASET.lineitem
         fields:
-          - { name: l_linekey,  expression: l_linekey }
-          - { name: l_orderkey, expression: l_orderkey }
+          - { name: line_id,  expression: l_linekey }
+          - { name: order_id, expression: l_orderkey }
 YAML
 ```
 
@@ -446,9 +436,9 @@ echo 'default_profile: analytical' >> catalog.yaml
 >     entities:
 >       - name: orders
 >         source: $PROJECT.$DATASET.orders
->         primary_key: [o_orderkey]
+>         primary_key: [order_id]
 >         fields:
->           - { name: o_orderkey, datatype: Integer, expression: o_orderkey }
+>           - { name: order_id, datatype: Integer, expression: o_orderkey }
 >           # ...
 > ```
 >
@@ -526,8 +516,10 @@ kcmd push --no-kc --print
 ```
 
 The generated graph turns each entity into a node table, each relationship into an
-edge, and the metric into a measure (your `$PROJECT`/`$DATASET` appear in the fully
-qualified names):
+edge, and the metric into a measure. Each property is the model's logical name
+backed by its bound column — `o_orderkey AS order_id` — so every query names
+`order_id`, never the physical column (your `$PROJECT`/`$DATASET` appear in the
+fully qualified names):
 
 ```sql
 Pushing semantic model (BigQuery Graph)...
@@ -538,30 +530,30 @@ NODE TABLES (
   `$PROJECT.$DATASET.orders` AS orders
     KEY(o_orderkey)
     PROPERTIES(
-      o_orderkey,
-      o_custkey,
+      o_orderkey AS order_id,
+      o_custkey AS customer_id,
       net_amount,
       MEASURE(SUM(net_amount)) AS revenue
     ),
   `$PROJECT.$DATASET.customer` AS customer
     KEY(c_custkey)
     PROPERTIES(
-      c_custkey,
-      c_name
+      c_custkey AS customer_id,
+      c_name AS name
     ),
   `$PROJECT.$DATASET.lineitem` AS lineitem
     KEY(l_linekey)
     PROPERTIES(
-      l_linekey,
-      l_orderkey
+      l_linekey AS line_id,
+      l_orderkey AS order_id
     )
 )
 EDGE TABLES (
-  `$PROJECT.$DATASET.orders` AS orders_to_customer
+  `$PROJECT.$DATASET.orders` AS placed_by
     KEY(o_orderkey)
     SOURCE KEY(o_orderkey) REFERENCES orders(o_orderkey)
     DESTINATION KEY(o_custkey) REFERENCES customer(c_custkey),
-  `$PROJECT.$DATASET.lineitem` AS lineitem_to_orders
+  `$PROJECT.$DATASET.lineitem` AS part_of
     KEY(l_linekey)
     SOURCE KEY(l_linekey) REFERENCES lineitem(l_linekey)
     DESTINATION KEY(l_orderkey) REFERENCES orders(o_orderkey)
@@ -625,16 +617,16 @@ fan-out cannot double-count. You read it by flattening the graph with
 
 ```bash
 bq query --use_legacy_sql=false --nouse_cache '
-SELECT customer_c_name AS c_name, AGG(orders_revenue) AS revenue
+SELECT customer_name AS name, AGG(orders_revenue) AS revenue
 FROM GRAPH_EXPAND("'"$PROJECT.$DATASET.$GRAPH"'")
-GROUP BY c_name ORDER BY c_name'
+GROUP BY name ORDER BY name'
 ```
 
 This one is **right**:
 
 ```
 +--------+---------+
-| c_name | revenue |
+| name   | revenue |
 +--------+---------+
 | Acme   |   290.0 |
 | Globex |    40.0 |
@@ -654,14 +646,14 @@ query, so the correct answer is the default one.
 
 Metrics answer aggregate questions. To follow the relationships between entities,
 query the graph with graph query language (GQL), which matches a pattern of nodes
-and edges. This walks the `orders_to_customer` edge to count each customer's
+and edges. This walks the `placed_by` edge to count each customer's
 orders:
 
 ```bash
 bq query --use_legacy_sql=false --nouse_cache '
 GRAPH `'"$PROJECT.$DATASET.$GRAPH"'`
-MATCH (o:orders)-[:orders_to_customer]->(c:customer)
-RETURN c.c_name AS customer, COUNT(o.o_orderkey) AS orders
+MATCH (o:orders)-[:placed_by]->(c:customer)
+RETURN c.name AS customer, COUNT(o.order_id) AS orders
 GROUP BY customer ORDER BY customer'
 ```
 
@@ -712,19 +704,19 @@ semantic_model:
       - name: orders
         source: Orders                       # a bare table in the Spanner database
         fields:
-          - { name: o_orderkey, expression: OrderId }
-          - { name: o_custkey,  expression: CustomerId }
-          - { name: net_amount, unbound: true }   # the operational store has no settled total
+          - { name: order_id,    expression: OrderId }
+          - { name: customer_id, expression: CustomerId }
+          - { name: net_amount,  unbound: true }   # the operational store has no settled total
       - name: customer
         source: Customers
         fields:
-          - { name: c_custkey, expression: CustomerId }
-          - { name: c_name,    expression: FullName }
+          - { name: customer_id, expression: CustomerId }
+          - { name: name,        expression: FullName }
       - name: lineitem
         source: LineItems
         fields:
-          - { name: l_linekey,  expression: LineId }
-          - { name: l_orderkey, expression: OrderId }
+          - { name: line_id,  expression: LineId }
+          - { name: order_id, expression: OrderId }
 YAML
 ```
 
@@ -819,28 +811,28 @@ NODE TABLES (
   Orders AS orders
     KEY(OrderId)
     PROPERTIES(
-      OrderId AS o_orderkey,
-      CustomerId AS o_custkey
+      OrderId AS order_id,
+      CustomerId AS customer_id
     ),
   Customers AS customer
     KEY(CustomerId)
     PROPERTIES(
-      CustomerId AS c_custkey,
-      FullName AS c_name
+      CustomerId AS customer_id,
+      FullName AS name
     ),
   LineItems AS lineitem
     KEY(LineId)
     PROPERTIES(
-      LineId AS l_linekey,
-      OrderId AS l_orderkey
+      LineId AS line_id,
+      OrderId AS order_id
     )
 )
 EDGE TABLES (
-  Orders AS orders_to_customer
+  Orders AS placed_by
     KEY(OrderId)
     SOURCE KEY(OrderId) REFERENCES orders(OrderId)
     DESTINATION KEY(CustomerId) REFERENCES customer(CustomerId),
-  LineItems AS lineitem_to_orders
+  LineItems AS part_of
     KEY(LineId)
     SOURCE KEY(LineId) REFERENCES lineitem(LineId)
     DESTINATION KEY(OrderId) REFERENCES orders(OrderId)
@@ -849,9 +841,9 @@ EDGE TABLES (
 Deployed 1 Spanner Graph(s).
 ```
 
-The graph still speaks the model's vocabulary — the properties are `o_orderkey`,
-`c_name`, and the rest — but each is now backed by the profile's Spanner column
-(`OrderId AS o_orderkey`, `FullName AS c_name`). The key and reference clauses
+The graph still speaks the model's vocabulary — the properties are `order_id`,
+`name`, and the rest — but each is now backed by the profile's Spanner column
+(`OrderId AS order_id`, `FullName AS name`). The key and reference clauses
 name the physical columns (`KEY(OrderId)`), because a Spanner graph keys on the
 table's real column rather than the property alias. Three things also differ from the
 BigQuery DDL in step 3:
@@ -875,13 +867,13 @@ BigQuery DDL in step 3:
 
 Query it with the same GQL query you ran on BigQuery in step 3, now against the
 bare `sales` graph. The query names the
-model's properties (`c_name`, `o_orderkey`); the profile's column bindings are
+model's properties (`name`, `order_id`); the profile's column bindings are
 invisible to it:
 
 ```bash
 gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
-  --sql="GRAPH sales MATCH (o:orders)-[:orders_to_customer]->(c:customer)
-         RETURN c.c_name AS customer, COUNT(o.o_orderkey) AS orders
+  --sql="GRAPH sales MATCH (o:orders)-[:placed_by]->(c:customer)
+         RETURN c.name AS customer, COUNT(o.order_id) AS orders
          GROUP BY customer ORDER BY customer"
 ```
 
@@ -894,7 +886,7 @@ Globex    1
 The one model now backs two stores: the BigQuery warehouse from step 3, where
 `revenue` is a measure, and this operational Spanner graph, where the same
 entities and relationships are queried live and `revenue` is computed in SQL or
-the application rather than by the graph. `Customer`, `orders_to_customer`, and
+the application rather than by the graph. `customer`, `placed_by`, and
 every field mean the same thing in both; only the bindings differ.
 
 > **Deploy every binding in one run.** This codelab pushed the two
