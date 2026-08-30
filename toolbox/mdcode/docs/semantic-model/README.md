@@ -126,9 +126,11 @@ the deploy does (see [Validation](reference.md#validation)).
 
 For a **Spanner** target, the graph and its tables live inside the one Spanner
 database the target names, so a `source` is reduced to its **final segment** —
-the table name in that database (`demo.sales.Orders` → `Orders`). That lets one
-authored `source` serve both backends; a Spanner-native `source` form is a
-planned [profiles](profiles.md) feature.
+the table name in that database. That final segment is taken the same way from a
+dotted `demo.sales.Orders` or a Spanner-native resource name
+(`//spanner.googleapis.com/…/tables/Orders`), so one authored `source` serves
+both backends. Binding a differently named Spanner source per environment is a
+[profiles](profiles.md) feature.
 
 ## 2. Push
 
