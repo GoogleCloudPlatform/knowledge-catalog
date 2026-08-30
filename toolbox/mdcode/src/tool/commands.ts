@@ -345,30 +345,40 @@ export async function push(options: PushOptions): Promise<number> {
     // Reserve the profile name 'default': it is the sentinel for the inline
     // bindings (never merged onto the document), so a
     // `<model>.profiles/default.yaml` would be silently unreachable. Reject it
-    // rather than let it sit there doing nothing.
-    for (const doc of layoutDocs) {
-      const clash =
-          layout.profileDocuments(doc.name).some(p => p.name === DEFAULT_PROFILE);
-      if (clash) {
-        console.error(
-            `Error: [${doc.name}] a binding profile may not be named '${
-                DEFAULT_PROFILE}' -- that name refers to the model's inline ` +
-            `bindings. Rename the profile file.`);
-        return 1;
+    // rather than let it sit there doing nothing. Only when the graph axis is on:
+    // a graph push may resolve profiles, but a catalog-only --no-profile push
+    // reads no profile files, so it does not police their names.
+    if (graphEnabled) {
+      for (const doc of layoutDocs) {
+        const clash = layout.profileDocuments(doc.name).some(
+            p => p.name === DEFAULT_PROFILE);
+        if (clash) {
+          console.error(
+              `Error: [${doc.name}] a binding profile may not be named '${
+                  DEFAULT_PROFILE}' -- that name refers to the model's inline ` +
+              `bindings. Rename the profile file.`);
+          return 1;
+        }
       }
     }
 
     // Merge one binding profile onto every model document, returning the merged
     // docs (or null after reporting an error). The implicit 'default' profile is
-    // the inline document as authored, so nothing is merged.
+    // the inline document as authored, so nothing is merged. With `skipMissing`
+    // (the --all-profiles fan-out) a model that does not define the profile is
+    // dropped from the result rather than erroring -- the profile name came from
+    // another model in the group and is not this one's concern; without it (an
+    // explicit --profile) a missing profile is an error.
     const mergeForProfile =
-        (profileName: string): Array<{name: string; text: string}>|null => {
+        (profileName: string, {skipMissing = false} = {}):
+            Array<{name: string; text: string}>|null => {
           if (profileName === DEFAULT_PROFILE) return layoutDocs;
           const merged: Array<{name: string; text: string}> = [];
           for (const doc of layoutDocs) {
             const available = layout.profileDocuments(doc.name);
             const chosen = available.find(p => p.name === profileName);
             if (!chosen) {
+              if (skipMissing) continue;
               const names = available.map(p => p.name);
               console.error(
                   `Error: unknown binding profile '${profileName}' for model '${
@@ -453,6 +463,39 @@ export async function push(options: PushOptions): Promise<number> {
           return {models, bqModels, spannerModels};
         };
 
+    // Merge + prepare a profile once and reuse it. The graph leg and the
+    // Knowledge Catalog leg both consume the default binding, so without this a
+    // bound `kcmd push` would load, transpile, prune, and validate the same
+    // profile twice -- and print every loader/transpile warning twice. Keyed by
+    // the inputs that change the result: profile name, prune, and (since
+    // --all-profiles may prepare a filtered subset of the documents) the set of
+    // document names.
+    type Prepared = {
+      models: LoadedModel[];
+      bqModels: LoadedModel[];
+      spannerModels: LoadedModel[];
+    };
+    const mergeCache =
+        new Map<string, Array<{name: string; text: string}>|null>();
+    const mergeOnce = (profileName: string, skipMissing: boolean) => {
+      const key = `${profileName}|${skipMissing}`;
+      if (mergeCache.has(key)) return mergeCache.get(key)!;
+      const docs = mergeForProfile(profileName, {skipMissing});
+      mergeCache.set(key, docs);
+      return docs;
+    };
+    const prepareCache = new Map<string, Prepared|null>();
+    const prepareOnce =
+        async(docs: Array<{name: string; text: string}>, profileName: string,
+              prune: boolean): Promise<Prepared|null> => {
+          const key = `${profileName}|${prune}|${
+              docs.map(d => d.name).sort().join(',')}`;
+          if (prepareCache.has(key)) return prepareCache.get(key)!;
+          const prepared = await prepareModels(docs, profileName, {prune});
+          prepareCache.set(key, prepared);
+          return prepared;
+        };
+
     // The graph binding profiles to deploy, in a deterministic order (named
     // profiles first, sorted, then the inline 'default'). --all-profiles fans
     // out over every defined profile, plus the inline 'default' when the
@@ -482,17 +525,49 @@ export async function push(options: PushOptions): Promise<number> {
     }
 
     // Deploy each selected profile's graph (BigQuery first within a profile, so
-    // a fail-fast push stops before later legs). A profile whose merged model
-    // declares no deployment target contributes no graph -- skip it. The live
-    // BigQuery pre-flight runs before each BigQuery deploy so a push fails fast
-    // when a source table is unreachable; it also runs under --validate-only.
+    // a fail-fast push stops before later legs). Only the documents that, after
+    // the merge, declare a deployment target contribute a graph; the rest are
+    // left to the Knowledge Catalog leg (a profile that binds no target at all is
+    // skipped). The live BigQuery pre-flight runs before each BigQuery deploy so
+    // a push fails fast when a source table is unreachable; it also runs under
+    // --validate-only. A deployment target may be claimed by only one profile in
+    // a run: two profiles pointing at the same graph would have the second
+    // CREATE OR REPLACE silently overwrite the first, so that is an error rather
+    // than last-write-wins.
+    const multiProfile = graphProfileNames.length > 1;
+    const claimedTargets = new Map<string, string>();  // target URI -> profile
+    const deployedProfiles: string[] = [];
+    const skippedProfiles: string[] = [];
     let deployedGraphs = 0;
     for (const profileName of graphProfileNames) {
-      const docs = mergeForProfile(profileName);
-      if (!docs) return 1;
-      if (docs.every(d => !declaresGraphTarget(d.text))) continue;
-      const prepared = await prepareModels(docs, profileName, {prune: true});
+      // --all-profiles fans out over every model's profiles, so a model that
+      // does not define this one is dropped (skipMissing) rather than failing
+      // the run; a single --profile / default push keeps every model.
+      const merged = mergeOnce(profileName, allProfiles);
+      if (!merged) return 1;
+      const docs = merged.filter(d => declaresGraphTarget(d.text));
+      if (!docs.length) {
+        skippedProfiles.push(profileName);
+        continue;
+      }
+      const prepared = await prepareOnce(docs, profileName, true);
       if (!prepared) return 1;
+      // Fail before any deploy if this profile's targets collide with a graph an
+      // earlier profile already claimed this run.
+      for (const m of prepared.models) {
+        for (const uri of deploy.deploymentTargetUris(m.model)) {
+          const owner = claimedTargets.get(uri);
+          if (owner !== undefined) {
+            console.error(
+                `Error: binding profiles '${owner}' and '${profileName}' both ` +
+                `deploy to the same graph '${uri}'; give each profile its own ` +
+                `deployment target (the second would overwrite the first).`);
+            return 1;
+          }
+          claimedTargets.set(uri, profileName);
+        }
+      }
+      if (multiProfile) console.log(`\n-- Binding profile '${profileName}' --`);
       if (prepared.bqModels.length) {
         const accessErrors = await validateBigQueryDataSources(
             prepared.bqModels, new BigQueryClient(ctx), defaultProject);
@@ -509,6 +584,21 @@ export async function push(options: PushOptions): Promise<number> {
         if (code !== 0) return code;
         deployedGraphs += prepared.spannerModels.length;
       }
+      deployedProfiles.push(profileName);
+    }
+    // Under --all-profiles the per-leg "Deployed N" lines alone don't show the
+    // whole fan-out, so summarize which profiles deployed and which were skipped
+    // for declaring no deployment target.
+    if (allProfiles && (deployedProfiles.length || skippedProfiles.length)) {
+      console.log(
+          `Deployed ${deployedGraphs} graph(s) across ${
+              deployedProfiles.length} binding profile(s)` +
+          (deployedProfiles.length ? ` (${deployedProfiles.join(', ')})` : '') +
+          (skippedProfiles.length ?
+               `; skipped ${skippedProfiles.length} with no deployment target (${
+                   skippedProfiles.join(', ')})` :
+               '') +
+          '.');
     }
 
     // Knowledge Catalog records one canonical view of the logical model: the
@@ -518,10 +608,10 @@ export async function push(options: PushOptions): Promise<number> {
     if (kcEnabled) {
       const kcProfileName =
           namedProfile ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
-      const docs = mergeForProfile(kcProfileName);
+      const docs = mergeOnce(kcProfileName, false);
       if (!docs) return 1;
       const prune = graphEnabled && docs.some(d => declaresGraphTarget(d.text));
-      const prepared = await prepareModels(docs, kcProfileName, {prune});
+      const prepared = await prepareOnce(docs, kcProfileName, prune);
       if (!prepared) return 1;
       const code =
           await pushKnowledgeCatalog(prepared.models, ctx, options, source);
