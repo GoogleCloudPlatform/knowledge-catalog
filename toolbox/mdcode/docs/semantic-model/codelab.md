@@ -119,22 +119,43 @@ cat > /tmp/sales.ttl <<'TTL'
 <http://example.com/sales> a owl:Ontology ;
     rdfs:comment "Orders, line items, and customers for the codelab." .
 
-ex:orders   a owl:Class ; owl:hasKey ( ex:o_orderkey ) .
-ex:customer a owl:Class ; owl:hasKey ( ex:c_custkey ) .
-ex:lineitem a owl:Class ; owl:hasKey ( ex:l_linekey ) .
+ex:orders a owl:Class ;
+    owl:hasKey ( ex:o_orderkey ) .
+ex:customer a owl:Class ;
+    owl:hasKey ( ex:c_custkey ) .
+ex:lineitem a owl:Class ;
+    owl:hasKey ( ex:l_linekey ) .
 
-ex:o_orderkey a owl:DatatypeProperty ; rdfs:domain ex:orders ; rdfs:range xsd:integer .
-ex:o_custkey  a owl:DatatypeProperty ; rdfs:domain ex:orders ; rdfs:range xsd:integer .
-ex:net_amount a owl:DatatypeProperty ; rdfs:domain ex:orders ; rdfs:range xsd:decimal .
+ex:o_orderkey a owl:DatatypeProperty ;
+    rdfs:domain ex:orders ;
+    rdfs:range xsd:integer .
+ex:o_custkey a owl:DatatypeProperty ;
+    rdfs:domain ex:orders ;
+    rdfs:range xsd:integer .
+ex:net_amount a owl:DatatypeProperty ;
+    rdfs:domain ex:orders ;
+    rdfs:range xsd:decimal .
 
-ex:c_custkey a owl:DatatypeProperty ; rdfs:domain ex:customer ; rdfs:range xsd:integer .
-ex:c_name    a owl:DatatypeProperty ; rdfs:domain ex:customer ; rdfs:range xsd:string .
+ex:c_custkey a owl:DatatypeProperty ;
+    rdfs:domain ex:customer ;
+    rdfs:range xsd:integer .
+ex:c_name a owl:DatatypeProperty ;
+    rdfs:domain ex:customer ;
+    rdfs:range xsd:string .
 
-ex:l_linekey  a owl:DatatypeProperty ; rdfs:domain ex:lineitem ; rdfs:range xsd:integer .
-ex:l_orderkey a owl:DatatypeProperty ; rdfs:domain ex:lineitem ; rdfs:range xsd:integer .
+ex:l_linekey a owl:DatatypeProperty ;
+    rdfs:domain ex:lineitem ;
+    rdfs:range xsd:integer .
+ex:l_orderkey a owl:DatatypeProperty ;
+    rdfs:domain ex:lineitem ;
+    rdfs:range xsd:integer .
 
-ex:orders_to_customer a owl:ObjectProperty ; rdfs:domain ex:orders   ; rdfs:range ex:customer .
-ex:lineitem_to_orders a owl:ObjectProperty ; rdfs:domain ex:lineitem ; rdfs:range ex:orders .
+ex:orders_to_customer a owl:ObjectProperty ;
+    rdfs:domain ex:orders ;
+    rdfs:range ex:customer .
+ex:lineitem_to_orders a owl:ObjectProperty ;
+    rdfs:domain ex:lineitem ;
+    rdfs:range ex:orders .
 TTL
 
 kcmd owl import /tmp/sales.ttl --out /tmp/sales_from_owl.yaml
