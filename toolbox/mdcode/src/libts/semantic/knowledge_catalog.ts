@@ -335,15 +335,15 @@ function modelAspectData(model: SemanticModel): Record<string, any> {
 // semantic-entity: the base table(s) backing the entity. importedSystem/
 // importedResource have no IR source today and are left unset.
 function entityAspectData(entity: Entity): Record<string, any> {
-  // A logical-only entity has no physical table (empty dataSource). Omit the
-  // `source` block entirely rather than emit an empty (or bogus ['']) resources
-  // array: like the semantic-model aspect's deploymentTargets, empty aspect data
-  // is valid and the aspect is still attached to satisfy required_aspects. The
-  // reader treats an absent source the same as an empty one (dataSource
-  // becomes '').
+  // A logical-only entity has no physical table (empty dataSource). Still emit
+  // the `source` block with an empty `resources` array rather than a bogus
+  // ['']: the semantic-entity template requires `source` (with its `resources`
+  // list), so omitting it is rejected server-side. An empty list is the honest
+  // "no binding yet"; the reader treats it the same as an absent source
+  // (dataSource becomes '').
   const path = resourcePath(entity.dataSource);
   return compact({
-    source: path ? {resources: [path]} : undefined,
+    source: {resources: path ? [path] : []},
   });
 }
 
