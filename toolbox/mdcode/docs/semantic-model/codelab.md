@@ -51,13 +51,13 @@ Author the model in two parts — this is what lets one model serve many stores:
   (`orders`, `customer`, `lineitem`), the relationships between them, and one
   metric (`revenue`). It names nothing physical.
 - A **binding profile** then says where each entity reads from and which column
-  each field is. You write one when you deploy to BigQuery (step 3) and another
-  for Spanner (step 4); the logical model never changes.
+  each field is. You write one for each store the model serves, and the logical
+  model itself never changes.
 
 ### Author by hand
 
-Write the logical model — declarations only, no sources, no columns, no
-deployment target:
+Write the logical model. It declares the entities, their fields, the
+relationships between them, and the metric:
 
 ```bash
 cat > catalog/EntryGroups/$DATASET/sales.yaml <<'YAML'
@@ -101,96 +101,261 @@ semantic_model:
 YAML
 ```
 
+The model describes three entities joined by two relationships:
+
+```mermaid
+classDiagram
+    class orders {
+        o_orderkey : integer
+        o_custkey : integer
+        net_amount : decimal
+    }
+    class customer {
+        c_custkey : integer
+        c_name : string
+    }
+    class lineitem {
+        l_linekey : integer
+        l_orderkey : integer
+    }
+    lineitem --> orders : lineitem_to_orders
+    orders --> customer : orders_to_customer
+```
+
 ### Import from an OWL ontology
 
 You can also start from an existing OWL ontology instead of hand-authoring this
 YAML. `kcmd owl import` converts an ontology (`.ttl`) into a semantic model:
 classes become entities, datatype properties become fields, and object
-properties become relationships. Write a tiny ontology and import it:
+properties become relationships. Here is the same `sales` domain written as an
+ontology. An ontology is an RDF graph: the classes, the properties, and the
+datatypes are all nodes, wired together by labeled arcs. Each property is its
+own node that points to the class it describes (`rdfs:domain`) and to the type
+of its values (`rdfs:range`); a datatype property ranges over a datatype such as
+`xsd:integer`, while an object property ranges over another class, which is what
+makes it a relationship. Node color marks each resource's `rdf:type` — class,
+datatype property, or object property:
+
+```mermaid
+graph LR
+    classDef cls fill:#dae8fc,stroke:#6c8ebf,color:#000;
+    classDef dp fill:#d5e8d4,stroke:#82b366,color:#000;
+    classDef op fill:#ffe6cc,stroke:#d79b00,color:#000;
+    classDef dt fill:#f5f5f5,stroke:#999,color:#333;
+
+    orders["ex:orders"]:::cls
+    customer["ex:customer"]:::cls
+    lineitem["ex:lineitem"]:::cls
+
+    o_orderkey(["ex:o_orderkey"]):::dp
+    o_custkey(["ex:o_custkey"]):::dp
+    net_amount(["ex:net_amount"]):::dp
+    c_custkey(["ex:c_custkey"]):::dp
+    c_name(["ex:c_name"]):::dp
+    l_linekey(["ex:l_linekey"]):::dp
+    l_orderkey(["ex:l_orderkey"]):::dp
+
+    orders_to_customer(["ex:orders_to_customer"]):::op
+    lineitem_to_orders(["ex:lineitem_to_orders"]):::op
+
+    xInt["xsd:integer"]:::dt
+    xDec["xsd:decimal"]:::dt
+    xStr["xsd:string"]:::dt
+
+    orders -. owl:hasKey .-> o_orderkey
+    customer -. owl:hasKey .-> c_custkey
+    lineitem -. owl:hasKey .-> l_linekey
+
+    o_orderkey -->|rdfs:domain| orders
+    o_orderkey -->|rdfs:range| xInt
+    o_custkey -->|rdfs:domain| orders
+    o_custkey -->|rdfs:range| xInt
+    net_amount -->|rdfs:domain| orders
+    net_amount -->|rdfs:range| xDec
+    c_custkey -->|rdfs:domain| customer
+    c_custkey -->|rdfs:range| xInt
+    c_name -->|rdfs:domain| customer
+    c_name -->|rdfs:range| xStr
+    l_linekey -->|rdfs:domain| lineitem
+    l_linekey -->|rdfs:range| xInt
+    l_orderkey -->|rdfs:domain| lineitem
+    l_orderkey -->|rdfs:range| xInt
+
+    orders_to_customer -->|rdfs:domain| orders
+    orders_to_customer -->|rdfs:range| customer
+    lineitem_to_orders -->|rdfs:domain| lineitem
+    lineitem_to_orders -->|rdfs:range| orders
+```
+
+Write that ontology and import it:
 
 ```bash
-cat > /tmp/parts.ttl <<'TTL'
+cat > /tmp/sales.ttl <<'TTL'
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 @prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
-@prefix ex:   <http://example.com/commerce#> .
+@prefix ex:   <http://example.com/sales#> .
 
-ex:Part a owl:Class ;
-    rdfs:label "Part" ;
-    rdfs:comment "A sellable part" .
-ex:Supplier a owl:Class ;
-    rdfs:label "Supplier" .
+ex:orders a owl:Class ;
+    rdfs:comment "A customer order" ;
+    owl:hasKey ( ex:o_orderkey ) .
+ex:customer a owl:Class ;
+    rdfs:comment "A customer who places orders" ;
+    owl:hasKey ( ex:c_custkey ) .
+ex:lineitem a owl:Class ;
+    rdfs:comment "A line on an order" ;
+    owl:hasKey ( ex:l_linekey ) .
 
-ex:partName a owl:DatatypeProperty ;
-    rdfs:domain ex:Part ;
-    rdfs:range xsd:string .
-ex:partPrice a owl:DatatypeProperty ;
-    rdfs:domain ex:Part ;
+ex:o_orderkey a owl:DatatypeProperty ;
+    rdfs:domain ex:orders ;
+    rdfs:range xsd:integer .
+ex:o_custkey a owl:DatatypeProperty ;
+    rdfs:domain ex:orders ;
+    rdfs:range xsd:integer .
+ex:net_amount a owl:DatatypeProperty ;
+    rdfs:domain ex:orders ;
     rdfs:range xsd:decimal .
-ex:suppliedBy a owl:ObjectProperty ;
-    rdfs:domain ex:Part ;
-    rdfs:range ex:Supplier .
+
+ex:c_custkey a owl:DatatypeProperty ;
+    rdfs:domain ex:customer ;
+    rdfs:range xsd:integer .
+ex:c_name a owl:DatatypeProperty ;
+    rdfs:domain ex:customer ;
+    rdfs:range xsd:string .
+
+ex:l_linekey a owl:DatatypeProperty ;
+    rdfs:domain ex:lineitem ;
+    rdfs:range xsd:integer .
+ex:l_orderkey a owl:DatatypeProperty ;
+    rdfs:domain ex:lineitem ;
+    rdfs:range xsd:integer .
+
+ex:orders_to_customer a owl:ObjectProperty ;
+    rdfs:domain ex:orders ;
+    rdfs:range ex:customer .
+ex:lineitem_to_orders a owl:ObjectProperty ;
+    rdfs:domain ex:lineitem ;
+    rdfs:range ex:orders .
 TTL
 
-kcmd owl import /tmp/parts.ttl --out /tmp/parts_osi.yaml
+kcmd owl import /tmp/sales.ttl --out /tmp/sales_osi.yaml
 ```
 
 ```
-converted 2 classes, 1 object property, 2 datatype properties
-wrote /tmp/parts_osi.yaml
-note: this model is UNBOUND (placeholder `unbound:` sources, no deployment target).
-      `kcmd push` is rejected until you bind each entity's source table and add
-      a BigQuery deployment target -- validation needs both, for every --target.
+converted 3 classes, 2 object properties, 7 datatype properties
+wrote /tmp/sales_osi.yaml
+note: this is a logical model -- entities, fields, and relationships, with no
+      physical bindings. `kcmd push --target kc` publishes it to Knowledge Catalog
+      as-is. To deploy a graph, bind each entity's source table and add a
+      deployment target first.
 ```
 
 Look at what it produced:
 
 ```bash
-cat /tmp/parts_osi.yaml
+cat /tmp/sales_osi.yaml
 ```
 
 ```yaml
 version: 0.2.0.dev0
 semantic_model:
-  - name: parts
-    description: Imported from OWL ontology http://example.com/commerce#
+  - name: sales
+    description: Imported from OWL ontology http://example.com/sales#
     datasets:
-      - name: Part
-        source: unbound:Part
-        description: A sellable part
+      - name: orders
+        source: unbound:orders
+        primary_key:
+          - o_orderkey
+        description: A customer order
         fields:
-          - name: partName
+          - name: o_orderkey
             expression:
               dialects:
                 - dialect: BIGQUERY
-                  expression: partName
-            datatype: String
-          - name: partPrice
+                  expression: o_orderkey
+            datatype: Integer
+          - name: o_custkey
             expression:
               dialects:
                 - dialect: BIGQUERY
-                  expression: partPrice
+                  expression: o_custkey
+            datatype: Integer
+          - name: net_amount
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: net_amount
             datatype: Decimal
-      - name: Supplier
-        source: unbound:Supplier
+      - name: customer
+        source: unbound:customer
+        primary_key:
+          - c_custkey
+        description: A customer who places orders
+        fields:
+          - name: c_custkey
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: c_custkey
+            datatype: Integer
+          - name: c_name
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: c_name
+            datatype: String
+      - name: lineitem
+        source: unbound:lineitem
+        primary_key:
+          - l_linekey
+        description: A line on an order
+        fields:
+          - name: l_linekey
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: l_linekey
+            datatype: Integer
+          - name: l_orderkey
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: l_orderkey
+            datatype: Integer
     relationships:
-      - name: suppliedBy
-        from: Part
-        to: Supplier
+      - name: orders_to_customer
+        from: orders
+        to: customer
         from_columns:
           - TODO_BIND
         to_columns:
+          - c_custkey
+      - name: lineitem_to_orders
+        from: lineitem
+        to: orders
+        from_columns:
           - TODO_BIND
+        to_columns:
+          - o_orderkey
 ```
 
-The classes became `Part` and `Supplier` entities, the datatype properties
-became `Part`'s fields, and the object property became the `suppliedBy`
-relationship. (The importer writes them under `datasets:`, the original spelling
-of the `entities:` key this codelab uses — the two are interchangeable.) The
-`source: unbound:*` and `TODO_BIND` join columns are
-placeholders: the import gives you structure, and you bind it to physical tables
-and a deployment target before deploying to a query engine — which is exactly
-what the `analytical` binding adds to the hand-authored `sales` model in step 3.
+This is the same logical model you wrote by hand: the same three entities, the
+same fields and datatypes, and the same two relationships. (The importer writes
+them under `datasets:`, the original spelling of the `entities:` key this codelab
+uses — the two are interchangeable.) Two things the ontology does not carry, both
+of which you supply when you bind the model to a query engine:
+
+- **The `revenue` metric.** An ontology describes structure, so OWL has no metric
+  concept; the imported model has none.
+- **Physical bindings.** Each entity reads from a placeholder `unbound:*` source,
+  and each relationship's foreign-key column comes through as `TODO_BIND`. The
+  importer does fill each relationship's destination columns from the target
+  class's `owl:hasKey`, so `orders_to_customer` already points at `c_custkey` and
+  `lineitem_to_orders` at `o_orderkey`; only the source-side foreign keys stay
+  open.
+
+Supplying the metric, the real source tables, and the join columns is exactly
+what a binding profile adds to the model.
 For the full OWL mapping — class hierarchies, unique keys, and the constructs
 carried as custom extensions — see [Importing an OWL ontology](owl-import.md).
 
@@ -200,8 +365,9 @@ The rest of this codelab uses the hand-authored `sales` model above.
 
 ## 2. Govern it in Knowledge Catalog
 
-You can govern the model right now — the push writes the logical model straight
-to the catalog as entries, so there is nothing to bind or load first.
+You can govern the model right now. The push writes the logical model straight
+to the catalog as entries; you do not need to connect it to any database tables
+first.
 
 ### Preview the plan
 
@@ -235,7 +401,7 @@ them: relationship names come back from a `kcmd pull` lowercased and hyphenated
 normalized link id. Nothing is wrong — the graph itself keeps the authored
 `orders_to_customer`.
 
-### Write the entries
+### Write the entries (available later)
 
 Then drop `--validate-only` to perform the write:
 
@@ -250,11 +416,10 @@ Wrote 5 new and 0 updated Knowledge Catalog entries; linked 2 relationships.
 
 Each entity, the metric,
 and the model itself are now governed entries, joined by a schema-join link —
-discoverable, access-controlled, and the single definition every downstream step
+discoverable, access-controlled, and the single definition the rest of your work
 reads from. `kcmd pull` reconstructs the model YAML from these entries, confirming
-the round-trip. You develop the model, govern it here, and bind it in the sections
-that follow — and those physical bindings can be governed in Knowledge Catalog
-too.
+the round-trip. Physical bindings can be governed here too, alongside the logical
+model.
 
 > This write needs the `semantic-model` / `semantic-entity` / `semantic-metric`
 > entry types and write access to the entry group. See
@@ -264,9 +429,11 @@ too.
 
 ## 3. Deploy to BigQuery and get reliable insights
 
-Governing the model created catalog entries but no tables. Deploying it to a
-query engine creates the tables and the graph. You add a **binding profile**,
-create the data, and deploy.
+In step 2 you governed the logical model, which created catalog entries but no
+tables and no data. To query it, you give the model a physical home in BigQuery.
+This takes three steps: write a **binding profile** that maps each entity to a
+BigQuery table, create those tables and load a little data, then deploy the model
+to build the graph.
 
 ### Write the binding profile
 
@@ -309,8 +476,7 @@ YAML
 The binding restates no relationship, no metric, and no grain — those are logical
 and live once in the model. It carries only bindings: each entity's table and
 each field's column. Make it the default so a bare `kcmd push` selects it (the
-rest of this step relies on this); step 4 selects the other profile explicitly
-with `--profile`:
+rest of this step relies on this):
 
 ```bash
 echo 'default_profile: analytical' >> catalog.yaml
@@ -335,15 +501,40 @@ echo 'default_profile: analytical' >> catalog.yaml
 >           # ...
 > ```
 >
-> This codelab splits them because step 4 adds a second store, and that split is
-> what lets one model back both.
+> This codelab keeps the binding in a separate profile so one model can back more
+> than one store, each with its own binding.
+
+### Inspect the binding profile
+
+`kcmd profiles` lists the model's binding profiles and reports what each one can
+answer. Run it to confirm the binding before you deploy:
+
+```bash
+kcmd profiles
+```
+
+```
+Model 'sales' ($DATASET):
+  profile 'analytical' (default)
+    target: //bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/sales
+    sources:
+      orders -> $PROJECT.$DATASET.orders
+      customer -> $PROJECT.$DATASET.customer
+      lineitem -> $PROJECT.$DATASET.lineitem
+    cannot answer: nothing withheld.
+```
+
+Only the `analytical` profile exists so far, and it binds every field, so it
+withholds nothing: the whole model, including the `revenue` metric, is answerable
+under this binding.
 
 ### Create the tables
 
-Now create the data. An ontology-driven data-engineering agent would produce it
-from raw sources; for a self-contained run, create the three tables directly.
-`net_amount` is materialized on `orders` (the measure aggregates it), and each
-order fans out into several `lineitem` rows:
+Now create the tables and load a little data. In a production pipeline, an agent
+working from the ontology would generate these tables from raw sources; for this
+self-contained codelab, you create them directly. Two details about the data
+matter here: the `orders` table stores `net_amount` as a column, which the
+`revenue` measure sums, and each order has several `lineitem` rows:
 
 ```bash
 bq mk -f --dataset $PROJECT:$DATASET
@@ -529,10 +720,9 @@ GROUP BY customer ORDER BY customer'
 +----------+--------+
 ```
 
-This is the same GQL query you run against Spanner in step 4. The pattern, the
-model's property names, and the result are identical. Only the graph reference
-changes: BigQuery takes the fully qualified `$PROJECT.$DATASET.$GRAPH`, Spanner
-the bare `sales`.
+This is standalone GQL. The pattern and the model's property names are portable
+across graph query engines; only the graph reference is engine-specific, and here
+BigQuery takes the fully qualified `$PROJECT.$DATASET.$GRAPH`.
 
 ---
 
@@ -587,7 +777,12 @@ YAML
 The profile restates no relationship, no metric, no label, and no grain — those
 are logical and live once in the model. It carries only bindings: each entity's
 Spanner table, each field's Spanner column, and the one field the store does not
-have. `kcmd profiles` reports what each binding can answer:
+have.
+
+### Inspect the binding profiles
+
+The model now has two profiles. `kcmd profiles` lists them both and reports what
+each one can answer:
 
 ```bash
 kcmd profiles
@@ -617,8 +812,7 @@ Both profiles now show side by side: `analytical` binds every field, so it
 withholds nothing; `operational` leaves `net_amount` unbound. (`kcmd profiles`
 resolves each source against your project for display — the `analytical` sources
 are fully qualified, and each `operational` bare table such as `Orders` is shown
-project-prefixed; the Spanner graph itself references the bare `Orders`, as the
-DDL below shows.)
+project-prefixed; the Spanner graph itself references the bare `Orders`.)
 
 `revenue` is `SUM(orders.net_amount)`, and the operational store does not bind
 `net_amount`, so the profile reports `revenue` as unavailable there — computed
