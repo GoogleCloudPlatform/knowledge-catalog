@@ -2,9 +2,9 @@
 
 A self-contained walkthrough. You author one *logical* semantic model, govern it
 in Knowledge Catalog, then bind it to physical stores — BigQuery and Spanner —
-and query the same metric in each. The metric is defined once and computed the
-same way at every step. The expected output is shown after each command so you
-can check as you go.
+and query it in each. The model is defined once and every store reads from that
+single definition. The expected output is shown after each command so you can
+check as you go.
 
 For the deploy mechanics on their own (author, push, update, pull), see the
 [deploy guide](README.md); for every flag and permission, see the
