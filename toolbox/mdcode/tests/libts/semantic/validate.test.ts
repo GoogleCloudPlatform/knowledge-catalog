@@ -111,6 +111,36 @@ describe('validatePushRequirements', () => {
     const errs = validatePushRequirements([a, b]);
     expect(errs.length).toBe(2);
   });
+
+  test(
+      'targetOptional accepts a model with no deployment target (KC-only)',
+      () => {
+        // A Knowledge-Catalog-only push governs the logical model and deploys
+        // no graph, so it needs no deployment target. The same model without
+        // the option is rejected (proving the option is what relaxed it).
+        const m = model();
+        expect(validatePushRequirements([loaded(m)], {
+          targetOptional: true
+        })).toEqual([]);
+        expect(validatePushRequirements([loaded(m)]).length).toBe(1);
+      });
+
+  test('targetOptional ignores the deployment target entirely (KC-only)', () => {
+    // A KC-only push deploys no graph, so its deployment target is irrelevant:
+    // more than one target -- and even a single malformed one -- is accepted,
+    // where a graph push rejects both. (Zero targets is covered above.)
+    const other =
+        '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
+    const many = model({}, [googleExt([BQ_TARGET, other])]);
+    expect(validatePushRequirements([loaded(many)], {targetOptional: true}))
+        .toEqual([]);
+    expect(validatePushRequirements([loaded(many)]).length).toBe(1);
+
+    const malformed = model({}, [googleExt(['//example.com/not/a/graph'])]);
+    expect(validatePushRequirements([loaded(malformed)], {targetOptional: true}))
+        .toEqual([]);
+    expect(validatePushRequirements([loaded(malformed)]).length).toBe(1);
+  });
 });
 
 

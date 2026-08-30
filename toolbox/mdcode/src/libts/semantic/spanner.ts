@@ -176,8 +176,22 @@ function renderNodeTable(
   const table =
       spannerTable(entity.dataSource, warnings, `entity '${entity.name}'`);
 
+  // Defense in depth: availability pruning normally strips every unbound field
+  // (it has no column) before generation. A caller that generates DDL straight
+  // from a bindingOptional load without pruning could still reach here with an
+  // unbound (e.g. purely logical) field; skip it with a warning rather than emit
+  // `<name>` as a phantom bare column the source table does not have.
   const properties =
-      entity.fields.map(f => renderFieldProperty(f, entity.name));
+      entity.fields
+          .filter(f => {
+            if (fieldExpression(f) !== undefined) return true;
+            warnings.push(
+                `entity '${entity.name}': field '${f.name}' has no column ` +
+                `under this binding; omitted from the node table (bind it, or ` +
+                `govern the logical model in Knowledge Catalog instead)`);
+            return false;
+          })
+          .map(f => renderFieldProperty(f, entity.name));
 
   const lines = [
     line(1, `${table} AS ${entity.name}`),

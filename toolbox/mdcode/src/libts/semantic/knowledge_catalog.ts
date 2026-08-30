@@ -286,11 +286,18 @@ function schemaJoinAspectData(
   return {
     joins: [compact({
       source: {
-        name: srcEntity ? srcEntity.dataSource : rel.source.entity,
+        // Name each side by its SQL table (dataSource); fall back to the entity
+        // name when the model is logical-only (no binding, so dataSource is
+        // empty), matching the entity-not-found fallback.
+        name: srcEntity && srcEntity.dataSource ?
+            srcEntity.dataSource :
+            rel.source.entity,
         fields: rel.source.columns,
       },
       target: {
-        name: dstEntity ? dstEntity.dataSource : rel.destination.entity,
+        name: dstEntity && dstEntity.dataSource ?
+            dstEntity.dataSource :
+            rel.destination.entity,
         fields: rel.destination.columns,
       },
       description: rel.description,
@@ -325,15 +332,19 @@ function modelAspectData(model: SemanticModel): Record<string, any> {
   });
 }
 
-// semantic-entity: the base table(s) backing the entity. `source` and its
-// `resources` array are required by the aspect type. importedSystem/
+// semantic-entity: the base table(s) backing the entity. importedSystem/
 // importedResource have no IR source today and are left unset.
 function entityAspectData(entity: Entity): Record<string, any> {
-  return {
-    source: compact({
-      resources: [resourcePath(entity.dataSource)],
-    }),
-  };
+  // A logical-only entity has no physical table (empty dataSource). Omit the
+  // `source` block entirely rather than emit an empty (or bogus ['']) resources
+  // array: like the semantic-model aspect's deploymentTargets, empty aspect data
+  // is valid and the aspect is still attached to satisfy required_aspects. The
+  // reader treats an absent source the same as an empty one (dataSource
+  // becomes '').
+  const path = resourcePath(entity.dataSource);
+  return compact({
+    source: path ? {resources: [path]} : undefined,
+  });
 }
 
 // The built-in schema aspect, carrying each field's column type and display

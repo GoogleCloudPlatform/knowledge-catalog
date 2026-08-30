@@ -300,6 +300,12 @@ export async function push(options: PushOptions): Promise<number> {
       return 1;
     }
 
+    // A push whose only destination is Knowledge Catalog governs the logical
+    // model (its meaning) and deploys no graph, so it neither needs physical
+    // bindings nor a deployment target. Relax both requirements for that case;
+    // any push that includes a graph leg keeps requiring them.
+    const kcOnly = targets.length === 1 && targets[0] === 'kc';
+
     // Load + validate every model ONCE, then fan the parsed models out to each
     // destination leg. Both legs consume the same IR, so a `--target all` push
     // parses each document a single time instead of once per leg. A parse error
@@ -342,7 +348,8 @@ export async function push(options: PushOptions): Promise<number> {
       docs = merged;
     }
     const loaded = loadSemanticModels(
-        docs, {defaultProject: source.project ?? ctx.project});
+        docs,
+        {defaultProject: source.project ?? ctx.project, bindingOptional: kcOnly});
     if (loaded.error) {
       console.error('Error:', loaded.error);
       return 1;
@@ -375,26 +382,32 @@ export async function push(options: PushOptions): Promise<number> {
     // whose join column is unbound), so the deployed graph presents only what
     // the profile binds. Availability propagates up the dependency graph. Runs
     // for every profile, including 'default' (a no-op when nothing is unbound).
-    const availability: AvailabilityReport[] = [];
-    models = models.map(({document, model}) => {
-      const {model: pruned, report} = pruneUnavailable(model, profileName);
-      availability.push(report);
-      return {document, model: pruned};
-    });
-    for (const r of availability) {
-      const dropped = r.droppedEntities.length + r.droppedMetrics.length +
-          r.droppedRelationships.length;
-      if (r.unboundFields.length || dropped) {
-        console.warn(
-            `Note: profile '${r.profile}' leaves ${
-                r.unboundFields.length} field(s) unbound` +
-            (dropped ?
-                 `; ${r.droppedEntities.length} entity(ies), ${
-                     r.droppedMetrics.length} metric(s) and ${
-                     r.droppedRelationships.length} relationship(s) ` +
-                     `unavailable` :
-                 '') +
-            '.');
+    //
+    // A KC-only push governs the whole logical model -- meaning, not a physical
+    // binding -- so pruning would wrongly drop every unbound entity/metric the
+    // author declared. Skip it: Knowledge Catalog publishes the full model.
+    if (!kcOnly) {
+      const availability: AvailabilityReport[] = [];
+      models = models.map(({document, model}) => {
+        const {model: pruned, report} = pruneUnavailable(model, profileName);
+        availability.push(report);
+        return {document, model: pruned};
+      });
+      for (const r of availability) {
+        const dropped = r.droppedEntities.length + r.droppedMetrics.length +
+            r.droppedRelationships.length;
+        if (r.unboundFields.length || dropped) {
+          console.warn(
+              `Note: profile '${r.profile}' leaves ${
+                  r.unboundFields.length} field(s) unbound` +
+              (dropped ?
+                   `; ${r.droppedEntities.length} entity(ies), ${
+                       r.droppedMetrics.length} metric(s) and ${
+                       r.droppedRelationships.length} relationship(s) ` +
+                       `unavailable` :
+                   '') +
+              '.');
+        }
       }
     }
 
@@ -403,7 +416,8 @@ export async function push(options: PushOptions): Promise<number> {
     // BigQuery-graph-targeting model's metrics must each resolve to one entity.
     // This is also the --validate-only path, so a dry run reports the same
     // failures.
-    const validationErrors = validatePushRequirements(models);
+    const validationErrors =
+        validatePushRequirements(models, {targetOptional: kcOnly});
     if (validationErrors.length) {
       for (const e of validationErrors) {
         console.error(`Error: ${e}`);

@@ -625,8 +625,23 @@ function renderNodeTable(
   // Order: declared fields, then any operand properties synthesized for
   // measures, then the measures themselves (which reference those operand
   // properties).
+  // Defense in depth: availability pruning normally strips every unbound field
+  // (it has no column) before generation, and fieldBinding is the shared
+  // "is bound" oracle both it and this generator consult so the two never
+  // disagree. But a caller that generates DDL straight from a bindingOptional
+  // load without pruning could still reach here with an unbound (e.g. purely
+  // logical) field. Skip it with a warning rather than emit `<name>` as a
+  // phantom bare column the source table does not have.
+  const boundFields = entity.fields.filter(f => {
+    if (fieldBinding(f) !== undefined) return true;
+    warnings.push(
+        `entity '${entity.name}': field '${f.name}' has no column under this ` +
+        `binding; omitted from the node table (bind it, or govern the logical ` +
+        `model in Knowledge Catalog instead)`);
+    return false;
+  });
   const properties = [
-    ...entity.fields.map(renderOwn),
+    ...boundFields.map(renderOwn),
     ...derivedProperties,
     ...measures,
   ];

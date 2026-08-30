@@ -21,6 +21,13 @@ export interface LoadOptions {
   dialect?: string;         // preferred expression dialect; default 'BIGQUERY'
   defaultProject?: string;  // fallback when a dataset `source` omits the project
   defaultDataset?: string;  // fallback when a dataset `source` omits the dataset
+  // Accept a purely logical model: do not require a `source` on each concrete
+  // dataset or an `expression` on each field. Set for a Knowledge-Catalog-only
+  // push, which governs the logical model (meaning) and needs no physical
+  // binding. Graph legs (BigQuery/Spanner) never set it -- they cannot generate
+  // a graph without bindings. Contradiction checks (unbound+expression,
+  // abstract+source) stay enforced regardless.
+  bindingOptional?: boolean;
 }
 
 export interface LoadResult {
@@ -84,12 +91,17 @@ const dimensionSchema = z.object({
   is_time: z.boolean().optional(),
 });
 
-const fieldSchema = z.object({
+// The field object shape, WITHOUT the binding-completeness refinement. The
+// refinement is applied per-load by makeDocumentSchema, so a
+// Knowledge-Catalog-only push (bindingOptional) can accept a purely logical
+// field. A superRefine does not change a schema's inferred type, so FieldDoc is
+// inferred from this base.
+const fieldBase = z.object({
   name: z.string(),
   // A bound field names its physical column via `expression`; an `unbound`
-  // field has no column under this binding. Exactly one of the two holds
-  // (enforced below), so a field is never both, and a field that is neither -- a
-  // forgotten binding -- is caught here rather than silently dropped.
+  // field has no column under this binding. Whether a field must be bound (or
+  // explicitly `unbound`) is decided per-load by makeDocumentSchema; a purely
+  // logical field carries neither.
   expression: expressionSchema.optional(),
   unbound: z.boolean().optional(),
   datatype: z.enum(DATA_TYPES).optional(),   // closed, case-sensitive vocabulary; see DATA_TYPES
@@ -98,30 +110,16 @@ const fieldSchema = z.object({
   dimension: dimensionSchema.optional(),
   ai_context: aiContextSchema.optional(),
   custom_extensions: z.array(customExtensionSchema).optional(),
-}).superRefine((f, ctx) => {
-  if (f.unbound && f.expression !== undefined) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['expression'],
-      message: `field '${f.name}': an unbound field has no column; remove ` +
-          `'expression', or drop 'unbound: true' to bind it to that column`,
-    });
-  }
-  if (!f.unbound && f.expression === undefined) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['expression'],
-      message: `field '${f.name}': requires an expression; set 'expression', ` +
-          `or mark it 'unbound: true' if this binding has no column for it`,
-    });
-  }
 });
 
-const datasetSchema = z.object({
+// The dataset object shape, WITHOUT the source-required refinement (applied
+// per-load by makeDocumentSchema). DatasetDoc is inferred from this base.
+const datasetBase = z.object({
   name: z.string(),
   // A concrete dataset is backed by a physical `source` table; an `abstract`
-  // one has no table, so `source` is optional here and required-unless-abstract
-  // by the refinement below.
+  // one has no table. Whether a non-abstract dataset must name a `source` is
+  // decided per-load by makeDocumentSchema (a KC-only push accepts a logical
+  // dataset with none); the abstract+source contradiction is always rejected.
   source: z.string().optional(),
   primary_key: z.array(z.string()).optional(),
   unique_keys: z.array(z.array(z.string())).optional(),
@@ -135,32 +133,8 @@ const datasetSchema = z.object({
   abstract: z.boolean().optional(),
   description: z.string().optional(),
   ai_context: aiContextSchema.optional(),
-  fields: z.array(fieldSchema).optional(),
+  fields: z.array(fieldBase).optional(),
   custom_extensions: z.array(customExtensionSchema).optional(),
-}).superRefine((ds, ctx) => {
-  // A concrete (non-abstract) dataset must name its backing table; only an
-  // abstract one may omit `source`.
-  if (!ds.abstract && ds.source === undefined) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['source'],
-      message: `dataset '${ds.name}': a non-abstract dataset requires a ` +
-          `source; set 'source', or mark it 'abstract: true' if it has no table`,
-    });
-  }
-  // The converse: an abstract dataset has no physical table, so declaring a
-  // `source` on it is contradictory -- the BigQuery leg forms no node table for
-  // an abstract entity and would silently ignore the source, dropping a table
-  // the author clearly intended. Reject it so the ambiguity is resolved
-  // explicitly rather than lost.
-  if (ds.abstract && ds.source !== undefined) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['source'],
-      message: `dataset '${ds.name}': an abstract dataset has no table; ` +
-          `remove 'source', or drop 'abstract: true' to bind it to that table`,
-    });
-  }
 });
 
 const relationshipSchema = z.object({
@@ -183,27 +157,90 @@ const metricSchema = z.object({
   custom_extensions: z.array(customExtensionSchema).optional(),
 });
 
-const modelSchema = z.object({
+const modelBase = z.object({
   name: z.string(),
   description: z.string().optional(),
   ai_context: aiContextSchema.optional(),
   custom_extensions: z.array(customExtensionSchema).optional(),
-  datasets: z.array(datasetSchema).min(1),
+  datasets: z.array(datasetBase).min(1),
   relationships: z.array(relationshipSchema).optional(),
   metrics: z.array(metricSchema).optional(),
 });
 
-const documentSchema = z.object({
-  version: z.string().optional(),
-  semantic_model: z.array(modelSchema).min(1),
-});
+// Builds the document schema with the binding-completeness refinement applied
+// according to `bindingOptional`. When false (the default -- any push that
+// includes a graph leg), each concrete dataset must name a `source` and each
+// field must be bound or explicitly `unbound`. When true (a
+// Knowledge-Catalog-only push, which governs the logical model), those two
+// requirements are dropped so a purely logical model loads. The contradiction
+// checks (unbound+expression, abstract+source) are enforced either way.
+function buildDocumentSchema(bindingOptional: boolean) {
+  const field = fieldBase.superRefine((f, ctx) => {
+    if (f.unbound && f.expression !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['expression'],
+        message: `field '${f.name}': an unbound field has no column; remove ` +
+            `'expression', or drop 'unbound: true' to bind it to that column`,
+      });
+    }
+    if (!bindingOptional && !f.unbound && f.expression === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['expression'],
+        message: `field '${f.name}': requires an expression; set 'expression', ` +
+            `or mark it 'unbound: true' if this binding has no column for it`,
+      });
+    }
+  });
+  const dataset = datasetBase.extend({ fields: z.array(field).optional() })
+    .superRefine((ds, ctx) => {
+      // A concrete (non-abstract) dataset must name its backing table; only an
+      // abstract one may omit `source`. Relaxed under bindingOptional, where a
+      // logical dataset has no source.
+      if (!bindingOptional && !ds.abstract && ds.source === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['source'],
+          message: `dataset '${ds.name}': a non-abstract dataset requires a ` +
+              `source; set 'source', or mark it 'abstract: true' if it has no table`,
+        });
+      }
+      // The converse is always contradictory: an abstract dataset has no
+      // physical table, so a `source` on it would be silently ignored by the
+      // BigQuery leg. Reject it regardless of bindingOptional.
+      if (ds.abstract && ds.source !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['source'],
+          message: `dataset '${ds.name}': an abstract dataset has no table; ` +
+              `remove 'source', or drop 'abstract: true' to bind it to that table`,
+        });
+      }
+    });
+  const model = modelBase.extend({ datasets: z.array(dataset).min(1) });
+  return z.object({
+    version: z.string().optional(),
+    semantic_model: z.array(model).min(1),
+  });
+}
+
+// Only two schema shapes exist (strict vs binding-optional) and each is
+// immutable, so build both once at module load and select between them rather
+// than reconstructing the whole field/dataset/model/document graph -- with fresh
+// superRefine closures -- on every fromDocument call.
+const strictDocumentSchema = buildDocumentSchema(false);
+const logicalDocumentSchema = buildDocumentSchema(true);
+function makeDocumentSchema(bindingOptional: boolean) {
+  return bindingOptional ? logicalDocumentSchema : strictDocumentSchema;
+}
 
 type ExpressionDoc = z.infer<typeof expressionSchema>;
-type DatasetDoc = z.infer<typeof datasetSchema>;
-type FieldDoc = z.infer<typeof fieldSchema>;
+type DatasetDoc = z.infer<typeof datasetBase>;
+type FieldDoc = z.infer<typeof fieldBase>;
 type RelationshipDoc = z.infer<typeof relationshipSchema>;
 type MetricDoc = z.infer<typeof metricSchema>;
-type ModelDoc = z.infer<typeof modelSchema>;
+type ModelDoc = z.infer<typeof modelBase>;
 type CustomExtensionDoc = z.infer<typeof customExtensionSchema>;
 type AiContextDoc = z.infer<typeof aiContextSchema>;
 
@@ -354,7 +391,8 @@ export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
  */
 export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
   const normalized = normalizeDocumentSugars(doc);
-  const result = documentSchema.safeParse(normalized);
+  const result =
+      makeDocumentSchema(opts.bindingOptional ?? false).safeParse(normalized);
   if (!result.success) {
     throw new Error(`Semantic model load error: ${result.error.message}`);
   }
@@ -460,15 +498,18 @@ function convertField(f: FieldDoc, entityName: string, warnings: string[], diale
     // Declared but not bound under this binding: no column, no expression (the
     // schema guarantees `expression` is absent here). See Field.unbound.
     field.unbound = true;
-  } else {
+  } else if (f.expression !== undefined) {
     const picked = pickDialect(
-      f.expression!, dialect, `field '${entityName}.${f.name}'`, warnings);
+      f.expression, dialect, `field '${entityName}.${f.name}'`, warnings);
     if (picked.expression !== undefined) field.expression = picked.expression;
     if (picked.importedExpression !== undefined) {
       field.importedExpression = picked.importedExpression;
       field.importedDialect = picked.importedDialect;
     }
   }
+  // else: a purely logical field (no expression, not explicitly unbound). Only
+  // reachable under bindingOptional -- strict loading requires one or the other
+  // -- so the field carries meaning with no physical column for a KC-only push.
   if (f.datatype) field.type = f.datatype;
   if (f.label) field.label = f.label;
   if (f.dimension) {

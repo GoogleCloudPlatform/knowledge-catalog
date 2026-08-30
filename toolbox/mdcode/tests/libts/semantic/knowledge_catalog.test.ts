@@ -605,6 +605,71 @@ describe('relationships map to schema-join entry links', () => {
 });
 
 
+describe('a purely logical model (no physical binding) emits cleanly', () => {
+  // A Knowledge-Catalog-only model governs meaning with no binding: every
+  // entity has an empty dataSource and its fields carry no expression. The
+  // emitter must publish it without inventing a bogus physical resource, and a
+  // relationship's join endpoints fall back to the entity name (there is no
+  // table to name).
+  function logicalModel(): SemanticModel {
+    return {
+      name: 'm',
+      metrics: [],
+      entities: [
+        {
+          name: 'orders',
+          dataSource: '',
+          keys: ['o_key'],
+          fields: [{name: 'amount'}]
+        },
+        {
+          name: 'customer',
+          dataSource: '',
+          keys: ['c_key'],
+          fields: [{name: 'name'}]
+        },
+      ],
+      relationships: [{
+        name: 'orders-to-customer',
+        source: {entity: 'orders', columns: ['custkey']},
+        destination: {entity: 'customer', columns: ['c_key']},
+      }],
+    };
+  }
+
+  test('every entity is published (anchor + 2 entities), no warnings', () => {
+    const {entries, warnings} = generateCatalogResources(logicalModel(), OPTS);
+    const kinds = entries.map(e => e.entryType.replace(/.*\//, ''));
+    expect(kinds).toEqual(
+        ['semantic-model', 'semantic-entity', 'semantic-entity']);
+    expect(warnings).toEqual([]);
+  });
+
+  test('a logical entity omits the physical source block (no bogus empty element)', () => {
+    const {entries} = generateCatalogResources(logicalModel(), OPTS);
+    const orders = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
+    // No table -> no `source` at all (empty aspect data is valid, like the
+    // model aspect's deploymentTargets), rather than source:{resources:[]} or
+    // the old bogus source:{resources:['']}.
+    const data = orders.aspects!['dataplex-types.global.semantic-entity'].data!;
+    expect(data.source).toBeUndefined();
+  });
+
+  test(
+      'the schema-join endpoints fall back to the entity name when there is no table',
+      () => {
+        const {entryLinks} = generateCatalogResources(logicalModel(), OPTS);
+        expect(entryLinks.length).toBe(1);
+        const join = entryLinks[0]
+                         .aspects!['dataplex-types.global.schema-join']
+                         .data!.joins[0];
+        // No dataSource to name, so the endpoint `name` is the entity name.
+        expect(join.source).toEqual({name: 'orders', fields: ['custkey']});
+        expect(join.target).toEqual({name: 'customer', fields: ['c_key']});
+      });
+});
+
+
 describe('abstract entities are skipped for Knowledge Catalog', () => {
   // The KC leg does not model inheritance (that is BigQuery-only today), and an
   // abstract entity has no physical table, so it must not be published as an

@@ -129,6 +129,21 @@ describe('graph naming', () => {
     const {ddl} = generateSpannerPropertyGraph(oneEntity(), opts);
     expect(ddl).toContain('CREATE OR REPLACE PROPERTY GRAPH `sales-graph`');
   });
+
+  test(
+      'an unbound field (no column) is omitted from the node table with a warning',
+      () => {
+        // Pruning normally removes unbound fields; generating DDL without
+        // pruning (e.g. straight from a bindingOptional load) must not emit the
+        // field as a phantom bare column.
+        const model = oneEntity();
+        model.entities[0].fields.push({name: 'notes'});  // no expression/binding
+        const {ddl, warnings} = generateSpannerPropertyGraph(model);
+        expect(ddl).not.toContain('notes');
+        expect(warnings.some(
+                   w => w.includes('notes') && w.includes('no column')))
+            .toBe(true);
+      });
 });
 
 
