@@ -918,17 +918,24 @@ Drop the Spanner database from step 4 (its tables and the graph go with it):
 gcloud spanner databases delete $SPANNER_DB --instance=$SPANNER_INSTANCE --quiet
 ```
 
-Remove the Knowledge Catalog entries and entry group via REST:
+Remove the Knowledge Catalog entries and entry group via REST. Delete the
+schema-join links first, while their endpoint entries still exist: a link whose
+entries are already gone is orphaned and can no longer be addressed by name.
 
 ```bash
 TOKEN=$(gcloud auth application-default print-access-token)
+DATAPLEX=${DATAPLEX_ENDPOINT:-https://dataplex.googleapis.com}
 EG=projects/$PROJECT/locations/$LOCATION/entryGroups/$DATASET
 
+for L in sales-placed-by sales-part-of; do
+  curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
+    "$DATAPLEX/v1/$EG/entryLinks/$L" >/dev/null
+done
 for E in sales sales.entities.orders sales.entities.customer sales.entities.lineitem sales.metrics.revenue; do
   curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
-    "https://dataplex.googleapis.com/v1/$EG/entries/$E" >/dev/null
+    "$DATAPLEX/v1/$EG/entries/$E" >/dev/null
 done
-curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "https://dataplex.googleapis.com/v1/$EG"
+curl -s -X DELETE -H "Authorization: Bearer $TOKEN" "$DATAPLEX/v1/$EG"
 ```
 
 Remove the local workspace that step 1 created:
