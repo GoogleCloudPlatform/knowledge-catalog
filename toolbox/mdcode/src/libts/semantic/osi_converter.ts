@@ -78,16 +78,47 @@ export interface SerializeResult {
  * `logical` marks the model as a purely logical one (no physical binding), so
  * the missing-source and missing-expression warnings -- which flag a lossy pull
  * of a bound model -- are suppressed. An OWL import sets it; `pull` does not.
+ *
+ * `compactFlow` renders leaf collections (scalar sequences, all-scalar maps) in
+ * flow style so the output matches the compact convention the semantic-model
+ * guides author by hand and is byte-for-byte reproducible there. An OWL import
+ * sets it; `pull` does not.
  */
 export interface SerializeOptions {
   logical?: boolean;
+  compactFlow?: boolean;
 }
 
 export function serializeModel(
     model: SemanticModel, opts: SerializeOptions = {}): SerializeResult {
   const warnings: string[] = [];
-  const text = yaml.stringify(modelDocument(model, warnings, opts.logical));
+  const document = modelDocument(model, warnings, opts.logical);
+  const text =
+      opts.compactFlow ? renderCompact(document) : yaml.stringify(document);
   return {yaml: text, warnings: [...new Set(warnings)]};
+}
+
+// Renders the document with "leaf" collections in flow style: a sequence whose
+// items are all scalars (`primary_key: [id]`, `from_columns: [fk]`) and a map
+// whose values are all scalars (an inline field `{ name, datatype }` or a
+// column-less relationship `{ name, from, to }`). Nested structures -- a
+// dataset, an expression's `dialects`, an `ai_context` -- stay block. Flow and
+// block parse identically, so this only affects layout.
+function renderCompact(document: Record<string, any>): string {
+  const doc = new yaml.Document(document);
+  yaml.visit(doc, {
+    Seq(_, node) {
+      if (node.items.every(item => yaml.isScalar(item))) node.flow = true;
+    },
+    Map(_, node) {
+      if (node.items.every(pair => yaml.isScalar((pair as yaml.Pair).value))) {
+        node.flow = true;
+      }
+    },
+  });
+  // No inner-brace padding and no line wrapping: a compact, conventional layout
+  // (`[id]`, `{name: x, datatype: y}`) that stays one line per leaf collection.
+  return doc.toString({flowCollectionPadding: false, lineWidth: 0});
 }
 
 // Builds the plain document object (version + one model) that yaml.stringify

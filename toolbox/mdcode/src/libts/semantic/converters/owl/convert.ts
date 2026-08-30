@@ -39,9 +39,11 @@ export function convertOwlToOsi(
   const owl = parseOwl(turtle);
   const {model, warnings: mapWarnings, stats} = owlToIr(owl, modelName);
   // An OWL import is always logical (no source/expression), so tell the
-  // serializer not to warn about the missing physical binding.
+  // serializer not to warn about the missing physical binding, and emit the
+  // compact flow layout the semantic-model guides use so the output is
+  // reproducible there.
   const {yaml, warnings: serializeWarnings} =
-      serializeModel(model, {logical: true});
+      serializeModel(model, {logical: true, compactFlow: true});
   return {
     yaml,
     stats,

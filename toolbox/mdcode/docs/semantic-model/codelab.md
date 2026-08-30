@@ -264,41 +264,27 @@ semantic_model:
     description: Imported from OWL ontology http://example.com/sales#
     datasets:
       - name: orders
-        primary_key:
-          - o_orderkey
+        primary_key: [o_orderkey]
         description: A customer order
         fields:
-          - name: o_orderkey
-            datatype: Integer
-          - name: o_custkey
-            datatype: Integer
-          - name: net_amount
-            datatype: Decimal
+          - {name: o_orderkey, datatype: Integer}
+          - {name: o_custkey, datatype: Integer}
+          - {name: net_amount, datatype: Decimal}
       - name: customer
-        primary_key:
-          - c_custkey
+        primary_key: [c_custkey]
         description: A customer who places orders
         fields:
-          - name: c_custkey
-            datatype: Integer
-          - name: c_name
-            datatype: String
+          - {name: c_custkey, datatype: Integer}
+          - {name: c_name, datatype: String}
       - name: lineitem
-        primary_key:
-          - l_linekey
+        primary_key: [l_linekey]
         description: A line on an order
         fields:
-          - name: l_linekey
-            datatype: Integer
-          - name: l_orderkey
-            datatype: Integer
+          - {name: l_linekey, datatype: Integer}
+          - {name: l_orderkey, datatype: Integer}
     relationships:
-      - name: orders_to_customer
-        from: orders
-        to: customer
-      - name: lineitem_to_orders
-        from: lineitem
-        to: orders
+      - {name: orders_to_customer, from: orders, to: customer}
+      - {name: lineitem_to_orders, from: lineitem, to: orders}
 ```
 
 This is the hand-authored `sales` model above, reproduced from the ontology: the
