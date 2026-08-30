@@ -184,6 +184,82 @@ describe('bare table mapping', () => {
 });
 
 
+describe(
+    'remapped physical columns (a profile binds fields to differently named columns)',
+    () => {
+      // A binding profile can map a logical field onto a differently named
+      // physical column (a warehouse's `o_orderkey` vs an operational store's
+      // `OrderId`). Every structural site -- node KEY, edge KEY / SOURCE KEY /
+      // DESTINATION KEY, and each REFERENCES target -- must name the physical
+      // column, never the property alias exposed under the field name, or
+      // Spanner rejects the DDL
+      // ("Column 'o_orderkey' not found in table 'Orders'"). PROPERTIES still
+      // exposes the alias. Mirrors the BigQuery leg.
+      const remapped = (): SemanticModel => ({
+        name: 'sales',
+        metrics: [],
+        entities: [
+          {
+            name: 'orders',
+            dataSource: 'Orders',
+            keys: ['o_orderkey'],
+            fields: [
+              {name: 'o_orderkey', expression: 'OrderId'},
+              {name: 'o_custkey', expression: 'CustomerId'},
+            ],
+          },
+          {
+            name: 'customer',
+            dataSource: 'Customers',
+            keys: ['c_custkey'],
+            fields: [
+              {name: 'c_custkey', expression: 'CustomerId'},
+              {name: 'c_name', expression: 'FullName'},
+            ],
+          },
+        ],
+        relationships: [{
+          name: 'orders_to_customer',
+          source: {entity: 'orders', columns: ['o_custkey']},
+          destination: {entity: 'customer', columns: ['c_custkey']},
+        }],
+      });
+
+      test(
+          'node KEY names the physical column, PROPERTIES keeps the alias',
+          () => {
+            const {ddl} = generateSpannerPropertyGraph(remapped());
+            expect(ddl).toContain('KEY(OrderId)');
+            expect(ddl).not.toContain('KEY(o_orderkey)');
+            expect(ddl).toContain('OrderId AS o_orderkey');
+          });
+
+      test(
+          'edge SOURCE/DESTINATION KEY and REFERENCES name physical columns',
+          () => {
+            const {ddl} = generateSpannerPropertyGraph(remapped());
+            expect(ddl).toContain(
+                'SOURCE KEY(OrderId) REFERENCES orders(OrderId)');
+            expect(ddl).toContain(
+                'DESTINATION KEY(CustomerId) REFERENCES customer(CustomerId)');
+            // The FK's logical name may still appear as a PROPERTIES alias
+            // (`CustomerId AS o_custkey`); it must not appear at a key site.
+            expect(ddl).not.toContain('KEY(o_custkey)');
+          });
+
+      test(
+          'a key field bound to a non-column expression is warned (Spanner needs a bare column)',
+          () => {
+            const model = remapped();
+            model.entities[0].fields[0].expression = 'UPPER(OrderId)';
+            const {warnings} = generateSpannerPropertyGraph(model);
+            expect(warnings.some(
+                       w => w.includes('o_orderkey') &&
+                           w.includes('non-column expression')))
+                .toBe(true);
+          });
+    });
+
 describe('degenerate inputs', () => {
   test(
       'a model with no entities throws (an empty NODE TABLES is invalid DDL)',
