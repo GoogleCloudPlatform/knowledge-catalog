@@ -372,7 +372,7 @@ SELECT * FROM UNNEST([                 -- order 100: 2 lines, 101: 1, 102: 3
 > these tables. So the tables must exist first. (Step 2 needed none of this: it
 > governed the logical model, no tables required.)
 
-### Deploy the graph
+### Deploy the semantic model
 
 Now deploy the bound model to BigQuery. `--print` shows the generated DDL:
 
@@ -425,7 +425,7 @@ EDGE TABLES (
 Deployed 1 BigQuery Graph(s).
 ```
 
-### View the graph in the console
+### View the semantic model
 
 The graph is now a resource in your dataset, and the console draws its schema as
 a diagram of node and edge tables — easier to read than the DDL above. Print the
@@ -440,7 +440,7 @@ Open the link, expand the `$DATASET` dataset in the Explorer, and click the
 `$GRAPH` property graph. Its schema renders as a visual graph of the nodes and
 the edges that connect them.
 
-### Query the graph two ways
+### Query the semantic model
 
 Now ask the same question — revenue by customer — two ways.
 
@@ -693,7 +693,7 @@ kcmd push --profile operational --target spanner
 > profile changes nothing logical — bindings are not governed in Knowledge
 > Catalog. The single set of entries from step 2 already describes this graph too.
 
-### Query the graph
+### Query the semantic model
 
 Query it with Spanner's Graph Query Language. The query names the model's
 properties (`c_name`, `o_orderkey`); the profile's column bindings are invisible
