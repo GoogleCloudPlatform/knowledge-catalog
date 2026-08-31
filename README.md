@@ -19,17 +19,18 @@ tool (`kcmd`), and an MCP server that exposes the same operations to agents.
 
 This is also how you build and deploy **semantic models**. A semantic model
 describes a business logically — its entities, the relationships between them, and
-the metrics computed over them — using [Apache Ossie](https://ossie.apache.org/),
-independent of where the data physically lives. `kcmd push` deploys that one model
+the metrics computed over them — in a format based on
+[Apache Ossie](https://ossie.apache.org/), independent of where the data
+physically lives. `kcmd push` deploys that one model
 to two kinds of destination at once:
 
 - **Knowledge Catalog, where the model is governed.** It becomes catalog entries —
   one per entity, metric, and the model itself — joined by links for its
   relationships. There it is the single governed definition of the business:
   access-controlled, searchable, and part of the dynamic knowledge graph that gives
-  AI agents the semantics and business context to work with your data. This needs
-  no tables and no data, so you can govern a purely logical model before it has any
-  physical home.
+  AI agents the semantics and business context to work with your data. Governing
+  needs no tables or data, so you can publish a purely logical model before it is
+  bound — or govern the model together with its bindings. The catalog serves either.
 - **A data store, where the model becomes queryable.** Consumers ask for business
   concepts — `Customer`, `revenue` — and get consistent, model-defined answers
   rather than re-deriving joins and formulas per query. The store can be

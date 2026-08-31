@@ -2,17 +2,19 @@
 
 A *semantic model* describes a business logically — its entities, the
 relationships between them, and the metrics computed over them — independent of
-where the data physically lives. You author it with
-[Apache Ossie](https://ossie.apache.org/). `kcmd push` deploys one model to two
-kinds of destination at once:
+where the data physically lives. You author it in a format based on
+[Apache Ossie](https://ossie.apache.org/), extended with a first-class deployment
+target and binding profiles. `kcmd push` deploys one model to two kinds of
+destination at once:
 
 * **Knowledge Catalog, where the model is governed.** It becomes catalog entries —
   one per entity, metric, and the model itself — joined by links for its
   relationships. There it is the single governed definition of the business:
   access-controlled, searchable, and part of the dynamic knowledge graph that gives
-  AI agents the semantics and business context to work with your data. This leg
-  needs no tables and no data, so you can govern a purely logical model before it
-  has any physical home, and `kcmd pull` reconstructs the model from these entries.
+  AI agents the semantics and business context to work with your data. Governing
+  needs no tables or data, so you can publish a purely logical model before it is
+  bound, or govern the model together with its bindings — the catalog serves
+  either. `kcmd pull` reconstructs the model from these entries.
 * **A data store, where the model becomes queryable.** Consumers ask for business
   concepts — `Customer`, `revenue` — and get consistent, model-defined answers
   rather than re-deriving joins and formulas per query. The store can be
@@ -139,10 +141,12 @@ Wrote 4 new and 0 updated Knowledge Catalog entries; linked 1 relationship.
 Those entries are the single governed definition of the business. They are
 access-controlled, searchable, and joined into the dynamic knowledge graph that
 gives AI agents the semantics and business context to reason over your data, and
-`kcmd pull` reconstructs the model document from them (see [Pull](#pull)). You
-govern the model here before it has any physical home, and every store you bind it
-to later serves this one definition. (Running `--no-kc` on a model with no
-deployment target is an error — it would have nowhere to deploy.)
+`kcmd pull` reconstructs the model document from them (see [Pull](#pull)).
+Governance works whether the model is purely logical or already bound: govern it
+before it has any physical home, or govern the logical model together with its
+bindings. Every store you bind it to later serves this one definition. (Running
+`--no-kc` on a model with no deployment target is an error — it would have nowhere
+to deploy.)
 
 > Writing these entries needs the `semantic-model` / `semantic-entity` /
 > `semantic-metric` entry types and write access to the entry group. See
