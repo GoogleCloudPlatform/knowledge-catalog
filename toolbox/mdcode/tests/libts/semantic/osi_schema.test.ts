@@ -115,6 +115,25 @@ function onlyLogicalGoldenDeviations(errors: typeof validate.errors): boolean {
     });
 }
 
+// `actions` (model-level write operations, the write-side counterpart to
+// metrics) are a deliberate SUPERSET of released Apache OSI: the Extended-spec
+// proposal adds them, but the vendored osi-schema.json -- pinned to released
+// v0.2.0.dev0 -- does not yet know the keyword, so a model carrying `actions`
+// trips `additionalProperties: false` on the semantic_model item. We tolerate
+// EXACTLY that one extra property (an additionalProperties error naming
+// `actions` on a /semantic_model/<n> path) and nothing else, so an actions
+// fixture validates while every other drift from the spec still fails. When
+// upstream OSI adopts actions, re-vendoring the schema makes this pass with no
+// special-casing and this tolerance can be removed.
+function onlyActionsExtension(errors: typeof validate.errors): boolean {
+  return !!errors && errors.length > 0 &&
+    errors.every(
+      e => e.keyword === 'additionalProperties' &&
+        (e.params as {additionalProperty?: string}).additionalProperty ===
+          'actions' &&
+        /\/semantic_model\/\d+$/.test(e.instancePath));
+}
+
 describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () => {
   test('at least one fixture is discovered', () => {
     expect(fixtures.length).toBeGreaterThan(0);
@@ -146,6 +165,15 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
         if ((rel === 'hierarchy_graph.yaml' ||
              rel === 'reserved_words_inherit.yaml') &&
             onlyExtendsExtension(validate.errors)) {
+          return;
+        }
+        // A model-level `actions` block is a deliberate superset of released
+        // OSI (the Extended-spec proposal); tolerate exactly that extra property
+        // and nothing else, and only on the actions fixtures that legitimately
+        // carry it -- so a stray `actions` slipping into any other fixture still
+        // fails.
+        if (rel.startsWith('actions_') &&
+            onlyActionsExtension(validate.errors)) {
           return;
         }
         const details = (validate.errors ?? [])

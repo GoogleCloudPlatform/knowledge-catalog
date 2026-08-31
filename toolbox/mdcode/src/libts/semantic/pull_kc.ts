@@ -149,7 +149,13 @@ function semanticAspectTypes(entryType: string): string[]|undefined {
   const aspectType = (name: string) => `${typeBase}/aspectTypes/${name}`;
   switch (t) {
     case 'semantic-model':
-      return [aspectType('semantic-model'), aspectType('guidelines')];
+      // The anchor also carries the built-in `overview` aspect when the model
+      // has actions (see actionsOverviewAspectData); fetch it so a pull can
+      // recover them.
+      return [
+        aspectType('semantic-model'), aspectType('overview'),
+        aspectType('guidelines')
+      ];
     case 'semantic-entity':
       return [
         aspectType('semantic-entity'), aspectType('schema'),

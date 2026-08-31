@@ -39,7 +39,7 @@
 
 import * as yaml from 'yaml';
 
-import {AiContext, CustomExtension, Entity, Field, Metric, Relationship, SemanticModel,} from './ir';
+import {Action, AiContext, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
 
 // The schema version the loader was written against; re-emitted verbatim so a
 // serialized document loads without a version-mismatch warning. Mirrors
@@ -180,6 +180,7 @@ function modelDoc(model: SemanticModel, warnings: string[], logical: boolean):
     relationships: nonEmpty(
         (model.relationships ?? []).map(r => relationshipDoc(r, warnings))),
     metrics: nonEmpty((model.metrics ?? []).map(m => metricDoc(m, warnings))),
+    actions: nonEmpty((model.actions ?? []).map(a => actionDoc(a))),
   });
 }
 
@@ -259,6 +260,34 @@ function metricDoc(metric: Metric, warnings: string[]): Record<string, any> {
     ai_context: aiContextDoc(metric.aiContext),
     custom_extensions: customExtensionsDoc(metric.customExtensions),
   });
+}
+
+// Inverts loader.convertAction. The executor collapses back to the open
+// format's single-key object; parameters emit as {name, type}. `isEntityRef` is
+// derived by the loader on reload, so it is intentionally not emitted.
+function actionDoc(action: Action): Record<string, any> {
+  return compact({
+    name: action.name,
+    description: action.description,
+    executor: executorDoc(action.executor),
+    parameters: nonEmpty(
+        (action.parameters ?? []).map(p => ({name: p.name, type: p.type}))),
+    ai_context: aiContextDoc(action.aiContext),
+    custom_extensions: customExtensionsDoc(action.customExtensions),
+  });
+}
+
+// Collapses the IR's tagged executor union back to the open format's single-key
+// object ({mcp: {...}} / {rest: {...}} / {grpc: {...}}).
+function executorDoc(ex: Executor): Record<string, any> {
+  switch (ex.kind) {
+    case 'mcp':
+      return {mcp: {server: ex.mcp.server, tool: ex.mcp.tool}};
+    case 'rest':
+      return {rest: {endpoint: ex.rest.endpoint, method: ex.rest.method}};
+    case 'grpc':
+      return {grpc: {service: ex.grpc.service, method: ex.grpc.method}};
+  }
 }
 
 // Inverts loader.convertRelationship: `from`/`to` are the endpoint entities and

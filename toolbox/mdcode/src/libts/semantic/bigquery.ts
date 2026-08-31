@@ -76,6 +76,21 @@ export function generatePropertyGraph(
   const relationships = resolved.model.relationships ?? [];
   const metrics = resolved.model.metrics ?? [];
 
+  // Actions are write-side operations with no read-side graph construct (no
+  // NODE TABLE / EDGE TABLE / MEASURE), so the BigQuery leg emits nothing for
+  // them. Warn once so an author who declared actions is not surprised they are
+  // absent from the graph. Their only destination is Knowledge Catalog (see
+  // knowledge_catalog.actionsOverviewAspectData) -- but that leg runs only when
+  // the KC destination is in the push, so the message stays conditional (a
+  // bq-only push warns separately that actions go nowhere; see commands.ts).
+  const actions = resolved.model.actions ?? [];
+  if (actions.length) {
+    warnings.push(
+        `${actions.length} action(s) are not represented in the BigQuery ` +
+        `property graph (actions are write-side); they are published to ` +
+        `Knowledge Catalog when that destination is included in the push.`);
+  }
+
   // An abstract entity is conceptual: it has no physical table and produces no
   // NODE TABLE, surviving only as a LABEL on its concrete descendants (whose
   // node tables carry its flattened fields). Collect the abstract names so the

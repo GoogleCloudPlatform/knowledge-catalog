@@ -58,6 +58,12 @@ export interface SemanticModel {
   entities: Entity[];        // the open format's `datasets`
   relationships: Relationship[];
   metrics: Metric[];
+  // Model-level write operations over the ontology -- the write-side counterpart
+  // to metrics (which are the read side). Like metrics they are defined over the
+  // concepts and their relationships, not bound to a single entity. Optional and
+  // absent on models authored before actions existed, so consumers read it as
+  // `actions ?? []`. See Action.
+  actions?: Action[];
   // Vendor extension blocks carried verbatim (round-trip fidelity), including the
   // model-level GOOGLE block. A typed deployment-target view is derived by the
   // consumer that acts on it (e.g. the CLI push), not surfaced on the IR yet.
@@ -285,4 +291,77 @@ export interface Metric {
   type?: DataType;       // logical datatype of the result (the open format's `datatype`)
   aiContext?: AiContext;
   customExtensions?: CustomExtension[];
+}
+
+/**
+ * An action: a model-level, named write operation over the ontology -- the
+ * write-side counterpart to a metric's read. Like a metric it lives on the
+ * model (not a single entity) and may span several entities via its typed
+ * `parameters`.
+ *
+ * The model contributes only what the ontology can say that a plain tool schema
+ * cannot -- typed parameters (an entity-typed one is an object reference). The
+ * mechanics of running it are delegated to an `executor` (e.g. an MCP tool in
+ * Agent Registry); `description` is informational and does not affect runtime.
+ */
+export interface Action {
+  name: string;
+  description?: string;
+  // How the action is executed. Exactly one executor kind (mcp / rest / grpc);
+  // the loader normalizes the open format's single-key executor object to this
+  // discriminated form.
+  executor: Executor;
+  // Inputs, each typed by the ontology: an entity type is an object reference,
+  // a scalar type an ordinary value. See ActionParameter.
+  parameters: ActionParameter[];
+  aiContext?: AiContext;
+  customExtensions?: CustomExtension[];
+}
+
+/**
+ * One input to an action, typed by the ontology.
+ *
+ * `type` is the authored type name, kept verbatim for a lossless round-trip.
+ * `isEntityRef` is DERIVED by the loader: true when `type` resolves to a known
+ * entity (the parameter is an object reference to that entity), false when it
+ * is a scalar `DataType`. A type that resolves to neither leaves `isEntityRef`
+ * undefined and the loader warns.
+ */
+export interface ActionParameter {
+  name: string;
+  type: string;           // entity name (object reference) or a scalar DataType
+  isEntityRef?: boolean;  // derived: true when `type` names a known entity
+}
+
+/**
+ * The mechanics of how an action is executed: exactly one kind, tagged so
+ * consumers can switch on it. The open format expresses it as an object with a
+ * single kind key (`mcp` / `rest` / `grpc`); the loader normalizes that to this
+ * discriminated union. Other kinds (SQL DML, CLI, ...) can be added later.
+ */
+export type Executor =
+  | { kind: 'mcp'; mcp: McpExecutor }
+  | { kind: 'rest'; rest: RestExecutor }
+  | { kind: 'grpc'; grpc: GrpcExecutor };
+
+/**
+ * An MCP executor: references a tool already registered in Agent Registry, by
+ * the MCP server's resource name plus the tool's in-server selector. Agent
+ * Registry is the canonical source consumed at runtime (e.g. by an agent).
+ */
+export interface McpExecutor {
+  server: string;   // e.g. //agentregistry.googleapis.com/.../mcpServers/commerce
+  tool: string;     // the tool's name within that server
+}
+
+/** A REST executor: an HTTP endpoint and method. */
+export interface RestExecutor {
+  endpoint: string;
+  method: string;
+}
+
+/** A gRPC executor: a fully-qualified service and method. */
+export interface GrpcExecutor {
+  service: string;
+  method: string;
 }

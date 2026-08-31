@@ -11,7 +11,7 @@
 import {BigQueryClient} from '../gcp/bigquery';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
-import {SemanticModel} from './ir';
+import {Executor, SemanticModel} from './ir';
 import {LoadedModel} from './loader';
 
 // Checks every model against the push requirements and returns the collected
@@ -109,8 +109,63 @@ export function validatePushRequirements(
         }
       }
     }
+
+    // Actions have no BigQuery Graph representation, so their checks are
+    // target-independent: each parameter's type must resolve to something in
+    // the ontology, and the executor must carry the coordinates a runtime needs
+    // to dispatch it. (The "exactly one executor kind" rule is already
+    // guaranteed by the loader schema, so it cannot reach here.)
+    errors.push(...validateActions(model, document));
   }
   return errors;
+}
+
+// Static, target-independent checks for a model's actions. Returns one message
+// per violation. Two things can be statically wrong once the model has parsed:
+//   - a parameter's type resolves to neither a known entity nor a scalar
+//     datatype (the loader left isEntityRef unset and only warned) -- an
+//     unresolvable type is a malformed action, promoted to a hard error here;
+//   - an executor is missing a coordinate a runtime needs to dispatch it (an
+//     empty server/tool, endpoint/method, or service/method) -- the schema
+//     accepts empty strings, so this is caught here rather than at parse.
+function validateActions(model: SemanticModel, document: string): string[] {
+  const errors: string[] = [];
+  for (const action of model.actions ?? []) {
+    const where =
+        `action '${action.name}' in model '${model.name}' (${document})`;
+    for (const param of action.parameters) {
+      if (param.isEntityRef === undefined) {
+        errors.push(`${where} has parameter '${param.name}' whose type '${
+            param.type}' is neither a known entity nor a scalar datatype.`);
+      }
+    }
+    for (const missing of missingExecutorFields(action.executor)) {
+      errors.push(`${where} has an ${
+          action.executor.kind} executor missing its '${missing}'.`);
+    }
+  }
+  return errors;
+}
+
+
+// The executor coordinate fields that are absent or blank. An executor with no
+// gaps yields an empty list.
+function missingExecutorFields(ex: Executor): string[] {
+  const blank = (s: string) => s.trim().length === 0;
+  switch (ex.kind) {
+    case 'mcp':
+      return [['server', ex.mcp.server], ['tool', ex.mcp.tool]]
+          .filter(([, v]) => blank(v))
+          .map(([k]) => k);
+    case 'rest':
+      return [['endpoint', ex.rest.endpoint], ['method', ex.rest.method]]
+          .filter(([, v]) => blank(v))
+          .map(([k]) => k);
+    case 'grpc':
+      return [['service', ex.grpc.service], ['method', ex.grpc.method]]
+          .filter(([, v]) => blank(v))
+          .map(([k]) => k);
+  }
 }
 
 

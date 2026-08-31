@@ -27,6 +27,7 @@ measures and no `OPTIONS` metadata — see [To Spanner Graph](#to-spanner-graph)
 | Relationship (1:1 / 1:N) | `EDGE TABLE` | `schema-join` link | ✓ (name normalized⁶) |
 | Relationship (M:N / `association`) | `EDGE TABLE` (via junction table) | — not stored | — |
 | Entity `extends` | `LABEL` clauses + flattened fields | — not modelled | — |
+| Action | — not represented (write-side)¹⁰ | `overview` aspect on the model anchor | ✓¹⁰ |
 | `description` (entity / metric / field / relationship) | `OPTIONS(description)` | entry description / aspect | ✓ |
 | `ai_context.synonyms` | `OPTIONS(synonyms=[...])` | — not stored | — |
 | `ai_context.instructions` | into `OPTIONS(description)` | `guidelines` aspect⁷ | ✓⁷ |
@@ -45,6 +46,8 @@ measures and no `OPTIONS` metadata — see [To Spanner Graph](#to-spanner-graph)
 ⁶ Relationship names come back lowercased/hyphenated (`Places Order` → `places-order`) — the catalog stores the name only in the link id. See [Writer-side follow-up](#writer-side-follow-up).
 ⁷ The `guidelines` aspect exists only for the model, entities, and metrics — not fields or relationships, so field- and relationship-level `ai_context.instructions` has no Knowledge Catalog home (a relationship's instructions still reach BigQuery, folded into the edge's `OPTIONS(description)`).
 ⁸ BigQuery silently drops statement-level graph `OPTIONS`, so model-level metadata has no home in the graph; the model's `description` and `ai_context.instructions` are carried into Knowledge Catalog instead.
+¹⁰ Actions are write-side, so they produce no graph construct — the push warns once and emits nothing to BigQuery. They are published to Knowledge Catalog on the model anchor's `overview` aspect (Markdown plus an embedded JSON block) and `pull` recovers them from that JSON. Prototype scope: an action's `precondition` and `affects` are not modelled, so nothing about them is stored either way.
+
 ⁹ Every other `custom_extensions` block — most notably the OWL constructs the importer carries with no native home yet (`owl:inverseOf`, `rdfs:subPropertyOf`, the equivalences and disjointness pairs, property characteristics, `owl:deprecated`/`owl:versionInfo`, …) — is inert on push and not persisted to Knowledge Catalog, so `pull` never recovers it. It does survive the OSI *document* round-trip verbatim, so it stays intact in your authored file. See [Constructs carried as custom extensions](owl-import.md#constructs-carried-as-custom-extensions-not-yet-native) for the full list and shape.
 
 ## To BigQuery
@@ -111,6 +114,13 @@ the `guidelines` aspect), or the original vendor SQL (`importedExpression` — e
 the MAQL or Snowflake form a metric was imported from). Those stay in your
 authored document; the vendor SQL and expressions are still used when generating
 BigQuery SQL.
+
+**Actions** are the exception to "one entry per element": they have no
+`semantic-*` type, so they are stored on the model anchor's built-in `overview`
+aspect — Markdown for humans plus an embedded JSON block. That JSON is the
+canonical copy, so actions round-trip losslessly through `pull` (name,
+description, executor, and typed parameters). Their `precondition`/`affects` are
+out of scope for this prototype and are not stored.
 
 ## What pull recovers
 

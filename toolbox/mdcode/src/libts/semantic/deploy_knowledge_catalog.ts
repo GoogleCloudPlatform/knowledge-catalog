@@ -689,12 +689,45 @@ async function writeEntry(
   if (isExists(res)) {
     // Idempotent re-push: refresh the existing entry's source + aspects.
     const upd = await cat.updateEntry(
-        entry, ['entry_source', 'aspects'], Object.keys(entry.aspects ?? {}));
+        entry, ['entry_source', 'aspects'], reconciledAspectKeys(entry, opts));
     if (!isOk(upd)) return {error: `entry '${entryId}': ${errText(upd)}`};
     return {updated: true};
   }
   if (!isOk(res)) return {error: `entry '${entryId}': ${errText(res)}`};
   return {};
+}
+
+// The built-in aspects the emitter attaches CONDITIONALLY. `guidelines` (only
+// when an object carries ai_context.instructions) can ride any entry, so it is
+// reconciled everywhere. `overview` (only when the model declares actions)
+// rides the model anchor alone, so it is reconciled only there -- naming it on
+// an entity/metric entry would be a harmless no-op, but scoping it keeps the
+// patch honest about where the aspect can live. Every other aspect the emitter
+// writes (semantic-*, schema) is unconditional, so it is always present on a
+// re-push and never needs explicit clearing.
+const OPTIONAL_ASPECT_TYPES = ['guidelines'] as const;
+const ANCHOR_ONLY_ASPECT_TYPES = ['overview'] as const;
+
+// The aspect keys to reconcile when updating an existing entry. A Dataplex
+// entries.patch clears an aspect only when its key is named in `aspectKeys` and
+// absent from the request body; a key that is present is upserted, and one the
+// server does not have is a no-op. Passing only the currently-attached keys
+// therefore leaves a *removed* optional aspect (e.g. the model dropped all its
+// actions, so `overview` is gone) stranded on the server, where a later `pull`
+// would resurrect it. Always naming the optional aspect keys -- present or not
+// -- makes a re-push converge: a still-present one is refreshed, a removed one
+// is deleted, and one that was never there stays absent. The anchor-only keys
+// are reconciled solely on the model anchor, where those aspects can appear.
+function reconciledAspectKeys(entry: Entry, opts: KcDeployOptions): string[] {
+  const proj = opts.systemTypeProject ?? 'dataplex-types';
+  const loc = opts.systemTypeLocation ?? 'global';
+  const keys = new Set(Object.keys(entry.aspects ?? {}));
+  const optional: string[] = [...OPTIONAL_ASPECT_TYPES];
+  if (entry.entryType?.endsWith('/semantic-model')) {
+    optional.push(...ANCHOR_ONLY_ASPECT_TYPES);
+  }
+  for (const type of optional) keys.add(`${proj}.${loc}.${type}`);
+  return [...keys];
 }
 
 // entries.create can briefly 404 on a just-created entry group; retry that

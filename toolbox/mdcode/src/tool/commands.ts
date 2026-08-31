@@ -601,6 +601,27 @@ export async function push(options: PushOptions): Promise<number> {
           '.');
     }
 
+    // Actions have no BigQuery/Spanner Graph construct -- their only destination
+    // is Knowledge Catalog. A push that omits the KC leg (--no-kc) would
+    // validate a model's actions and then deploy them nowhere, so warn rather
+    // than drop them silently.
+    if (!kcEnabled) {
+      const kcProfileName =
+          namedProfile ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
+      const docs = mergeOnce(kcProfileName, false);
+      const prepared =
+          docs ? await prepareOnce(docs, kcProfileName, false) : null;
+      for (const {model} of prepared?.models ?? []) {
+        const n = model.actions?.length ?? 0;
+        if (n) {
+          console.warn(
+              `Warning: model '${model.name}' declares ${n} action(s), which ` +
+              `deploy only to Knowledge Catalog; --no-kc excludes that leg, so ` +
+              `they will not be deployed. Drop --no-kc to deploy them.`);
+        }
+      }
+    }
+
     // Knowledge Catalog records one canonical view of the logical model: the
     // single --profile selection, else the default binding. Alongside a graph
     // deploy the entries reflect that binding (pruned to what it answers); a
