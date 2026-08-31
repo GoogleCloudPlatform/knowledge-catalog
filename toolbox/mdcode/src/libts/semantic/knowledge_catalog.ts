@@ -15,9 +15,15 @@
 // `required_aspects`; the emitted aspect set per entry is those plus the
 // optional `guidelines` aspect (attached only when the object carries
 // `ai_context.instructions`):
-//   * semantic-model entry -> { semantic-model, guidelines? }
+//   * semantic-model entry -> { semantic-model, overview?, guidelines? }
 //   * semantic-entity entry -> { semantic-entity, schema, guidelines? }
 //   * semantic-metric entry -> { semantic-metric, guidelines? }
+//
+// Actions (the model's write operations) have no semantic-* system type, so
+// they ride the anchor's built-in `overview` aspect: human-readable Markdown
+// plus an embedded JSON block a pull recovers them from (see
+// actionsOverviewAspectData). The overview is attached only when the model
+// declares actions.
 //
 // Aspect data shapes mirror the aspect types' CLOSED metadataTemplates exactly
 // (a server aspect type rejects an undeclared data field):
@@ -49,7 +55,7 @@
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
 import {googleDeploymentTargets} from './deployment_target';
-import {AiContext, DataType, Entity, Metric, Relationship, SemanticModel} from './ir';
+import {Action, AiContext, DataType, Entity, Executor, Metric, Relationship, SemanticModel} from './ir';
 
 // Where the `semantic-*` and `schema` system types live: built-in types in
 // project `dataplex-types`, location `global`. Callers may override to reference
@@ -127,12 +133,22 @@ export function generateCatalogResources(
   const modelEntryName = names.entry(modelId);
   claim(seen, modelId, 'entry', `model '${model.name}'`, warnings);
 
+  // The anchor's base aspects: always semantic-model; plus the built-in
+  // `overview` aspect when the model has actions. Actions are write-side and
+  // have no semantic-* system type of their own, so they ride the anchor's
+  // free-form overview (Markdown for humans + an embedded JSON block a pull
+  // recovers them from) rather than getting their own entries.
+  const anchorBase: Record<string, Record<string, any>> = {
+    'semantic-model': modelAspectData(model),
+  };
+  const overview = actionsOverviewAspectData(model, warnings);
+  if (overview) anchorBase['overview'] = overview;
+
   const entries: Entry[] = [{
     name: modelEntryName,
     entryType: names.typeName('entry', 'semantic-model'),
     entrySource: source(model.name, model.description),
-    aspects: aspectsFor(
-        names, {'semantic-model': modelAspectData(model)}, model.aiContext),
+    aspects: aspectsFor(names, anchorBase, model.aiContext),
   }];
 
   // Maps an entity's model name to its published entry name, so a relationship
@@ -347,6 +363,100 @@ function modelAspectData(model: SemanticModel): Record<string, any> {
   return compact({
     deploymentTargets: uris.length ? uris : undefined,
   });
+}
+
+// Fences the machine-readable action JSON inside the overview Markdown. The
+// reader (kc_converter.readActionsFromOverview) locates the block by this
+// marker and parses the fenced JSON, so publish and pull agree on one
+// delimiter.
+export const ACTIONS_OVERVIEW_MARKER = '<!-- kcmd:actions v1 -->';
+
+// The anchor's `overview` aspect carrying the model's actions, or undefined
+// when there are none (so a model without actions carries no overview and the
+// anchor is unchanged from before actions existed). Actions have no BigQuery
+// Graph or semantic-* representation; the overview is their only catalog home.
+// The content is human-readable Markdown followed by a fenced JSON block (after
+// ACTIONS_OVERVIEW_MARKER) that a pull round-trips losslessly.
+function actionsOverviewAspectData(
+    model: SemanticModel, warnings: string[]): Record<string, any>|undefined {
+  const actions = model.actions ?? [];
+  if (!actions.length) return undefined;
+  warnings.push(
+      `model '${model.name}': ${actions.length} action(s) published to the ` +
+      `model's overview aspect (actions have no BigQuery Graph representation).`);
+  return {
+    content: renderActionsOverview(actions),
+    contentType: 'MARKDOWN',
+  };
+}
+
+// Renders the actions overview: a Markdown section for humans, then the marker
+// and a fenced JSON array (the canonical IR form) for a lossless pull.
+function renderActionsOverview(actions: Action[]): string {
+  const md: string[] = [
+    '## Actions',
+    '',
+    'Write operations defined on this model -- the write-side counterpart to ' +
+        'metrics. Actions have no BigQuery Graph representation; they are ' +
+        'published here for discovery and are round-tripped by `kcmd pull`.',
+    '',
+  ];
+  for (const a of actions) {
+    md.push(`### ${a.name}`, '');
+    if (a.description) md.push(a.description, '');
+    md.push(`- Executor: ${describeExecutor(a.executor)}`);
+    if (a.parameters.length) {
+      md.push('- Parameters:');
+      for (const p of a.parameters) {
+        const kind = p.isEntityRef ? `${p.type} (entity reference)` : p.type;
+        md.push(`  - \`${p.name}\`: ${kind}`);
+      }
+    }
+    md.push('');
+  }
+  md.push(
+      ACTIONS_OVERVIEW_MARKER, '```json',
+      JSON.stringify(actions.map(actionJson), null, 2), '```', '');
+  return md.join('\n');
+}
+
+// A one-line human description of an executor for the Markdown body.
+function describeExecutor(ex: Executor): string {
+  switch (ex.kind) {
+    case 'mcp':
+      return `MCP tool \`${ex.mcp.tool}\` on server \`${ex.mcp.server}\``;
+    case 'rest':
+      return `REST ${ex.rest.method} \`${ex.rest.endpoint}\``;
+    case 'grpc':
+      return `gRPC \`${ex.grpc.service}/${ex.grpc.method}\``;
+  }
+}
+
+// The canonical JSON form of an action embedded in the overview, mirroring the
+// IR so kc_converter.readActionsFromOverview reconstructs it verbatim. The
+// executor's tagged union is flattened to the open format's single-key object,
+// matching how osi_converter emits it to YAML.
+function actionJson(a: Action): Record<string, any> {
+  return compact({
+    name: a.name,
+    description: a.description,
+    executor: executorJson(a.executor),
+    parameters: a.parameters.map(
+        p => compact({name: p.name, type: p.type, isEntityRef: p.isEntityRef})),
+    aiContext: a.aiContext,
+    customExtensions: a.customExtensions,
+  });
+}
+
+function executorJson(ex: Executor): Record<string, any> {
+  switch (ex.kind) {
+    case 'mcp':
+      return {mcp: {server: ex.mcp.server, tool: ex.mcp.tool}};
+    case 'rest':
+      return {rest: {endpoint: ex.rest.endpoint, method: ex.rest.method}};
+    case 'grpc':
+      return {grpc: {service: ex.grpc.service, method: ex.grpc.method}};
+  }
 }
 
 // semantic-entity: the base table(s) backing the entity. importedSystem/

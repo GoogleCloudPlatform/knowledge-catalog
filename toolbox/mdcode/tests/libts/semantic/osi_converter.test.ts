@@ -39,6 +39,7 @@ describe('loader <-> serialize round trip is IR-stable', () => {
     'vendor_dialects.yaml',
     'lineitem_databricks_ext.yaml',
     'sales_bq_graph_target.yaml',
+    'actions_place_order.yaml',
   ];
 
   for (const fixture of fixtures) {

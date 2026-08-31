@@ -188,6 +188,25 @@ describe('deployKnowledgeCatalog: re-push upserts', () => {
     expect(create).toHaveBeenCalledTimes(3);
     expect(update).toHaveBeenCalledTimes(3);
   });
+
+  test('re-push names the optional overview key so a removed action aspect is cleared', async () => {
+    const {update} = stubClient({
+      create: () => err(409, 'entry already exists'),
+      update: ok({}),
+    });
+
+    // DOCS declares no actions, so the regenerated anchor carries no overview
+    // aspect. The anchor is written first (anchor-first).
+    await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+    // Its update must still NAME the overview key in aspectKeys: Dataplex clears
+    // an aspect only when its key is listed and absent from the body. Otherwise
+    // a previously-published overview (an earlier push that HAD actions)
+    // survives on the server and a later pull resurrects the deleted actions.
+    const anchorAspectKeys = update.mock.calls[0][2] ?? [];
+    expect(anchorAspectKeys.some((k: string) => k.endsWith('.overview')))
+        .toBe(true);
+  });
 });
 
 

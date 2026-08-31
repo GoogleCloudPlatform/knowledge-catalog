@@ -88,6 +88,10 @@ supertype's fields down and expresses the hierarchy as BigQuery labels. See
 [Class hierarchies](reference.md#class-hierarchies-extends--labels) for the
 rules.
 
+A model can also declare **actions** — named write operations over the ontology,
+the write-side counterpart to metrics. See [Actions](#actions-write-operations)
+below.
+
 ### Deployment targets (required)
 
 Every model must declare exactly one **deployment target** — the property graph
@@ -128,6 +132,41 @@ database the target names, so a `source` is reduced to its **final segment** —
 the table name in that database (`demo.sales.Orders` → `Orders`). That lets one
 authored `source` serve both backends; a Spanner-native `source` form is a
 planned [profiles](profiles.md) feature.
+
+### Actions (write operations)
+
+Where a metric reads a value over the ontology, an **action** *changes state*.
+Both are model-level and defined over the concepts, not bound to a single entity;
+the difference is direction. An action names a business operation and leaves the
+mechanics to an **executor**; the model contributes only what the ontology can
+say that a plain tool schema cannot — **parameters typed by the ontology**, where
+a scalar type is an ordinary value and an **entity type is an object reference**.
+
+```yaml
+    actions:
+      - name: PlaceOrder
+        description: Create an order for a customer   # informational; does not affect runtime
+        executor:                                     # exactly one kind: mcp / rest / grpc
+          mcp:
+            server: //agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/commerce
+            tool: place_order                         # the tool's name within that server
+        parameters:                                   # each input an entity (object reference) or a scalar
+          - {name: customer, type: customer}          # `customer` is an entity -> an object reference
+          - {name: quantity, type: Integer}           # a scalar value
+```
+
+The `mcp` executor **references** a tool already registered in Agent Registry, by
+the server's resource name plus the tool's name; `rest` (`{endpoint, method}`)
+and `grpc` (`{service, method}`) are the other kinds. Exactly one kind is
+required.
+
+Actions are **write-side, so they have no BigQuery Graph representation** — the
+push emits no node/edge/measure for them and warns once that they were not placed
+in the graph. They are published to **Knowledge Catalog** instead, on the model's
+anchor entry (see
+[What gets created in Knowledge Catalog](reference.md#what-gets-created-in-knowledge-catalog)),
+and a `pull` recovers them. This is a prototype: an action's `precondition` and
+`affects` (its gate and blast radius) are **not** modeled yet.
 
 ## 2. Push
 

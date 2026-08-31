@@ -54,7 +54,8 @@
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
-import {AiContext, CustomExtension, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
+import {Action, ActionParameter, AiContext, CustomExtension, DATA_TYPES, DataType, Entity, Executor, Field, Metric, Relationship, SemanticModel} from './ir';
+import {ACTIONS_OVERVIEW_MARKER} from './knowledge_catalog';
 import {referencedEntityNames} from './sql_expr_utils';
 
 export interface ReadResult {
@@ -127,6 +128,11 @@ export function modelsFromCatalogResources(
     const model: SemanticModel = {name, entities, relationships, metrics};
     const description = anchor.entrySource?.description;
     if (description !== undefined) model.description = description;
+    // Actions ride the anchor's overview aspect (see
+    // actionsOverviewAspectData); recover them from its embedded JSON block.
+    // Absent overview -> no actions.
+    const actions = readActionsFromOverview(anchor, entityNames, warnings);
+    if (actions.length) model.actions = actions;
     // Deployment targets ride back in the same GOOGLE custom_extensions block
     // the author wrote them in (the inverse of the emitter's modelAspectData).
     const targets = readDeploymentTargets(anchor);
@@ -283,6 +289,143 @@ function readMetric(
   const ai = readAiContext(entry);
   if (ai) metric.aiContext = ai;
   return metric;
+}
+
+
+// Recovers the model's actions from the anchor's `overview` aspect, the inverse
+// of actionsOverviewAspectData. The overview's Markdown is for humans; the
+// machine-readable form is a fenced JSON array after ACTIONS_OVERVIEW_MARKER,
+// so this locates that block, parses it, and rebuilds each Action.
+// `isEntityRef` is re-derived against the reconstructed entities (as the loader
+// does) rather than trusted from the JSON, so it stays consistent with the
+// pulled model. Returns an empty list when there is no overview or no parseable
+// action block.
+function readActionsFromOverview(
+    anchor: Entry, entityNames: string[], warnings: string[]): Action[] {
+  const content = aspectData(anchor, 'overview').content;
+  if (typeof content !== 'string' || !content.includes(ACTIONS_OVERVIEW_MARKER))
+    return [];
+  const json = jsonBlockAfterMarker(content, ACTIONS_OVERVIEW_MARKER);
+  if (json === undefined) {
+    warnings.push(
+        `model actions: overview aspect has the actions marker but no parseable ` +
+        `JSON block; actions are not recovered`);
+    return [];
+  }
+  let parsed: any;
+  try {
+    parsed = JSON.parse(json);
+  } catch (err: any) {
+    warnings.push(`model actions: overview action block is not valid JSON (${
+        err.message || err}); actions are not recovered`);
+    return [];
+  }
+  if (!Array.isArray(parsed)) {
+    warnings.push(
+        `model actions: overview action block is not a JSON array; actions are ` +
+        `not recovered`);
+    return [];
+  }
+  const entitySet = new Set(entityNames);
+  return parsed.map((a: any) => readAction(a, entitySet, warnings))
+      .filter((a): a is Action => a !== undefined);
+}
+
+
+// Extracts the first ```json ... ``` fenced block that follows `marker` in the
+// content, returning the block's inner text (or undefined when none follows).
+function jsonBlockAfterMarker(content: string, marker: string): string|
+    undefined {
+  const afterMarker =
+      content.slice(content.lastIndexOf(marker) + marker.length);
+  const fence = afterMarker.match(/```json\s*\n([\s\S]*?)\n```/);
+  return fence ? fence[1] : undefined;
+}
+
+
+// Rebuilds one Action from its embedded JSON (the inverse of actionJson). A
+// record missing a usable name or executor is skipped with a warning, so a
+// malformed block degrades one action rather than the whole pull.
+function readAction(
+    a: any, entityNames: Set<string>, warnings: string[]): Action|undefined {
+  const name = typeof a?.name === 'string' ? a.name : '';
+  if (!name) {
+    warnings.push(
+        'model actions: an action in the overview has no name; skipped');
+    return undefined;
+  }
+  const executor = readExecutor(a?.executor);
+  if (!executor) {
+    warnings.push(
+        `action '${name}': overview executor is missing or malformed; the ` +
+        `action is skipped`);
+    return undefined;
+  }
+  const parameters =
+      asArray(a?.parameters)
+          .map((p: any) => readParameter(p, entityNames, name, warnings))
+          .filter((p): p is ActionParameter => p !== undefined);
+  const action: Action = {name, executor, parameters};
+  if (typeof a?.description === 'string' && a.description !== '')
+    action.description = a.description;
+  if (a?.aiContext && typeof a.aiContext === 'object')
+    action.aiContext = a.aiContext as AiContext;
+  if (Array.isArray(a?.customExtensions))
+    action.customExtensions = a.customExtensions as CustomExtension[];
+  return action;
+}
+
+
+// One action parameter from its JSON, re-deriving isEntityRef against the
+// model's entities (a scalar datatype otherwise). A record missing a name is
+// dropped.
+function readParameter(
+    p: any, entityNames: Set<string>, actionName: string,
+    warnings: string[]): ActionParameter|undefined {
+  const name = typeof p?.name === 'string' ? p.name : '';
+  const type = typeof p?.type === 'string' ? p.type : '';
+  if (!name) return undefined;
+  const param: ActionParameter = {name, type};
+  if (entityNames.has(type)) {
+    param.isEntityRef = true;
+  } else if ((DATA_TYPES as readonly string[]).includes(type)) {
+    param.isEntityRef = false;
+  } else {
+    // The type resolves to neither an entity in the pulled model nor a scalar
+    // datatype -- e.g. an entity-typed parameter whose entity was not part of
+    // this pull. Leave isEntityRef unset (push-side validate flags it) and warn
+    // so the gap is visible rather than silently dropped.
+    warnings.push(
+        `action '${actionName}': parameter '${name}' type '${type}' is ` +
+        `neither a known entity nor a scalar datatype; pulled without a ` +
+        `resolved type`);
+  }
+  return param;
+}
+
+
+// The IR executor from the embedded single-key JSON object
+// ({mcp}/{rest}/{grpc}, the inverse of executorJson). Returns undefined when no
+// known kind is present or a coordinate is not a string.
+function readExecutor(ex: any): Executor|undefined {
+  // A coordinate must be a present, NON-BLANK string. The overview JSON can
+  // carry an empty string (e.g. a hand-edited block); treat that as malformed
+  // so the reader rejects it exactly as push-side validate would, rather than
+  // recovering an action the next push cannot deploy.
+  const str = (v: any): v is string => typeof v === 'string' && v.trim() !== '';
+  if (ex?.mcp && str(ex.mcp.server) && str(ex.mcp.tool))
+    return {kind: 'mcp', mcp: {server: ex.mcp.server, tool: ex.mcp.tool}};
+  if (ex?.rest && str(ex.rest.endpoint) && str(ex.rest.method))
+    return {
+      kind: 'rest',
+      rest: {endpoint: ex.rest.endpoint, method: ex.rest.method}
+    };
+  if (ex?.grpc && str(ex.grpc.service) && str(ex.grpc.method))
+    return {
+      kind: 'grpc',
+      grpc: {service: ex.grpc.service, method: ex.grpc.method}
+    };
+  return undefined;
 }
 
 

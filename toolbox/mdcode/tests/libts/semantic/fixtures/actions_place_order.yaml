@@ -1,0 +1,76 @@
+# Test fixture -- AI-first semantics format (v0.2.0.dev0).
+#
+# A minimal star (orders -> customer) plus a model-level ACTION, the write-side
+# counterpart to a metric. PlaceOrder carries an MCP executor (a tool in Agent
+# Registry) and ontology-typed parameters: an entity-typed one (`customer`, an
+# object reference to the customer entity) and scalar ones. Preconditions and
+# affects are intentionally out of scope for this prototype. A GOOGLE BigQuery
+# Graph target keeps the model executable (actions produce no graph element).
+
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: sales
+    description: Sales orders with customer attributes
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{"deploymentTargets": ["//bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales"]}'
+    datasets:
+      - name: orders
+        source: samples.tpch.orders
+        primary_key: [o_orderkey]
+        fields:
+          - name: o_orderkey
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_orderkey
+          - name: o_custkey
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_custkey
+          - name: o_totalprice
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_totalprice
+      - name: customer
+        source: samples.tpch.customer
+        primary_key: [c_custkey]
+        fields:
+          - name: c_custkey
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c_custkey
+          - name: c_name
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c_name
+    relationships:
+      - name: orders_to_customer
+        from: orders
+        to: customer
+        from_columns: [o_custkey]
+        to_columns: [c_custkey]
+    metrics:
+      - name: total_revenue
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(orders.o_totalprice)
+        description: Total order revenue
+    actions:
+      - name: PlaceOrder
+        description: Create an order for a customer
+        executor:
+          mcp:
+            server: //agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/commerce
+            tool: place_order
+        parameters:
+          - {name: customer, type: customer}
+          - {name: quantity, type: Integer}
+        ai_context:
+          instructions: "Resolve the buyer to a customer before calling."
