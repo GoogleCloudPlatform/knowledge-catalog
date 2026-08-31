@@ -1,20 +1,29 @@
 # Deploying a semantic model
 
-A *semantic model* describes your entities (tables), the metrics computed over
-them, and the relationships between them, authored as a single
-[Apache Ossie](https://ossie.apache.org/) document. `kcmd push` deploys one
-model to two destinations at once:
+A *semantic model* describes a business logically — its entities, the
+relationships between them, and the metrics computed over them — independent of
+where the data physically lives. You author it with
+[Apache Ossie](https://ossie.apache.org/). `kcmd push` deploys one model two ways
+at once:
 
-* **A property graph** — a queryable `CREATE OR REPLACE PROPERTY GRAPH` over the
-  model's tables, so the model can be traversed (and, on BigQuery, its metrics
-  computed) in SQL. The graph backend is **BigQuery Graph** or **Spanner
-  Graph**, chosen by the deployment target you declare — the same authored model
-  deploys to either (see [Deployment targets](#deployment-targets-required)).
-* **Knowledge Catalog** — catalog entries and links that make the
-  model discoverable as metadata.
+* **To a data store, where it becomes queryable.** Consumers ask for business
+  concepts — `Customer`, `revenue` — and get consistent, model-defined answers
+  rather than re-deriving joins and formulas per query. The store can be
+  **analytical**, such as BigQuery for reporting and conversational-analytics
+  agents, or **operational**, such as Spanner for the live state an agent reads
+  before it acts. Which store a model deploys to is set by its
+  [deployment target](#where-a-model-deploys-the-deployment-target); the query
+  mechanics are in [Reference](reference.md#what-gets-created-in-bigquery).
+* **To Knowledge Catalog** — catalog entries and links that make the model
+  discoverable as metadata.
 
-Both are generated from the same source document — you never author them
-separately, and a single `push` keeps them in sync.
+Both come from the same source, so a single `push` keeps them in sync and you
+never author them separately.
+
+You bind the one logical model to a store with a **binding profile**. A model can
+bind to more than one store — an analytical warehouse and an operational database,
+say — from a single definition, so `Customer` and `revenue` mean the same thing
+wherever they are served. See [Binding profiles](profiles.md).
 
 This page is the deploy walkthrough: author a model, push it, update it, pull it
 back. For the Ossie document format itself, see
@@ -25,6 +34,7 @@ back. For the Ossie document format itself, see
 | Page | Open it to… |
 |---|---|
 | **This page** | author a model and deploy it |
+| [Binding profiles](profiles.md) | bind one logical model to several stores |
 | [End-to-end codelab](codelab.md) | see the whole lifecycle: author, govern, hydrate, query |
 | [Reference](reference.md) | look up a flag, what push creates, validation, or permissions |
 | [What push and pull preserve](fidelity.md) | understand why something changed or wasn't recovered |
@@ -62,72 +72,71 @@ creates its local directory. Author the model at
 version: "0.2.0.dev0"
 
 semantic_model:
-  - name: sales                              # keep equal to the <model>.yaml filename (pull round-trips to that name)
-    # Required: the deployment target, in a GOOGLE custom extension. `data` is a
-    # JSON string whose deploymentTargets holds the target graph URI (for now,
-    # exactly one).
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["//bigquery.googleapis.com/projects/my-project/datasets/sales/propertyGraphs/sales_graph"]}'
-    datasets:                                # each dataset becomes an entity
+  - name: sales                      # keep equal to the <model>.yaml filename (pull round-trips to that name)
+    # Required: where the model deploys. The host of this URI selects the store —
+    # BigQuery (analytical) or Spanner (operational).
+    deployment_target: //bigquery.googleapis.com/projects/my-project/datasets/sales/propertyGraphs/sales
+    entities:                        # each entity is one concept, backed by a table
       - name: orders
-        source: my-project.sales.orders      # the backing BigQuery table
+        source: //bigquery.googleapis.com/projects/my-project/datasets/sales/tables/orders
         primary_key: [o_orderkey]
         fields:
-          - name: o_orderkey
-            expression: {dialects: [{dialect: BIGQUERY, expression: o_orderkey}]}
-          - name: o_totalprice
-            expression: {dialects: [{dialect: BIGQUERY, expression: o_totalprice}]}
+          - { name: o_orderkey,   expression: o_orderkey }
+          - { name: o_totalprice, expression: o_totalprice }
     metrics:
       - name: total_revenue
-        expression: {dialects: [{dialect: BIGQUERY, expression: SUM(orders.o_totalprice)}]}
+        expression: SUM(orders.o_totalprice)
 ```
+
+`deployment_target` and each `source` are resource URIs, and an `expression` may
+be a bare column name; the fuller per-dialect and custom-extension forms still
+work and mean the same thing. `entities` may also be written `datasets`.
 
 Entities can **extend** other entities (`extends: [Parent]`); push flattens the
 supertype's fields down and expresses the hierarchy as BigQuery labels. See
 [Class hierarchies](reference.md#class-hierarchies-extends--labels) for the
 rules.
 
-### Deployment targets (required)
+### Where a model deploys (the deployment target)
 
-Every model must declare exactly one **deployment target** — the property graph
-it deploys to — in a `GOOGLE` custom extension, as shown above. The target's
-**host selects the graph backend**:
+Every model must declare exactly one **deployment target**: where in a store the
+model deploys. The host of the target URI selects the store:
 
 ```
-# BigQuery Graph
-//bigquery.googleapis.com/projects/<project>/datasets/<dataset>/propertyGraphs/<graphName>
+# BigQuery — an analytical store
+//bigquery.googleapis.com/projects/<project>/datasets/<dataset>/propertyGraphs/<name>
 
-# Spanner Graph
-//spanner.googleapis.com/projects/<project>/instances/<instance>/databases/<database>/propertyGraphs/<graphName>
+# Spanner — an operational store
+//spanner.googleapis.com/projects/<project>/instances/<instance>/databases/<database>/propertyGraphs/<name>
 ```
 
-A BigQuery target's project and dataset are where the property graph is created;
-a Spanner target's instance and database are. Swapping one target URI for the
-other is all it takes to deploy the same model to the other backend. The target
-is also recorded on the model's Knowledge Catalog entry. A model with no
-deployment target — or with more than one — is rejected at push time (see
+A BigQuery target names the project and dataset the model deploys into; a Spanner
+target names the instance and database. Swapping one target URI for the other
+deploys the same model to the other store — the logical model does not change. The
+target is also recorded on the model's Knowledge Catalog entry. A model with no
+deployment target, or more than one, is rejected at push time (see
 [Validation](reference.md#validation)).
+
+For a model that serves more than one store, the target belongs to a
+[binding profile](profiles.md) rather than the model. `deployment_target` may
+also be written inside a `GOOGLE` custom extension; both forms mean the same
+thing.
 
 ### Table sources
 
-Each entity's `source` is its backing table.
+Each entity's `source` names its backing table, written as a resource URI:
+`//bigquery.googleapis.com/…/tables/<table>` for BigQuery,
+`//spanner.googleapis.com/…/tables/<table>` for Spanner. A
+[binding profile](profiles.md) can move an entity between stores by swapping this
+URI.
 
-For a **BigQuery** target, `source` is the BigQuery table. A `source` written as
-`dataset.table` (two parts) is qualified with the scope's project — the
-`<projectId>` from `init`. Write the full `project.dataset.table` when a table
-lives in another project. Sources are not limited to native BigQuery tables: a
-name with more than three parts — for example a four-part
-`catalog.database.schema.table` reference — points at a table in a **federated
-REST catalog**, such as an Apache Iceberg table exposed through BigLake. Write it
-exactly as BigQuery resolves the name, and validation resolves it the same way
-the deploy does (see [Validation](reference.md#validation)).
-
-For a **Spanner** target, the graph and its tables live inside the one Spanner
-database the target names, so a `source` is reduced to its **final segment** —
-the table name in that database (`demo.sales.Orders` → `Orders`). That lets one
-authored `source` serve both backends; a Spanner-native `source` form is a
-planned [profiles](profiles.md) feature.
+For BigQuery, a shorthand dotted name also works: `dataset.table` (two parts) is
+qualified with the scope's project from `init`, and `project.dataset.table` names
+a table in another project. A name with more than three parts — a four-part
+`catalog.database.schema.table`, say — points at a table in a **federated REST
+catalog**, such as an Apache Iceberg table exposed through BigLake. Validation
+resolves the name the same way the deploy does (see
+[Validation](reference.md#validation)).
 
 ## 2. Push
 
@@ -135,34 +144,32 @@ planned [profiles](profiles.md) feature.
 kcmd push
 ```
 
-With no flags this deploys to **every** destination — the model's graph backend
-(BigQuery Graph or Spanner Graph, whichever its target names) and Knowledge
-Catalog — the graph first. You don't pick the graph backend on the command line;
-the model's deployment target (or the [profile](profiles.md) you merge) does. The
-most common flags:
+With no flags this deploys to **every** destination — the store the model's target
+names (BigQuery or Spanner) and Knowledge Catalog — the store first. You don't
+name the store on the command line; the model's deployment target (or the
+[profile](profiles.md) you merge) does. The most common flags:
 
 ```bash
-kcmd push                      # deploy the graph (default binding) + Knowledge Catalog
-kcmd push --no-kc              # deploy only the graph, skip Knowledge Catalog
-kcmd push --no-profile         # publish only to Knowledge Catalog, deploy no graph
-kcmd push --profile analytical # deploy the graph with one binding profile; its target picks the backend
-kcmd push --all-profiles       # deploy the graph once per binding profile
+kcmd push                      # deploy to the store (default binding) + Knowledge Catalog
+kcmd push --no-kc              # deploy only to the store, skip Knowledge Catalog
+kcmd push --no-profile         # publish only to Knowledge Catalog, deploy to no store
+kcmd push --profile analytical # deploy with one binding profile; its target picks the store
+kcmd push --all-profiles       # deploy once per binding profile
 kcmd push --validate-only      # run all checks, write nothing
 kcmd push --print              # also print the generated DDL / entry plan
 ```
 
-A push has two axes. The **binding-profile axis** sets how many profiles the
-graph deploys for: the default binding, `--no-profile` (none — catalog only), a
-single `--profile`, or every one with `--all-profiles`. The **Knowledge Catalog
-axis** is `--no-kc` (skip the catalog leg). Both default on, so a bare push
-deploys the default graph and records to the catalog. See
-[Binding profiles](profiles.md).
+A push has two axes. The **binding-profile axis** sets how many profiles the model
+deploys for: the default binding, `--no-profile` (none — catalog only), a single
+`--profile`, or every one with `--all-profiles`. The **Knowledge Catalog axis** is
+`--no-kc` (skip the catalog leg). Both default on, so a bare push deploys the
+default binding and records to the catalog. See [Binding profiles](profiles.md).
 
-A logical model that declares no deployment target has no graph to deploy, so a
-bare `kcmd push` records it to Knowledge Catalog alone (and `--no-kc` on such a
-model is an error — it would have nowhere to go).
+A logical model that declares no deployment target has nowhere to deploy in a
+store, so a bare `kcmd push` records it to Knowledge Catalog alone (and `--no-kc`
+on such a model is an error — it would have nowhere to go).
 
-See [Reference → push flags](reference.md#push) for the full list. The graph leg
+See [Reference → push flags](reference.md#push) for the full list. The store leg
 deploys first and fails fast, so a rejected model never half-deploys — the checks
 that gate it are in [Validation](reference.md#validation).
 
@@ -184,7 +191,7 @@ survives the trip (and what doesn't) is in
 
 Your model document is the source of truth. To change what is deployed, edit
 the document and run `kcmd push` again — you never edit the catalog or the
-BigQuery Graph by hand. Re-running is safe: each push makes the destinations
+deployed store by hand. Re-running is safe: each push makes the destinations
 match the document as it stands now.
 
 **When you edit an entity, metric, or relationship** — push overwrites the
@@ -211,7 +218,7 @@ nothing — so remove a model while other models in its group remain, or delete
 its catalog entries directly.
 
 Every push prints one line per destination summarizing what it did. For a push
-that deploys both the graph and Knowledge Catalog:
+that deploys to both the store and Knowledge Catalog:
 
 ```
 Deployed 1 BigQuery Graph(s).
@@ -233,7 +240,7 @@ catalog actually holds.
 kcmd pull
 ```
 
-Pull reads only from Knowledge Catalog (never BigQuery). Its coordinates come
+Pull reads only from Knowledge Catalog (never the data store). Its coordinates come
 from the same scope you authored under (`<projectId>.<locationId>.<entryGroupId>`).
 The `--dry-run` and `--force-remove` flags are in
 [Reference → pull flags](reference.md#pull).
@@ -247,7 +254,7 @@ Pull overwrites a model that already exists locally in place. If the catalog's
 model has a **different name** than the one on disk, writing it would leave the
 entry group holding two models — so by default pull stops and reports the
 mismatch instead of deleting anything. Re-run with `--force-remove` to delete the
-local model and replace it with the catalog's. Pull never touches BigQuery.
+local model and replace it with the catalog's. Pull never touches the data store.
 
 Pull can only return what push wrote, so a push→pull round trip is **not** an
 identity — see [What push and pull preserve](fidelity.md) for exactly what
