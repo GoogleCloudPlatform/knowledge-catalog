@@ -20,17 +20,22 @@ tool (`kcmd`), and an MCP server that exposes the same operations to agents.
 This is also how you build and deploy **semantic models**. A semantic model
 describes a business logically — its entities, the relationships between them, and
 the metrics computed over them — using [Apache Ossie](https://ossie.apache.org/),
-independent of where the data physically lives. `kcmd push` deploys that model two
-ways at once:
+independent of where the data physically lives. `kcmd push` deploys that one model
+to two kinds of destination at once:
 
-- **To a data store, where it becomes queryable.** Consumers ask for business
+- **Knowledge Catalog, where the model is governed.** It becomes catalog entries —
+  one per entity, metric, and the model itself — joined by links for its
+  relationships. There it is the single governed definition of the business:
+  access-controlled, searchable, and part of the dynamic knowledge graph that gives
+  AI agents the semantics and business context to work with your data. This needs
+  no tables and no data, so you can govern a purely logical model before it has any
+  physical home.
+- **A data store, where the model becomes queryable.** Consumers ask for business
   concepts — `Customer`, `revenue` — and get consistent, model-defined answers
-  instead of re-deriving joins and formulas per query. The store can be
+  rather than re-deriving joins and formulas per query. The store can be
   **analytical**, such as BigQuery for reporting and conversational-analytics
   agents, or **operational**, such as Spanner for the live state an agent reads
   before it acts.
-- **To Knowledge Catalog**, as entries and links that make the model discoverable
-  as metadata.
 
 A **binding profile** maps one logical model onto a concrete store, so you keep a
 single definition and add a profile per store or environment. `Customer` and
