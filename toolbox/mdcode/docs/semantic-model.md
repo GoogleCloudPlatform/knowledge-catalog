@@ -5,8 +5,8 @@ now split by what you came to do:
 
 - **[Deploy guide](semantic-model/README.md)** — author a model, push it, update
   it, pull it back.
-- **[End-to-end codelab](semantic-model/codelab.md)** — author, govern, hydrate,
-  and query one model, start to finish.
+- **[Codelab: one semantic ontology, one data journey](semantic-model/codelab.md)** —
+  author, govern, hydrate, and query one model, start to finish.
 - **[Reference](semantic-model/reference.md)** — every flag, what push creates in
   BigQuery Graph, Spanner Graph, and Knowledge Catalog (including class
   hierarchies), validation, and permissions.
