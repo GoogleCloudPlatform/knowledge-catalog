@@ -34,7 +34,7 @@ This tutorial demonstrates how to implement a **Metadata-as-Code** pipeline to b
 │  │  • Extracts: Document Title, Executive Summary, Domain Entities, Confidence Score                │  │
 │  └──────────────────────────────────────────────────────────────────────────────────────────────────┘  │
 │                                                  │                                                     │
-│                                                  ▼ (Step 2: Negative Falsification & Schema Binding)   │
+│                                                  ▼ (Step 2: Schema Validation & Aspect Binding)   │
 │  [ENTERPRISE GOVERNANCE & CATALOG LAYER]                                                               │
 │  ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐  │
 │  │ Knowledge Catalog (location="us-central1")                                                       │  │
@@ -70,10 +70,9 @@ This tutorial demonstrates how to implement a **Metadata-as-Code** pipeline to b
 By following this tutorial, you will:
 1. **Provision and manage** Knowledge Catalog namespaces (`EntryGroup`, `EntryType`, `AspectType`) programmatically using the official Google Cloud SDK.
 2. **Extract and structure** business metadata, executive summaries, and domain entities from raw PDF documents using Gemini and Pydantic validation.
-3. **Intercept invalid metadata** through negative fault injection to ensure data contract adherence before catalog publication.
-4. **Bind and attach** custom Aspect Types to Knowledge Catalog Entries using dot-separated map keys.
-5. **Discover and query** cataloged unstructured assets across the borderless lakehouse using Knowledge Catalog search.
-6. **Clean up** provisioned cloud resources using reverse-order teardown.
+3. **Bind and attach** custom Aspect Types to Knowledge Catalog Entries using dot-separated map keys.
+4. **Discover and query** cataloged unstructured assets across the borderless lakehouse using Knowledge Catalog search.
+5. **Clean up** provisioned cloud resources using reverse-order teardown.
 
 ---
 
@@ -89,7 +88,7 @@ import os
 import json
 import urllib.request
 import pandas as pd
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 from google.auth import default
 from google.cloud import dataplex_v1
 from google.cloud.dataplex_v1.types import AspectType, Entry, Aspect, EntryGroup, EntryType
@@ -317,35 +316,6 @@ df_extracted = pd.DataFrame(list(extracted_metadata.items()), columns=["Attribut
 print(df_extracted)
 ```
 
-### Negative test demonstration: Intercepting schema non-compliance
-
-In production pipelines, automated AI extraction can occasionally encounter corrupted files or produce out-of-range metrics. 
-
-To verify that your data contract functions as an impenetrable gate, you test a **negative falsification scenario**: deliberately injecting an invalid payload that violates the Pydantic schema (missing required `document_title` and an out-of-bounds `confidence_score = 1.75`). The gate must intercept the error immediately, preventing bad metadata from contaminating the enterprise catalog.
-
-```python
-# Negative test: Intercept malformed metadata before catalog publication
-corrupted_payload = {
-    "document_summary": "Incomplete manual metadata missing title",
-    "extracted_entities": "power cord, switch",
-    "confidence_score": 1.75,
-}
-
-def validate_contract_compliance(payload: dict) -> bool:
-    try:
-        DarkDataMetadataSchema(**payload)
-        return True
-    except ValidationError as exc:
-        print("✓ Negative falsification test passed: Corrupted payload safely blocked from catalog publication.\n")
-        print("=== Intercepted Schema Violations (Client-Side Gate) ===")
-        for err in exc.errors():
-            print(f"  • Field: {' -> '.join(str(loc) for loc in err['loc'])} | Error: {err['msg']} (Type: {err['type']})")
-        return False
-
-is_payload_valid = validate_contract_compliance(corrupted_payload)
-assert not is_payload_valid, "CRITICAL: Malformed metadata bypassed Pydantic schema validation gate!"
-```
-
 ### Bind metadata aspect to Knowledge Catalog entry
 
 With structured metadata extracted and validated, you create a Knowledge Catalog `Entry` representing the physical document and bind the extracted metadata as an `Aspect`.
@@ -426,7 +396,8 @@ You execute a search query across Knowledge Catalog using `search_entries` to ve
 import time
 
 # Discover entries using entry group scoping
-search_query = f"entrygroup:{ENTRY_GROUP_ID}"
+entry_group_name = f"{parent_location}/entryGroups/{ENTRY_GROUP_ID}"
+search_query = f"entrygroup={entry_group_name}"
 print(f"Searching Knowledge Catalog with scoped query: {search_query}...")
 
 max_wait_seconds = 60
@@ -657,3 +628,4 @@ In an enterprise production environment, consider expanding this pattern into an
 * **Event-Driven Triggers**: Use [Eventarc](https://cloud.google.com/eventarc/docs?utm_source=devrel&utm_medium=notebook&utm_campaign=knowledge_catalog_dark_data) on Cloud Storage buckets (`google.cloud.storage.object.v1.finalized`) to trigger [Cloud Functions](https://cloud.google.com/functions/docs?utm_source=devrel&utm_medium=notebook&utm_campaign=knowledge_catalog_dark_data) or [Cloud Run](https://cloud.google.com/run/docs?utm_source=devrel&utm_medium=notebook&utm_campaign=knowledge_catalog_dark_data) services whenever a new PDF document is uploaded.
 * **IAM Least Privilege**: Assign `roles/dataplex.entryGroupCreator` and `roles/dataplex.aspectTypeUser` specifically to the service account executing the ingestion worker.
 * **Downstream RAG Integration**: Feed catalog metadata into grounded search systems to enhance relevance for conversational search and enterprise AI agents.
+
