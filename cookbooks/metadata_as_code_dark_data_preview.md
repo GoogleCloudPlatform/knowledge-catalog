@@ -1,4 +1,4 @@
-> [!NOTE]
+> ℹ️ **Note**:
 > **Internal Review Preview**: This Markdown document is generated exclusively for internal review inside Jetski/agent artifacts. It mirrors the exact cell sequence and structure of `metadata_as_code_dark_data.ipynb`. Do NOT publish or distribute this file externally.
 
 <a href="https://colab.research.google.com/github/GoogleCloudPlatform/knowledge-catalog/blob/main/cookbooks/metadata_as_code_dark_data.ipynb?utm_source=devrel&utm_medium=colab_badge&utm_campaign=knowledge_catalog_dark_data" target="_parent"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
@@ -103,7 +103,7 @@ To adhere to the principle of strict domain decoupling:
 * Catalog metadata and governance resources are provisioned in `REGION = "us-central1"`.
 * Gemini models are accessed via the `global` AI endpoint (`GEMINI_LOCATION = "global"`).
 
-> [!NOTE]
+> ℹ️ **Note**:
 > **Data Residency & Endpoint Decoupling**: Gemini models use `GEMINI_LOCATION = "global"` because modern flagship models (`gemini-3.7-flash`) are deployed on global endpoints. Catalog governance resources are provisioned regionally in `REGION = "us-central1"`. If your enterprise compliance, sovereignty regulations, or VPC Service Controls require data processing within a specific region, verify regional model availability in Google Cloud documentation and configure `GEMINI_LOCATION` to your compliant region (such as `"us-central1"`).
 
 ```python
@@ -487,7 +487,7 @@ print("All end-to-end verification assertions passed successfully!")
 
 To avoid unnecessary cloud resource consumption, you delete all created entities in reverse dependency order (`Entry` → `EntryGroup` → `EntryType` → `AspectType`) and remove the local temporary PDF.
 
-> [!TIP]
+> 💡 **Tip**:
 > Run the cleanup cell below when you are ready to permanently delete all demonstration resources.
 
 ```python

@@ -1,4 +1,4 @@
-> [!NOTE]
+> ℹ️ **Note**:
 > **Internal Review Preview**: This Markdown document is generated exclusively for internal review inside Jetski/agent artifacts. It mirrors the exact cell sequence and structure of `curated_data_products.ipynb`. Do NOT publish or distribute this file externally.
 
 <a href="https://colab.research.google.com/github/GoogleCloudPlatform/knowledge-catalog/blob/main/cookbooks/curated_data_products.ipynb?utm_source=devrel&utm_medium=colab_badge&utm_campaign=knowledge_catalog_contracts" target="_parent"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
@@ -127,7 +127,7 @@ To adhere to the principle of strict domain decoupling:
 * BigQuery dataset storage and Knowledge Catalog governance resources are provisioned in `REGION = "us-central1"`.
 * Gemini models are accessed via the `global` AI endpoint (`GEMINI_LOCATION = "global"`).
 
-> [!NOTE]
+> ℹ️ **Note**:
 > **Data Residency & Endpoint Decoupling**: Gemini models use `GEMINI_LOCATION = "global"` because modern flagship models (`gemini-3.7-flash`) are deployed on global endpoints. Analytical compute and catalog governance resources are provisioned regionally in `REGION = "us-central1"`. If your enterprise compliance, sovereignty regulations, or VPC Service Controls require data processing within a specific region, verify regional model availability in Google Cloud documentation and configure `GEMINI_LOCATION` to your compliant region (such as `"us-central1"`). Customer prompt data processed by Gemini Enterprise is never used to train foundation models.
 
 ```python
@@ -520,7 +520,7 @@ print(f"✓ Aspect Type [{ASPECT_TYPE_ID}] and Governance Contract defined succe
 
 ### Check indexing and attach the aspect
 
-> [!NOTE]
+> ℹ️ **Note**:
 > When BigQuery creates a table, Knowledge Catalog automatically discovers and indexes the canonical entry (`projects/.../entryGroups/@bigquery/entries/...`) in the background. This typically takes 30 to 60 seconds.
 >
 > To avoid overwriting system-managed schema aspects, the `update_entry` call scopes the operation specifically to the custom aspect using `aspect_keys=[aspect_key]`.

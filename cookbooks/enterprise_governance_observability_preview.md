@@ -1,5 +1,4 @@
-> [!NOTE]
-> **Internal Review Preview**: This Markdown document is generated exclusively for internal review inside Jetski/agent artifacts. It mirrors the exact cell sequence and structure of `enterprise_governance_observability.ipynb`. Do NOT publish or distribute this file externally.
+> ℹ️ **Internal Review Preview**: This Markdown document is generated exclusively for internal review inside Jetski/agent artifacts. It mirrors the exact cell sequence and structure of `enterprise_governance_observability.ipynb`. Do NOT publish or distribute this file externally.
 
 <a href="https://colab.research.google.com/github/GoogleCloudPlatform/knowledge-catalog/blob/main/cookbooks/enterprise_governance_observability.ipynb?utm_source=devrel&utm_medium=colab_badge&utm_campaign=knowledge_catalog_governance" target="_parent"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
 
@@ -12,19 +11,19 @@ Furthermore, enterprise regulatory auditing requires end-to-end explainability: 
 
 This cookbook implements an authentic, verifiable data governance and observability architecture using **BigQuery**, **Knowledge Catalog**, **Data Lineage API**, and **Gemini Enterprise Agent Platform** with **Gemini 3.7 Flash**.
 
-> [!NOTE]
-> **Scope Boundary (Level 200)**: This cookbook focuses on the core integration between BigQuery, Knowledge Catalog, Data Lineage API, and Gemini Enterprise Agent Platform. Multi-engine pipelines (Apache Spark, Dataflow) and Dynamic Data Masking policy tags are covered in depth in the companion codelabs (*Building a Governed Iceberg Lakehouse with Google Cloud Lakehouse and Knowledge Catalog* and *Deploy an Enterprise Governance-Aware Agent with MCP and Cloud Run*).
+> ℹ️ **Scope Boundary (Level 200)**:
+> This cookbook focuses on the core integration between BigQuery, Knowledge Catalog, Data Lineage API, and Gemini Enterprise Agent Platform. Multi-engine pipelines (Apache Spark, Dataflow) and Dynamic Data Masking policy tags are covered in depth in the companion codelabs (*Building a Governed Iceberg Lakehouse with Google Cloud Lakehouse and Knowledge Catalog* and *Deploy an Enterprise Governance-Aware Agent with MCP and Cloud Run*).
 
 ### Target audience and prerequisites
 - **Audience**: Data Engineers, Analytics Engineers, and AI Application Developers (Level 200 - Intermediate).
 - **Prerequisites**: A Google Cloud project with billing enabled, BigQuery Data Viewer / Editor permissions, and Knowledge Catalog Admin rights.
 
 ### Measurable learning objectives
-1. Ingest public transaction items into bounded, auto-expiring BigQuery tables with defensive staging limits.
-2. Build and verify an automated schema drift diagnostic gate with positive and negative falsification proofs.
-3. Define Knowledge Catalog Aspect Types, attach governance metadata directly to BigQuery table entries, and verify state using complete entry views.
-4. Discover certified datasets via ACL-aware catalog search and execute governed Gemini 3.7 Flash structured risk decisions.
-5. Traverse upstream data lineage by parsing graph link entities and generate an auditable decision provenance report.
+1. Implement schema validation and data quality gates to prevent corrupted data from entering the catalog.
+2. Build and verify automated schema drift detection with both positive validation and negative falsification proofs.
+3. Define custom Knowledge Catalog Aspect Types and bind enterprise governance metadata directly to BigQuery entries using scoped update masks.
+4. Enforce Human-in-the-Loop (HITL) certification gates to prevent downstream AI agents from consuming unverified assets.
+5. Discover certified datasets via ACL-aware catalog search, execute governed Gemini 3.7 Flash structured decisions, and traverse upstream data lineage graphs for auditable provenance.
 
 ### End-to-end architecture flow
 ```
@@ -75,8 +74,7 @@ This cookbook implements an authentic, verifiable data governance and observabil
 
 Install the required Google Cloud client libraries for BigQuery, Knowledge Catalog, Data Lineage, and the Google GenAI SDK.
 
-> [!NOTE]
-> **Data Residency and Endpoint Decoupling**:
+> ℹ️ **Data Residency and Endpoint Decoupling**:
 > In Google Cloud, storage resources (such as BigQuery datasets and Knowledge Catalog entries) reside in specific geographic locations (e.g., multi-region `US` or regional `us-central1`), while modern Gemini models on the Gemini Enterprise Agent Platform are accessed via their global endpoint (`location="global"`). Keeping these parameters decoupled ensures compliance with data residency policies while preventing 404 regional endpoint errors.
 
 ```python
@@ -330,7 +328,13 @@ assert gold_table.num_rows > 0, "Gold aggregation table is empty"
 
 ### Pipeline diagnostics and automated schema drift checks
 
-Implement an automated diagnostic quality gate (`check_pipeline_health`) that checks required columns, data freshness, null boundaries, and return ratio limits before feeding data to AI models.
+In an enterprise production environment, data quality and schema drift monitoring are typically managed asynchronously and continuously at scale:
+* **Knowledge Catalog DataScan**: Continuously scans BigQuery tables and Cloud Storage data for schema drift, completeness, freshness, and anomalous distributions without requiring ad-hoc procedural queries.
+* **Cloud Audit Logs & Eventarc**: Capture BigQuery DDL/DML events (`google.cloud.bigquery.v2.JobService.InsertJob`) in real time, triggering event-driven Cloud Functions or Cloud Run microservices whenever tables are altered or updated.
+* **Automated Quarantine Pipelines**: Automatically tag drifting assets in Knowledge Catalog to block downstream consumption before corrupted data enters analytical pipelines.
+
+> ℹ️ **Architectural Note (Production vs. Tutorial Context)**:
+> While a production architecture provisions Eventarc event buses, Cloud Audit Log sinks, and Knowledge Catalog DataScan jobs across infrastructure, this tutorial implements an atomic, procedural diagnostic gate (`check_pipeline_health`) directly in Python and BigQuery. This allows you to observe the exact validation mechanics—verifying required column sets, non-null constraints, and business thresholds—in a transparent, self-contained demonstration without the operational complexity of deploying asynchronous event routing.
 
 ```python
 # Diagnostic quality and schema drift validation gate
@@ -395,13 +399,38 @@ assert drift_intercepted is True, "Diagnostic gate failed to catch missing colum
 
 ### Knowledge Catalog semantic governance and aspect entry binding
 
-Register an `enterprise-data-quality` aspect type in Knowledge Catalog and attach it directly to the BigQuery Gold table system entry.
+In enterprise data architectures, raw technical schemas (column names and data types) are insufficient for autonomous AI operations. AI agents must understand **business context**, **certification level**, and **SLA guarantees** before incorporating data into high-stakes decisions.
 
-> [!IMPORTANT]
-> **API Contracts for System Entry Updates**:
-> 1. BigQuery system entries exist under the `@bigquery` entry group at `projects/{PROJECT_ID}/locations/{KC_LOCATION}/entryGroups/@bigquery/entries/...`.
-> 2. When calling `update_entry` on system entries, `update_mask` must specify `paths=["aspects"]` and the aspect key must be explicitly provided in `aspect_keys=[aspect_map_key]`.
-> 3. To verify custom aspects on live entries, query `get_entry` with `view=EntryView.ALL`.
+In Knowledge Catalog, this semantic governance is achieved using **Aspects**:
+1. **AspectType (The Blueprint)**: A reusable metadata schema that defines required attributes (e.g., data tier, certification status, governance owner, SLA tier).
+2. **Aspect (The Instance)**: Concrete metadata values attached to a catalog Entry.
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                        KNOWLEDGE CATALOG ASPECT ARCHITECTURE                           │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                        │
+│   AspectType: `enterprise-data-quality` (Schema Blueprint)                             │
+│   ├── data_tier: string (e.g. "CANDIDATE" | "GOLD")                                    │
+│   ├── certification_status: string (e.g. "PENDING_REVIEW" | "CERTIFIED_GOLD")          │
+│   ├── governance_owner: string (email)                                                 │
+│   └── sla_tier: string (e.g. "CRITICAL_SLA_4HR")                                       │
+│                                │                                                       │
+│                                ▼ [Instantiated & Attached]                             │
+│   BigQuery System Entry: `@bigquery/entries/.../tables/gold_customer_risk_summary`     │
+│   ├── System Aspects: Schema, BigQuery Policy (Google-managed)                         │
+│   └── Custom Aspect: `{PROJECT_ID}.{KC_LOCATION}.enterprise-data-quality`              │
+│                                                                                        │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+> ⚠️ **Important: API Contracts for System Entry Updates**
+> 
+> * **Google-Managed System Entries**: BigQuery datasets and tables are automatically harvested by Knowledge Catalog into the `@bigquery` entry group under `projects/{PROJECT_ID}/locations/{KC_LOCATION}/entryGroups/@bigquery/entries/...`.
+> * **Scoped Update Mask (`aspect_keys`)**: System entries contain Google-managed aspects (such as BigQuery schemas and IAM policies). When calling `catalog_client.update_entry`, you must specify `update_mask=FieldMask(paths=["aspects"])` AND explicitly scope the update with `aspect_keys=[aspect_map_key]`. This guarantees that your update only touches your custom aspect without mutating Google-managed system metadata.
+> * **Full Aspect Retrieval (`EntryView.ALL`)**: By default, `catalog_client.get_entry` returns a basic view that omits custom aspect dictionaries to conserve network bandwidth. You must explicitly pass `view=dataplex_v1.EntryView.ALL` to retrieve live custom aspect payloads.
+
+In this step, we register the `enterprise-data-quality` AspectType, wait for Knowledge Catalog to harvest the BigQuery table entry, and attach an initial **State 1 (`PENDING_REVIEW`)** aspect to verify that the Human-in-the-Loop (HITL) gate blocks uncertified AI consumption.
 
 ```python
 from google.protobuf import field_mask_pb2
@@ -571,7 +600,7 @@ import time
 from google.genai import types
 
 # 1. ACL-Aware Catalog Search: Discover certified entries within IAM boundary
-search_query = f"project:{PROJECT_ID} dataset:{DATASET_ID} type=TABLE"
+search_query = f"{DATASET_ID} name:gold_customer_risk_summary -name:drifted"
 print(f"Searching Knowledge Catalog with query: {search_query}...")
 
 max_wait_seconds = 60
@@ -708,10 +737,9 @@ for link in lineage_links:
 
 # If recent async lineage is propagating, transparently document cloud SLA
 if not lineage_graph_edges:
-    print("\n> [!NOTE]")
-    print("> **Data Lineage Propagation Latency**: In Google Cloud, BigQuery automated query lineage")
-    print("> is parsed asynchronously from Cloud Audit Logs (typically taking 15-45 minutes).")
-    print(f"> Documenting verified pipeline dependency edge: `{bronze_table_id}` -> `{gold_table_id}`.")
+    print("\nℹ️ [Notice: Data Lineage Propagation Latency]")
+    print("In Google Cloud, BigQuery automated query lineage is parsed asynchronously from Cloud Audit Logs (typically taking 15-45 minutes).")
+    print(f"Documenting verified pipeline dependency edge: `{bronze_table_id}` -> `{gold_table_id}`.")
 
 # 2. Query Data Lineage Processes API for execution and transformation provenance
 process_request = lineage_v1.ListProcessesRequest(parent=lineage_parent, page_size=5)
