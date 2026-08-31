@@ -1,4 +1,4 @@
-# End-to-end codelab: one semantic model, from authoring to query
+# Codelab: one semantic ontology, one data journey
 
 A self-contained walkthrough. You author a semantic model, govern it in Knowledge
 Catalog, and bind it to physical stores — BigQuery and Spanner — to query it in
