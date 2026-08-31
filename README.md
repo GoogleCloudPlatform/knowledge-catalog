@@ -17,23 +17,31 @@ with the catalog service, using the same edit, review, and version-control
 workflows you use for code. It ships as a TypeScript and a Python library, a CLI
 tool (`kcmd`), and an MCP server that exposes the same operations to agents.
 
-This is also how you build **semantic models**. You describe your entities
-(tables), the metrics computed over them, and the relationships between them in a
-single [Apache Ossie](https://ossie.apache.org/) document. One `kcmd push` then
-deploys that document to two destinations at once:
+This is also how you build and deploy **semantic models**. A semantic model
+describes a business logically — its entities, the relationships between them, and
+the metrics computed over them — using [Apache Ossie](https://ossie.apache.org/),
+independent of where the data physically lives. `kcmd push` deploys that model two
+ways at once:
 
-- a queryable property graph — **BigQuery Graph** or **Spanner Graph**, chosen by
-  the deployment target you declare — so the model can be traversed in SQL. On
-  BigQuery each metric becomes a graph measure, so agents and analysts query
-  business concepts rather than raw columns.
-- **Knowledge Catalog** entries and links that make the model discoverable as
-  metadata.
+- **To a data store, where it becomes queryable.** Consumers ask for business
+  concepts — `Customer`, `revenue` — and get consistent, model-defined answers
+  instead of re-deriving joins and formulas per query. The store can be
+  **analytical**, such as BigQuery for reporting and conversational-analytics
+  agents, or **operational**, such as Spanner for the live state an agent reads
+  before it acts.
+- **To Knowledge Catalog**, as entries and links that make the model discoverable
+  as metadata.
+
+A **binding profile** maps one logical model onto a concrete store, so you keep a
+single definition and add a profile per store or environment. `Customer` and
+`revenue` mean the same thing whichever profile serves them, so an
+operational agent and an analytics agent share one definition.
 
 Start with the [semantic model guide](toolbox/mdcode/docs/semantic-model/README.md)
-to author and deploy one, or the
-[end-to-end codelab](toolbox/mdcode/docs/semantic-model/codelab.md) to walk the
-whole lifecycle: author, govern, hydrate, and query one model. To start from an
-existing OWL ontology, see
+to author and deploy one, [binding profiles](toolbox/mdcode/docs/semantic-model/profiles.md)
+to bind one model to several stores, or the
+[end-to-end codelab](toolbox/mdcode/docs/semantic-model/codelab.md) for the whole
+lifecycle. To start from an existing OWL ontology, see
 [Importing an OWL ontology](toolbox/mdcode/docs/semantic-model/owl-import.md).
 
 ### Enrichment agent — [`toolbox/enrichment`](toolbox/enrichment/README.md)
