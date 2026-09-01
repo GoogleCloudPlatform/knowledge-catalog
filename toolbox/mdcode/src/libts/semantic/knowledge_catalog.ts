@@ -10,23 +10,30 @@
 //
 // Target schema: the `semantic-model`, `semantic-entity`, and `semantic-metric`
 // entry/aspect types are built-in system types under `dataplex-types/global`,
-// alongside the built-in `schema` aspect. This emitter references them; it never
-// provisions them. Each entry type declares `required_aspects`, so the emitted aspect set
-// per entry is a hard contract:
-//   * semantic-model entry -> { semantic-model }
-//   * semantic-entity entry -> { semantic-entity, schema }
-//   * semantic-metric entry -> { semantic-metric }
+// alongside the built-in `schema` and `guidelines` aspects. This emitter
+// references them; it never provisions them. Each entry type declares
+// `required_aspects`; the emitted aspect set per entry is those plus the
+// optional `guidelines` aspect (attached only when the object carries
+// `ai_context.instructions`):
+//   * semantic-model entry -> { semantic-model, guidelines? }
+//   * semantic-entity entry -> { semantic-entity, schema, guidelines? }
+//   * semantic-metric entry -> { semantic-metric, guidelines? }
 //
 // Aspect data shapes mirror the aspect types' CLOSED metadataTemplates exactly
 // (a server aspect type rejects an undeclared data field):
 //   * semantic-model  = { deploymentTargets: string[] }
 //   * semantic-entity = { source: { resources: string[], importedSystem?,
 //                                    importedResource? } }
-//   * semantic-metric = { entity?, dataType (required), expression?,
-//                         importedExpression? }
+//   * semantic-metric = { entity?, dataType (required) }
 //   * schema          = { fields: [{ name, dataType, metadataType,
-//                                    description?, semantics: { expression?,
-//                                    importedExpression?, role } }] }
+//                                    description?, annotations? }],
+//                         primaryKey?: { fields }, uniqueConstraints?: [...] }
+//   * guidelines      = { instructions, userManaged (required) }
+//
+// The SQL-expression fields -- `semantic-metric.expression` and the per-field
+// `schema.semantics` { expression, role } block -- are NOT in the published
+// system-type templates yet, so they are gated behind
+// KcGenerateOptions.emitExpressions (off by default) and omitted above.
 //
 // Relationships become `schema-join` entry links between the two entity entries.
 // schema-join is a built-in, undirected entry link type in `dataplex-types/global`
@@ -41,8 +48,8 @@
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
-import {bigQueryGraphTargets} from './deploy_bigquery';
-import {DataType, Entity, Metric, Relationship, SemanticModel} from './ir';
+import {googleDeploymentTargets} from './deployment_target';
+import {AiContext, DataType, Entity, Metric, Relationship, SemanticModel} from './ir';
 
 // Where the `semantic-*` and `schema` system types live: built-in types in
 // project `dataplex-types`, location `global`. Callers may override to reference
@@ -56,12 +63,31 @@ export interface KcGenerateOptions {
   entryGroup: string;  // destination entry group
   systemTypeProject?: string;   // default 'dataplex-types'
   systemTypeLocation?: string;  // default 'global'
+  // Emit the SQL-expression fields the published Dataplex system-type templates
+  // do not carry yet: the per-field `schema.semantics` block (expression +
+  // role) and `semantic-metric.expression`. Off by default so a push matches
+  // the live types; flip on once the templates gain these fields. Enabling it
+  // against today's types fails the push with an ASPECT_*_PARSING_FAILURE on
+  // the unknown property.
+  emitExpressions?: boolean;
 }
 
 export interface KcResources {
   entries: Entry[];
   entryLinks: EntryLink[];
   warnings: string[];
+  // Entry-id prefixes this model owns, used by delete reconciliation to decide
+  // which existing entries a push is allowed to remove. Supplied by the emitter
+  // rather than derived by the publisher: the id scheme is the emitter's
+  // concern, and origins differ (Ossie uses dotted ids, LookML the KC path
+  // form), so the publisher must not assume either.
+  //
+  // It rides on the emitter's output rather than being passed to the publisher
+  // alongside it so that the ids and the prefixes meant to match them are
+  // produced by one call and cannot drift apart. A prefix that stops matching
+  // fails silently in the dangerous direction: nothing is owned, so nothing is
+  // deleted, and orphaned entries accumulate while the push reports success.
+  ownedPrefixes: string[];
 }
 
 /**
@@ -86,6 +112,7 @@ export function generateCatalogResources(
   }
 
   const names = new Namer(opts);
+  const emitExpr = opts.emitExpressions ?? false;
 
   // Entry ids must be unique within the entry group. Two source names that
   // normalize to the same id (see slug), or exact duplicates the loader did not
@@ -104,9 +131,8 @@ export function generateCatalogResources(
     name: modelEntryName,
     entryType: names.typeName('entry', 'semantic-model'),
     entrySource: source(model.name, model.description),
-    aspects: aspectMap(names, {
-      'semantic-model': modelAspectData(model),
-    }),
+    aspects: aspectsFor(
+        names, {'semantic-model': modelAspectData(model)}, model.aiContext),
   }];
 
   // Maps an entity's model name to its published entry name, so a relationship
@@ -114,6 +140,19 @@ export function generateCatalogResources(
   // actually emitted (not skipped for a duplicate id) are recorded.
   const entityEntryName = new Map<string, string>();
   for (const entity of entities) {
+    // An abstract entity is a conceptual (table-less) supertype: it has no
+    // physical resource to catalog. The Knowledge Catalog leg does not model
+    // inheritance (that is BigQuery-only today, via resolveInheritance), so
+    // rather than publish a malformed entry -- an empty linked resource and no
+    // key -- skip it with a warning. Its concrete subtypes are published
+    // normally, and any edge naming it as an endpoint is dropped downstream
+    // (its name never enters `entityEntryName`).
+    if (entity.abstract) {
+      warnings.push(
+          `entity '${entity.name}' is abstract (no physical table); skipped ` +
+          `for Knowledge Catalog (KC does not yet model class hierarchies)`);
+      continue;
+    }
     const entityId = names.entityId(model, entity);
     if (!claim(seen, entityId, 'entry', `entity '${entity.name}'`, warnings))
       continue;
@@ -127,11 +166,15 @@ export function generateCatalogResources(
       entryType: names.typeName('entry', 'semantic-entity'),
       parentEntry: modelEntryName,
       entrySource: source(entity.name, entity.description),
-      // required_aspects: semantic-entity AND the built-in schema.
-      aspects: aspectMap(names, {
-        'semantic-entity': entityAspectData(entity),
-        'schema': schemaAspectData(entity),
-      }),
+      // required_aspects: semantic-entity AND the built-in schema; plus the
+      // built-in guidelines aspect when the entity carries ai_context
+      // instructions.
+      aspects: aspectsFor(
+          names, {
+            'semantic-entity': entityAspectData(entity),
+            'schema': schemaAspectData(entity, emitExpr),
+          },
+          entity.aiContext),
     });
   }
 
@@ -144,9 +187,9 @@ export function generateCatalogResources(
       entryType: names.typeName('entry', 'semantic-metric'),
       parentEntry: modelEntryName,
       entrySource: source(metric.name, metric.description),
-      aspects: aspectMap(names, {
-        'semantic-metric': metricAspectData(metric, warnings),
-      }),
+      aspects: aspectsFor(
+          names, {'semantic-metric': metricAspectData(metric, emitExpr)},
+          metric.aiContext),
     });
   }
 
@@ -159,16 +202,24 @@ export function generateCatalogResources(
     if (link) entryLinks.push(link);
   }
 
-  return {entries, entryLinks, warnings: [...new Set(warnings)]};
+  return {
+    entries,
+    entryLinks,
+    warnings: [...new Set(warnings)],
+    // Ossie ids are dotted: `<model>.entities.<name>` / `<model>.metrics.<name>`.
+    ownedPrefixes: [`${modelId}.entities.`, `${modelId}.metrics.`],
+  };
 }
 
 
 // Builds the schema-join entry link for one relationship, or undefined when it
-// cannot be published. A many-to-many (association) edge is skipped -- a junction
-// is two joins, which the single source/target schema-join does not model -- and
-// so is an edge whose endpoint entity was not emitted (e.g. skipped for a
-// duplicate id). Both cases warn; the BigQuery property graph still carries the
-// edge.
+// cannot be published. Skipped, each with a warning: a many-to-many
+// (association) edge -- a junction is two joins, which the single source/target
+// schema-join does not model; an edge whose endpoint entity was not emitted
+// (e.g. skipped for a duplicate id); and a column-less (purely logical) edge,
+// whose join columns must be added to the model before it can publish. The
+// BigQuery property graph still carries the association and (once bound) direct
+// edges.
 function relationshipLink(
     names: Namer, model: SemanticModel, rel: Relationship,
     entityEntryName: Map<string, string>, seenLinks: Set<string>,
@@ -189,11 +240,37 @@ function relationshipLink(
         `published entity; the relationship link is skipped.`);
     return undefined;
   }
+  // A purely logical edge (an OWL import) carries no join columns. schema-join
+  // is a server-defined CLOSED metadataTemplate whose `fields` requirement we
+  // cannot depend on, so rather than risk a rejected aspect on a KC push we skip
+  // the link until the edge is bound. Add the relationship's from_columns /
+  // to_columns to the model and it publishes; the edge still lives in the model
+  // (and, once bound, the BigQuery/Spanner graph).
+  if (!rel.source.columns.length || !rel.destination.columns.length) {
+    warnings.push(
+        `relationship '${rel.name}': no join columns, so it is not published ` +
+        `to Knowledge Catalog yet; add its from_columns and to_columns to the ` +
+        `relationship in the model to publish the link.`);
+    return undefined;
+  }
   const linkId = names.linkId(model, rel);
   if (!claim(
           seenLinks, linkId, 'entry link', `relationship '${rel.name}'`,
           warnings))
     return undefined;
+
+  // The name lives only in the link id (schema-join's aspect has no name
+  // field), and link ids are normalized -- lowercase, hyphens only. When the
+  // authored name is not already in that form, a later pull recovers it
+  // lowercased and hyphenated, not verbatim; warn so the round-trip change is
+  // not a surprise.
+  const normalizedName = linkSlug(rel.name);
+  if (normalizedName !== rel.name) {
+    warnings.push(
+        `relationship '${rel.name}': Knowledge Catalog stores the name only ` +
+        `in the normalized link id, so a pull returns it lowercased/hyphenated ` +
+        `(e.g. '${normalizedName}'), not '${rel.name}'.`);
+  }
 
   return {
     name: names.entryLink(linkId),
@@ -217,20 +294,29 @@ function relationshipLink(
 // because the join is author-declared, and `userManaged` stops Dataplex from
 // overwriting it. Field names/nesting mirror the schema-join aspect type's
 // metadataTemplate.
+//
+// Only bound edges reach here -- relationshipLink skips a column-less (logical)
+// edge -- so `fields` is always present. The `name` still falls back to the
+// entity name when the model is logical-only for KC (columns set but no
+// dataSource binding), matching the entity-not-found fallback.
 function schemaJoinAspectData(
     model: SemanticModel, rel: Relationship): Record<string, any> {
   const srcEntity = entityByName(model, rel.source.entity);
   const dstEntity = entityByName(model, rel.destination.entity);
   return {
     joins: [compact({
-      source: {
-        name: srcEntity ? srcEntity.dataSource : rel.source.entity,
+      source: compact({
+        name: srcEntity && srcEntity.dataSource ?
+            srcEntity.dataSource :
+            rel.source.entity,
         fields: rel.source.columns,
-      },
-      target: {
-        name: dstEntity ? dstEntity.dataSource : rel.destination.entity,
+      }),
+      target: compact({
+        name: dstEntity && dstEntity.dataSource ?
+            dstEntity.dataSource :
+            rel.destination.entity,
         fields: rel.destination.columns,
-      },
+      }),
       description: rel.description,
       type: 'FOREIGN_KEY',
       inferenceSource: 'USER',
@@ -250,69 +336,120 @@ function entityByName(model: SemanticModel, name: string): Entity|undefined {
 // these shapes so any schema-driven change is a visible, reviewable diff.
 // ---------------------------------------------------------------------------
 
-// semantic-model: the BigQuery Graph deployment target URIs this model deploys
-// to (the same targets the BigQuery leg executes against). Empty data is valid;
-// the aspect is still attached to satisfy the entry type's required_aspects.
+// semantic-model: every recognized graph deployment target URI this model
+// deploys to -- BigQuery Graph and/or Spanner Graph, the same targets the graph
+// legs execute against. Recording both backends keeps the entry faithful for a
+// Spanner-targeted model (so a later `kcmd pull` reconstructs a bound model).
+// Empty data is valid; the aspect is still attached to satisfy required_aspects.
 function modelAspectData(model: SemanticModel): Record<string, any> {
-  const {targets} = bigQueryGraphTargets(model);
+  const {bigQuery, spanner} = googleDeploymentTargets(model);
+  const uris = [...bigQuery, ...spanner].map(t => t.uri);
   return compact({
-    deploymentTargets: targets.length ? targets.map(t => t.uri) : undefined,
+    deploymentTargets: uris.length ? uris : undefined,
   });
 }
 
-// semantic-entity: the base table(s) backing the entity. `source` and its
-// `resources` array are required by the aspect type. importedSystem/
+// semantic-entity: the base table(s) backing the entity. importedSystem/
 // importedResource have no IR source today and are left unset.
 function entityAspectData(entity: Entity): Record<string, any> {
-  return {
-    source: compact({
-      resources: [resourcePath(entity.dataSource)],
-    }),
-  };
+  // A logical-only entity has no physical table (empty dataSource). Still emit
+  // the `source` block with an empty `resources` array rather than a bogus
+  // ['']: the semantic-entity template requires `source` (with its `resources`
+  // list), so omitting it is rejected server-side. An empty list is the honest
+  // "no binding yet"; the reader treats it the same as an absent source
+  // (dataSource becomes '').
+  const path = resourcePath(entity.dataSource);
+  return compact({
+    source: {resources: path ? [path] : []},
+  });
 }
 
-// The built-in schema aspect, carrying each field's column type plus the new
-// per-field `semantics` block (expression / importedExpression / role). name,
-// dataType, and metadataType are required per column.
-function schemaAspectData(entity: Entity): Record<string, any> {
-  return {
+// The built-in schema aspect, carrying each field's column type and display
+// label, the entity's primary/unique keys, plus the gated per-field `semantics`
+// block (expression / role). name, dataType, and metadataType are required per
+// column.
+function schemaAspectData(
+    entity: Entity, emitExpressions: boolean): Record<string, any> {
+  // Key column lists ride the schema aspect verbatim -- they need NOT be
+  // declared fields (the closed template accepts and round-trips columns absent
+  // from fields[], live-verified). Keep only non-empty strings, matching the
+  // reader's stringList, so a degenerate '' member does not round-trip
+  // asymmetrically; a set that is empty after filtering is then dropped.
+  const keyFields = (cols: readonly string[]|undefined): string[] =>
+      (cols ?? []).filter(c => typeof c === 'string' && c !== '');
+  const primaryKey = keyFields(entity.keys);
+  const uniqueConstraints =
+      (entity.uniqueKeys ?? []).map(keyFields).filter(set => set.length);
+  return compact({
     fields: (entity.fields ??
              []).map(f => compact({
                        name: f.name,
-                       dataType: columnDataType(f.type),
-                       metadataType: columnMetadataType(f.type),
+                       // An untyped field is published as Opaque (STRING +
+                       // metadataType OTHER), the explicit "type unknown"
+                       // marker, so a pull recovers it as Opaque rather than
+                       // dropping the type. Authored `String` maps to STRING.
+                       dataType: columnDataType(f.type ?? 'Opaque'),
+                       metadataType: columnMetadataType(f.type ?? 'Opaque'),
                        description: f.description,
-                       semantics: compact({
+                       // A field's display label rides in the schema field's
+                       // `annotations` map (the template's free-form
+                       // string->string map) -- the one slot for metadata the
+                       // template has no dedicated column for. Omitted when the
+                       // field has no label.
+                       annotations: f.label ? {label: f.label} : undefined,
+                       // The per-field `semantics` block (expression + role) is
+                       // not in the published `schema` aspect template yet, so
+                       // it is gated off by default (see
+                       // KcGenerateOptions.emitExpressions); compact() then
+                       // drops the undefined key.
+                       semantics: emitExpressions ? compact({
                          expression: f.expression,
-                         importedExpression: f.importedExpression,
                          // A field with any dimension metadata is a dimension;
                          // otherwise DEFAULT.
                          role: f.dimension ? 'DIMENSION' : 'DEFAULT',
-                       }),
+                       }) : undefined,
                      })),
-  };
+    // The entity's grain / primary key -> the schema aspect's primaryKey.fields
+    // (ordered, so a composite key's ordinal positions round-trip). Omitted
+    // when the entity declares no (non-empty) keys.
+    primaryKey: primaryKey.length ? {fields: primaryKey} : undefined,
+    // Additional uniqueness constraints beyond the primary key -> one
+    // uniqueConstraints entry per non-empty unique column set. Omitted when
+    // there are none.
+    uniqueConstraints: uniqueConstraints.length ?
+        uniqueConstraints.map(fields => ({fields})) :
+        undefined,
+  });
+}
+
+// The built-in guidelines aspect: routes an object's `ai_context.instructions`
+// -- free-form guidance for AI consumers -- to the aspect's `instructions`
+// richText field. `userManaged` is required and always true: these guidelines
+// are author-declared, so Dataplex must not overwrite them. Only `instructions`
+// is routed here; `ai_context.synonyms`/`examples` have no home in this aspect.
+// Returns undefined (attach no aspect) when there are no instructions.
+function guidelinesAspectData(ai: AiContext|undefined): Record<string, any>|
+    undefined {
+  const instructions = ai?.instructions;
+  if (instructions === undefined || instructions === '') return undefined;
+  return {instructions, userManaged: true};
 }
 
 // semantic-metric: the model-level aggregate. `dataType` is required by the
-// aspect type; when the model does not declare one, fall back to NUMERIC
-// (decimal) and warn (metrics are aggregates, so an exact numeric is the
-// sensible default; dimensions, in schemaAspectData, default to STRING) rather
-// than emit an invalid aspect.
+// aspect type; a metric the author left untyped is published as Opaque -- the
+// explicit "type unknown" marker -- rather than guessing a numeric type. (The
+// metric aspect template carries only `dataType`, not a metadataType, so Opaque
+// serializes as STRING and a pull recovers the metric untyped; once the
+// template gains a metadataType it can round-trip as an explicit Opaque.)
 function metricAspectData(
-    metric: Metric, warnings: string[]): Record<string, any> {
-  let dataType = metric.type ? columnDataType(metric.type) : undefined;
-  if (!dataType) {
-    warnings.push(
-        `metric '${
-            metric.name}': no datatype in the source model; defaulting the ` +
-        `required semantic-metric.dataType to 'NUMERIC'`);
-    dataType = 'NUMERIC';
-  }
+    metric: Metric, emitExpressions: boolean): Record<string, any> {
+  const dataType = columnDataType(metric.type ?? 'Opaque');
   return compact({
     entity: metric.entity,
     dataType,
-    expression: metric.expression,
-    importedExpression: metric.importedExpression,
+    // `expression` is not in the published semantic-metric aspect template yet;
+    // gated off by default (see KcGenerateOptions.emitExpressions).
+    expression: emitExpressions ? metric.expression : undefined,
   });
 }
 
@@ -459,6 +596,18 @@ function aspectMap(names: Namer, byType: Record<string, Record<string, any>>):
     };
   }
   return out;
+}
+
+// An entry's aspect map: its required `base` aspects, plus the optional
+// built-in `guidelines` aspect when the object carries
+// `ai_context.instructions`. Kept in one place so every entry kind
+// (model/entity/metric) routes instructions the same way and an object without
+// instructions carries no empty guidelines aspect.
+function aspectsFor(
+    names: Namer, base: Record<string, Record<string, any>>,
+    ai: AiContext|undefined): Record<string, Aspect> {
+  const guidelines = guidelinesAspectData(ai);
+  return aspectMap(names, guidelines ? {...base, guidelines} : base);
 }
 
 // The native catalog entry source (display name + description), separate from

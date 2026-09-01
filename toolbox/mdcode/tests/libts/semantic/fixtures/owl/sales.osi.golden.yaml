@@ -1,0 +1,60 @@
+version: 0.2.0.dev0
+semantic_model:
+  - name: sales
+    description: "A minimal sales domain: customers and the orders they place.
+      (ontology version 1.0)"
+    ai_context:
+      synonyms:
+        - Sales domain
+      examples:
+        - How many orders did each customer place last month?
+    datasets:
+      - name: Customer
+        primary_key:
+          - customerId
+        unique_keys:
+          - - email
+        description: A person or organization that places orders.
+        ai_context:
+          synonyms:
+            - Buyer
+        fields:
+          - name: customerId
+            datatype: String
+          - name: email
+            datatype: String
+            description: The customer's unique email address.
+          - name: customerName
+            datatype: String
+            label: name
+          - name: signupDate
+            datatype: Date
+            dimension:
+              is_time: true
+          - name: isVip
+            datatype: Boolean
+            description: Whether the customer is in the loyalty program.
+      - name: Order
+        primary_key:
+          - orderId
+        description: A purchase placed by a customer.
+        fields:
+          - name: orderId
+            datatype: String
+          - name: orderAmount
+            datatype: Decimal
+            ai_context:
+              examples:
+                - "19.99"
+          - name: quantity
+            datatype: Integer
+          - name: orderDate
+            datatype: Date
+            dimension:
+              is_time: true
+    relationships:
+      - name: placedBy
+        from: Order
+        to: Customer
+        ai_context:
+          instructions: Links an order to the customer who placed it.

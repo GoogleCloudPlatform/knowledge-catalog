@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import datetime, timezone
 from typing import Any
 
 import yaml
@@ -10,6 +10,23 @@ import yaml
 REQUIRED_FRONTMATTER_KEYS = ("type",)
 
 _FRONTMATTER_DELIM = "---"
+
+
+class _Loader(yaml.SafeLoader):
+    """SafeLoader that leaves timestamps as the text the author wrote.
+
+    PyYAML implements YAML 1.1, whose implicit resolvers turn a value like
+    `2026-06-30T14:00:00Z` into a `datetime`. Dumping it back yields
+    `2026-06-30 14:00:00+00:00`, so a parse/serialize round-trip silently
+    rewrites the author's frontmatter. Dropping the resolver keeps every
+    value a string, matching the YAML 1.2 core schema.
+    """
+
+
+_Loader.yaml_implicit_resolvers = {
+    ch: [(tag, regexp) for tag, regexp in resolvers if tag != "tag:yaml.org,2002:timestamp"]
+    for ch, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
 
 
 class OKFDocumentError(ValueError):
@@ -37,7 +54,7 @@ class OKFDocument:
 
         fm_text = "\n".join(lines[1:end_idx])
         try:
-            fm = yaml.safe_load(fm_text) or {}
+            fm = yaml.load(fm_text, Loader=_Loader) or {}
         except yaml.YAMLError as e:
             raise OKFDocumentError(f"Invalid YAML in frontmatter: {e}") from e
         if not isinstance(fm, dict):
@@ -96,20 +113,21 @@ def trust_tier(frontmatter: dict[str, Any]) -> str:
     return "machine-confirmed"
 
 
-def is_stale(frontmatter: dict[str, Any], today: date | None = None) -> bool:
+def is_stale(frontmatter: dict[str, Any], now: datetime | None = None) -> bool:
     """Whether a concept is stale per `stale_after` (OKF v0.2 §5.5).
 
-    A concept is stale when `today >= stale_after`. Returns False when
-    `stale_after` is absent or unparseable.
+    A concept is stale when `now >= stale_after`. Returns False when
+    `stale_after` is absent, or is not an ISO 8601 datetime with an explicit
+    UTC offset: a date-only `2026-12-31` names a different instant in every
+    timezone, so it is ignored rather than guessed at.
     """
-    raw = frontmatter.get("stale_after")
-    if not raw:
+    raw = str(frontmatter.get("stale_after") or "")
+    if "T" not in raw:
         return False
-    if isinstance(raw, date):
-        stale_after = raw
-    else:
-        try:
-            stale_after = date.fromisoformat(str(raw)[:10])
-        except ValueError:
-            return False
-    return (today or date.today()) >= stale_after
+    try:
+        stale_after = datetime.fromisoformat(raw)
+    except ValueError:
+        return False
+    if stale_after.tzinfo is None:
+        return False
+    return (now or datetime.now(timezone.utc)) >= stale_after

@@ -15,7 +15,7 @@ import * as path from 'node:path';
 import {ApiResult} from '../../../src/libts/gcp/api';
 import {ApiContext} from '../../../src/libts/gcp/context';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
-import {deployKnowledgeCatalog} from '../../../src/libts/semantic/deploy_knowledge_catalog';
+import {deployEmittedModels, deployKnowledgeCatalog} from '../../../src/libts/semantic/deploy_knowledge_catalog';
 import {loadSemanticModels} from '../../../src/libts/semantic/loader';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
@@ -44,9 +44,12 @@ function models(docs: {name: string; text: string}[]) {
 }
 
 // A destination entry name for a given entry id, as the catalog returns it from
-// listEntries; reconciliation keys off the id (the last path segment).
-function entryName(id: string): string {
-  return `projects/dest/locations/us/entryGroups/eg/entries/${id}`;
+// listEntries. Reconciliation recovers the id by matching the CONTAINER's shape
+// (`projects/*/locations/*/entryGroups/*/entries/`), not its exact text, so that
+// a name spelling the project as a number is still recognised -- see the
+// project-number test below.
+function entryName(id: string, project = 'dest'): string {
+  return `projects/${project}/locations/us/entryGroups/eg/entries/${id}`;
 }
 
 // The same loader-valid model, but its GOOGLE custom_extension carries invalid
@@ -84,13 +87,23 @@ function stubClient(opts: {
   group?: ApiResult<any>,
   create?: (entryId: string) => ApiResult<any>,
   update?: ApiResult<any>,
-  // Entry ids the destination entry group already holds (yielded by
-  // listEntries during delete reconciliation). Default: none.
-  existing?: string[],
+  // Entries the destination entry group already holds (yielded by listEntries).
+  // A bare id defaults to a generic entryType; pass {id, type} to stage a
+  // specific one (e.g. a foreign semantic-model anchor). Default: none.
+  existing?: (string | {id: string; type: string})[],
+  // How listEntries spells the project in the names it yields. Defaults to the
+  // scope's own project; set to a number to reproduce the server's inconsistent
+  // id/number spelling.
+  existingProject?: string,
   del?: (entryId: string) => ApiResult<any>,
   // Result of createEntryLink, keyed by the entry-link id. Default: 200.
   createLink?: (linkId: string) => ApiResult<any>,
   updateLink?: ApiResult<any>,
+  // Entry links the destination returns from lookupEntryLinks, keyed by the
+  // referenced entry's full resource name. Default: none (ok, empty list).
+  links?: (entry: string) => ApiResult<any>,
+  // Result of deleteEntryLink, keyed by the entry-link id. Default: 200.
+  delLink?: (linkId: string) => ApiResult<any>,
 } = {}) {
   const group = spyOn(CatalogClient.prototype, 'createEntryGroup')
                     .mockImplementation(async () => opts.group ?? ok({}));
@@ -102,8 +115,14 @@ function stubClient(opts: {
                      .mockImplementation(async () => opts.update ?? ok({}));
   const list = spyOn(CatalogClient.prototype, 'listEntries')
                    .mockImplementation(async function*() {
-                     for (const id of opts.existing ?? []) {
-                       yield {name: entryName(id), entryType: 'semantic'} as any;
+                     for (const e of opts.existing ?? []) {
+                       const id = typeof e === 'string' ? e : e.id;
+                       const entryType =
+                           typeof e === 'string' ? 'semantic' : e.type;
+                       yield {
+                         name: entryName(id, opts.existingProject),
+                         entryType,
+                       } as any;
                      }
                    });
   const del = spyOn(CatalogClient.prototype, 'deleteEntry')
@@ -117,7 +136,17 @@ function stubClient(opts: {
   const updateLink = spyOn(CatalogClient.prototype, 'updateEntryLink')
                          .mockImplementation(
                              async () => opts.updateLink ?? ok({}));
-  return {group, create, update, list, del, createLink, updateLink};
+  const lookupLinks =
+      spyOn(CatalogClient.prototype, 'lookupEntryLinks')
+          .mockImplementation(
+              async (_p, _l, o: any) => (opts.links ?? (() => ok([])))(o.entry));
+  const delLink = spyOn(CatalogClient.prototype, 'deleteEntryLink')
+                      .mockImplementation(
+                          async (_p, _l, _eg, linkId) =>
+                              (opts.delLink ?? (() => ok({})))(linkId));
+  return {group,      create, update,      list,
+          del,        createLink,          updateLink,
+          lookupLinks, delLink};
 }
 
 
@@ -194,6 +223,42 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
     expect(result.linked).toBe(1);
     expect(createLink).toHaveBeenCalledTimes(1);
     expect(updateLink).toHaveBeenCalledTimes(1);
+    // The upsert narrows the patch to the link's aspect keys (schema-join);
+    // UpdateEntryLink has no update mask, so a stale ['aspects'] mask would 400.
+    const aspectKeys = updateLink.mock.calls[0][1] ?? [];
+    expect(aspectKeys.some((k: string) => k.endsWith('schema-join'))).toBe(true);
+  });
+
+  test('an existing link whose update is not addressable still succeeds',
+       async () => {
+         // The link exists (409), but this catalog surface exposes only create
+         // + lookup for entry links, so the by-name aspect-refresh update comes
+         // back NOT_FOUND. The link is fully present; only the aspect refresh is
+         // unavailable, so the push must not fail on it.
+         const {createLink, updateLink} = stubClient({
+           createLink: () => err(409, 'entry link already exists'),
+           updateLink: err(404, 'entry link not found'),
+         });
+
+         const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+         expect(result.success).toBe(true);
+         expect(result.linked).toBe(1);
+         expect(createLink).toHaveBeenCalledTimes(1);
+         expect(updateLink).toHaveBeenCalledTimes(1);
+       });
+
+  test('a masked PERMISSION_DENIED on the link update also succeeds', async () => {
+    const {updateLink} = stubClient({
+      createLink: () => err(409, 'entry link already exists'),
+      updateLink: err(403, 'permission denied'),
+    });
+
+    const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(true);
+    expect(result.linked).toBe(1);
+    expect(updateLink).toHaveBeenCalledTimes(1);
   });
 
   test('a failed link write fails the push, naming the link', async () => {
@@ -265,11 +330,11 @@ describe('deployKnowledgeCatalog: failures', () => {
       });
 
   test(
-      'two models generating the same entry id fail before any write',
+      'more than one model in a single push is rejected before any write',
       async () => {
-        // Both docs declare a model named 'sales', so their entry ids collide
-        // within the entry group; the second would silently upsert over the
-        // first. The publisher must catch the collision up front.
+        // Only one model per entry group is supported, so a push carrying two
+        // documents is rejected up front -- which also means two models can
+        // never race for the same entry id.
         const {group, create} = stubClient();
         const docs = [
           {name: 'a.yaml', text: OSSIE},
@@ -279,8 +344,7 @@ describe('deployKnowledgeCatalog: failures', () => {
         const result = await deployKnowledgeCatalog(models(docs), CTX, OPTS);
 
         expect(result.success).toBe(false);
-        expect(result.details).toContain('sales');   // the colliding entry id
-        expect(result.details).toContain('unique');  // the reason
+        expect(result.details).toContain('one model per entry group');
         expect(group).not.toHaveBeenCalled();
         expect(create).not.toHaveBeenCalled();
       });
@@ -327,6 +391,60 @@ describe('deployKnowledgeCatalog: delete reconciliation', () => {
     expect(list).toHaveBeenCalledTimes(1);
     const deletedIds = del.mock.calls.map(c => c[3]).sort();
     expect(deletedIds).toEqual(['sales.entities.removed', 'sales.metrics.removed']);
+  });
+
+  test('recognises owned entries when the server names the project by number',
+       async () => {
+    // listEntries does not always spell the project the way the scope does: the
+    // server mixes ids and numbers, and _fixEntry only normalises them when its
+    // Cloud Resource Manager lookup succeeds -- which silently fails for a
+    // caller without resourcemanager.projects.get.
+    //
+    // An exact-prefix match against the scope's project therefore recovered no
+    // id at all, so nothing was ever "owned", nothing was deleted, and the push
+    // still reported success. Orphans accumulated invisibly.
+    const {del} = stubClient({
+      existing: [...EMITTED, 'sales.metrics.removed'],
+      existingProject: '123456789',
+    });
+
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(true);
+    expect(result.deleted).toBe(1);
+    expect(del.mock.calls.map(c => c[3])).toEqual(['sales.metrics.removed']);
+  });
+
+  test('an empty ownedPrefixes entry cannot delete the whole entry group',
+       async () => {
+    // Unreachable through either current emitter -- both build prefixes from a
+    // validated model name -- but deployEmittedModels is exported as the
+    // seam for future origins, and it deletes on the strength of what it is
+    // handed. An empty prefix matches every id, so without the guard this wipes
+    // every entry in the group that the push did not re-emit.
+    const {del} = stubClient({
+      existing: ['mine', 'someone-elses-entry', 'bigquery.table.42'],
+    });
+
+    const result = await deployEmittedModels(
+        [{
+          model: 'm',
+          resources: {
+            entries: [{
+              name: entryName('mine'),
+              entryType: 'x',
+              aspects: {},
+            }] as any,
+            entryLinks: [],
+            warnings: [],
+            ownedPrefixes: [''],
+          },
+        }],
+        [], CTX, OPTS);
+
+    expect(result.success).toBe(true);
+    expect(del).not.toHaveBeenCalled();
+    expect(result.deleted).toBe(0);
   });
 
   test('deletes nothing when the model still emits every entry', async () => {
@@ -376,4 +494,269 @@ describe('deployKnowledgeCatalog: delete reconciliation', () => {
     expect(list).not.toHaveBeenCalled();
     expect(del).not.toHaveBeenCalled();
   });
+});
+
+
+// Built-in system entry types, as the catalog reports them on existing entries.
+const MODEL_TYPE =
+    'projects/dataplex-types/locations/global/entryTypes/semantic-model';
+const ENTITY_TYPE =
+    'projects/dataplex-types/locations/global/entryTypes/semantic-entity';
+const METRIC_TYPE =
+    'projects/dataplex-types/locations/global/entryTypes/semantic-metric';
+
+// A schema-join entry link as lookupEntryLinks returns it: `refIds` are the two
+// endpoint entry ids (undirected, both UNSPECIFIED).
+function linkEntry(id: string, refIds: string[]): any {
+  return {
+    name: `projects/dest/locations/us/entryGroups/eg/entryLinks/${id}`,
+    entryLinkType:
+        'projects/dataplex-types/locations/global/entryLinkTypes/schema-join',
+    entryReferences: refIds.map(r => ({name: entryName(r), type: 'UNSPECIFIED'})),
+  };
+}
+
+
+describe('deployKnowledgeCatalog: link reconciliation', () => {
+  // The STAR model 'sales' has entities orders + customer and emits exactly one
+  // schema-join link, 'sales-orders-to-customer'.
+  const KEPT = linkEntry(
+      'sales-orders-to-customer',
+      ['sales.entities.orders', 'sales.entities.customer']);
+
+  // The model's entity entries as the destination already holds them (a
+  // re-push). reconcileLinks looks up links via these server-known entities, so
+  // they must be in the pre-write listing for a link to be discoverable.
+  const STAR_ENTITIES = [
+    {id: 'sales.entities.orders', type: ENTITY_TYPE},
+    {id: 'sales.entities.customer', type: ENTITY_TYPE},
+  ];
+
+  test('deletes an owned schema-join link the model no longer emits',
+     async () => {
+       // The server also still holds a link to a dropped relationship (both
+       // endpoints under this model). It is returned from both endpoints it
+       // touches (orders + customer), so the dedup path is exercised too.
+       const orphan = linkEntry(
+           'sales-orders-to-supplier',
+           ['sales.entities.orders', 'sales.entities.supplier']);
+       const {delLink} = stubClient({
+         existing: STAR_ENTITIES,
+         links: (entry: string) => entry.endsWith('sales.entities.orders')
+             ? ok([orphan, KEPT])
+             : ok([KEPT]),
+       });
+
+       const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+       expect(result.success).toBe(true);
+       expect(result.unlinked).toBe(1);
+       expect(delLink).toHaveBeenCalledTimes(1);
+       expect(delLink.mock.calls[0][3]).toBe('sales-orders-to-supplier');
+     });
+
+  test('keeps a link the model still emits', async () => {
+    const {delLink} = stubClient({
+      existing: STAR_ENTITIES,
+      links: (entry: string) =>
+          entry.endsWith('sales.entities.orders') ? ok([KEPT]) : ok([KEPT]),
+    });
+
+    const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(true);
+    expect(result.unlinked).toBe(0);
+    expect(delLink).not.toHaveBeenCalled();
+  });
+
+  test('never deletes a link that touches an entry outside the model',
+     async () => {
+       // One endpoint is another model's entity: not owned, so not this model's
+       // to reconcile even though it references one of our entities.
+       const foreign = linkEntry(
+           'sales-orders-to-external',
+           ['sales.entities.orders', 'other.entities.x']);
+       const {delLink} = stubClient({
+         existing: STAR_ENTITIES,
+         links: (entry: string) =>
+             entry.endsWith('sales.entities.orders') ? ok([foreign]) : ok([]),
+       });
+
+       const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+       expect(result.success).toBe(true);
+       expect(result.unlinked).toBe(0);
+       expect(delLink).not.toHaveBeenCalled();
+     });
+
+  test('a failed link delete fails the push, naming the link', async () => {
+    const orphan = linkEntry(
+        'sales-orders-to-supplier',
+        ['sales.entities.orders', 'sales.entities.supplier']);
+    const {delLink} = stubClient({
+      existing: STAR_ENTITIES,
+      links: (entry: string) =>
+          entry.endsWith('sales.entities.orders') ? ok([orphan]) : ok([]),
+      delLink: () => err(500, 'boom'),
+    });
+
+    const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(false);
+    expect(result.details).toContain('sales-orders-to-supplier');
+    expect(delLink).toHaveBeenCalledTimes(1);
+  });
+
+  test('validateOnly never looks up or deletes links (offline)', async () => {
+    const {lookupLinks, delLink} = stubClient({
+      links: () => ok([linkEntry(
+          'sales-orders-to-supplier',
+          ['sales.entities.orders', 'sales.entities.supplier'])]),
+    });
+
+    const result = await deployKnowledgeCatalog(
+        models(STAR_DOCS), CTX, {...OPTS, validateOnly: true});
+
+    expect(result.success).toBe(true);
+    expect(lookupLinks).not.toHaveBeenCalled();
+    expect(delLink).not.toHaveBeenCalled();
+  });
+
+  test('deletes a link whose BOTH endpoints were removed in this push',
+     async () => {
+       // The dropped relationship's two endpoints are both entities removed from
+       // the model, so the orphan link is reachable ONLY via those removed
+       // entries in the pre-write snapshot -- never via a still-emitted entity.
+       // Enumerating the snapshot (not the emitted set) is what finds it.
+       const orphan = linkEntry(
+           'sales-supplier-to-warehouse',
+           ['sales.entities.supplier', 'sales.entities.warehouse']);
+       const {delLink} = stubClient({
+         existing: [
+           ...STAR_ENTITIES,
+           {id: 'sales.entities.supplier', type: ENTITY_TYPE},
+           {id: 'sales.entities.warehouse', type: ENTITY_TYPE},
+         ],
+         links: (entry: string) =>
+             entry.endsWith('sales.entities.supplier') ||
+                 entry.endsWith('sales.entities.warehouse')
+             ? ok([orphan])
+             : ok([]),
+       });
+
+       const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+       expect(result.success).toBe(true);
+       expect(result.unlinked).toBe(1);
+       expect(delLink.mock.calls.map(c => c[3]))
+           .toEqual(['sales-supplier-to-warehouse']);
+     });
+
+  test('a first push (empty group) issues no link lookups', async () => {
+    // No entity of the model exists on the server yet, so there is nothing to
+    // reconcile and reconcileLinks makes no lookupEntryLinks call.
+    const {lookupLinks, delLink} = stubClient();
+
+    const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(true);
+    expect(lookupLinks).not.toHaveBeenCalled();
+    expect(delLink).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('deployKnowledgeCatalog: whole-model removal (--force-remove)', () => {
+  test('a model already in the group that this push omits fails without the flag',
+     async () => {
+       const {create, del} = stubClient({
+         existing: [{id: 'old', type: MODEL_TYPE}],
+       });
+
+       const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+       expect(result.success).toBe(false);
+       expect(result.details).toContain('old');
+       expect(result.details).toContain('--force-remove');
+       // Nothing is written or deleted -- the guard runs before any mutation.
+       expect(create).not.toHaveBeenCalled();
+       expect(del).not.toHaveBeenCalled();
+     });
+
+  test('--force-remove drops the omitted model (entries + links), then writes',
+     async () => {
+       const orphanLink = linkEntry(
+           'old-a-to-b', ['old.entities.a', 'old.entities.b']);
+       const {create, del, delLink} = stubClient({
+         existing: [
+           {id: 'old', type: MODEL_TYPE},
+           {id: 'old.entities.a', type: ENTITY_TYPE},
+           {id: 'old.entities.b', type: ENTITY_TYPE},
+           {id: 'old.metrics.m', type: METRIC_TYPE},
+         ],
+         links: (entry: string) =>
+             entry.endsWith('old.entities.a') ? ok([orphanLink]) : ok([]),
+       });
+
+       const result = await deployKnowledgeCatalog(
+           models(DOCS), CTX, {...OPTS, forceRemove: true});
+
+       expect(result.success).toBe(true);
+       // The foreign model's 4 entries and its 1 link are removed...
+       expect(result.deleted).toBe(4);
+       expect(result.unlinked).toBe(1);
+       expect(delLink.mock.calls.map(c => c[3])).toEqual(['old-a-to-b']);
+       expect(del.mock.calls.map(c => c[3]).sort()).toEqual(
+           ['old', 'old.entities.a', 'old.entities.b', 'old.metrics.m']);
+       // ...and the current model is still written (3 entries).
+       expect(create).toHaveBeenCalledTimes(3);
+     });
+
+  test('a foreign model whose ids use a different scheme is removed whole',
+     async () => {
+       // The foreign model is by definition not in this push, so its emitter's
+       // ownedPrefixes are unavailable and ownership has to be inferred from
+       // the anchor. Naming the segments (`.entities.` / `.metrics.`) matches
+       // only one id scheme: a model published with path-form ids keeps all of
+       // its children, and because its anchor is gone no later push sees a
+       // foreign model, so nothing ever owns them again.
+       const {del} = stubClient({
+         existing: [
+           {id: 'old', type: MODEL_TYPE},
+           {id: 'old/entities/customers', type: ENTITY_TYPE},
+           {id: 'old/metrics/customers/count', type: METRIC_TYPE},
+           {id: 'old/explores/all', type: ENTITY_TYPE},
+         ],
+         links: () => ok([]),
+       });
+
+       const result = await deployKnowledgeCatalog(
+           models(DOCS), CTX, {...OPTS, forceRemove: true});
+
+       expect(result.success).toBe(true);
+       expect(result.deleted).toBe(4);
+       expect(del.mock.calls.map(c => c[3]).sort()).toEqual([
+         'old', 'old/entities/customers', 'old/explores/all',
+         'old/metrics/customers/count',
+       ]);
+     });
+
+  test('an existing anchor this push re-emits is not treated as foreign',
+     async () => {
+       // The group already holds the same model being pushed: a normal re-push,
+       // no --force-remove required, nothing removed.
+       const {del} = stubClient({
+         existing: [
+           {id: 'sales', type: MODEL_TYPE},
+           {id: 'sales.entities.orders', type: ENTITY_TYPE},
+           {id: 'sales.metrics.total_revenue', type: METRIC_TYPE},
+         ],
+       });
+
+       const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+       expect(result.success).toBe(true);
+       expect(result.deleted).toBe(0);
+       expect(del).not.toHaveBeenCalled();
+     });
 });

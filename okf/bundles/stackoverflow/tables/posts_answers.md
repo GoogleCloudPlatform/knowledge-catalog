@@ -4,7 +4,7 @@ resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datas
 title: Posts Answers
 description: Contains Stack Overflow answers, including their content, scores, and
   associated metadata.
-tags: stackoverflow, answers, posts, Q&A
+tags: [stackoverflow, answers, posts, Q&A]
 generated:
   by: reference_agent/gemini-2.5-flash
   at: '2026-07-10T22:48:04+00:00'

@@ -19,8 +19,10 @@
 // See: https://docs.cloud.google.com/bigquery/docs/graph-measures
 //
 
-import {AiContext, Association, Entity, Field, isTimeDimension, Metric, Relationship, SemanticModel,} from './ir';
+import {AiContext, Association, Entity, Field, fieldBinding, isTimeDimension, Metric, Relationship, SemanticModel,} from './ir';
+import {resolveInheritance} from './resolve_inheritance';
 import {referencedEntityNames, stripQualifier} from './sql_expr_utils';
+import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
 
 export interface GenerateOptions {
   project?: string;    // fills the project for the graph name + under-qualified
@@ -60,11 +62,26 @@ export function generatePropertyGraph(
     model: SemanticModel, opts: GenerateOptions = {}): GenerateResult {
   const warnings: string[] = [];
 
+  // Resolve entity-level inheritance (`extends`) before generating: this
+  // flattens each subclass's inherited fields down and expands `extends` to the
+  // full transitive ancestor set, so labels and property signatures can be read
+  // straight off the resolved model. Only the BigQuery leg runs this; the KC
+  // push consumes the raw model, so its output is unaffected.
+  const resolved = resolveInheritance(model);
+  warnings.push(...resolved.warnings);
+
   // The IR requires entities/relationships/metrics, but be defensive against a
   // hand-built or partially-deserialized model rather than throwing on `.map`.
-  const entities = model.entities ?? [];
-  const relationships = model.relationships ?? [];
-  const metrics = model.metrics ?? [];
+  const entities = resolved.model.entities ?? [];
+  const relationships = resolved.model.relationships ?? [];
+  const metrics = resolved.model.metrics ?? [];
+
+  // An abstract entity is conceptual: it has no physical table and produces no
+  // NODE TABLE, surviving only as a LABEL on its concrete descendants (whose
+  // node tables carry its flattened fields). Collect the abstract names so the
+  // node-table filter drops them while label emission still sees them.
+  const abstractNames =
+      new Set(entities.filter(e => e.abstract).map(e => e.name));
 
   // A graph node table requires a non-empty KEY. An entity whose primary key is
   // empty cannot form a valid node, so skip it (and, below, any edge that
@@ -72,6 +89,13 @@ export function generatePropertyGraph(
   // warns about the missing key; this records the resulting structural drop.
   const skipped = new Set<string>();
   const validEntities = entities.filter(entity => {
+    // An abstract entity is intentionally table-less: skip its node table (it
+    // still contributes LABELs to descendants) without warning -- unlike a
+    // missing KEY, this is by design, not a defect.
+    if (abstractNames.has(entity.name)) {
+      skipped.add(entity.name);
+      return false;
+    }
     if (entity.keys && entity.keys.length) return true;
     warnings.push(
         `entity '${
@@ -81,16 +105,39 @@ export function generatePropertyGraph(
     return false;
   });
 
+  // An abstract class exists only to be a supertype; one that is no concrete
+  // (valid) entity's ancestor produces no graph element at all, so warn and
+  // drop it rather than let it vanish silently.
+  const ancestorsUsed = new Set<string>();
+  for (const entity of validEntities) {
+    for (const a of entity.extends ?? []) ancestorsUsed.add(a);
+  }
+  for (const name of abstractNames) {
+    if (!ancestorsUsed.has(name)) {
+      warnings.push(
+          `abstract entity '${name}' is not a supertype of any concrete ` +
+          `entity; it has no table and no descendant to label, so it produces ` +
+          `no graph element`);
+    }
+  }
+
   // A property graph must have at least one NODE TABLE; an empty `NODE TABLES
   // ()` block is invalid DDL under any circumstance. When no entity can form a
-  // node — the model declares none, or every one was skipped for an empty KEY —
-  // fail loudly rather than emit a graph BigQuery would reject. The collected
-  // skip reasons ride along in the error so the caller sees why each entity
-  // dropped.
+  // node — the model declares none, every one is abstract (a table-less
+  // supertype forms no node), or every one was skipped for an empty KEY — fail
+  // loudly rather than emit a graph BigQuery would reject. The collected skip
+  // reasons ride along in the error so the caller sees why each entity dropped.
   if (!validEntities.length) {
-    const reason = entities.length ?
-        'every entity was skipped because it has no primary key (a graph node requires a KEY)' :
-        'the model declares no entities';
+    let reason: string;
+    if (!entities.length) {
+      reason = 'the model declares no entities';
+    } else if (entities.every(e => e.abstract)) {
+      reason =
+          'every entity is abstract (a table-less supertype forms no node table)';
+    } else {
+      reason =
+          'every entity was skipped because it has no primary key (a graph node requires a KEY)';
+    }
     throw new Error(
         `cannot generate a property graph: ${reason}; a graph requires at ` +
         `least one NODE TABLE` +
@@ -105,14 +152,28 @@ export function generatePropertyGraph(
   const loweringByEntity = new Map<string, MeasureLowering>();
   for (const metric of metrics) {
     placeMetric(
-        metric, model, entityByName, skipped, metricsByEntity, loweringByEntity,
-        warnings);
+        metric, resolved.model, entityByName, skipped, ancestorsUsed,
+        metricsByEntity, loweringByEntity, warnings);
   }
+
+  // A subclass's `LABEL <ancestor>` block lists that ancestor's own (flattened)
+  // signature, so the label renderer must reach every LABEL CARRIER by name:
+  // node-forming entities plus abstract (table-less) supertypes, which have no
+  // node table but still contribute a label signature. A concrete entity
+  // dropped for an empty KEY is deliberately excluded -- it was reported as a
+  // structural defect, so it must not silently reappear as a shared label on a
+  // subclass (which would contradict the drop and expose a half-defined class);
+  // a subclass extending it drops that LABEL with a warning (see
+  // renderNodeTable).
+  const labelByName =
+      new Map(entities.filter(e => e.abstract || !skipped.has(e.name))
+                  .map(e => [e.name, e]));
 
   const nodeTables = validEntities.map(
       entity => renderNodeTable(
           entity, loweringByEntity.get(entity.name)?.derivedProperties ?? [],
-          metricsByEntity.get(entity.name) ?? [], opts, warnings));
+          metricsByEntity.get(entity.name) ?? [], labelByName,
+          ancestorsUsed.has(entity.name), opts, warnings));
 
   const entitiesByName = new Map(validEntities.map(e => [e.name, e]));
   const edgeTables =
@@ -130,7 +191,7 @@ export function generatePropertyGraph(
           })
           .map(rel => renderEdgeTable(rel, entitiesByName, opts, warnings));
 
-  const graphName = qualifyGraph(model, opts);
+  const graphName = qualifyGraph(resolved.model, opts);
 
   const blocks: string[] = [
     `CREATE OR REPLACE PROPERTY GRAPH ${graphName}`,
@@ -140,12 +201,12 @@ export function generatePropertyGraph(
     blocks.push(`EDGE TABLES (\n${edgeTables.join(',\n')}\n)`);
   }
 
-  // Graph-level metadata: the trailing OPTIONS after the EDGE TABLES clause
-  // (grammar: create_property_graph_statement). The model's AI-first
-  // annotations are folded into the description here (see elementDescription).
-  const graphOpts =
-      optionsClause(elementDescription(model.description, model.aiContext));
-  if (graphOpts) blocks.push(graphOpts);
+  // Model-level description / ai_context has no home in the BigQuery graph:
+  // statement-level `OPTIONS` after EDGE TABLES parses but BigQuery silently
+  // drops it (verified live; create_property_graph_options is off for
+  // BigQuery), so we do not emit it. The model's description is carried into
+  // Knowledge Catalog's model entry instead (see knowledge_catalog.ts);
+  // element-level metadata rides on labels, properties, and measures here.
 
   return {ddl: blocks.join('\n') + ';\n', warnings: dedupe(warnings)};
 }
@@ -161,6 +222,7 @@ export function generatePropertyGraph(
 interface MeasureLowering {
   derivedProperties: string[];  // extra property lines to emit on the node
   taken: Set<string>;           // property names already in use on the node
+  fieldNames: Set<string>;      // declared field names (each an exposed property)
   byLocalExpr: Map<string, string>;  // existing field local-expression -> its
                                      // property name
   operandToName:
@@ -172,15 +234,23 @@ interface MeasureLowering {
 // duplicating.
 function newLowering(entity: Entity): MeasureLowering {
   const taken = new Set<string>();
+  const fieldNames = new Set<string>();
   const byLocalExpr = new Map<string, string>();
   for (const f of entity.fields) {
     taken.add(f.name);
+    fieldNames.add(f.name);
     const expr = fieldExpression(f);
     if (expr === undefined) continue;
     const local = stripQualifier(expr, entity.name);
     if (!byLocalExpr.has(local)) byLocalExpr.set(local, f.name);
   }
-  return {derivedProperties: [], taken, byLocalExpr, operandToName: new Map()};
+  return {
+    derivedProperties: [],
+    taken,
+    fieldNames,
+    byLocalExpr,
+    operandToName: new Map()
+  };
 }
 
 // Assigns a metric to the node table of the single entity its aggregate
@@ -189,7 +259,8 @@ function newLowering(entity: Entity): MeasureLowering {
 // single supported aggregate over one operand.
 function placeMetric(
     metric: Metric, model: SemanticModel, entityByName: Map<string, Entity>,
-    skipped: Set<string>, metricsByEntity: Map<string, string[]>,
+    skipped: Set<string>, ancestorsUsed: Set<string>,
+    metricsByEntity: Map<string, string[]>,
     loweringByEntity: Map<string, MeasureLowering>, warnings: string[]): void {
   // The IR keeps at most two expression forms; a measure is emitted from the
   // target/canonical `expression`, falling back to the imported vendor SQL when
@@ -245,6 +316,16 @@ function placeMetric(
         entityName}'; skipped (cannot be a single MEASURE)`);
     return;
   }
+  // An abstract entity is a table-less supertype with no node table, so it can
+  // carry no MEASURE. Report that specifically -- it is also in `skipped`, so
+  // this must precede the generic no-KEY message below to stay accurate.
+  if (entity.abstract) {
+    warnings.push(
+        `metric '${metric.name}' targets entity '${entityName}', which is ` +
+        `abstract (a table-less supertype with no node table to carry a ` +
+        `MEASURE); metric dropped`);
+    return;
+  }
   // A metric can only become a MEASURE on a node table, but an entity that was
   // skipped upstream (empty KEY) has no node table to carry it. Check the skip
   // set already computed, and report the drop directly, instead of letting it
@@ -252,6 +333,19 @@ function placeMetric(
   if (skipped.has(entityName)) {
     warnings.push(`metric '${metric.name}' targets entity '${
         entityName}', which has no KEY and was skipped; metric dropped`);
+    return;
+  }
+  // A metric lowers to a MEASURE on the target entity's DEFAULT LABEL. When
+  // that entity is a supertype, its label is shared with every subclass table,
+  // and BigQuery forbids binding a MEASURE to a label carried by more than one
+  // element table (a measure cannot be replicated across tables -- verified
+  // live "defined as MEASURE, but there are other declarations with the same
+  // name"). Drop it with a warning rather than emit DDL BigQuery rejects.
+  if (ancestorsUsed.has(entityName)) {
+    warnings.push(
+        `metric '${metric.name}' targets entity '${entityName}', which is a ` +
+        `supertype whose label is shared across subclass tables; skipped ` +
+        `(BigQuery cannot bind a MEASURE to a shared label)`);
     return;
   }
 
@@ -307,11 +401,13 @@ function placeMetric(
   lowering.taken.add(metric.name);
 
   const propName = exposeOperand(lowering, operandExpr, metric.name);
-  const aggregate = `${agg.fn}(${agg.distinct ? 'DISTINCT ' : ''}${propName})`;
+  const aggregate =
+      `${agg.fn}(${agg.distinct ? 'DISTINCT ' : ''}${quoteIfReserved(propName)})`;
 
-  const opts =
-      optionsClause(elementDescription(metric.description, metric.aiContext));
-  const measure = `MEASURE(${aggregate}) AS ${metric.name}`;
+  const opts = optionsClause(
+      elementDescription(metric.description, metric.aiContext),
+      metric.aiContext?.synonyms);
+  const measure = `MEASURE(${aggregate}) AS ${quoteIfReserved(metric.name)}`;
   const lines = metricsByEntity.get(entityName) ?? [];
   lines.push(opts ? `${measure} ${opts}` : measure);
   metricsByEntity.set(entityName, lines);
@@ -328,14 +424,24 @@ function exposeOperand(
       lowering.operandToName.get(operandExpr);
   if (existing) return existing;
 
+  // An operand that names a declared field is already an exposed property, so a
+  // MEASURE may aggregate it directly by name -- even when a profile bound that
+  // field to a differently named physical column (the property is
+  // `<column> AS <field>`, and a MEASURE may reference a sibling alias).
+  // Synthesizing an input property here would emit `<field> AS ..._input`, and
+  // an alias is illegal inside a property expression -- BigQuery rejects it with
+  // "Unrecognized name". (A raw column that is not a field still falls through
+  // to be exposed under its own name, which BigQuery requires.)
+  if (lowering.fieldNames.has(operandExpr)) return operandExpr;
+
   let name: string;
   if (isSimpleIdentifier(operandExpr) && !lowering.taken.has(operandExpr)) {
     // A bare column not already declared: expose it under its own name.
     name = operandExpr;
-    lowering.derivedProperties.push(name);
+    lowering.derivedProperties.push(quoteIfReserved(name));
   } else {
     name = uniqueName(`${metricName}_input`, lowering.taken);
-    lowering.derivedProperties.push(`${operandExpr} AS ${name}`);
+    lowering.derivedProperties.push(`${quoteIfReserved(operandExpr)} AS ${name}`);
   }
   lowering.taken.add(name);
   lowering.operandToName.set(operandExpr, name);
@@ -433,9 +539,6 @@ function hasTopLevelComma(expr: string): boolean {
   return false;
 }
 
-function isSimpleIdentifier(s: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(s);
-}
 
 // Returns `base` if free, else the first `base_2`, `base_3`, ... not in
 // `taken`.
@@ -459,30 +562,154 @@ function referencedEntities(
 
 function renderNodeTable(
     entity: Entity, derivedProperties: string[], measures: string[],
+    labelByName: Map<string, Entity>, isSupertype: boolean,
     opts: GenerateOptions, warnings: string[]): string {
   const table = qualifyTable(
       entity.dataSource, opts, warnings, `entity '${entity.name}'`);
+
+  // Canonical rendering of every inherited property: its supertype's OWN
+  // definition, keyed by property name (nearest ancestor wins, matching field
+  // flattening). A property that appears under a label shared across element
+  // tables must have one identical definition everywhere it appears, so the
+  // supertype is authoritative -- both this node's DEFAULT LABEL and its
+  // `LABEL <ancestor>` blocks render an inherited property exactly as the
+  // supertype's node table does. resolveInheritance localizes the inherited
+  // copies on this entity, so in a well-formed hierarchy `renderOwn` below is a
+  // no-op; the map's real job is to catch and neutralize a genuine override.
+  const inheritedRender = new Map<string, string>();
+  const inheritedCore = new Map<string, string>();
+  for (const ancestorName of entity.extends ?? []) {
+    const ancestor = labelByName.get(ancestorName);
+    if (!ancestor) continue;
+    for (const f of ancestor.fields) {
+      if (!inheritedRender.has(f.name)) {
+        inheritedRender.set(f.name, renderFieldProperty(f, ancestor.name));
+        inheritedCore.set(f.name, renderFieldPropertyCore(f, ancestor.name));
+      }
+    }
+  }
+  // Renders one of this entity's own fields, deferring to the supertype's
+  // canonical definition for any inherited name. A subclass CANNOT give an
+  // inherited property a different definition -- BigQuery requires one
+  // definition per property under a shared label -- so a divergent override is
+  // warned and dropped in favor of the supertype's, keeping the DDL valid. The
+  // warning distinguishes a STRUCTURAL remap (a different column/expression --
+  // the property is genuinely rebound) from a METADATA-only refinement (same
+  // column, different description/synonyms) so it states precisely what the
+  // subclass loses, rather than mislabeling an added description as a redefined
+  // column.
+  const renderOwn = (f: Field): string => {
+    const own = renderFieldProperty(f, entity.name);
+    const canonical = inheritedRender.get(f.name);
+    if (canonical === undefined) return own;  // not inherited: render as-is
+    if (canonical === own) return canonical;  // identical: nothing to warn
+    if (renderFieldPropertyCore(f, entity.name) !== inheritedCore.get(f.name)) {
+      warnings.push(
+          `entity '${entity.name}' remaps inherited property '${
+              f.name}' to a different column/expression than its supertype; ` +
+          `BigQuery allows only one definition per property under a shared ` +
+          `label, so the supertype's is used and the subclass's remapping is ` +
+          `dropped`);
+    } else {
+      warnings.push(
+          `entity '${entity.name}' overrides the description/synonyms of ` +
+          `inherited property '${
+              f.name}'; under a shared label every binding ` +
+          `must declare it identically, so the supertype's metadata is used ` +
+          `and the subclass's is dropped`);
+    }
+    return canonical;
+  };
+
   // Order: declared fields, then any operand properties synthesized for
   // measures, then the measures themselves (which reference those operand
   // properties).
+  // Defense in depth: availability pruning normally strips every unbound field
+  // (it has no column) before generation, and fieldBinding is the shared
+  // "is bound" oracle both it and this generator consult so the two never
+  // disagree. But a caller that generates DDL straight from a bindingOptional
+  // load without pruning could still reach here with an unbound (e.g. purely
+  // logical) field. Skip it with a warning rather than emit `<name>` as a
+  // phantom bare column the source table does not have.
+  const boundFields = entity.fields.filter(f => {
+    if (fieldBinding(f) !== undefined) return true;
+    warnings.push(
+        `entity '${entity.name}': field '${f.name}' has no column under this ` +
+        `binding; omitted from the node table (bind it, or govern the logical ` +
+        `model in Knowledge Catalog instead)`);
+    return false;
+  });
   const properties = [
-    ...entity.fields.map(f => renderFieldProperty(f, entity.name)),
+    ...boundFields.map(renderOwn),
     ...derivedProperties,
     ...measures,
   ];
 
   const lines = [
-    line(1, `${table} AS ${entity.name}`),
-    line(2, `KEY(${entity.keys.join(', ')})`),
+    line(1, `${table} AS ${quoteIfReserved(entity.name)}`),
+    line(2, `KEY(${physicalColumns(entity, entity.keys, warnings, `entity '${entity.name}'`).join(', ')})`),
   ];
-  // Element-table description attaches to the DEFAULT LABEL: after the key
-  // clause, before PROPERTIES (grammar: element_table_definition).
-  const labelOpts =
-      optionsClause(elementDescription(entity.description, entity.aiContext));
+  // Element-table description and synonyms attach to the node's DEFAULT LABEL
+  // -- UNLESS this entity is a supertype whose label is shared by subclass
+  // tables. BigQuery forbids a label that carries an OPTIONS clause from being
+  // bound to more than one element table (verified live -- "the label ... is
+  // defined with OPTIONS clause in one of the element tables and cannot be
+  // bound to another element table"), so a shared supertype label must be
+  // options-free; its description/synonyms are dropped (with a warning).
+  let labelOpts = optionsClause(
+      elementDescription(entity.description, entity.aiContext),
+      entity.aiContext?.synonyms);
+  if (isSupertype && labelOpts) {
+    warnings.push(
+        `entity '${entity.name}' is a supertype in a class hierarchy; its ` +
+        `description/synonyms are dropped from the shared '${entity.name}' ` +
+        `label (BigQuery forbids OPTIONS on a label bound by multiple tables)`);
+    labelOpts = undefined;
+  }
+  // A node participating in the hierarchy -- as a subclass (it declares
+  // ancestor LABELs) or as a shared supertype (a subclass binds its label) --
+  // must use an EXPLICIT `DEFAULT LABEL`: BigQuery rejects a bare (implicit
+  // default) PROPERTIES clause immediately followed by explicit LABEL clauses
+  // (verified live -- "Expected \")\" ... but got keyword LABEL"), and the
+  // validated shared-label shape is `DEFAULT LABEL PROPERTIES(...)`. A node
+  // outside any hierarchy keeps the implicit form so existing output is
+  // byte-for-byte unchanged.
+  const hasAncestors = !!(entity.extends && entity.extends.length);
+  if (hasAncestors || isSupertype) lines.push(line(2, 'DEFAULT LABEL'));
   if (labelOpts) lines.push(line(2, labelOpts));
   // Omit the PROPERTIES block when there is nothing to list, rather than emit
   // an empty `PROPERTIES()` (a node table may declare just its KEY).
   if (properties.length) lines.push(propertiesBlock(properties));
+
+  // Inheritance: declare one LABEL per transitive ancestor (resolveInheritance
+  // expanded `extends` to the full ancestor set), each re-listing that
+  // ancestor's properties so `MATCH (:Ancestor)` also matches this subclass
+  // node. The block is rendered straight from the ANCESTOR's own fields with
+  // the ancestor as qualifier, so it is byte-for-byte identical to the
+  // ancestor's own DEFAULT LABEL -- the exact match BigQuery requires for a
+  // property shared across the element tables that bind a label ("same set of
+  // property declarations under the same label"). This node's DEFAULT LABEL
+  // renders the same inherited names via `renderOwn`, which also defers to the
+  // ancestor, so the label is consistent within this table too.
+  for (const ancestorName of entity.extends ?? []) {
+    const ancestor = labelByName.get(ancestorName);
+    if (!ancestor) {
+      // The ancestor exists in the model (resolveInheritance already dropped
+      // unknown parents) but is not a label carrier -- it was dropped for an
+      // empty KEY. Its fields still flattened onto this node (they render as
+      // own properties above); it just forms no queryable label, so omit the
+      // LABEL and say so rather than reference a class reported as gone.
+      warnings.push(
+          `entity '${entity.name}' extends '${ancestorName}', which has no ` +
+          `node table and is not abstract (it was dropped, e.g. for an empty ` +
+          `KEY); the '${ancestorName}' label is omitted from '${entity.name}'`);
+      continue;
+    }
+    lines.push(line(2, `LABEL ${quoteIfReserved(ancestorName)}`));
+    const signature =
+        ancestor.fields.map(f => renderFieldProperty(f, ancestor.name));
+    if (signature.length) lines.push(propertiesBlock(signature));
+  }
   return lines.join('\n');
 }
 
@@ -492,11 +719,64 @@ function renderNodeTable(
 // `derived_property` rule. A field with no expression is exposed as a bare
 // column under its name.
 function renderFieldProperty(field: Field, entity: string): string {
+  const core = renderFieldPropertyCore(field, entity);
+  const opts =
+      optionsClause(fieldDescription(field), field.aiContext?.synonyms);
+  return opts ? `${core} ${opts}` : core;
+}
+
+// Renders just the STRUCTURAL core of a field property -- the bare column, or
+// `<expr> AS <name>` when the field maps a non-trivial expression -- with no
+// trailing OPTIONS. This is the part BigQuery requires to be byte-for-byte
+// identical across every element table binding a shared label; metadata
+// (OPTIONS) is compared separately so a subclass's metadata-only refinement is
+// reported distinctly from a structural remap (see renderNodeTable's
+// renderOwn). This is also the single place a field expression is lowered to
+// its table-local form: the resolve-inheritance pass first rewrites an
+// inherited field's expression into the child's frame (localizeInheritedField),
+// then this strips the entity's own qualifier -- one normalization, in one
+// place, applied to own and inherited fields alike.
+function renderFieldPropertyCore(field: Field, entity: string): string {
   const expr = fieldExpression(field);
   const local = expr !== undefined ? stripQualifier(expr, entity) : field.name;
-  const prop = local === field.name ? field.name : `${local} AS ${field.name}`;
-  const opts = optionsClause(fieldDescription(field));
-  return opts ? `${prop} ${opts}` : prop;
+  const alias = quoteIfReserved(field.name);
+  return local === field.name ? alias :
+                                `${quoteIfReserved(local)} AS ${alias}`;
+}
+
+
+// Resolves a logical field name to the physical column it binds to on
+// `entity`'s table. A structural key reference -- node KEY, edge KEY, SOURCE
+// KEY, DESTINATION KEY, and each REFERENCES target -- must name a real column,
+// never the property alias exposed under the field's name: BigQuery rejects an
+// alias there ("Column '<alias>' not found"). A profile that binds a field to a
+// differently named column makes name != column common. Falls back to the name
+// itself when it is not a declared field (already a raw column) or the entity is
+// unknown.
+function physicalColumn(entity: Entity|undefined, fieldName: string): string {
+  const field = entity?.fields.find(f => f.name === fieldName);
+  if (entity === undefined || field === undefined) return fieldName;
+  const expr = fieldExpression(field);
+  return expr !== undefined ? stripQualifier(expr, entity.name) : fieldName;
+}
+
+function physicalColumns(
+    entity: Entity|undefined, fieldNames: string[], warnings?: string[],
+    ctx?: string): string[] {
+  return fieldNames.map(n => {
+    const col = physicalColumn(entity, n);
+    // A structural site (KEY / SOURCE KEY / DESTINATION KEY / REFERENCES) must
+    // name a bare column. A field bound to a computed expression resolves to
+    // SQL, not a column, which BigQuery rejects at deploy; warn here so the
+    // problem is named statically rather than surfacing as opaque DDL.
+    if (warnings && !isSimpleIdentifier(col)) {
+      warnings.push(
+          `${ctx ?? `entity '${entity?.name ?? '?'}'`}: field '${n}' is bound ` +
+          `to a non-column expression (${col}); a KEY/REFERENCES site requires ` +
+          `a bare column, so BigQuery will reject the generated DDL`);
+    }
+    return quoteIfReserved(col);
+  });
 }
 
 
@@ -516,6 +796,7 @@ function renderEdgeTable(
   // source node through, the source entity's own key (looked up here rather
   // than duplicated onto the relationship).
   const sourceEntity = entitiesByName.get(rel.source.entity);
+  const destEntity = entitiesByName.get(rel.destination.entity);
   let backing: string;
   let sourceKey: string[];
   if (!sourceEntity) {
@@ -529,21 +810,36 @@ function renderEdgeTable(
     sourceKey = sourceEntity.keys;
   }
 
-  const key = sourceKey.join(', ');
+  // Every key clause names physical columns: the edge is the source entity's own
+  // table, so its KEY / SOURCE KEY / the FK in DESTINATION KEY all resolve
+  // against the source entity, while the destination REFERENCES resolves against
+  // the destination entity's key.
+  const relCtx = `relationship '${rel.name}'`;
+  const key = physicalColumns(sourceEntity, sourceKey, warnings, relCtx).join(', ');
+  const destFk =
+      physicalColumns(sourceEntity, rel.source.columns, warnings, relCtx)
+          .join(', ');
+  const destRef =
+      physicalColumns(destEntity, rel.destination.columns, warnings, relCtx)
+          .join(', ');
   const lines = [
-    line(1, `${backing} AS ${rel.name}`),
+    line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
     line(2, `KEY(${key})`),
-    line(2, `SOURCE KEY(${key}) REFERENCES ${rel.source.entity}(${key})`),
     line(
         2,
-        `DESTINATION KEY(${rel.source.columns.join(', ')}) REFERENCES ${
-            rel.destination.entity}(${rel.destination.columns.join(', ')})`),
+        `SOURCE KEY(${key}) REFERENCES ${quoteIfReserved(rel.source.entity)}(${
+            key})`),
+    line(
+        2,
+        `DESTINATION KEY(${destFk}) REFERENCES ${
+            quoteIfReserved(rel.destination.entity)}(${destRef})`),
   ];
 
-  // Edge description attaches to the DEFAULT LABEL: after the
+  // Edge description and synonyms attach to the DEFAULT LABEL: after the
   // SOURCE/DESTINATION clauses (grammar: element_table_definition).
-  const labelOpts =
-      optionsClause(elementDescription(rel.description, rel.aiContext));
+  const labelOpts = optionsClause(
+      elementDescription(rel.description, rel.aiContext),
+      rel.aiContext?.synonyms);
   if (labelOpts) lines.push(line(2, labelOpts));
 
   return lines.join('\n');
@@ -572,29 +868,34 @@ function renderAssociationEdge(
     if (!entity) {
       warnings.push(
           `relationship '${rel.name}': unknown entity '${end.entity}'`);
-      return end.columns.join(', ');
+      return end.columns.map(quoteIfReserved).join(', ');
     }
-    return entity.keys.join(', ');
+    return physicalColumns(entity, entity.keys, warnings, `relationship '${rel.name}'`)
+        .join(', ');
   };
 
   const lines = [
-    line(1, `${backing} AS ${rel.name}`),
-    line(2, `KEY(${assoc.keys.join(', ')})`),
+    line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
+    line(2, `KEY(${assoc.keys.map(quoteIfReserved).join(', ')})`),
     line(
         2,
-        `SOURCE KEY(${assoc.sourceColumns.join(', ')}) REFERENCES ${
-            rel.source.entity}(${refColumns(rel.source)})`),
+        `SOURCE KEY(${assoc.sourceColumns.map(quoteIfReserved).join(', ')}) ` +
+            `REFERENCES ${quoteIfReserved(rel.source.entity)}(${
+                refColumns(rel.source)})`),
     line(
         2,
-        `DESTINATION KEY(${assoc.destinationColumns.join(', ')}) REFERENCES ${
-            rel.destination.entity}(${refColumns(rel.destination)})`),
+        `DESTINATION KEY(${
+            assoc.destinationColumns.map(quoteIfReserved).join(', ')}) ` +
+            `REFERENCES ${quoteIfReserved(rel.destination.entity)}(${
+                refColumns(rel.destination)})`),
   ];
 
-  // Edge description attaches to the DEFAULT LABEL: after the
+  // Edge description and synonyms attach to the DEFAULT LABEL: after the
   // SOURCE/DESTINATION clauses, before PROPERTIES (grammar:
   // element_table_definition).
-  const labelOpts =
-      optionsClause(elementDescription(rel.description, rel.aiContext));
+  const labelOpts = optionsClause(
+      elementDescription(rel.description, rel.aiContext),
+      rel.aiContext?.synonyms);
   if (labelOpts) lines.push(line(2, labelOpts));
 
   // The junction's own non-key fields are the edge's properties.
@@ -610,7 +911,10 @@ function renderAssociationEdge(
 // that is all the IR carries (see the Field/Metric expression-fidelity
 // contract).
 function fieldExpression(f: Field): string|undefined {
-  return f.expression ?? f.importedExpression;
+  // Delegates to the canonical accessor so the generator's notion of "bound"
+  // matches availability pruning's (an unbound field yields undefined; a field
+  // awaiting transpilation stays bound via its imported expression).
+  return fieldBinding(f);
 }
 function metricExpression(m: Metric): string|undefined {
   return m.expression ?? m.importedExpression;
@@ -654,9 +958,12 @@ function qualifyGraph(model: SemanticModel, opts: GenerateOptions): string {
   let project = opts.project;
   let dataset = opts.dataset;
 
-  const first = (model.entities ?? [])[0];
-  if ((!project || !dataset) && first?.dataSource &&
-      !/\s/.test(first.dataSource)) {
+  // Pick the first entity with a plain `project.dataset.table` source to derive
+  // the graph's location; skip abstract entities (empty source) and query-based
+  // sources (whitespace), which carry no usable location.
+  const first = (model.entities ??
+                 []).find(e => e.dataSource && !/\s/.test(e.dataSource));
+  if ((!project || !dataset) && first) {
     const p = first.dataSource.trim().split('.');
     if (p.length >= 3) {
       project = project ?? p[0];
@@ -694,37 +1001,33 @@ function propertiesBlock(properties: string[]): string {
 }
 
 
-// Composes the `OPTIONS(description=...)` text for a graph element from its
-// base description and AI-first annotations. BigQuery graph DDL exposes only a
-// single description slot, so instructions, synonyms, and examples are folded
-// into that one text (the only metadata sink the graph DDL provides).
+// Composes the folded `description` text for a graph element from its base
+// description and the AI-first annotations that have no dedicated BigQuery
+// option: instructions and examples. Synonyms are NOT folded in here --
+// BigQuery's PropertyGraph{Label,Property}Options carry a structured `synonyms`
+// array, so they are emitted as their own option (see optionsClause and the
+// call sites).
 function elementDescription(description?: string, ai?: AiContext): string|
     undefined {
   return composeText([
     description,
     ai?.instructions,
-    synonymsLine(ai?.synonyms),
     examplesLine(ai?.examples),
   ]);
 }
 
 // A field additionally carries a human `label` and a temporal-dimension role,
 // which lead the composed text (matching the authored order) ahead of its
-// description and AI-first annotations.
+// description and instructions/examples. Synonyms are emitted structurally, as
+// for elementDescription.
 function fieldDescription(field: Field): string|undefined {
   return composeText([
     field.label,
     isTimeDimension(field) ? 'Time dimension.' : undefined,
     field.description,
     field.aiContext?.instructions,
-    synonymsLine(field.aiContext?.synonyms),
     examplesLine(field.aiContext?.examples),
   ]);
-}
-
-function synonymsLine(synonyms?: string[]): string|undefined {
-  return synonyms && synonyms.length ? `Synonyms: ${synonyms.join(', ')}` :
-                                       undefined;
 }
 
 function examplesLine(examples?: string[]): string|undefined {
@@ -740,14 +1043,22 @@ function composeText(parts: (string|undefined)[]): string|undefined {
   return kept.length ? kept.join('\n\n') : undefined;
 }
 
-// Renders the trailing `OPTIONS(description=...)` clause, or undefined when
-// there is nothing to say. The grammar allows this clause on graph properties
-// and measures (after the alias), on element tables (as DEFAULT LABEL options,
-// before PROPERTIES), and on the graph itself (after the EDGE TABLES clause).
-// See storage/googlesql/parser: `derived_property`, `element_table_definition`,
-// `create_property_graph_statement`.
-function optionsClause(text?: string): string|undefined {
-  return text ? `OPTIONS(description=${quote(text)})` : undefined;
+// Renders the trailing `OPTIONS(...)` clause for a graph element -- a folded
+// `description` string and/or a structured `synonyms` array -- or undefined
+// when there is nothing to emit. Both map to BigQuery's
+// PropertyGraph{Label,Property}Options (`description` singular, `synonyms`
+// repeated), honored on element-table labels (DEFAULT LABEL, before PROPERTIES)
+// and on derived properties and measures (after the alias). Statement-level
+// graph OPTIONS is intentionally not emitted: it parses but BigQuery silently
+// drops it (verified live; create_property_graph_options is off for BigQuery).
+function optionsClause(description?: string, synonyms?: string[]): string|
+    undefined {
+  const parts: string[] = [];
+  if (description) parts.push(`description=${quote(description)}`);
+  if (synonyms && synonyms.length) {
+    parts.push(`synonyms=[${synonyms.map(quote).join(', ')}]`);
+  }
+  return parts.length ? `OPTIONS(${parts.join(', ')})` : undefined;
 }
 
 // Renders a value as a BigQuery double-quoted string literal. Backslash and the

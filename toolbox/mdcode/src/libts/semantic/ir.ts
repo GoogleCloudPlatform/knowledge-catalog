@@ -81,6 +81,31 @@ export interface Entity {
   // Additional uniqueness constraints beyond the primary key; each inner array
   // is one unique column set (maps to the Schema aspect's uniqueConstraints).
   uniqueKeys?: string[][];
+  // Names of supertype entities this entity inherits from -- Apache Ossie's
+  // `extends` (see ontology/ontology.md), the target of OWL `rdfs:subClassOf`.
+  // Inheritance is ENTITY-LEVEL ONLY: only entities carry `extends`;
+  // relationships never do (there is no relationship-inheritance field), so OWL
+  // `rdfs:subPropertyOf` has no representation here by design.
+  //
+  // This is the hierarchy AS DECLARED: it records the fact, it does not itself
+  // flatten anything. Resolving `extends` into inherited fields (so an emitter
+  // sees a self-contained entity) is a separate pass (see resolve_inheritance);
+  // the BigQuery leg runs it, so a consumer of the raw IR may still observe
+  // `extends` on an entity whose `fields` do NOT yet include the supertype's.
+  extends?: string[];
+  // Marks a conceptual (abstract) entity with NO physical table: a class used
+  // only to group its subtypes (e.g. an abstract `Party` over `Person` and
+  // `Organization`). It is never materialized, so it forms no NODE TABLE in the
+  // BigQuery graph -- it survives only as a LABEL on its concrete descendants
+  // (its fields still flatten down so that shared label's signature is present).
+  // An abstract entity therefore has no meaningful `dataSource` or `keys`.
+  //
+  // This is an EXPLICIT marker, deliberately distinct from the OWL importer's
+  // `unbound:<Name>` source placeholder: an unbound source means "should be
+  // bound but isn't yet" and must fail the push loudly, whereas `abstract`
+  // asserts "intentionally has no table". Overloading one for the other would
+  // silently drop an entity someone merely forgot to bind.
+  abstract?: boolean;
   description?: string;
   aiContext?: AiContext;
   fields: Field[];       // dimensions / attributes
@@ -116,6 +141,16 @@ export interface Field {
   expression?: string;             // target/canonical (GoogleSQL-valid) SQL
   importedExpression?: string;     // original vendor SQL, verbatim
   importedDialect?: string;        // dialect of `importedExpression` (e.g. 'SNOWFLAKE')
+  // Marks a field declared logically but with NO physical column under the
+  // current binding: structurally absent, not null. A metric, relationship, or
+  // action that reads it is unavailable here rather than reading a null (see
+  // the binding-profiles guide). An unbound field carries no `expression`.
+  //
+  // This is the field-level analogue of an entity's `abstract` (a whole class
+  // with no table) and, like the OWL importer's `unbound:` source placeholder,
+  // means "should be bound by some binding, and reading it where it is not is an
+  // error" -- distinct from a bound field whose value merely happens to be null.
+  unbound?: boolean;
   dimension?: Dimension;           // dimension metadata (e.g. temporal role)
   label?: string;                  // human display label (distinct from name/description)
   description?: string;
@@ -155,6 +190,18 @@ export function isTimeDimension(field: Field): boolean {
   if (!field.dimension) return false;
   if (field.dimension.isTime !== undefined) return field.dimension.isTime;
   return field.type !== undefined && TEMPORAL_TYPES.has(field.type);
+}
+
+// The physical column (or SQL) a field binds to under the current binding, or
+// undefined when the field is unbound (structurally absent -- no column). A
+// field's target/canonical `expression` wins; a field awaiting transpilation
+// falls back to its imported vendor expression, which still names a real column,
+// so it is bound rather than unbound. `unbound: true` means no column at all.
+// This is the single source of truth for "is this field bound"; availability
+// pruning and the BigQuery generator both consult it so they never disagree.
+export function fieldBinding(field: Field): string | undefined {
+  if (field.unbound) return undefined;
+  return field.expression ?? field.importedExpression;
 }
 
 /**

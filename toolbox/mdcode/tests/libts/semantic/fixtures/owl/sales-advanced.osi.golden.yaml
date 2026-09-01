@@ -1,0 +1,109 @@
+version: 0.2.0.dev0
+semantic_model:
+  - name: sales
+    description: "A sales domain: customers (a kind of person) and their orders.
+      (ontology version 2.0)"
+    ai_context:
+      synonyms:
+        - Sales domain
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: |-
+          {
+            "owl:baseIri": "http://example.com/sales#"
+          }
+    datasets:
+      - name: Person
+        description: A human being.
+        fields:
+          - name: fullName
+            datatype: String
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: |-
+              {
+                "owl:equivalentClass": [
+                  "http://xmlns.com/foaf/0.1/Person"
+                ]
+              }
+      - name: Customer
+        extends:
+          - Person
+        primary_key:
+          - customerId
+        unique_keys:
+          - - email
+        description: A person or organization that places orders.
+        ai_context:
+          synonyms:
+            - Buyer
+        fields:
+          - name: customerId
+            datatype: String
+          - name: email
+            datatype: String
+            description: The customer's unique email address.
+            custom_extensions:
+              - vendor_name: GOOGLE
+                data: |-
+                  {
+                    "owl:FunctionalProperty": true
+                  }
+          - name: customerName
+            datatype: String
+            label: name
+            custom_extensions:
+              - vendor_name: GOOGLE
+                data: |-
+                  {
+                    "rdfs:subPropertyOf": [
+                      "fullName"
+                    ],
+                    "owl:equivalentProperty": [
+                      "http://xmlns.com/foaf/0.1/name"
+                    ]
+                  }
+          - name: signupDate
+            datatype: Date
+            dimension:
+              is_time: true
+          - name: isVip
+            datatype: Boolean
+            description: Whether the customer is in the loyalty program.
+      - name: Order
+        primary_key:
+          - orderId
+        description: A purchase placed by a customer.
+        fields:
+          - name: orderId
+            datatype: String
+          - name: orderAmount
+            datatype: Decimal
+          - name: orderDate
+            datatype: Date
+            dimension:
+              is_time: true
+    relationships:
+      - name: placedBy
+        from: Order
+        to: Customer
+        ai_context:
+          instructions: Links an order to the customer who placed it.
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: |-
+              {
+                "owl:inverseOf": "places"
+              }
+      - name: referredBy
+        from: Customer
+        to: Customer
+        ai_context:
+          instructions: The customer who referred this one.
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: |-
+              {
+                "owl:IrreflexiveProperty": true,
+                "owl:AsymmetricProperty": true
+              }

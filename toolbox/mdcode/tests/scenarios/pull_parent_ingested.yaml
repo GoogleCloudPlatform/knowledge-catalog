@@ -1,0 +1,28 @@
+name: pull_parent_ingested
+description: >
+  An ingested entry group never sends parentEntry back on push (toServiceEntry
+  drops it), so a pulled parentEntry is not recorded in the local snapshot --
+  recording one would show a parent that push silently ignores.
+setup:
+  catalog:
+    entryGroups:
+      - name: projects/test/locations/us/entryGroups/@custom
+    entryTypes:
+      - name: projects/test/locations/global/entryTypes/et1
+    entries:
+      - name: projects/test/locations/us/entryGroups/@custom/entries/child
+        entryType: projects/test/locations/global/entryTypes/et1
+        parentEntry: projects/test/locations/us/entryGroups/@custom/entries/parent
+
+  fileSystem:
+    catalog.yaml: |
+      scope: entryGroup.test.us.@custom
+
+actions:
+  - action: pull
+
+assert:
+  fileSystem:
+    catalog/child.yaml:
+      - contains: "name: child"
+      - notContains: "parent:"

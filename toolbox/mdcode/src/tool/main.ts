@@ -2,75 +2,154 @@
 //
 
 import * as cac from 'cac';
+
 import * as commands from './commands';
 import * as mcp from './mcp';
 
 
 const cli = cac.cac('kcmd').version('1.0.0').help();
 cli.command('init', 'Initialize a new catalog snapshot')
-   .option('--entry-group <id>', 'Identifier of the EntryGroup (project.location.id)')
-   .option('--bigquery-dataset <id...>', 'Identifier of the BigQuery dataset(s) (project.datasetId)')
-   .option('--kb <id>', 'Identifier of the Knowledge Base EntryGroup (project.location.id)')
-   .option('--semantic-model <id>', 'Semantic model scope as <projectId>.<locationId>.<entryGroupId>')
-   .option('--pull', 'Optionally pull catalog entries during initialization')
-   .action(async (options) => {
+    .option(
+        '--entry-group <id>',
+        'Identifier of the EntryGroup (project.location.id)')
+    .option(
+        '--bigquery-dataset <id...>',
+        'Identifier of the BigQuery dataset(s) (project.datasetId)')
+    .option(
+        '--kb <id>',
+        'Identifier of the Knowledge Base EntryGroup (project.location.id)')
+    .option(
+        '--semantic-model <id>',
+        'Semantic model scope as <projectId>.<locationId>.<entryGroupId>')
+    .option('--pull', 'Optionally pull catalog entries during initialization')
+    .action(async (options) => {
+      let exitCode = 1;
       try {
-        await commands.init(options);
-      }
-      catch (err: any) {
+        exitCode = await commands.init(options);
+      } catch (err: any) {
         console.error('Error:', err.message || err);
-        process.exit(1);
+        exitCode = 1;
       }
-   });
+
+      process.exit(exitCode);
+    });
 
 
 cli.command('pull', 'Pull catalog entries')
-   .action(async () => {
+    .option(
+        '--dry-run',
+        'Reconstruct and report only; do not write files (semantic-model scope)')
+    .option(
+        '--force-remove',
+        'Delete a differently-named local model and replace it with the catalog\'s; without it, a pull that would leave two models in the entry group fails (semantic-model scope)')
+    .action(async (options) => {
       let exitCode = 1;
       try {
-        exitCode = await commands.pull();
-      }
-      catch (err: any) {
+        exitCode = await commands.pull(options);
+      } catch (err: any) {
         console.error('Error:', err.message || err);
         exitCode = 1;
       }
-      
+
       process.exit(exitCode);
-   });
+    });
 
 cli.command('push', 'Push catalog entries')
-   .option('--force', 'Force push changes')
-   .option('--validate-only', 'Only validate changes without applying')
-   .option('--target <targets>', 'Semantic-model push destination(s): bq, kc, all (default), or a comma-separated list (e.g. bq,kc)')
-   .option('--print', 'Print each pushed destination\'s generated artifact in its native format (BigQuery Graph SQL DDL, Knowledge Catalog entry plan); scope with --target (semantic-model push only)')
-   .action(async (options) => {
+    .option('--force', 'Force push changes')
+    .option(
+        '--force-remove',
+        'Delete Knowledge Catalog models in the entry group that this push does not include (removed/renamed models); semantic-model push only')
+    .option(
+        '--emit-expressions',
+        'Emit SQL-expression fields not yet in the published Knowledge Catalog system-type templates (per-field schema semantics, metric expression); off by default, enable once the templates support them; semantic-model push only')
+    .option('--validate-only', 'Only validate changes without applying')
+    .option(
+        '--no-profile',
+        'Deploy the graph for no binding profile: publish only the logical model to Knowledge Catalog, leaving any deployed graph untouched; the graph is deployed by default for the default binding profile; semantic-model push only')
+    .option(
+        '--no-kc',
+        'Skip the Knowledge Catalog metadata push and deploy only the graph; Knowledge Catalog is pushed by default; semantic-model push only')
+    .option(
+        '--print',
+        'Print each pushed destination\'s generated artifact in its native format (BigQuery/Spanner Graph SQL DDL, Knowledge Catalog entry plan); semantic-model push only')
+    .option(
+        '--transpile',
+        'Rewrite vendor-dialect (e.g. Snowflake/Databricks) expressions to GoogleSQL before deploying, filling target expressions the loader left unset; semantic-model push only')
+    .option(
+        '--profile [name]',
+        'Deploy the graph for one binding profile (reads <model>.profiles/<name>.yaml); its deployment target selects the graph backend; defaults to default_profile, else the inline bindings; mutually exclusive with --all-profiles and --no-profile; semantic-model push only')
+    .option(
+        '--all-profiles',
+        'Deploy the graph for every defined binding profile (plus the inline bindings when the document declares a target); Knowledge Catalog still records the default binding; mutually exclusive with --profile and --no-profile; semantic-model push only')
+    .action(async (options) => {
       let exitCode = 1;
       try {
         exitCode = await commands.push(options);
-      }
-      catch (err: any) {
+      } catch (err: any) {
         console.error('Error:', err.message || err);
         exitCode = 1;
       }
-      
+
       process.exit(exitCode);
-   });
+    });
+
+
+cli.command(
+       'profiles',
+       'List a semantic model\'s binding profiles and what each can answer')
+    .action(async () => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.profiles();
+      } catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+
+      process.exit(exitCode);
+    });
+
+
+cli.command(
+       'owl <action> <file>',
+       'OWL ontology tools (action: import a .ttl ontology into an OSI model)')
+    .option(
+        '--out <path>',
+        'Write the generated OSI document to this path instead of the semantic-model layout dir')
+    .option(
+        '--compact',
+        'Emit compact flow YAML (primary_key: [id], inline field/relationship maps) instead of the default block layout')
+    .action(async (action, file, options) => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.owl(action, file, options);
+      } catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+
+      process.exit(exitCode);
+    });
 
 
 cli.command('mcp', 'Run the Model Context Protocol (MCP) server')
-   .option('--path <path>', 'Path to the catalog snapshot root directory')
-   .action(async (options) => {
+    .option('--path <path>', 'Path to the catalog snapshot root directory')
+    .action(async (options) => {
       try {
         await mcp.startServer(options.path);
-      }
-      catch (err: any) {
+      } catch (err: any) {
         console.error('Error starting MCP server:', err.message || err);
         process.exit(1);
       }
-   });
+    });
 
 
-cli.parse();
+try {
+  cli.parse();
+} catch (err: any) {
+  console.error('Error:', err.message || err);
+  process.exit(1);
+}
 
 if (!cli.matchedCommand) {
   if (cli.args.length > 0) {

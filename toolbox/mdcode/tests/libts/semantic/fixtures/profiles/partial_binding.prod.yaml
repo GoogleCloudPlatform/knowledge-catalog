@@ -1,0 +1,15 @@
+# Environment swap: the same schema in a different project/dataset. The profile
+# overrides only the deployment target and each entity's source table; it names
+# no fields, so every column binding is INHERITED from the base unchanged. The
+# golden shows the prod tables with the identical column set and all three
+# metrics intact -- proof that a field a profile omits keeps its base binding
+# (omission inherits, it does not drop).
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    deployment_target: //bigquery.googleapis.com/projects/acme-prod/datasets/sales/propertyGraphs/sales
+    entities:
+      - name: Customer
+        source: //bigquery.googleapis.com/projects/acme-prod/datasets/sales/tables/customers
+      - name: Order
+        source: //bigquery.googleapis.com/projects/acme-prod/datasets/sales/tables/orders
