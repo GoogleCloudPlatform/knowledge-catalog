@@ -11,3 +11,6 @@ ORIGINAL_REQUEST.md
 *_review_*.md
 *_en.md
 *_ko.md
+*_preview.md
+*.receipt.json
+test_receipt.json
