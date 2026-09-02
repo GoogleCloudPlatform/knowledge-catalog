@@ -34,7 +34,7 @@ measures and no `OPTIONS` metadata — see [To Spanner Graph](#to-spanner-graph)
 | Model-level `description` / `instructions` | — dropped⁸ | on the model entry | ✓⁸ |
 | Model-level `ai_context.synonyms` / `examples` | — dropped | — not stored | — |
 | Deployment target | names the graph | recorded on the model entry | ✓ |
-| Imported vendor SQL (`importedExpression` / `importedDialect`) | fallback — builds the DDL only when no canonical `expression` exists | — not stored | — |
+| Vendor-dialect `expression` variant (a non-canonical `dialects[]` entry) | fallback — builds the DDL only when no canonical `expression` exists¹⁰ | — not stored | — |
 | `custom_extensions` (beyond the deployment target) | — not in graph | — not stored | —⁹ |
 
 ¹ BigQuery uses the source column's own type; a field's authored `datatype` is not carried.
@@ -46,6 +46,8 @@ measures and no `OPTIONS` metadata — see [To Spanner Graph](#to-spanner-graph)
 ⁷ The `guidelines` aspect exists only for the model, entities, and metrics — not fields or relationships, so field- and relationship-level `ai_context.instructions` has no Knowledge Catalog home (a relationship's instructions still reach BigQuery, folded into the edge's `OPTIONS(description)`).
 ⁸ BigQuery silently drops statement-level graph `OPTIONS`, so model-level metadata has no home in the graph; the model's `description` and `ai_context.instructions` are carried into Knowledge Catalog instead.
 ⁹ Every other `custom_extensions` block — most notably the OWL constructs the importer carries with no native home yet (`owl:inverseOf`, `rdfs:subPropertyOf`, the equivalences and disjointness pairs, property characteristics, `owl:deprecated`/`owl:versionInfo`, …) — is inert on push and not persisted to Knowledge Catalog, so `pull` never recovers it. It does survive the OSI *document* round-trip verbatim, so it stays intact in your authored file. See [Constructs carried as custom extensions](owl-import.md#constructs-carried-as-custom-extensions-not-yet-native) for the full list and shape.
+
+¹⁰ What you author is the `expression.dialects[]` list; the graph builds from the canonical (BigQuery/ANSI) variant. `importedExpression` / `importedDialect` are not authored keys — the loader *derives* them from a non-canonical dialect entry (e.g. the MAQL or Snowflake form a metric was imported from) and uses that verbatim as the fallback when no canonical variant exists. See [Model spec §2.5](model_spec.md#25-expressions).
 
 ## To BigQuery
 
