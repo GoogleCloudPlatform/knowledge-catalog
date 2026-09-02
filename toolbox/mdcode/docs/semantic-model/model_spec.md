@@ -336,10 +336,13 @@ BigQuery `MEASURE` cannot bind to a label shared across subtype tables. See
 
 ### 4.2. Relaxations (looser than Ossie)
 
-Ossie marks these fields required; `kcmd` accepts them as optional so a model can
-be governed before it is bound (a purely *logical* model). A graph deploy still
-requires the binding-related ones — that requirement is the corresponding
-narrowing in [§4.1](#41-narrowings-stricter-than-ossie).
+`kcmd` relaxes Ossie in two kinds, for two different reasons.
+
+**Binding fields made optional — to model before binding.** Ossie marks these
+required; `kcmd` accepts them as optional so a model can be governed before it is
+bound (a purely *logical* model). A graph deploy still requires each one — that
+requirement is the corresponding narrowing in
+[§4.1](#41-narrowings-stricter-than-ossie).
 
 - **`source` on a dataset** — required in Ossie; optional in `kcmd`. A non-abstract
   dataset bound for a graph MUST still declare one.
@@ -347,7 +350,18 @@ narrowing in [§4.1](#41-narrowings-stricter-than-ossie).
   field `unbound`, or supply the column in a binding profile).
 - **`from_columns` / `to_columns` on a relationship** — both required in Ossie;
   `kcmd` allows both omitted (a logical edge).
-- **`dialect` value** — a closed enum in Ossie; any string in `kcmd`'s parser.
+
+**Value constraints loosened — to tolerate imported and future inputs.** Ossie
+closes these to a fixed set; `kcmd`'s parser accepts more so a document produced by
+an importer or by a newer Ossie is loaded (with a warning), not rejected, then
+normalized on the way to a store. *Why:* these carry no deploy-time meaning that a
+stricter check would protect — an unknown `dialect` is only ever selected against a
+known one, and a non-string example is discarded — so rejecting the whole document
+over them costs portability for no safety. Authored documents SHOULD still use the
+Ossie-valid forms.
+
+- **`dialect` value** — a closed enum in Ossie; any string in `kcmd`'s parser
+  (an unrecognized dialect is ignored when a canonical variant is selected).
 - **`ai_context.examples` items** — strings in Ossie; any shape in `kcmd`
   (non-strings are dropped on load).
 
