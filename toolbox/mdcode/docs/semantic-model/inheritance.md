@@ -70,6 +70,26 @@ The supertype's `id` and `name` flatten down onto both subtypes, so `Customer`
 and `Supplier` each expose them, and each subtype node carries both its own label
 and the `Party` label.
 
+```mermaid
+classDiagram
+    class Party {
+        <<abstract>>
+        id : integer
+        name : string
+    }
+    class Customer {
+        loyalty_tier : string
+    }
+    class Supplier {
+        rating : integer
+    }
+    Party <|-- Customer
+    Party <|-- Supplier
+```
+
+`Party` is abstract, so it has no table of its own; the arrows are `extends`. A
+query against `Party` reaches every subtype below it.
+
 ## 2. Bind each subtype's table
 
 Inheritance meets binding at one requirement: **each subtype's table must expose
@@ -118,6 +138,17 @@ every one's label:
         primary_key: [id]
         fields:
           - { name: department, datatype: String }
+```
+
+```mermaid
+classDiagram
+    class Person
+    class Taxpayer
+    class Employee {
+        department : string
+    }
+    Person <|-- Employee
+    Taxpayer <|-- Employee
 ```
 
 `MATCH (:Person)` and `MATCH (:Taxpayer)` each return the employee once. A diamond
