@@ -180,19 +180,18 @@ function renderNodeTable(
   // Defense in depth: availability pruning normally strips every unbound field
   // (it has no column) before generation. A caller that generates DDL straight
   // from a bindingOptional load without pruning could still reach here with an
-  // unbound (e.g. purely logical) field; skip it with a warning rather than emit
+  // unbound (e.g. purely logical) field; skip it with a warning rather than
+  // emit
   // `<name>` as a phantom bare column the source table does not have.
-  const properties =
-      entity.fields
-          .filter(f => {
-            if (fieldExpression(f) !== undefined) return true;
-            warnings.push(
-                `entity '${entity.name}': field '${f.name}' has no column ` +
-                `under this binding; omitted from the node table (bind it, or ` +
-                `govern the logical model in Knowledge Catalog instead)`);
-            return false;
-          })
-          .map(f => renderFieldProperty(f, entity.name));
+  const boundFields = entity.fields.filter(f => {
+    if (fieldExpression(f) !== undefined) return true;
+    warnings.push(
+        `entity '${entity.name}': field '${f.name}' has no column ` +
+        `under this binding; omitted from the node table (bind it, or ` +
+        `govern the logical model in Knowledge Catalog instead)`);
+    return false;
+  });
+  const properties = boundFields.map(f => renderFieldProperty(f, entity.name));
 
   const lines = [
     line(1, `${table} AS ${quoteIfReserved(entity.name)}`),
@@ -214,8 +213,10 @@ function renderNodeTable(
 
   // Inheritance: declare one LABEL per transitive ancestor (resolveInheritance
   // expanded `extends` to the full ancestor set), each re-listing that
-  // ancestor's own properties so `MATCH (:Ancestor)` also matches this
-  // subclass.
+  // ancestor's properties so `MATCH (:Ancestor)` also matches this subclass. A
+  // CONCRETE ancestor's block is rendered from its own fields; an ABSTRACT
+  // ancestor has no table of its own, so its names are rendered from THIS
+  // subtype's binding of each inherited field (mirrors the BigQuery leg).
   for (const ancestorName of entity.extends ?? []) {
     const ancestor = labelByName.get(ancestorName);
     if (!ancestor) {
@@ -226,8 +227,17 @@ function renderNodeTable(
       continue;
     }
     lines.push(line(2, `LABEL ${quoteIfReserved(ancestorName)}`));
-    const signature =
-        ancestor.fields.map(f => renderFieldProperty(f, ancestor.name));
+    let signature: string[];
+    if (ancestor.abstract) {
+      signature = [];
+      for (const af of ancestor.fields) {
+        const child = boundFields.find(cf => cf.name === af.name);
+        if (child) signature.push(renderFieldProperty(child, entity.name));
+      }
+    } else {
+      signature =
+          ancestor.fields.map(f => renderFieldProperty(f, ancestor.name));
+    }
     if (signature.length) lines.push(propertiesBlock(signature));
   }
   return lines.join('\n');
@@ -348,8 +358,7 @@ function renderFieldProperty(field: Field, entity: string): string {
   const expr = fieldExpression(field);
   const local = expr !== undefined ? stripQualifier(expr, entity) : field.name;
   const alias = quoteIfReserved(field.name);
-  return local === field.name ? alias :
-                                `${quoteIfReserved(local)} AS ${alias}`;
+  return local === field.name ? alias : `${quoteIfReserved(local)} AS ${alias}`;
 }
 
 

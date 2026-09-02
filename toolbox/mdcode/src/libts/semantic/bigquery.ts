@@ -222,7 +222,7 @@ export function generatePropertyGraph(
 interface MeasureLowering {
   derivedProperties: string[];  // extra property lines to emit on the node
   taken: Set<string>;           // property names already in use on the node
-  fieldNames: Set<string>;      // declared field names (each an exposed property)
+  fieldNames: Set<string>;  // declared field names (each an exposed property)
   byLocalExpr: Map<string, string>;  // existing field local-expression -> its
                                      // property name
   operandToName:
@@ -401,8 +401,8 @@ function placeMetric(
   lowering.taken.add(metric.name);
 
   const propName = exposeOperand(lowering, operandExpr, metric.name);
-  const aggregate =
-      `${agg.fn}(${agg.distinct ? 'DISTINCT ' : ''}${quoteIfReserved(propName)})`;
+  const aggregate = `${agg.fn}(${agg.distinct ? 'DISTINCT ' : ''}${
+      quoteIfReserved(propName)})`;
 
   const opts = optionsClause(
       elementDescription(metric.description, metric.aiContext),
@@ -429,9 +429,9 @@ function exposeOperand(
   // field to a differently named physical column (the property is
   // `<column> AS <field>`, and a MEASURE may reference a sibling alias).
   // Synthesizing an input property here would emit `<field> AS ..._input`, and
-  // an alias is illegal inside a property expression -- BigQuery rejects it with
-  // "Unrecognized name". (A raw column that is not a field still falls through
-  // to be exposed under its own name, which BigQuery requires.)
+  // an alias is illegal inside a property expression -- BigQuery rejects it
+  // with "Unrecognized name". (A raw column that is not a field still falls
+  // through to be exposed under its own name, which BigQuery requires.)
   if (lowering.fieldNames.has(operandExpr)) return operandExpr;
 
   let name: string;
@@ -441,7 +441,8 @@ function exposeOperand(
     lowering.derivedProperties.push(quoteIfReserved(name));
   } else {
     name = uniqueName(`${metricName}_input`, lowering.taken);
-    lowering.derivedProperties.push(`${quoteIfReserved(operandExpr)} AS ${name}`);
+    lowering.derivedProperties.push(
+        `${quoteIfReserved(operandExpr)} AS ${name}`);
   }
   lowering.taken.add(name);
   lowering.operandToName.set(operandExpr, name);
@@ -567,20 +568,28 @@ function renderNodeTable(
   const table = qualifyTable(
       entity.dataSource, opts, warnings, `entity '${entity.name}'`);
 
-  // Canonical rendering of every inherited property: its supertype's OWN
-  // definition, keyed by property name (nearest ancestor wins, matching field
-  // flattening). A property that appears under a label shared across element
-  // tables must have one identical definition everywhere it appears, so the
-  // supertype is authoritative -- both this node's DEFAULT LABEL and its
-  // `LABEL <ancestor>` blocks render an inherited property exactly as the
-  // supertype's node table does. resolveInheritance localizes the inherited
-  // copies on this entity, so in a well-formed hierarchy `renderOwn` below is a
-  // no-op; the map's real job is to catch and neutralize a genuine override.
+  // Canonical rendering of every property inherited from a CONCRETE supertype:
+  // that supertype's OWN definition, keyed by property name (nearest ancestor
+  // wins, matching field flattening). A property under a label shared across
+  // element tables must have the same name in each, and a concrete supertype
+  // has its own node table binding that property, so it is authoritative --
+  // both this node's DEFAULT LABEL and its `LABEL <ancestor>` blocks render
+  // such a property exactly as the supertype's node table does.
+  // resolveInheritance localizes the inherited copies on this entity, so in a
+  // well-formed hierarchy `renderOwn` below is a no-op; the map's real job is
+  // to catch and neutralize a genuine override. An ABSTRACT supertype is
+  // excluded (it has no binding); its inherited names are rendered from this
+  // subtype's own binding instead.
   const inheritedRender = new Map<string, string>();
   const inheritedCore = new Map<string, string>();
   for (const ancestorName of entity.extends ?? []) {
     const ancestor = labelByName.get(ancestorName);
-    if (!ancestor) continue;
+    // Skip an ABSTRACT ancestor: it has no table and no binding of its own, so
+    // it cannot be authoritative for an inherited property's rendering. This
+    // subtype's own binding is the canonical one (e.g. `c_name AS name`), so we
+    // leave the inherited names out of this map and let `renderOwn` render them
+    // straight from this table. A concrete ancestor keeps its authority.
+    if (!ancestor || ancestor.abstract) continue;
     for (const f of ancestor.fields) {
       if (!inheritedRender.has(f.name)) {
         inheritedRender.set(f.name, renderFieldProperty(f, ancestor.name));
@@ -647,7 +656,12 @@ function renderNodeTable(
 
   const lines = [
     line(1, `${table} AS ${quoteIfReserved(entity.name)}`),
-    line(2, `KEY(${physicalColumns(entity, entity.keys, warnings, `entity '${entity.name}'`).join(', ')})`),
+    line(
+        2,
+        `KEY(${
+            physicalColumns(
+                entity, entity.keys, warnings, `entity '${entity.name}'`)
+                .join(', ')})`),
   ];
   // Element-table description and synonyms attach to the node's DEFAULT LABEL
   // -- UNLESS this entity is a supertype whose label is shared by subclass
@@ -684,13 +698,20 @@ function renderNodeTable(
   // Inheritance: declare one LABEL per transitive ancestor (resolveInheritance
   // expanded `extends` to the full ancestor set), each re-listing that
   // ancestor's properties so `MATCH (:Ancestor)` also matches this subclass
-  // node. The block is rendered straight from the ANCESTOR's own fields with
-  // the ancestor as qualifier, so it is byte-for-byte identical to the
-  // ancestor's own DEFAULT LABEL -- the exact match BigQuery requires for a
-  // property shared across the element tables that bind a label ("same set of
-  // property declarations under the same label"). This node's DEFAULT LABEL
-  // renders the same inherited names via `renderOwn`, which also defers to the
-  // ancestor, so the label is consistent within this table too.
+  // node. BigQuery reconciles a label shared across element tables by property
+  // NAME, not by backing column (verified live), so every table under a label
+  // must declare the same property names -- each backed by its own column.
+  //   - A CONCRETE ancestor has its own node table. Render its block straight
+  //     from the ancestor's own fields (ancestor qualifier), byte-for-byte
+  //     identical to the ancestor's own DEFAULT LABEL.
+  //   - An ABSTRACT ancestor has no table and no binding of its own, so its
+  //     names must be rendered from THIS subtype's binding of each inherited
+  //     field (e.g. `c_name AS name` on the customer table, `s_name AS name` on
+  //     the supplier table). A bare-alias reference (`PROPERTIES(name)`) does
+  //     NOT deploy -- "Unrecognized name: name" (verified live).
+  // Either way this node's DEFAULT LABEL renders the same inherited names (via
+  // `renderOwn`, which defers to a concrete ancestor and renders an abstract
+  // one's names from this table), so the label is consistent within this table.
   for (const ancestorName of entity.extends ?? []) {
     const ancestor = labelByName.get(ancestorName);
     if (!ancestor) {
@@ -706,8 +727,22 @@ function renderNodeTable(
       continue;
     }
     lines.push(line(2, `LABEL ${quoteIfReserved(ancestorName)}`));
-    const signature =
-        ancestor.fields.map(f => renderFieldProperty(f, ancestor.name));
+    let signature: string[];
+    if (ancestor.abstract) {
+      // Render each inherited field from THIS subtype's own binding, keyed by
+      // the abstract ancestor's field names. Skip any the subtype leaves
+      // unbound so the block matches the DEFAULT LABEL (which lists only bound
+      // fields); a profile that binds the subtype but not an inherited field
+      // simply does not expose that property under the shared label.
+      signature = [];
+      for (const af of ancestor.fields) {
+        const child = boundFields.find(cf => cf.name === af.name);
+        if (child) signature.push(renderFieldProperty(child, entity.name));
+      }
+    } else {
+      signature =
+          ancestor.fields.map(f => renderFieldProperty(f, ancestor.name));
+    }
     if (signature.length) lines.push(propertiesBlock(signature));
   }
   return lines.join('\n');
@@ -740,8 +775,7 @@ function renderFieldPropertyCore(field: Field, entity: string): string {
   const expr = fieldExpression(field);
   const local = expr !== undefined ? stripQualifier(expr, entity) : field.name;
   const alias = quoteIfReserved(field.name);
-  return local === field.name ? alias :
-                                `${quoteIfReserved(local)} AS ${alias}`;
+  return local === field.name ? alias : `${quoteIfReserved(local)} AS ${alias}`;
 }
 
 
@@ -751,8 +785,8 @@ function renderFieldPropertyCore(field: Field, entity: string): string {
 // never the property alias exposed under the field's name: BigQuery rejects an
 // alias there ("Column '<alias>' not found"). A profile that binds a field to a
 // differently named column makes name != column common. Falls back to the name
-// itself when it is not a declared field (already a raw column) or the entity is
-// unknown.
+// itself when it is not a declared field (already a raw column) or the entity
+// is unknown.
 function physicalColumn(entity: Entity|undefined, fieldName: string): string {
   const field = entity?.fields.find(f => f.name === fieldName);
   if (entity === undefined || field === undefined) return fieldName;
@@ -771,8 +805,10 @@ function physicalColumns(
     // problem is named statically rather than surfacing as opaque DDL.
     if (warnings && !isSimpleIdentifier(col)) {
       warnings.push(
-          `${ctx ?? `entity '${entity?.name ?? '?'}'`}: field '${n}' is bound ` +
-          `to a non-column expression (${col}); a KEY/REFERENCES site requires ` +
+          `${ctx ?? `entity '${entity?.name ?? '?'}'`}: field '${
+              n}' is bound ` +
+          `to a non-column expression (${
+              col}); a KEY/REFERENCES site requires ` +
           `a bare column, so BigQuery will reject the generated DDL`);
     }
     return quoteIfReserved(col);
@@ -810,12 +846,13 @@ function renderEdgeTable(
     sourceKey = sourceEntity.keys;
   }
 
-  // Every key clause names physical columns: the edge is the source entity's own
-  // table, so its KEY / SOURCE KEY / the FK in DESTINATION KEY all resolve
-  // against the source entity, while the destination REFERENCES resolves against
-  // the destination entity's key.
+  // Every key clause names physical columns: the edge is the source entity's
+  // own table, so its KEY / SOURCE KEY / the FK in DESTINATION KEY all resolve
+  // against the source entity, while the destination REFERENCES resolves
+  // against the destination entity's key.
   const relCtx = `relationship '${rel.name}'`;
-  const key = physicalColumns(sourceEntity, sourceKey, warnings, relCtx).join(', ');
+  const key =
+      physicalColumns(sourceEntity, sourceKey, warnings, relCtx).join(', ');
   const destFk =
       physicalColumns(sourceEntity, rel.source.columns, warnings, relCtx)
           .join(', ');
@@ -870,7 +907,8 @@ function renderAssociationEdge(
           `relationship '${rel.name}': unknown entity '${end.entity}'`);
       return end.columns.map(quoteIfReserved).join(', ');
     }
-    return physicalColumns(entity, entity.keys, warnings, `relationship '${rel.name}'`)
+    return physicalColumns(
+               entity, entity.keys, warnings, `relationship '${rel.name}'`)
         .join(', ');
   };
 
