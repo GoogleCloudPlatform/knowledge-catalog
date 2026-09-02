@@ -244,7 +244,7 @@ differs from BigQuery Graph in four ways:
 - **No per-element `OPTIONS`.** `description` / `synonyms` are not emitted into
   the Spanner DDL; they ride into Knowledge Catalog instead — mirroring how
   BigQuery's graph-level `OPTIONS` is dropped. See
-  [What push and pull preserve](fidelity.md#to-spanner-graph).
+  [What push and pull preserve](fidelity.md#to-spanner).
 - **Async DDL.** The statement is applied through the Spanner Admin
   `updateDatabaseDdl` long-running operation, polled to completion (BigQuery runs
   its DDL through `jobs.query`). No region detection is needed — the DDL runs in
