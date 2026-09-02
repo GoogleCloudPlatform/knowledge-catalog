@@ -16,25 +16,33 @@ is the authority on what the tool then does.
 ## 1. Status and baseline
 
 The format is **`kcmd`'s profile of [Apache Ossie](https://ossie.apache.org/)**,
-pinned to Ossie version **`0.2.0.dev0`**. Ossie is the open, store-agnostic
-semantic-model format; this profile is a superset of it. The compatibility
-contract is:
+pinned to Ossie version **`0.2.0.dev0`**. Ossie is the open semantic-model format:
+it describes a business — datasets, fields, relationships, metrics — *and* binds
+each dataset to a `source` table and each field to a column `expression`. What
+Ossie does not describe is where a model then deploys. This profile is a superset:
+it adds that deployment layer and a few modeling constructs, and it relaxes a few
+of Ossie's required fields so a model can stay purely logical.
 
-> A `kcmd` model with its extensions stripped is a valid Ossie `0.2.0.dev0`
-> document, and an Ossie document valid at `0.2.0.dev0` is a valid `kcmd` model.
+The compatibility contract runs in both directions, and they are not symmetric:
+
+> **Every Ossie `0.2.0.dev0` document is a valid `kcmd` model.** The reverse holds
+> for a `kcmd` model that uses no extensions ([§5](#5-extensions)) *and* no
+> relaxations ([§4](#4-narrowings-and-relaxations)) — i.e. a fully-bound model with only Ossie
+> constructs. Strip the extensions from such a model and it is a valid Ossie
+> document.
 
 The goal is full Ossie compatibility. Every `kcmd`-specific construct is carried
 in a way an Ossie-only tool ignores (see [§6](#6-the-extension-mechanism)), so the
 two never fork the document.
 
 **How to read this document.** This is a *delta* against the Ossie spec. It does
-not restate constructs `kcmd` adopts unchanged — for those, the Ossie spec at
-[ossie.apache.org](https://ossie.apache.org/) is authoritative. This document
-covers only the three things that are `kcmd`'s to state:
+not restate constructs `kcmd` adopts unchanged — for those, the Ossie spec is
+authoritative. This document covers only what is `kcmd`'s to state:
 
-1. where `kcmd` is **stricter** than Ossie ([§4](#4-narrowings)),
-2. what `kcmd` **adds** beyond Ossie ([§5](#5-extensions)), and
-3. how those additions stay Ossie-compatible ([§6](#6-the-extension-mechanism)).
+1. where `kcmd` is **stricter** than Ossie — narrowings ([§4](#4-narrowings-and-relaxations)),
+2. where `kcmd` is **looser** than Ossie — relaxations ([§4](#4-narrowings-and-relaxations)),
+3. what `kcmd` **adds** beyond Ossie — extensions ([§5](#5-extensions)), and
+4. how those additions stay Ossie-compatible ([§6](#6-the-extension-mechanism)).
 
 If a construct is not mentioned here, `kcmd` supports it as Ossie `0.2.0.dev0`
 defines it.
@@ -44,17 +52,17 @@ defines it.
 at load or validation time; the exact operational effect (hard error, skip with a
 warning) is in [Reference → Validation](reference.md#validation).
 
-**Version handling.** `version` is optional. A document whose `version` differs
-from `0.2.0.dev0` loads anyway with a warning; the profile does not gate on it.
-Authored documents SHOULD set `version: "0.2.0.dev0"`.
+**Version handling.** `version` is optional and lives at the top of the document
+(not inside a model). A document whose `version` differs from `0.2.0.dev0` loads
+anyway with a warning; the profile does not gate on it. Authored documents SHOULD
+set `version: "0.2.0.dev0"`.
 
-**Baseline-classification caveat.** The "Ossie baseline" column in
-[§3](#3-conformance-summary) records this profile's *intended* classification of
-each construct against the published Ossie `0.2.0.dev0` spec. Rows marked **†**
-are asserted from `kcmd`'s parser, not yet reconciled against the published Ossie
-grammar text, and MUST be verified before this document is treated as final. The
-parser is authoritative for what `kcmd` *accepts*; it is not authoritative for
-what Ossie *defines*.
+**Baseline.** The Ossie classifications in [§3](#3-conformance-summary) are
+reconciled against the Ossie `0.2.0.dev0` core JSON Schema, a copy of which is
+vendored in this repository at
+`tests/libts/semantic/fixtures/ossie/osi-schema.json` (copied unmodified from
+`apache/ossie`). That schema, not `kcmd`'s parser, is the authority for what Ossie
+defines; the parser is the authority only for what `kcmd` accepts.
 
 ## 2. Document shape
 
@@ -98,15 +106,15 @@ A dataset is one concept in the business.
 | `fields` | list of [field](#211-field) | the concept's attributes |
 | `primary_key` | list of strings | the field(s) that identify a row |
 | `unique_keys` | list of lists of strings | additional unique column-sets |
-| `extends` | list of strings | supertype dataset names (see [§2.1.2](#212-inheritance-extends)) |
-| `abstract` | boolean | a concept with no table (extension — [§5](#5-extensions)) |
-| `source` | string | physical table URI (binding — [§7](#7-the-binding-layer)) |
+| `extends` | list of strings | supertype dataset names — extension ([§2.1.2](#212-inheritance-extends), [§5](#5-extensions)) |
+| `abstract` | boolean | a concept with no table — extension ([§5](#5-extensions)) |
+| `source` | string | physical table URI; Ossie-native, relaxed to optional ([§7.1](#71-table-sources), [§4](#4-narrowings-and-relaxations)) |
 | `description` | string | |
 | `ai_context` | [ai_context](#24-ai_context) | |
 | `custom_extensions` | list | [§6](#6-the-extension-mechanism) |
 
 An abstract dataset MUST NOT declare a `source`; a non-abstract dataset in a model
-bound for a graph MUST declare one (see [§4](#4-narrowings) and
+bound for a graph MUST declare one (see [§4](#4-narrowings-and-relaxations) and
 [§7](#7-the-binding-layer)).
 
 #### 2.1.1. Field
@@ -139,10 +147,11 @@ block that carries the real type.
 
 #### 2.1.2. Inheritance (`extends`)
 
-A dataset MAY declare `extends: [Parent, …]`, naming one or more supertype
-datasets by name. Inheritance is **entity-level only** — relationships do not
-`extends`. A supertype that has no table of its own MUST be marked
-`abstract: true`.
+`extends` is a `kcmd` **extension** — Ossie `0.2.0.dev0` has no inheritance
+construct ([§5](#5-extensions)). A dataset MAY declare `extends: [Parent, …]`,
+naming one or more supertype datasets by name. Inheritance is **entity-level
+only** — relationships do not `extends`. A supertype that has no table of its own
+MUST be marked `abstract: true` (also an extension).
 
 The format rule is only that supertypes are named datasets in the same model. The
 resolver breaks cycles with a warning and flattens diamonds (each ancestor
@@ -168,11 +177,17 @@ A relationship is a directed edge between two datasets.
 | `ai_context` | [ai_context](#24-ai_context) | |
 | `custom_extensions` | list | [§6](#6-the-extension-mechanism) |
 
-`from_columns` and `to_columns` are the physical binding of the edge
-([§7](#7-the-binding-layer)). They MUST be given together (a bound edge) or both
-omitted (a logical edge); one without the other is rejected. When both are given
-they MUST have equal length. `from` and `to` MUST name datasets declared in the
-same model.
+`from_columns` and `to_columns` are the edge's join keys. They MUST be given
+together (a bound edge) or both omitted (a logical edge); one without the other is
+rejected. When both are given they MUST have equal length. `from` and `to` MUST
+name datasets declared in the same model.
+
+Ossie **requires** both join-column lists; allowing both to be omitted — a
+logical edge with no join keys — is a `kcmd` **relaxation** ([§4](#4-narrowings-and-relaxations))
+that lets a relationship be governed before it is bound. A graph deploy still
+requires them (see [§4](#4-narrowings-and-relaxations)). Unlike `source` and field `expression`,
+join columns are declared on the logical model and are not profile-swappable
+([§7](#7-the-binding-layer)).
 
 > **Many-to-many is not yet authorable.** A junction-table (M:N) relationship
 > exists in `kcmd`'s internal representation but has **no YAML syntax** in
@@ -194,7 +209,7 @@ A metric is a computation over the model's fields.
 
 A metric names no dataset directly; the dataset it belongs to is **derived** from
 the entities its expression references. This is why a metric bound for a BigQuery
-graph MUST reduce to a single entity ([§4](#4-narrowings)). A metric is SQL over
+graph MUST reduce to a single entity ([§4](#4-narrowings-and-relaxations)). A metric is SQL over
 fields; there is no native metric-composition (metric-of-metrics) construct.
 
 ### 2.4. `ai_context`
@@ -210,8 +225,11 @@ ai_context:
 ```
 
 There is no top-level `synonyms` key on any object; synonyms are always
-`ai_context.synonyms`. Which parts of `ai_context` reach which destination is in
-[What push and pull preserve](fidelity.md).
+`ai_context.synonyms`. `instructions`, `synonyms`, and `examples` are all
+Ossie-native. `kcmd` accepts `examples` leniently — items of any shape, keeping
+only the string ones — where Ossie constrains items to strings; authored documents
+SHOULD use string examples for portability. Which parts of `ai_context` reach
+which destination is in [What push and pull preserve](fidelity.md).
 
 ### 2.5. Expressions
 
@@ -232,39 +250,56 @@ portable fallback. An `expression` references logical fields as
 `entity.field`; the qualifiers are what let a metric's entity be derived
 ([§2.3](#23-metric)).
 
+Ossie closes `dialect` to an enum — `ANSI_SQL`, `SNOWFLAKE`, `MDX`, `TABLEAU`,
+`DATABRICKS`, `MAQL`, `BIGQUERY`, `THOUGHTSPOT`. `kcmd`'s parser accepts any
+string here (a relaxation); authored documents SHOULD use an Ossie dialect name.
+
 ## 3. Conformance summary
 
-Every construct, at a glance. **Status** is this profile's relationship to Ossie:
-*as-is* (adopted unchanged), *narrowed* (accepted but stricter, [§4](#4-narrowings)),
-*extension* (added by `kcmd`, [§5](#5-extensions)), *alias/sugar* (a `kcmd`
-spelling of an Ossie construct), or *reserved* (recognized internally, not
-authorable in `0.2.0.dev0`). Rows marked **†** need reconciliation against the
-published Ossie grammar (see [§1](#1-status-and-baseline)).
+Every construct, at a glance. **In Ossie?** is whether Ossie `0.2.0.dev0` defines
+it (per the vendored core schema — see [§1](#1-status-and-baseline)). **kcmd
+status** is this profile's relationship to it: *as-is* (adopted unchanged),
+*relaxed* (accepted but looser than Ossie, [§4](#4-narrowings-and-relaxations)), *narrowed*
+(accepted but stricter, [§4](#4-narrowings-and-relaxations)), *extension* (added by `kcmd`,
+[§5](#5-extensions)), or *reserved* (recognized internally, not authorable in
+`0.2.0.dev0`).
 
-| Construct | Ossie baseline | Status | Where |
+| Construct | In Ossie? | kcmd status | Where |
 |---|---|---|---|
-| `semantic_model`, `name`, `description` | native † | as-is | [§2](#2-document-shape) |
-| `datasets` | native † | as-is | [§2.1](#21-dataset-entity) |
-| `entities` (as `datasets`) | — | alias/sugar | [§5](#5-extensions) |
-| field (`name`, `datatype`, `label`, `dimension`) | native † | as-is | [§2.1.1](#211-field) |
-| `datatype` vocabulary | native † | as-is (closed) | [§2.1.1](#211-field) |
-| `primary_key`, `unique_keys` | native † | as-is | [§2.1](#21-dataset-entity) |
-| `extends` | native † | as-is | [§2.1.2](#212-inheritance-extends) |
-| `abstract` | — | extension | [§5](#5-extensions) |
-| relationship (1:1, 1:N) | native † | as-is | [§2.2](#22-relationship) |
-| relationship M:N (`association`) | — | reserved (IR only) | [§2.2](#22-relationship) |
-| `metrics`, `expression` (per-dialect) | native † | narrowed | [§2.3](#23-metric), [§4](#4-narrowings) |
-| `ai_context` (`instructions`, `synonyms`, `examples`) | native † | as-is | [§2.4](#24-ai_context) |
-| `custom_extensions` | native † | as-is (mechanism) | [§6](#6-the-extension-mechanism) |
-| `source` (table binding) | store-agnostic in Ossie | extension | [§7](#7-the-binding-layer) |
-| field `expression` / `unbound` (binding) | native †/— | as-is / extension | [§7](#7-the-binding-layer) |
-| `deployment_target` | — | extension | [§5](#5-extensions), [§7](#7-the-binding-layer) |
-| binding profiles | — | extension | [§7](#7-the-binding-layer) |
-| single model per entry group | — | narrowed | [§4](#4-narrowings) |
+| `semantic_model`, `name`, `description` | yes | as-is | [§2](#2-document-shape) |
+| `datasets` | yes | as-is | [§2.1](#21-dataset-entity) |
+| `entities` (alias for `datasets`) | no | extension (alias) | [§5](#5-extensions) |
+| field `name`, `label`, `dimension` (`is_time`) | yes | as-is | [§2.1.1](#211-field) |
+| `datatype` + its vocabulary | yes | as-is (identical, closed) | [§2.1.1](#211-field) |
+| `primary_key`, `unique_keys` | yes | as-is | [§2.1](#21-dataset-entity) |
+| `extends` | no | extension | [§2.1.2](#212-inheritance-extends), [§5](#5-extensions) |
+| `abstract` | no | extension | [§5](#5-extensions) |
+| relationship `name`, `from`, `to` | yes | as-is | [§2.2](#22-relationship) |
+| relationship `from_columns` / `to_columns` | yes (required) | relaxed to optional | [§2.2](#22-relationship), [§4](#4-narrowings-and-relaxations) |
+| relationship M:N (`association`) | no | reserved (IR only) | [§2.2](#22-relationship) |
+| `metrics`, metric `expression` (required) | yes | as-is; graph-bound narrowed | [§2.3](#23-metric), [§4](#4-narrowings-and-relaxations) |
+| `expression.dialects` | yes (closed enum) | as-is; `dialect` string relaxed | [§2.5](#25-expressions) |
+| field `expression` (column binding) | yes (required) | relaxed to optional | [§7](#7-the-binding-layer), [§4](#4-narrowings-and-relaxations) |
+| `source` (dataset table binding) | yes (required) | relaxed to optional | [§7.1](#71-table-sources), [§4](#4-narrowings-and-relaxations) |
+| `unbound` (field) | no | extension | [§5](#5-extensions), [§7](#7-the-binding-layer) |
+| `ai_context` (`instructions`, `synonyms`, `examples`) | yes | as-is (`examples` relaxed) | [§2.4](#24-ai_context) |
+| `custom_extensions` (`vendor_name`, `data`) | yes | as-is (mechanism) | [§6](#6-the-extension-mechanism) |
+| `deployment_target` | no | extension | [§5](#5-extensions), [§7.2](#72-deployment-target) |
+| binding profiles | no | extension | [§7.3](#73-binding-profiles) |
+| single model per entry group | — | narrowed | [§4](#4-narrowings-and-relaxations) |
 
-## 4. Narrowings
+## 4. Narrowings and relaxations
 
-Where `kcmd` accepts Ossie but is **stricter**. Each rule and its reason:
+`kcmd` diverges from Ossie in two directions. **Narrowings** are where `kcmd` is
+stricter — rules that can reject an otherwise-valid Ossie document at deploy time.
+**Relaxations** are where `kcmd` is looser — fields Ossie requires that `kcmd`
+makes optional, so a relaxed `kcmd` model is not a valid Ossie document until those
+fields are supplied. Both are the reason the reverse compatibility direction in
+[§1](#1-status-and-baseline) is conditional.
+
+### 4.1. Narrowings (stricter than Ossie)
+
+Each rule and its reason:
 
 - **At most one deployment target per model.** A model bound for a graph MUST
   declare exactly one deployment target ([§7](#7-the-binding-layer)). *Why:* the
@@ -299,8 +334,26 @@ cycles with a warning. What *is* rejected is downstream and store-specific — a
 BigQuery `MEASURE` cannot bind to a label shared across subtype tables. See
 [§2.1.2](#212-inheritance-extends).
 
-The operational form of every rule above (hard error vs. skip-with-warning, and
-the exact message) is in [Reference → Validation](reference.md#validation).
+### 4.2. Relaxations (looser than Ossie)
+
+Ossie marks these fields required; `kcmd` accepts them as optional so a model can
+be governed before it is bound (a purely *logical* model). A graph deploy still
+requires the binding-related ones — that requirement is the corresponding
+narrowing in [§4.1](#41-narrowings-stricter-than-ossie).
+
+- **`source` on a dataset** — required in Ossie; optional in `kcmd`. A non-abstract
+  dataset bound for a graph MUST still declare one.
+- **`expression` on a field** — required in Ossie; optional in `kcmd` (mark the
+  field `unbound`, or supply the column in a binding profile).
+- **`from_columns` / `to_columns` on a relationship** — both required in Ossie;
+  `kcmd` allows both omitted (a logical edge).
+- **`dialect` value** — a closed enum in Ossie; any string in `kcmd`'s parser.
+- **`ai_context.examples` items** — strings in Ossie; any shape in `kcmd`
+  (non-strings are dropped on load).
+
+The operational form of every rule in this section (hard error vs.
+skip-with-warning, and the exact message) is in
+[Reference → Validation](reference.md#validation).
 
 ## 5. Extensions
 
@@ -310,6 +363,10 @@ reads the document ([§6](#6-the-extension-mechanism)).
 - **`entities` as an alias for `datasets`.** A model MAY spell its datasets
   `entities:` instead of `datasets:`. Setting both is an error. Pure sugar —
   identical meaning.
+
+- **`extends` on a dataset.** Class inheritance — a subtype names its supertype
+  datasets. Ossie `0.2.0.dev0` has no inheritance construct. See
+  [§2.1.2](#212-inheritance-extends).
 
 - **`abstract: true` on a dataset.** Marks a concept with no physical table
   (typically an `extends` supertype). An abstract dataset produces no node table
@@ -369,28 +426,31 @@ block does or doesn't reach is in
 
 ## 7. The binding layer
 
-Ossie describes a business independent of where its data lives; the **binding
-layer** is `kcmd`'s addition that says where each logical construct reads from and
-where the model deploys. All of it is optional: a model with no bindings is a
-complete *logical* model that can be governed in Knowledge Catalog as-is. Bindings
-are required only to deploy the model to a store.
+Ossie already binds a model to physical data: a dataset names a `source` table, a
+field names a column `expression`, and a relationship names its join columns. Those
+are Ossie-native, not `kcmd` additions. What `kcmd` adds is the layer that says
+**where a model deploys** and lets **one logical model serve several stores**:
 
-The binding constructs are:
+- **`deployment_target` on the model** — where the model deploys. A `kcmd`
+  extension; Ossie has no deployment construct ([§7.2](#72-deployment-target)).
+- **binding profiles** — a separate document that varies the physical bindings
+  per store. A `kcmd` extension ([§7.3](#73-binding-profiles)).
+- **`unbound` on a field** — a field with no column under a given binding. A
+  `kcmd` extension.
 
-- **`source` on a dataset** — the backing table, as a resource URI.
-- **`expression` / `unbound` on a field** — which column the field maps to under a
-  binding, or that this binding has no column for it.
-- **`deployment_target` on the model** — where the model deploys.
-- **`from_columns` / `to_columns` on a relationship** — the edge's join keys.
+`kcmd` also **relaxes** the Ossie-native bindings — `source`, field `expression`,
+and relationship join columns — from required to optional ([§4.2](#42-relaxations-looser-than-ossie)),
+so a model with none of them is a complete *logical* model that can be governed in
+Knowledge Catalog as-is. The bindings are required only to deploy to a store.
 
-The first three are **profile-swappable**: a [binding profile](#73-binding-profiles)
-can supply or override them, so one logical model deploys to several stores. Edge
-join keys are the exception. They are physical, but they are declared on the
-**logical model** and a profile MUST NOT set them ([§7.3](#73-binding-profiles)),
-so they cannot vary per store — a relationship's `from_columns` / `to_columns` are
-fixed for every binding of the model. In practice this holds because the join keys
-are usually stable across stores even when table and column names differ; a store
-that needs different join keys needs a different logical model.
+The physical bindings divide by what a profile can move. **`source` and a field's
+`expression` are profile-swappable**: a [binding profile](#73-binding-profiles)
+supplies or overrides them, so one logical model deploys to several stores. **A
+relationship's join columns are not** — they are declared on the logical model and
+a profile MUST NOT set them ([§7.3](#73-binding-profiles)), so they are fixed for
+every binding of the model. In practice this holds because join keys are usually
+stable across stores even when table and column names differ; a store that needs
+different join keys needs a different logical model.
 
 ### 7.1. Table sources
 
@@ -403,8 +463,10 @@ that needs different join keys needs a different logical model.
 
 For BigQuery a dotted shorthand is also accepted: `dataset.table` (qualified with
 the scope's project) or `project.dataset.table`; a name with more than three parts
-points at a table in a federated REST catalog. A non-abstract dataset in a model
-bound for a graph MUST have a `source`.
+points at a table in a federated REST catalog. Ossie requires `source` on every
+dataset; `kcmd` relaxes it to optional ([§4.2](#42-relaxations-looser-than-ossie))
+so a purely logical model loads, but a non-abstract dataset in a model bound for a
+graph MUST have one.
 
 ### 7.2. Deployment target
 
@@ -419,7 +481,7 @@ bound for a graph MUST have a `source`.
 ```
 
 The URI MUST match one of these two shapes. A model bound for a graph MUST declare
-exactly one ([§4](#4-narrowings)). The identifier segments are restricted to
+exactly one ([§4](#4-narrowings-and-relaxations)). The identifier segments are restricted to
 `[A-Za-z0-9_-]`. As [§6](#6-the-extension-mechanism) notes, the key is sugar over
 a `GOOGLE` `custom_extensions` block; both forms mean the same thing.
 
@@ -440,7 +502,9 @@ definition. A profile:
 - MUST express a field `expression` as a **bare column reference**, not arbitrary
   SQL — the computation belongs to the logical model.
 
-Profiles live at `catalog/EntryGroups/<entryGroup>/<model>.profiles/<name>.yaml`;
+The model document lives at `catalog/EntryGroups/<entryGroup>/<model>.yaml`
+(sidecar files `*.aspects.yaml` / `*.overview.yaml` are not models). Profiles live
+alongside it at `catalog/EntryGroups/<entryGroup>/<model>.profiles/<name>.yaml`;
 the profile's name is the file's basename. The name `default` is reserved for the
 model's own inline bindings and MUST NOT be used as a profile file. A
 `default_profile` in `catalog.yaml` selects which profile the default push uses.
