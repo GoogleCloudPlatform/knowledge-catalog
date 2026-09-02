@@ -22,39 +22,75 @@ nuances that don't fit a cell. BigQuery and Spanner each get a column; they
 agree on every structural row and differ only where a Spanner target has no
 `MEASURE` and no `OPTIONS` metadata — see [To Spanner](#to-spanner).
 
-| Authored element | → Knowledge Catalog | Recovered by `pull` | → BigQuery | → Spanner |
-|---|---|---|---|---|
-| Entity (name, `source`) | `semantic-entity` entry¹⁰ | ✓ | `NODE TABLE` | `NODE TABLE` |
-| Field | `schema` aspect column | ✓ (type collapses²) | column on the node table¹ | column on the node table¹ |
-| Field `label` | `schema` per-field annotation | ✓ | into `OPTIONS(description)` | — dropped |
-| Field expression (canonical SQL) | only with `--emit-expressions` | only if pushed with it | builds the DDL | builds the DDL |
-| Field dimension role (`is_time`) | only with `--emit-expressions`³ | only if pushed with it³ | noted in `OPTIONS(description)` | — dropped |
-| Primary key | `schema.primaryKey` | ✓ | `KEY(...)` on the node table | `KEY(...)` on the node table |
-| Unique keys | `schema.uniqueConstraints` | ✓ | — dropped (only PK emitted) | — dropped (only PK emitted) |
-| Metric | `semantic-metric` entry | name, entity, description, instructions, type⁵ | `MEASURE`⁴ | — dropped (no `MEASURE`) |
-| Relationship (1:1 / 1:N) | `schema-join` link | ✓ (name normalized⁶) | `EDGE TABLE` | `EDGE TABLE` |
-| Relationship (M:N / `association`) | — not stored | — | `EDGE TABLE` (via junction table) | `EDGE TABLE` (via junction table) |
-| Entity `extends` | — not modelled | — | `LABEL` clauses + flattened fields | `LABEL` clauses + flattened fields |
-| `description` (entity / metric / field / relationship) | entry description / aspect | ✓ | `OPTIONS(description)` | — dropped |
-| `ai_context.synonyms` | — not stored | — | `OPTIONS(synonyms=[...])` | — dropped |
-| `ai_context.instructions` | `guidelines` aspect⁷ | ✓⁷ | into `OPTIONS(description)` | — dropped |
-| `ai_context.examples` | — not stored | — | into `OPTIONS(description)` (`Examples:` line) | — dropped |
-| Model-level `description` / `instructions` | on the model entry | ✓⁸ | — dropped⁸ | — dropped⁸ |
-| Model-level `ai_context.synonyms` / `examples` | — not stored | — | — dropped | — dropped |
-| Deployment target | recorded on the model entry | ✓ | names the graph | names the graph |
-| Imported vendor SQL (`importedExpression` / `importedDialect`) | — not stored | — | fallback — builds the DDL only when no canonical `expression` exists | fallback — builds the DDL only when no canonical `expression` exists |
-| `custom_extensions` (beyond the deployment target) | — not stored | —⁹ | — not in graph | — not in graph |
+| Authored element                                               | → Knowledge Catalog             | Recovered by `pull`                            | → BigQuery                                                           | → Spanner                                                            |
+|----------------------------------------------------------------|---------------------------------|------------------------------------------------|----------------------------------------------------------------------|----------------------------------------------------------------------|
+| Entity (name, `source`)                                        | `semantic-entity` entry¹⁰       | ✓                                              | `NODE TABLE`                                                         | `NODE TABLE`                                                         |
+| Field                                                          | `schema` aspect column          | ✓ (type collapses²)                            | column on the node table¹                                            | column on the node table¹                                            |
+| Field `label`                                                  | `schema` per-field annotation   | ✓                                              | into `OPTIONS(description)`                                          | — dropped                                                            |
+| Field expression (canonical SQL)                               | only with `--emit-expressions`  | only if pushed with it                         | builds the DDL                                                       | builds the DDL                                                       |
+| Field dimension role (`is_time`)                               | only with `--emit-expressions`³ | only if pushed with it³                        | noted in `OPTIONS(description)`                                      | — dropped                                                            |
+| Primary key                                                    | `schema.primaryKey`             | ✓                                              | `KEY(...)` on the node table                                         | `KEY(...)` on the node table                                         |
+| Unique keys                                                    | `schema.uniqueConstraints`      | ✓                                              | — dropped (only PK emitted)                                          | — dropped (only PK emitted)                                          |
+| Metric                                                         | `semantic-metric` entry         | name, entity, description, instructions, type⁵ | `MEASURE`⁴                                                           | — dropped (no `MEASURE`)                                             |
+| Relationship (1:1 / 1:N)                                       | `schema-join` link              | ✓ (name normalized⁶)                           | `EDGE TABLE`                                                         | `EDGE TABLE`                                                         |
+| Relationship (M:N / `association`)                             | — not stored                    | —                                              | `EDGE TABLE` (via junction table)                                    | `EDGE TABLE` (via junction table)                                    |
+| Entity `extends`                                               | — not modelled                  | —                                              | `LABEL` clauses + flattened fields                                   | `LABEL` clauses + flattened fields                                   |
+| `description` (entity / metric / field / relationship)         | entry description / aspect      | ✓                                              | `OPTIONS(description)`                                               | — dropped                                                            |
+| `ai_context.synonyms`                                          | — not stored                    | —                                              | `OPTIONS(synonyms=[...])`                                            | — dropped                                                            |
+| `ai_context.instructions`                                      | `guidelines` aspect⁷            | ✓⁷                                             | into `OPTIONS(description)`                                          | — dropped                                                            |
+| `ai_context.examples`                                          | — not stored                    | —                                              | into `OPTIONS(description)` (`Examples:` line)                       | — dropped                                                            |
+| Model-level `description` / `instructions`                     | on the model entry              | ✓⁸                                             | — dropped⁸                                                           | — dropped⁸                                                           |
+| Model-level `ai_context.synonyms` / `examples`                 | — not stored                    | —                                              | — dropped                                                            | — dropped                                                            |
+| Deployment target                                              | recorded on the model entry     | ✓                                              | names the graph                                                      | names the graph                                                      |
+| Imported vendor SQL (`importedExpression` / `importedDialect`) | — not stored                    | —                                              | fallback — builds the DDL only when no canonical `expression` exists | fallback — builds the DDL only when no canonical `expression` exists |
+| `custom_extensions` (beyond the deployment target)             | — not stored                    | —⁹                                             | — not in graph                                                       | — not in graph                                                       |
 
-¹ The graph uses the source column's own type; a field's authored `datatype` is not carried.
-² Field types round-trip except two collapses: no type → `Opaque`, and `String` → un-typed. Both store as `dataType STRING`, disambiguated by `metadataType` (`OTHER` → read back as `Opaque`; `STRING` → read back un-typed) — which is exactly what lets them round-trip differently.
-³ The default push omits the per-field `semantics` block, so the dimension role is written only with `--emit-expressions` — and then comes back as a bare `dimension: {}` marker (without `is_time`, and so on). A default push drops the marker entirely.
-⁴ A metric must resolve to exactly one entity (otherwise the push is rejected) and reduce to one supported aggregate — `SUM` / `AVG` / `COUNT` / `MIN` / `MAX` — over one operand (otherwise it is skipped with a warning).
-⁵ A metric's expression is gated behind `--emit-expressions`; its data type round-trips only for a concrete type (e.g. `Decimal`) — an untyped, `String`, or `Opaque` metric comes back un-typed.
-⁶ Relationship names come back lowercased/hyphenated (`Places Order` → `places-order`) — the catalog stores the name only in the link id. See [Writer-side follow-up](#writer-side-follow-up).
-⁷ The `guidelines` aspect exists only for the model, entities, and metrics — not fields or relationships, so field- and relationship-level `ai_context.instructions` has no Knowledge Catalog home (a relationship's instructions still reach BigQuery, folded into the edge's `OPTIONS(description)`).
-⁸ Neither graph has a home for statement-level metadata — BigQuery silently drops graph-statement `OPTIONS`, and Spanner carries no `OPTIONS` at all — so the model's `description` and `ai_context.instructions` are carried into Knowledge Catalog instead.
-⁹ Every other `custom_extensions` block — most notably the OWL constructs the importer carries with no native home yet (`owl:inverseOf`, `owl:oneOf`, `rdfs:subPropertyOf`, `owl:propertyChainAxiom`, the equivalence and disjointness pairs, the set-level axioms `owl:AllDisjointClasses` / `owl:AllDisjointProperties` / `owl:AllDifferent`, the property characteristics, `owl:deprecated` / `owl:versionInfo`, …) — is inert on push and not persisted to Knowledge Catalog, so `pull` never recovers it. It does survive the OSI *document* round-trip verbatim, so it stays intact in your authored file. See [Constructs carried as custom extensions](owl-import.md#constructs-carried-as-custom-extensions-not-yet-native) for the full list and shape.
-¹⁰ A model with no bindings still publishes to Knowledge Catalog: each entity's `source` is recorded empty (`resources: []`) because there is no table behind it, and a relationship that carries no join columns is skipped with a warning. When the same push also deploys a graph, the catalog entries are first pruned to what the graph binds — see [To Knowledge Catalog](#to-knowledge-catalog).
+- **¹ Field type source.** The graph uses the source column's own type; a
+  field's authored `datatype` is not carried.
+- **² Field type collapses.** Field types round-trip except two collapses: no
+  type → `Opaque`, and `String` → un-typed. Both store as `dataType STRING`,
+  disambiguated by `metadataType` (`OTHER` → read back as `Opaque`; `STRING` →
+  read back un-typed) — which is what lets them round-trip differently.
+- **³ Dimension role.** The default push omits the per-field `semantics` block,
+  so the dimension role is written only with `--emit-expressions` — and then
+  comes back as a bare `dimension: {}` marker (without `is_time`, and so on). A
+  default push drops the marker entirely.
+- **⁴ Metric shape.** A metric must resolve to exactly one entity (otherwise the
+  push is rejected) and reduce to one supported aggregate — `SUM` / `AVG` /
+  `COUNT` / `MIN` / `MAX` — over one operand (otherwise it is skipped with a
+  warning).
+- **⁵ Metric type.** A metric's expression is gated behind `--emit-expressions`;
+  its data type round-trips only for a concrete type (e.g. `Decimal`) — an
+  untyped, `String`, or `Opaque` metric comes back un-typed.
+- **⁶ Relationship name.** Relationship names come back lowercased/hyphenated
+  (`Places Order` → `places-order`) — the catalog stores the name only in the
+  link id. See [Writer-side follow-up](#writer-side-follow-up).
+- **⁷ Guidelines aspect.** The `guidelines` aspect exists only for the model,
+  entities, and metrics — not fields or relationships, so field- and
+  relationship-level `ai_context.instructions` has no Knowledge Catalog home (a
+  relationship's instructions still reach BigQuery, folded into the edge's
+  `OPTIONS(description)`).
+- **⁸ Model-level metadata.** Neither graph has a home for statement-level
+  metadata — BigQuery silently drops graph-statement `OPTIONS`, and Spanner
+  carries no `OPTIONS` at all — so the model's `description` and
+  `ai_context.instructions` are carried into Knowledge Catalog instead.
+- **⁹ OWL and other custom extensions.** Every other `custom_extensions` block —
+  most notably the OWL constructs the importer carries with no native home yet
+  (`owl:inverseOf`, `owl:oneOf`, `rdfs:subPropertyOf`, `owl:propertyChainAxiom`,
+  the equivalence and disjointness pairs, the set-level axioms
+  `owl:AllDisjointClasses` / `owl:AllDisjointProperties` / `owl:AllDifferent`,
+  the property characteristics, `owl:deprecated` / `owl:versionInfo`, …) — is
+  inert on push and not persisted to Knowledge Catalog, so `pull` never recovers
+  it. It does survive the OSI *document* round-trip verbatim, so it stays intact
+  in your authored file. See
+  [Constructs carried as custom extensions](owl-import.md#constructs-carried-as-custom-extensions-not-yet-native)
+  for the full list and shape.
+- **¹⁰ Logical (unbound) model.** A model with no bindings still publishes to
+  Knowledge Catalog: each entity's `source` is recorded empty (`resources: []`)
+  because there is no table behind it, and a relationship that carries no join
+  columns is skipped with a warning. When the same push also deploys a graph,
+  the catalog entries are first pruned to what the graph binds — see
+  [To Knowledge Catalog](#to-knowledge-catalog).
 
 ## To Knowledge Catalog
 
