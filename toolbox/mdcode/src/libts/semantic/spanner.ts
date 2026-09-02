@@ -180,8 +180,7 @@ function renderNodeTable(
   // Defense in depth: availability pruning normally strips every unbound field
   // (it has no column) before generation. A caller that generates DDL straight
   // from a bindingOptional load without pruning could still reach here with an
-  // unbound (e.g. purely logical) field; skip it with a warning rather than
-  // emit
+  // unbound (e.g. purely logical) field; skip it with a warning rather than emit
   // `<name>` as a phantom bare column the source table does not have.
   const boundFields = entity.fields.filter(f => {
     if (fieldExpression(f) !== undefined) return true;
@@ -358,7 +357,8 @@ function renderFieldProperty(field: Field, entity: string): string {
   const expr = fieldExpression(field);
   const local = expr !== undefined ? stripQualifier(expr, entity) : field.name;
   const alias = quoteIfReserved(field.name);
-  return local === field.name ? alias : `${quoteIfReserved(local)} AS ${alias}`;
+  return local === field.name ? alias :
+                                `${quoteIfReserved(local)} AS ${alias}`;
 }
 
 

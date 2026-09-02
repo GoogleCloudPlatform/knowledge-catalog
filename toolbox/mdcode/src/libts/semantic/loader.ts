@@ -4,23 +4,23 @@
 // The format describes a semantic model as datasets (entities), foreign-key
 // relationships, and model-level metrics, with entity-qualified SQL expressions
 // (`Entity.column`) supplied per SQL dialect. This module reads the subset of
-// that logical layer needed to normalize a model into the IR, so the rest of
-// the toolbox (e.g. the BigQuery property-graph generator) can consume models
+// that logical layer needed to normalize a model into the IR, so the rest of the
+// toolbox (e.g. the BigQuery property-graph generator) can consume models
 // authored in it. Fields outside the supported subset are accepted and ignored.
 //
 
 import * as yaml from 'yaml';
 import * as z from 'zod';
-
-import {AiContext, CustomExtension, DATA_TYPES, Entity, Field, Metric, Relationship, SemanticModel,} from './ir';
-import {referencedEntityNames} from './sql_expr_utils';
+import {
+  SemanticModel, Entity, Field, Relationship, Metric, AiContext, CustomExtension,
+  DATA_TYPES,
+} from './ir';
+import { referencedEntityNames } from './sql_expr_utils';
 
 export interface LoadOptions {
-  dialect?: string;  // preferred expression dialect; default 'BIGQUERY'
-  defaultProject?:
-      string;  // fallback when a dataset `source` omits the project
-  defaultDataset?:
-      string;  // fallback when a dataset `source` omits the dataset
+  dialect?: string;         // preferred expression dialect; default 'BIGQUERY'
+  defaultProject?: string;  // fallback when a dataset `source` omits the project
+  defaultDataset?: string;  // fallback when a dataset `source` omits the dataset
   // Accept a purely logical model: do not require a `source` on each concrete
   // dataset or an `expression` on each field. Set for a Knowledge-Catalog-only
   // push, which governs the logical model (meaning) and needs no physical
@@ -52,14 +52,14 @@ const SUPPORTED_VERSION = '0.2.0.dev0';
 // only ever sees the per-dialect object.
 const expressionObjectSchema = z.object({
   dialects: z.array(z.object({
-               dialect: z.string(),
-               expression: z.string(),
-             })).min(1),
+    dialect: z.string(),
+    expression: z.string(),
+  })).min(1),
 });
 const expressionSchema = z.union([
   z.string().transform((s): z.infer<typeof expressionObjectSchema> => ({
-                         dialects: [{dialect: DEFAULT_DIALECT, expression: s}],
-                       })),
+    dialects: [{ dialect: DEFAULT_DIALECT, expression: s }],
+  })),
   expressionObjectSchema,
 ]);
 
@@ -79,9 +79,8 @@ const aiContextSchema = z.union([
 // A vendor-scoped extension block: opaque `data` (a JSON string) tagged by
 // `vendor_name`. The spec allows these at every level (model, dataset, field,
 // relationship, metric). All are preserved verbatim on the IR (see
-// toCustomExtensions) for lossless round-trip; no vendor block is interpreted
-// at load time -- typed views (e.g. off the GOOGLE block) are a consumer
-// concern.
+// toCustomExtensions) for lossless round-trip; no vendor block is interpreted at
+// load time -- typed views (e.g. off the GOOGLE block) are a consumer concern.
 const customExtensionSchema = z.object({
   vendor_name: z.string(),
   data: z.string(),
@@ -105,8 +104,7 @@ const fieldBase = z.object({
   // logical field carries neither.
   expression: expressionSchema.optional(),
   unbound: z.boolean().optional(),
-  datatype: z.enum(DATA_TYPES).optional(),  // closed, case-sensitive
-                                            // vocabulary; see DATA_TYPES
+  datatype: z.enum(DATA_TYPES).optional(),   // closed, case-sensitive vocabulary; see DATA_TYPES
   description: z.string().optional(),
   label: z.string().optional(),
   dimension: dimensionSchema.optional(),
@@ -140,32 +138,27 @@ const datasetBase = z.object({
 });
 
 const relationshipSchema = z.object({
-                              name: z.string(),
-                              from: z.string(),
-                              to: z.string(),
-                              // Join columns are the physical binding of the
-                              // edge and are OPTIONAL, so a purely logical
-                              // relationship (an ontology edge, direction only)
-                              // loads. When present they must be non-empty;
-                              // either both endpoints are bound or neither is
-                              // (a half-bound edge is a malformed join, caught
-                              // below). A graph push still requires both (see
-                              // validatePushRequirements).
-                              from_columns:
-                                  z.array(z.string()).min(1).optional(),
-                              to_columns: z.array(z.string()).min(1).optional(),
-                              description: z.string().optional(),
-                              ai_context: aiContextSchema.optional(),
-                              custom_extensions:
-                                  z.array(customExtensionSchema).optional(),
-                            }).superRefine((r, ctx) => {
+  name: z.string(),
+  from: z.string(),
+  to: z.string(),
+  // Join columns are the physical binding of the edge and are OPTIONAL, so a
+  // purely logical relationship (an ontology edge, direction only) loads. When
+  // present they must be non-empty; either both endpoints are bound or neither
+  // is (a half-bound edge is a malformed join, caught below). A graph push still
+  // requires both (see validatePushRequirements).
+  from_columns: z.array(z.string()).min(1).optional(),
+  to_columns: z.array(z.string()).min(1).optional(),
+  description: z.string().optional(),
+  ai_context: aiContextSchema.optional(),
+  custom_extensions: z.array(customExtensionSchema).optional(),
+}).superRefine((r, ctx) => {
   if ((r.from_columns === undefined) !== (r.to_columns === undefined)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: `relationship '${
-                   r.name}': from_columns and to_columns must be given ` +
-          `together (both bind the edge) or both omitted (a logical edge); one ` +
-          `without the other is a half-bound join.`,
+      message:
+        `relationship '${r.name}': from_columns and to_columns must be given ` +
+        `together (both bind the edge) or both omitted (a logical edge); one ` +
+        `without the other is a half-bound join.`,
     });
   }
 });
@@ -173,8 +166,7 @@ const relationshipSchema = z.object({
 const metricSchema = z.object({
   name: z.string(),
   expression: expressionSchema,
-  datatype: z.enum(DATA_TYPES).optional(),  // closed, case-sensitive
-                                            // vocabulary; see DATA_TYPES
+  datatype: z.enum(DATA_TYPES).optional(),   // closed, case-sensitive vocabulary; see DATA_TYPES
   description: z.string().optional(),
   ai_context: aiContextSchema.optional(),
   custom_extensions: z.array(customExtensionSchema).optional(),
@@ -207,58 +199,54 @@ function buildDocumentSchema(bindingOptional: boolean) {
             `'expression', or drop 'unbound: true' to bind it to that column`,
       });
     }
-    // The "requires an expression" check lives at the dataset level below, not
-    // here: a field on an ABSTRACT dataset legitimately has no column (the
-    // supertype has no table -- it survives only as a label on its subtypes),
-    // and only the dataset's superRefine can see `abstract`.
+    // The expression-required check is applied at the dataset level (below),
+    // not here, so it can skip a dataset marked `abstract`: an abstract
+    // supertype has no table and its fields carry no expression, surviving only
+    // as labels on its concrete descendants.
   });
-  const dataset =
-      datasetBase.extend({fields: z.array(field).optional()})
-          .superRefine((ds, ctx) => {
-            // A concrete (non-abstract) dataset must name its backing table;
-            // only an abstract one may omit `source`. Relaxed under
-            // bindingOptional, where a logical dataset has no source.
-            if (!bindingOptional && !ds.abstract && ds.source === undefined) {
-              ctx.addIssue({
-                code: z.ZodIssueCode.custom,
-                path: ['source'],
-                message:
-                    `dataset '${ds.name}': a non-abstract dataset requires a ` +
-                    `source; set 'source', or mark it 'abstract: true' if it has no table`,
-              });
-            }
-            // The converse is always contradictory: an abstract dataset has no
-            // physical table, so a `source` on it would be silently ignored by
-            // the BigQuery leg. Reject it regardless of bindingOptional.
-            if (ds.abstract && ds.source !== undefined) {
-              ctx.addIssue({
-                code: z.ZodIssueCode.custom,
-                path: ['source'],
-                message:
-                    `dataset '${ds.name}': an abstract dataset has no table; ` +
-                    `remove 'source', or drop 'abstract: true' to bind it to that table`,
-              });
-            }
-            // Under a graph leg, every field of a CONCRETE dataset must be
-            // bound or explicitly unbound. An abstract dataset is exempt: it
-            // has no table, so its fields carry no column -- they define the
-            // label signature its subtypes bind. Enforced here (not on the
-            // field) so `abstract` is visible.
-            if (!bindingOptional && !ds.abstract) {
-              (ds.fields ?? []).forEach((f, i) => {
-                if (!f.unbound && f.expression === undefined) {
-                  ctx.addIssue({
-                    code: z.ZodIssueCode.custom,
-                    path: ['fields', i, 'expression'],
-                    message: `field '${f.name}': requires an expression; set ` +
-                        `'expression', or mark it 'unbound: true' if this ` +
-                        `binding has no column for it`,
-                  });
-                }
-              });
-            }
-          });
-  const model = modelBase.extend({datasets: z.array(dataset).min(1)});
+  const dataset = datasetBase.extend({ fields: z.array(field).optional() })
+    .superRefine((ds, ctx) => {
+      // A concrete (non-abstract) dataset must name its backing table; only an
+      // abstract one may omit `source`. Relaxed under bindingOptional, where a
+      // logical dataset has no source.
+      if (!bindingOptional && !ds.abstract && ds.source === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['source'],
+          message: `dataset '${ds.name}': a non-abstract dataset requires a ` +
+              `source; set 'source', or mark it 'abstract: true' if it has no table`,
+        });
+      }
+      // The converse is always contradictory: an abstract dataset has no
+      // physical table, so a `source` on it would be silently ignored by the
+      // BigQuery leg. Reject it regardless of bindingOptional.
+      if (ds.abstract && ds.source !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['source'],
+          message: `dataset '${ds.name}': an abstract dataset has no table; ` +
+              `remove 'source', or drop 'abstract: true' to bind it to that table`,
+        });
+      }
+      // Each concrete dataset's fields must be bound (or explicitly `unbound`)
+      // under a graph leg. An abstract dataset is skipped: it has no table, so
+      // its fields carry no column. Checked here rather than per-field because
+      // abstractness is a dataset-level fact.
+      if (!bindingOptional && !ds.abstract) {
+        (ds.fields ?? []).forEach((f, i) => {
+          if (!f.unbound && f.expression === undefined) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['fields', i, 'expression'],
+              message: `field '${f.name}': requires an expression; set ` +
+                  `'expression', or mark it 'unbound: true' if this ` +
+                  `binding has no column for it`,
+            });
+          }
+        });
+      }
+    });
+  const model = modelBase.extend({ datasets: z.array(dataset).min(1) });
   return z.object({
     version: z.string().optional(),
     semantic_model: z.array(model).min(1),
@@ -267,8 +255,8 @@ function buildDocumentSchema(bindingOptional: boolean) {
 
 // Only two schema shapes exist (strict vs binding-optional) and each is
 // immutable, so build both once at module load and select between them rather
-// than reconstructing the whole field/dataset/model/document graph -- with
-// fresh superRefine closures -- on every fromDocument call.
+// than reconstructing the whole field/dataset/model/document graph -- with fresh
+// superRefine closures -- on every fromDocument call.
 const strictDocumentSchema = buildDocumentSchema(false);
 const logicalDocumentSchema = buildDocumentSchema(true);
 function makeDocumentSchema(bindingOptional: boolean) {
@@ -287,16 +275,14 @@ type AiContextDoc = z.infer<typeof aiContextSchema>;
 // The AI-first `ai_context` normalized to the IR's common shape: a bare string
 // is read as `instructions`; a structured object keeps its parts. `examples` is
 // filtered to strings (producers vary; non-string examples are dropped).
-function normalizeAiContext(ai: AiContextDoc|undefined): AiContext {
+function normalizeAiContext(ai: AiContextDoc | undefined): AiContext {
   if (ai === undefined) return {};
-  if (typeof ai === 'string') return {instructions: ai};
+  if (typeof ai === 'string') return { instructions: ai };
   const out: AiContext = {};
   if (ai.instructions) out.instructions = ai.instructions;
-  if (ai.synonyms && ai.synonyms.length)
-    out.synonyms = [...new Set(ai.synonyms)];
+  if (ai.synonyms && ai.synonyms.length) out.synonyms = [...new Set(ai.synonyms)];
   if (ai.examples && ai.examples.length) {
-    const strings =
-        ai.examples.filter((e): e is string => typeof e === 'string');
+    const strings = ai.examples.filter((e): e is string => typeof e === 'string');
     if (strings.length) out.examples = strings;
   }
   return out;
@@ -304,7 +290,7 @@ function normalizeAiContext(ai: AiContextDoc|undefined): AiContext {
 
 // Normalizes `ai_context` and returns it only when it carries something, so the
 // IR omits empty aiContext objects.
-function aiContextOrUndefined(ai: AiContextDoc|undefined): AiContext|undefined {
+function aiContextOrUndefined(ai: AiContextDoc | undefined): AiContext | undefined {
   const ctx = normalizeAiContext(ai);
   return (ctx.instructions || ctx.synonyms || ctx.examples) ? ctx : undefined;
 }
@@ -313,21 +299,22 @@ function aiContextOrUndefined(ai: AiContextDoc|undefined): AiContext|undefined {
 // `vendorName`; `data` kept as the opaque, vendor-serialized string) so nothing
 // is lost and a 1P round-trip stays lossless. Typed views over specific vendors
 // are derived by the consumers that need them, not here.
-function toCustomExtensions(exts: CustomExtensionDoc[]|undefined):
-    CustomExtension[]|undefined {
+function toCustomExtensions(
+    exts: CustomExtensionDoc[] | undefined): CustomExtension[] | undefined {
   if (!exts || !exts.length) return undefined;
-  return exts.map(e => ({vendorName: e.vendor_name, data: e.data}));
+  return exts.map(e => ({ vendorName: e.vendor_name, data: e.data }));
 }
 
 // Composes a single description string from ordered parts, dropping empties.
 // Parts are separated by blank lines so a base description and derived markers
 // read as distinct paragraphs in the emitted metadata. AI-first annotations
-// (instructions / synonyms / examples) are NOT folded in here — they are
-// carried structurally on the IR (aiContext) so an emitter can route them to
-// their own aspects.
-function composeDescription(...parts: (string|undefined)[]): string|undefined {
-  const kept = parts.map(p => (p === undefined ? undefined : p.trim()))
-                   .filter((p): p is string => !!p);
+// (instructions / synonyms / examples) are NOT folded in here — they are carried
+// structurally on the IR (aiContext) so an emitter can route them to their own
+// aspects.
+function composeDescription(...parts: (string | undefined)[]): string | undefined {
+  const kept = parts
+    .map(p => (p === undefined ? undefined : p.trim()))
+    .filter((p): p is string => !!p);
   return kept.length ? kept.join('\n\n') : undefined;
 }
 
@@ -359,8 +346,7 @@ function normalizeModelSugars(m: any): void {
 
   if (m.entities !== undefined) {
     if (m.datasets !== undefined) {
-      throw new Error(
-          `Semantic model load error: ${label}: set either ` +
+      throw new Error(`Semantic model load error: ${label}: set either ` +
           `'entities' or 'datasets', not both (they are the same key).`);
     }
     m.datasets = m.entities;
@@ -370,8 +356,7 @@ function normalizeModelSugars(m: any): void {
   if (m.deployment_target !== undefined) {
     const target = m.deployment_target;
     if (typeof target !== 'string') {
-      throw new Error(
-          `Semantic model load error: ${label}: ` +
+      throw new Error(`Semantic model load error: ${label}: ` +
           `'deployment_target' must be a URI string.`);
     }
     foldDeploymentTarget(m, target, label);
@@ -399,8 +384,7 @@ function foldDeploymentTarget(m: any, target: string, label: string): void {
     const list = data?.deploymentTargets;
     if (Array.isArray(list) && list.length) {
       if (!list.includes(target)) {
-        throw new Error(
-            `Semantic model load error: ${label}: ` +
+        throw new Error(`Semantic model load error: ${label}: ` +
             `'deployment_target' disagrees with the GOOGLE custom_extension ` +
             `already on this model; set one, or make them match.`);
       }
@@ -409,22 +393,21 @@ function foldDeploymentTarget(m: any, target: string, label: string): void {
   }
   exts.push({
     vendor_name: GOOGLE_VENDOR,
-    data: JSON.stringify({deploymentTargets: [target]}),
+    data: JSON.stringify({ deploymentTargets: [target] }),
   });
   m.custom_extensions = exts;
 }
 
 /**
- * Loads YAML or JSON text (a document in the AI-first semantics format) into
- * the Semantic Model IR. `yaml.parse` accepts JSON too, so both are supported.
+ * Loads YAML or JSON text (a document in the AI-first semantics format) into the
+ * Semantic Model IR. `yaml.parse` accepts JSON too, so both are supported.
  */
 export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
   let doc: unknown;
   try {
     doc = yaml.parse(text);
   } catch (err: any) {
-    throw new Error(`Semantic model load error: could not parse input: ${
-        err?.message ?? err}`);
+    throw new Error(`Semantic model load error: could not parse input: ${err?.message ?? err}`);
   }
   return fromDocument(doc, opts);
 }
@@ -447,14 +430,12 @@ export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
 
   if (parsed.version && parsed.version !== SUPPORTED_VERSION) {
     warnings.push(
-        `document version '${parsed.version}' differs from the supported '${
-            SUPPORTED_VERSION}'; ` +
-        `loading anyway`);
+      `document version '${parsed.version}' differs from the supported '${SUPPORTED_VERSION}'; ` +
+      `loading anyway`);
   }
 
-  const models =
-      parsed.semantic_model.map(m => convertModel(m, opts, warnings));
-  return {models, warnings: [...new Set(warnings)]};
+  const models = parsed.semantic_model.map(m => convertModel(m, opts, warnings));
+  return { models, warnings: [...new Set(warnings)] };
 }
 
 
@@ -469,40 +450,34 @@ function warnDuplicateNames(
   for (const n of names) {
     if (seen.has(n)) {
       warnings.push(
-          `${scope}: duplicate ${kind} '${n}'; names must be unique ` +
-          `(the generated graph will be invalid)`);
+        `${scope}: duplicate ${kind} '${n}'; names must be unique ` +
+        `(the generated graph will be invalid)`);
     }
     seen.add(n);
   }
 }
 
-function convertModel(
-    m: ModelDoc, opts: LoadOptions, warnings: string[]): SemanticModel {
+function convertModel(m: ModelDoc, opts: LoadOptions, warnings: string[]): SemanticModel {
   const dialect = opts.dialect ?? DEFAULT_DIALECT;
 
-  const entities =
-      m.datasets.map(ds => convertDataset(ds, opts, warnings, dialect));
-  warnDuplicateNames(
-      entities.map(e => e.name), 'dataset name', `model '${m.name}'`, warnings);
+  const entities = m.datasets.map(ds => convertDataset(ds, opts, warnings, dialect));
+  warnDuplicateNames(entities.map(e => e.name), 'dataset name', `model '${m.name}'`, warnings);
 
   const entityNames = entities.map(e => e.name);
   const entityNameSet = new Set(entityNames);
 
-  const relationships =
-      (m.relationships ?? []).map(r => convertRelationship(r, entityNameSet));
+  const relationships = (m.relationships ?? []).map(
+    r => convertRelationship(r, entityNameSet));
   warnDuplicateNames(
-      relationships.map(r => r.name), 'relationship name', `model '${m.name}'`,
-      warnings);
+    relationships.map(r => r.name), 'relationship name', `model '${m.name}'`, warnings);
 
-  const metrics =
-      (m.metrics ??
-       []).map(mt => convertMetric(mt, entityNames, warnings, dialect));
-  warnDuplicateNames(
-      metrics.map(mt => mt.name), 'metric name', `model '${m.name}'`, warnings);
+  const metrics = (m.metrics ?? []).map(
+    mt => convertMetric(mt, entityNames, warnings, dialect));
+  warnDuplicateNames(metrics.map(mt => mt.name), 'metric name', `model '${m.name}'`, warnings);
 
   const description = composeDescription(m.description);
 
-  const model: SemanticModel = {name: m.name, entities, relationships, metrics};
+  const model: SemanticModel = { name: m.name, entities, relationships, metrics };
   if (description) model.description = description;
   const ai = aiContextOrUndefined(m.ai_context);
   if (ai) model.aiContext = ai;
@@ -511,9 +486,8 @@ function convertModel(
   return model;
 }
 
-function convertDataset(
-    ds: DatasetDoc, opts: LoadOptions, warnings: string[],
-    dialect: string): Entity {
+function convertDataset(ds: DatasetDoc, opts: LoadOptions,
+                        warnings: string[], dialect: string): Entity {
   const ctxLabel = `dataset '${ds.name}'`;
   // An abstract entity has no physical table, so it carries no source (empty
   // dataSource) and no key -- both are meaningless for a class never
@@ -523,17 +497,13 @@ function convertDataset(
       '';
   const keys = ds.primary_key ?? [];
   if (!keys.length && !ds.abstract) {
-    warnings.push(`${
-        ctxLabel}: no primary_key; the entity's KEY will be empty (invalid for graph generation)`);
+    warnings.push(`${ctxLabel}: no primary_key; the entity's KEY will be empty (invalid for graph generation)`);
   }
-  const fields =
-      (ds.fields ?? []).map(f => convertField(f, ds.name, warnings, dialect));
-  warnDuplicateNames(
-      fields.map(f => f.name), 'field name', `dataset '${ds.name}'`, warnings);
+  const fields = (ds.fields ?? []).map(f => convertField(f, ds.name, warnings, dialect));
+  warnDuplicateNames(fields.map(f => f.name), 'field name', `dataset '${ds.name}'`, warnings);
 
-  const entity: Entity = {name: ds.name, dataSource, keys, fields};
-  if (ds.unique_keys && ds.unique_keys.length)
-    entity.uniqueKeys = ds.unique_keys;
+  const entity: Entity = { name: ds.name, dataSource, keys, fields };
+  if (ds.unique_keys && ds.unique_keys.length) entity.uniqueKeys = ds.unique_keys;
   if (ds.extends && ds.extends.length) entity.extends = ds.extends;
   if (ds.abstract) entity.abstract = true;
   const description = composeDescription(ds.description);
@@ -545,22 +515,20 @@ function convertDataset(
   return entity;
 }
 
-function convertField(
-    f: FieldDoc, entityName: string, warnings: string[],
-    dialect: string): Field {
+function convertField(f: FieldDoc, entityName: string, warnings: string[], dialect: string): Field {
   // `label`, `dimension`, and AI-first annotations are carried structurally on
   // the IR (not folded into `description`) so an emitter can route each to its
   // own destination and a 1P round-trip stays lossless.
   const description = composeDescription(f.description);
 
-  const field: Field = {name: f.name};
+  const field: Field = { name: f.name };
   if (f.unbound) {
     // Declared but not bound under this binding: no column, no expression (the
     // schema guarantees `expression` is absent here). See Field.unbound.
     field.unbound = true;
   } else if (f.expression !== undefined) {
     const picked = pickDialect(
-        f.expression, dialect, `field '${entityName}.${f.name}'`, warnings);
+      f.expression, dialect, `field '${entityName}.${f.name}'`, warnings);
     if (picked.expression !== undefined) field.expression = picked.expression;
     if (picked.importedExpression !== undefined) {
       field.importedExpression = picked.importedExpression;
@@ -574,8 +542,7 @@ function convertField(
   if (f.label) field.label = f.label;
   if (f.dimension) {
     field.dimension = {};
-    if (f.dimension.is_time !== undefined)
-      field.dimension.isTime = f.dimension.is_time;
+    if (f.dimension.is_time !== undefined) field.dimension.isTime = f.dimension.is_time;
   }
   if (description) field.description = description;
   const ai = aiContextOrUndefined(f.ai_context);
@@ -585,41 +552,35 @@ function convertField(
   return field;
 }
 
-// Maps an OSI foreign-key relationship onto the IR edge. `source.columns` are
-// the FK columns on the `from` table (`from_columns`); `destination.columns`
-// are the referenced key columns on the `to` table (`to_columns`), paired
-// positionally. A logical relationship carries no columns (both endpoints
-// empty); a graph push requires them and rejects a column-less edge (see
-// validatePushRequirements). The source entity's own primary key is not
-// duplicated here -- downstream consumers look it up from the entity. A
-// malformed relationship (an endpoint not declared in the model, or mismatched
-// column arity) is a hard error, not a warning: the resulting edge would be
-// structurally invalid.
-function convertRelationship(
-    r: RelationshipDoc, entityNames: Set<string>): Relationship {
+// Maps an OSI foreign-key relationship onto the IR edge. `source.columns` are the
+// FK columns on the `from` table (`from_columns`); `destination.columns` are the
+// referenced key columns on the `to` table (`to_columns`), paired positionally.
+// A logical relationship carries no columns (both endpoints empty); a graph
+// push requires them and rejects a column-less edge (see validatePushRequirements).
+// The source entity's own primary key is not duplicated here -- downstream
+// consumers look it up from the entity. A malformed relationship (an endpoint not
+// declared in the model, or mismatched column arity) is a hard error, not a
+// warning: the resulting edge would be structurally invalid.
+function convertRelationship(r: RelationshipDoc, entityNames: Set<string>): Relationship {
   const ctx = `relationship '${r.name}'`;
   if (!entityNames.has(r.from)) {
-    throw new Error(
-        `${ctx}: 'from' dataset '${r.from}' is not defined in the model`);
+    throw new Error(`${ctx}: 'from' dataset '${r.from}' is not defined in the model`);
   }
   if (!entityNames.has(r.to)) {
-    throw new Error(
-        `${ctx}: 'to' dataset '${r.to}' is not defined in the model`);
+    throw new Error(`${ctx}: 'to' dataset '${r.to}' is not defined in the model`);
   }
   const fromColumns = r.from_columns ?? [];
   const toColumns = r.to_columns ?? [];
   if (fromColumns.length !== toColumns.length) {
     throw new Error(
-        `${ctx}: from_columns (${fromColumns.length}) and to_columns ` +
-        `(${
-            toColumns
-                .length}) have different lengths; the join keys are mismatched`);
+      `${ctx}: from_columns (${fromColumns.length}) and to_columns ` +
+      `(${toColumns.length}) have different lengths; the join keys are mismatched`);
   }
 
   const relationship: Relationship = {
     name: r.name,
-    source: {entity: r.from, columns: fromColumns},
-    destination: {entity: r.to, columns: toColumns},
+    source: { entity: r.from, columns: fromColumns },
+    destination: { entity: r.to, columns: toColumns },
   };
   const description = composeDescription(r.description);
   if (description) relationship.description = description;
@@ -630,9 +591,8 @@ function convertRelationship(
   return relationship;
 }
 
-function convertMetric(
-    mt: MetricDoc, entityNames: string[], warnings: string[],
-    dialect: string): Metric {
+function convertMetric(mt: MetricDoc, entityNames: string[],
+                       warnings: string[], dialect: string): Metric {
   const ctx = `metric '${mt.name}'`;
   const picked = pickDialect(mt.expression, dialect, ctx, warnings);
   // Infer referenced entities from whichever expression form we have; the
@@ -640,13 +600,11 @@ function convertMetric(
   const exprForRefs = picked.expression ?? picked.importedExpression ?? '';
   const referenced = referencedEntityNames(exprForRefs, entityNames);
   if (!referenced.length) {
-    warnings.push(`${
-        ctx}: expression references no known entity; it may not be placeable downstream`);
+    warnings.push(`${ctx}: expression references no known entity; it may not be placeable downstream`);
   }
-  const metric: Metric = {name: mt.name};
-  // Attach only when the reference is unambiguous; a cross-entity metric is
-  // left unattached (its qualifiers stay inline in the expression for
-  // consumers).
+  const metric: Metric = { name: mt.name };
+  // Attach only when the reference is unambiguous; a cross-entity metric is left
+  // unattached (its qualifiers stay inline in the expression for consumers).
   if (referenced.length === 1) metric.entity = referenced[0];
   if (picked.expression !== undefined) metric.expression = picked.expression;
   if (picked.importedExpression !== undefined) {
@@ -664,15 +622,13 @@ function convertMetric(
 }
 
 // Collapses an expression's per-dialect variants into at most two forms:
-//   - `expression`: a target/canonical form valid against the target.
-//   Preference
+//   - `expression`: a target/canonical form valid against the target. Preference
 //     is the requested dialect, else the portable canonical dialect (ANSI_SQL).
 //   - `importedExpression` (+ `importedDialect`): the original vendor SQL, kept
 //     verbatim so nothing is lost and a later transpile pass (see ./transpile)
 //     can fill `expression` from it.
 // Dialect names are compared case-insensitively. No transpilation is performed
-// here; chosen expressions are passed through verbatim. At least one form is
-// set.
+// here; chosen expressions are passed through verbatim. At least one form is set.
 //
 // The fallbacks differ in risk, so they are surfaced differently:
 //   - ANSI_SQL is the AI-first format's default expression language (ANSI
@@ -689,18 +645,16 @@ interface PickedExpression {
   importedDialect?: string;
 }
 
-function pickDialect(
-    expr: ExpressionDoc, preferred: string, ctx: string,
-    warnings: string[]): PickedExpression {
+function pickDialect(expr: ExpressionDoc, preferred: string,
+                     ctx: string, warnings: string[]): PickedExpression {
   const upper = (s: string) => s.toUpperCase();
   const byName = (name: string) =>
-      expr.dialects.find(d => upper(d.dialect) === upper(name));
+    expr.dialects.find(d => upper(d.dialect) === upper(name));
 
   // The original vendor variant, if any: the first dialect that is neither the
   // target nor the portable canonical. Kept as `importedExpression`.
   const vendor = expr.dialects.find(
-      d => upper(d.dialect) !== upper(preferred) &&
-          upper(d.dialect) !== FALLBACK_DIALECT);
+    d => upper(d.dialect) !== upper(preferred) && upper(d.dialect) !== FALLBACK_DIALECT);
 
   const out: PickedExpression = {};
   if (vendor) {
@@ -718,21 +672,17 @@ function pickDialect(
   if (canonical) {
     out.expression = canonical.expression;
     warnings.push(
-        `note: no '${
-            preferred}' dialect for one or more expressions; using the portable ` +
-        `'${FALLBACK_DIALECT}' dialect verbatim ('${
-            preferred}' accepts the ANSI core subset — ` +
-        `supply '${preferred}' variants only for ${preferred}-specific SQL)`);
+      `note: no '${preferred}' dialect for one or more expressions; using the portable ` +
+      `'${FALLBACK_DIALECT}' dialect verbatim ('${preferred}' accepts the ANSI core subset — ` +
+      `supply '${preferred}' variants only for ${preferred}-specific SQL)`);
     return out;
   }
 
   // Neither target nor canonical: keep only the imported vendor form; the
   // target `expression` awaits a transpile pass.
   warnings.push(
-      `${ctx}: no '${preferred}' or '${
-          FALLBACK_DIALECT}' dialect; keeping the ` +
-      `'${out.importedDialect}' expression as imported_expression (needs transpilation to '${
-          preferred}')`);
+    `${ctx}: no '${preferred}' or '${FALLBACK_DIALECT}' dialect; keeping the ` +
+    `'${out.importedDialect}' expression as imported_expression (needs transpilation to '${preferred}')`);
   return out;
 }
 
@@ -740,18 +690,16 @@ function pickDialect(
 // reference. Each identifier segment is unquoted, and a short reference has its
 // leading qualifiers prepended from options (a bare `table` gets both defaults;
 // a `dataset.table` gets the project). References that already carry three or
-// more segments are passed through untouched, so an already-qualified name
-// keeps whatever shape the source system gave it rather than being forced into
-// fixed slots. A source that looks like a query (contains whitespace) cannot be
+// more segments are passed through untouched, so an already-qualified name keeps
+// whatever shape the source system gave it rather than being forced into fixed
+// slots. A source that looks like a query (contains whitespace) cannot be
 // qualified, so it is kept verbatim.
-function parseSource(
-    source: string, opts: LoadOptions, warnings: string[],
-    ctx: string): string {
+function parseSource(source: string, opts: LoadOptions,
+                     warnings: string[], ctx: string): string {
   const trimmed = source.trim();
 
   if (/\s/.test(trimmed)) {
-    warnings.push(`${
-        ctx}: source looks like a query, not a table reference; keeping it verbatim`);
+    warnings.push(`${ctx}: source looks like a query, not a table reference; keeping it verbatim`);
     return trimmed;
   }
 
@@ -771,10 +719,8 @@ function parseSource(
   }
 
   const parts = trimmed.split('.').map(unquote);
-  if (parts.length === 1 && opts.defaultDataset)
-    parts.unshift(opts.defaultDataset);
-  if (parts.length < 3 && opts.defaultProject)
-    parts.unshift(opts.defaultProject);
+  if (parts.length === 1 && opts.defaultDataset) parts.unshift(opts.defaultDataset);
+  if (parts.length < 3 && opts.defaultProject) parts.unshift(opts.defaultProject);
   return parts.join('.');
 }
 
