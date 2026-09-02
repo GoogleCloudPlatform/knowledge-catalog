@@ -89,6 +89,10 @@ labels, …) lands in the graph and which is dropped, see
 
 ### Class hierarchies (`extends` → labels)
 
+This section is the rules lookup. To model a hierarchy step by step — declaring
+it, binding each subtype's table, and keeping supertype counts correct — see
+[Modeling class hierarchies](inheritance.md).
+
 An entity that declares `extends: [Parent]` is a **subclass**. BigQuery Graph has
 no inheritance keyword, so the push expresses the hierarchy with **labels**: a
 subclass node table declares its own default label **plus one `LABEL <Ancestor>`
