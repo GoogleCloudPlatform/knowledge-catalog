@@ -45,52 +45,52 @@ agree on every structural row and differ only where a Spanner target has no
 | Imported vendor SQL (`importedExpression` / `importedDialect`) | — not stored                    | —                                              | fallback — builds the DDL only when no canonical `expression` exists | fallback — builds the DDL only when no canonical `expression` exists |
 | `custom_extensions` (beyond the deployment target)             | — not stored                    | —⁹                                             | — not in graph                                                       | — not in graph                                                       |
 
-- **¹ Field type source.** The graph uses the source column's own type; a
-  field's authored `datatype` is not carried.
-- **² Field type collapses.** Field types round-trip except two collapses: no
-  type → `Opaque`, and `String` → un-typed. Both store as `dataType STRING`,
-  disambiguated by `metadataType` (`OTHER` → read back as `Opaque`; `STRING` →
-  read back un-typed) — which is what lets them round-trip differently.
-- **³ Dimension role.** The default push omits the per-field `semantics` block,
-  so the dimension role is written only with `--emit-expressions` — and then
-  comes back as a bare `dimension: {}` marker (without `is_time`, and so on). A
-  default push drops the marker entirely.
-- **⁴ Metric shape.** A metric must resolve to exactly one entity (otherwise the
-  push is rejected) and reduce to one supported aggregate — `SUM` / `AVG` /
-  `COUNT` / `MIN` / `MAX` — over one operand (otherwise it is skipped with a
-  warning).
-- **⁵ Metric type.** A metric's expression is gated behind `--emit-expressions`;
-  its data type round-trips only for a concrete type (e.g. `Decimal`) — an
-  untyped, `String`, or `Opaque` metric comes back un-typed.
-- **⁶ Relationship name.** Relationship names come back lowercased/hyphenated
-  (`Places Order` → `places-order`) — the catalog stores the name only in the
-  link id. See [Writer-side follow-up](#writer-side-follow-up).
-- **⁷ Guidelines aspect.** The `guidelines` aspect exists only for the model,
-  entities, and metrics — not fields or relationships, so field- and
-  relationship-level `ai_context.instructions` has no Knowledge Catalog home (a
-  relationship's instructions still reach BigQuery, folded into the edge's
-  `OPTIONS(description)`).
-- **⁸ Model-level metadata.** Neither graph has a home for statement-level
-  metadata — BigQuery silently drops graph-statement `OPTIONS`, and Spanner
-  carries no `OPTIONS` at all — so the model's `description` and
-  `ai_context.instructions` are carried into Knowledge Catalog instead.
-- **⁹ OWL and other custom extensions.** Every other `custom_extensions` block —
-  most notably the OWL constructs the importer carries with no native home yet
-  (`owl:inverseOf`, `owl:oneOf`, `rdfs:subPropertyOf`, `owl:propertyChainAxiom`,
-  the equivalence and disjointness pairs, the set-level axioms
-  `owl:AllDisjointClasses` / `owl:AllDisjointProperties` / `owl:AllDifferent`,
-  the property characteristics, `owl:deprecated` / `owl:versionInfo`, …) — is
-  inert on push and not persisted to Knowledge Catalog, so `pull` never recovers
-  it. It does survive the OSI *document* round-trip verbatim, so it stays intact
-  in your authored file. See
-  [Constructs carried as custom extensions](owl-import.md#constructs-carried-as-custom-extensions-not-yet-native)
-  for the full list and shape.
-- **¹⁰ Logical (unbound) model.** A model with no bindings still publishes to
-  Knowledge Catalog: each entity's `source` is recorded empty (`resources: []`)
-  because there is no table behind it, and a relationship that carries no join
-  columns is skipped with a warning. When the same push also deploys a graph,
-  the catalog entries are first pruned to what the graph binds — see
-  [To Knowledge Catalog](#to-knowledge-catalog).
+1. **Field type source.** The graph uses the source column's own type; a
+   field's authored `datatype` is not carried.
+2. **Field type collapses.** Field types round-trip except two collapses: no
+   type → `Opaque`, and `String` → un-typed. Both store as `dataType STRING`,
+   disambiguated by `metadataType` (`OTHER` → read back as `Opaque`; `STRING` →
+   read back un-typed) — which is what lets them round-trip differently.
+3. **Dimension role.** The default push omits the per-field `semantics` block,
+   so the dimension role is written only with `--emit-expressions` — and then
+   comes back as a bare `dimension: {}` marker (without `is_time`, and so on). A
+   default push drops the marker entirely.
+4. **Metric shape.** A metric must resolve to exactly one entity (otherwise the
+   push is rejected) and reduce to one supported aggregate — `SUM` / `AVG` /
+   `COUNT` / `MIN` / `MAX` — over one operand (otherwise it is skipped with a
+   warning).
+5. **Metric type.** A metric's expression is gated behind `--emit-expressions`;
+   its data type round-trips only for a concrete type (e.g. `Decimal`) — an
+   untyped, `String`, or `Opaque` metric comes back un-typed.
+6. **Relationship name.** Relationship names come back lowercased/hyphenated
+   (`Places Order` → `places-order`) — the catalog stores the name only in the
+   link id. See [Writer-side follow-up](#writer-side-follow-up).
+7. **Guidelines aspect.** The `guidelines` aspect exists only for the model,
+   entities, and metrics — not fields or relationships, so field- and
+   relationship-level `ai_context.instructions` has no Knowledge Catalog home (a
+   relationship's instructions still reach BigQuery, folded into the edge's
+   `OPTIONS(description)`).
+8. **Model-level metadata.** Neither graph has a home for statement-level
+   metadata — BigQuery silently drops graph-statement `OPTIONS`, and Spanner
+   carries no `OPTIONS` at all — so the model's `description` and
+   `ai_context.instructions` are carried into Knowledge Catalog instead.
+9. **OWL and other custom extensions.** Every other `custom_extensions` block —
+   most notably the OWL constructs the importer carries with no native home yet
+   (`owl:inverseOf`, `owl:oneOf`, `rdfs:subPropertyOf`, `owl:propertyChainAxiom`,
+   the equivalence and disjointness pairs, the set-level axioms
+   `owl:AllDisjointClasses` / `owl:AllDisjointProperties` / `owl:AllDifferent`,
+   the property characteristics, `owl:deprecated` / `owl:versionInfo`, …) — is
+   inert on push and not persisted to Knowledge Catalog, so `pull` never recovers
+   it. It does survive the OSI *document* round-trip verbatim, so it stays intact
+   in your authored file. See
+   [Constructs carried as custom extensions](owl-import.md#constructs-carried-as-custom-extensions-not-yet-native)
+   for the full list and shape.
+10. **Logical (unbound) model.** A model with no bindings still publishes to
+    Knowledge Catalog: each entity's `source` is recorded empty (`resources: []`)
+    because there is no table behind it, and a relationship that carries no join
+    columns is skipped with a warning. When the same push also deploys a graph,
+    the catalog entries are first pruned to what the graph binds — see
+    [To Knowledge Catalog](#to-knowledge-catalog).
 
 ## To Knowledge Catalog
 
