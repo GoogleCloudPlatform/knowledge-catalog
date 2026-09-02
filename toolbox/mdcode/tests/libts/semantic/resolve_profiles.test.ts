@@ -290,4 +290,38 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     expect(metricNames(model)).toEqual(['order_count']);
     expect(report.droppedMetrics.map(d => d.name)).toContain('avg_lifetime_value');
   });
+
+  test('an abstract supertype survives pruning with its field names intact', () => {
+    // An abstract entity has no table and no bindings by design: its fields are
+    // column-less on purpose (they name the label its subtypes bind). Pruning
+    // must NOT treat them as "unbound" and drop the entity for its unbound key,
+    // or the shared label loses the signature the emitter reads.
+    const m: SemanticModel = {
+      name: 'parties',
+      entities: [
+        {
+          name: 'Party', dataSource: '', keys: ['id'], abstract: true,
+          fields: [{name: 'id'}, {name: 'name'}],
+        },
+        {
+          name: 'Customer', dataSource: 'proj.ds.customer', keys: ['id'],
+          extends: ['Party'],
+          fields: [
+            {name: 'id', expression: 'c_custkey'},
+            {name: 'name', expression: 'c_name'},
+          ],
+        },
+      ],
+      relationships: [],
+      metrics: [],
+    };
+    const {model, report} = pruneUnavailable(m, 'default');
+    // Party is kept, not dropped, and its field names remain.
+    expect(model.entities.map(e => e.name)).toEqual(['Party', 'Customer']);
+    expect(report.droppedEntities).toEqual([]);
+    const party = model.entities.find(e => e.name === 'Party')!;
+    expect(party.fields.map(f => f.name)).toEqual(['id', 'name']);
+    // Its column-less fields are not reported as unbound.
+    expect(report.unboundFields).toEqual([]);
+  });
 });

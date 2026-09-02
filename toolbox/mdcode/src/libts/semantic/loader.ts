@@ -199,14 +199,10 @@ function buildDocumentSchema(bindingOptional: boolean) {
             `'expression', or drop 'unbound: true' to bind it to that column`,
       });
     }
-    if (!bindingOptional && !f.unbound && f.expression === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['expression'],
-        message: `field '${f.name}': requires an expression; set 'expression', ` +
-            `or mark it 'unbound: true' if this binding has no column for it`,
-      });
-    }
+    // The expression-required check is applied at the dataset level (below),
+    // not here, so it can skip a dataset marked `abstract`: an abstract
+    // supertype has no table and its fields carry no expression, surviving only
+    // as labels on its concrete descendants.
   });
   const dataset = datasetBase.extend({ fields: z.array(field).optional() })
     .superRefine((ds, ctx) => {
@@ -230,6 +226,23 @@ function buildDocumentSchema(bindingOptional: boolean) {
           path: ['source'],
           message: `dataset '${ds.name}': an abstract dataset has no table; ` +
               `remove 'source', or drop 'abstract: true' to bind it to that table`,
+        });
+      }
+      // Each concrete dataset's fields must be bound (or explicitly `unbound`)
+      // under a graph leg. An abstract dataset is skipped: it has no table, so
+      // its fields carry no column. Checked here rather than per-field because
+      // abstractness is a dataset-level fact.
+      if (!bindingOptional && !ds.abstract) {
+        (ds.fields ?? []).forEach((f, i) => {
+          if (!f.unbound && f.expression === undefined) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['fields', i, 'expression'],
+              message: `field '${f.name}': requires an expression; set ` +
+                  `'expression', or mark it 'unbound: true' if this ` +
+                  `binding has no column for it`,
+            });
+          }
         });
       }
     });

@@ -620,10 +620,16 @@ describe(
 
 describe('abstract (table-less) superclasses are eliminated to labels', () => {
   // An abstract `Party` has no physical table; two concrete subtypes, `Person`
-  // and `Organization`, bind it. resolveInheritance flattens Party's `name`
-  // onto each subtype and expands their `extends` to [Party], so each concrete
-  // node table declares `LABEL Party` with Party's own signature. Party itself
-  // must produce NO node table -- it survives only as that shared label.
+  // and `Organization`, bind it. Party's inherited `id`/`name` are bound on
+  // each subtype's OWN table under DIFFERENT columns (person.p_name vs
+  // org.o_name). resolveInheritance flattens Party's fields onto each subtype
+  // and expands their `extends` to [Party], so each concrete node table
+  // declares `LABEL Party` with that subtype's OWN binding of the inherited
+  // names (`p_name AS name` / `o_name AS name`). BigQuery reconciles a shared
+  // label by property name, not backing column, so the differing columns are
+  // valid; a bare-alias reference (`PROPERTIES(name)`) would not deploy
+  // (verified live). Party itself must produce NO node table -- it survives
+  // only as that shared label.
   function partyModel(): SemanticModel {
     return {
       name: 'party_graph',
@@ -640,14 +646,22 @@ describe('abstract (table-less) superclasses are eliminated to labels', () => {
           dataSource: 'sqlgen-testing.demo.person',
           keys: ['id'],
           extends: ['Party'],
-          fields: [{name: 'id'}, {name: 'ssn'}],
+          fields: [
+            {name: 'id', expression: 'p_id'},
+            {name: 'name', expression: 'p_name'},
+            {name: 'ssn', expression: 'p_ssn'},
+          ],
         },
         {
           name: 'Organization',
           dataSource: 'sqlgen-testing.demo.organization',
           keys: ['id'],
           extends: ['Party'],
-          fields: [{name: 'id'}, {name: 'taxId'}],
+          fields: [
+            {name: 'id', expression: 'o_id'},
+            {name: 'name', expression: 'o_name'},
+            {name: 'taxId', expression: 'o_tax'},
+          ],
         },
       ],
       relationships: [],
@@ -670,9 +684,9 @@ describe('abstract (table-less) superclasses are eliminated to labels', () => {
       () => {
         const {ddl} = generatePropertyGraph(partyModel(), GEN_OPTS);
         // Both Person and Organization declare the shared Party label, each
-        // with a PROPERTIES block that lists Party's flattened `name` (assert
-        // inside the block, so an unrelated `name` substring elsewhere can't
-        // satisfy this).
+        // with a PROPERTIES block listing Party's flattened `id`/`name`
+        // rendered from that subtype's OWN binding (assert inside the block, so
+        // an unrelated substring elsewhere can't satisfy this).
         const partyBlocks =
             [...ddl.matchAll(/LABEL Party\s*\n\s*PROPERTIES\(([\s\S]*?)\)/g)];
         expect(partyBlocks.length).toBe(2);
@@ -680,6 +694,13 @@ describe('abstract (table-less) superclasses are eliminated to labels', () => {
           expect(props).toContain('name');
           expect(props).toContain('id');
         }
+        // The label signature must REDEFINE each inherited property with the
+        // subtype's own column (`<col> AS <name>`), never a bare-alias
+        // reference -- the shape BigQuery accepts across element tables with
+        // differing columns (verified live).
+        const props = partyBlocks.map(m => m[1]);
+        expect(props.some(p => /p_name\s+AS\s+name/.test(p))).toBe(true);
+        expect(props.some(p => /o_name\s+AS\s+name/.test(p))).toBe(true);
       });
 
   test('both concrete node tables are still emitted', () => {

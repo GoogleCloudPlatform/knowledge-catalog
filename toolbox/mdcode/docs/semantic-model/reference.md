@@ -89,67 +89,91 @@ labels, …) lands in the graph and which is dropped, see
 
 ### Class hierarchies (`extends` → labels)
 
+This section is the rules lookup. To model a hierarchy step by step — declaring
+it, binding each subtype's table, and keeping supertype counts correct — see
+[Modeling class hierarchies](inheritance.md).
+
 An entity that declares `extends: [Parent]` is a **subclass**. BigQuery Graph has
 no inheritance keyword, so the push expresses the hierarchy with **labels**: a
 subclass node table declares its own default label **plus one `LABEL <Ancestor>`
 per supertype**, walking the full transitive chain. A node then matches its
-supertype in a query — `MATCH (:Person)` returns `Person`, `Customer`,
-`Employee`, and `Manager` nodes alike.
+supertype in a query — `MATCH (:Party)` returns every `Customer` and every
+`Supplier` node.
 
-You author only each entity's **own** fields plus the one `extends` keyword; the
-push does the rest:
+You author each entity's **own** fields plus the one `extends` keyword, and the
+push flattens the supertype's fields down onto each subclass. The usual
+supertype has no table of its own, so mark it `abstract: true`: it has no
+`source` and no key, produces no node table, and survives only as a label on its
+subtypes.
 
 ```yaml
-datasets:
-  - name: Person
-    source: proj.ds.person
+entities:
+  - name: Party
+    abstract: true             # no table; becomes a label on every subtype
     primary_key: [id]
     fields:
-      - {name: id,        expression: {dialects: [{dialect: BIGQUERY, expression: id}]}}
-      - {name: full_name, expression: {dialects: [{dialect: BIGQUERY, expression: full_name}]}}
-      - {name: email,     expression: {dialects: [{dialect: BIGQUERY, expression: email}]}}
+      - { name: id,   datatype: Integer }
+      - { name: name, datatype: String }
   - name: Customer
-    source: proj.ds.customer
+    extends: [Party]           # the one keyword you add
     primary_key: [id]          # each subclass keeps its OWN key; keys do not inherit
-    extends: [Person]          # the one keyword you add
+    source: proj.ds.customer
     fields:
-      - {name: loyalty_tier, expression: {dialects: [{dialect: BIGQUERY, expression: loyalty_tier}]}}
+      - { name: id,   datatype: Integer, expression: c_custkey }
+      - { name: name, datatype: String,  expression: c_name }   # the inherited field, bound to this table's column
+      - { name: tier, datatype: String,  expression: c_tier }
+  - name: Supplier
+    extends: [Party]
+    primary_key: [id]
+    source: proj.ds.supplier
+    fields:
+      - { name: id,     datatype: Integer, expression: s_suppkey }
+      - { name: name,   datatype: String,  expression: s_name }
+      - { name: rating, datatype: Integer, expression: s_rating }
 ```
 
-For those shared labels to work, **the supertype's fields flatten down** onto the
-subclass. BigQuery requires every table exposing a label to expose the **same
-property signature**, so a subclass's `LABEL Person` block must list exactly what
-`Person`'s own table lists. The push copies each ancestor's fields onto the
-subclass (a nearer definition wins on a name clash) so those signatures line up,
-and the subclass's default label carries the inherited fields too:
+**The supertype's fields flatten down** onto each subclass. A supertype
+contributes its field names to every subclass, ordered own fields first then
+inherited, and a nearer definition wins on a name clash. An abstract supertype
+binds no columns of its own, so each subtype supplies the column for every
+inherited name on its own table — `id` and `name` above are bound on both the
+customer and the supplier. A concrete supertype's bound fields flatten straight
+down, and a subtype need not repeat them.
+
+**A shared label is reconciled by property name rather than by backing column**
+(verified live). Every table that carries `LABEL Party` must expose the same property
+names — here `id` and `name` — and each backs them with its own column. So the
+push renders each inherited property from the subtype's own binding: `c_name AS
+name` on the customer table, `s_name AS name` on the supplier table. A bare-alias
+reference such as `PROPERTIES(name)` does not deploy; BigQuery rejects it with
+`Unrecognized name: name`.
 
 ```sql
 `proj.ds.customer` AS Customer
-  KEY(id)
+  KEY(c_custkey)
   DEFAULT LABEL
-  PROPERTIES( loyalty_tier, id, full_name, email )   -- own field first, then inherited (flattened)
-  LABEL Person
-  PROPERTIES( id, full_name, email )                 -- matches Person's own signature
+  PROPERTIES( c_custkey AS id, c_name AS name, c_tier AS tier )   -- id and name inherited from Party; tier is Customer's own
+  LABEL Party
+  PROPERTIES( c_custkey AS id, c_name AS name )                   -- Party's signature, backed by this table's columns
 ```
 
 ```
-GRAPH proj.ds.people
-MATCH (p:Person) RETURN p.full_name   -- resolves on Customer/Employee/Manager too
+GRAPH proj.ds.parties
+MATCH (p:Party) RETURN p.name   -- resolves on Customer and Supplier alike
 ```
 
-Four boundaries:
+The boundaries:
 
 - **Fields flow down; edges and keys do not.** A subclass gains its supertypes'
   fields but **not** their relationships or their key: an edge stays bound to the
   exact node table it was declared on, and each subclass keeps its own `KEY` (a
   node table is identified by its own grain, never its supertype's). If
   `Person —livesIn→ City`, a `Customer` node does not get a `livesIn` edge.
-- **The subclass's `source` must physically expose the inherited columns.** The
-  flattened `full_name`/`email` above are read from `proj.ds.customer`, so that
-  table (or a view over it) must include those columns. Parent and child are
-  separate physical tables, so the same real-world entity present in both
-  `person` and `customer` appears as two nodes under `MATCH (:Person)` — a
-  modeling choice for the binding step, not something the DDL enforces.
+- **The subclass's `source` must physically expose every inherited column.** The
+  flattened `name` above is read from `proj.ds.customer`, so that table (or a view
+  over it) must include the column that `Customer`'s `name` field binds. A
+  subclass whose table lacks a column that one of its inherited properties needs
+  fails the push when the graph deploys.
 - **A shared supertype label carries no OPTIONS and no measures.** A supertype's
   label is bound by every subclass table, and BigQuery forbids a label carried by
   more than one element table from carrying an `OPTIONS` clause or a `MEASURE`. So
@@ -157,23 +181,45 @@ Four boundaries:
   warning), and a metric that targets a supertype is skipped (with a warning) —
   attach metrics to a leaf class instead. Subclass and leaf labels are
   unaffected.
-- **An inherited field cannot be redefined.** A shared label requires one
-  identical definition per property across every table that binds it, so if a
-  subclass declares a field of the same name as an inherited one but with a
-  different expression, the supertype's definition wins and the subclass's is
-  dropped (with a warning). Redeclaring it identically is a harmless no-op.
+- **Each inherited property has one definition under the shared label.** For an
+  abstract supertype, the subtype supplies that definition — it binds the
+  inherited field to its own column, as `name` is bound above, and that binding is
+  used. A concrete supertype already defines the property on its own table, so a
+  subtype that declares the same-named field with a different column or expression
+  cannot override it: the supertype's definition wins and the subtype's is dropped
+  (with a warning). Redeclaring it identically is a harmless no-op.
 
-An entity may also be marked **`abstract: true`** — a conceptual class with no
-physical table (so it has no `source` and no key). It produces **no node table**;
-it survives only as a `LABEL` on its concrete descendants (its fields still
-flatten down so the label's signature is present). An abstract entity that no
-concrete entity extends has nothing to attach to and is dropped with a warning.
-`abstract` is an explicit marker: an entity left with an unbound `source`
-placeholder is treated as a binding error and fails the push, never silently
-dropped as if it were table-less. The Knowledge Catalog leg does not
+An entity marked **`abstract: true`** is a conceptual class with no physical
+table: it has no `source` and no key, produces **no node table**, and survives
+only as a `LABEL` on its concrete descendants. Its field names still flatten
+down, and each concrete subtype supplies the column for each of those names, so
+the shared label's signature is present on every subtype table. An abstract
+entity that no concrete entity extends has nothing to attach to and is dropped
+with a warning. `abstract` is an explicit marker: an entity left with an unbound
+`source` placeholder is treated as a binding error and fails the push, never
+silently dropped as if it were table-less. The Knowledge Catalog leg does not
 model inheritance today, so an abstract entity has no physical resource to
 catalog and is skipped there (with a warning); its concrete subtypes are
 published normally.
+
+A supertype **may** instead be concrete — carry its own `source` and key. It then
+becomes both its own node table and a label on its subtypes. Every subtype table
+must still expose columns that render to the supertype's property signature, so
+each subtype table has to carry the supertype's columns under the same names. The
+supertype's own rows and its subtypes' rows are distinct nodes: a real thing
+present in both the supertype table and a subtype table is matched twice under the
+supertype label. Prefer an abstract supertype unless each real thing lives in
+exactly one table under the hierarchy.
+
+**Multiple supertypes and diamonds.** `extends` takes a list, so a subclass may
+extend several supertypes and carry every one's label. The push expands `extends`
+to the full transitive ancestor set, de-duplicated. A diamond — two supertypes
+that share a grandparent — lists that grandparent's label once, so
+`MATCH (:Grandparent)` matches the leaf a single time. Depth and breadth do not
+change the rules: each concrete table binds every inherited property to its own
+column, and these shapes deploy on both BigQuery Graph and Spanner Graph
+(verified live for a diamond and for a three-level hierarchy with several
+concrete leaves).
 
 ## What gets created in Spanner
 

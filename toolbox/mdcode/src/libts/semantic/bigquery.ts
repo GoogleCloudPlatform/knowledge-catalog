@@ -580,7 +580,12 @@ function renderNodeTable(
   const inheritedCore = new Map<string, string>();
   for (const ancestorName of entity.extends ?? []) {
     const ancestor = labelByName.get(ancestorName);
-    if (!ancestor) continue;
+    // Skip an ABSTRACT ancestor: it has no table and no binding of its own, so
+    // it cannot be authoritative for an inherited property's rendering. This
+    // subtype's own binding is the canonical one (e.g. `c_name AS name`), so we
+    // leave the inherited names out of this map and let `renderOwn` render them
+    // straight from this table. A concrete ancestor keeps its authority.
+    if (!ancestor || ancestor.abstract) continue;
     for (const f of ancestor.fields) {
       if (!inheritedRender.has(f.name)) {
         inheritedRender.set(f.name, renderFieldProperty(f, ancestor.name));
@@ -706,8 +711,22 @@ function renderNodeTable(
       continue;
     }
     lines.push(line(2, `LABEL ${quoteIfReserved(ancestorName)}`));
-    const signature =
-        ancestor.fields.map(f => renderFieldProperty(f, ancestor.name));
+    let signature: string[];
+    if (ancestor.abstract) {
+      // Render each inherited field from THIS subtype's own binding, keyed by
+      // the abstract ancestor's field names. Skip any the subtype leaves
+      // unbound so the block matches the DEFAULT LABEL (which lists only bound
+      // fields); a profile that binds the subtype but not an inherited field
+      // simply does not expose that property under the shared label.
+      signature = [];
+      for (const af of ancestor.fields) {
+        const child = boundFields.find(cf => cf.name === af.name);
+        if (child) signature.push(renderFieldProperty(child, entity.name));
+      }
+    } else {
+      signature =
+          ancestor.fields.map(f => renderFieldProperty(f, ancestor.name));
+    }
     if (signature.length) lines.push(propertiesBlock(signature));
   }
   return lines.join('\n');

@@ -44,6 +44,7 @@ example that carries one model through the whole lifecycle, see the
 |---|---|
 | **This page** | look up each deploy operation and its rules |
 | [Binding profiles](profiles.md) | bind one logical model to several stores |
+| [Modeling class hierarchies](inheritance.md) | model subtypes with `extends` so a supertype query gathers them |
 | [Codelab: one semantic ontology, one data journey](codelab.md) | see the whole lifecycle: author, govern, hydrate, query |
 | [Reference](reference.md) | look up a flag, what push creates, validation, or permissions |
 | [What push and pull preserve](fidelity.md) | understand why something changed or wasn't recovered |
@@ -112,9 +113,11 @@ metric's `expression` may be a bare formula over the logical fields or the fulle
 per-dialect form. `entities` may also be written `datasets`.
 
 Entities can **extend** other entities (`extends: [Parent]`); push flattens the
-supertype's fields down and expresses the hierarchy as BigQuery labels. See
-[Class hierarchies](reference.md#class-hierarchies-extends--labels) for the
-rules.
+supertype's fields down and expresses the hierarchy as graph labels, so a query
+against the supertype gathers every subtype. See
+[Modeling class hierarchies](inheritance.md) to model one step by step, and
+[Class hierarchies](reference.md#class-hierarchies-extends--labels) for the rules
+push enforces.
 
 This model names no table and no store, so it is complete enough to govern in
 Knowledge Catalog as-is (step 2). Where each entity reads from — the store and the

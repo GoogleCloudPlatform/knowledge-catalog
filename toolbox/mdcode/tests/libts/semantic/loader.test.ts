@@ -323,6 +323,51 @@ describe('abstract datasets and their source constraint', () => {
     expect(models[0].entities[0].abstract).toBe(true);
     expect(models[0].entities[0].dataSource).toBe('');
   });
+
+  test('an abstract dataset\'s fields need no expression under a graph leg', () => {
+    // The supertype has no table, so its fields carry no column -- they name
+    // the label its subtypes bind. The strict (graph-leg) schema must accept
+    // them even though a concrete dataset's field would require an expression.
+    const { models } = fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [
+          {
+            name: 'Party', abstract: true, primary_key: ['id'],
+            fields: [{ name: 'id' }, { name: 'name' }],
+          },
+          {
+            name: 'Customer', extends: ['Party'], primary_key: ['id'],
+            source: 'proj.ds.customer',
+            fields: [
+              { name: 'id', expression: 'c_custkey' },
+              { name: 'name', expression: 'c_name' },
+            ],
+          },
+        ],
+      }],
+    });
+    const party = models[0].entities.find(e => e.name === 'Party')!;
+    expect(party.abstract).toBe(true);
+    expect(party.fields.map(f => f.name)).toEqual(['id', 'name']);
+    expect(party.fields.every(f => f.expression === undefined)).toBe(true);
+  });
+
+  test('a concrete dataset\'s expression-less field still fails under a graph leg', () => {
+    // The abstract exemption must not leak to concrete datasets: a real
+    // table's field still needs a column (or an explicit `unbound`).
+    expect(() => fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [{
+          name: 'orders',
+          primary_key: ['id'],
+          source: 'proj.ds.orders',
+          fields: [{ name: 'id', expression: 'o_id' }, { name: 'total' }],
+        }],
+      }],
+    })).toThrow(/field 'total': requires an expression/);
+  });
 });
 
 

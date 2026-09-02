@@ -281,6 +281,12 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
   // column carried on the imported expression) counts as bound, not dropped.
   const unbound = new Set<string>();
   for (const e of clone.entities ?? []) {
+    // An abstract entity has no table and no bindings by design: it survives
+    // only as a label on its subtypes (which bind its inherited fields on their
+    // own tables). Its fields are legitimately column-less, so they are not
+    // "unbound" in the pruning sense -- skip them so the entity is not dropped
+    // and its field names remain to define the shared label's signature.
+    if (e.abstract) continue;
     for (const f of e.fields ?? []) {
       if (fieldBinding(f) === undefined) unbound.add(`${e.name}.${f.name}`);
     }
@@ -313,6 +319,9 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
   clone.entities =
       (clone.entities ?? []).filter(e => !unavailableEntities.has(e.name));
   for (const e of clone.entities) {
+    // Keep an abstract entity's fields intact: they are column-less by design
+    // and name the shared label's property set for the emitter (see above).
+    if (e.abstract) continue;
     e.fields = (e.fields ?? []).filter(f => fieldBinding(f) !== undefined);
   }
 
