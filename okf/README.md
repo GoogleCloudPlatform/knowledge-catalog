@@ -108,6 +108,11 @@ python3.13 -m venv .venv
 - Gemini: set `GEMINI_API_KEY` (AI Studio) **or** use Vertex AI by setting
   `GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_CLOUD_PROJECT=<id>`, and
   `GOOGLE_CLOUD_LOCATION=<region>`.
+- MiniMax: pass a MiniMax model to `--model` (`MiniMax-M3` or `MiniMax-M2.7`)
+  and set `MINIMAX_API_KEY`. Requests go to the global endpoint
+  (`https://api.minimax.io/v1`) by default; set `KC_MINIMAX_REGION=cn_zh` to use
+  the China endpoint (`https://api.minimaxi.com/v1`). Gemini stays the default
+  when `--model` names a Gemini id.
 
 ## How the reference agent works
 
