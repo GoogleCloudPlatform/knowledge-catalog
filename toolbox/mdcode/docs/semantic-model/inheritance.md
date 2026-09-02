@@ -127,35 +127,163 @@ RETURN p.name
 Every customer and every supplier comes back, each once, because each real party
 lives in exactly one table.
 
-## Extending more than one supertype
+## More hierarchy shapes
 
-`extends` takes a list. A subtype may extend several supertypes and then carries
-every one's label:
+`extends` composes. A subtype can extend several supertypes, and a supertype can
+extend another supertype above it. Two facts hold for every shape: the supertype
+fields flatten down, and each concrete table binds every inherited field to its
+own column. So the shapes below all deploy the same way, and each was verified to
+deploy on BigQuery Graph.
+
+### Extending more than one supertype, and diamonds
+
+`extends` takes a list. Here an `Employee` is both a `Person` and a `Taxpayer`,
+and each of those is a `Party`:
 
 ```yaml
+      - name: Party
+        abstract: true
+        primary_key: [id]
+        fields:
+          - { name: id,   datatype: Integer }
+          - { name: name, datatype: String }
+      - name: Person
+        abstract: true
+        extends: [Party]
+        fields:
+          - { name: birth_year, datatype: Integer }
+      - name: Taxpayer
+        abstract: true
+        extends: [Party]
+        fields:
+          - { name: tax_id, datatype: String }
       - name: Employee
         extends: [Person, Taxpayer]
         primary_key: [id]
+        source: my-project.hr.employee
         fields:
-          - { name: department, datatype: String }
+          - { name: id,         datatype: Integer, expression: e_id }
+          - { name: name,       datatype: String,  expression: e_name }
+          - { name: birth_year, datatype: Integer, expression: e_birth }
+          - { name: tax_id,     datatype: String,  expression: e_tax }
+          - { name: department, datatype: String,  expression: e_dept }
 ```
 
 ```mermaid
 classDiagram
-    class Person
-    class Taxpayer
+    class Party {
+        <<abstract>>
+        id : integer
+        name : string
+    }
+    class Person {
+        <<abstract>>
+        birth_year : integer
+    }
+    class Taxpayer {
+        <<abstract>>
+        tax_id : string
+    }
     class Employee {
         department : string
     }
+    Party <|-- Person
+    Party <|-- Taxpayer
     Person <|-- Employee
     Taxpayer <|-- Employee
 ```
 
-`MATCH (:Person)` and `MATCH (:Taxpayer)` each return the employee once. A diamond
-— two supertypes that share a grandparent — resolves cleanly too: the shared
-ancestor's label appears once on the leaf and matches once. Double-counting comes
-only from the same thing sitting in two sibling tables, never from how many
-supertypes an entity has or how deep the chain runs.
+`Party` sits at the top and is reached through two paths, so this is a diamond.
+`Employee` carries the `Person`, `Taxpayer`, and `Party` labels, and `Party`
+appears once. `MATCH (:Person)`, `MATCH (:Taxpayer)`, and `MATCH (:Party)` each
+return every employee a single time. The number of supertypes a subtype has, and
+the number of paths that reach a shared ancestor, do not change the count.
+
+### Deeper hierarchies
+
+A hierarchy can run several levels deep with a concrete table at each leaf. Here
+`Party` divides into `Person` and `Organization`, and each has its own concrete
+kind: a `Customer` is a person, a `Vendor` is an organization:
+
+```yaml
+      - name: Party
+        abstract: true
+        primary_key: [id]
+        fields:
+          - { name: id,   datatype: Integer }
+          - { name: name, datatype: String }
+      - name: Person
+        abstract: true
+        extends: [Party]
+        fields:
+          - { name: birth_year, datatype: Integer }
+      - name: Organization
+        abstract: true
+        extends: [Party]
+        fields:
+          - { name: founded_year, datatype: Integer }
+      - name: Customer
+        extends: [Person]
+        primary_key: [id]
+        source: my-project.sales.customer
+        fields:
+          - { name: id,         datatype: Integer, expression: c_id }
+          - { name: name,       datatype: String,  expression: c_name }
+          - { name: birth_year, datatype: Integer, expression: c_birth }
+          - { name: tier,       datatype: String,  expression: c_tier }
+      - name: Vendor
+        extends: [Organization]
+        primary_key: [id]
+        source: my-project.sales.vendor
+        fields:
+          - { name: id,           datatype: Integer, expression: v_id }
+          - { name: name,         datatype: String,  expression: v_name }
+          - { name: founded_year, datatype: Integer, expression: v_founded }
+          - { name: rating,       datatype: Integer, expression: v_rating }
+```
+
+```mermaid
+classDiagram
+    class Party {
+        <<abstract>>
+        id : integer
+        name : string
+    }
+    class Person {
+        <<abstract>>
+        birth_year : integer
+    }
+    class Organization {
+        <<abstract>>
+        founded_year : integer
+    }
+    class Customer {
+        tier : string
+    }
+    class Vendor {
+        rating : integer
+    }
+    Party <|-- Person
+    Party <|-- Organization
+    Person <|-- Customer
+    Organization <|-- Vendor
+```
+
+`Customer` and `Vendor` are the only tables. `MATCH (:Party)` returns every
+customer and every vendor; `MATCH (:Person)` returns customers alone, and
+`MATCH (:Organization)` vendors alone. Each real party lives in one table, so
+every count is exact.
+
+### What keeps every shape correct
+
+These shapes deploy because their supertypes are abstract. Each concrete table
+binds every inherited field to its own column, and BigQuery matches a shared
+label by property name, so the subtype tables never have to agree on a physical
+column. A supertype with its own table works too. Then every subtype table must
+carry that supertype's columns under the same names, and a thing present in both
+the supertype table and a subtype table is counted twice under the supertype
+label. Keeping supertypes abstract keeps the one rule — one real thing, one node
+— automatic.
 
 ## Match the shape to how your data is stored
 
