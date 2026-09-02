@@ -85,7 +85,11 @@ interface EntryLinkList {
 export class CatalogClient extends api.ApiClient {
 
   constructor(ctx: context.ApiContext) {
-    super('https://dataplex.googleapis.com', 'v1', ctx);
+    // Defaults to the production Dataplex endpoint. Override via DATAPLEX_ENDPOINT
+    // to target a non-prod host (e.g. an autopush/sandbox EAP), same env-var
+    // knob style as GCP_LOG.
+    super(process.env.DATAPLEX_ENDPOINT || 'https://dataplex.googleapis.com',
+          'v1', ctx);
   }
 
   async getEntryGroup(project: string, location: string,

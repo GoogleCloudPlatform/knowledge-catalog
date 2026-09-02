@@ -48,7 +48,7 @@
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
-import {bigQueryGraphTargets} from './deploy_bigquery';
+import {googleDeploymentTargets} from './deployment_target';
 import {AiContext, DataType, Entity, Metric, Relationship, SemanticModel} from './ir';
 
 // Where the `semantic-*` and `schema` system types live: built-in types in
@@ -213,11 +213,13 @@ export function generateCatalogResources(
 
 
 // Builds the schema-join entry link for one relationship, or undefined when it
-// cannot be published. A many-to-many (association) edge is skipped -- a junction
-// is two joins, which the single source/target schema-join does not model -- and
-// so is an edge whose endpoint entity was not emitted (e.g. skipped for a
-// duplicate id). Both cases warn; the BigQuery property graph still carries the
-// edge.
+// cannot be published. Skipped, each with a warning: a many-to-many
+// (association) edge -- a junction is two joins, which the single source/target
+// schema-join does not model; an edge whose endpoint entity was not emitted
+// (e.g. skipped for a duplicate id); and a column-less (purely logical) edge,
+// whose join columns must be added to the model before it can publish. The
+// BigQuery property graph still carries the association and (once bound) direct
+// edges.
 function relationshipLink(
     names: Namer, model: SemanticModel, rel: Relationship,
     entityEntryName: Map<string, string>, seenLinks: Set<string>,
@@ -236,6 +238,19 @@ function relationshipLink(
     warnings.push(
         `relationship '${rel.name}': endpoint entity '${missing}' is not a ` +
         `published entity; the relationship link is skipped.`);
+    return undefined;
+  }
+  // A purely logical edge (an OWL import) carries no join columns. schema-join
+  // is a server-defined CLOSED metadataTemplate whose `fields` requirement we
+  // cannot depend on, so rather than risk a rejected aspect on a KC push we skip
+  // the link until the edge is bound. Add the relationship's from_columns /
+  // to_columns to the model and it publishes; the edge still lives in the model
+  // (and, once bound, the BigQuery/Spanner graph).
+  if (!rel.source.columns.length || !rel.destination.columns.length) {
+    warnings.push(
+        `relationship '${rel.name}': no join columns, so it is not published ` +
+        `to Knowledge Catalog yet; add its from_columns and to_columns to the ` +
+        `relationship in the model to publish the link.`);
     return undefined;
   }
   const linkId = names.linkId(model, rel);
@@ -279,20 +294,29 @@ function relationshipLink(
 // because the join is author-declared, and `userManaged` stops Dataplex from
 // overwriting it. Field names/nesting mirror the schema-join aspect type's
 // metadataTemplate.
+//
+// Only bound edges reach here -- relationshipLink skips a column-less (logical)
+// edge -- so `fields` is always present. The `name` still falls back to the
+// entity name when the model is logical-only for KC (columns set but no
+// dataSource binding), matching the entity-not-found fallback.
 function schemaJoinAspectData(
     model: SemanticModel, rel: Relationship): Record<string, any> {
   const srcEntity = entityByName(model, rel.source.entity);
   const dstEntity = entityByName(model, rel.destination.entity);
   return {
     joins: [compact({
-      source: {
-        name: srcEntity ? srcEntity.dataSource : rel.source.entity,
+      source: compact({
+        name: srcEntity && srcEntity.dataSource ?
+            srcEntity.dataSource :
+            rel.source.entity,
         fields: rel.source.columns,
-      },
-      target: {
-        name: dstEntity ? dstEntity.dataSource : rel.destination.entity,
+      }),
+      target: compact({
+        name: dstEntity && dstEntity.dataSource ?
+            dstEntity.dataSource :
+            rel.destination.entity,
         fields: rel.destination.columns,
-      },
+      }),
       description: rel.description,
       type: 'FOREIGN_KEY',
       inferenceSource: 'USER',
@@ -312,25 +336,32 @@ function entityByName(model: SemanticModel, name: string): Entity|undefined {
 // these shapes so any schema-driven change is a visible, reviewable diff.
 // ---------------------------------------------------------------------------
 
-// semantic-model: the BigQuery Graph deployment target URIs this model deploys
-// to (the same targets the BigQuery leg executes against). Empty data is valid;
-// the aspect is still attached to satisfy the entry type's required_aspects.
+// semantic-model: every recognized graph deployment target URI this model
+// deploys to -- BigQuery Graph and/or Spanner Graph, the same targets the graph
+// legs execute against. Recording both backends keeps the entry faithful for a
+// Spanner-targeted model (so a later `kcmd pull` reconstructs a bound model).
+// Empty data is valid; the aspect is still attached to satisfy required_aspects.
 function modelAspectData(model: SemanticModel): Record<string, any> {
-  const {targets} = bigQueryGraphTargets(model);
+  const {bigQuery, spanner} = googleDeploymentTargets(model);
+  const uris = [...bigQuery, ...spanner].map(t => t.uri);
   return compact({
-    deploymentTargets: targets.length ? targets.map(t => t.uri) : undefined,
+    deploymentTargets: uris.length ? uris : undefined,
   });
 }
 
-// semantic-entity: the base table(s) backing the entity. `source` and its
-// `resources` array are required by the aspect type. importedSystem/
+// semantic-entity: the base table(s) backing the entity. importedSystem/
 // importedResource have no IR source today and are left unset.
 function entityAspectData(entity: Entity): Record<string, any> {
-  return {
-    source: compact({
-      resources: [resourcePath(entity.dataSource)],
-    }),
-  };
+  // A logical-only entity has no physical table (empty dataSource). Still emit
+  // the `source` block with an empty `resources` array rather than a bogus
+  // ['']: the semantic-entity template requires `source` (with its `resources`
+  // list), so omitting it is rejected server-side. An empty list is the honest
+  // "no binding yet"; the reader treats it the same as an absent source
+  // (dataSource becomes '').
+  const path = resourcePath(entity.dataSource);
+  return compact({
+    source: {resources: path ? [path] : []},
+  });
 }
 
 // The built-in schema aspect, carrying each field's column type and display

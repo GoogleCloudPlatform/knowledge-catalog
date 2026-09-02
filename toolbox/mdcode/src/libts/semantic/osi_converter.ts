@@ -74,34 +74,101 @@ export interface SerializeResult {
  *
  * Warnings flag IR content that has no loadable representation (an association
  * relationship's junction detail), so the caller can surface the lossy edge.
+ *
+ * `logical` marks the model as a purely logical one (no physical binding), so
+ * the missing-source and missing-expression warnings -- which flag a lossy pull
+ * of a bound model -- are suppressed. An OWL import sets it; `pull` does not.
+ *
+ * `compactFlow` renders leaf collections (scalar sequences, all-scalar maps) in
+ * flow style so the output matches the compact convention the semantic-model
+ * guides author by hand and is byte-for-byte reproducible there. An OWL import
+ * sets it; `pull` does not.
  */
-export function serializeModel(model: SemanticModel): SerializeResult {
+export interface SerializeOptions {
+  logical?: boolean;
+  compactFlow?: boolean;
+}
+
+export function serializeModel(
+    model: SemanticModel, opts: SerializeOptions = {}): SerializeResult {
   const warnings: string[] = [];
-  const text = yaml.stringify(modelDocument(model, warnings));
+  const document = modelDocument(model, warnings, opts.logical);
+  const text =
+      opts.compactFlow ? renderCompact(document) : yaml.stringify(document);
   return {yaml: text, warnings: [...new Set(warnings)]};
+}
+
+// Renders "leaf" collections in flow style so the output matches the compact
+// convention the semantic-model guides author by hand: a sequence whose items
+// are all scalars (`primary_key: [id]`, `from_columns: [fk]`) and a map whose
+// values are all scalars (an inline field `{name, datatype}` or a column-less
+// relationship `{name, from, to}`). Nested structures -- a dataset, an
+// expression's `dialects`, an `ai_context` -- always stay block.
+//
+// A leaf collection is inlined ONLY while it stays short: a map or sequence
+// whose flow form would exceed FLOW_WIDTH_BUDGET (a field carrying a long
+// `description`, say) is left block, so `--compact` never emits an unreadable
+// multi-hundred-character line. `lineWidth: 0` disables the wrapper so an
+// inlined collection is never broken mid-braces -- the width gate, not the
+// wrapper, is what bounds line length. Flow and block parse identically, so
+// this only affects layout.
+const FLOW_WIDTH_BUDGET = 80;
+
+// The rendered width of a scalar node (its stringified value length); 0 for a
+// non-scalar, which never contributes because a collection holding one is not
+// inlined in the first place.
+function scalarWidth(node: unknown): number {
+  return yaml.isScalar(node) ?
+      String((node as yaml.Scalar).value ?? '').length :
+      0;
+}
+
+function renderCompact(document: Record<string, any>): string {
+  const doc = new yaml.Document(document);
+  yaml.visit(doc, {
+    Seq(_, node) {
+      if (!node.items.every(item => yaml.isScalar(item))) return;
+      // `[` + each `item, ` + `]`, approximated for the width gate.
+      const width = node.items.reduce((n, item) => n + scalarWidth(item) + 2, 2);
+      if (width <= FLOW_WIDTH_BUDGET) node.flow = true;
+    },
+    Map(_, node) {
+      const pairs = node.items as yaml.Pair[];
+      if (!pairs.every(pair => yaml.isScalar(pair.value))) return;
+      // `{` + each `key: value, ` + `}`, approximated for the width gate.
+      const width = pairs.reduce(
+          (n, pair) => n + scalarWidth(pair.key) + scalarWidth(pair.value) + 4,
+          2);
+      if (width <= FLOW_WIDTH_BUDGET) node.flow = true;
+    },
+  });
+  return doc.toString({flowCollectionPadding: false, lineWidth: 0});
 }
 
 // Builds the plain document object (version + one model) that yaml.stringify
 // renders. Kept separate so tests can assert the structure without parsing
 // YAML.
 export function modelDocument(
-    model: SemanticModel, warnings: string[] = []): Record<string, any> {
+    model: SemanticModel, warnings: string[] = [],
+    logical = false): Record<string, any> {
   return {
     version: SERIALIZED_VERSION,
-    semantic_model: [modelDoc(model, warnings)],
+    semantic_model: [modelDoc(model, warnings, logical)],
   };
 }
 
-function modelDoc(
-    model: SemanticModel, warnings: string[]): Record<string, any> {
+function modelDoc(model: SemanticModel, warnings: string[], logical: boolean):
+    Record<string, any> {
   // `datasets` is required (min 1) by the loader. A reconstructed model with no
   // entities (e.g. every entity fetch failed during a pull) would serialize to
   // a document the loader rejects; emit the (empty) array but flag it so the
   // lossy edge is visible rather than surfacing later as an opaque load error.
-  const datasets = (model.entities ?? []).map(e => datasetDoc(e, warnings));
+  const datasets =
+      (model.entities ?? []).map(e => datasetDoc(e, warnings, logical));
   if (!datasets.length) {
     warnings.push(
-        `model '${model.name}': no datasets (entities); the document requires ` +
+        `model '${
+            model.name}': no datasets (entities); the document requires ` +
         `at least one and will not load until an entity is present.`);
   }
   return compact({
@@ -117,21 +184,23 @@ function modelDoc(
 }
 
 function datasetDoc(
-    entity: Entity, warnings: string[]): Record<string, any> {
+    entity: Entity, warnings: string[], logical: boolean): Record<string, any> {
   // A concrete (non-abstract) entity with no source cannot be reloaded -- the
   // loader requires `source` unless the dataset is abstract -- so surface the
   // gap at write time instead of emitting a document that fails to load. This
   // never fires for a well-formed IR; it catches a lossy pull that dropped a
-  // binding without marking the entity abstract.
-  if (!entity.abstract && !entity.dataSource) {
+  // binding without marking the entity abstract. Suppressed for a logical
+  // model, where a missing source is intended (a binding profile supplies it
+  // later).
+  if (!logical && !entity.abstract && !entity.dataSource) {
     warnings.push(
         `entity '${entity.name}' has no source and is not abstract; the ` +
         `serialized document will not reload until a source is set`);
   }
   return compact({
     name: entity.name,
-    // An abstract entity has no physical table, so its source is empty; omit the
-    // key rather than emit `source: ""` (which the loader reads as a
+    // An abstract entity has no physical table, so its source is empty; omit
+    // the key rather than emit `source: ""` (which the loader reads as a
     // concrete-but-empty reference).
     source: entity.dataSource || undefined,
     // Supertype entities (entity-level inheritance); omitted when none.
@@ -142,15 +211,20 @@ function datasetDoc(
     unique_keys: nonEmpty(entity.uniqueKeys),
     description: entity.description,
     ai_context: aiContextDoc(entity.aiContext),
-    fields: nonEmpty((entity.fields ?? []).map(f => fieldDoc(f, warnings))),
+    fields: nonEmpty(
+        (entity.fields ?? []).map(f => fieldDoc(f, warnings, logical))),
     custom_extensions: customExtensionsDoc(entity.customExtensions),
   });
 }
 
-function fieldDoc(field: Field, warnings: string[]): Record<string, any> {
+function fieldDoc(
+    field: Field, warnings: string[], logical: boolean): Record<string, any> {
   const expression = expressionDoc(
       field.expression, field.importedExpression, field.importedDialect);
-  if (!expression) {
+  // A logical field intentionally has no expression (a binding profile maps it
+  // to a column later), so the missing-expression warning is suppressed there;
+  // for a bound model it still flags a lossy pull.
+  if (!logical && !expression) {
     warnings.push(
         `field '${field.name}': no expression; the loader requires one per ` +
         `field and the document will not load until it is set.`);

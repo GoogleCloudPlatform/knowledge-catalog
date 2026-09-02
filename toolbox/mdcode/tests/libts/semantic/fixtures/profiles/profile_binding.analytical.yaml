@@ -1,0 +1,22 @@
+# The analytical binding profile: every logical field maps to a differently
+# named physical column, so the generated DDL must carry the physical column at
+# every structural site (node KEY, edge SOURCE KEY / DESTINATION KEY /
+# REFERENCES) and as each MEASURE operand -- never the logical field name.
+# `segment` is explicitly unbound, which prunes it and the segment_count metric.
+version: "0.2.0.dev0"
+semantic_model:
+  - name: commerce
+    deployment_target: //bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/commerce
+    entities:
+      - name: Customer
+        source: //bigquery.googleapis.com/projects/acme/datasets/sales/tables/customers
+        fields:
+          - { name: id, expression: cust_id }
+          - { name: name, expression: full_name }
+          - { name: segment, unbound: true }
+      - name: Order
+        source: //bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders
+        fields:
+          - { name: id, expression: order_id }
+          - { name: customerId, expression: fk_customer }
+          - { name: amount, expression: gross_amount }

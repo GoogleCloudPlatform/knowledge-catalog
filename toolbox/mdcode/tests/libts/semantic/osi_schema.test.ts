@@ -25,8 +25,17 @@ function yamlFixtures(dir: string): string[] {
   const out: string[] = [];
   for (const ent of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, ent.name);
-    if (ent.isDirectory()) out.push(...yamlFixtures(p));
-    else if (ent.name.endsWith('.yaml') || ent.name.endsWith('.yml')) out.push(p);
+    // The profiles/ subtree holds binding-profile authoring input, a
+    // deliberate pre-OSI superset -- a logical model declares fields with no
+    // `expression`, and a profile carries `deployment_target`/`unbound` sugars
+    // -- so it is not a standalone OSI document. The loader, merge, and
+    // profile-golden tests validate it instead.
+    if (ent.isDirectory()) {
+      if (ent.name === 'profiles') continue;
+      out.push(...yamlFixtures(p));
+    } else if (ent.name.endsWith('.yaml') || ent.name.endsWith('.yml')) {
+      out.push(p);
+    }
   }
   return out;
 }
@@ -77,6 +86,35 @@ function onlyExtendsExtension(errors: typeof validate.errors): boolean {
         /\/datasets\/\d+$/.test(e.instancePath));
 }
 
+// The OWL import goldens (.osi.golden.yaml) are purely LOGICAL models -- a
+// deliberate pre-OSI superset, the same shape the profiles/ subtree is exempted
+// for: an ontology has no physical tables, so they omit every binding facet the
+// released schema requires (dataset `source` and field `expression`, supplied
+// by a binding profile later; relationship `from_columns`/`to_columns`, added
+// to the model later) and also carry the `extends`/`abstract` dataset
+// supersets. Tolerate EXACTLY those
+// omissions and extra properties on these goldens and nothing else, so real
+// drift (a bad enum, a misspelled key, an unexpected shape) still fails.
+function onlyLogicalGoldenDeviations(errors: typeof validate.errors): boolean {
+  const missingOk = new Set(
+    ['source', 'expression', 'from_columns', 'to_columns']);
+  const extraOk = new Set(['extends', 'abstract']);
+  return !!errors && errors.length > 0 &&
+    errors.every(e => {
+      if (e.keyword === 'required') {
+        return missingOk.has(
+          (e.params as {missingProperty?: string}).missingProperty ?? '');
+      }
+      if (e.keyword === 'additionalProperties') {
+        return extraOk.has(
+          (e.params as {additionalProperty?: string}).additionalProperty ??
+          '') &&
+          /\/datasets\/\d+$/.test(e.instancePath);
+      }
+      return false;
+    });
+}
+
 describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () => {
   test('at least one fixture is discovered', () => {
     expect(fixtures.length).toBeGreaterThan(0);
@@ -95,14 +133,18 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
             onlyMissingExpression(validate.errors)) {
           return;
         }
-        // A dataset `extends`/`abstract` is a deliberate superset of released
-        // OSI (OWL rdfs:subClassOf -> entity-level inheritance, plus the
-        // abstract marker); tolerate exactly those extra properties and nothing
-        // else, and only on the OWL import goldens (.osi.golden.yaml) and the
-        // hand-authored hierarchy fixture that legitimately carry them -- so a
-        // stray `extends` slipping into any other fixture still fails.
-        if ((rel.endsWith('.osi.golden.yaml') ||
-             rel === 'hierarchy_graph.yaml') &&
+        // The OWL import goldens are purely logical models (a pre-OSI superset,
+        // like profiles/): they omit source/expression/join-columns and carry
+        // the extends/abstract supersets. Tolerate exactly those deviations on
+        // them, so any other drift still fails.
+        if (rel.endsWith('.osi.golden.yaml') &&
+            onlyLogicalGoldenDeviations(validate.errors)) {
+          return;
+        }
+        // The hand-authored bound graph fixtures carry only the
+        // extends/abstract superset (their sources/expressions are present).
+        if ((rel === 'hierarchy_graph.yaml' ||
+             rel === 'reserved_words_inherit.yaml') &&
             onlyExtendsExtension(validate.errors)) {
           return;
         }

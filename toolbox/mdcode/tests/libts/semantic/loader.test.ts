@@ -977,3 +977,199 @@ describe('field label and time-dimension role align with the format models', () 
     expect(isTimeDimension(f)).toBe(false);
   });
 });
+
+
+describe('authoring sugars: entities alias, bare-string expression, deployment_target', () => {
+  const URI =
+    '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+
+  test("'entities:' is an alias for 'datasets:'", () => {
+    const { models } = fromDocument({
+      semantic_model: [{
+        name: 'm',
+        entities: [
+          { name: 'a', source: 'proj.ds.tbl', primary_key: ['id'],
+            fields: [{ name: 'id', expression: expr('id') }] },
+        ],
+      }],
+    });
+    expect(models[0].entities.map(e => e.name)).toEqual(['a']);
+    expect(models[0].entities[0].dataSource).toBe('proj.ds.tbl');
+  });
+
+  test("declaring both 'entities' and 'datasets' is an error", () => {
+    expect(() => fromDocument({
+      semantic_model: [{
+        name: 'm',
+        entities: [{ name: 'a', source: 's', fields: [] }],
+        datasets: [{ name: 'b', source: 's', fields: [] }],
+      }],
+    })).toThrow(/set either 'entities' or 'datasets', not both/);
+  });
+
+  test('a bare-string expression expands to the target-dialect object', () => {
+    const { models } = fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [{
+          name: 'a', source: 'proj.ds.tbl', primary_key: ['id'],
+          fields: [{ name: 'id', expression: 'id_col' }],
+        }],
+      }],
+    });
+    expect(models[0].entities[0].fields[0].expression).toBe('id_col');
+  });
+
+  test("a top-level 'deployment_target' folds into the GOOGLE block form", () => {
+    const sugar = fromDocument({
+      semantic_model: [{
+        name: 'm', deployment_target: URI,
+        datasets: [{ name: 'a', source: 's', primary_key: ['id'],
+          fields: [{ name: 'id', expression: 'id' }] }],
+      }],
+    });
+    const explicit = fromDocument({
+      semantic_model: [{
+        name: 'm',
+        custom_extensions: [{ vendor_name: 'GOOGLE',
+          data: JSON.stringify({ deploymentTargets: [URI] }) }],
+        datasets: [{ name: 'a', source: 's', primary_key: ['id'],
+          fields: [{ name: 'id', expression: 'id' }] }],
+      }],
+    });
+    expect(sugar.models[0].customExtensions)
+      .toEqual(explicit.models[0].customExtensions);
+    expect(sugar.models[0].customExtensions).toEqual([
+      { vendorName: 'GOOGLE',
+        data: JSON.stringify({ deploymentTargets: [URI] }) },
+    ]);
+  });
+
+  test("'deployment_target' agreeing with a GOOGLE block adds no duplicate", () => {
+    const { models } = fromDocument({
+      semantic_model: [{
+        name: 'm', deployment_target: URI,
+        custom_extensions: [{ vendor_name: 'GOOGLE',
+          data: JSON.stringify({ deploymentTargets: [URI] }) }],
+        datasets: [{ name: 'a', source: 's', primary_key: ['id'],
+          fields: [{ name: 'id', expression: 'id' }] }],
+      }],
+    });
+    expect(models[0].customExtensions).toEqual([
+      { vendorName: 'GOOGLE',
+        data: JSON.stringify({ deploymentTargets: [URI] }) },
+    ]);
+  });
+
+  test("'deployment_target' disagreeing with a GOOGLE block is an error", () => {
+    expect(() => fromDocument({
+      semantic_model: [{
+        name: 'm', deployment_target: URI,
+        custom_extensions: [{ vendor_name: 'GOOGLE',
+          data: JSON.stringify({ deploymentTargets: ['//other/target'] }) }],
+        datasets: [{ name: 'a', source: 's', fields: [] }],
+      }],
+    })).toThrow(/disagrees with the GOOGLE custom_extension/);
+  });
+});
+
+describe('fields may be declared unbound (no physical column)', () => {
+  test('an unbound field loads with no expression', () => {
+    const { models } = fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [{
+          name: 'a', source: 's', primary_key: ['id'],
+          fields: [
+            { name: 'id', expression: 'id' },
+            { name: 'credit', unbound: true },
+          ],
+        }],
+      }],
+    });
+    const [id, credit] = models[0].entities[0].fields;
+    expect(id.unbound).toBeUndefined();
+    expect(credit.unbound).toBe(true);
+    expect(credit.expression).toBeUndefined();
+  });
+
+  test('a field that is both bound and unbound is an error', () => {
+    expect(() => fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [{ name: 'a', source: 's', primary_key: ['id'],
+          fields: [{ name: 'credit', unbound: true, expression: 'c' }] }],
+      }],
+    })).toThrow(/an unbound field has no column/);
+  });
+
+  test('a field that is neither bound nor unbound is an error naming the field', () => {
+    expect(() => fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [{ name: 'a', source: 's', primary_key: ['id'],
+          fields: [{ name: 'credit' }] }],
+      }],
+    })).toThrow(/field 'credit': requires an expression/);
+  });
+});
+
+
+describe('a purely logical model loads only under bindingOptional', () => {
+  // A logical-only model declares meaning (entities, fields, keys) with no
+  // physical binding: no dataset `source`, no field `expression`. It is the
+  // Knowledge-Catalog-only push case -- KC governs the logical layer and needs
+  // no table or column to point at.
+  const logicalOnly = {
+    semantic_model: [{
+      name: 'm',
+      datasets: [{
+        name: 'orders', primary_key: ['id'],
+        fields: [{ name: 'amount' }, { name: 'status' }],
+      }],
+    }],
+  };
+
+  test('under bindingOptional it loads with an empty source and unbound fields', () => {
+    const { models } = fromDocument(logicalOnly, { bindingOptional: true });
+    const orders = models[0].entities[0];
+    // No source -> empty dataSource (the emitter tolerates this); the fields
+    // carry no expression because there is no binding.
+    expect(orders.dataSource).toBe('');
+    expect(orders.keys).toEqual(['id']);
+    expect(orders.fields.map(f => f.name)).toEqual(['amount', 'status']);
+    expect(orders.fields.every(f => f.expression === undefined)).toBe(true);
+  });
+
+  test('without bindingOptional the same model fails for the missing source and expression', () => {
+    let message = '';
+    try {
+      fromDocument(logicalOnly);
+    } catch (e: any) {
+      message = String(e.message ?? e);
+    }
+    // Both binding-completeness checks fire in the default (strict) mode.
+    expect(message).toContain("dataset 'orders': a non-abstract dataset requires a source");
+    expect(message).toContain("field 'amount': requires an expression");
+  });
+
+  test('bindingOptional still rejects an unbound field that also has an expression', () => {
+    // The contradiction check is independent of binding-completeness, so it
+    // fires even when a source/expression is otherwise optional.
+    expect(() => fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [{ name: 'a', fields: [{ name: 'c', unbound: true, expression: 'c' }] }],
+      }],
+    }, { bindingOptional: true })).toThrow(/an unbound field has no column/);
+  });
+
+  test('bindingOptional still rejects an abstract dataset that also names a source', () => {
+    expect(() => fromDocument({
+      semantic_model: [{
+        name: 'm',
+        datasets: [{ name: 'Party', abstract: true, source: 'p.d.party', fields: [] }],
+      }],
+    }, { bindingOptional: true })).toThrow(/an abstract dataset has no table/);
+  });
+});

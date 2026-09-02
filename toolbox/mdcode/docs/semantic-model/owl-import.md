@@ -16,8 +16,9 @@ the property characteristics, and per-term annotations (`rdfs:seeAlso`,
 `owl:deprecated`, …) — are not dropped: they **ride along verbatim** as custom
 extensions, lossless and inert, until they earn a first-class concept (see
 [Constructs carried as custom extensions](#constructs-carried-as-custom-extensions-not-yet-native)).
-Richer OWL still not read at all (SHACL, cardinality restrictions, `owl:oneOf`,
-individuals) is listed in [Limitations](#limitations).
+Richer OWL still not read at all (SHACL, cardinality restrictions, the set-level
+disjointness / identity axioms, individuals) is listed in
+[Limitations](#limitations).
 
 ## 1. The OWL file
 
@@ -131,14 +132,17 @@ literal types that become each field's `datatype`.
 $ kcmd owl import sales.owl.ttl
 converted 2 classes, 1 object property, 9 datatype properties
 wrote catalog/EntryGroups/<entryGroup>/sales.yaml
-note: this model is UNBOUND (placeholder `unbound:` sources, no deployment target).
-      `kcmd push` is rejected until you bind each entity's source table and add
-      a BigQuery deployment target -- validation needs both, for every --target.
 ```
 
 The model name comes from the file (`sales.owl.ttl` → `sales`). By default the
 document is written into the semantic-model layout dir so the next `kcmd push`
-picks it up; pass `--out <path>` to write it elsewhere.
+picks it up; pass `--out <path>` to write it elsewhere. The output uses the
+block layout shown below; pass `--compact` for the compact flow layout
+(`primary_key: [id]`, inline `{ name, datatype }` field and relationship maps)
+instead. Either way it is a purely **logical** model — `kcmd push` publishes it
+to Knowledge Catalog as-is, while a BigQuery or Spanner Graph deploy needs each
+relationship's join columns added to the model plus a [binding
+profile](profiles.md) (see [§4](#4-going-from-ontology-to-a-running-graph-binding)).
 
 ## 3. The semantic model it produces — `sales.yaml`
 
@@ -159,8 +163,7 @@ semantic_model:
       examples:
         - How many orders did each customer place last month?
     datasets:
-      - name: Customer
-        source: unbound:Customer        # placeholder — bind to a table for BigQuery Graph
+      - name: Customer                   # no source: a logical entity
         primary_key:
           - customerId                   # from owl:hasKey
         unique_keys:
@@ -170,56 +173,37 @@ semantic_model:
           synonyms:
             - Buyer
         fields:
-          - name: customerId
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: customerId
+          - name: customerId             # no expression: a logical field
             datatype: String
           - name: email
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: email
             datatype: String
             description: The customer's unique email address.
           - name: customerName
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: customerName
             datatype: String
             label: name
           - name: signupDate
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: signupDate
             datatype: Date
             dimension:
               is_time: true              # a temporal field is a time dimension
           - name: isVip
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: isVip
             datatype: Boolean
             description: Whether the customer is in the loyalty program.
       # ... Order dataset: orderId, orderAmount, quantity, orderDate ...
     relationships:
       - name: placedBy
-        from: Order
+        from: Order                      # logical edge: direction only, no columns
         to: Customer
-        from_columns:
-          - TODO_BIND                    # source FK — fill in when you bind sources
-        to_columns:
-          - customerId                   # already bound to Customer's key
         ai_context:
           instructions: Links an order to the customer who placed it.
 ```
 
-This is the **clean mapping**: every construct here has a native semantic-model
-home, so the output carries no term IRIs and no `custom_extensions`. Two kinds of
+This is a purely **logical model**: an ontology declares meaning, not physical
+tables, so entities carry no `source`, fields no `expression`, and relationships
+no join columns. Before a graph deploy a [binding profile](profiles.md) supplies
+the sources and field expressions, and you add each edge's join columns to the
+model (they are logical, not a binding). It is also the **clean mapping**: every construct here has a native
+semantic-model home, so the output carries no term IRIs and no
+`custom_extensions`. Two kinds of
 ontology go further — a **class hierarchy** (`rdfs:subClassOf`) and constructs
 with **no native home yet** (inverses, equivalences, property characteristics,
 …). Both are supported; the rest of this page shows them as extensions of *this
@@ -242,11 +226,11 @@ appears nowhere above.
 | OWL | Semantic model | Notes |
 |---|---|---|
 | `owl:Ontology` header | model `description`, `ai_context`, version | comment → `description`; labels → `ai_context.synonyms`; `skos:example` → `ai_context.examples`; `owl:versionInfo` → appended to `description` |
-| `owl:Class` | `datasets[]` entry | `source` = `unbound:<Name>` placeholder until bound |
-| `owl:DatatypeProperty` | `fields[]` on **each** domain's dataset | a property with several `rdfs:domain` values lands on each; `expression` defaults to the property's local name (a valid column ref once bound) |
-| `owl:ObjectProperty` | `relationships[]` | `from` = domain, `to` = range; join columns bound to the destination key when it has one, else `TODO_BIND` (see [binding](#4-going-from-ontology-to-a-running-graph-binding)); with several `rdfs:domain`/`rdfs:range` values only the first of each is kept (a relationship is one source → one destination) and the rest are warned |
+| `owl:Class` | `datasets[]` entry | a logical entity — **no `source`** (a binding profile adds one before a graph deploy) |
+| `owl:DatatypeProperty` | `fields[]` on **each** domain's dataset | a property with several `rdfs:domain` values lands on each; a logical field — **no `expression`** (a binding profile maps it to a column) |
+| `owl:ObjectProperty` | `relationships[]` | `from` = domain, `to` = range; a **logical edge with no join columns** (you add `from_columns`/`to_columns` to the model before a graph deploy, see [binding](#4-going-from-ontology-to-a-running-graph-binding)); with several `rdfs:domain`/`rdfs:range` values only the first of each is kept (a relationship is one source → one destination) and the rest are warned |
 | `rdfs:subClassOf` (named superclass) | dataset `extends[]` | **entity-level inheritance only** — records the parent(s) in document order; not read on object properties (see [Class hierarchies](#class-hierarchies-rdfssubclassof)) |
-| `rdfs:subPropertyOf`, `owl:inverseOf`, `owl:equivalentClass`, `owl:disjointWith`, `owl:equivalentProperty`, `owl:propertyDisjointWith`, the property characteristics, `rdfs:seeAlso`, `rdfs:isDefinedBy`, `owl:deprecated`, `owl:versionInfo` | `custom_extensions` (GOOGLE) | **no native home yet** — carried verbatim, inert on push (see [Constructs carried as custom extensions](#constructs-carried-as-custom-extensions-not-yet-native)) |
+| `rdfs:subPropertyOf`, `owl:inverseOf`, `owl:equivalentClass`, `owl:disjointWith`, `owl:oneOf`, `owl:equivalentProperty`, `owl:propertyDisjointWith`, `owl:propertyChainAxiom`, `owl:AllDisjointClasses`, `owl:AllDisjointProperties`, `owl:AllDifferent`, the property characteristics, `rdfs:seeAlso`, `rdfs:isDefinedBy`, `owl:deprecated`, `owl:versionInfo` | `custom_extensions` (GOOGLE) | **no native home yet** — carried verbatim, inert on push (see [Constructs carried as custom extensions](#constructs-carried-as-custom-extensions-not-yet-native)) |
 | `rdfs:range xsd:*` | field `datatype` | see [Datatypes](#datatypes-rdfsrange) |
 | `owl:hasKey ( ... )` | dataset `primary_key` | single or composite, in list order |
 | `owl:InverseFunctionalProperty` | dataset `unique_keys` | a uniquely-identifying property; omitted when it is already the `primary_key`; a lone one on a keyless class is promoted to `primary_key` instead |
@@ -304,7 +288,10 @@ BigQuery Graph / BI treats it as one.
   (with a warning) so the dataset has a grain; ambiguous cases (several unique
   keys, or a composite one) are left without a `primary_key`.
 
-Keys also make relationships half-bindable — see the next section.
+Keys are **logical grain**, not a binding — they are the entity's identity, so
+they come across even though the model has no physical binding. They also tell
+you which columns an edge's `to_columns` must reference when you add join columns
+to the model; see [binding](#4-going-from-ontology-to-a-running-graph-binding).
 
 ### Class hierarchies (`rdfs:subClassOf`)
 
@@ -333,19 +320,13 @@ the `Person` and `Customer` datasets come out as (`Customer` carrying
 ```yaml
   # Person is its own dataset:
   - name: Person
-    source: unbound:Person
     description: A human being.
     fields:
       - name: fullName
-        expression:
-          dialects:
-            - dialect: BIGQUERY
-              expression: fullName
         datatype: String
   # Customer records that it extends Person and keeps ONLY its own fields;
   # Person's fullName is NOT flattened down.
   - name: Customer
-    source: unbound:Customer
     extends:
       - Person
     primary_key:
@@ -353,10 +334,6 @@ the `Person` and `Customer` datasets come out as (`Customer` carrying
     description: A person or organization that places orders.
     fields:
       - name: customerId
-        expression:
-          dialects:
-            - dialect: BIGQUERY
-              expression: customerId
         datatype: String
       # ... email, customerName, signupDate, isVip (Customer's own) ...
 ```
@@ -443,22 +420,34 @@ original construct is lost in translation.
 **What is carried, and where it attaches:**
 
 The JSON key is the OWL construct itself (see **The shape** above), so it is not
-repeated as its own column. Rows are grouped by what they attach to.
+repeated as its own column. Rows are grouped by what they attach to. Most attach
+to the term they describe (an entity, a field, a relationship, or *any* term);
+the **set-level axioms** are the exception — `owl:AllDisjointClasses`,
+`owl:AllDisjointProperties`, and `owl:AllDifferent` are each asserted on an
+anonymous node about a *set* of terms, belonging to no single class or property,
+so they attach to the **model** (the top-level `custom_extensions`, beside
+`owl:baseIri`). Each is an array of member sets — one per axiom — so two separate
+disjointness axioms stay two entries rather than merging into one flat list.
 
 | OWL construct | Attaches to | Value | Meaning |
 |---|---|---|---|
 | `owl:equivalentClass` | entity | `string[]` (equivalent class refs) | this class denotes the same set as another |
 | `owl:disjointWith` | entity | `string[]` (disjoint class refs) | no individual is in both classes |
+| `owl:oneOf` | entity | `string[]` (member refs; an enumeration is a **set** — deduped, order not significant) | the class is exactly this enumerated set of members |
 | `rdfs:subPropertyOf` | field / relationship | `string[]` (super-property refs) | this property refines a broader one |
 | `owl:equivalentProperty` | field / relationship | `string[]` (equivalent property refs) | this property means the same as another |
 | `owl:propertyDisjointWith` | field / relationship | `string[]` (disjoint property refs) | the two properties never both hold |
 | `owl:FunctionalProperty` | field / relationship | `true` | at most one value / destination per subject |
+| `owl:propertyChainAxiom` | relationship | `string[][]` (one ordered chain per axiom — **in chain order, duplicates kept**; a property may carry several chain axioms) | this edge is the ordered composition of the listed ones (`hasParent` then `hasBrother` ⇒ `hasUncle`) |
 | `owl:inverseOf` | relationship | `string` (the inverse edge's ref) | the same edge read the other way |
 | `owl:SymmetricProperty` | relationship | `true` | the edge holds both ways (`a→b` ⇒ `b→a`) |
 | `owl:TransitiveProperty` | relationship | `true` | the edge chains (`a→b`, `b→c` ⇒ `a→c`) |
 | `owl:ReflexiveProperty` | relationship | `true` | every subject relates to itself (`a→a`) |
 | `owl:IrreflexiveProperty` | relationship | `true` | no subject relates to itself |
 | `owl:AsymmetricProperty` | relationship | `true` | `a→b` rules out `b→a` |
+| `owl:AllDisjointClasses` | model | `string[][]` (one member **set** per axiom — deduped, order not significant) | the listed classes are pairwise disjoint |
+| `owl:AllDisjointProperties` | model | `string[][]` (one member set per axiom) | the listed properties are pairwise disjoint |
+| `owl:AllDifferent` | model | `string[][]` (one member set per axiom; members are individuals, names only, like `owl:oneOf`) | the listed individuals are pairwise distinct |
 | `rdfs:seeAlso` | any | `string[]` of N-Triples terms — an IRI as `<iri>`, a literal as `"text"` (with any `@lang` / `^^<datatype>` preserved) | pointer to further information (kept distinguishable, see below) |
 | `rdfs:isDefinedBy` | any | `string[]` (IRIs, verbatim) | the resource that defines this term |
 | `owl:deprecated` | any | `true` | the term is deprecated (carried only when true) |
@@ -612,96 +601,117 @@ is out of scope (see [Limitations](#limitations)).
 
 ## 4. Going from ontology to a running graph (binding)
 
-The import gets you an **unbound** model — placeholder `unbound:<Name>` sources,
-`TODO_BIND` join columns, and no deployment target — so it is **not deployable
-yet**. `kcmd push` is rejected for *any* `--target` (including `kc`) until the
-model passes [validation](reference.md#validation): every entity `source` must
-resolve to a real BigQuery table, and the model must declare exactly one BigQuery
-deployment target. Both checks run before either destination leg, so there is no
-Knowledge-Catalog-only shortcut around them today.
-
-> **Known limitation — no KC-only publish before binding.** Even
-> `kcmd push --target kc` runs the BigQuery deployment-target and live-source
-> checks first, so you cannot publish the ontology as catalog metadata while the
-> model is still unbound. Letting `--target kc` publish an unbound model is a
-> possible follow-up (see [Limitations](#limitations)).
-
-To make the model deployable, bind each class to a real table. A
-declared key does half of this for you: an edge into a class that has a key
-already has its **destination** columns bound to that key, so you only fill each
-dataset's `source` table and the relationship's **source** foreign-key columns
-(the `TODO_BIND` placeholders):
-
-```yaml
-datasets:
-  - name: Customer
-    source: myproj.sales.customers        # was unbound:Customer
-    primary_key:
-      - customerId                        # already set from owl:hasKey
-    # ... fields, each expression bound to its real column ...
-  - name: Order
-    source: myproj.sales.orders           # was unbound:Order
-    # ... fields ...
-relationships:
-  - name: placedBy
-    from: Order
-    to: Customer
-    from_columns:
-      - customer_id                       # fill in the source FK (was TODO_BIND)
-    to_columns:
-      - customerId                        # already bound to Customer's key
-```
-
-Add a [deployment target](README.md#deployment-targets-required) on the model as
-well. With every `source` bound and one deployment target set, the model passes
-validation, and a single `kcmd push` deploys both destinations:
+The import gives you a **logical model**: what the domain means, with no physical
+binding. That is directly useful — `kcmd push` publishes it to
+Knowledge Catalog as-is, so the ontology becomes catalog metadata (entities,
+fields, and keys) with nothing more to fill in:
 
 ```console
-$ kcmd push                  # CREATE OR REPLACE PROPERTY GRAPH (Customer/Order nodes, placedBy edge), then KC entries
+$ kcmd push                  # publishes the logical model to Knowledge Catalog
 ```
 
-Binding the `source` tables and the source foreign-key columns is a manual edit
-in this first cut.
+A relationship publishes as a catalog link only once it has join columns (added
+to the model, below); a column-less edge is skipped with a warning, so the
+entities and fields still publish while the edge waits.
+
+A **BigQuery or Spanner Graph** deploy needs two things the import leaves open,
+and they belong in different places:
+
+1. **The join columns on each edge — in the model.** The import gives every
+   relationship its endpoints (`from`/`to`) but no join columns; which columns an
+   edge joins on is a *logical* fact the model owns, not a physical binding, so
+   you add it to the imported model itself. The keys the import already recovered
+   (`primary_key`, `unique_keys`) tell you which columns an edge's `to_columns`
+   must reference:
+
+   ```yaml
+   # sales.yaml — add the join columns to the imported relationship
+   relationships:
+     - name: placedBy
+       from: Order
+       to: Customer
+       from_columns: [o_custkey]   # the Order-side foreign key
+       to_columns: [customerId]    # Customer's key column
+   ```
+
+2. **The physical binding — in a profile.** Which table each entity reads, which
+   column each field reads, and the deployment target go in a
+   [binding profile](profiles.md): a document in the same schema, kept beside the
+   model as `<model>.profiles/<name>.yaml`, that adds *only* the binding and
+   leaves the logical model untouched. A profile may set `source`, field
+   `expression`, `unbound`, and `deployment_target` — nothing logical (a
+   `relationships` block in a profile is rejected). The model and the profile
+   merge by name at push time:
+
+   ```yaml
+   # sales.profiles/warehouse.yaml — physical binding for the sales model
+   version: 0.2.0.dev0
+   semantic_model:
+     - name: sales
+       deployment_target: //bigquery.googleapis.com/projects/myproj/datasets/sales/propertyGraphs/sales
+       datasets:
+         - name: Customer
+           source: //bigquery.googleapis.com/projects/myproj/datasets/sales/tables/customers
+           fields:
+             - { name: customerId, expression: c_custkey }
+             - { name: email,      expression: c_email }
+             # ... the remaining Customer fields ...
+         - name: Order
+           source: //bigquery.googleapis.com/projects/myproj/datasets/sales/tables/orders
+           fields:
+             - { name: orderId, expression: o_orderkey }
+             # ... the remaining Order fields ...
+   ```
+
+With the join columns in the model and the profile in place, a single push
+deploys the graph:
+
+```console
+$ kcmd push --profile warehouse   # merges the binding, then CREATE OR REPLACE PROPERTY GRAPH + KC entries
+```
+
+See [One logical model, many physical bindings](profiles.md) for the full profile
+contract — what a profile may and may not set, how merge and prune work, and how
+one logical model binds to several stores.
 
 ## Limitations
 
-Four different situations hide in "not covered": constructs already read but not
-yet resolved all the way downstream, constructs not read but reachable next,
-constructs out of scope, and one item that is a push limitation rather than a
-converter gap.
+Three different situations hide in "not covered": constructs already read but not
+yet resolved all the way downstream, constructs not read but reachable next, and
+constructs out of scope.
 
 **Read now — only downstream resolution is pending.** These are not dropped; the
 importer handles them today, and the remaining work is a later step, not in the
 import:
 
 - **Class hierarchy** (`rdfs:subClassOf`) maps to dataset `extends` (see
-  [Class hierarchies](#class-hierarchies-rdfssubclassof)); a **BigQuery** push
-  resolves it into node-table labels with inherited fields flattened down (see
-  [Class hierarchies (`extends` →
-  labels)](reference.md#class-hierarchies-extends--labels)). Resolving the same
-  inheritance into **Knowledge Catalog** entries is the follow-on — KC push still
-  publishes each entry with only its own fields.
-- **Constructs with no native home** — property inheritance
-  (`rdfs:subPropertyOf`), the cross-references (`owl:inverseOf`,
-  `owl:equivalentClass`, `owl:disjointWith`, `owl:equivalentProperty`,
-  `owl:propertyDisjointWith`), every property characteristic (symmetric /
-  transitive / functional / reflexive / irreflexive / asymmetric), and the
-  per-term annotations (`rdfs:seeAlso`, `rdfs:isDefinedBy`, `owl:deprecated`,
-  `owl:versionInfo`) are **carried verbatim** as `custom_extensions` rather than
-  dropped (see [Constructs carried as custom
-  extensions](#constructs-carried-as-custom-extensions-not-yet-native)). They are
-  inert on push; promoting any to a native concept is the follow-on.
+  [Class hierarchies](#class-hierarchies-rdfssubclassof)). Downstream:
+  - **BigQuery** push resolves it into node-table labels, inherited fields
+    flattened down (see [Class hierarchies (`extends` →
+    labels)](reference.md#class-hierarchies-extends--labels)).
+  - **Knowledge Catalog** is the follow-on — KC push still publishes each entry
+    with only its own fields.
+- **Constructs with no native home** are **carried verbatim** as
+  `custom_extensions` rather than dropped — inert on push, and promoting any to a
+  native concept is the follow-on (see [Constructs carried as custom
+  extensions](#constructs-carried-as-custom-extensions-not-yet-native)):
+  - **Property inheritance** — `rdfs:subPropertyOf`.
+  - **Cross-references** — `owl:inverseOf`, `owl:equivalentClass`,
+    `owl:disjointWith`, `owl:equivalentProperty`, `owl:propertyDisjointWith`.
+  - **Property characteristics** — symmetric / transitive / functional /
+    reflexive / irreflexive / asymmetric.
+  - **Enumerations** (`owl:oneOf`) and **property chains**
+    (`owl:propertyChainAxiom`).
+  - **Set-level axioms** — `owl:AllDisjointClasses`,
+    `owl:AllDisjointProperties`, `owl:AllDifferent` (carried on the model).
+  - **Per-term annotations** — `rdfs:seeAlso`, `rdfs:isDefinedBy`,
+    `owl:deprecated`, `owl:versionInfo`.
 
-**Not read yet — the next candidates for carriage.** Each is stated as a
-blank-node axiom (an RDF list or an anonymous node) whose predicates the
-converter does not recognize today; the RDF-list walker itself already exists (it
-reads `owl:hasKey`), so these are within reach:
-
-- Cardinality / required (`owl:minCardinality` / `owl:maxCardinality`
-  restrictions), enumerations (`owl:oneOf`), and the *set* disjointness / identity
-  axioms (`owl:AllDisjointClasses` / `AllDisjointProperties` / `AllDifferent`,
-  `owl:propertyChainAxiom`). (Pairwise `owl:disjointWith` /
-  `owl:propertyDisjointWith`, which name a term directly, *are* carried.)
+**Not read yet — the next candidate for carriage.** Cardinality
+(`owl:minCardinality` / `owl:maxCardinality`) lives on an anonymous
+`owl:Restriction` reached through `rdfs:subClassOf` — the last blank-node shape
+the converter does not yet read. Carrying it needs an `owl:Restriction` reader
+joined back to its class.
 
 **Not read — out of scope.** Richer OWL/RDF beyond the schema-shaped subset this
 converter targets:
@@ -711,10 +721,3 @@ converter targets:
   instances), and `owl:sameAs` / `owl:differentFrom` (which relate individuals).
 - OWL serializations other than Turtle (`.ttl`), and the reverse direction —
   semantic model → OWL export. Import is one-way.
-
-**A push limitation, not a converter gap: no Knowledge-Catalog-only publish of an
-unbound model.** A freshly imported model cannot `kcmd push --target kc` until its
-sources are bound and a deployment target is set: push validates the BigQuery
-deployment target and probes every source table before any leg runs (for every
-`--target`), so there is no KC-only path around those checks. Decoupling the KC
-leg from the BigQuery checks is a possible follow-up.

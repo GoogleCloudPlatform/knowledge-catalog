@@ -6,32 +6,38 @@ semantic_model:
       - vendor_name: GOOGLE
         data: |-
           {
+            "owl:AllDisjointClasses": [
+              [
+                "Person",
+                "Robot",
+                "LifeStage"
+              ]
+            ],
+            "owl:AllDisjointProperties": [
+              [
+                "personId",
+                "name"
+              ]
+            ],
+            "owl:AllDifferent": [
+              [
+                "Infant",
+                "Adult"
+              ]
+            ],
             "owl:baseIri": "http://example.com/people#"
           }
     datasets:
       - name: Person
-        source: unbound:Person
         primary_key:
           - personId
         description: A human being.
         fields:
           - name: personId
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: personId
             datatype: String
           - name: name
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: name
             datatype: String
           - name: legalName
-            expression:
-              dialects:
-                - dialect: BIGQUERY
-                  expression: legalName
             datatype: String
             custom_extensions:
               - vendor_name: GOOGLE
@@ -68,16 +74,21 @@ semantic_model:
                 ]
               }
       - name: Robot
-        source: unbound:Robot
         description: A machine, never a person.
+      - name: LifeStage
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: |-
+              {
+                "owl:oneOf": [
+                  "Infant",
+                  "Adult"
+                ]
+              }
     relationships:
       - name: ancestorOf
         from: Person
         to: Person
-        from_columns:
-          - TODO_BIND
-        to_columns:
-          - personId
         custom_extensions:
           - vendor_name: GOOGLE
             data: |-
@@ -99,10 +110,6 @@ semantic_model:
       - name: relatedTo
         from: Person
         to: Person
-        from_columns:
-          - TODO_BIND
-        to_columns:
-          - personId
         custom_extensions:
           - vendor_name: GOOGLE
             data: |-
@@ -112,4 +119,18 @@ semantic_model:
                 ],
                 "owl:SymmetricProperty": true,
                 "owl:ReflexiveProperty": true
+              }
+      - name: uncleOf
+        from: Person
+        to: Person
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: |-
+              {
+                "owl:propertyChainAxiom": [
+                  [
+                    "ancestorOf",
+                    "relatedTo"
+                  ]
+                ]
               }

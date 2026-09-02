@@ -6,7 +6,7 @@
 //
 // The mapping (see the user guide's table). Each line is one construct, kept
 // short so a comment reflow cannot run the columns together:
-//   owl:Class                     -> dataset (entity) + unbound source
+//   owl:Class                     -> dataset (entity), no source (logical)
 //   owl:DatatypeProperty          -> field on each domain class's dataset
 //   owl:ObjectProperty            -> relationship (edge), domain -> range
 //   rdfs:range xsd:*              -> field datatype (see XSD_DATATYPES)
@@ -31,19 +31,26 @@
 //   owl:equivalentProperty -> field / relationship
 //   owl:propertyDisjointWith -> field / relationship
 //   property characteristics -> relationship (symmetric, transitive, ...)
+//   owl:oneOf -> entity (enumerated class members)
+//   owl:propertyChainAxiom -> relationship (ordered property composition)
+//   owl:AllDisjointClasses -> model (a set of pairwise-disjoint classes)
+//   owl:AllDisjointProperties -> model (pairwise-disjoint properties)
+//   owl:AllDifferent -> model (a set of distinct individuals)
 //   rdfs:seeAlso, rdfs:isDefinedBy -> any (external pointers, verbatim)
 //   owl:deprecated, owl:versionInfo -> any (lifecycle metadata)
 //
 // A carried cross-reference keeps the full referent IRI unless it is in this
 // ontology's own namespace, when it shortens to a local name (see refValue).
 //
-// The result is UNBOUND: entities carry an `unbound:<Name>` source placeholder
-// and relationships carry `TODO_BIND` join columns, because an ontology has no
-// physical tables. A declared key sharpens this -- an edge into a class with a
-// key binds its destination columns to that key, leaving only the source
-// foreign-key columns to fill. The model loads and pushes to Knowledge Catalog
-// as-is; binding real sources/columns is a manual follow-up before a BigQuery
-// push (see the user guide, "Going from ontology to a running graph").
+// The result is a purely LOGICAL model: an ontology declares meaning, not
+// physical tables, so entities carry no source, fields no expression, and
+// relationships no join columns -- only the logical shape (entities, fields,
+// keys, and edges by direction). `kcmd push` publishes it as-is.
+// A BigQuery or Spanner Graph deploy needs each edge's join columns added to
+// the model (logical grain the model owns) plus a physical binding (sources,
+// field columns) and a deployment target; that binding is a separate step (a
+// binding profile, see the user guide, "Going from ontology to a running
+// graph").
 
 import {AiContext, CustomExtension, Entity, Field, Relationship, SemanticModel,} from '../../ir';
 
@@ -150,18 +157,6 @@ function commonTerms(a: OwlCommonAnnotations): Record<string, unknown> {
   if (a.versionInfo) terms['owl:versionInfo'] = a.versionInfo;
   return terms;
 }
-
-// The placeholder source for an unbound entity: an ontology class has no
-// backing table, so the entity is emitted with this sentinel until a real
-// source is bound. Chosen so it is obviously not a real table reference.
-function unboundSource(name: string): string {
-  return `unbound:${name}`;
-}
-
-// The placeholder join column for an unbound relationship: the real foreign-key
-// / key columns are unknown until sources are bound. The loader requires at
-// least one column per endpoint, so a sentinel stands in until binding.
-const TODO_BIND = 'TODO_BIND';
 
 // --- Datatype mapping. ------------------------------------------------------
 
@@ -341,6 +336,15 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     return v;
   }));
 
+  // Like refs(), but preserves order AND duplicates -- for an ORDERED construct
+  // (a property chain) where a repeated referent is meaningful (e.g.
+  // hasParent/hasParent == grandparent), so deduping would silently corrupt it.
+  const refSeq = (iris: string[]): string[] => iris.map(iri => {
+    const v = refValue(iri, owl.baseIri);
+    if (v !== iri) shortenedRef = true;
+    return v;
+  });
+
   // Entities, one per class, in class-declaration order. Fields are attached in
   // datatype-property-declaration order below. Two classes can share a local
   // name (e.g. same name in different namespaces); OSI dataset names must be
@@ -358,7 +362,9 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     }
     const entity: Entity = {
       name: c.localName,
-      dataSource: unboundSource(c.localName),
+      // No source: a class is a logical entity. A binding profile supplies the
+      // backing table before a graph deploy; KC push needs none.
+      dataSource: '',
       keys: dedupe(c.keys),  // owl:hasKey -> primary_key (grain)
       description: c.comment,
       aiContext: synonymAiContext(c.label, c.localName, c.synonyms, c.examples),
@@ -387,14 +393,18 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     // OWL facts with no native OSI home, carried verbatim on the entity, in a
     // fixed key order. owl:equivalentClass / owl:disjointWith are class
     // cross-references (a class is one entity, so these are facts ABOUT it, not
-    // structural links); blank-node class expressions were dropped in the
-    // parser. commonTerms adds any per-term annotations (seeAlso, deprecated,
-    // ...).
+    // structural links); owl:oneOf enumerates the class's members (usually
+    // individuals, which are not modeled, so only the names are kept) -- an
+    // enumeration is a set, so refs() (which dedupes) is correct here, unlike
+    // the ordered propertyChainAxiom which uses refSeq; blank-node class
+    // expressions were dropped in the parser. commonTerms adds any per-term
+    // annotations (seeAlso, deprecated, ...).
     const entityTerms: Record<string, unknown> = {};
     if (c.equivalentClass.length)
       entityTerms['owl:equivalentClass'] = refs(c.equivalentClass);
     if (c.disjointWith.length)
       entityTerms['owl:disjointWith'] = refs(c.disjointWith);
+    if (c.oneOf.length) entityTerms['owl:oneOf'] = refs(c.oneOf);
     Object.assign(entityTerms, commonTerms(c));
     attachOntology(entity, entityTerms);
     entitiesByName.set(c.localName, entity);
@@ -449,9 +459,8 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
       const type = datatypeFor(p.rangeIri);
       const field: Field = {
         name: p.localName,
-        // The property's local name is a valid column reference once the entity
-        // is bound to a real table; it is the default binding target.
-        expression: p.localName,
+        // No expression: the field is logical. A binding profile maps it to a
+        // column when a real source is bound.
         type,
         // A temporal field is a time dimension by OSI's own rule; mark it so
         // downstream (BigQuery Graph, BI) treats it as one.
@@ -510,9 +519,9 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   }
 
   // Object properties -> relationships (edges). Both endpoints must be known
-  // classes. When the destination class declares a key, the edge's destination
-  // columns bind to it and only the source foreign-key columns stay unbound;
-  // otherwise both ends are placeholders.
+  // classes. The edge is logical: it carries only its direction (source entity
+  // -> destination entity), no join columns. The foreign-key / key columns are
+  // added to the model (logical grain, not a binding) before a graph deploy.
   const relationships: Relationship[] = [];
   for (const p of owl.objectProperties) {
     const domain = p.domains[0];
@@ -554,13 +563,21 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     // OWL facts with no native OSI home, carried verbatim on the relationship,
     // in a fixed key order so the emitted block is stable. rdfs:subPropertyOf
     // -> relationship inheritance (kept as a fact, no flattening);
-    // owl:inverseOf -> the edge read the other way; owl:equivalentProperty /
-    // propertyDisjointWith -> property cross-references; then the edge's
-    // characteristics (symmetric / transitive / functional / reflexive /
-    // irreflexive / asymmetric); commonTerms adds any per-term annotations.
+    // owl:propertyChainAxiom -> this edge as an ordered composition of other
+    // properties; owl:inverseOf -> the edge read the other way;
+    // owl:equivalentProperty / propertyDisjointWith -> property
+    // cross-references; then the edge's characteristics (symmetric / transitive
+    // / functional / reflexive / irreflexive / asymmetric); commonTerms adds
+    // any per-term annotations.
     const relTerms: Record<string, unknown> = {};
     if (p.subPropertyOf.length)
       relTerms['rdfs:subPropertyOf'] = refs(p.subPropertyOf);
+    // One list per chain axiom (a property may carry several). Each is ordered
+    // and repetition-sensitive, so refSeq (not refs): a chain may name the same
+    // property twice (e.g. hasParent/hasParent for a grandparent). Emitted as a
+    // list of chains so distinct axioms are not fused into one flat sequence.
+    if (p.propertyChain.length)
+      relTerms['owl:propertyChainAxiom'] = p.propertyChain.map(refSeq);
     if (p.inverseOf.length) {
       // owl:inverseOf pairs two properties; one DISTINCT statement is the norm.
       // refs() shortens and dedupes first, so a repeated identical triple isn't
@@ -588,22 +605,13 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     if (p.asymmetric) relTerms['owl:AsymmetricProperty'] = true;
     Object.assign(relTerms, commonTerms(p));
 
-    const destKeys = entitiesByName.get(range)?.keys ?? [];
-    const bound = destKeys.length > 0;
     const relationship: Relationship = {
       name: p.localName,
-      // Source FK columns are unknown until binding; keep the count aligned
-      // with the destination key so the positional join is well-formed.
-      source: {
-        entity: domain,
-        columns: bound ? destKeys.map(() => TODO_BIND) : [TODO_BIND],
-      },
-      destination: {
-        // Copy the key so the destination columns render inline rather than as
-        // a YAML alias of the entity's primary_key (same array object).
-        entity: range,
-        columns: bound ? [...destKeys] : [TODO_BIND],
-      },
+      // A logical edge: direction only, no join columns. The source
+      // foreign-key and destination key columns are added to the model (logical
+      // grain, not a binding) before a graph deploy.
+      source: {entity: domain, columns: []},
+      destination: {entity: range, columns: []},
       // No `description`: the OSI relationship has no such slot, so the comment
       // rides in ai_context.instructions (see relationshipAiContext).
       aiContext: relationshipAiContext(
@@ -621,13 +629,26 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     relationships,
     metrics: [],
   };
-  // Carry the base IRI as structured metadata WHENEVER a cross-reference was
-  // shortened to a local name (refValue), so a consumer can rebuild the full
-  // IRI as `<baseIri><localName>` mechanically instead of parsing it out of the
-  // prose description. Only emitted when it is actually needed for that
-  // reconstruction, so a model with no shortened reference stays clean.
-  if (shortenedRef && owl.baseIri)
-    attachOntology(model, {'owl:baseIri': owl.baseIri});
+  // Model-level carried facts, in a fixed key order so the block is stable. The
+  // set-level axioms come first (each an array of member SETS -- one per axiom
+  // -- so refs() per set, which dedupes; order within a set is not meaningful).
+  // owl:baseIri comes last and only WHEN a cross-reference was shortened to a
+  // local name (refValue), so a consumer can rebuild the full IRI as
+  // `<baseIri><localName>` mechanically instead of parsing it from the prose
+  // description; a model with no shortened reference stays clean. The set-level
+  // members are shortened through refs() too, so they alone can require the
+  // base IRI -- computed before the check below relies on that side effect.
+  const modelTerms: Record<string, unknown> = {};
+  if (owl.allDisjointClasses.length)
+    modelTerms['owl:AllDisjointClasses'] =
+        owl.allDisjointClasses.map(set => refs(set));
+  if (owl.allDisjointProperties.length)
+    modelTerms['owl:AllDisjointProperties'] =
+        owl.allDisjointProperties.map(set => refs(set));
+  if (owl.allDifferent.length)
+    modelTerms['owl:AllDifferent'] = owl.allDifferent.map(set => refs(set));
+  if (shortenedRef && owl.baseIri) modelTerms['owl:baseIri'] = owl.baseIri;
+  attachOntology(model, modelTerms);
 
   return {
     model,

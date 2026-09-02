@@ -21,6 +21,13 @@ export interface LoadOptions {
   dialect?: string;         // preferred expression dialect; default 'BIGQUERY'
   defaultProject?: string;  // fallback when a dataset `source` omits the project
   defaultDataset?: string;  // fallback when a dataset `source` omits the dataset
+  // Accept a purely logical model: do not require a `source` on each concrete
+  // dataset or an `expression` on each field. Set for a Knowledge-Catalog-only
+  // push, which governs the logical model (meaning) and needs no physical
+  // binding. Graph legs (BigQuery/Spanner) never set it -- they cannot generate
+  // a graph without bindings. Contradiction checks (unbound+expression,
+  // abstract+source) stay enforced regardless.
+  bindingOptional?: boolean;
 }
 
 export interface LoadResult {
@@ -38,12 +45,23 @@ const SUPPORTED_VERSION = '0.2.0.dev0';
 // An expression is supplied as one or more per-dialect variants; we collapse it
 // to at most two forms (target/canonical + imported) by picking dialects.
 // Unknown sibling keys are ignored.
-const expressionSchema = z.object({
+//
+// A one-line string is accepted as shorthand for a single target-dialect
+// variant (`expression: c_name` == `{dialects: [{dialect: BIGQUERY, expression:
+// c_name}]}`) and normalized to the object form here, so the rest of the loader
+// only ever sees the per-dialect object.
+const expressionObjectSchema = z.object({
   dialects: z.array(z.object({
     dialect: z.string(),
     expression: z.string(),
   })).min(1),
 });
+const expressionSchema = z.union([
+  z.string().transform((s): z.infer<typeof expressionObjectSchema> => ({
+    dialects: [{ dialect: DEFAULT_DIALECT, expression: s }],
+  })),
+  expressionObjectSchema,
+]);
 
 // The format's AI-first annotation. It appears at every level (model, dataset,
 // field, relationship, metric) and is either a bare instructions string or a
@@ -73,9 +91,19 @@ const dimensionSchema = z.object({
   is_time: z.boolean().optional(),
 });
 
-const fieldSchema = z.object({
+// The field object shape, WITHOUT the binding-completeness refinement. The
+// refinement is applied per-load by makeDocumentSchema, so a
+// Knowledge-Catalog-only push (bindingOptional) can accept a purely logical
+// field. A superRefine does not change a schema's inferred type, so FieldDoc is
+// inferred from this base.
+const fieldBase = z.object({
   name: z.string(),
-  expression: expressionSchema,
+  // A bound field names its physical column via `expression`; an `unbound`
+  // field has no column under this binding. Whether a field must be bound (or
+  // explicitly `unbound`) is decided per-load by makeDocumentSchema; a purely
+  // logical field carries neither.
+  expression: expressionSchema.optional(),
+  unbound: z.boolean().optional(),
   datatype: z.enum(DATA_TYPES).optional(),   // closed, case-sensitive vocabulary; see DATA_TYPES
   description: z.string().optional(),
   label: z.string().optional(),
@@ -84,11 +112,14 @@ const fieldSchema = z.object({
   custom_extensions: z.array(customExtensionSchema).optional(),
 });
 
-const datasetSchema = z.object({
+// The dataset object shape, WITHOUT the source-required refinement (applied
+// per-load by makeDocumentSchema). DatasetDoc is inferred from this base.
+const datasetBase = z.object({
   name: z.string(),
   // A concrete dataset is backed by a physical `source` table; an `abstract`
-  // one has no table, so `source` is optional here and required-unless-abstract
-  // by the refinement below.
+  // one has no table. Whether a non-abstract dataset must name a `source` is
+  // decided per-load by makeDocumentSchema (a KC-only push accepts a logical
+  // dataset with none); the abstract+source contradiction is always rejected.
   source: z.string().optional(),
   primary_key: z.array(z.string()).optional(),
   unique_keys: z.array(z.array(z.string())).optional(),
@@ -102,43 +133,34 @@ const datasetSchema = z.object({
   abstract: z.boolean().optional(),
   description: z.string().optional(),
   ai_context: aiContextSchema.optional(),
-  fields: z.array(fieldSchema).optional(),
+  fields: z.array(fieldBase).optional(),
   custom_extensions: z.array(customExtensionSchema).optional(),
-}).superRefine((ds, ctx) => {
-  // A concrete (non-abstract) dataset must name its backing table; only an
-  // abstract one may omit `source`.
-  if (!ds.abstract && ds.source === undefined) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['source'],
-      message: `dataset '${ds.name}': a non-abstract dataset requires a ` +
-          `source; set 'source', or mark it 'abstract: true' if it has no table`,
-    });
-  }
-  // The converse: an abstract dataset has no physical table, so declaring a
-  // `source` on it is contradictory -- the BigQuery leg forms no node table for
-  // an abstract entity and would silently ignore the source, dropping a table
-  // the author clearly intended. Reject it so the ambiguity is resolved
-  // explicitly rather than lost.
-  if (ds.abstract && ds.source !== undefined) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['source'],
-      message: `dataset '${ds.name}': an abstract dataset has no table; ` +
-          `remove 'source', or drop 'abstract: true' to bind it to that table`,
-    });
-  }
 });
 
 const relationshipSchema = z.object({
   name: z.string(),
   from: z.string(),
   to: z.string(),
-  from_columns: z.array(z.string()).min(1),
-  to_columns: z.array(z.string()).min(1),
+  // Join columns are the physical binding of the edge and are OPTIONAL, so a
+  // purely logical relationship (an ontology edge, direction only) loads. When
+  // present they must be non-empty; either both endpoints are bound or neither
+  // is (a half-bound edge is a malformed join, caught below). A graph push still
+  // requires both (see validatePushRequirements).
+  from_columns: z.array(z.string()).min(1).optional(),
+  to_columns: z.array(z.string()).min(1).optional(),
   description: z.string().optional(),
   ai_context: aiContextSchema.optional(),
   custom_extensions: z.array(customExtensionSchema).optional(),
+}).superRefine((r, ctx) => {
+  if ((r.from_columns === undefined) !== (r.to_columns === undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        `relationship '${r.name}': from_columns and to_columns must be given ` +
+        `together (both bind the edge) or both omitted (a logical edge); one ` +
+        `without the other is a half-bound join.`,
+    });
+  }
 });
 
 const metricSchema = z.object({
@@ -150,27 +172,90 @@ const metricSchema = z.object({
   custom_extensions: z.array(customExtensionSchema).optional(),
 });
 
-const modelSchema = z.object({
+const modelBase = z.object({
   name: z.string(),
   description: z.string().optional(),
   ai_context: aiContextSchema.optional(),
   custom_extensions: z.array(customExtensionSchema).optional(),
-  datasets: z.array(datasetSchema).min(1),
+  datasets: z.array(datasetBase).min(1),
   relationships: z.array(relationshipSchema).optional(),
   metrics: z.array(metricSchema).optional(),
 });
 
-const documentSchema = z.object({
-  version: z.string().optional(),
-  semantic_model: z.array(modelSchema).min(1),
-});
+// Builds the document schema with the binding-completeness refinement applied
+// according to `bindingOptional`. When false (the default -- any push that
+// includes a graph leg), each concrete dataset must name a `source` and each
+// field must be bound or explicitly `unbound`. When true (a
+// Knowledge-Catalog-only push, which governs the logical model), those two
+// requirements are dropped so a purely logical model loads. The contradiction
+// checks (unbound+expression, abstract+source) are enforced either way.
+function buildDocumentSchema(bindingOptional: boolean) {
+  const field = fieldBase.superRefine((f, ctx) => {
+    if (f.unbound && f.expression !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['expression'],
+        message: `field '${f.name}': an unbound field has no column; remove ` +
+            `'expression', or drop 'unbound: true' to bind it to that column`,
+      });
+    }
+    if (!bindingOptional && !f.unbound && f.expression === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['expression'],
+        message: `field '${f.name}': requires an expression; set 'expression', ` +
+            `or mark it 'unbound: true' if this binding has no column for it`,
+      });
+    }
+  });
+  const dataset = datasetBase.extend({ fields: z.array(field).optional() })
+    .superRefine((ds, ctx) => {
+      // A concrete (non-abstract) dataset must name its backing table; only an
+      // abstract one may omit `source`. Relaxed under bindingOptional, where a
+      // logical dataset has no source.
+      if (!bindingOptional && !ds.abstract && ds.source === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['source'],
+          message: `dataset '${ds.name}': a non-abstract dataset requires a ` +
+              `source; set 'source', or mark it 'abstract: true' if it has no table`,
+        });
+      }
+      // The converse is always contradictory: an abstract dataset has no
+      // physical table, so a `source` on it would be silently ignored by the
+      // BigQuery leg. Reject it regardless of bindingOptional.
+      if (ds.abstract && ds.source !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['source'],
+          message: `dataset '${ds.name}': an abstract dataset has no table; ` +
+              `remove 'source', or drop 'abstract: true' to bind it to that table`,
+        });
+      }
+    });
+  const model = modelBase.extend({ datasets: z.array(dataset).min(1) });
+  return z.object({
+    version: z.string().optional(),
+    semantic_model: z.array(model).min(1),
+  });
+}
+
+// Only two schema shapes exist (strict vs binding-optional) and each is
+// immutable, so build both once at module load and select between them rather
+// than reconstructing the whole field/dataset/model/document graph -- with fresh
+// superRefine closures -- on every fromDocument call.
+const strictDocumentSchema = buildDocumentSchema(false);
+const logicalDocumentSchema = buildDocumentSchema(true);
+function makeDocumentSchema(bindingOptional: boolean) {
+  return bindingOptional ? logicalDocumentSchema : strictDocumentSchema;
+}
 
 type ExpressionDoc = z.infer<typeof expressionSchema>;
-type DatasetDoc = z.infer<typeof datasetSchema>;
-type FieldDoc = z.infer<typeof fieldSchema>;
+type DatasetDoc = z.infer<typeof datasetBase>;
+type FieldDoc = z.infer<typeof fieldBase>;
 type RelationshipDoc = z.infer<typeof relationshipSchema>;
 type MetricDoc = z.infer<typeof metricSchema>;
-type ModelDoc = z.infer<typeof modelSchema>;
+type ModelDoc = z.infer<typeof modelBase>;
 type CustomExtensionDoc = z.infer<typeof customExtensionSchema>;
 type AiContextDoc = z.infer<typeof aiContextSchema>;
 
@@ -221,6 +306,85 @@ function composeDescription(...parts: (string | undefined)[]): string | undefine
 }
 
 
+// The vendor tag for Google-specific extension blocks (kept in sync with the
+// deploy leg's reader). A model-level `deployment_target:` folds into one.
+const GOOGLE_VENDOR = 'GOOGLE';
+
+// Rewrites the author-friendly sugar forms into the canonical wire shape the
+// schema validates, so the guide's readable syntax and the underlying format
+// are one code path: `entities:` is an alias for `datasets:`, and a model-level
+// `deployment_target:` URI folds into a GOOGLE `custom_extensions` block (the
+// form the deploy leg reads). Conflicts -- both `entities` and `datasets`, or a
+// `deployment_target` that disagrees with an existing GOOGLE block -- are load
+// errors, named here. Operates on the parsed document before schema validation.
+function normalizeDocumentSugars(doc: unknown): unknown {
+  if (!doc || typeof doc !== 'object') return doc;
+  const cloned = structuredClone(doc) as any;
+  const models = cloned.semantic_model;
+  if (!Array.isArray(models)) return cloned;
+  for (const m of models) {
+    if (m && typeof m === 'object') normalizeModelSugars(m);
+  }
+  return cloned;
+}
+
+function normalizeModelSugars(m: any): void {
+  const label = typeof m.name === 'string' ? `model '${m.name}'` : 'model';
+
+  if (m.entities !== undefined) {
+    if (m.datasets !== undefined) {
+      throw new Error(`Semantic model load error: ${label}: set either ` +
+          `'entities' or 'datasets', not both (they are the same key).`);
+    }
+    m.datasets = m.entities;
+    delete m.entities;
+  }
+
+  if (m.deployment_target !== undefined) {
+    const target = m.deployment_target;
+    if (typeof target !== 'string') {
+      throw new Error(`Semantic model load error: ${label}: ` +
+          `'deployment_target' must be a URI string.`);
+    }
+    foldDeploymentTarget(m, target, label);
+    delete m.deployment_target;
+  }
+}
+
+// Merges a `deployment_target` URI into the model's GOOGLE custom_extensions.
+// If a GOOGLE block already declares deploymentTargets, the URI must be among
+// them (the two forms mean the same thing and must agree); otherwise a fresh
+// GOOGLE block is appended.
+function foldDeploymentTarget(m: any, target: string, label: string): void {
+  const exts = Array.isArray(m.custom_extensions) ? m.custom_extensions : [];
+  for (const ext of exts) {
+    if (!ext || ext.vendor_name !== GOOGLE_VENDOR ||
+        typeof ext.data !== 'string') {
+      continue;
+    }
+    let data: any;
+    try {
+      data = JSON.parse(ext.data);
+    } catch {
+      continue;  // a malformed block is the deploy leg's error to report
+    }
+    const list = data?.deploymentTargets;
+    if (Array.isArray(list) && list.length) {
+      if (!list.includes(target)) {
+        throw new Error(`Semantic model load error: ${label}: ` +
+            `'deployment_target' disagrees with the GOOGLE custom_extension ` +
+            `already on this model; set one, or make them match.`);
+      }
+      return;  // agree: nothing to add
+    }
+  }
+  exts.push({
+    vendor_name: GOOGLE_VENDOR,
+    data: JSON.stringify({ deploymentTargets: [target] }),
+  });
+  m.custom_extensions = exts;
+}
+
 /**
  * Loads YAML or JSON text (a document in the AI-first semantics format) into the
  * Semantic Model IR. `yaml.parse` accepts JSON too, so both are supported.
@@ -241,7 +405,9 @@ export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
  * `warnings` rather than thrown.
  */
 export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
-  const result = documentSchema.safeParse(doc);
+  const normalized = normalizeDocumentSugars(doc);
+  const result =
+      makeDocumentSchema(opts.bindingOptional ?? false).safeParse(normalized);
   if (!result.success) {
     throw new Error(`Semantic model load error: ${result.error.message}`);
   }
@@ -337,19 +503,28 @@ function convertDataset(ds: DatasetDoc, opts: LoadOptions,
 }
 
 function convertField(f: FieldDoc, entityName: string, warnings: string[], dialect: string): Field {
-  const picked = pickDialect(f.expression, dialect, `field '${entityName}.${f.name}'`, warnings);
-
   // `label`, `dimension`, and AI-first annotations are carried structurally on
   // the IR (not folded into `description`) so an emitter can route each to its
   // own destination and a 1P round-trip stays lossless.
   const description = composeDescription(f.description);
 
   const field: Field = { name: f.name };
-  if (picked.expression !== undefined) field.expression = picked.expression;
-  if (picked.importedExpression !== undefined) {
-    field.importedExpression = picked.importedExpression;
-    field.importedDialect = picked.importedDialect;
+  if (f.unbound) {
+    // Declared but not bound under this binding: no column, no expression (the
+    // schema guarantees `expression` is absent here). See Field.unbound.
+    field.unbound = true;
+  } else if (f.expression !== undefined) {
+    const picked = pickDialect(
+      f.expression, dialect, `field '${entityName}.${f.name}'`, warnings);
+    if (picked.expression !== undefined) field.expression = picked.expression;
+    if (picked.importedExpression !== undefined) {
+      field.importedExpression = picked.importedExpression;
+      field.importedDialect = picked.importedDialect;
+    }
   }
+  // else: a purely logical field (no expression, not explicitly unbound). Only
+  // reachable under bindingOptional -- strict loading requires one or the other
+  // -- so the field carries meaning with no physical column for a KC-only push.
   if (f.datatype) field.type = f.datatype;
   if (f.label) field.label = f.label;
   if (f.dimension) {
@@ -367,6 +542,8 @@ function convertField(f: FieldDoc, entityName: string, warnings: string[], diale
 // Maps an OSI foreign-key relationship onto the IR edge. `source.columns` are the
 // FK columns on the `from` table (`from_columns`); `destination.columns` are the
 // referenced key columns on the `to` table (`to_columns`), paired positionally.
+// A logical relationship carries no columns (both endpoints empty); a graph
+// push requires them and rejects a column-less edge (see validatePushRequirements).
 // The source entity's own primary key is not duplicated here -- downstream
 // consumers look it up from the entity. A malformed relationship (an endpoint not
 // declared in the model, or mismatched column arity) is a hard error, not a
@@ -379,16 +556,18 @@ function convertRelationship(r: RelationshipDoc, entityNames: Set<string>): Rela
   if (!entityNames.has(r.to)) {
     throw new Error(`${ctx}: 'to' dataset '${r.to}' is not defined in the model`);
   }
-  if (r.from_columns.length !== r.to_columns.length) {
+  const fromColumns = r.from_columns ?? [];
+  const toColumns = r.to_columns ?? [];
+  if (fromColumns.length !== toColumns.length) {
     throw new Error(
-      `${ctx}: from_columns (${r.from_columns.length}) and to_columns ` +
-      `(${r.to_columns.length}) have different lengths; the join keys are mismatched`);
+      `${ctx}: from_columns (${fromColumns.length}) and to_columns ` +
+      `(${toColumns.length}) have different lengths; the join keys are mismatched`);
   }
 
   const relationship: Relationship = {
     name: r.name,
-    source: { entity: r.from, columns: r.from_columns },
-    destination: { entity: r.to, columns: r.to_columns },
+    source: { entity: r.from, columns: fromColumns },
+    destination: { entity: r.to, columns: toColumns },
   };
   const description = composeDescription(r.description);
   if (description) relationship.description = description;
@@ -508,6 +687,21 @@ function parseSource(source: string, opts: LoadOptions,
 
   if (/\s/.test(trimmed)) {
     warnings.push(`${ctx}: source looks like a query, not a table reference; keeping it verbatim`);
+    return trimmed;
+  }
+
+  // A BigQuery resource-name URI (AIP-122) is the readable way to name a
+  // source; rewrite it to the canonical project.dataset.table the generator
+  // emits.
+  const bq = trimmed.match(
+      /^\/\/bigquery\.googleapis\.com\/projects\/([^/]+)\/datasets\/([^/]+)\/tables\/(.+)$/);
+  if (bq) return `${bq[1]}.${bq[2]}.${bq[3]}`;
+
+  // Any other resource URI (Spanner, AlloyDB, an iceberg:// table, ...) is not
+  // a BigQuery table and is not dotted-qualified; keep it verbatim. It rides
+  // through to the consumer that binds it (the BigQuery path does not probe or
+  // emit a non-BigQuery source).
+  if (trimmed.startsWith('//') || /^[a-z][\w+.-]*:\/\//i.test(trimmed)) {
     return trimmed;
   }
 

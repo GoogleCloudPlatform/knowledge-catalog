@@ -1,0 +1,41 @@
+# A COMBINED single-file model: the logical declarations AND an inline physical
+# binding (the implicit `default` profile) in one file -- the form a model has
+# before any profile exists. Every field is bound to a column here, so this file
+# deploys on its own with a bare `kcmd push`. The profiles beside it override
+# only the physical facets that differ elsewhere:
+#   - prod:  an environment swap -- same columns, a different project/dataset.
+#   - remap: a store that renamed a column and does not carry `discount`.
+# Together they show that a profile overriding a model that already has bindings
+# replaces only what it names and INHERITS every field it omits.
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    deployment_target: //bigquery.googleapis.com/projects/acme-dev/datasets/sales/propertyGraphs/sales
+    entities:
+      - name: Customer
+        source: //bigquery.googleapis.com/projects/acme-dev/datasets/sales/tables/customers
+        primary_key: [id]
+        fields:
+          - { name: id, label: Customer ID, expression: customer_id }
+          - { name: name, expression: customer_name }
+      - name: Order
+        source: //bigquery.googleapis.com/projects/acme-dev/datasets/sales/tables/orders
+        primary_key: [id]
+        fields:
+          - { name: id, expression: order_id }
+          - { name: customerId, expression: customer_id }
+          - { name: amount, expression: amount }
+          - { name: discount, expression: discount }
+    relationships:
+      - name: placed_by
+        from: Order
+        to: Customer
+        from_columns: [customerId]
+        to_columns: [id]
+    metrics:
+      - name: order_count
+        expression: COUNT(Order.id)
+      - name: total_amount
+        expression: SUM(Order.amount)
+      - name: total_discount
+        expression: SUM(Order.discount)

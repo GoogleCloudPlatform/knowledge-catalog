@@ -52,6 +52,12 @@ const OWL_IRREFLEXIVE_PROPERTY = `${OWL}IrreflexiveProperty`;
 const OWL_ASYMMETRIC_PROPERTY = `${OWL}AsymmetricProperty`;
 const OWL_ONTOLOGY = `${OWL}Ontology`;
 const OWL_HAS_KEY = `${OWL}hasKey`;
+// List-valued constructs whose object is an RDF collection head (a blank node),
+// resolved with the same list walker as owl:hasKey. owl:oneOf enumerates a
+// class's members; owl:propertyChainAxiom composes a property from a sequence
+// of others. Both are carried verbatim (no native OSI home).
+const OWL_ONE_OF = `${OWL}oneOf`;
+const OWL_PROPERTY_CHAIN_AXIOM = `${OWL}propertyChainAxiom`;
 const OWL_INVERSE_OF = `${OWL}inverseOf`;
 const OWL_EQUIVALENT_PROPERTY = `${OWL}equivalentProperty`;
 const OWL_PROPERTY_DISJOINT_WITH = `${OWL}propertyDisjointWith`;
@@ -59,6 +65,16 @@ const OWL_DISJOINT_WITH = `${OWL}disjointWith`;
 const OWL_DEPRECATED = `${OWL}deprecated`;
 const OWL_VERSION_INFO = `${OWL}versionInfo`;
 const OWL_THING = `${OWL}Thing`;
+// Set-level axioms. Each is asserted on an ANONYMOUS node (not a named term)
+// typed with one of these, whose `owl:members` list names the set the axiom
+// constrains. owl:AllDifferent also accepts the legacy OWL 1
+// `owl:distinctMembers` spelling. Carried verbatim at the model level (no
+// native OSI home).
+const OWL_ALL_DISJOINT_CLASSES = `${OWL}AllDisjointClasses`;
+const OWL_ALL_DISJOINT_PROPERTIES = `${OWL}AllDisjointProperties`;
+const OWL_ALL_DIFFERENT = `${OWL}AllDifferent`;
+const OWL_MEMBERS = `${OWL}members`;
+const OWL_DISTINCT_MEMBERS = `${OWL}distinctMembers`;
 
 const RDFS_LABEL = `${RDFS}label`;
 const RDFS_COMMENT = `${RDFS}comment`;
@@ -168,6 +184,8 @@ interface Annotations {
   ranges: string[];  // raw range IRIs; the mapper maps xsd:* -> datatype
   versionInfo?: string;
   keyListHeads: string[];          // owl:hasKey list heads (blank nodes)
+  oneOfListHeads: string[];        // owl:oneOf list heads (blank nodes)
+  chainListHeads: string[];        // owl:propertyChainAxiom list heads
   subClassOf: string[];            // local names (feed native `extends`)
   subPropertyOf: string[];         // full IRIs (named superproperties)
   equivalentClass: string[];       // full IRIs (named classes only)
@@ -187,6 +205,8 @@ function emptyAnnotations(): Annotations {
     domains: [],
     ranges: [],
     keyListHeads: [],
+    oneOfListHeads: [],
+    chainListHeads: [],
     subClassOf: [],
     subPropertyOf: [],
     equivalentClass: [],
@@ -249,6 +269,17 @@ export function parseOwl(turtle: string): OwlModel {
   const reflexive = new Set<string>();
   const irreflexive = new Set<string>();
   const asymmetric = new Set<string>();
+  // Anonymous set-level-axiom nodes, in document order, deduped by node id
+  // within each kind (a duplicate type triple must not list the node twice). A
+  // node typed as two different kinds -- legal, if unusual, RDF -- is recorded
+  // under each, so the dedup is per-kind rather than one shared seen-set. Their
+  // `owl:members` list is resolved after the list structure is known.
+  const allDisjointClassesNodes: string[] = [];
+  const allDisjointPropertiesNodes: string[] = [];
+  const allDifferentNodes: string[] = [];
+  const seenDisjointClasses = new Set<string>();
+  const seenDisjointProperties = new Set<string>();
+  const seenDifferent = new Set<string>();
   let ontologyIri: string|undefined;
   for (const q of quads) {
     if (q.predicate.value !== RDF_TYPE) continue;
@@ -286,6 +317,27 @@ export function parseOwl(turtle: string): OwlModel {
       if (ontologyIri === undefined) ontologyIri = subject;
       continue;
     }
+    if (type === OWL_ALL_DISJOINT_CLASSES) {
+      if (!seenDisjointClasses.has(subject)) {
+        seenDisjointClasses.add(subject);
+        allDisjointClassesNodes.push(subject);
+      }
+      continue;
+    }
+    if (type === OWL_ALL_DISJOINT_PROPERTIES) {
+      if (!seenDisjointProperties.has(subject)) {
+        seenDisjointProperties.add(subject);
+        allDisjointPropertiesNodes.push(subject);
+      }
+      continue;
+    }
+    if (type === OWL_ALL_DIFFERENT) {
+      if (!seenDifferent.has(subject)) {
+        seenDifferent.add(subject);
+        allDifferentNodes.push(subject);
+      }
+      continue;
+    }
     const k = KIND_BY_TYPE[type];
     if (!k) continue;
     if (!kind.has(subject)) {
@@ -299,11 +351,25 @@ export function parseOwl(turtle: string): OwlModel {
   // unrelated to the typed subjects, so they are collected separately.
   const listFirst = new Map<string, string>();
   const listRest = new Map<string, string>();
+  // The `owl:members` list head of each set-level-axiom node. owl:members (OWL
+  // 2) wins over the legacy owl:distinctMembers (OWL 1, owl:AllDifferent only)
+  // when a node carries both, regardless of the order the two triples appear.
+  // owl:distinctMembers is honored ONLY on an owl:AllDifferent node, matching
+  // the OWL spec (it has no meaning on the disjointness axioms), so a stray
+  // owl:distinctMembers on an owl:AllDisjoint* node is ignored rather than
+  // carried.
+  const membersHead = new Map<string, string>();
   for (const q of quads) {
     if (q.predicate.value === RDF_FIRST)
       listFirst.set(q.subject.value, q.object.value);
     else if (q.predicate.value === RDF_REST)
       listRest.set(q.subject.value, q.object.value);
+    else if (q.predicate.value === OWL_MEMBERS)
+      membersHead.set(q.subject.value, q.object.value);
+    else if (
+        q.predicate.value === OWL_DISTINCT_MEMBERS &&
+        seenDifferent.has(q.subject.value) && !membersHead.has(q.subject.value))
+      membersHead.set(q.subject.value, q.object.value);
   }
   // Resolves an RDF collection to its member IRIs, following rdf:rest to nil.
   // Defensive against a cycle or a missing link (stops at the first gap).
@@ -378,6 +444,20 @@ export function parseOwl(turtle: string): OwlModel {
         break;
       case OWL_HAS_KEY:
         a.keyListHeads.push(q.object.value);
+        break;
+      case OWL_ONE_OF:
+        // Enumerated class -> no native OSI home; carried verbatim. The object
+        // is an RDF collection head; the members (usually individuals) are
+        // resolved with the list walker at build time. This is recorded for any
+        // annotated subject, but only the class build reads it -- if the
+        // subject is typed a property instead, the heads are collected here and
+        // then dropped (an owl:oneOf on a property is not meaningful).
+        a.oneOfListHeads.push(q.object.value);
+        break;
+      case OWL_PROPERTY_CHAIN_AXIOM:
+        // Property chain -> no native OSI home; carried verbatim. The object is
+        // an RDF collection head naming the composed properties, in order.
+        a.chainListHeads.push(q.object.value);
         break;
       case RDFS_SUBCLASS_OF:
         // Class hierarchy -> the entity's `extends`. Named superclasses only:
@@ -491,6 +571,11 @@ export function parseOwl(turtle: string): OwlModel {
           subClassOf: a.subClassOf,
           equivalentClass: a.equivalentClass,
           disjointWith: a.disjointWith,
+          // Full member IRIs of the enumeration set (a carried cross-reference;
+          // the mapper shortens an in-namespace one). flatMap unions the
+          // members across every oneOf head -- an enumeration is a set, so the
+          // mapper dedupes and order does not matter (contrast propertyChain).
+          oneOf: a.oneOfListHeads.flatMap(resolveList),
           ...commonAnnotations(a),
         });
         break;
@@ -527,6 +612,15 @@ export function parseOwl(turtle: string): OwlModel {
           inverseOf: a.inverseOf,
           equivalentProperty: a.equivalentProperty,
           propertyDisjointWith: a.propertyDisjointWith,
+          // One resolved chain per owl:propertyChainAxiom (map, NOT flatMap):
+          // OWL 2 permits several chain axioms on one property, and fusing them
+          // would be indistinguishable from a single longer chain. Full
+          // property IRIs in chain order (the mapper shortens in-namespace
+          // ones); within a chain order and repetition are preserved, so no
+          // dedupe. An empty chain (a broken/gapped list) is dropped rather
+          // than carried as [].
+          propertyChain:
+              a.chainListHeads.map(resolveList).filter(c => c.length),
           symmetric: symmetric.has(iri),
           transitive: transitive.has(iri),
           functional: functional.has(iri),
@@ -559,7 +653,26 @@ export function parseOwl(turtle: string): OwlModel {
     baseIri = baseIri ?? ontologyBaseIri(ontologyIri);
   }
 
-  return {baseIri, ontology, classes, datatypeProperties, objectProperties};
+  // Resolve each set-level-axiom node's `owl:members` list to its member IRIs.
+  // A node with no members list, or one whose list is broken/empty, contributes
+  // nothing (an axiom over no members is meaningless). Member names are kept as
+  // full IRIs; the mapper shortens an in-namespace one.
+  const resolveMembers = (nodes: string[]): string[][] =>
+      nodes.map(n => membersHead.get(n))
+          .filter((h): h is string => h !== undefined)
+          .map(resolveList)
+          .filter(members => members.length > 0);
+
+  return {
+    baseIri,
+    ontology,
+    classes,
+    datatypeProperties,
+    objectProperties,
+    allDisjointClasses: resolveMembers(allDisjointClassesNodes),
+    allDisjointProperties: resolveMembers(allDisjointPropertiesNodes),
+    allDifferent: resolveMembers(allDifferentNodes),
+  };
 }
 
 // The base namespace an ontology IRI stands for. An owl:Ontology is commonly

@@ -8,9 +8,14 @@
 #   - rdfs:subPropertyOf / owl:equivalentProperty / owl:FunctionalProperty and
 #     the rdfs:seeAlso / owl:deprecated / owl:versionInfo annotations on a
 #     datatype property -> field extension
-#   - rdfs:subPropertyOf / owl:inverseOf / owl:propertyDisjointWith and the
-#     reflexive / irreflexive / symmetric / transitive / asymmetric
-#     characteristics on an object property -> relationship extension
+#   - rdfs:subPropertyOf / owl:inverseOf / owl:propertyDisjointWith /
+#     owl:propertyChainAxiom and the reflexive / irreflexive / symmetric /
+#     transitive / asymmetric characteristics on an object property ->
+#     relationship extension
+#   - owl:oneOf on a class (an enumeration) -> entity extension
+#   - owl:AllDisjointClasses / owl:AllDisjointProperties / owl:AllDifferent,
+#     each asserted on an ANONYMOUS node about a SET of terms (belonging to no
+#     single class/property) -> model extension
 #
 # Namespace handling: this ontology's base namespace is
 # http://example.com/people# (ex:); it also references the external FOAF and
@@ -47,6 +52,12 @@ ex:Person a owl:Class ;
 ex:Robot a owl:Class ;
     rdfs:comment "A machine, never a person." .
 
+# LifeStage is an ENUMERATION: it is exactly these members (owl:oneOf). The
+# members are individuals (which the converter does not model), so the list is
+# carried verbatim, keeping the in-namespace member names in list order.
+ex:LifeStage a owl:Class ;
+    owl:oneOf ( ex:Infant ex:Adult ) .
+
 ex:personId a owl:DatatypeProperty ;
     rdfs:domain ex:Person ; rdfs:range xsd:string .
 
@@ -81,3 +92,21 @@ ex:ancestorOf a owl:ObjectProperty, owl:TransitiveProperty,
 ex:relatedTo a owl:ObjectProperty, owl:SymmetricProperty, owl:ReflexiveProperty ;
     rdfs:domain ex:Person ; rdfs:range ex:Person ;
     owl:equivalentProperty foaf:knows .
+
+# uncleOf is the COMPOSITION ancestorOf then relatedTo (owl:propertyChainAxiom):
+# an ordered chain of in-namespace properties, kept in order and never deduped.
+ex:uncleOf a owl:ObjectProperty ;
+    rdfs:domain ex:Person ; rdfs:range ex:Person ;
+    owl:propertyChainAxiom ( ex:ancestorOf ex:relatedTo ) .
+
+# Set-level axioms: each hangs off an ANONYMOUS node and is ABOUT a set of
+# terms, so it rides on the MODEL, not any one class/property. Members are
+# in-namespace, so they shorten to local names (reversible via owl:baseIri).
+# The three classes are mutually exclusive kinds; personId and name are disjoint
+# data properties; the two LifeStage individuals are distinct.
+[] a owl:AllDisjointClasses ;
+    owl:members ( ex:Person ex:Robot ex:LifeStage ) .
+[] a owl:AllDisjointProperties ;
+    owl:members ( ex:personId ex:name ) .
+[] a owl:AllDifferent ;
+    owl:members ( ex:Infant ex:Adult ) .
