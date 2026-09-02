@@ -115,7 +115,7 @@ bound for a graph MUST declare one (see [§4](#4-narrowings) and
 |---|---|---|
 | `name` | string | required |
 | `datatype` | enum | one of the closed vocabulary below |
-| `expression` | [expression](#22-metric) | physical-column binding (binding — [§7](#7-the-binding-layer)) |
+| `expression` | [expression](#25-expressions) | physical-column binding (binding — [§7](#7-the-binding-layer)) |
 | `unbound` | boolean | this binding has no column for the field (binding — [§7](#7-the-binding-layer)) |
 | `label` | string | human display label |
 | `dimension` | object | `{ is_time: boolean }` |
@@ -380,8 +380,17 @@ The binding constructs are:
 - **`source` on a dataset** — the backing table, as a resource URI.
 - **`expression` / `unbound` on a field** — which column the field maps to under a
   binding, or that this binding has no column for it.
-- **`from_columns` / `to_columns` on a relationship** — the edge's join keys.
 - **`deployment_target` on the model** — where the model deploys.
+- **`from_columns` / `to_columns` on a relationship** — the edge's join keys.
+
+The first three are **profile-swappable**: a [binding profile](#73-binding-profiles)
+can supply or override them, so one logical model deploys to several stores. Edge
+join keys are the exception. They are physical, but they are declared on the
+**logical model** and a profile MUST NOT set them ([§7.3](#73-binding-profiles)),
+so they cannot vary per store — a relationship's `from_columns` / `to_columns` are
+fixed for every binding of the model. In practice this holds because the join keys
+are usually stable across stores even when table and column names differ; a store
+that needs different join keys needs a different logical model.
 
 ### 7.1. Table sources
 
@@ -465,7 +474,8 @@ The full merge behavior and worked examples are in
 A logical model plus one binding profile.
 
 ```yaml
-# catalog/EntryGroups/sales/sales.yaml — the logical model (no physical detail)
+# catalog/EntryGroups/sales/sales.yaml — the logical model (concepts + edge join keys;
+# table and column bindings live in the profile below — see §7)
 version: "0.2.0.dev0"
 semantic_model:
   - name: sales
