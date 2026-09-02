@@ -47,6 +47,7 @@ example that carries one model through the whole lifecycle, see the
 | [Modeling class hierarchies](inheritance.md) | model subtypes with `extends` so a supertype query gathers them |
 | [Codelab: one semantic ontology, one data journey](codelab.md) | see the whole lifecycle: author, govern, hydrate, query |
 | [Reference](reference.md) | look up a flag, what push creates, validation, or permissions |
+| [Model specification](model_spec.md) | the normative format: every YAML construct, what's OSI and what's a kcmd extension |
 | [What push and pull preserve](fidelity.md) | understand why something changed or wasn't recovered |
 | [Importing an OWL ontology](owl-import.md) | start from an OWL ontology instead of hand-authoring |
 

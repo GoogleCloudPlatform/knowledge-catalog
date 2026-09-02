@@ -42,7 +42,7 @@ agree on every structural row and differ only where a Spanner target has no
 | Model-level `description` / `instructions`                     | on the model entry              | ✓⁸                                             | — dropped⁸                                                           | — dropped⁸                                                           |
 | Model-level `ai_context.synonyms` / `examples`                 | — not stored                    | —                                              | — dropped                                                            | — dropped                                                            |
 | Deployment target                                              | recorded on the model entry     | ✓                                              | names the graph                                                      | names the graph                                                      |
-| Imported vendor SQL (`importedExpression` / `importedDialect`) | — not stored                    | —                                              | fallback — builds the DDL only when no canonical `expression` exists | fallback — builds the DDL only when no canonical `expression` exists |
+| Vendor-dialect `expression` variant (non-canonical `dialects[]` entry)¹¹ | — not stored          | —                                              | fallback — builds the DDL only when no canonical `expression` exists | fallback — builds the DDL only when no canonical `expression` exists |
 | `custom_extensions` (beyond the deployment target)             | — not stored                    | —⁹                                             | — not in graph                                                       | — not in graph                                                       |
 
 1. **Field type source.** The graph uses the source column's own type; a
@@ -91,6 +91,13 @@ agree on every structural row and differ only where a Spanner target has no
     columns is skipped with a warning. When the same push also deploys a graph,
     the catalog entries are first pruned to what the graph binds — see
     [To Knowledge Catalog](#to-knowledge-catalog).
+11. **Vendor-dialect fallback.** What you author is the `expression.dialects[]`
+    list; the graph builds from the canonical (BigQuery/ANSI) variant.
+    `importedExpression` / `importedDialect` are not authored keys — the loader
+    *derives* them from a non-canonical dialect entry (for example the MAQL or
+    Snowflake form a metric was imported from) and uses that verbatim as the
+    fallback when no canonical variant exists. See
+    [Model spec §2.5](model_spec.md#25-expressions).
 
 ## To Knowledge Catalog
 
@@ -121,6 +128,8 @@ templates gain the fields. The catalog never stores `ai_context.synonyms` /
 SQL (`importedExpression` — for example the MAQL or Snowflake form a metric was
 imported from). Those stay in your authored document; the vendor SQL and
 expressions are still used when generating graph SQL.
+
+¹⁰ What you author is the `expression.dialects[]` list; the graph builds from the canonical (BigQuery/ANSI) variant. `importedExpression` / `importedDialect` are not authored keys — the loader *derives* them from a non-canonical dialect entry (e.g. the MAQL or Snowflake form a metric was imported from) and uses that verbatim as the fallback when no canonical variant exists. See [Model spec §2.5](model_spec.md#25-expressions).
 
 ## To BigQuery
 

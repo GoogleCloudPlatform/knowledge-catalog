@@ -287,7 +287,10 @@ of your model. For exactly what is stored, what is gated behind
 ## Validation
 
 `push` and `--validate-only` run the same checks, **before either destination is
-touched**, so a model that cannot deploy fails fast instead of half-deploying:
+touched**, so a model that cannot deploy fails fast instead of half-deploying.
+Each check enforces a rule the [model specification](model_spec.md) *defines*;
+this section is the operational side of it — what the tool does when the rule is
+broken — and links to the definition it enforces:
 
 * **A graph push declares exactly one deployment target per model, and it must
   be a valid BigQuery Graph or Spanner Graph URI.** A model with more than one is
@@ -301,12 +304,15 @@ touched**, so a model that cannot deploy fails fast instead of half-deploying:
   on it is an error — it would have nowhere to go). This gate runs before any
   destination leg, so a malformed target writes **nothing** — not to the graph
   and **not to Knowledge Catalog**; the push aborts with a non-zero exit and no
-  entries are created. *(static)*
+  entries are created. Defined in [model spec §4.1](model_spec.md#41-narrowings-stricter-than-ossie)
+  (one target) and [§7.2](model_spec.md#72-deployment-target) (the URI grammar).
+  *(static)*
 * **Every metric on a BigQuery Graph model resolves to exactly one entity** —
   otherwise it would be dropped from the BigQuery Graph. Set the metric's attach
   entity, or scope its expression to a single entity. This rule is
   BigQuery-only: Spanner Graph has no `MEASURE`, so a Spanner target drops its
-  metrics by design and imposes no such requirement. *(static)*
+  metrics by design and imposes no such requirement. Defined in
+  [model spec §4.1](model_spec.md#41-narrowings-stricter-than-ossie). *(static)*
 * **Every entity's source table is reachable.** For a **BigQuery-targeting**
   model, each `source` is probed with a dry-run query, so BigQuery resolves it
   exactly as the deploy will — a three-part `project.dataset.table`, a four-part
@@ -314,8 +320,9 @@ touched**, so a model that cannot deploy fails fast instead of half-deploying:
   identifier all work. A table that does not exist or that you cannot access fails
   the push, naming the table and the entity; a `source` that is a query (not a
   table) is skipped. A **Spanner-targeting** model's sources live in Spanner
-  (a different system) and are **not** probed here. *(live — needs BigQuery
-  access)*
+  (a different system) and are **not** probed here. The `source` construct and its
+  URI/dotted forms are defined in [model spec §7.1](model_spec.md#71-table-sources).
+  *(live — needs BigQuery access)*
 
 The live table check runs whenever the BigQuery leg runs (some model targets
 BigQuery Graph), including under `--no-kc`, because the same tables back both a
