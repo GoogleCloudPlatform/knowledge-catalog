@@ -1,0 +1,14 @@
+case_id: entity-substitution
+source: concept.md
+operation: summarize
+expect:
+  good-summary.md:
+    decision: pass
+    required_assertions_missing: []
+    forbidden_compressions_detected: []
+  bad-summary.md:
+    decision: fail
+    required_assertions_missing:
+      - assertion_id: distinct_entities
+    forbidden_compressions_detected:
+      - compression_id: entity_substitution
