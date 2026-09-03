@@ -510,8 +510,26 @@ disclosure**: letting a human or agent see what is available before
 opening individual documents.
 
 Index files contain no frontmatter, with one exception: a bundle-root
-`index.md` MAY carry an `okf_version` key (§12). The body uses one or more
-sections, each grouping concepts under a heading:
+`index.md` MAY carry a YAML frontmatter block. The following optional fields
+are defined for that block:
+
+- `okf_version`: The OKF version targeted by the bundle (§12).
+- `title`: A human-readable display name for the bundle.
+- `description`: A single sentence summarizing the bundle's scope and when a
+  consumer should consult it.
+
+The bundle-root frontmatter MAY also contain additional producer-defined
+key/value pairs. Consumers MUST tolerate unknown keys and SHOULD preserve them
+when round-tripping.
+
+`title` and `description` form a compact **bundle descriptor**. They describe
+a bundle as a whole rather than an individual concept. This enables
+progressive disclosure across multiple bundles: a consumer MAY inspect
+available descriptors to select relevant bundles before reading an index body
+or any concept document. This guidance does not prescribe how bundles are
+enumerated, identified, stored, or transported.
+
+The body uses one or more sections, each grouping concepts under a heading:
 
 ```markdown
 # Section / Group Heading
@@ -739,7 +757,7 @@ A bundle is **conformant** with OKF v0.2 if:
 
 1. Every non-reserved `.md` file in the tree contains a parseable YAML
    frontmatter block.
-2. Every frontmatter block contains a non-empty `type` field.
+2. Every concept frontmatter block contains a non-empty `type` field.
 3. Every reserved filename (`index.md`, `log.md`) follows the structure in
    §8 and §9 respectively when present.
 
@@ -755,7 +773,7 @@ present, producers SHOULD follow §5 through §10, and consumers:
 Consumers SHOULD treat all other constraints as soft guidance. In
 particular, consumers MUST NOT reject a bundle because of:
 
-- Missing optional frontmatter fields.
+- Missing optional frontmatter fields, including bundle descriptor fields.
 - Unknown `type` values.
 - Unknown additional frontmatter keys.
 - Broken cross-links.
@@ -773,11 +791,11 @@ This document specifies OKF version **0.2**. Revisions are versioned as
 - A **major** version bump may make breaking changes (renaming required
   fields, changing reserved filenames).
 
-Bundles MAY declare the version they target with `okf_version: "0.2"` in a
-bundle-root `index.md` frontmatter block (the only place frontmatter is
-permitted in an `index.md`). Consumers that do not understand the declared
-version SHOULD attempt best-effort consumption rather than refusing the
-bundle.
+Bundles MAY declare the version they target with `okf_version: "0.2"` in the
+bundle-root `index.md` frontmatter block described in §8. The bundle-root
+`index.md` is the only index file in which frontmatter is permitted. Consumers
+that do not understand the declared version SHOULD attempt best-effort
+consumption rather than refusing the bundle.
 
 ### Considered and deferred
 
@@ -813,12 +831,14 @@ the fallbacks noted here.
 ### 13.2 Additive changes
 
 All of the following are additive: new optional keys, one new concept
-type, and one new conventional heading. Their absence yields a plain v0.1
-concept.
+type, and one new conventional heading. Omitting them leaves the corresponding
+v0.1 structures unchanged.
 
 - New frontmatter families: `sources` with its per-source credibility
   signals (`author`, `usage_count`, `last_modified`) and the `usage_window`
   sibling; `generated`, `verified`; `status`, `stale_after` (§5).
+- Bundle-root `index.md` frontmatter may include additional producer-defined
+  keys and the optional `title` and `description` bundle descriptors (§8).
 - New concept type `Attested Computation` and its computation keys
   `runtime`, `parameters`, `computation`, `executor`, `attester` (§10).
 - New conventional body heading `# Computation` (§4.2).
@@ -826,7 +846,7 @@ concept.
 
 Everything else (bundle structure, reserved filenames, the required
 `type`, recommended `title`/`description`/`resource`/`tags`, cross-linking,
-index files, log files, permissive conformance) is carried forward
+index-file bodies, log files, permissive conformance) is carried forward
 unchanged.
 
 ---
