@@ -206,6 +206,16 @@ appear.
 SHOULD preserve unknown keys when round-tripping and MUST NOT reject
 documents with unrecognized fields.
 
+**Conventional agent-routing hints (optional):** to help a consumption agent
+decide whether and how to use a concept before reading its body, producers MAY
+include any of the following keys. They are hints, never gates — consumers
+MUST tolerate their absence and MUST NOT reject a document that omits them:
+
+- `purpose` — one line on what the concept is for.
+- `task` — the task or tasks the concept is most useful for (a string or a
+  list of strings).
+- `audience` — the intended reader or agent (a string or a list of strings).
+
 ### 4.2 Body
 
 The body is standard markdown. Producers SHOULD favor structural markdown
