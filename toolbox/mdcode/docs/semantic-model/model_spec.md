@@ -36,8 +36,9 @@ top-level `version` (see [Version handling](#1-status-and-baseline)):
   nothing left for it to carry. This profile is readable, but not a vanilla-Ossie
   document — an Ossie-only reader knows neither its version nor its native keys.
 
-The two are the same model written two ways; both parse to the identical IR, so no
-downstream leg sees which was used.
+For a model that avoids the `/google`-only constructs, the two are the same model
+written two ways; both parse to the identical IR, so no downstream leg sees which
+was used.
 
 Ossie compatibility is a property of the **vanilla** version, and the contract
 runs in both directions:
@@ -48,9 +49,10 @@ runs in both directions:
 > Ossie constructs. Strip the `GOOGLE` `custom_extensions` blocks from such a model
 > and it is a valid Ossie document.
 
-Under vanilla, every `kcmd`-specific construct rides in a `custom_extensions` block
-an Ossie-only tool ignores (see [§6](#6-the-extension-mechanism)), so the two never
-fork the document. The extended `0.2.0.dev0/google` profile trades that wire
+Under vanilla, `kcmd`'s deployment and binding additions ride in a `custom_extensions`
+block an Ossie-only tool ignores (see [§6](#6-the-extension-mechanism)), so those never
+fork the document; inheritance and the `entities` spelling have no vanilla form and
+exist only under `0.2.0.dev0/google`. The extended `0.2.0.dev0/google` profile trades that wire
 compatibility for readable native keys; it is `kcmd`'s own surface, converted to or
 from vanilla by choosing the `version`.
 
@@ -316,10 +318,10 @@ extension, [§5](#5-extensions)), or *rejected* / *not authorable* (excluded).
 
 ## 4. Narrowings and relaxations
 
-`kcmd` diverges from Ossie in two directions. **Narrowings** are where `kcmd` is
+This profile diverges from Ossie in two directions. **Narrowings** are where it is
 stricter — rules that can reject an otherwise-valid Ossie document at deploy time.
-**Relaxations** are where `kcmd` is looser — fields Ossie requires that `kcmd`
-makes optional, so a relaxed `kcmd` model is not a valid Ossie document until those
+**Relaxations** are where it is looser — fields Ossie requires that this profile
+makes optional, so a relaxed model is not a valid Ossie document until those
 fields are supplied. Both are the reason the reverse compatibility direction in
 [§1](#1-status-and-baseline) is conditional.
 
@@ -382,7 +384,7 @@ BigQuery `MEASURE` cannot bind to a label shared across subtype tables. See
 
 ### 4.2. Relaxations (looser than Ossie)
 
-`kcmd` relaxes Ossie in two kinds, for two different reasons.
+This profile relaxes Ossie in two kinds, for two different reasons.
 
 **Binding fields made optional — to model before binding.** Ossie marks these
 required; `kcmd` accepts them as optional so a model can be governed before it is
