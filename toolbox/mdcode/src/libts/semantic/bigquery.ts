@@ -83,6 +83,18 @@ export function generatePropertyGraph(
   const abstractNames =
       new Set(entities.filter(e => e.abstract).map(e => e.name));
 
+  // A metric lowers to a MEASURE on its target's DEFAULT LABEL, and BigQuery
+  // forbids a MEASURE on a label carried by more than one element table. A
+  // supertype's label is shared with every subtype's table, so a measure is
+  // allowed only on a LEAF type -- one that no other entity extends (agreed with
+  // Dmitri). Inheritance is already resolved, so each entity's `extends` is its
+  // full transitive ancestor set; every non-leaf name therefore appears in some
+  // entity's list, computed here across ALL entities (abstract included).
+  const supertypeNames = new Set<string>();
+  for (const e of entities) {
+    for (const a of e.extends ?? []) supertypeNames.add(a);
+  }
+
   // A graph node table requires a non-empty KEY. An entity whose primary key is
   // empty cannot form a valid node, so skip it (and, below, any edge that
   // references it) rather than emit `KEY()` — invalid DDL. The loader already
@@ -152,7 +164,7 @@ export function generatePropertyGraph(
   const loweringByEntity = new Map<string, MeasureLowering>();
   for (const metric of metrics) {
     placeMetric(
-        metric, resolved.model, entityByName, skipped, ancestorsUsed,
+        metric, resolved.model, entityByName, skipped, supertypeNames,
         metricsByEntity, loweringByEntity, warnings);
   }
 
@@ -259,7 +271,7 @@ function newLowering(entity: Entity): MeasureLowering {
 // single supported aggregate over one operand.
 function placeMetric(
     metric: Metric, model: SemanticModel, entityByName: Map<string, Entity>,
-    skipped: Set<string>, ancestorsUsed: Set<string>,
+    skipped: Set<string>, supertypeNames: Set<string>,
     metricsByEntity: Map<string, string[]>,
     loweringByEntity: Map<string, MeasureLowering>, warnings: string[]): void {
   // The IR keeps at most two expression forms; a measure is emitted from the
@@ -335,17 +347,18 @@ function placeMetric(
         entityName}', which has no KEY and was skipped; metric dropped`);
     return;
   }
-  // A metric lowers to a MEASURE on the target entity's DEFAULT LABEL. When
-  // that entity is a supertype, its label is shared with every subclass table,
-  // and BigQuery forbids binding a MEASURE to a label carried by more than one
-  // element table (a measure cannot be replicated across tables -- verified
-  // live "defined as MEASURE, but there are other declarations with the same
-  // name"). Drop it with a warning rather than emit DDL BigQuery rejects.
-  if (ancestorsUsed.has(entityName)) {
+  // A measure is allowed only on a LEAF type. A metric lowers to a MEASURE on
+  // the target's DEFAULT LABEL; when that entity is a supertype its label is
+  // shared with every subtype table, and BigQuery forbids a MEASURE on a label
+  // carried by more than one element table (verified live: "defined as MEASURE,
+  // but there are other declarations with the same name"). Drop it with a
+  // warning rather than emit DDL BigQuery rejects.
+  if (supertypeNames.has(entityName)) {
     warnings.push(
-        `metric '${metric.name}' targets entity '${entityName}', which is a ` +
-        `supertype whose label is shared across subclass tables; skipped ` +
-        `(BigQuery cannot bind a MEASURE to a shared label)`);
+        `metric '${metric.name}' targets entity '${entityName}', which is not ` +
+        `a leaf type (another entity extends it); a measure is allowed only on ` +
+        `a leaf type, because a supertype's label is shared across its ` +
+        `subtype tables; skipped`);
     return;
   }
 

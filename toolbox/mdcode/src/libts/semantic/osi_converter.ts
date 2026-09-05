@@ -28,10 +28,13 @@
 //     are re-emitted, each under a single dialect label.
 //   * comments and key ordering are not preserved.
 // What the loader DOES keep on the IR round-trips here: names, descriptions,
-// `ai_context` (instructions / synonyms / examples), `custom_extensions`
-// (verbatim), keys and unique keys, data sources, field datatypes / labels /
-// dimension flags, expressions, and relationship join columns. See
-// serialize.test.ts.
+// `ai_context` (instructions / synonyms / examples), keys and unique keys, data
+// sources, field datatypes / labels / dimension flags, expressions, and
+// relationship join columns. Output is the extended profile ('/google'), which
+// uses native extension keys and has no `custom_extensions` carrier: a model's
+// GOOGLE deployment target is re-emitted as a native `deployment_target`, and
+// any other vendor extension on the IR is dropped with a warning (its carrier's
+// fate under '/google' is still open). See serialize.test.ts.
 //
 // An `association` (junction-table) relationship has no open-format syntax (the
 // loader cannot produce one), so only its direct foreign-key view (from/to +
@@ -41,10 +44,16 @@ import * as yaml from 'yaml';
 
 import {AiContext, CustomExtension, Entity, Field, Metric, Relationship, SemanticModel,} from './ir';
 
-// The schema version the loader was written against; re-emitted verbatim so a
-// serialized document loads without a version-mismatch warning. Mirrors
-// loader.SUPPORTED_VERSION.
-const SERIALIZED_VERSION = '0.2.0.dev0';
+// The version stamped on every serialized document. Pull emits kcmd's extended
+// profile: it uses native extension keys (`entities`, `deployment_target`)
+// rather than Ossie's `custom_extensions` carrier, so the version MUST be the
+// `/google` variant for the output to load. Mirrors loader.GOOGLE_VERSION.
+const SERIALIZED_VERSION = '0.2.0.dev0/google';
+
+// The vendor tag for Google-specific extension blocks on the IR (kept in sync
+// with loader.GOOGLE_VENDOR). A model-level deployment target rides in one and
+// is re-emitted as the native `deployment_target` key.
+const GOOGLE_VENDOR = 'GOOGLE';
 
 // The dialect label for the IR's target/canonical `expression`. The IR does not
 // record which authored dialect that string came from (the loader picked it
@@ -129,7 +138,8 @@ function renderCompact(document: Record<string, any>): string {
     Seq(_, node) {
       if (!node.items.every(item => yaml.isScalar(item))) return;
       // `[` + each `item, ` + `]`, approximated for the width gate.
-      const width = node.items.reduce((n, item) => n + scalarWidth(item) + 2, 2);
+      const width =
+          node.items.reduce((n, item) => n + scalarWidth(item) + 2, 2);
       if (width <= FLOW_WIDTH_BUDGET) node.flow = true;
     },
     Map(_, node) {
@@ -171,12 +181,18 @@ function modelDoc(model: SemanticModel, warnings: string[], logical: boolean):
             model.name}': no datasets (entities); the document requires ` +
         `at least one and will not load until an entity is present.`);
   }
+  // The extended profile has no `custom_extensions` carrier: the one kcmd
+  // understands -- the GOOGLE deployment target -- is emitted as the native
+  // `deployment_target` key; any other vendor extension has no representation
+  // and is dropped with a warning (see extractDeploymentTarget).
+  const deploymentTarget =
+      extractDeploymentTarget(model.customExtensions, model.name, warnings);
   return compact({
     name: model.name,
     description: model.description,
     ai_context: aiContextDoc(model.aiContext),
-    custom_extensions: customExtensionsDoc(model.customExtensions),
-    datasets,
+    deployment_target: deploymentTarget,
+    entities: datasets,
     relationships: nonEmpty(
         (model.relationships ?? []).map(r => relationshipDoc(r, warnings))),
     metrics: nonEmpty((model.metrics ?? []).map(m => metricDoc(m, warnings))),
@@ -197,6 +213,7 @@ function datasetDoc(
         `entity '${entity.name}' has no source and is not abstract; the ` +
         `serialized document will not reload until a source is set`);
   }
+  dropExtensions(entity.customExtensions, `entity '${entity.name}'`, warnings);
   return compact({
     name: entity.name,
     // An abstract entity has no physical table, so its source is empty; omit
@@ -213,7 +230,6 @@ function datasetDoc(
     ai_context: aiContextDoc(entity.aiContext),
     fields: nonEmpty(
         (entity.fields ?? []).map(f => fieldDoc(f, warnings, logical))),
-    custom_extensions: customExtensionsDoc(entity.customExtensions),
   });
 }
 
@@ -229,6 +245,7 @@ function fieldDoc(
         `field '${field.name}': no expression; the loader requires one per ` +
         `field and the document will not load until it is set.`);
   }
+  dropExtensions(field.customExtensions, `field '${field.name}'`, warnings);
   return compact({
     name: field.name,
     expression,
@@ -237,7 +254,6 @@ function fieldDoc(
     dimension: dimensionDoc(field),
     description: field.description,
     ai_context: aiContextDoc(field.aiContext),
-    custom_extensions: customExtensionsDoc(field.customExtensions),
   });
 }
 
@@ -251,13 +267,13 @@ function metricDoc(metric: Metric, warnings: string[]): Record<string, any> {
         `metric '${metric.name}': no expression; the loader requires one per ` +
         `metric and the document will not load until it is set.`);
   }
+  dropExtensions(metric.customExtensions, `metric '${metric.name}'`, warnings);
   return compact({
     name: metric.name,
     expression,
     datatype: metric.type,
     description: metric.description,
     ai_context: aiContextDoc(metric.aiContext),
-    custom_extensions: customExtensionsDoc(metric.customExtensions),
   });
 }
 
@@ -274,6 +290,7 @@ function relationshipDoc(
         `open-format representation and is not serialized; only its foreign-key ` +
         `endpoints are written.`);
   }
+  dropExtensions(rel.customExtensions, `relationship '${rel.name}'`, warnings);
   return compact({
     name: rel.name,
     from: rel.source.entity,
@@ -282,7 +299,6 @@ function relationshipDoc(
     to_columns: nonEmpty(rel.destination.columns),
     description: rel.description,
     ai_context: aiContextDoc(rel.aiContext),
-    custom_extensions: customExtensionsDoc(rel.customExtensions),
   });
 }
 
@@ -290,8 +306,8 @@ function relationshipDoc(
 // array of {dialect, expression}). Emits the target/canonical form under
 // CANONICAL_DIALECT and the imported vendor form under its own dialect, so the
 // loader re-picks each into the same IR field. Returns undefined when neither
-// form is present (the loader requires an expression, but a pathological field
-// with none is dropped rather than fabricated).
+// form is present: a field with no expression is unbound, so it emits no
+// `expression` block rather than a fabricated one.
 function expressionDoc(
     expression: string|undefined, importedExpression: string|undefined,
     importedDialect: string|undefined): Record<string, any>|undefined {
@@ -336,12 +352,56 @@ function aiContextDoc(ai: AiContext|undefined): Record<string, any>|undefined {
   return Object.keys(doc).length ? doc : undefined;
 }
 
-// Emits vendor `custom_extensions` verbatim (`vendorName` -> `vendor_name`),
-// inverting loader.toCustomExtensions. Returns undefined when there are none.
-function customExtensionsDoc(exts: CustomExtension[]|undefined):
-    Record<string, any>[]|undefined {
+// Pulls a model's deployment target out of its GOOGLE custom_extension block
+// and returns it as the value for the native `deployment_target` key (the
+// extended profile's representation; the loader folds the reverse direction).
+// The native key is a single URI, so the first target is emitted; any further
+// targets, and any non-deployment-target vendor extension, have no `/google`
+// representation and are counted as dropped and warned about once.
+function extractDeploymentTarget(
+    exts: CustomExtension[]|undefined, modelName: string,
+    warnings: string[]): string|undefined {
   if (!exts || !exts.length) return undefined;
-  return exts.map(e => ({vendor_name: e.vendorName, data: e.data}));
+  let target: string|undefined;
+  let dropped = 0;
+  for (const ext of exts) {
+    let targets: unknown;
+    if (ext.vendorName === GOOGLE_VENDOR) {
+      try {
+        targets = JSON.parse(ext.data)?.deploymentTargets;
+      } catch {
+        targets = undefined;
+      }
+    }
+    if (Array.isArray(targets) && targets.length) {
+      if (target === undefined && typeof targets[0] === 'string') {
+        target = targets[0];
+      }
+      if (targets.length > 1) dropped += targets.length - 1;
+    } else {
+      dropped += 1;  // a non-GOOGLE block, or a GOOGLE block without targets
+    }
+  }
+  if (dropped) {
+    warnings.push(
+        `model '${modelName}': ${dropped} custom_extension value(s) have no ` +
+        `representation under '${SERIALIZED_VERSION}' and are not serialized`);
+  }
+  return target;
+}
+
+// The extended profile has no `custom_extensions` carrier, so a vendor
+// extension on a non-model element cannot be serialized. Warn (once per
+// element) and drop it. The model-level GOOGLE deployment target is handled
+// separately (extractDeploymentTarget) and is NOT dropped.
+function dropExtensions(
+    exts: CustomExtension[]|undefined, where: string,
+    warnings: string[]): void {
+  if (exts && exts.length) {
+    warnings.push(
+        `${where}: ${exts.length} custom_extension(s) have no representation ` +
+        `under '${SERIALIZED_VERSION}' and are not serialized`);
+  }
 }
 
 // Drops undefined-valued keys so the emitted YAML only shows fields the model
