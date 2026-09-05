@@ -76,11 +76,13 @@ describe('checkPushSelection', () => {
 
 describe('declaresGraphTarget', () => {
   const withSugar = `
+version: 0.2.0.dev0/google
 semantic_model:
   - name: sales
     deployment_target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
 `;
   const withExtension = `
+version: 0.2.0.dev0
 semantic_model:
   - name: sales
     custom_extensions:
@@ -88,6 +90,7 @@ semantic_model:
         data: '{"deploymentTargets":["//spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g"]}'
 `;
   const logicalOnly = `
+version: 0.2.0.dev0
 semantic_model:
   - name: sales
     datasets:
@@ -108,6 +111,7 @@ semantic_model:
 
   test('an empty deployment_target string is not a target', () => {
     expect(declaresGraphTarget(`
+version: 0.2.0.dev0/google
 semantic_model:
   - name: sales
     deployment_target: '   '
@@ -116,6 +120,7 @@ semantic_model:
 
   test('a non-GOOGLE extension is ignored', () => {
     expect(declaresGraphTarget(`
+version: 0.2.0.dev0
 semantic_model:
   - name: sales
     custom_extensions:
@@ -131,6 +136,7 @@ semantic_model:
   test('malformed GOOGLE data resolves to true so the strict load reports it',
        () => {
          expect(declaresGraphTarget(`
+version: 0.2.0.dev0
 semantic_model:
   - name: sales
     custom_extensions:

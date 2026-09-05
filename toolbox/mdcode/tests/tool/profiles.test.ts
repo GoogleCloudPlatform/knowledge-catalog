@@ -15,7 +15,7 @@ import {profiles} from '../../src/tool/commands';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
-const LOGICAL = `version: "0.2.0.dev0"
+const LOGICAL = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
     entities:
@@ -36,7 +36,7 @@ semantic_model:
         expression: AVG(Customer.lifetimeValue)
 `;
 
-const ANALYTICAL = `version: "0.2.0.dev0"
+const ANALYTICAL = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
     deployment_target: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/propertyGraphs/commerce
@@ -46,14 +46,14 @@ semantic_model:
         fields:
           - { name: key, expression: c_custkey }
           - { name: lifetimeValue, expression: c_ltv }
-          - { name: availableCredit, unbound: true }
+          - { name: availableCredit }
       - name: Order
         source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
         fields:
           - { name: key, expression: o_orderkey }
 `;
 
-const OPERATIONAL = `version: "0.2.0.dev0"
+const OPERATIONAL = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
     deployment_target: //spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/propertyGraphs/commerce
@@ -63,7 +63,7 @@ semantic_model:
         fields:
           - { name: key, expression: CustomerId }
           - { name: availableCredit, expression: AvailableCredit }
-          - { name: lifetimeValue, unbound: true }
+          - { name: lifetimeValue }
       - name: Order
         source: //spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/tables/Orders
         fields:

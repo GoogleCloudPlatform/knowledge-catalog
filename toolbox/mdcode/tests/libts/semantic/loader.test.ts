@@ -21,7 +21,7 @@ function expr(expression: string, dialect = 'BIGQUERY') {
 
 
 describe('dataset source strings normalize to fully-qualified references', () => {
-  const { models } = fromDocument({
+  const { models } = fromDocument({ version: '0.2.0.dev0',
     semantic_model: [{
       name: 'm',
       datasets: [
@@ -46,7 +46,7 @@ describe('dataset source strings normalize to fully-qualified references', () =>
   });
 
   test('a query-like source is kept verbatim with a warning', () => {
-    const { models, warnings } = fromDocument({
+    const { models, warnings } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{ name: 'm', datasets: [
         { name: 'a', source: 'SELECT 1 FROM t', primary_key: ['id'], fields: [] }] }],
     });
@@ -55,7 +55,7 @@ describe('dataset source strings normalize to fully-qualified references', () =>
   });
 
   test('a dataset without a primary key warns (its KEY would be empty)', () => {
-    const { warnings } = fromDocument({
+    const { warnings } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{ name: 'm', datasets: [
         { name: 'a', source: 'a', fields: [] }] }],
     });
@@ -63,7 +63,7 @@ describe('dataset source strings normalize to fully-qualified references', () =>
   });
 
   test('backtick- or double-quoted identifiers are unquoted', () => {
-    const { models } = fromDocument({
+    const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{ name: 'm', datasets: [
         { name: 'a', source: '`proj`.`ds`.`tbl`', primary_key: ['id'], fields: [] }] }],
     });
@@ -71,7 +71,7 @@ describe('dataset source strings normalize to fully-qualified references', () =>
   });
 
   test('a four-part Lakehouse catalog name passes through untouched', () => {
-    const { models, warnings } = fromDocument({
+    const { models, warnings } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{ name: 'm', datasets: [
         { name: 'a', source: 'proj.cat.ns.tbl', primary_key: ['id'], fields: [] }] }],
     }, { defaultProject: 'P', defaultDataset: 'D' });
@@ -80,7 +80,7 @@ describe('dataset source strings normalize to fully-qualified references', () =>
   });
 
   test('an explicit project/dataset in the source is not overridden by defaults', () => {
-    const { models } = fromDocument({
+    const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{ name: 'm', datasets: [
         { name: 'a', source: 'realproj.realds.tbl', primary_key: ['id'], fields: [] }] }],
     }, { defaultProject: 'P', defaultDataset: 'D' });
@@ -92,6 +92,7 @@ describe('dataset source strings normalize to fully-qualified references', () =>
 describe('per-dialect expressions collapse to a single string', () => {
   function metricDoc(dialectList: Array<{ dialect: string; expression: string }>) {
     return {
+      version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [{ name: 'orders', source: 'orders', primary_key: ['id'], fields: [] }],
@@ -150,7 +151,7 @@ describe('per-dialect expressions collapse to a single string', () => {
   });
 
   test('field expressions select their dialect independently of metrics', () => {
-    const { models, warnings } = fromDocument({
+    const { models, warnings } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [{
@@ -183,7 +184,7 @@ describe('per-dialect expressions collapse to a single string', () => {
 
 
 describe('relationships map onto the direct-FK IR convention', () => {
-  const { models } = fromDocument({
+  const { models } = fromDocument({ version: '0.2.0.dev0',
     semantic_model: [{
       name: 'm',
       datasets: [
@@ -207,7 +208,7 @@ describe('relationships map onto the direct-FK IR convention', () => {
   });
 
   test('a composite foreign key maps column-for-column', () => {
-    const { models } = fromDocument({
+    const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [
@@ -229,7 +230,7 @@ describe('relationships map onto the direct-FK IR convention', () => {
     // The FK columns are taken straight from from_columns; the source entity's own
     // primary key is looked up from the entity by downstream consumers, never
     // duplicated onto the relationship (so a missing from-PK is irrelevant here).
-    const { models } = fromDocument({
+    const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [
@@ -247,7 +248,7 @@ describe('relationships map onto the direct-FK IR convention', () => {
   });
 
   test('an unresolved to dataset is a hard error', () => {
-    expect(() => fromDocument({
+    expect(() => fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [{ name: 'orders', source: 'orders', primary_key: ['order_id'], fields: [] }],
@@ -260,7 +261,7 @@ describe('relationships map onto the direct-FK IR convention', () => {
   });
 
   test('an unresolved from dataset is a hard error', () => {
-    expect(() => fromDocument({
+    expect(() => fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [{ name: 'customers', source: 'customers', primary_key: ['customer_id'], fields: [] }],
@@ -273,7 +274,7 @@ describe('relationships map onto the direct-FK IR convention', () => {
   });
 
   test('mismatched from_columns/to_columns arity is a hard error', () => {
-    expect(() => fromDocument({
+    expect(() => fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [
@@ -291,7 +292,7 @@ describe('relationships map onto the direct-FK IR convention', () => {
 
 describe('abstract datasets and their source constraint', () => {
   test('a non-abstract dataset with no source is a hard error', () => {
-    expect(() => fromDocument({
+    expect(() => fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [{ name: 'orders', primary_key: ['id'], fields: [] }],
@@ -302,7 +303,7 @@ describe('abstract datasets and their source constraint', () => {
   test('an abstract dataset that also declares a source is a hard error', () => {
     // abstract == no physical table; a source would be silently ignored by the
     // BigQuery leg, dropping a table the author intended, so reject the combo.
-    expect(() => fromDocument({
+    expect(() => fromDocument({ version: '0.2.0.dev0/google',
       semantic_model: [{
         name: 'm',
         datasets: [{
@@ -314,7 +315,7 @@ describe('abstract datasets and their source constraint', () => {
   });
 
   test('an abstract dataset with no source loads and is marked abstract', () => {
-    const { models } = fromDocument({
+    const { models } = fromDocument({ version: '0.2.0.dev0/google',
       semantic_model: [{
         name: 'm',
         datasets: [{ name: 'Party', abstract: true, fields: [] }],
@@ -328,7 +329,7 @@ describe('abstract datasets and their source constraint', () => {
     // The supertype has no table, so its fields carry no column -- they name
     // the label its subtypes bind. The strict (graph-leg) schema must accept
     // them even though a concrete dataset's field would require an expression.
-    const { models } = fromDocument({
+    const { models } = fromDocument({ version: '0.2.0.dev0/google',
       semantic_model: [{
         name: 'm',
         datasets: [
@@ -353,10 +354,11 @@ describe('abstract datasets and their source constraint', () => {
     expect(party.fields.every(f => f.expression === undefined)).toBe(true);
   });
 
-  test('a concrete dataset\'s expression-less field still fails under a graph leg', () => {
-    // The abstract exemption must not leak to concrete datasets: a real
-    // table's field still needs a column (or an explicit `unbound`).
-    expect(() => fromDocument({
+  test('a concrete dataset\'s expression-less field loads as unbound under a graph leg', () => {
+    // A field with no expression is unbound, not an error: the availability
+    // pass drops it (and whatever depends on it) before generation. The
+    // dataset's own `source` is a separate constraint and is still required.
+    const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [{
@@ -366,14 +368,17 @@ describe('abstract datasets and their source constraint', () => {
           fields: [{ name: 'id', expression: 'o_id' }, { name: 'total' }],
         }],
       }],
-    })).toThrow(/field 'total': requires an expression/);
+    });
+    const [id, total] = models[0].entities[0].fields;
+    expect(id.expression).toBe('o_id');
+    expect(total.expression).toBeUndefined();
   });
 });
 
 
 describe('metrics infer their referenced entities from the expression', () => {
   test('a single referenced entity becomes the metric attach entity', () => {
-    const { models } = fromDocument({
+    const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [{ name: 'order_items', source: 'order_items', primary_key: ['id'], fields: [] }],
@@ -386,7 +391,7 @@ describe('metrics infer their referenced entities from the expression', () => {
   test('a metric spanning multiple entities has no single attach entity', () => {
     // A cross-entity metric references known entities but cannot hang off one
     // node, so `entity` is left undefined -- not a missing-entity warning.
-    const { models, warnings } = fromDocument({
+    const { models, warnings } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [
@@ -404,7 +409,7 @@ describe('metrics infer their referenced entities from the expression', () => {
   });
 
   test('a metric referencing no known entity warns', () => {
-    const { warnings } = fromDocument({
+    const { warnings } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [{ name: 'order_items', source: 'order_items', primary_key: ['id'], fields: [] }],
@@ -417,7 +422,7 @@ describe('metrics infer their referenced entities from the expression', () => {
   test('a qualifier inside a string literal is not counted as a reference', () => {
     // 'customers.region' is data, not a column reference, so the metric must be
     // attributed only to order_items.
-    const { models } = fromDocument({
+    const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [
@@ -436,7 +441,7 @@ describe('metrics infer their referenced entities from the expression', () => {
   test('a backtick-quoted entity qualifier is recognized (BigQuery quoting)', () => {
     // BigQuery quotes identifiers with backticks; `orders`.amount must still be
     // attributed to the orders entity, not dropped as unqualified.
-    const { models, warnings } = fromDocument({
+    const { models, warnings } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [{ name: 'orders', source: 'orders', primary_key: ['id'], fields: [] }],
@@ -450,37 +455,31 @@ describe('metrics infer their referenced entities from the expression', () => {
 
 
 describe('document-level handling', () => {
-  test('a mismatched version warns but still loads', () => {
-    const { models, warnings } = fromDocument({
+  test('an unknown version is a hard load error', () => {
+    expect(() => fromDocument({
       version: '9.9.9',
       semantic_model: [{ name: 'm', datasets: [
         { name: 'a', source: 'a', primary_key: ['id'], fields: [] }] }],
-    });
-    expect(models).toHaveLength(1);
-    expect(warnings.some(w => w.includes('differs from the supported'))).toBe(true);
+    })).toThrow(/unknown version '9.9.9'/);
   });
 
-  test('unknown/extra fields outside the subset are ignored, not errors', () => {
-    const { models } = fromDocument({
+  test('an unknown key is a hard load error (objects are strict)', () => {
+    // Objects are `.strict()`: an unrecognized key is rejected rather than
+    // silently dropped, so a typo cannot slip through unnoticed.
+    expect(() => fromDocument({
+      version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
-        ai_context: { instructions: 'ignored' },
-        custom_extensions: [{ vendor_name: 'X', data: '{}' }],
         datasets: [{
           name: 'a', source: 'a', primary_key: ['id'],
-          unique_keys: [['id']],
-          fields: [{
-            name: 'id', label: 'ignored', dimension: { is_time: false },
-            expression: expr('a.id'),
-          }],
+          fields: [{ name: 'id', expression: expr('a.id'), bogus: true }],
         }],
       }],
-    });
-    expect(models[0].entities[0].fields[0].name).toBe('id');
+    })).toThrow(/Semantic model load error/);
   });
 
-  test('duplicate dataset names warn (only one node table can carry the label)', () => {
-    const { warnings } = fromDocument({
+  test('duplicate dataset names are a hard load error', () => {
+    expect(() => fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [
@@ -488,12 +487,11 @@ describe('document-level handling', () => {
           { name: 'orders', source: 'b', primary_key: ['id'], fields: [] },
         ],
       }],
-    });
-    expect(warnings.some(w => w.includes("duplicate dataset name 'orders'"))).toBe(true);
+    })).toThrow(/duplicate dataset name 'orders'/);
   });
 
   test('each semantic_model entry becomes its own IR model', () => {
-    const { models } = fromDocument({
+    const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [
         { name: 'first', datasets: [{ name: 'a', source: 'a', primary_key: ['id'], fields: [] }] },
         { name: 'second', datasets: [{ name: 'b', source: 'b', primary_key: ['id'], fields: [] }] },
@@ -503,7 +501,7 @@ describe('document-level handling', () => {
   });
 
   test('model and metric descriptions carry through to the IR', () => {
-    const { models } = fromDocument({
+    const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm', description: 'a sales model',
         datasets: [{ name: 'orders', source: 'orders', primary_key: ['id'], fields: [] }],
@@ -516,6 +514,7 @@ describe('document-level handling', () => {
 
   test('JSON text loads identically to YAML (yaml.parse accepts JSON)', () => {
     const json = JSON.stringify({
+      version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [{ name: 'a', source: 'proj.ds.tbl', primary_key: ['id'], fields: [] }],
@@ -526,11 +525,11 @@ describe('document-level handling', () => {
   });
 
   test('a document without semantic_model throws', () => {
-    expect(() => fromDocument({ foo: 'bar' })).toThrow(/Semantic model load error/);
+    expect(() => fromDocument({ version: '0.2.0.dev0', foo: 'bar' })).toThrow(/Semantic model load error/);
   });
 
   test('an empty semantic_model array throws (min one model required)', () => {
-    expect(() => fromDocument({ semantic_model: [] })).toThrow(/Semantic model load error/);
+    expect(() => fromDocument({ version: '0.2.0.dev0', semantic_model: [] })).toThrow(/Semantic model load error/);
   });
 
   test('unparseable input throws', () => {
@@ -541,7 +540,7 @@ describe('document-level handling', () => {
 
 describe('richer IR fields carry through from the format', () => {
   test('field and metric datatype populate the IR type', () => {
-    const { models } = fromDocument({
+    const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [{
@@ -558,7 +557,7 @@ describe('richer IR fields carry through from the format', () => {
   test('an off-vocabulary datatype is rejected (closed, case-sensitive enum)', () => {
     // Lowercase 'date' is not in the vocabulary (only 'Date' is); the closed
     // enum makes this a hard parse error rather than a silently mis-typed field.
-    expect(() => fromDocument({
+    expect(() => fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [{
@@ -570,7 +569,7 @@ describe('richer IR fields carry through from the format', () => {
   });
 
   test('a dataset unique_keys becomes Entity.uniqueKeys', () => {
-    const { models } = fromDocument({
+    const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [{
@@ -584,7 +583,7 @@ describe('richer IR fields carry through from the format', () => {
   });
 
   test('the GOOGLE block is carried verbatim, not interpreted at load time', () => {
-    const { models } = fromDocument({
+    const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         custom_extensions: [
@@ -605,7 +604,7 @@ describe('richer IR fields carry through from the format', () => {
   });
 
   test('a malformed GOOGLE block is kept verbatim without warning (not parsed)', () => {
-    const { models, warnings } = fromDocument({
+    const { models, warnings } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         custom_extensions: [{ vendor_name: 'GOOGLE', data: '{not json' }],
@@ -618,7 +617,7 @@ describe('richer IR fields carry through from the format', () => {
   });
 
   test('ai_context instructions and synonyms are structural, not folded into description', () => {
-    const { models } = fromDocument({
+    const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm', description: 'a sales model',
         ai_context: { instructions: 'Prefer net revenue.', synonyms: ['sales', 'commerce'] },
@@ -873,7 +872,7 @@ describe('gold fixtures parse from disk (real YAML files)', () => {
     const m = models[0];
     expect(m.customExtensions).toEqual([{
       vendorName: 'GOOGLE',
-      data: '{"deploymentTargets": ["projects/demo/locations/us/entryGroups/@bigquery/entries/sales_graph"]}',
+      data: JSON.stringify({ deploymentTargets: ['projects/demo/locations/us/entryGroups/@bigquery/entries/sales_graph'] }),
     }]);
     const orders = m.entities[0];
     expect(orders.uniqueKeys).toEqual([['o_orderkey'], ['o_ordernumber']]);
@@ -910,9 +909,9 @@ describe('gold fixtures parse from disk (real YAML files)', () => {
   });
 });
 
-describe('duplicate names within a model warn (uniqueness checks)', () => {
-  test('duplicate field names within a dataset warn', () => {
-    const { warnings } = fromDocument({
+describe('duplicate names within a model are hard errors (uniqueness checks)', () => {
+  test('duplicate field names within a dataset are a hard error', () => {
+    expect(() => fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [{
@@ -923,13 +922,11 @@ describe('duplicate names within a model warn (uniqueness checks)', () => {
           ],
         }],
       }],
-    });
-    expect(warnings.some(w =>
-      w.includes("dataset 'orders'") && w.includes("duplicate field name 'amount'"))).toBe(true);
+    })).toThrow(/duplicate field name 'amount'/);
   });
 
-  test('duplicate metric names within a model warn', () => {
-    const { warnings } = fromDocument({
+  test('duplicate metric names within a model are a hard error', () => {
+    expect(() => fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [{ name: 'orders', source: 'orders', primary_key: ['id'],
@@ -939,13 +936,11 @@ describe('duplicate names within a model warn (uniqueness checks)', () => {
           { name: 'total', expression: expr('AVG(orders.amount)') },
         ],
       }],
-    });
-    expect(warnings.some(w =>
-      w.includes("model 'm'") && w.includes("duplicate metric name 'total'"))).toBe(true);
+    })).toThrow(/duplicate metric name 'total'/);
   });
 
-  test('duplicate relationship names within a model warn', () => {
-    const { warnings } = fromDocument({
+  test('duplicate relationship names within a model are a hard error', () => {
+    expect(() => fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [
@@ -959,9 +954,7 @@ describe('duplicate names within a model warn (uniqueness checks)', () => {
           { name: 'o2c', from: 'orders', to: 'customer', from_columns: ['c_id'], to_columns: ['c_id'] },
         ],
       }],
-    });
-    expect(warnings.some(w =>
-      w.includes("model 'm'") && w.includes("duplicate relationship name 'o2c'"))).toBe(true);
+    })).toThrow(/duplicate relationship name 'o2c'/);
   });
 });
 
@@ -969,7 +962,7 @@ describe('duplicate names within a model warn (uniqueness checks)', () => {
 describe('field label and time-dimension role align with the format models', () => {
   // Builds one field with the given extra props and returns its IR form.
   function field(props: Record<string, unknown>) {
-    const { models } = fromDocument({
+    const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [{
@@ -1029,7 +1022,7 @@ describe('authoring sugars: entities alias, bare-string expression, deployment_t
     '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
 
   test("'entities:' is an alias for 'datasets:'", () => {
-    const { models } = fromDocument({
+    const { models } = fromDocument({ version: '0.2.0.dev0/google',
       semantic_model: [{
         name: 'm',
         entities: [
@@ -1043,7 +1036,7 @@ describe('authoring sugars: entities alias, bare-string expression, deployment_t
   });
 
   test("declaring both 'entities' and 'datasets' is an error", () => {
-    expect(() => fromDocument({
+    expect(() => fromDocument({ version: '0.2.0.dev0/google',
       semantic_model: [{
         name: 'm',
         entities: [{ name: 'a', source: 's', fields: [] }],
@@ -1053,7 +1046,7 @@ describe('authoring sugars: entities alias, bare-string expression, deployment_t
   });
 
   test('a bare-string expression expands to the target-dialect object', () => {
-    const { models } = fromDocument({
+    const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [{
@@ -1066,14 +1059,14 @@ describe('authoring sugars: entities alias, bare-string expression, deployment_t
   });
 
   test("a top-level 'deployment_target' folds into the GOOGLE block form", () => {
-    const sugar = fromDocument({
+    const sugar = fromDocument({ version: '0.2.0.dev0/google',
       semantic_model: [{
         name: 'm', deployment_target: URI,
         datasets: [{ name: 'a', source: 's', primary_key: ['id'],
           fields: [{ name: 'id', expression: 'id' }] }],
       }],
     });
-    const explicit = fromDocument({
+    const explicit = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         custom_extensions: [{ vendor_name: 'GOOGLE',
@@ -1090,72 +1083,44 @@ describe('authoring sugars: entities alias, bare-string expression, deployment_t
     ]);
   });
 
-  test("'deployment_target' agreeing with a GOOGLE block adds no duplicate", () => {
-    const { models } = fromDocument({
-      semantic_model: [{
-        name: 'm', deployment_target: URI,
-        custom_extensions: [{ vendor_name: 'GOOGLE',
-          data: JSON.stringify({ deploymentTargets: [URI] }) }],
-        datasets: [{ name: 'a', source: 's', primary_key: ['id'],
-          fields: [{ name: 'id', expression: 'id' }] }],
-      }],
-    });
-    expect(models[0].customExtensions).toEqual([
-      { vendorName: 'GOOGLE',
-        data: JSON.stringify({ deploymentTargets: [URI] }) },
-    ]);
-  });
-
-  test("'deployment_target' disagreeing with a GOOGLE block is an error", () => {
-    expect(() => fromDocument({
-      semantic_model: [{
-        name: 'm', deployment_target: URI,
-        custom_extensions: [{ vendor_name: 'GOOGLE',
-          data: JSON.stringify({ deploymentTargets: ['//other/target'] }) }],
-        datasets: [{ name: 'a', source: 's', fields: [] }],
-      }],
-    })).toThrow(/disagrees with the GOOGLE custom_extension/);
-  });
 });
 
-describe('fields may be declared unbound (no physical column)', () => {
+describe('a field is unbound exactly when it has no expression', () => {
   test('an unbound field loads with no expression', () => {
-    const { models } = fromDocument({
+    // There is no separate flag: a field is unbound simply by carrying no
+    // expression. This holds on either leg -- a graph leg does not reject an
+    // unbound field; the availability pass drops it before generation.
+    const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [{
           name: 'a', source: 's', primary_key: ['id'],
           fields: [
             { name: 'id', expression: 'id' },
-            { name: 'credit', unbound: true },
+            { name: 'credit' },
           ],
         }],
       }],
-    });
+    }, { bindingOptional: true });
     const [id, credit] = models[0].entities[0].fields;
-    expect(id.unbound).toBeUndefined();
-    expect(credit.unbound).toBe(true);
+    expect(id.expression).toBe('id');
     expect(credit.expression).toBeUndefined();
   });
 
-  test('a field that is both bound and unbound is an error', () => {
-    expect(() => fromDocument({
+  test('an expression-less field is not a load error under a graph leg', () => {
+    // A missing expression is an unbound field, not a validation failure: the
+    // availability pass prunes it (and any metric that reads it) before the
+    // graph is generated, so one logical model can serve stores that lack a
+    // given column.
+    const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         datasets: [{ name: 'a', source: 's', primary_key: ['id'],
-          fields: [{ name: 'credit', unbound: true, expression: 'c' }] }],
+          fields: [{ name: 'id', expression: 'id' }, { name: 'credit' }] }],
       }],
-    })).toThrow(/an unbound field has no column/);
-  });
-
-  test('a field that is neither bound nor unbound is an error naming the field', () => {
-    expect(() => fromDocument({
-      semantic_model: [{
-        name: 'm',
-        datasets: [{ name: 'a', source: 's', primary_key: ['id'],
-          fields: [{ name: 'credit' }] }],
-      }],
-    })).toThrow(/field 'credit': requires an expression/);
+    });
+    const credit = models[0].entities[0].fields.find(f => f.name === 'credit')!;
+    expect(credit.expression).toBeUndefined();
   });
 });
 
@@ -1166,6 +1131,7 @@ describe('a purely logical model loads only under bindingOptional', () => {
   // Knowledge-Catalog-only push case -- KC governs the logical layer and needs
   // no table or column to point at.
   const logicalOnly = {
+    version: '0.2.0.dev0',
     semantic_model: [{
       name: 'm',
       datasets: [{
@@ -1186,31 +1152,22 @@ describe('a purely logical model loads only under bindingOptional', () => {
     expect(orders.fields.every(f => f.expression === undefined)).toBe(true);
   });
 
-  test('without bindingOptional the same model fails for the missing source and expression', () => {
+  test('without bindingOptional the same model fails for the missing source', () => {
     let message = '';
     try {
       fromDocument(logicalOnly);
     } catch (e: any) {
       message = String(e.message ?? e);
     }
-    // Both binding-completeness checks fire in the default (strict) mode.
+    // A non-abstract dataset in a graph leg still requires a source. The
+    // expression-less fields are unbound, not errors -- the availability pass
+    // drops them -- so only the missing-source check fires here.
     expect(message).toContain("dataset 'orders': a non-abstract dataset requires a source");
-    expect(message).toContain("field 'amount': requires an expression");
-  });
-
-  test('bindingOptional still rejects an unbound field that also has an expression', () => {
-    // The contradiction check is independent of binding-completeness, so it
-    // fires even when a source/expression is otherwise optional.
-    expect(() => fromDocument({
-      semantic_model: [{
-        name: 'm',
-        datasets: [{ name: 'a', fields: [{ name: 'c', unbound: true, expression: 'c' }] }],
-      }],
-    }, { bindingOptional: true })).toThrow(/an unbound field has no column/);
+    expect(message).not.toContain("requires an expression");
   });
 
   test('bindingOptional still rejects an abstract dataset that also names a source', () => {
-    expect(() => fromDocument({
+    expect(() => fromDocument({ version: '0.2.0.dev0/google',
       semantic_model: [{
         name: 'm',
         datasets: [{ name: 'Party', abstract: true, source: 'p.d.party', fields: [] }],
