@@ -90,8 +90,16 @@ export function mergeProfile(
   }
 
   // Clear the logical clone's inline field bindings before overlaying the
-  // profile, so the profile alone decides what is bound (see below).
-  stripInlineFieldExpressions(merged);
+  // profile, so for the models the profile targets the profile alone decides
+  // what is bound (see below). A model the profile does not name keeps its
+  // inline bindings untouched.
+  const profileModelNames = new Set<string>();
+  for (const pm of profile.semantic_model) {
+    if (pm && typeof pm === 'object' && typeof pm.name === 'string') {
+      profileModelNames.add(pm.name);
+    }
+  }
+  stripInlineFieldExpressions(merged, profileModelNames);
 
   for (const pm of profile.semantic_model) {
     if (!pm || typeof pm !== 'object') continue;
@@ -232,9 +240,10 @@ function indexByName(list: unknown): Map<string, any> {
 // logical model's meaning -- names, types, relationships, metric formulas -- is
 // untouched. A field is unbound exactly when it carries no expression; there is
 // no separate flag.
-function stripInlineFieldExpressions(doc: any): void {
+function stripInlineFieldExpressions(
+    doc: any, modelNames: Set<string>): void {
   for (const m of doc.semantic_model ?? []) {
-    if (!m || typeof m !== 'object') continue;
+    if (!m || typeof m !== 'object' || !modelNames.has(m.name)) continue;
     const entities = m.entities ?? m.datasets ?? [];
     for (const e of entities) {
       if (!e || typeof e !== 'object' || !Array.isArray(e.fields)) continue;

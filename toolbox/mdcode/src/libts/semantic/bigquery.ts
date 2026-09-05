@@ -83,17 +83,6 @@ export function generatePropertyGraph(
   const abstractNames =
       new Set(entities.filter(e => e.abstract).map(e => e.name));
 
-  // A metric lowers to a MEASURE on its target's DEFAULT LABEL, and BigQuery
-  // forbids a MEASURE on a label carried by more than one element table. A
-  // supertype's label is shared with every subtype's table, so a measure is
-  // allowed only on a LEAF type -- one that no other entity extends (agreed with
-  // Dmitri). Inheritance is already resolved, so each entity's `extends` is its
-  // full transitive ancestor set; every non-leaf name therefore appears in some
-  // entity's list, computed here across ALL entities (abstract included).
-  const supertypeNames = new Set<string>();
-  for (const e of entities) {
-    for (const a of e.extends ?? []) supertypeNames.add(a);
-  }
 
   // A graph node table requires a non-empty KEY. An entity whose primary key is
   // empty cannot form a valid node, so skip it (and, below, any edge that
@@ -117,9 +106,16 @@ export function generatePropertyGraph(
     return false;
   });
 
-  // An abstract class exists only to be a supertype; one that is no concrete
-  // (valid) entity's ancestor produces no graph element at all, so warn and
-  // drop it rather than let it vanish silently.
+  // The ancestors carried by a table-emitting entity. Two uses. First, the
+  // leaf-measure rule: a metric lowers to a MEASURE on its target's DEFAULT
+  // LABEL, and BigQuery forbids a MEASURE on a label shared by more than one
+  // element table, so a measure is allowed only on a LEAF type -- one that no
+  // *table-emitting* entity extends (agreed with Dmitri). Building this from
+  // validEntities (not all entities) is deliberate: an abstract or empty-KEY
+  // subtype emits no table, so it does not duplicate its parent's label and
+  // must not mark the parent non-leaf. Second, the orphan check below: an
+  // abstract class that is no concrete entity's ancestor produces no graph
+  // element at all, so warn and drop it rather than let it vanish silently.
   const ancestorsUsed = new Set<string>();
   for (const entity of validEntities) {
     for (const a of entity.extends ?? []) ancestorsUsed.add(a);
@@ -164,7 +160,7 @@ export function generatePropertyGraph(
   const loweringByEntity = new Map<string, MeasureLowering>();
   for (const metric of metrics) {
     placeMetric(
-        metric, resolved.model, entityByName, skipped, supertypeNames,
+        metric, resolved.model, entityByName, skipped, ancestorsUsed,
         metricsByEntity, loweringByEntity, warnings);
   }
 
@@ -271,7 +267,7 @@ function newLowering(entity: Entity): MeasureLowering {
 // single supported aggregate over one operand.
 function placeMetric(
     metric: Metric, model: SemanticModel, entityByName: Map<string, Entity>,
-    skipped: Set<string>, supertypeNames: Set<string>,
+    skipped: Set<string>, ancestorsUsed: Set<string>,
     metricsByEntity: Map<string, string[]>,
     loweringByEntity: Map<string, MeasureLowering>, warnings: string[]): void {
   // The IR keeps at most two expression forms; a measure is emitted from the
@@ -353,7 +349,7 @@ function placeMetric(
   // carried by more than one element table (verified live: "defined as MEASURE,
   // but there are other declarations with the same name"). Drop it with a
   // warning rather than emit DDL BigQuery rejects.
-  if (supertypeNames.has(entityName)) {
+  if (ancestorsUsed.has(entityName)) {
     warnings.push(
         `metric '${metric.name}' targets entity '${entityName}', which is not ` +
         `a leaf type (another entity extends it); a measure is allowed only on ` +
@@ -712,8 +708,9 @@ function renderNodeTable(
   for (const ancestorName of entity.extends ?? []) {
     const ancestor = labelByName.get(ancestorName);
     if (!ancestor) {
-      // The ancestor exists in the model (resolveInheritance already dropped
-      // unknown parents) but is not a label carrier -- it was dropped for an
+      // The ancestor exists in the model (an unknown parent hard-fails in
+      // resolveInheritance, so it never reaches here) but is not a label
+      // carrier -- it was dropped for an
       // empty KEY. Its fields still flattened onto this node (they render as
       // own properties above); it just forms no queryable label, so omit the
       // LABEL and say so rather than reference a class reported as gone.

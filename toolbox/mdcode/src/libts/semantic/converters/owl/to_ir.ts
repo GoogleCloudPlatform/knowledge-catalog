@@ -247,23 +247,25 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
       aiContext: synonymAiContext(c.label, c.localName, c.synonyms, c.examples),
       fields: [],
     };
-    // rdfs:subClassOf -> entity-level `extends`. Recorded AS DECLARED (parent
+    // rdfs:subClassOf -> entity-level `extends`. Kept AS DECLARED (parent
     // local names, deduped); parents are not flattened here -- a later
-    // resolution pass expands inherited fields (see ir.ts Entity.extends). A
-    // parent that is not an owl:Class in this ontology (a typo, or a superclass
-    // imported from another ontology) is still recorded, but warned about, so
-    // a dangling `extends` is never emitted silently.
+    // resolution pass expands inherited fields (see ir.ts Entity.extends). Only
+    // parents defined as an owl:Class in this ontology are kept: an unknown
+    // parent (a typo, or a superclass imported from another ontology) cannot be
+    // resolved, and the loader hard-fails on an unknown supertype, so it is
+    // DROPPED here with a warning rather than emitted into a model that could
+    // not be pushed.
     if (c.subClassOf.length) {
       const parents = dedupe(c.subClassOf);
-      entity.extends = parents;
+      const known = parents.filter(name => classNames.has(name));
       const unknown = parents.filter(name => !classNames.has(name));
+      if (known.length) entity.extends = known;
       if (unknown.length) {
         warnings.push(
             `class '${c.localName}' declares rdfs:subClassOf a non-class ` +
             `superclass (${
-                unknown.join(', ')}); the extends link is recorded ` +
-            `as declared but cannot be resolved (not an owl:Class in this ` +
-            `ontology).`);
+                unknown.join(', ')}); dropped, as it is not an owl:Class in ` +
+            `this ontology and cannot be resolved.`);
       }
     }
     entitiesByName.set(c.localName, entity);
