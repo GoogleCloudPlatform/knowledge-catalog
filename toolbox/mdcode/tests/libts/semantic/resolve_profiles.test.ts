@@ -67,7 +67,7 @@ function analyticalDoc(): any {
             {name: 'key', expression: 'c_custkey'},
             {name: 'name', expression: 'c_name'},
             {name: 'lifetimeValue', expression: 'c_ltv'},
-            {name: 'availableCredit', unbound: true},
+            {name: 'availableCredit'},
           ],
         },
         {
@@ -103,10 +103,12 @@ describe('mergeProfile overlays physical bindings by name', () => {
     expect(modelOf(doc).deployment_target).toBe(GRAPH);
   });
 
-  test('an explicit unbound field drops its column', () => {
+  test('a field the profile does not bind has no column', () => {
+    // availableCredit is present in the profile but carries no expression, so
+    // the merge leaves it unbound (a field is unbound exactly when it has no
+    // expression -- there is no separate flag).
     const {doc} = mergeProfile(logicalDoc(), analyticalDoc(), 'analytical');
     const credit = fieldOf(doc, 'Customer', 'availableCredit');
-    expect(credit.unbound).toBe(true);
     expect(credit.expression).toBeUndefined();
   });
 
@@ -118,7 +120,23 @@ describe('mergeProfile overlays physical bindings by name', () => {
             (f: any) => f.name !== 'availableCredit');
     const {doc, error} = mergeProfile(logicalDoc(), profile, 'analytical');
     expect(error).toBeUndefined();
-    expect(fieldOf(doc, 'Customer', 'availableCredit').unbound).toBe(true);
+    expect(fieldOf(doc, 'Customer', 'availableCredit').expression).toBeUndefined();
+  });
+
+  test('selecting a profile clears an inline logical binding it omits', () => {
+    // Selecting a profile makes it authoritative for physical bindings: an
+    // inline column binding in the logical model is cleared before the profile
+    // is overlaid, so a field the profile does not rebind is left unbound
+    // (omission is unbound).
+    const logical = logicalDoc();
+    fieldOf(logical, 'Customer', 'name').expression = 'inline_name';
+    const profile = analyticalDoc();
+    entityOf(profile, 'Customer').fields =
+        entityOf(profile, 'Customer').fields.filter(
+            (f: any) => f.name !== 'name');
+    const {doc, error} = mergeProfile(logical, profile, 'analytical');
+    expect(error).toBeUndefined();
+    expect(fieldOf(doc, 'Customer', 'name').expression).toBeUndefined();
   });
 
   test('the inputs are never mutated', () => {
@@ -176,7 +194,7 @@ function irModel(): SemanticModel {
         fields: [
           {name: 'key', expression: 'c_custkey'},
           {name: 'name', expression: 'c_name'},
-          {name: 'lifetimeValue', unbound: true},
+          {name: 'lifetimeValue'},
         ],
       },
       {
@@ -239,7 +257,6 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     const customerKey =
         m.entities.find(e => e.name === 'Order')!.fields.find(
             f => f.name === 'customerKey')!;
-    customerKey.unbound = true;
     delete customerKey.expression;
     const {model, report} = pruneUnavailable(m, 'operational');
     expect(relNames(model)).toEqual([]);
@@ -260,7 +277,6 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     const m = irModel();
     const ltv = m.entities.find(e => e.name === 'Customer')!.fields.find(
         f => f.name === 'lifetimeValue')!;
-    delete ltv.unbound;
     delete ltv.expression;
     ltv.importedExpression = 'c_ltv';
     ltv.importedDialect = 'SNOWFLAKE';
@@ -277,7 +293,6 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     const m = irModel();
     const key = m.entities.find(e => e.name === 'Customer')!.fields.find(
         f => f.name === 'key')!;
-    key.unbound = true;
     delete key.expression;
     const {model, report} = pruneUnavailable(m, 'operational');
     expect(model.entities.map(e => e.name)).toEqual(['Order']);

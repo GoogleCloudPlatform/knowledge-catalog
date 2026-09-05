@@ -52,12 +52,30 @@ function entryName(id: string, project = 'dest'): string {
   return `projects/${project}/locations/us/entryGroups/eg/entries/${id}`;
 }
 
-// The same loader-valid model, but its GOOGLE custom_extension carries invalid
-// JSON: the doc parses, yet the emitter (via bigQueryGraphTargets) throws while
-// building the semantic-model aspect. Surgically swap only the `data:` value so
-// the rest of the document stays valid.
-const MALFORMED_EXTENSION =
-    OSSIE.replace(/data: '[^\n]*'/, 'data: \'not valid json\'');
+// A loader-valid VANILLA (0.2.0.dev0) model whose model-level GOOGLE
+// custom_extension carries invalid JSON: the doc parses, yet the emitter (via
+// googleDeploymentTargets) throws while building the semantic-model aspect.
+// Under the extended profile the deployment target is a native key with no JSON
+// to corrupt, so the malformed-carrier case is a vanilla document (which is the
+// version that carries the target in a GOOGLE custom_extension at all).
+const MALFORMED_EXTENSION = `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: 'not valid json'
+    datasets:
+      - name: orders
+        source: demo.sales.orders
+        primary_key: [o_orderkey]
+        fields:
+          - { name: o_orderkey, expression: o_orderkey }
+          - { name: o_totalprice, expression: o_totalprice }
+    metrics:
+      - name: total_revenue
+        expression: SUM(orders.o_totalprice)
+`;
 
 // entryCreateTries: 1 keeps the propagation-retry loop from sleeping in tests.
 const OPTS = {

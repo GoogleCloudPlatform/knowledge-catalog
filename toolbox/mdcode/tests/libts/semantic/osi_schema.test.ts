@@ -27,7 +27,7 @@ function yamlFixtures(dir: string): string[] {
     const p = join(dir, ent.name);
     // The profiles/ subtree holds binding-profile authoring input, a
     // deliberate pre-OSI superset -- a logical model declares fields with no
-    // `expression`, and a profile carries `deployment_target`/`unbound` sugars
+    // `expression`, and a profile carries a `deployment_target` sugar
     // -- so it is not a standalone OSI document. The loader, merge, and
     // profile-golden tests validate it instead.
     if (ent.isDirectory()) {
@@ -115,6 +115,31 @@ function onlyLogicalGoldenDeviations(errors: typeof validate.errors): boolean {
     });
 }
 
+// Released Apache OSI (osi-schema.json) is vanilla `0.2.0.dev0`: it pins the
+// `version` const, requires `datasets`, and knows no native `deployment_target`
+// key. Many fixtures declare the extended `0.2.0.dev0/google` profile, whose
+// surface deltas -- the version suffix, the `entities` alias for `datasets`, and
+// the native `deployment_target` key -- are deliberate supersets, not drift.
+// Fold those back to the vanilla surface before validating, so the released
+// schema still checks the deep content (dialects, datatypes, field/metric
+// shapes); the remaining deep supersets (`extends`/`abstract`) and the logical
+// goldens' omitted bindings are tolerated by the checks below, exactly as they
+// were for vanilla fixtures.
+function toSchemaShape(doc: any): any {
+  if (!doc || typeof doc !== 'object') return doc;
+  const d = structuredClone(doc);
+  if (d.version === '0.2.0.dev0/google') d.version = '0.2.0.dev0';
+  for (const m of Array.isArray(d.semantic_model) ? d.semantic_model : []) {
+    if (!m || typeof m !== 'object') continue;
+    if (m.entities !== undefined && m.datasets === undefined) {
+      m.datasets = m.entities;
+      delete m.entities;
+    }
+    delete m.deployment_target;
+  }
+  return d;
+}
+
 describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () => {
   test('at least one fixture is discovered', () => {
     expect(fixtures.length).toBeGreaterThan(0);
@@ -123,7 +148,7 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
   for (const path of fixtures) {
     const rel = path.slice(fixturesDir.length + 1);
     test(`${rel} validates against the OSI schema`, () => {
-      const doc = yaml.parse(readFileSync(path, 'utf8'));
+      const doc = toSchemaShape(yaml.parse(readFileSync(path, 'utf8')));
       const ok = validate(doc);
       if (!ok) {
         // A .pull.golden.yaml from an expression-free push is a known #290 gap

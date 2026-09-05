@@ -366,10 +366,12 @@ describe(
 //   - profile_binding + operational: the SAME logical base bound a second way --
 //     one model, two physical realizations, a different field unbound in each.
 //   - partial_binding + prod       : a combined single-file model (already fully
-//     bound inline) whose profile overrides only the sources + deployment target
-//     and inherits every column it omits (an environment swap).
+//     bound inline) whose profile re-declares every column over new tables and a
+//     new deployment target (an environment swap); selecting it clears the inline
+//     bindings, so the profile is authoritative.
 //   - partial_binding + remap      : the same combined base, a profile that
-//     renames one column and unbinds another, inheriting the rest.
+//     re-declares its columns -- renaming one and omitting another, which leaves
+//     that field unbound.
 function buildProfile(logicalFixture: string, profile: string) {
   const dir = path.join(FIXTURES, 'profiles');
   const logicalText = fs.readFileSync(path.join(dir, logicalFixture), 'utf8');
@@ -505,20 +507,20 @@ describe('binding profiles resolve physical columns and availability', () => {
       });
 
   test(
-      'a profile that overrides a model with inline bindings inherits every ' +
-          'field it omits',
+      'a profile that re-declares every column deploys the whole model over ' +
+          'new tables (an environment swap)',
       () => {
-        // prod names no fields at all -- only the sources and the target. Every
-        // column binding must come through from the base unchanged, and every
-        // metric must survive (nothing is unbound). The tables move to the prod
-        // project; the columns do not change.
+        // prod re-declares every column -- the same names -- over the prod
+        // tables and a new target. Nothing is unbound, so every metric survives.
+        // Selecting the profile clears the base's inline bindings; the profile's
+        // own bindings are what deploy.
         const {ddl, model, report} = buildProfile('partial_binding.yaml', 'prod');
         expect(report.unboundFields).toEqual([]);
         expect(report.droppedMetrics).toEqual([]);
         expect((model.metrics ?? []).map(m => m.name).sort()).toEqual([
           'order_count', 'total_amount', 'total_discount'
         ]);
-        // Inherited base columns, emitted over the prod tables.
+        // The re-declared columns, emitted over the prod tables.
         expect(ddl).toContain('`acme-prod.sales.customers` AS Customer');
         expect(ddl).toContain('customer_name AS name');
         // A field whose column equals its logical name emits bare, no AS.
@@ -526,12 +528,12 @@ describe('binding profiles resolve physical columns and availability', () => {
         expect(ddl).not.toContain('acme-dev');
       });
 
-  test('a partial override renames one column and unbinds another', () => {
-    // remap changes only Customer.name's column and drops Order.discount; the
-    // rest is inherited from the combined base.
+  test('a profile renames one column and omits another, unbinding it', () => {
+    // remap re-declares its columns: Customer.name maps to a different column,
+    // and Order.discount is omitted -- so it is unbound and total_discount prunes.
     const {ddl, report} = buildProfile('partial_binding.yaml', 'remap');
-    expect(ddl).toContain('full_name AS name');   // overridden
-    expect(ddl).toContain('order_id AS id');       // inherited
+    expect(ddl).toContain('full_name AS name');   // remapped column
+    expect(ddl).toContain('order_id AS id');       // re-declared
     expect(report.unboundFields).toEqual(['Order.discount']);
     expect(report.droppedMetrics.map(d => d.name)).toEqual(['total_discount']);
   });

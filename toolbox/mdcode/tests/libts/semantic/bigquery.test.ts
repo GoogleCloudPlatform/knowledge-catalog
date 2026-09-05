@@ -778,7 +778,7 @@ describe('supertype shared-label constraints (inheritance)', () => {
     expect(ddl).not.toContain('total_people');
     expect(warnings.some(
                w => w.includes(`metric 'total_people'`) &&
-                   w.includes('shared label')))
+                   w.includes('not a leaf type')))
         .toBe(true);
   });
 
