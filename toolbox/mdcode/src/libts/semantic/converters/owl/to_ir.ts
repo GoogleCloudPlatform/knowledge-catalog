@@ -18,29 +18,16 @@
 //   skos:example                  -> ai_context.examples
 //   owl:Ontology header           -> model description / ai_context
 //
-// Constructs with no native OSI home ride along verbatim in a GOOGLE custom
-// extension (see googleOntologyExtension). It is inert on push (the BigQuery /
-// KC legs read none of it) and preserved across the OSI document round-trip
-// (loader + osi_converter keep custom_extensions verbatim); it is NOT yet
-// persisted to Knowledge Catalog, so a KC pull does not recover it today.
-// Each line is kept short so a comment reflow cannot run the columns together:
-//   rdfs:subPropertyOf -> field / relationship (property inheritance)
-//   owl:inverseOf -> relationship (the edge, reversed)
-//   owl:equivalentClass -> entity (class equivalence)
-//   owl:disjointWith -> entity (class disjointness)
-//   owl:equivalentProperty -> field / relationship
-//   owl:propertyDisjointWith -> field / relationship
-//   property characteristics -> relationship (symmetric, transitive, ...)
-//   owl:oneOf -> entity (enumerated class members)
-//   owl:propertyChainAxiom -> relationship (ordered property composition)
-//   owl:AllDisjointClasses -> model (a set of pairwise-disjoint classes)
-//   owl:AllDisjointProperties -> model (pairwise-disjoint properties)
-//   owl:AllDifferent -> model (a set of distinct individuals)
-//   rdfs:seeAlso, rdfs:isDefinedBy -> any (external pointers, verbatim)
-//   owl:deprecated, owl:versionInfo -> any (lifecycle metadata)
-//
-// A carried cross-reference keeps the full referent IRI unless it is in this
-// ontology's own namespace, when it shortens to a local name (see refValue).
+// The importer is IMPORT-ONLY: it maps the constructs above and DROPS every
+// other OWL construct rather than carrying it. Facts with no native OSI home --
+// rdfs:subPropertyOf, owl:inverseOf, owl:equivalentClass / owl:disjointWith /
+// owl:equivalentProperty / owl:propertyDisjointWith, the property
+// characteristics (symmetric, transitive, ...), owl:oneOf,
+// owl:propertyChainAxiom, the owl:AllDisjoint* / owl:AllDifferent set axioms,
+// rdfs:seeAlso / isDefinedBy, and owl:deprecated / versionInfo -- are NOT
+// imported. An earlier version carried them verbatim in a GOOGLE custom
+// extension; that was removed so an imported model is a clean OSI model with no
+// opaque carrier. The user guide's table documents what maps and what drops.
 //
 // The result is a purely LOGICAL model: an ontology declares meaning, not
 // physical tables, so entities carry no source, fields no expression, and
@@ -52,10 +39,9 @@
 // binding profile, see the user guide, "Going from ontology to a running
 // graph").
 
-import {AiContext, CustomExtension, Entity, Field, Relationship, SemanticModel,} from '../../ir';
+import {AiContext, Entity, Field, Relationship, SemanticModel,} from '../../ir';
 
-import {OwlCommonAnnotations, OwlModel, OwlOntology} from './model';
-import {localName, namespace} from './parse';
+import {OwlModel, OwlOntology} from './model';
 
 export interface ToIrResult {
   model: SemanticModel;
@@ -69,93 +55,6 @@ export interface ToIrResult {
   // even when some elements were warned and skipped.
   stats:
       {classes: number; datatypeProperties: number; objectProperties: number};
-}
-
-// --- Seams: the isolated change-points for later work. ----------------------
-
-// The GOOGLE custom-extensions vendor name. OWL constructs OSI can't express
-// natively (rdfs:subPropertyOf, owl:inverseOf, owl:equivalentClass, property
-// characteristics) ride in this vendor's block -- Google's choice to support
-// OWL, so it sits in the GOOGLE block alongside deployment targets, not a new
-// "OWL" vendor. See deploy_bigquery.googleDeploymentTargets, which safely
-// ignores a GOOGLE block that carries no deploymentTargets.
-const GOOGLE_VENDOR = 'GOOGLE';
-
-/**
- * Builds a GOOGLE custom-extension block carrying OWL constructs that have no
- * native OSI home, verbatim.
- *
- * The payload is a FLAT object whose keys ARE the source constructs, prefixed
- * with their vocabulary (`owl:inverseOf`, `rdfs:subPropertyOf`, ...): the
- * prefix carries the namespace, so the same short name from a different
- * standard can't collide and the reader always knows which vocabulary a fact
- * came from. This is the deliberate mirror of the deployment-target block,
- * whose own keys are Google's (`deploymentTargets`, unprefixed) -- the two
- * kinds of key coexist in one GOOGLE block without clashing, and a consumer
- * reads "any key with a `:`" as a carried ontology fact.
- *
- * The values mirror the construct faithfully rather than inventing a shape:
- * `owl:SymmetricProperty: true` (not a synthesized `characteristics` list), the
- * raw superproperty names for `rdfs:subPropertyOf`, and so on. Carriage is
- * inert on push (the BigQuery / KC legs read none of it) and survives the OSI
- * document round-trip verbatim (loader + osi_converter preserve
- * custom_extensions); it is NOT yet persisted to / recovered from Knowledge
- * Catalog. Promoting a construct to a native OSI concept later means changing
- * this seam and its callers, nothing downstream.
- *
- * Returns undefined when `terms` is empty, so a caller can attach the result
- * unconditionally without emitting an empty block.
- */
-export function googleOntologyExtension(terms: Record<string, unknown>):
-    CustomExtension|undefined {
-  if (!Object.keys(terms).length) return undefined;
-  return {
-    vendorName: GOOGLE_VENDOR,
-    // Pretty-printed (2-space) so the carried block reads as a legible JSON
-    // object in the serialized YAML -- the `yaml` serializer renders a
-    // newline-bearing string as a block scalar -- instead of one long quoted
-    // line. `data` is opaque and every consumer JSON.parses it, so the added
-    // whitespace is insignificant on the wire.
-    data: JSON.stringify(terms, null, 2),
-  };
-}
-
-// Appends a carried-ontology GOOGLE block to an IR object (entity / field /
-// relationship), leaving any existing custom extensions in place. A no-op when
-// there is nothing to carry, so callers can attach unconditionally.
-function attachOntology(
-    target: {customExtensions?: CustomExtension[]},
-    terms: Record<string, unknown>): void {
-  const ext = googleOntologyExtension(terms);
-  if (!ext) return;
-  (target.customExtensions ??= []).push(ext);
-}
-
-// How a carried CROSS-REFERENCE IRI is rendered: shortened to its local name
-// when it lives in this ontology's own namespace (an in-model reference a
-// consumer resolves by name), kept as the full IRI otherwise (a cross-ontology
-// reference that points outside the model). Shortening is lossless because the
-// base IRI is carried as structured metadata (`owl:baseIri`) on the model
-// whenever any reference is shortened, so an in-namespace localName is
-// reconstructable as `<baseIri><localName>`; "when in doubt, keep the full IRI"
-// falls out for free.
-function refValue(iri: string, baseIri: string|undefined): string {
-  return baseIri !== undefined && namespace(iri) === baseIri ? localName(iri) :
-                                                               iri;
-}
-
-// The per-term carried annotations shared by entities, fields, and
-// relationships (rdfs:seeAlso / isDefinedBy, owl:deprecated / versionInfo), in
-// a fixed key order. seeAlso/isDefinedBy are external pointers, so they are
-// kept verbatim (never shortened). Returns the entries to merge into a term's
-// carried block; empty when the term has none.
-function commonTerms(a: OwlCommonAnnotations): Record<string, unknown> {
-  const terms: Record<string, unknown> = {};
-  if (a.seeAlso.length) terms['rdfs:seeAlso'] = dedupe(a.seeAlso);
-  if (a.isDefinedBy.length) terms['rdfs:isDefinedBy'] = dedupe(a.isDefinedBy);
-  if (a.deprecated) terms['owl:deprecated'] = true;
-  if (a.versionInfo) terms['owl:versionInfo'] = a.versionInfo;
-  return terms;
 }
 
 // --- Datatype mapping. ------------------------------------------------------
@@ -323,28 +222,6 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   const warnings: string[] = [];
   const classNames = new Set(owl.classes.map(c => c.localName));
 
-  // refValue over a list, deduped, recording whether any referent was actually
-  // shortened. When one was, the base IRI is carried on the model
-  // (`owl:baseIri` below) so the shortened localName is mechanically
-  // reconstructable. Mapping before dedupe collapses a referent stated more
-  // than once (its shortened form is identical), so a repeated identical triple
-  // never looks like a conflict.
-  let shortenedRef = false;
-  const refs = (iris: string[]): string[] => dedupe(iris.map(iri => {
-    const v = refValue(iri, owl.baseIri);
-    if (v !== iri) shortenedRef = true;
-    return v;
-  }));
-
-  // Like refs(), but preserves order AND duplicates -- for an ORDERED construct
-  // (a property chain) where a repeated referent is meaningful (e.g.
-  // hasParent/hasParent == grandparent), so deduping would silently corrupt it.
-  const refSeq = (iris: string[]): string[] => iris.map(iri => {
-    const v = refValue(iri, owl.baseIri);
-    if (v !== iri) shortenedRef = true;
-    return v;
-  });
-
   // Entities, one per class, in class-declaration order. Fields are attached in
   // datatype-property-declaration order below. Two classes can share a local
   // name (e.g. same name in different namespaces); OSI dataset names must be
@@ -374,9 +251,8 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     // local names, deduped); parents are not flattened here -- a later
     // resolution pass expands inherited fields (see ir.ts Entity.extends). A
     // parent that is not an owl:Class in this ontology (a typo, or a superclass
-    // imported from another ontology) is still recorded, but warned about -- as
-    // every other cross-reference here is -- so a dangling `extends` is never
-    // emitted silently.
+    // imported from another ontology) is still recorded, but warned about, so
+    // a dangling `extends` is never emitted silently.
     if (c.subClassOf.length) {
       const parents = dedupe(c.subClassOf);
       entity.extends = parents;
@@ -390,23 +266,6 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
             `ontology).`);
       }
     }
-    // OWL facts with no native OSI home, carried verbatim on the entity, in a
-    // fixed key order. owl:equivalentClass / owl:disjointWith are class
-    // cross-references (a class is one entity, so these are facts ABOUT it, not
-    // structural links); owl:oneOf enumerates the class's members (usually
-    // individuals, which are not modeled, so only the names are kept) -- an
-    // enumeration is a set, so refs() (which dedupes) is correct here, unlike
-    // the ordered propertyChainAxiom which uses refSeq; blank-node class
-    // expressions were dropped in the parser. commonTerms adds any per-term
-    // annotations (seeAlso, deprecated, ...).
-    const entityTerms: Record<string, unknown> = {};
-    if (c.equivalentClass.length)
-      entityTerms['owl:equivalentClass'] = refs(c.equivalentClass);
-    if (c.disjointWith.length)
-      entityTerms['owl:disjointWith'] = refs(c.disjointWith);
-    if (c.oneOf.length) entityTerms['owl:oneOf'] = refs(c.oneOf);
-    Object.assign(entityTerms, commonTerms(c));
-    attachOntology(entity, entityTerms);
     entitiesByName.set(c.localName, entity);
     entities.push(entity);
   }
@@ -421,24 +280,6 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
           `(a field must belong to a class).`);
       continue;
     }
-    // OWL facts with no native OSI home, carried verbatim on the field, in a
-    // fixed key order. Built once and attached to the field on each domain (the
-    // facts are the property's, independent of which class it lands on). Each
-    // mapping line is kept short so a comment reflow cannot mangle it:
-    //   rdfs:subPropertyOf -> property inheritance (kept as a fact, no
-    //     entity-style flattening)
-    //   owl:equivalentProperty, owl:propertyDisjointWith -> cross-references
-    //   owl:FunctionalProperty -> single-valued
-    //   commonTerms adds any per-term annotations
-    const fieldTerms: Record<string, unknown> = {};
-    if (p.subPropertyOf.length)
-      fieldTerms['rdfs:subPropertyOf'] = refs(p.subPropertyOf);
-    if (p.equivalentProperty.length)
-      fieldTerms['owl:equivalentProperty'] = refs(p.equivalentProperty);
-    if (p.propertyDisjointWith.length)
-      fieldTerms['owl:propertyDisjointWith'] = refs(p.propertyDisjointWith);
-    if (p.functional) fieldTerms['owl:FunctionalProperty'] = true;
-    Object.assign(fieldTerms, commonTerms(p));
     // A property counts as converted once if it produces at least one field,
     // regardless of how many domains it lands on.
     let produced = false;
@@ -469,7 +310,6 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
         description: p.comment,
         aiContext: fieldAiContext(p.synonyms, p.localName, p.examples),
       };
-      attachOntology(field, fieldTerms);
       entity.fields.push(field);
       produced = true;
       // An inverse-functional property uniquely identifies its subject -> a
@@ -560,51 +400,6 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
           `name; skipped (relationship names must be unique).`);
       continue;
     }
-    // OWL facts with no native OSI home, carried verbatim on the relationship,
-    // in a fixed key order so the emitted block is stable. rdfs:subPropertyOf
-    // -> relationship inheritance (kept as a fact, no flattening);
-    // owl:propertyChainAxiom -> this edge as an ordered composition of other
-    // properties; owl:inverseOf -> the edge read the other way;
-    // owl:equivalentProperty / propertyDisjointWith -> property
-    // cross-references; then the edge's characteristics (symmetric / transitive
-    // / functional / reflexive / irreflexive / asymmetric); commonTerms adds
-    // any per-term annotations.
-    const relTerms: Record<string, unknown> = {};
-    if (p.subPropertyOf.length)
-      relTerms['rdfs:subPropertyOf'] = refs(p.subPropertyOf);
-    // One list per chain axiom (a property may carry several). Each is ordered
-    // and repetition-sensitive, so refSeq (not refs): a chain may name the same
-    // property twice (e.g. hasParent/hasParent for a grandparent). Emitted as a
-    // list of chains so distinct axioms are not fused into one flat sequence.
-    if (p.propertyChain.length)
-      relTerms['owl:propertyChainAxiom'] = p.propertyChain.map(refSeq);
-    if (p.inverseOf.length) {
-      // owl:inverseOf pairs two properties; one DISTINCT statement is the norm.
-      // refs() shortens and dedupes first, so a repeated identical triple isn't
-      // mistaken for a genuine conflict. If more than one distinct inverse
-      // remains, carry the first and say what was dropped rather than emitting
-      // an array the reader would have to disambiguate.
-      const inverses = refs(p.inverseOf);
-      relTerms['owl:inverseOf'] = inverses[0];
-      if (inverses.length > 1) {
-        warnings.push(
-            `object property '${p.localName}' declares owl:inverseOf more ` +
-            `than once (${inverses.join(', ')}); a relationship has one ` +
-            `inverse, so only '${inverses[0]}' is carried.`);
-      }
-    }
-    if (p.equivalentProperty.length)
-      relTerms['owl:equivalentProperty'] = refs(p.equivalentProperty);
-    if (p.propertyDisjointWith.length)
-      relTerms['owl:propertyDisjointWith'] = refs(p.propertyDisjointWith);
-    if (p.symmetric) relTerms['owl:SymmetricProperty'] = true;
-    if (p.transitive) relTerms['owl:TransitiveProperty'] = true;
-    if (p.functional) relTerms['owl:FunctionalProperty'] = true;
-    if (p.reflexive) relTerms['owl:ReflexiveProperty'] = true;
-    if (p.irreflexive) relTerms['owl:IrreflexiveProperty'] = true;
-    if (p.asymmetric) relTerms['owl:AsymmetricProperty'] = true;
-    Object.assign(relTerms, commonTerms(p));
-
     const relationship: Relationship = {
       name: p.localName,
       // A logical edge: direction only, no join columns. The source
@@ -617,7 +412,6 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
       aiContext: relationshipAiContext(
           p.label, p.localName, p.synonyms, p.comment, p.examples),
     };
-    attachOntology(relationship, relTerms);
     relationships.push(relationship);
   }
 
@@ -629,27 +423,6 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     relationships,
     metrics: [],
   };
-  // Model-level carried facts, in a fixed key order so the block is stable. The
-  // set-level axioms come first (each an array of member SETS -- one per axiom
-  // -- so refs() per set, which dedupes; order within a set is not meaningful).
-  // owl:baseIri comes last and only WHEN a cross-reference was shortened to a
-  // local name (refValue), so a consumer can rebuild the full IRI as
-  // `<baseIri><localName>` mechanically instead of parsing it from the prose
-  // description; a model with no shortened reference stays clean. The set-level
-  // members are shortened through refs() too, so they alone can require the
-  // base IRI -- computed before the check below relies on that side effect.
-  const modelTerms: Record<string, unknown> = {};
-  if (owl.allDisjointClasses.length)
-    modelTerms['owl:AllDisjointClasses'] =
-        owl.allDisjointClasses.map(set => refs(set));
-  if (owl.allDisjointProperties.length)
-    modelTerms['owl:AllDisjointProperties'] =
-        owl.allDisjointProperties.map(set => refs(set));
-  if (owl.allDifferent.length)
-    modelTerms['owl:AllDifferent'] = owl.allDifferent.map(set => refs(set));
-  if (shortenedRef && owl.baseIri) modelTerms['owl:baseIri'] = owl.baseIri;
-  attachOntology(model, modelTerms);
-
   return {
     model,
     warnings,
