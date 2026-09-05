@@ -7,14 +7,12 @@
 # `commerce` of instance `prod` in project `demo`. The metric is dropped by the
 # Spanner generator (Spanner Graph has no MEASURE).
 
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 
 semantic_model:
   - name: sales
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["//spanner.googleapis.com/projects/demo/instances/prod/databases/commerce/propertyGraphs/sales_graph"]}'
-    datasets:
+    deployment_target: //spanner.googleapis.com/projects/demo/instances/prod/databases/commerce/propertyGraphs/sales_graph
+    entities:
       - name: orders
         source: demo.sales.Orders
         primary_key: [o_orderkey]

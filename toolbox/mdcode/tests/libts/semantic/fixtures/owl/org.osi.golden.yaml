@@ -1,9 +1,9 @@
-version: 0.2.0.dev0
+version: 0.2.0.dev0/google
 semantic_model:
   - name: org
     description: "An org chart: employees, the departments they work in, and the
       projects they staff."
-    datasets:
+    entities:
       - name: Employee
         primary_key:
           - employeeId

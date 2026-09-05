@@ -1,9 +1,9 @@
 # (no warnings)
-version: 0.2.0.dev0
+version: 0.2.0.dev0/google
 semantic_model:
   - name: tpcds_model
     description: TPC-DS retail model
-    datasets:
+    entities:
       - name: store_sales
         source: tpcds.public.store_sales
         primary_key:

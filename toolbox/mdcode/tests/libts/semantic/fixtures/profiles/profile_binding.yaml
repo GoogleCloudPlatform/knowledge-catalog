@@ -3,7 +3,7 @@
 # bindings. `segment` is declared but left for a profile to bind (the analytical
 # profile leaves it unbound), and `segment_count` depends on it -- so the golden
 # shows both the field and the metric pruned when the binding withholds it.
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
     entities:

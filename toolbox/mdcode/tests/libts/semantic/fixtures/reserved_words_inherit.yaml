@@ -3,10 +3,10 @@
 # bare `LABEL Order` that would be a syntax error. Complements reserved_words.yaml
 # (which covers the direct-FK edge, property, and measure positions) with the
 # inheritance-LABEL position.
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 semantic_model:
   - name: reserved_words_inherit
-    datasets:
+    entities:
       # `Order` is reserved -> the ancestor label is quoted everywhere it appears.
       - name: Order
         source: proj.ds.orders
