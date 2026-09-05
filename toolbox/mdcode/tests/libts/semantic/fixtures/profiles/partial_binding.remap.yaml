@@ -1,10 +1,10 @@
-# A store that renamed one column and does not carry `discount`. The profile
-# overrides just those two facets -- `Customer.name` maps to a different column,
-# and `discount` is marked unbound -- and inherits everything else from the base
-# (the other columns, the keys, the graph shape). The golden shows the remapped
-# column beside the inherited base columns, and `discount` + `total_discount`
-# pruned. This is a partial override of a model that already carries bindings.
-version: "0.2.0.dev0"
+# A store that renamed one column and does not carry `discount`. Selecting a
+# profile clears the model's inline bindings, so this profile re-declares the
+# columns it serves: `Customer.name` maps to a different column, and `discount`
+# is omitted -- so it is unbound here, and `total_discount` prunes with it. The
+# golden shows the remapped column beside the re-declared columns, and `discount`
+# + `total_discount` pruned.
+version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
     deployment_target: //bigquery.googleapis.com/projects/acme-eu/datasets/sales/propertyGraphs/sales
@@ -12,8 +12,11 @@ semantic_model:
       - name: Customer
         source: //bigquery.googleapis.com/projects/acme-eu/datasets/sales/tables/customers
         fields:
+          - { name: id, expression: customer_id }
           - { name: name, expression: full_name }
       - name: Order
         source: //bigquery.googleapis.com/projects/acme-eu/datasets/sales/tables/orders
         fields:
-          - { name: discount, unbound: true }
+          - { name: id, expression: order_id }
+          - { name: customerId, expression: customer_id }
+          - { name: amount, expression: amount }

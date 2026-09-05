@@ -1,14 +1,8 @@
-version: 0.2.0.dev0
+version: 0.2.0.dev0/google
 semantic_model:
   - name: hierarchy
     description: Imported from OWL ontology http://example.com/hr#
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: |-
-          {
-            "owl:baseIri": "http://example.com/hr#"
-          }
-    datasets:
+    entities:
       - name: Person
         description: A human being.
         fields:
@@ -21,14 +15,6 @@ semantic_model:
             datatype: String
           - name: legalName
             datatype: String
-            custom_extensions:
-              - vendor_name: GOOGLE
-                data: |-
-                  {
-                    "rdfs:subPropertyOf": [
-                      "fullName"
-                    ]
-                  }
       - name: Customer
         extends:
           - Person
@@ -45,14 +31,6 @@ semantic_model:
       - name: managedBy
         from: Employee
         to: Manager
-        custom_extensions:
-          - vendor_name: GOOGLE
-            data: |-
-              {
-                "rdfs:subPropertyOf": [
-                  "worksWith"
-                ]
-              }
       - name: worksWith
         from: Employee
         to: Employee

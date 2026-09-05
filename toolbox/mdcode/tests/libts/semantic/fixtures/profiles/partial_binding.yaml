@@ -1,13 +1,14 @@
 # A COMBINED single-file model: the logical declarations AND an inline physical
 # binding (the implicit `default` profile) in one file -- the form a model has
 # before any profile exists. Every field is bound to a column here, so this file
-# deploys on its own with a bare `kcmd push`. The profiles beside it override
-# only the physical facets that differ elsewhere:
-#   - prod:  an environment swap -- same columns, a different project/dataset.
+# deploys on its own with a bare `kcmd push`. Selecting a profile clears these
+# inline bindings, so a profile is authoritative -- it alone decides what is
+# bound. The profiles beside it re-declare the columns each store serves:
+#   - prod:  an environment swap -- the same columns, a different project/dataset.
 #   - remap: a store that renamed a column and does not carry `discount`.
-# Together they show that a profile overriding a model that already has bindings
-# replaces only what it names and INHERITS every field it omits.
-version: "0.2.0.dev0"
+# Together they show that selecting a profile clears the inline bindings, so a
+# field the profile does not name is unbound under it (there is no `unbound` flag).
+version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
     deployment_target: //bigquery.googleapis.com/projects/acme-dev/datasets/sales/propertyGraphs/sales

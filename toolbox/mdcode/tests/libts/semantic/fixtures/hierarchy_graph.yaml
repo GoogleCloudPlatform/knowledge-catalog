@@ -13,15 +13,13 @@
 # Person LABEL and its fields, but not its relationships. `extends` is a
 # deliberate superset of released OSI (see osi_schema.test.ts).
 
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 
 semantic_model:
   - name: people
     description: People and organizations, as a class hierarchy
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["//bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/people"]}'
-    datasets:
+    deployment_target: //bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/people
+    entities:
       - name: Person
         source: sqlgen-testing.demo.person
         primary_key: [id]

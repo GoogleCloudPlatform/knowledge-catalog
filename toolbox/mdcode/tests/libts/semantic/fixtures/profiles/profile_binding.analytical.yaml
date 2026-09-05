@@ -3,7 +3,7 @@
 # every structural site (node KEY, edge SOURCE KEY / DESTINATION KEY /
 # REFERENCES) and as each MEASURE operand -- never the logical field name.
 # `segment` is explicitly unbound, which prunes it and the segment_count metric.
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
     deployment_target: //bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/commerce
@@ -13,7 +13,6 @@ semantic_model:
         fields:
           - { name: id, expression: cust_id }
           - { name: name, expression: full_name }
-          - { name: segment, unbound: true }
       - name: Order
         source: //bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders
         fields:
