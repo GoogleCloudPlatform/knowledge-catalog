@@ -61,7 +61,7 @@ relationships between them, and the metric:
 
 ```bash
 cat > catalog/EntryGroups/$DATASET/sales.yaml <<'YAML'
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
     description: Orders, line items, and customers for the codelab
@@ -247,11 +247,11 @@ cat /tmp/sales_osi.yaml
 ```
 
 ```yaml
-version: 0.2.0.dev0
+version: 0.2.0.dev0/google
 semantic_model:
   - name: sales
     description: Imported from OWL ontology http://example.com/sales#
-    datasets:
+    entities:
       - name: orders
         primary_key: [order_id]
         description: A customer order
@@ -278,9 +278,9 @@ semantic_model:
 
 This is the hand-authored `sales` model above, reproduced from the ontology: the
 same three entities, the same fields and datatypes, the same primary keys, and
-the same two relationships. (The importer writes entities under `datasets:`, the
-original spelling of the `entities:` key this codelab uses — the two are
-interchangeable.)
+the same two relationships. (The importer emits the extended profile — `entities:`
+under `version: 0.2.0.dev0/google` — the same spelling this codelab's hand-authored
+model uses.)
 
 Two things from the hand-authored model are missing, and both are inherent —
 an ontology has no way to state either:
@@ -394,7 +394,7 @@ TARGET=//bigquery.googleapis.com/$BQ_DS/propertyGraphs/$GRAPH
 
 mkdir -p catalog/EntryGroups/$DATASET/sales.profiles
 cat > catalog/EntryGroups/$DATASET/sales.profiles/analytical.yaml <<YAML
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
     deployment_target: $TARGET
@@ -700,7 +700,7 @@ SPANNER_TARGET=//spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INS
 
 mkdir -p catalog/EntryGroups/$DATASET/sales.profiles
 cat > catalog/EntryGroups/$DATASET/sales.profiles/operational.yaml <<YAML
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
     deployment_target: $SPANNER_TARGET
@@ -710,7 +710,7 @@ semantic_model:
         fields:
           - { name: order_id,    expression: OrderId }
           - { name: customer_id, expression: CustomerId }
-          - { name: net_amount,  unbound: true }   # the operational store has no settled total
+          # net_amount is omitted -> unbound: the operational store has no settled total
       - name: customer
         source: Customers
         fields:
@@ -926,7 +926,7 @@ line up under the shared label by that name:
 
 ```bash
 cat > catalog/EntryGroups/$DATASET/sales.yaml <<'YAML'
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
     description: Orders, line items, and customers for the codelab
@@ -999,7 +999,7 @@ its `party` label reads. Rewrite the profile to include `supplier`:
 
 ```bash
 cat > catalog/EntryGroups/$DATASET/sales.profiles/analytical.yaml <<YAML
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
     deployment_target: $TARGET

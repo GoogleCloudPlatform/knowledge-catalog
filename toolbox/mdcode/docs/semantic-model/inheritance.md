@@ -44,7 +44,7 @@ Each concrete kind declares its own fields and the one `extends` keyword. The
 supertype's fields are inherited, so you do not repeat them:
 
 ```yaml
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 semantic_model:
   - name: parties
     entities:

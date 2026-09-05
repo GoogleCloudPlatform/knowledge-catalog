@@ -16,24 +16,43 @@ is the authority on what the tool then does.
 ## 1. Status and baseline
 
 The format is **`kcmd`'s profile of [Apache Ossie](https://ossie.apache.org/)**,
-pinned to Ossie version **`0.2.0.dev0`**. Ossie is the open semantic-model format:
+built on Ossie version **`0.2.0.dev0`**. Ossie is the open semantic-model format:
 it describes a business — datasets, fields, relationships, metrics — *and* binds
 each dataset to a `source` table and each field to a column `expression`. What
-Ossie does not describe is where a model then deploys. This profile is a superset:
-it adds that deployment layer and a few modeling constructs, and it relaxes a few
-of Ossie's required fields so a model can stay purely logical.
+Ossie does not describe is where a model then deploys. `kcmd` adds that deployment
+layer and a few modeling constructs, and it relaxes a few of Ossie's required
+fields so a model can stay purely logical.
 
-The compatibility contract runs in both directions, and they are not symmetric:
+Those additions come in **two versions**, and a document picks one with its
+top-level `version` (see [Version handling](#1-status-and-baseline)):
+
+- **`0.2.0.dev0`** — **vanilla Ossie**. `kcmd`'s additions ride in Ossie's own
+  `custom_extensions` carrier ([§6](#6-the-extension-mechanism)); the native
+  extension keys are not accepted. This profile is a strict superset of Ossie:
+  strip the `GOOGLE` extension blocks and it is a plain Ossie document.
+- **`0.2.0.dev0/google`** — the **extended profile**. The same additions are
+  first-class native keys (`entities`, `deployment_target`, `extends`,
+  `abstract`); the `custom_extensions` carrier is not accepted, because there is
+  nothing left for it to carry. This profile is readable, but not a vanilla-Ossie
+  document — an Ossie-only reader knows neither its version nor its native keys.
+
+The two are the same model written two ways; both parse to the identical IR, so no
+downstream leg sees which was used.
+
+Ossie compatibility is a property of the **vanilla** version, and the contract
+runs in both directions:
 
 > **Every Ossie `0.2.0.dev0` document is a valid `kcmd` model.** The reverse holds
-> for a `kcmd` model that uses no extensions ([§5](#5-extensions)) *and* no
-> relaxations ([§4](#4-narrowings-and-relaxations)) — i.e. a fully-bound model with only Ossie
-> constructs. Strip the extensions from such a model and it is a valid Ossie
-> document.
+> for a vanilla `kcmd` model that uses no extensions ([§5](#5-extensions)) *and* no
+> relaxations ([§4](#4-narrowings-and-relaxations)) — a fully-bound model with only
+> Ossie constructs. Strip the `GOOGLE` `custom_extensions` blocks from such a model
+> and it is a valid Ossie document.
 
-The goal is full Ossie compatibility. Every `kcmd`-specific construct is carried
-in a way an Ossie-only tool ignores (see [§6](#6-the-extension-mechanism)), so the
-two never fork the document.
+Under vanilla, every `kcmd`-specific construct rides in a `custom_extensions` block
+an Ossie-only tool ignores (see [§6](#6-the-extension-mechanism)), so the two never
+fork the document. The extended `0.2.0.dev0/google` profile trades that wire
+compatibility for readable native keys; it is `kcmd`'s own surface, converted to or
+from vanilla by choosing the `version`.
 
 **How to read this document.** This is a *delta* against the Ossie spec. It does
 not restate constructs `kcmd` adopts unchanged — for those, the Ossie spec is
@@ -52,10 +71,13 @@ defines it.
 at load or validation time; the exact operational effect (hard error, skip with a
 warning) is in [Reference → Validation](reference.md#validation).
 
-**Version handling.** `version` is optional and lives at the top of the document
-(not inside a model). A document whose `version` differs from `0.2.0.dev0` loads
-anyway with a warning; the profile does not gate on it. Authored documents SHOULD
-set `version: "0.2.0.dev0"`.
+**Version handling.** `version` is **required** and lives at the top of the
+document (not inside a model). It MUST be one of two values: `0.2.0.dev0` (vanilla
+Ossie) or `0.2.0.dev0/google` (the extended profile). A missing or unrecognized
+`version` is a **hard load error**, not a warning — the value selects which
+extension surface is legal ([§6](#6-the-extension-mechanism)), so it cannot be
+guessed. `kcmd`'s own tools (pull, the OWL importer) emit `0.2.0.dev0/google`;
+hand-authored portable models SHOULD use vanilla `0.2.0.dev0`.
 
 **Baseline.** The Ossie classifications in [§3](#3-conformance-summary) are
 reconciled against the Ossie `0.2.0.dev0` core JSON Schema, a copy of which is
@@ -69,28 +91,30 @@ defines; the parser is the authority only for what `kcmd` accepts.
 A model document is a YAML file with a top-level `semantic_model` list.
 
 ```yaml
-version: "0.2.0.dev0"          # optional; see §1
+version: "0.2.0.dev0"          # required; selects the extension surface (§1)
 semantic_model:                # one or more models; kcmd deploys exactly one per entry group (§4)
   - name: sales
-    datasets: [ … ]            # one or more; the entities (§2.1). `entities:` is an accepted alias (§5)
+    datasets: [ … ]            # one or more; the entities (§2.1). Spelled `entities:` under /google (§5)
     relationships: [ … ]       # optional (§2.2)
     metrics: [ … ]             # optional (§2.3)
     description: "…"           # optional
     ai_context: { … }          # optional (§2.4)
-    custom_extensions: [ … ]   # optional (§6)
-    deployment_target: "…"     # optional; physical binding (§5, §7)
+    custom_extensions: [ … ]   # vanilla only (§6); rejected under /google
+    deployment_target: "…"     # /google only (§5, §7); vanilla carries it in a GOOGLE block
 ```
 
 A document MUST contain at least one model, and each model MUST contain at least
-one dataset. Every named object (dataset, field, relationship, metric) SHOULD
-have a name unique within its scope; a duplicate loads with a warning and produces
-an invalid graph.
+one dataset. Every named object (dataset, field, relationship, metric) MUST have a
+name unique within its scope; a duplicate name is a **hard load error** (agreed
+with Dmitri), because it would make the generated node, property, edge, or measure
+ambiguous.
 
-Objects are **open**: an unknown sibling key inside a validated object is silently
-dropped, not an error. The two exceptions are the sugar conflicts in
-[§5](#5-extensions) (setting both `entities` and `datasets`, or a
-`deployment_target` that disagrees with an existing `GOOGLE` extension), which are
-hard errors.
+Objects are **closed**: an unknown sibling key inside a validated object is a
+**hard error**, not silently dropped (agreed with Dmitri). This is what makes the
+version gate bite — a native key under vanilla, or a `custom_extensions` block
+under `/google`, is an unknown key for that version and is rejected
+([§6](#6-the-extension-mechanism)). Setting both `entities` and `datasets` is
+likewise an error ([§5](#5-extensions)).
 
 The remaining subsections define each object. Names throughout are **logical
 business vocabulary** — `order_id`, `placed_by` — never physical column names; the
@@ -123,8 +147,7 @@ bound for a graph MUST declare one (see [§4](#4-narrowings-and-relaxations) and
 |---|---|---|
 | `name` | string | required |
 | `datatype` | enum | one of the closed vocabulary below |
-| `expression` | [expression](#25-expressions) | physical-column binding (binding — [§7](#7-the-binding-layer)) |
-| `unbound` | boolean | this binding has no column for the field (binding — [§7](#7-the-binding-layer)) |
+| `expression` | [expression](#25-expressions) | physical-column binding; a field with none is *unbound* (binding — [§7](#7-the-binding-layer)) |
 | `label` | string | human display label |
 | `dimension` | object | `{ is_time: boolean }` |
 | `description` | string | |
@@ -142,8 +165,9 @@ String  Integer  Decimal  Float  Boolean  Date  Time  DateTime  DateTimeTz  Opaq
 `kcmd` cannot express natively is represented as `Opaque` plus a `custom_extensions`
 block that carries the real type.
 
-`expression` and `unbound` are the field's binding and are mutually exclusive; see
-[§7](#7-the-binding-layer).
+A field's `expression` is its binding; a field with no `expression` is **unbound**
+(no column under this binding). There is no separate `unbound` flag — absence is
+the signal. See [§7](#7-the-binding-layer).
 
 #### 2.1.2. Inheritance (`extends`)
 
@@ -153,9 +177,11 @@ naming one or more supertype datasets by name. Inheritance is **entity-level
 only** — relationships do not `extends`. A supertype that has no table of its own
 MUST be marked `abstract: true` (also an extension).
 
-The format rule is only that supertypes are named datasets in the same model. The
-resolver breaks cycles with a warning and flattens diamonds (each ancestor
-contributes once, nearest-first); an unknown supertype is ignored with a warning.
+The format rule is only that supertypes are named datasets in the same model. An
+`extends` that names a dataset not defined in the model is a **hard error** (a typo
+must not silently drop inheritance — agreed with Dmitri). The resolver breaks
+cycles with a warning and flattens diamonds (each ancestor contributes once,
+nearest-first).
 How the hierarchy is *lowered* into each store (labels, field flattening) and the
 downstream limits (e.g. a supertype whose label is shared across subtype tables
 cannot carry a measure) are operational — see
@@ -268,7 +294,7 @@ status** is this profile's relationship to it: *as-is* (adopted unchanged),
 |---|---|---|---|
 | `semantic_model`, `name`, `description` | yes | as-is | [§2](#2-document-shape) |
 | `datasets` | yes | as-is | [§2.1](#21-dataset-entity) |
-| `entities` (alias for `datasets`) | no | extension (alias) | [§5](#5-extensions) |
+| `entities` (alias for `datasets`) | no | extension (alias, /google only) | [§5](#5-extensions) |
 | field `name`, `label`, `dimension` (`is_time`) | yes | as-is | [§2.1.1](#211-field) |
 | `datatype` + its vocabulary | yes | as-is (identical, closed) | [§2.1.1](#211-field) |
 | `primary_key`, `unique_keys` | yes | as-is | [§2.1](#21-dataset-entity) |
@@ -281,10 +307,9 @@ status** is this profile's relationship to it: *as-is* (adopted unchanged),
 | `expression.dialects` | yes (closed enum) | as-is; `dialect` string relaxed | [§2.5](#25-expressions) |
 | field `expression` (column binding) | yes (required) | relaxed to optional | [§7](#7-the-binding-layer), [§4](#4-narrowings-and-relaxations) |
 | `source` (dataset table binding) | yes (required) | relaxed to optional | [§7.1](#71-table-sources), [§4](#4-narrowings-and-relaxations) |
-| `unbound` (field) | no | extension | [§5](#5-extensions), [§7](#7-the-binding-layer) |
 | `ai_context` (`instructions`, `synonyms`, `examples`) | yes | as-is (`examples` relaxed) | [§2.4](#24-ai_context) |
-| `custom_extensions` (`vendor_name`, `data`) | yes | as-is (mechanism) | [§6](#6-the-extension-mechanism) |
-| `deployment_target` | no | extension | [§5](#5-extensions), [§7.2](#72-deployment-target) |
+| `custom_extensions` (`vendor_name`, `data`) | yes | as-is; vanilla-only carrier | [§6](#6-the-extension-mechanism) |
+| `deployment_target` | no | extension (native, /google) | [§5](#5-extensions), [§7.2](#72-deployment-target) |
 | binding profiles | no | extension | [§7.3](#73-binding-profiles) |
 | single model per entry group | — | narrowed | [§4](#4-narrowings-and-relaxations) |
 
@@ -328,6 +353,26 @@ Each rule and its reason:
   target, a non-M:N relationship MUST supply both `from_columns` and `to_columns`
   before deploy. *Why:* the edge table needs both keys.
 
+- **Unknown keys are rejected.** Every object is validated closed: an unrecognized
+  sibling key is a hard load error, not silently dropped. Combined with the version
+  gate, this is how a native key under vanilla — or a `custom_extensions` block
+  under `/google` — is caught ([§6](#6-the-extension-mechanism)).
+
+- **Duplicate names are rejected.** A dataset, field, relationship, or metric name
+  repeated within its scope is a hard load error; the generated element would be
+  ambiguous.
+
+- **An unknown supertype is rejected.** An `extends` that names a dataset not in the
+  model is a hard load error (see [§2.1.2](#212-inheritance-extends)).
+
+- **A graph measure binds only to a leaf type.** For a BigQuery target, a metric
+  whose entity is a supertype — one another entity `extends` — cannot become a
+  `MEASURE` and is skipped with a warning: the supertype's label is shared across
+  its subtype tables, and BigQuery forbids a `MEASURE` on a shared label. Like the
+  single-aggregate rule this is a SHOULD, not a MUST — the metric still reaches
+  Knowledge Catalog; it simply has no graph measure. See [Reference → Class
+  hierarchies](reference.md#class-hierarchies-extends--labels).
+
 Not a narrowing, contrary to a common assumption: **diamonds in a class hierarchy
 are not rejected.** The resolver flattens them (each ancestor once) and breaks
 cycles with a warning. What *is* rejected is downstream and store-specific — a
@@ -340,14 +385,18 @@ BigQuery `MEASURE` cannot bind to a label shared across subtype tables. See
 
 **Binding fields made optional — to model before binding.** Ossie marks these
 required; `kcmd` accepts them as optional so a model can be governed before it is
-bound (a purely *logical* model). A graph deploy still requires each one — that
-requirement is the corresponding narrowing in
-[§4.1](#41-narrowings-stricter-than-ossie).
+bound (a purely *logical* model). At graph deploy a non-abstract dataset must
+still declare a `source` — the corresponding narrowing in
+[§4.1](#41-narrowings-stricter-than-ossie). An omitted field `expression` or
+relationship join column is not an error: the field is unbound and the
+availability pass prunes it, and a relationship with no join columns is a
+logical edge.
 
 - **`source` on a dataset** — required in Ossie; optional in `kcmd`. A non-abstract
   dataset bound for a graph MUST still declare one.
-- **`expression` on a field** — required in Ossie; optional in `kcmd` (mark the
-  field `unbound`, or supply the column in a binding profile).
+- **`expression` on a field** — required in Ossie; optional in `kcmd`. A field
+  with no `expression` is unbound and is pruned at graph generation; supply
+  the column in a binding profile to bind it.
 - **`from_columns` / `to_columns` on a relationship** — both required in Ossie;
   `kcmd` allows both omitted (a logical edge).
 
@@ -374,31 +423,32 @@ skip-with-warning, and the exact message) is in
 Constructs `kcmd` adds beyond Ossie. Each is carried so an Ossie-only tool still
 reads the document ([§6](#6-the-extension-mechanism)).
 
-- **`entities` as an alias for `datasets`.** A model MAY spell its datasets
-  `entities:` instead of `datasets:`. Setting both is an error. Pure sugar —
-  identical meaning.
+- **`entities` as an alias for `datasets` (extended profile only).** Under
+  `0.2.0.dev0/google` a model MAY spell its datasets `entities:` instead of
+  `datasets:`; setting both is an error. Pure sugar — identical meaning. Under
+  vanilla Ossie the key is not accepted; use `datasets`. `kcmd`'s pull always emits
+  `entities`.
 
-- **`extends` on a dataset.** Class inheritance — a subtype names its supertype
-  datasets. Ossie `0.2.0.dev0` has no inheritance construct. See
+- **`extends` on a dataset (extended profile only).** Class inheritance — a
+  subtype names its supertype datasets. Ossie `0.2.0.dev0` has no inheritance
+  construct, so it is accepted only under `0.2.0.dev0/google`. See
   [§2.1.2](#212-inheritance-extends).
 
-- **`abstract: true` on a dataset.** Marks a concept with no physical table
-  (typically an `extends` supertype). An abstract dataset produces no node table
-  and MUST NOT declare a `source`.
+- **`abstract: true` on a dataset (extended profile only).** Marks a concept with
+  no physical table (typically an `extends` supertype). An abstract dataset produces
+  no node table and MUST NOT declare a `source`. Accepted only under
+  `0.2.0.dev0/google`.
 
-- **`deployment_target`.** The physical destination — one graph in one store — as
-  a first-class model-level (or profile-level) key. It folds into a `GOOGLE`
-  `custom_extensions` block ([§6](#6-the-extension-mechanism)); the block is the
-  wire form an Ossie-only reader passes through untouched. Grammar in
+- **`deployment_target` (extended profile only).** The physical destination — one
+  graph in one store — as a first-class model-level (or profile-level) key, accepted
+  under `0.2.0.dev0/google`. Under vanilla Ossie there is no native key; the same
+  target is written as a `GOOGLE` `custom_extensions` block carrying
+  `{"deploymentTargets": ["…"]}` ([§6](#6-the-extension-mechanism)). Grammar in
   [§7](#7-the-binding-layer).
 
 - **Binding profiles.** A separate document that supplies only the physical
   bindings, so one logical model serves several stores. Not part of the Ossie
   document; a `kcmd`-specific file alongside it ([§7](#7-the-binding-layer)).
-
-- **`unbound: true` on a field.** Declares that a given binding has no column for
-  the field. A binding-layer concept ([§7](#7-the-binding-layer)); mutually
-  exclusive with `expression`.
 
 Deliberately **not** extensions in `0.2.0.dev0`, to avoid the impression they
 exist: there is **no `actions` block** and **no authorable M:N `association`
@@ -407,8 +457,12 @@ format today.
 
 ## 6. The extension mechanism
 
-Every `kcmd` extension rides in Ossie's own **`custom_extensions`** carrier, which
-is why the profile stays a superset. A `custom_extensions` entry is:
+The `version` selects **one** of two mutually exclusive extension surfaces (agreed
+with Dmitri). A document uses the carrier *or* the native keys, never both — which
+surface applies is a property of the version, not a per-key choice.
+
+**Vanilla `0.2.0.dev0` — the `custom_extensions` carrier.** Under vanilla Ossie
+every `kcmd` extension rides in Ossie's own `custom_extensions` field. An entry is:
 
 ```yaml
 custom_extensions:
@@ -417,25 +471,27 @@ custom_extensions:
 ```
 
 `custom_extensions` MAY appear on the model, a dataset, a field, a relationship,
-and a metric. `data` is opaque at the format level: nothing is interpreted when
-the document is parsed, and it round-trips verbatim. An Ossie-only tool treats a
+and a metric. `data` is opaque at the format level: nothing is interpreted when the
+document is parsed, and it round-trips verbatim. An Ossie-only tool treats a
 `GOOGLE` block as a vendor extension it does not recognize and passes it through
-unchanged — so a `kcmd` model is still a valid Ossie document, and stripping the
-`GOOGLE` blocks yields plain Ossie.
+unchanged — so a vanilla `kcmd` model is still a valid Ossie document, and stripping
+the `GOOGLE` blocks yields plain Ossie. A model's deployment target rides here as a
+`GOOGLE` block carrying `{"deploymentTargets": ["…"]}`. The native keys (`entities`,
+`deployment_target`, `extends`, `abstract`) are **not accepted** under vanilla —
+each is an unknown key and rejected ([§4.1](#41-narrowings-stricter-than-ossie)).
 
-**Native key + `GOOGLE` mirror.** Where a `kcmd` extension has a readable
-first-class spelling, that spelling is *sugar* over a `GOOGLE` block. The
-`deployment_target:` key is the example: it folds into a
-`GOOGLE` block carrying `{"deploymentTargets": ["…"]}`, which is the form the
-deploy path actually reads. Both forms are accepted and mean the same thing; if a
-document sets both and they disagree, that is a hard error. This lets authors
-write the readable key while the document on the wire stays plain Ossie plus one
-opaque vendor block.
+**Extended `0.2.0.dev0/google` — native keys.** Under the extended profile the same
+information is written as first-class keys — `entities`, `deployment_target`,
+`extends`, `abstract` — read directly, with no `data` string to encode. There is
+therefore nothing left for the carrier to carry, and a `custom_extensions` block is
+**not accepted** under `/google` (also an unknown key). This is the profile `kcmd`'s
+own tools emit: readable, but no longer a vanilla-Ossie document.
 
-Extensions with no first-class spelling (for example the OWL constructs the OWL
-importer carries) live directly in `custom_extensions` and survive the document
-round-trip verbatim, even though they are inert on deploy today. What each such
-block does or doesn't reach is in
+**Converting between the two** is the `version` plus a mechanical fold: a vanilla
+`GOOGLE` deployment-target block becomes a native `deployment_target:` key under
+`/google`, and back. Both parse to the identical IR. Constructs that exist only as
+native keys (inheritance, the `entities` spelling) have no vanilla form and are
+simply unavailable there. What survives a push and a pull through each surface is in
 [What push and pull preserve](fidelity.md).
 
 ## 7. The binding layer
@@ -449,8 +505,8 @@ are Ossie-native, not `kcmd` additions. What `kcmd` adds is the layer that says
   extension; Ossie has no deployment construct ([§7.2](#72-deployment-target)).
 - **binding profiles** — a separate document that varies the physical bindings
   per store. A `kcmd` extension ([§7.3](#73-binding-profiles)).
-- **`unbound` on a field** — a field with no column under a given binding. A
-  `kcmd` extension.
+- **an unbound field** — a field with no column under a given binding, expressed
+  by omitting its `expression` (there is no `unbound` flag).
 
 `kcmd` also **relaxes** the Ossie-native bindings — `source`, field `expression`,
 and relationship join columns — from required to optional ([§4.2](#42-relaxations-looser-than-ossie)),
@@ -495,9 +551,10 @@ graph MUST have one.
 ```
 
 The URI MUST match one of these two shapes. A model bound for a graph MUST declare
-exactly one ([§4](#4-narrowings-and-relaxations)). The identifier segments are restricted to
-`[A-Za-z0-9_-]`. As [§6](#6-the-extension-mechanism) notes, the key is sugar over
-a `GOOGLE` `custom_extensions` block; both forms mean the same thing.
+exactly one ([§4](#4-narrowings-and-relaxations)). The identifier segments are
+restricted to `[A-Za-z0-9_-]`. The native `deployment_target:` key shown here is the
+extended-profile form; under vanilla Ossie the same target rides in a `GOOGLE`
+`custom_extensions` block ([§6](#6-the-extension-mechanism)).
 
 ### 7.3. Binding profiles
 
@@ -508,11 +565,11 @@ definition. A profile:
 - is a `semantic_model` document in the **same schema** as the logical model, but
   MUST set only physical-binding keys: at the model level `deployment_target` and
   `datasets`/`entities`; at the dataset level `source` and `fields`; at the field
-  level `expression` and `unbound`. Setting any logical key (a new field,
-  `primary_key`, a relationship, …) in a profile is an error — the logical model
-  owns those.
-- binds by `name` at each level. A field a profile omits is treated as `unbound`
-  for that profile.
+  level `expression`. Setting any logical key (a new field, `primary_key`, a
+  relationship, …) in a profile is an error — the logical model owns those.
+- binds by `name` at each level. A field a profile does not bind is left **unbound**
+  for that profile (selecting a profile clears the logical model's inline column
+  bindings, so the profile alone decides what is bound); there is no `unbound` flag.
 - MUST express a field `expression` as a **bare column reference**, not arbitrary
   SQL — the computation belongs to the logical model.
 
@@ -527,21 +584,23 @@ The full merge behavior and worked examples are in
 
 ## 8. Versioning and compatibility policy
 
-- **What pinning `0.2.0.dev0` guarantees.** The constructs in [§2](#2-document-shape)
-  and the extensions in [§5](#5-extensions) are what `kcmd` reads and writes at
-  this version. `version` is advisory: a document at another version loads with a
-  warning, so pinning is a statement of intent, not a gate.
+- **What declaring a version guarantees.** The constructs in
+  [§2](#2-document-shape) and the extensions in [§5](#5-extensions) are what `kcmd`
+  reads and writes. The `version` is a **gate**, not advice: it is required, must be
+  `0.2.0.dev0` or `0.2.0.dev0/google`, and selects the legal extension surface
+  ([§6](#6-the-extension-mechanism)); any other value is a hard error.
 
 - **When Ossie changes.** A new Ossie construct is added to
   [§3](#3-conformance-summary) as a row — *as-is* if adopted unchanged, *narrowed*
   if constrained. Growth is a table entry, not a rewrite; this document's size
   tracks `kcmd`'s decisions, not Ossie's surface.
 
-- **Forward direction of each extension.** An extension is either a candidate to
-  upstream into Ossie (the readable-key extensions, e.g. `deployment_target`) or
-  intended to stay a `GOOGLE` `custom_extensions` block indefinitely (Google-store
-  specifics). Until an extension is upstreamed it MUST keep its `GOOGLE`-carried
-  form so the superset contract in [§1](#1-status-and-baseline) holds.
+- **Forward direction of each extension.** A native `/google` key is either a
+  candidate to upstream into Ossie (e.g. `deployment_target`, `entities`) or a
+  Google-store specific that stays `kcmd`'s own. The vanilla version stays a strict
+  Ossie superset: its only extension is the `GOOGLE` `custom_extensions` carrier,
+  and constructs with no vanilla form (inheritance, the `entities` spelling) are
+  simply unavailable there — a model that needs them uses `0.2.0.dev0/google`.
 
 - **Reserved constructs.** `association` (M:N) and any `actions`-like write-side
   construct are reserved: recognized as future work, not authorable today. A
@@ -554,7 +613,7 @@ A logical model plus one binding profile.
 ```yaml
 # catalog/EntryGroups/sales/sales.yaml — the logical model (concepts + edge join keys;
 # table and column bindings live in the profile below — see §7)
-version: "0.2.0.dev0"
+version: "0.2.0.dev0"          # vanilla Ossie: uses no native keys, so this file is portable
 semantic_model:
   - name: sales
     datasets:
@@ -583,7 +642,7 @@ semantic_model:
 
 ```yaml
 # catalog/EntryGroups/sales/sales.profiles/analytical.yaml — physical binding only
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"   # native deployment_target key -> extended profile
 semantic_model:
   - name: sales
     deployment_target: "//bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/sales"

@@ -82,7 +82,7 @@ business and nothing physical — the entities, their fields, the relationships
 between them, and the metrics computed over them:
 
 ```yaml
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 
 semantic_model:
   - name: sales                      # keep equal to the <model>.yaml filename (pull round-trips to that name)
@@ -111,7 +111,7 @@ semantic_model:
 Field and relationship names are the business vocabulary — `order_id`,
 `placed_by` — never physical column names; the physical binding comes later. A
 metric's `expression` may be a bare formula over the logical fields or the fuller
-per-dialect form. `entities` may also be written `datasets`.
+per-dialect form. `entities` may also be written `datasets` (the two are interchangeable under the `/google` version).
 
 Entities can **extend** other entities (`extends: [Parent]`); push flattens the
 supertype's fields down and expresses the hierarchy as graph labels, so a query
@@ -210,8 +210,9 @@ than one deployment target is rejected at push time (see
 
 For a model that serves more than one store, the target belongs to a
 [binding profile](profiles.md) rather than the model. `deployment_target` is a
-resource URI; it may also be written inside a `GOOGLE` custom extension, and both
-forms mean the same thing.
+resource URI and a native key under the extended `0.2.0.dev0/google` profile; under
+vanilla Ossie the same target is written inside a `GOOGLE` custom extension instead
+(see [model spec §6](model_spec.md#6-the-extension-mechanism)).
 
 ### Table sources
 
@@ -322,7 +323,7 @@ your authored document as the source of truth.
 
 Already have an OWL ontology? `kcmd owl import` converts it into a semantic model
 once — classes → entities, object properties → relationships, datatype
-properties → fields. The converted model is **unbound** (placeholder sources, no
+properties → fields. The converted model is **unbound** (no sources, no
 deployment target), so bind each entity's `source`, fill the relationship join
 columns, and add a deployment target before `kcmd push` will deploy it — then it
 rides the normal push / pull above. See [Importing an OWL ontology](owl-import.md).

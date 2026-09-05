@@ -74,17 +74,14 @@ agree on every structural row and differ only where a Spanner target has no
    metadata — BigQuery silently drops graph-statement `OPTIONS`, and Spanner
    carries no `OPTIONS` at all — so the model's `description` and
    `ai_context.instructions` are carried into Knowledge Catalog instead.
-9. **OWL and other custom extensions.** Every other `custom_extensions` block —
-   most notably the OWL constructs the importer carries with no native home yet
-   (`owl:inverseOf`, `owl:oneOf`, `rdfs:subPropertyOf`, `owl:propertyChainAxiom`,
-   the equivalence and disjointness pairs, the set-level axioms
-   `owl:AllDisjointClasses` / `owl:AllDisjointProperties` / `owl:AllDifferent`,
-   the property characteristics, `owl:deprecated` / `owl:versionInfo`, …) — is
-   inert on push and not persisted to Knowledge Catalog, so `pull` never recovers
-   it. It does survive the OSI *document* round-trip verbatim, so it stays intact
-   in your authored file. See
-   [Constructs carried as custom extensions](owl-import.md#constructs-carried-as-custom-extensions-not-yet-native)
-   for the full list and shape.
+9. **Other custom extensions.** Under the vanilla `0.2.0.dev0` profile a
+   `custom_extensions` block (other than a GOOGLE deployment target) is the only
+   carrier for vendor metadata; it is inert on push and not persisted to
+   Knowledge Catalog, so `pull` never recovers it. `pull` also emits the extended
+   `0.2.0.dev0/google` profile, which has no `custom_extensions` carrier, so such
+   a block is not re-serialized either — keep your authored file. The OWL importer
+   emits none: it is import-only (see [Importing an OWL
+   ontology](owl-import.md)).
 10. **Logical (unbound) model.** A model with no bindings still publishes to
     Knowledge Catalog: each entity's `source` is recorded empty (`resources: []`)
     because there is no table behind it, and a relationship that carries no join

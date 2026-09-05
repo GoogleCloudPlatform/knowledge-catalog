@@ -195,8 +195,8 @@ only as a `LABEL` on its concrete descendants. Its field names still flatten
 down, and each concrete subtype supplies the column for each of those names, so
 the shared label's signature is present on every subtype table. An abstract
 entity that no concrete entity extends has nothing to attach to and is dropped
-with a warning. `abstract` is an explicit marker: an entity left with an unbound
-`source` placeholder is treated as a binding error and fails the push, never
+with a warning. `abstract` is an explicit marker: a non-abstract entity with no
+`source` is treated as a binding error and fails the push, never
 silently dropped as if it were table-less. The Knowledge Catalog leg does not
 model inheritance today, so an abstract entity has no physical resource to
 catalog and is skipped there (with a warning); its concrete subtypes are
@@ -291,6 +291,17 @@ touched**, so a model that cannot deploy fails fast instead of half-deploying.
 Each check enforces a rule the [model specification](model_spec.md) *defines*;
 this section is the operational side of it — what the tool does when the rule is
 broken — and links to the definition it enforces:
+
+Before these checks even run, the document must **load**, and the loader is strict:
+`version` is required and must be `0.2.0.dev0` (vanilla Ossie) or
+`0.2.0.dev0/google` (the extended profile); every object is closed, so an unknown
+key — including a native key under vanilla, or a `custom_extensions` block under
+`/google` — is rejected; names must be unique within their scope; and every
+`extends` must name an entity defined in the model. A load failure is reported the
+same way as a validation failure — nothing is touched, non-zero exit — and is
+defined in [model spec §1](model_spec.md#1-status-and-baseline),
+[§2](model_spec.md#2-document-shape), [§6](model_spec.md#6-the-extension-mechanism),
+and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
 
 * **A graph push declares exactly one deployment target per model, and it must
   be a valid BigQuery Graph or Spanner Graph URI.** A model with more than one is

@@ -10,14 +10,13 @@ The converter maps the OWL constructs that have a clean BigQuery Graph shape to
 **native** semantic-model fields — class → node, object property → edge,
 datatype property → property, plus **class hierarchies** (`rdfs:subClassOf` →
 entity `extends`, see [Class hierarchies](#class-hierarchies-rdfssubclassof)).
-Constructs that have **no native home yet** — property inheritance
-(`rdfs:subPropertyOf`), the inverse / equivalence / disjointness cross-references,
-the property characteristics, and per-term annotations (`rdfs:seeAlso`,
-`owl:deprecated`, …) — are not dropped: they **ride along verbatim** as custom
-extensions, lossless and inert, until they earn a first-class concept (see
-[Constructs carried as custom extensions](#constructs-carried-as-custom-extensions-not-yet-native)).
-Richer OWL still not read at all (SHACL, cardinality restrictions, the set-level
-disjointness / identity axioms, individuals) is listed in
+Import is **one-way and lossy by design**: constructs with no native
+semantic-model home — property inheritance (`rdfs:subPropertyOf`), the inverse /
+equivalence / disjointness cross-references, the property characteristics, the
+set-level axioms, and per-term annotations (`rdfs:seeAlso`, `owl:deprecated`, …)
+— are **not imported**. The result is a clean semantic model, never an OWL
+document wrapped in opaque metadata. What maps and what drops is listed in [How
+each OWL construct maps](#how-each-owl-construct-maps) and
 [Limitations](#limitations).
 
 ## 1. The OWL file
@@ -152,7 +151,7 @@ emits; the inline `#` comments are annotations added here for the walkthrough �
 the real output has none:
 
 ```yaml
-version: 0.2.0.dev0
+version: 0.2.0.dev0/google
 semantic_model:
   - name: sales
     description: "A minimal sales domain: customers and the orders they place.
@@ -162,7 +161,7 @@ semantic_model:
         - Sales domain
       examples:
         - How many orders did each customer place last month?
-    datasets:
+    entities:
       - name: Customer                   # no source: a logical entity
         primary_key:
           - customerId                   # from owl:hasKey
@@ -201,24 +200,16 @@ This is a purely **logical model**: an ontology declares meaning, not physical
 tables, so entities carry no `source`, fields no `expression`, and relationships
 no join columns. Before a graph deploy a [binding profile](profiles.md) supplies
 the sources and field expressions, and you add each edge's join columns to the
-model (they are logical, not a binding). It is also the **clean mapping**: every construct here has a native
-semantic-model home, so the output carries no term IRIs and no
-`custom_extensions`. Two kinds of
-ontology go further — a **class hierarchy** (`rdfs:subClassOf`) and constructs
-with **no native home yet** (inverses, equivalences, property characteristics,
-…). Both are supported; the rest of this page shows them as extensions of *this
-same sales domain* — see [Class hierarchies](#class-hierarchies-rdfssubclassof)
-and [Constructs carried as custom
-extensions](#constructs-carried-as-custom-extensions-not-yet-native).
+model (they are logical, not a binding). The output carries no term IRIs and no
+`custom_extensions`: a term's identity is its name, so a cleanly-mapped construct
+needs nothing more. One kind of ontology goes further — a **class hierarchy**
+(`rdfs:subClassOf`), shown next as an extension of *this same sales domain* (see
+[Class hierarchies](#class-hierarchies-rdfssubclassof)). Everything OWL can say
+that the semantic model cannot is **dropped on import**, not carried.
 
-Why nothing extra appears here: for a cleanly-mapped term its IRI carries nothing
-the model doesn't already have — the term's identity is its name — and the source
-namespace is recorded only when needed: in the model `description` as a fallback
-when the ontology header has no comment of its own, or in an `owl:baseIri`
-extension when an in-namespace reference has to be shortened (the `owl:baseIri`
-form is shown in the advanced example below; the `description` fallback appears
-only when the header carries no comment, which is not the case there either).
-This ontology has a header comment and makes no such references, so the namespace
+The source namespace is recorded only as a human-readable fallback: when the
+ontology header has no comment of its own, the model `description` names the base
+IRI it was imported from. This ontology has a header comment, so the namespace
 appears nowhere above.
 
 ### How each OWL construct maps
@@ -230,7 +221,7 @@ appears nowhere above.
 | `owl:DatatypeProperty` | `fields[]` on **each** domain's dataset | a property with several `rdfs:domain` values lands on each; a logical field — **no `expression`** (a binding profile maps it to a column) |
 | `owl:ObjectProperty` | `relationships[]` | `from` = domain, `to` = range; a **logical edge with no join columns** (you add `from_columns`/`to_columns` to the model before a graph deploy, see [binding](#4-going-from-ontology-to-a-running-graph-binding)); with several `rdfs:domain`/`rdfs:range` values only the first of each is kept (a relationship is one source → one destination) and the rest are warned |
 | `rdfs:subClassOf` (named superclass) | dataset `extends[]` | **entity-level inheritance only** — records the parent(s) in document order; not read on object properties (see [Class hierarchies](#class-hierarchies-rdfssubclassof)) |
-| `rdfs:subPropertyOf`, `owl:inverseOf`, `owl:equivalentClass`, `owl:disjointWith`, `owl:oneOf`, `owl:equivalentProperty`, `owl:propertyDisjointWith`, `owl:propertyChainAxiom`, `owl:AllDisjointClasses`, `owl:AllDisjointProperties`, `owl:AllDifferent`, the property characteristics, `rdfs:seeAlso`, `rdfs:isDefinedBy`, `owl:deprecated`, `owl:versionInfo` | `custom_extensions` (GOOGLE) | **no native home yet** — carried verbatim, inert on push (see [Constructs carried as custom extensions](#constructs-carried-as-custom-extensions-not-yet-native)) |
+| `rdfs:subPropertyOf`, `owl:inverseOf`, `owl:equivalentClass`, `owl:disjointWith`, `owl:oneOf`, `owl:equivalentProperty`, `owl:propertyDisjointWith`, `owl:propertyChainAxiom`, `owl:AllDisjointClasses`, `owl:AllDisjointProperties`, `owl:AllDifferent`, the property characteristics, `rdfs:seeAlso`, `rdfs:isDefinedBy`, `owl:deprecated`, `owl:versionInfo` | *(dropped)* | **no native home** — not imported (see [Limitations](#limitations)) |
 | `rdfs:range xsd:*` | field `datatype` | see [Datatypes](#datatypes-rdfsrange) |
 | `owl:hasKey ( ... )` | dataset `primary_key` | single or composite, in list order |
 | `owl:InverseFunctionalProperty` | dataset `unique_keys` | a uniquely-identifying property; omitted when it is already the `primary_key`; a lone one on a keyless class is promoted to `primary_key` instead |
@@ -239,7 +230,7 @@ appears nowhere above.
 | extra `rdfs:label` / `skos:altLabel` / `prefLabel` / `hiddenLabel` | `ai_context.synonyms` | genuinely alternate names; feed NL search |
 | `skos:example` | `ai_context.examples` | sample questions / values |
 | `rdfs:comment`, `skos:definition`, `dcterms:`/`dc:description` | `description` | first present wins, in that order; on an object property (which has no `description` slot) the comment rides in `ai_context.instructions` |
-| term IRIs, `@prefix` | a term's own IRI is dropped (base IRI kept as the model's `owl:baseIri` custom-extension key **when any reference was shortened**, and in `description` **only when the header has no comment of its own**) | reconstructable as `<base><name>`; a *carried cross-reference* to another namespace keeps its full IRI (see [Constructs carried as custom extensions](#constructs-carried-as-custom-extensions-not-yet-native)) |
+| term IRIs, `@prefix` | dropped (base IRI named in `description` **only when the header has no comment of its own**) | a term's identity is its local name; the source namespace is not otherwise carried |
 
 A datatype property whose domain is not a class, or an object property missing an
 endpoint, cannot be placed; it is **skipped with a warning** rather than failing
@@ -314,11 +305,11 @@ ex:Customer a owl:Class ;
 # ... Customer's own datatype properties: customerId, email, customerName, … ...
 ```
 
-the `Person` and `Customer` datasets come out as (`Customer` carrying
+the `Person` and `Customer` entities come out as (`Customer` carrying
 `extends: [Person]`):
 
 ```yaml
-  # Person is its own dataset:
+  # Person is its own entity:
   - name: Person
     description: A human being.
     fields:
@@ -354,250 +345,10 @@ Two boundaries to be clear about:
   labels)](reference.md#class-hierarchies-extends--labels). The **Knowledge Catalog** push is
   unchanged: it still publishes each entry with exactly the fields it declares
   (KC-side inheritance is a separate, later opt-in).
-- **Native inheritance is entity-level only.** `extends` lives on `datasets`,
+- **Native inheritance is entity-level only.** `extends` lives on `entities`,
   never on relationships — the boundary is structural. `rdfs:subPropertyOf`
   (property / relationship inheritance) has no such native slot, so it is **not
-  dropped but carried verbatim** as a custom extension on the field or
-  relationship (see [Constructs carried as custom
-  extensions](#constructs-carried-as-custom-extensions-not-yet-native)).
-
-### Constructs carried as custom extensions (not yet native)
-
-Some OWL constructs have no native slot in the semantic model — a class is one
-entity, so it has nowhere to record that it *equals* another class; an edge is
-directed, so it has nowhere to record its *inverse*. Rather than drop these, the
-converter **carries them verbatim** in a `GOOGLE` custom extension on the object
-they describe. Carriage is a holding pattern with three deliberate properties:
-
-- **Lossless for carried facts.** Every fact the converter *carries* is preserved
-  exactly: the imported OSI document holds each carried construct as imported, and
-  it survives a local load → serialize round-trip verbatim. (This is not a blanket
-  guarantee that nothing the converter reads is ever dropped — some constructs are
-  reduced with a warning, e.g. an object property's extra domains/ranges or a
-  duplicate declaration; see [How each OWL construct
-  maps](#how-each-owl-construct-maps).) Carriage is **not** yet persisted to
-  Knowledge Catalog, though, so a `kcmd pull` does not return these facts today
-  (push writes no aspect for them — see
-  [What push and pull preserve](fidelity.md)).
-- **Inert.** A carried fact changes **nothing** downstream — the BigQuery Graph
-  push and the Knowledge Catalog push read none of it, so it never alters a node,
-  an edge, or a query. (Contrast `extends`, which *does* change the graph by
-  adding node labels — that is why it earned a native slot and these have not.)
-- **Promotable.** When a construct proves it needs to be first-class, it moves
-  out of carriage into a native concept; the extension is the seam where that
-  happens.
-
-**The shape.** Each carried construct is one key in a flat JSON object under the
-`GOOGLE` vendor. **The key *is* the source construct, prefixed with its
-vocabulary** (`owl:` or `rdfs:`); the value mirrors the construct faithfully.
-`data` is a pretty-printed (2-space) JSON string, so it appears as a YAML block
-scalar (`data: |-`). This is the block the `customerName` field gets from its
-`rdfs:subPropertyOf` and `owl:equivalentProperty` (real output, verbatim):
-
-```yaml
-custom_extensions:
-  - vendor_name: GOOGLE
-    data: |-
-      {
-        "rdfs:subPropertyOf": [
-          "fullName"
-        ],
-        "owl:equivalentProperty": [
-          "http://xmlns.com/foaf/0.1/name"
-        ]
-      }
-```
-
-The prefix carries the namespace, which does two jobs: it keeps a carried fact
-from colliding with Google's own keys in the same block (a deployment target is
-`deploymentTargets`, unprefixed), and it disambiguates a short name that means
-different things in different standards (`subPropertyOf` is RDFS; `inverseOf` is
-OWL). A reader treats **any key containing a `:`** as a carried ontology fact (a convention for future consumers — nothing reads these keys back today).
-Values are mirrored, not invented — a symmetric property is `"owl:SymmetricProperty":
-true`, not a synthesized `characteristics` list — so no information about the
-original construct is lost in translation.
-
-**What is carried, and where it attaches:**
-
-The JSON key is the OWL construct itself (see **The shape** above), so it is not
-repeated as its own column. Rows are grouped by what they attach to. Most attach
-to the term they describe (an entity, a field, a relationship, or *any* term);
-the **set-level axioms** are the exception — `owl:AllDisjointClasses`,
-`owl:AllDisjointProperties`, and `owl:AllDifferent` are each asserted on an
-anonymous node about a *set* of terms, belonging to no single class or property,
-so they attach to the **model** (the top-level `custom_extensions`, beside
-`owl:baseIri`). Each is an array of member sets — one per axiom — so two separate
-disjointness axioms stay two entries rather than merging into one flat list.
-
-| OWL construct | Attaches to | Value | Meaning |
-|---|---|---|---|
-| `owl:equivalentClass` | entity | `string[]` (equivalent class refs) | this class denotes the same set as another |
-| `owl:disjointWith` | entity | `string[]` (disjoint class refs) | no individual is in both classes |
-| `owl:oneOf` | entity | `string[]` (member refs; an enumeration is a **set** — deduped, order not significant) | the class is exactly this enumerated set of members |
-| `rdfs:subPropertyOf` | field / relationship | `string[]` (super-property refs) | this property refines a broader one |
-| `owl:equivalentProperty` | field / relationship | `string[]` (equivalent property refs) | this property means the same as another |
-| `owl:propertyDisjointWith` | field / relationship | `string[]` (disjoint property refs) | the two properties never both hold |
-| `owl:FunctionalProperty` | field / relationship | `true` | at most one value / destination per subject |
-| `owl:propertyChainAxiom` | relationship | `string[][]` (one ordered chain per axiom — **in chain order, duplicates kept**; a property may carry several chain axioms) | this edge is the ordered composition of the listed ones (`hasParent` then `hasBrother` ⇒ `hasUncle`) |
-| `owl:inverseOf` | relationship | `string` (the inverse edge's ref) | the same edge read the other way |
-| `owl:SymmetricProperty` | relationship | `true` | the edge holds both ways (`a→b` ⇒ `b→a`) |
-| `owl:TransitiveProperty` | relationship | `true` | the edge chains (`a→b`, `b→c` ⇒ `a→c`) |
-| `owl:ReflexiveProperty` | relationship | `true` | every subject relates to itself (`a→a`) |
-| `owl:IrreflexiveProperty` | relationship | `true` | no subject relates to itself |
-| `owl:AsymmetricProperty` | relationship | `true` | `a→b` rules out `b→a` |
-| `owl:AllDisjointClasses` | model | `string[][]` (one member **set** per axiom — deduped, order not significant) | the listed classes are pairwise disjoint |
-| `owl:AllDisjointProperties` | model | `string[][]` (one member set per axiom) | the listed properties are pairwise disjoint |
-| `owl:AllDifferent` | model | `string[][]` (one member set per axiom; members are individuals, names only, like `owl:oneOf`) | the listed individuals are pairwise distinct |
-| `rdfs:seeAlso` | any | `string[]` of N-Triples terms — an IRI as `<iri>`, a literal as `"text"` (with any `@lang` / `^^<datatype>` preserved) | pointer to further information (kept distinguishable, see below) |
-| `rdfs:isDefinedBy` | any | `string[]` (IRIs, verbatim) | the resource that defines this term |
-| `owl:deprecated` | any | `true` | the term is deprecated (carried only when true) |
-| `owl:versionInfo` | any | `string` | a term-level version string |
-
-When more than one fact applies to the same object they share **one** block, in a
-fixed key order (cross-references, then characteristics, then the per-term
-annotations) so the output is stable.
-
-**Names vs. full IRIs (namespace-aware).** A carried cross-reference points at
-another OWL term, which has an IRI. When that IRI lives in **this ontology's own
-namespace**, it is shortened to the plain local name (`"fullName"`, `"places"`) —
-the same name the referenced entity/property carries in the model, so a consumer
-can resolve it by name. When it lives in **another namespace**, the **full IRI**
-is kept (`"http://xmlns.com/foaf/0.1/Person"`) — a shortened name would be
-ambiguous and resolve to nothing. Nothing is lost either way: whenever any reference is
-shortened, the base IRI is carried as structured metadata on the model — an
-`owl:baseIri` key in the model-level GOOGLE `custom_extensions` block — so an
-in-namespace name reconstructs mechanically as `<base><name>`, and a
-cross-namespace IRI is already complete. (The base also appears in the model
-`description` for humans, but the structured key is what a consumer reads.)
-`rdfs:seeAlso` / `rdfs:isDefinedBy` point *outside* the model by definition, so
-they are **always** kept verbatim; `rdfs:seeAlso` additionally wraps each value
-as an N-Triples term (`<iri>` vs `"text"`, with any language tag `@en` or
-datatype `^^<iri>` preserved) so an IRI stays distinguishable from a literal — and
-a tagged/typed literal from a plain one — on round-trip. A carried reference is
-**not** validated against the model — it is a fact to carry, not a resolved link.
-
-**Example.** A slice of the sales domain that exercises every kind of carried
-construct at once — a cross-namespace equivalence, a native-and-carried duality,
-in-namespace and external references side by side, an inverse, and property
-characteristics. Each `#` comment names where the construct lands:
-
-```turtle
-# Person is equivalent to the EXTERNAL foaf:Person -> carried as a full IRI.
-ex:Person a owl:Class ;
-    owl:equivalentClass foaf:Person .
-
-# email is inverse-functional (-> unique_keys, native) AND single-valued
-# (owl:FunctionalProperty -> carried): one construct maps, the other rides along.
-ex:email a owl:DatatypeProperty,
-        owl:InverseFunctionalProperty,
-        owl:FunctionalProperty ;
-    rdfs:domain ex:Customer ;
-    rdfs:range xsd:string .
-
-# customerName refines the in-namespace ex:fullName (-> "fullName") and equals
-# the external foaf:name (-> full IRI).
-ex:customerName a owl:DatatypeProperty ;
-    rdfs:domain ex:Customer ;
-    rdfs:range xsd:string ;
-    rdfs:subPropertyOf ex:fullName ;
-    owl:equivalentProperty foaf:name .
-
-# placedBy's inverse is the in-namespace ex:places (-> "places").
-ex:placedBy a owl:ObjectProperty ;
-    rdfs:domain ex:Order ;
-    rdfs:range ex:Customer ;
-    owl:inverseOf ex:places .
-
-# referredBy is one-way and never self -- both characteristics carried.
-ex:referredBy a owl:ObjectProperty,
-        owl:AsymmetricProperty,
-        owl:IrreflexiveProperty ;
-    rdfs:domain ex:Customer ;
-    rdfs:range ex:Customer .
-```
-
-Below is the resulting model, trimmed to the carried blocks — each `data` value
-is the real emitted output, verbatim; the `# ...` lines stand in for elided
-structure. It attaches at three levels: on an **entity** (`Person`), on a
-**field** (`Customer.email`), and on a **relationship** (`referredBy`).
-(`customerName`'s field block is the one under **The shape** above; `placedBy`
-carries `{"owl:inverseOf": "places"}`.)
-
-```yaml
-datasets:
-  # entity level -- cross-namespace equivalence, on the Person entity:
-  - name: Person
-    # ... fields ...
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: |-
-          {
-            "owl:equivalentClass": [
-              "http://xmlns.com/foaf/0.1/Person"
-            ]
-          }
-  - name: Customer
-    # ... primary_key, unique_keys, other fields ...
-    fields:
-      # field level -- the single-valued flag on email, which is ALSO a native
-      # unique key (email is inverse-functional):
-      - name: email
-        # ... expression, datatype ...
-        custom_extensions:
-          - vendor_name: GOOGLE
-            data: |-
-              {
-                "owl:FunctionalProperty": true
-              }
-relationships:
-  # relationship level -- characteristics on the referredBy edge:
-  - name: referredBy
-    # ... endpoints ...
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: |-
-          {
-            "owl:IrreflexiveProperty": true,
-            "owl:AsymmetricProperty": true
-          }
-```
-
-Because the in-namespace references (`fullName`, `places`) were shortened, the
-**model header** also carries the base IRI so they can be reconstructed
-(`<base><name>` → `http://example.com/sales#fullName`):
-
-```yaml
-semantic_model:
-  - name: sales
-    # ... description, ai_context ...
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: |-
-          {
-            "owl:baseIri": "http://example.com/sales#"
-          }
-```
-
-A reference to an **external** vocabulary keeps its full IRI instead — as
-`Person`'s `owl:equivalentClass foaf:Person` and `customerName`'s
-`owl:equivalentProperty foaf:name` both show above
-(`"http://xmlns.com/foaf/0.1/Person"`, `"http://xmlns.com/foaf/0.1/name"`); no
-base IRI is needed to rebuild them.
-
-**Prefix → namespace** (the `owl:` / `rdfs:` on the *keys*; reconstruct an
-in-namespace *value* as `<base><name>`, where `<base>` is the model's
-`owl:baseIri` custom-extension key — a cross-namespace value is already a full
-IRI):
-
-| Prefix | Namespace IRI |
-|---|---|
-| `owl:` | `http://www.w3.org/2002/07/owl#` |
-| `rdfs:` | `http://www.w3.org/2000/01/rdf-schema#` |
-
-Blank-node forms are **not** carried: an `owl:equivalentClass` (or
-`rdfs:subClassOf`) whose object is a class *expression* (`owl:intersectionOf`, an
-`owl:Restriction`, …) is a definition rather than a plain cross-reference, so it
-is out of scope (see [Limitations](#limitations)).
+  imported** (see [Limitations](#limitations)).
 
 ## 4. Going from ontology to a running graph (binding)
 
@@ -639,13 +390,14 @@ and they belong in different places:
    [binding profile](profiles.md): a document in the same schema, kept beside the
    model as `<model>.profiles/<name>.yaml`, that adds *only* the binding and
    leaves the logical model untouched. A profile may set `source`, field
-   `expression`, `unbound`, and `deployment_target` — nothing logical (a
-   `relationships` block in a profile is rejected). The model and the profile
-   merge by name at push time:
+   `expression`, and `deployment_target` — nothing logical (a `relationships`
+   block in a profile is rejected). A field the profile does not bind is left
+   unbound; there is no separate flag. The model and the profile merge by name at
+   push time:
 
    ```yaml
    # sales.profiles/warehouse.yaml — physical binding for the sales model
-   version: 0.2.0.dev0
+   version: 0.2.0.dev0/google
    semantic_model:
      - name: sales
        deployment_target: //bigquery.googleapis.com/projects/myproj/datasets/sales/propertyGraphs/sales
@@ -680,38 +432,39 @@ Three different situations hide in "not covered": constructs already read but no
 yet resolved all the way downstream, constructs not read but reachable next, and
 constructs out of scope.
 
-**Read now — only downstream resolution is pending.** These are not dropped; the
-importer handles them today, and the remaining work is a later step, not in the
-import:
+**Read now — only downstream resolution is pending.** The **class hierarchy**
+(`rdfs:subClassOf`) maps to entity `extends` (see [Class
+hierarchies](#class-hierarchies-rdfssubclassof)); the importer handles it today
+and the remaining work is downstream, not in the import:
 
-- **Class hierarchy** (`rdfs:subClassOf`) maps to dataset `extends` (see
-  [Class hierarchies](#class-hierarchies-rdfssubclassof)). Downstream:
-  - **BigQuery** push resolves it into node-table labels, inherited fields
-    flattened down (see [Class hierarchies (`extends` →
-    labels)](reference.md#class-hierarchies-extends--labels)).
-  - **Knowledge Catalog** is the follow-on — KC push still publishes each entry
-    with only its own fields.
-- **Constructs with no native home** are **carried verbatim** as
-  `custom_extensions` rather than dropped — inert on push, and promoting any to a
-  native concept is the follow-on (see [Constructs carried as custom
-  extensions](#constructs-carried-as-custom-extensions-not-yet-native)):
-  - **Property inheritance** — `rdfs:subPropertyOf`.
-  - **Cross-references** — `owl:inverseOf`, `owl:equivalentClass`,
-    `owl:disjointWith`, `owl:equivalentProperty`, `owl:propertyDisjointWith`.
-  - **Property characteristics** — symmetric / transitive / functional /
-    reflexive / irreflexive / asymmetric.
-  - **Enumerations** (`owl:oneOf`) and **property chains**
-    (`owl:propertyChainAxiom`).
-  - **Set-level axioms** — `owl:AllDisjointClasses`,
-    `owl:AllDisjointProperties`, `owl:AllDifferent` (carried on the model).
-  - **Per-term annotations** — `rdfs:seeAlso`, `rdfs:isDefinedBy`,
-    `owl:deprecated`, `owl:versionInfo`.
+- **BigQuery** push resolves it into node-table labels, inherited fields
+  flattened down (see [Class hierarchies (`extends` →
+  labels)](reference.md#class-hierarchies-extends--labels)).
+- **Knowledge Catalog** is the follow-on — KC push still publishes each entry
+  with only its own fields.
 
-**Not read yet — the next candidate for carriage.** Cardinality
-(`owl:minCardinality` / `owl:maxCardinality`) lives on an anonymous
-`owl:Restriction` reached through `rdfs:subClassOf` — the last blank-node shape
-the converter does not yet read. Carrying it needs an `owl:Restriction` reader
-joined back to its class.
+**Not imported — dropped.** OWL can state things the semantic model has no native
+slot for. The importer reads them but does **not** carry them (an earlier version
+rode them along as `custom_extensions`; that was removed so an imported model is a
+clean semantic model). To keep any of these, model them natively after import.
+Dropped:
+
+- **Property inheritance** — `rdfs:subPropertyOf`.
+- **Cross-references** — `owl:inverseOf`, `owl:equivalentClass`,
+  `owl:disjointWith`, `owl:equivalentProperty`, `owl:propertyDisjointWith`.
+- **Property characteristics** — symmetric / transitive / functional /
+  reflexive / irreflexive / asymmetric.
+- **Enumerations** (`owl:oneOf`) and **property chains**
+  (`owl:propertyChainAxiom`).
+- **Set-level axioms** — `owl:AllDisjointClasses`, `owl:AllDisjointProperties`,
+  `owl:AllDifferent`.
+- **Per-term annotations** — `rdfs:seeAlso`, `rdfs:isDefinedBy`,
+  `owl:deprecated`, `owl:versionInfo`.
+
+**Not read yet.** Cardinality (`owl:minCardinality` / `owl:maxCardinality`)
+lives on an anonymous `owl:Restriction` reached through `rdfs:subClassOf` — the
+last blank-node shape the converter does not yet read. Reading it needs an
+`owl:Restriction` reader joined back to its class.
 
 **Not read — out of scope.** Richer OWL/RDF beyond the schema-shaped subset this
 converter targets:
