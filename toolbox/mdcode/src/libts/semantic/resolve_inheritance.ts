@@ -137,16 +137,15 @@ function localizeInheritedField(field: Field, ancestor: string): Field {
 // read from the pre-mutation snapshot so resolution is order-independent.
 //
 // A parent edge that points back to `start` is a cycle (warned, skipped so the
-// walk terminates); a parent that is not an entity in the model is warned and
-// excluded (an emitter cannot label with a signature it does not have). A node
-// re-reached through a second path (a diamond) is simply skipped -- it is
-// already included at its nearest distance.
+// walk terminates); a parent that is not an entity in the model is a hard error
+// (an emitter cannot label with a signature it does not have, and a typo must
+// not silently drop inheritance). A node re-reached through a second path (a
+// diamond) is simply skipped -- it is already included at its nearest distance.
 function transitiveAncestors(
     start: string, byName: Map<string, Entity>,
     directParents: Map<string, string[]>, warnings: string[]): string[] {
   const result: string[] = [];
   const seen = new Set<string>([start]);
-  const missingWarned = new Set<string>();
 
   // Queue of (child that declared the edge, parent) so a cycle warning can name
   // the offending child. Seeded with `start`'s direct parents in declared
@@ -163,13 +162,9 @@ function transitiveAncestors(
       continue;
     }
     if (!byName.has(name)) {
-      if (!missingWarned.has(name)) {
-        missingWarned.add(name);
-        warnings.push(
-            `entity '${from}' extends unknown entity '${name}'; it is not ` +
-            `defined in the model, so it is ignored`);
-      }
-      continue;
+      throw new Error(
+          `entity '${from}' extends unknown entity '${name}'; it is not ` +
+          `defined in the model`);
     }
     if (seen.has(name)) continue;  // diamond: already included at its nearest
     seen.add(name);
