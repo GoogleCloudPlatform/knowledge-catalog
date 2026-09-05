@@ -133,16 +133,18 @@ that reads it is unavailable there rather than reading a null. Keeping the two
 apart is what lets a query fail against a store that cannot answer it instead of
 returning a blank that reads like real data.
 
-**Leaving a field unbound is explicit.** A profile leaves a field unbound in one
-of two ways. The logical model declares the field, and no profile that omits a
-column for it has it until one binds it. Alternatively, a profile that would
-otherwise inherit a column sets `unbound: true` on the field to drop it. Silently
-omitting a field that another profile binds does neither — the field stays
-declared and simply has no column under the omitting profile, which is caught if
-a metric needs it. When the source table a profile binds is missing or
+**A profile binds only what its store serves; the rest is unbound.** A profile
+is authoritative for the model's physical bindings: a field the profile gives an
+`expression` is bound, and a field the profile omits is unbound — there is no
+separate flag. (Selecting a named profile also clears any column binding written
+inline in the logical model, so the profile alone decides what is bound; the
+logical model stays where meaning is declared, the profile where columns are.) So
+the operational profile below binds `availableCredit` and omits `lifetimeValue`,
+and the analytical profile does the reverse. A field's absence is not silent: a
+metric or relationship that needs an unbound field is reported as unavailable
+under that profile. When the source table a profile binds is missing or
 inaccessible, validation fails and names it; a mistyped column name resolves to a
 real table and so surfaces at deploy, when BigQuery rejects the generated graph.
-So a forgotten binding is caught, and an intentional non-binding is written down.
 
 ## File layout
 
@@ -176,7 +178,7 @@ declared here, though no single store carries both:
 
 ```yaml
 # commerce.yaml — logical model
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
     entities:
@@ -208,11 +210,11 @@ semantic_model:
 
 The analytical binding points the model at the BigQuery warehouse. The warehouse
 carries the modeled `lifetimeValue` and does not hold live credit, so
-`availableCredit` is `unbound`:
+`availableCredit` is left unbound (omitted below):
 
 ```yaml
 # commerce.profiles/analytical.yaml — BigQuery bindings
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
     deployment_target: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/propertyGraphs/commerce
@@ -223,7 +225,7 @@ semantic_model:
           - { name: key,             expression: c_custkey }
           - { name: name,            expression: c_name }
           - { name: lifetimeValue,   expression: c_ltv }
-          - { name: availableCredit, unbound: true }
+          # availableCredit is omitted -> unbound under this profile
       - name: Order
         source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
         fields:
@@ -238,7 +240,7 @@ holds the same customers under different table and column names, binds the live
 
 ```yaml
 # commerce.profiles/operational.yaml — Spanner bindings
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
     deployment_target: //spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/propertyGraphs/commerce
@@ -249,7 +251,7 @@ semantic_model:
           - { name: key,             expression: CustomerId }
           - { name: name,            expression: FullName }
           - { name: availableCredit, expression: AvailableCredit }
-          - { name: lifetimeValue,   unbound: true }
+          # lifetimeValue is omitted -> unbound under this profile
       - name: Order
         source: //spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/tables/Orders
         fields:
@@ -267,8 +269,8 @@ picks its own backend. The two bindings answer different parts of the same model
 - `order_count` depends only on `Order.key`, bound under both bindings, so it is
   available under either.
 - `avg_lifetime_value` depends on `Customer.lifetimeValue`. The warehouse binds
-  it, so the metric is available analytically; the operational store marks it
-  unbound, so the metric is unavailable there.
+  it, so the metric is available analytically; the operational store omits it, so
+  it is unbound there and the metric is unavailable.
 - `availableCredit` is bound only operationally, so it — and any metric written
   on top of it — is available under the operational binding and absent under the
   analytical one.
@@ -279,12 +281,14 @@ picks its own backend. The two bindings answer different parts of the same model
   `fields`; these merge onto the logical model **by `name`**. A profile never
   carries a `relationship` or a `metric` — those are logical, so they live once
   in the model and a profile that sets one is rejected.
-- An entity or field named only in the logical model is carried through
-  unchanged; a profile element whose `name` is not in the logical model is
-  rejected.
+- An entity or field named only in the logical model keeps its declaration,
+  but any inline column binding is cleared unless the profile re-declares it;
+  a profile element whose `name` is not in the logical model is rejected.
 - Scalars — `source`, `expression`, `deployment_target` — **replace**.
-- A field with `unbound: true` in a profile **drops** any column for that field
-  under that profile.
+- A field the profile does not bind is **unbound** under that profile — selecting
+  a profile clears the logical model's inline column bindings, so only what the
+  profile binds is bound. There is no `unbound` flag; omission is how a field is
+  left unbound.
 - Profiles are **binding-only**: a profile sets physical facets and may leave a
   field unbound. It cannot add or remove entities, fields, or metrics, change
   the grain or graph shape, or change what anything means.
@@ -353,10 +357,13 @@ writes nothing.
 
 ## Notes
 
-**The deployment target is a first-class key.** So a profile can set it readably,
-`deployment_target:` is a model key rather than a JSON string inside a `GOOGLE
-custom_extensions` block. The custom-extension form is still accepted and means
-the same thing.
+**The deployment target is a first-class key.** Under the extended
+`0.2.0.dev0/google` profile — the version these binding examples use —
+`deployment_target:` is a native model key, so a profile sets it readably. The
+vanilla `0.2.0.dev0` profile has no native key for it; there the target rides in a
+`GOOGLE` `custom_extensions` block instead. The two are the same target written
+two ways, chosen by the document's `version` (see [model
+spec](model_spec.md#1-status-and-baseline)).
 
 **Bare-string expressions.** A field's `expression` may be written as a one-line
 string (`expression: c_name`) instead of the full per-dialect object. The two
