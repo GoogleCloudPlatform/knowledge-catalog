@@ -330,11 +330,11 @@ describe('class hierarchies map rdfs:subClassOf to entity extends', () => {
         expect(managedBy.customExtensions).toBeUndefined();
       });
 
-  test('an extends parent that is not a class is recorded but warned', () => {
+  test('an extends parent that is not a class is dropped with a warning', () => {
     // subClassOf a superclass that is not an owl:Class in this ontology (a
-    // typo, or an external superclass) is still recorded as `extends`, but --
-    // like every other unresolved cross-reference in the converter -- it is
-    // warned about rather than emitted silently.
+    // typo, or an external superclass) cannot be resolved, and the loader
+    // hard-fails on an unknown supertype -- so the importer drops the link,
+    // warning about it, rather than emit a model that could not be pushed.
     const ttl = [
       '@prefix owl:  <http://www.w3.org/2002/07/owl#> .',
       '@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .',
@@ -346,10 +346,28 @@ describe('class hierarchies map rdfs:subClassOf to entity extends', () => {
                w => w.includes('Customer') && w.includes('Persn') &&
                    w.includes('subClassOf')))
         .toBe(true);
-    // Still recorded as declared -- the warning does not drop the link.
+    // Dropped -- the unresolvable link is not emitted, so the model loads.
     const customer =
         load(yaml).models[0].entities.find(e => e.name === 'Customer')!;
-    expect(customer.extends).toEqual(['Persn']);
+    expect(customer.extends).toBeUndefined();
+  });
+
+  test('extends keeps the known parents and drops only the unknown one', () => {
+    // A class extending both a real owl:Class and an unresolvable superclass
+    // keeps the resolvable link and drops the other (warning about it), so the
+    // model still loads with the inheritance it can honour.
+    const ttl = [
+      '@prefix owl:  <http://www.w3.org/2002/07/owl#> .',
+      '@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .',
+      '@prefix ex:   <http://example.com/hr#> .',
+      'ex:Person a owl:Class .',
+      'ex:Customer a owl:Class ; rdfs:subClassOf ex:Person, ex:Persn .',
+    ].join('\n');
+    const {yaml, warnings} = convertOwlToOsi(ttl, 'mixed');
+    expect(warnings.some(w => w.includes('Persn'))).toBe(true);
+    const customer =
+        load(yaml).models[0].entities.find(e => e.name === 'Customer')!;
+    expect(customer.extends).toEqual(['Person']);
   });
 
   test(
