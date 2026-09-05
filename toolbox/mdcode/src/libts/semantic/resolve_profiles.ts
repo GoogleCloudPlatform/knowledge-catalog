@@ -51,7 +51,7 @@ const PROFILE_MODEL_KEYS = new Set([
   'name', 'version', 'deployment_target', 'entities', 'datasets',
 ]);
 const PROFILE_ENTITY_KEYS = new Set(['name', 'source', 'fields']);
-const PROFILE_FIELD_KEYS = new Set(['name', 'expression', 'unbound']);
+const PROFILE_FIELD_KEYS = new Set(['name', 'expression']);
 
 /**
  * Overlays `profileDoc` onto `logicalDoc`, matching models, entities, fields by
@@ -89,6 +89,10 @@ export function mergeProfile(
     }
   }
 
+  // Clear the logical clone's inline field bindings before overlaying the
+  // profile, so the profile alone decides what is bound (see below).
+  stripInlineFieldExpressions(merged);
+
   for (const pm of profile.semantic_model) {
     if (!pm || typeof pm !== 'object') continue;
     const lm = logicalByName.get(pm.name);
@@ -103,10 +107,6 @@ export function mergeProfile(
     if (err) return {doc: merged, warnings, error: err};
   }
 
-  // A field the profile neither bound nor marked unbound is carried through from
-  // the logical model with no column -- unbound under this profile. Mark it so
-  // the merged document is self-describing and the availability pass sees it.
-  markOmittedFieldsUnbound(merged);
   return {doc: merged, warnings};
 }
 
@@ -173,11 +173,6 @@ function mergeField(
       return declError(profileName, `field '${entityName}.${pf.name}'`, k);
     }
   }
-  if (pf.unbound === true) {
-    lf.unbound = true;
-    delete lf.expression;
-    return undefined;
-  }
   if (pf.expression !== undefined) {
     if (!isBareColumnRef(pf.expression)) {
       return `profile '${profileName}': field '${entityName}.${
@@ -185,15 +180,16 @@ function mergeField(
           `SQL; the computation is the logical model's to define`;
     }
     lf.expression = pf.expression;
-    delete lf.unbound;
   }
+  // A field the profile does not bind keeps no expression -- unbound under this
+  // profile (a field is unbound exactly when it carries no expression).
   return undefined;
 }
 
 function declError(profileName: string, where: string, key: string): string {
   return `profile '${profileName}': ${where} sets '${key}', a logical ` +
       `declaration the model owns; a profile may set only physical bindings ` +
-      `(source, expression, unbound, deployment_target)`;
+      `(source, expression, deployment_target)`;
 }
 
 // A profile's field expression must be a BARE column reference (e.g. `c_name`),
@@ -228,17 +224,22 @@ function indexByName(list: unknown): Map<string, any> {
   return m;
 }
 
-function markOmittedFieldsUnbound(doc: any): void {
+// A profile is authoritative for a model's physical bindings, so a field is
+// bound under the merged model only if the profile binds it. This clears every
+// inline field expression from the logical clone before the profile is
+// overlaid, so a field the profile does not bind is left unbound (§7.3,
+// "omitted is unbound"). Only the per-field column binding is cleared; the
+// logical model's meaning -- names, types, relationships, metric formulas -- is
+// untouched. A field is unbound exactly when it carries no expression; there is
+// no separate flag.
+function stripInlineFieldExpressions(doc: any): void {
   for (const m of doc.semantic_model ?? []) {
     if (!m || typeof m !== 'object') continue;
     const entities = m.entities ?? m.datasets ?? [];
     for (const e of entities) {
       if (!e || typeof e !== 'object' || !Array.isArray(e.fields)) continue;
       for (const f of e.fields) {
-        if (!f || typeof f !== 'object') continue;
-        if (f.expression === undefined && f.unbound !== true) {
-          f.unbound = true;
-        }
+        if (f && typeof f === 'object') delete f.expression;
       }
     }
   }

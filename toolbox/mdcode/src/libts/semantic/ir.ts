@@ -141,17 +141,15 @@ export interface Field {
   expression?: string;             // target/canonical (GoogleSQL-valid) SQL
   importedExpression?: string;     // original vendor SQL, verbatim
   importedDialect?: string;        // dialect of `importedExpression` (e.g. 'SNOWFLAKE')
-  // Marks a field declared logically but with NO physical column under the
-  // current binding: structurally absent, not null. A metric, relationship, or
-  // action that reads it is unavailable here rather than reading a null (see
-  // the binding-profiles guide). An unbound field carries no `expression`.
-  //
-  // This is the field-level analogue of an entity's `abstract` (a whole class
-  // with no table) and, like the OWL importer's `unbound:` source placeholder,
-  // means "should be bound by some binding, and reading it where it is not is an
-  // error" -- distinct from a bound field whose value merely happens to be null.
-  unbound?: boolean;
+  // A field with NO physical column under the current binding is UNBOUND:
+  // structurally absent, not null. There is no explicit flag -- a field is
+  // unbound exactly when it carries no `expression` (and no
+  // `importedExpression`); see fieldBinding. A metric, relationship, or action
+  // that reads an unbound field is unavailable here rather than reading a null
+  // (see the binding-profiles guide). This is the field-level analogue of an
+  // entity's `abstract` (a whole class with no table).
   dimension?: Dimension;           // dimension metadata (e.g. temporal role)
+
   label?: string;                  // human display label (distinct from name/description)
   description?: string;
   type?: DataType;                 // logical datatype (the open format's `datatype`)
@@ -196,13 +194,14 @@ export function isTimeDimension(field: Field): boolean {
 // undefined when the field is unbound (structurally absent -- no column). A
 // field's target/canonical `expression` wins; a field awaiting transpilation
 // falls back to its imported vendor expression, which still names a real column,
-// so it is bound rather than unbound. `unbound: true` means no column at all.
-// This is the single source of truth for "is this field bound"; availability
-// pruning and the BigQuery generator both consult it so they never disagree.
+// so it is bound rather than unbound. A field with neither is unbound (no
+// column at all). This is the single source of truth for "is this field bound";
+// availability pruning and the BigQuery generator both consult it so they never
+// disagree.
 export function fieldBinding(field: Field): string | undefined {
-  if (field.unbound) return undefined;
   return field.expression ?? field.importedExpression;
 }
+
 
 /**
  * A relationship: a directed foreign-key edge in the semantic graph, from
