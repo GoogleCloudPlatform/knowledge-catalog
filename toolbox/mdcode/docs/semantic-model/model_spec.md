@@ -282,36 +282,37 @@ string here (a relaxation); authored documents SHOULD use an Ossie dialect name.
 
 ## 3. Conformance summary
 
-Every construct, at a glance. **In Ossie?** is whether Ossie `0.2.0.dev0` defines
-it (per the vendored core schema — see [§1](#1-status-and-baseline)). **kcmd
-status** is this profile's relationship to it: *as-is* (adopted unchanged),
-*relaxed* (accepted but looser than Ossie, [§4](#4-narrowings-and-relaxations)), *narrowed*
-(accepted but stricter, [§4](#4-narrowings-and-relaxations)), *extension* (added by `kcmd`,
-[§5](#5-extensions)), or *reserved* (recognized internally, not authorable in
-`0.2.0.dev0`).
+Every construct, at a glance, measured against **Ossie `0.2.0.dev0`** — the
+vanilla baseline (see [§1](#1-status-and-baseline)). The **OSI** column is what
+that baseline defines, where a `—` means Ossie does not define the construct at
+all. The **Google extension** column is how this profile differs: *same* (adopted
+unchanged), *optional* (a relaxation, [§4](#4-narrowings-and-relaxations)),
+*stricter* (a narrowing, [§4](#4-narrowings-and-relaxations)), *added* (an
+extension, [§5](#5-extensions)), or *rejected* / *not authorable* (excluded).
+**Why / where** gives the reason and the section with the detail.
 
-| Construct | In Ossie? | kcmd status | Where |
+| Feature | OSI (`0.2.0.dev0`) | Google extension | Why / where |
 |---|---|---|---|
-| `semantic_model`, `name`, `description` | yes | as-is | [§2](#2-document-shape) |
-| `datasets` | yes | as-is | [§2.1](#21-dataset-entity) |
-| `entities` (alias for `datasets`) | no | extension (alias, /google only) | [§5](#5-extensions) |
-| field `name`, `label`, `dimension` (`is_time`) | yes | as-is | [§2.1.1](#211-field) |
-| `datatype` + its vocabulary | yes | as-is (identical, closed) | [§2.1.1](#211-field) |
-| `primary_key`, `unique_keys` | yes | as-is | [§2.1](#21-dataset-entity) |
-| `extends` | no | extension | [§2.1.2](#212-inheritance-extends), [§5](#5-extensions) |
-| `abstract` | no | extension | [§5](#5-extensions) |
-| relationship `name`, `from`, `to` | yes | as-is | [§2.2](#22-relationship) |
-| relationship `from_columns` / `to_columns` | yes (required) | relaxed to optional | [§2.2](#22-relationship), [§4](#4-narrowings-and-relaxations) |
-| relationship M:N (`association`) | no | reserved (IR only) | [§2.2](#22-relationship) |
-| `metrics`, metric `expression` (required) | yes | as-is; graph-bound narrowed | [§2.3](#23-metric), [§4](#4-narrowings-and-relaxations) |
-| `expression.dialects` | yes (closed enum) | as-is; `dialect` string relaxed | [§2.5](#25-expressions) |
-| field `expression` (column binding) | yes (required) | relaxed to optional | [§7](#7-the-binding-layer), [§4](#4-narrowings-and-relaxations) |
-| `source` (dataset table binding) | yes (required) | relaxed to optional | [§7.1](#71-table-sources), [§4](#4-narrowings-and-relaxations) |
-| `ai_context` (`instructions`, `synonyms`, `examples`) | yes | as-is (`examples` relaxed) | [§2.4](#24-ai_context) |
-| `custom_extensions` (`vendor_name`, `data`) | yes | as-is; vanilla-only carrier | [§6](#6-the-extension-mechanism) |
-| `deployment_target` | no | extension (native, /google) | [§5](#5-extensions), [§7.2](#72-deployment-target) |
-| binding profiles | no | extension | [§7.3](#73-binding-profiles) |
-| single model per entry group | — | narrowed | [§4](#4-narrowings-and-relaxations) |
+| `semantic_model`, `name`, `description` | defined | same | [§2](#2-document-shape) |
+| `datasets` | defined | same | [§2.1](#21-dataset-entity) |
+| `entities` (alias for `datasets`) | — | added (alias) | readability; sugar, `/google` only · [§5](#5-extensions) |
+| field `name`, `label`, `dimension` (`is_time`) | defined | same | [§2.1.1](#211-field) |
+| `datatype` + vocabulary | closed enum | same (identical set) | [§2.1.1](#211-field) |
+| `primary_key`, `unique_keys` | defined | same | [§2.1](#21-dataset-entity) |
+| `extends` | — | added | class inheritance; `/google` only · [§2.1.2](#212-inheritance-extends), [§5](#5-extensions) |
+| `abstract` | — | added | supertype with no table; `/google` only · [§5](#5-extensions) |
+| relationship `name`, `from`, `to` | defined | same | [§2.2](#22-relationship) |
+| relationship `from_columns` / `to_columns` | required | optional | model before binding; none = logical edge · [§4.2](#42-relaxations-looser-than-ossie) |
+| relationship M:N (`association`) | — | not authorable (reserved) | no M:N syntax yet · [§2.2](#22-relationship) |
+| `metrics`, metric `expression` | required | same; graph-bound stricter | a graph measure binds one node and aggregate · [§4.1](#41-narrowings-stricter-than-ossie) |
+| `expression.dialects` | closed enum | any dialect string | tolerate imported / newer input · [§4.2](#42-relaxations-looser-than-ossie) |
+| field `expression` (column binding) | required | optional | model before binding; unbound is pruned · [§4.2](#42-relaxations-looser-than-ossie), [§7](#7-the-binding-layer) |
+| `source` (table binding) | required | optional | logical-only models; graph deploy still needs it · [§4.2](#42-relaxations-looser-than-ossie), [§7.1](#71-table-sources) |
+| `ai_context` (`instructions`, `synonyms`, `examples`) | `examples` are strings | same; `examples` any shape | tolerate imports; non-strings dropped · [§2.4](#24-ai_context), [§4.2](#42-relaxations-looser-than-ossie) |
+| `custom_extensions` (`vendor_name`, `data`) | the extension carrier | rejected | `/google` uses native keys; nothing to carry · [§6](#6-the-extension-mechanism) |
+| `deployment_target` | — | added | OSI omits deployment; vanilla carries it in `custom_extensions` · [§5](#5-extensions), [§7.2](#72-deployment-target) |
+| binding profiles | — | added | one model, many stores · [§7.3](#73-binding-profiles) |
+| multiple models per document | a list (many) | exactly one | entry group = model's identity · [§4.1](#41-narrowings-stricter-than-ossie) |
 
 ## 4. Narrowings and relaxations
 
