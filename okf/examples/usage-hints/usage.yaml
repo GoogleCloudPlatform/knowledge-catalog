@@ -1,0 +1,18 @@
+version: 1
+usage_hints:
+  - concept: metrics/revenue.md
+    intent: revenue_calculation
+    conditions:
+      period: monthly
+      aggregation: total
+    access_count: 514
+    successful_count: 462
+    last_accessed: 2026-08-20T08:30:00Z
+  - concept: metrics/regional-revenue.md
+    intent: revenue_calculation
+    conditions:
+      group_by: region
+      aggregation: total
+    access_count: 287
+    successful_count: 241
+    last_accessed: 2026-08-19T16:42:11Z
