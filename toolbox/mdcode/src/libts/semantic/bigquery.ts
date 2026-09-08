@@ -19,7 +19,7 @@
 // See: https://docs.cloud.google.com/bigquery/docs/graph-measures
 //
 
-import {AiContext, Association, Entity, Field, fieldBinding, isTimeDimension, Metric, Relationship, SemanticModel,} from './ir';
+import {AiContext, Entity, Field, fieldBinding, isTimeDimension, Metric, Relationship, SemanticModel,} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
 import {referencedEntityNames, stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
@@ -827,11 +827,10 @@ function physicalColumns(
 function renderEdgeTable(
     rel: Relationship, entitiesByName: Map<string, Entity>,
     opts: GenerateOptions, warnings: string[]): string {
-  // A many-to-many relationship is backed by its own association table rather
-  // than a source entity's foreign key; render it from that block.
-  if (rel.association) {
-    return renderAssociationEdge(
-        rel, rel.association, entitiesByName, opts, warnings);
+  // A many-to-many relationship runs through a table of its own rather than
+  // over a source entity's foreign key; render it from that table.
+  if (rel.through) {
+    return renderThroughEdge(rel, rel.through, entitiesByName, opts, warnings);
   }
   // A relationship is a direct foreign key: the SOURCE entity's own base table
   // backs the edge (one edge row per source row). Its FK columns
@@ -890,19 +889,19 @@ function renderEdgeTable(
 }
 
 
-// Renders a many-to-many edge backed by an association (junction) table. Unlike
-// a direct FK, the edge has its OWN backing table and KEY, each endpoint's
-// SOURCE/DESTINATION KEY names the junction columns referencing that entity's
-// declared key, and the junction's own `fields` become edge PROPERTIES.
-function renderAssociationEdge(
-    rel: Relationship, assoc: Association, entitiesByName: Map<string, Entity>,
+// Renders a many-to-many edge, which runs through a table of its own. Unlike a
+// direct FK, the edge has its OWN backing table and KEY, each endpoint's
+// SOURCE/DESTINATION KEY names the columns on that table referencing the
+// entity's declared key, and the edge's own `fields` become PROPERTIES.
+function renderThroughEdge(
+    rel: Relationship, through: string, entitiesByName: Map<string, Entity>,
     opts: GenerateOptions, warnings: string[]): string {
-  const backing = qualifyTable(
-      assoc.dataSource, opts, warnings, `relationship '${rel.name}'`);
-  if (!assoc.keys?.length) {
+  const backing =
+      qualifyTable(through, opts, warnings, `relationship '${rel.name}'`);
+  if (!rel.keys?.length) {
     warnings.push(
-        `relationship '${rel.name}': association table has no KEY; the edge ` +
-        `table will be invalid (an edge requires a KEY)`);
+        `relationship '${rel.name}': the table it runs through has no KEY; ` +
+        `the edge table will be invalid (an edge requires a KEY)`);
   }
 
   // The REFERENCES target is each endpoint entity's declared key; fall back to
@@ -920,16 +919,17 @@ function renderAssociationEdge(
 
   const lines = [
     line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
-    line(2, `KEY(${assoc.keys.map(quoteIfReserved).join(', ')})`),
+    line(2, `KEY(${(rel.keys ?? []).map(quoteIfReserved).join(', ')})`),
     line(
         2,
-        `SOURCE KEY(${assoc.sourceColumns.map(quoteIfReserved).join(', ')}) ` +
+        `SOURCE KEY(${
+            rel.source.columns.map(quoteIfReserved).join(', ')}) ` +
             `REFERENCES ${quoteIfReserved(rel.source.entity)}(${
                 refColumns(rel.source)})`),
     line(
         2,
         `DESTINATION KEY(${
-            assoc.destinationColumns.map(quoteIfReserved).join(', ')}) ` +
+            rel.destination.columns.map(quoteIfReserved).join(', ')}) ` +
             `REFERENCES ${quoteIfReserved(rel.destination.entity)}(${
                 refColumns(rel.destination)})`),
   ];
@@ -942,9 +942,9 @@ function renderAssociationEdge(
       rel.aiContext?.synonyms);
   if (labelOpts) lines.push(line(2, labelOpts));
 
-  // The junction's own non-key fields are the edge's properties.
+  // The through table's own non-key fields are the edge's properties.
   const properties =
-      (assoc.fields ?? []).map(f => renderFieldProperty(f, rel.name));
+      (rel.fields ?? []).map(f => renderFieldProperty(f, rel.name));
   if (properties.length) lines.push(propertiesBlock(properties));
 
   return lines.join('\n');

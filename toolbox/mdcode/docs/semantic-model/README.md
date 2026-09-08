@@ -114,6 +114,14 @@ Field and relationship names are the business vocabulary — `order_id`,
 metric's `expression` may be a bare formula over the logical fields or the fuller
 per-dialect form. `entities` may also be written `datasets` (the two are interchangeable under the `/google` version).
 
+A relationship that pairs many rows on each side — a student takes many courses,
+a course has many students — adds `through`, naming the table that holds the
+pairs. `from_columns` and `to_columns` then reach each side from that table
+rather than from the endpoints, and the relationship may carry a key of its own
+plus any fields the pairing itself has (an enrollment's grade, say). Both graphs
+deploy it as an edge table over that table. See
+[Model spec §2.2.1](model_spec.md#221-many-to-many-through).
+
 Entities can **extend** other entities (`extends: [Parent]`); push flattens the
 supertype's fields down and expresses the hierarchy as graph labels, so a query
 against the supertype gathers every subtype. See

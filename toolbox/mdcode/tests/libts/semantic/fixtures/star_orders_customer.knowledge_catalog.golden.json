@@ -160,6 +160,29 @@
           }
         }
       }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.relationships.orders_to_customer",
+      "entryType": "projects/sqlgen-testing/locations/global/entryTypes/semantic-relationship",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "orders_to_customer"
+      },
+      "aspects": {
+        "sqlgen-testing.global.semantic-relationship": {
+          "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-relationship",
+          "data": {
+            "fromEntity": "orders",
+            "toEntity": "customer",
+            "fromColumns": [
+              "o_custkey"
+            ],
+            "toColumns": [
+              "c_custkey"
+            ]
+          }
+        }
+      }
     }
   ],
   "entryLinks": [
@@ -204,7 +227,5 @@
       }
     }
   ],
-  "warnings": [
-    "relationship 'orders_to_customer': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'orders-to-customer'), not 'orders_to_customer'."
-  ]
+  "warnings": []
 }

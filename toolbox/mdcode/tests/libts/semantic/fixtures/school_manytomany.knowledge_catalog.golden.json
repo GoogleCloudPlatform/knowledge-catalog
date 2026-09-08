@@ -1,0 +1,139 @@
+{
+  "entries": [
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/school_graph",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-model",
+      "entrySource": {
+        "displayName": "school_graph",
+        "description": "Students, courses, and the enrollments that pair them"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-model": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-model",
+          "data": {}
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/school_graph.entities.students",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/school_graph",
+      "entrySource": {
+        "displayName": "students"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "source": {
+              "resources": [
+                "//bigquery.googleapis.com/projects/sqlgen-testing/datasets/bei_semantic_ir_verify/tables/students"
+              ]
+            }
+          }
+        },
+        "dataplex-types.global.schema": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema",
+          "data": {
+            "fields": [
+              {
+                "name": "student_id",
+                "dataType": "STRING",
+                "metadataType": "OTHER"
+              },
+              {
+                "name": "name",
+                "dataType": "STRING",
+                "metadataType": "OTHER"
+              }
+            ],
+            "primaryKey": {
+              "fields": [
+                "student_id"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/school_graph.entities.courses",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/school_graph",
+      "entrySource": {
+        "displayName": "courses"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "source": {
+              "resources": [
+                "//bigquery.googleapis.com/projects/sqlgen-testing/datasets/bei_semantic_ir_verify/tables/courses"
+              ]
+            }
+          }
+        },
+        "dataplex-types.global.schema": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema",
+          "data": {
+            "fields": [
+              {
+                "name": "course_id",
+                "dataType": "STRING",
+                "metadataType": "OTHER"
+              },
+              {
+                "name": "title",
+                "dataType": "STRING",
+                "metadataType": "OTHER"
+              }
+            ],
+            "primaryKey": {
+              "fields": [
+                "course_id"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/school_graph.relationships.enrollment",
+      "entryType": "projects/sqlgen-testing/locations/global/entryTypes/semantic-relationship",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/school_graph",
+      "entrySource": {
+        "displayName": "enrollment"
+      },
+      "aspects": {
+        "sqlgen-testing.global.semantic-relationship": {
+          "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-relationship",
+          "data": {
+            "fromEntity": "students",
+            "toEntity": "courses",
+            "through": "//bigquery.googleapis.com/projects/sqlgen-testing/datasets/bei_semantic_ir_verify/tables/enrollment",
+            "keys": [
+              "enrollment_id"
+            ],
+            "fromColumns": [
+              "student_id"
+            ],
+            "toColumns": [
+              "course_id"
+            ],
+            "fields": [
+              {
+                "name": "grade",
+                "dataType": "Opaque",
+                "description": "Letter grade",
+                "expression": "enrollment.grade"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "entryLinks": [],
+  "warnings": []
+}

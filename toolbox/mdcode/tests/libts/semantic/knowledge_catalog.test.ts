@@ -496,32 +496,31 @@ describe('model-level structure', () => {
 });
 
 
-describe('relationships map to schema-join entry links', () => {
-  // A two-entity model joined by a direct foreign key (orders.custkey ->
-  // customer.custkey), the common case the loader produces from
-  // `relationships`.
-  function directFkModel(): SemanticModel {
-    return {
-      name: 'm',
-      metrics: [],
-      entities: [
-        {name: 'orders', dataSource: 'p.d.orders', keys: ['o_key'], fields: []},
-        {
-          name: 'customer',
-          dataSource: 'p.d.customer',
-          keys: ['c_key'],
-          fields: []
-        },
-      ],
-      relationships: [{
-        name: 'orders-to-customer',
-        source: {entity: 'orders', columns: ['custkey']},
-        destination: {entity: 'customer', columns: ['c_key']},
-        description: 'each order belongs to a customer',
-      }],
-    };
-  }
+// A two-entity model joined by a direct foreign key (orders.custkey ->
+// customer.custkey), the common case the loader produces from `relationships`.
+function directFkModel(): SemanticModel {
+  return {
+    name: 'm',
+    metrics: [],
+    entities: [
+      {name: 'orders', dataSource: 'p.d.orders', keys: ['o_key'], fields: []},
+      {
+        name: 'customer',
+        dataSource: 'p.d.customer',
+        keys: ['c_key'],
+        fields: []
+      },
+    ],
+    relationships: [{
+      name: 'orders-to-customer',
+      source: {entity: 'orders', columns: ['custkey']},
+      destination: {entity: 'customer', columns: ['c_key']},
+      description: 'each order belongs to a customer',
+    }],
+  };
+}
 
+describe('relationships map to schema-join entry links', () => {
   test('a direct FK becomes one FOREIGN_KEY schema-join link', () => {
     const {entryLinks, warnings} =
         generateCatalogResources(directFkModel(), OPTS);
@@ -557,23 +556,14 @@ describe('relationships map to schema-join entry links', () => {
     expect(warnings.length).toBe(0);
   });
 
-  test(
-      'a many-to-many (association) edge is skipped and warned, no link',
-      () => {
-        const model = directFkModel();
-        model.relationships[0].association = {
-          dataSource: 'p.d.order_customer',
-          keys: ['id'],
-          sourceColumns: ['o_key'],
-          destinationColumns: ['c_key'],
-        };
-        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
-        expect(entryLinks.length).toBe(0);
-        expect(warnings.some(
-                   w => w.includes('orders-to-customer') &&
-                       w.includes('many-to-many')))
-            .toBe(true);
-      });
+  test('a many-to-many edge produces no link (it is an entry instead)', () => {
+    const {entryLinks, warnings} = generateCatalogResources(mnModel(), OPTS);
+    expect(entryLinks.length).toBe(0);
+    // Silently, because the edge is published -- as an entry, asserted in the
+    // many-to-many describe below. A warning here would say a supported
+    // construct was dropped.
+    expect(warnings.length).toBe(0);
+  });
 
   test('an edge to an unpublished entity is skipped and warned', () => {
     const model = directFkModel();
@@ -587,38 +577,185 @@ describe('relationships map to schema-join entry links', () => {
         .toBe(true);
   });
 
-  test('a column-less (purely logical) edge is skipped and warned, no link',
+  test('a column-less (purely logical) edge produces no link, silently', () => {
+    // An OWL import leaves an edge with no join columns. schema-join is a
+    // server CLOSED template, so rather than risk a rejected column-less aspect
+    // the emitter skips the link. Silently: the edge is still published, as an
+    // entry, so nothing is lost by having no link for it.
+    const model = directFkModel();
+    model.relationships[0].source.columns = [];
+    model.relationships[0].destination.columns = [];
+    const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+    expect(entryLinks.length).toBe(0);
+    expect(warnings.length).toBe(0);
+  });
+
+  test('a name that is not link-id-clean is slugged into the link id', () => {
+    // Underscores and uppercase are not valid in a link id, so the emitter
+    // slugs the name. No warning: the entry carries the authored name verbatim,
+    // and a pull reads the name from there, so the slug never reaches the
+    // author.
+    const model = directFkModel();
+    model.relationships[0].name = 'Orders_To_Customer';
+    const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+    expect(entryLinks.length).toBe(1);
+    expect(entryLinks[0].name!.endsWith('/entryLinks/m-orders-to-customer'))
+        .toBe(true);
+    expect(warnings.length).toBe(0);
+  });
+});
+
+
+// The same two entities paired through a table of their own instead of a
+// foreign key: an order reaches many customers and a customer is reached by
+// many orders, so the pairs live in `p.d.order_customer` with a `discount` of
+// their own.
+function mnModel(): SemanticModel {
+  return {
+    name: 'm',
+    metrics: [],
+    entities: [
+      {name: 'orders', dataSource: 'p.d.orders', keys: ['o_key'], fields: []},
+      {
+        name: 'customer',
+        dataSource: 'p.d.customer',
+        keys: ['c_key'],
+        fields: []
+      },
+    ],
+    relationships: [{
+      name: 'order-customer',
+      source: {entity: 'orders', columns: ['j_orderkey']},
+      destination: {entity: 'customer', columns: ['j_custkey']},
+      description: 'which customers an order reached',
+      through: 'p.d.order_customer',
+      keys: ['id'],
+      fields: [{name: 'discount', expression: 'j.discount', type: 'Decimal'}],
+    }],
+  };
+}
+
+// The sole semantic-relationship entry of a generated model.
+function relationshipEntry(model: SemanticModel) {
+  const {entries} = generateCatalogResources(model, OPTS);
+  const found = entries.filter(
+      e => e.entryType.endsWith('/entryTypes/semantic-relationship'));
+  expect(found.length).toBe(1);
+  return found[0];
+}
+
+// A relationship has no built-in Knowledge Catalog type of its own: schema-join
+// is an entry LINK, which holds one column pair and no name, and Dataplex has
+// no custom entry LINK types. Every relationship therefore publishes as an entry
+// of the custom `semantic-relationship` type, the same mechanism actions use.
+// See kc_relationships.ts.
+describe('a relationship becomes a semantic-relationship entry', () => {
+  const ASPECT = 'dest-proj.global.semantic-relationship';
+
+  test('the entry is typed, named and parented to the model anchor', () => {
+    const entry = relationshipEntry(mnModel());
+    expect(entry.name!.endsWith('/entries/m.relationships.order-customer'))
+        .toBe(true);
+    // The custom type lives in the DESTINATION project (kcmd init creates it
+    // there), not under dataplex-types with the built-in types.
+    expect(entry.entryType)
+        .toBe(
+            'projects/dest-proj/locations/global/entryTypes/semantic-relationship');
+    expect(entry.parentEntry!.endsWith('/entries/m')).toBe(true);
+    // The authored name rides the entry source verbatim, so unlike the
+    // schema-join link's id it is not normalized on the way back.
+    expect(entry.entrySource!.displayName).toBe('order-customer');
+    expect(entry.entrySource!.description)
+        .toBe('which customers an order reached');
+  });
+
+  test('the aspect carries both endpoints, the table and its columns', () => {
+    const entry = relationshipEntry(mnModel());
+    const aspect = entry.aspects![ASPECT];
+    expect(aspect.aspectType)
+        .toBe(
+            'projects/dest-proj/locations/global/aspectTypes/semantic-relationship');
+    const data = aspect.data!;
+    expect(data.fromEntity).toBe('orders');
+    expect(data.toEntity).toBe('customer');
+    // The table the edge runs through is addressed the way an entity's backing
+    // table is: the BigQuery linked-resource URI, not the dotted form.
+    expect(data.through)
+        .toBe(
+            '//bigquery.googleapis.com/projects/p/datasets/d/tables/order_customer');
+    expect(data.keys).toEqual(['id']);
+    expect(data.fromColumns).toEqual(['j_orderkey']);
+    expect(data.toColumns).toEqual(['j_custkey']);
+  });
+
+  test('edge properties ride the relationship aspect, not a schema aspect', () => {
+    // The entry's type is custom, so the built-in `schema` aspect type is not
+    // available to it (a pull derives the aspect base from the entry type's
+    // project). The edge's own fields therefore live on this aspect.
+    const entry = relationshipEntry(mnModel());
+    expect(Object.keys(entry.aspects!)).toEqual([ASPECT]);
+    expect(entry.aspects![ASPECT].data!.fields).toEqual([
+      {name: 'discount', dataType: 'Decimal', expression: 'j.discount'},
+    ]);
+  });
+
+  test('an untyped edge property is published as Opaque', () => {
+    const model = mnModel();
+    delete model.relationships[0].fields![0].type;
+    const data = relationshipEntry(model).aspects![ASPECT].data!;
+    expect(data.fields[0].dataType).toBe('Opaque');
+  });
+
+  test('ai_context.instructions ride the relationship aspect too', () => {
+    const model = mnModel();
+    model.relationships[0].aiContext = {instructions: 'one row per pairing'};
+    const entry = relationshipEntry(model);
+    expect(entry.aspects![ASPECT].data!.instructions).toBe('one row per pairing');
+    // Not the built-in guidelines aspect, which this entry type cannot require.
+    expect(Object.keys(entry.aspects!)).toEqual([ASPECT]);
+  });
+
+  test('the relationships prefix is owned, so a dropped edge is reconciled',
        () => {
-         // An OWL import leaves an edge with no join columns. schema-join is a
-         // server CLOSED template, so rather than risk a rejected column-less
-         // aspect the emitter skips the link (the edge publishes once join
-         // columns are added to the model).
-         const model = directFkModel();
-         model.relationships[0].source.columns = [];
-         model.relationships[0].destination.columns = [];
-         const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
-         expect(entryLinks.length).toBe(0);
-         expect(warnings.some(
-                    w => w.includes('orders-to-customer') &&
-                        w.includes('no join columns')))
-             .toBe(true);
+         const {ownedPrefixes} = generateCatalogResources(mnModel(), OPTS);
+         expect(ownedPrefixes).toContain('m.relationships.');
        });
 
-  test(
-      'a relationship name that is not link-id-clean warns it will normalize',
-      () => {
-        const model = directFkModel();
-        // Underscores + uppercase are not valid in a link id, so the emitter
-        // slugs the name into the link id; a pull can only recover that slugged
-        // form. Warn so the author knows the round trip renames it.
-        model.relationships[0].name = 'Orders_To_Customer';
-        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
-        expect(entryLinks.length).toBe(1);
-        expect(warnings.some(
-                   w => w.includes('Orders_To_Customer') &&
-                       w.includes('orders-to-customer')))
-            .toBe(true);
-      });
+  test('a foreign-key edge gets an entry too, with no through table', () => {
+    // The entry is the fidelity record for EVERY relationship; the schema-join
+    // link is the graph-shaped projection a foreign-key edge also gets.
+    const {entries, entryLinks} =
+        generateCatalogResources(directFkModel(), OPTS);
+    const entry = entries.find(
+        e => e.entryType.endsWith('/entryTypes/semantic-relationship'))!;
+    const data = entry.aspects![ASPECT].data!;
+    expect('through' in data).toBe(false);
+    expect(data.fromColumns).toEqual(['custkey']);
+    expect(data.toColumns).toEqual(['c_key']);
+    expect(entryLinks.length).toBe(1);
+  });
+
+  test('an edge to an unpublished entity is skipped and warned', () => {
+    const model = mnModel();
+    model.relationships[0].destination.entity = 'ghost';
+    const {entries, warnings} = generateCatalogResources(model, OPTS);
+    expect(entries.some(
+               e => e.entryType.endsWith('/entryTypes/semantic-relationship')))
+        .toBe(false);
+    expect(warnings.some(
+               w => w.includes('order-customer') && w.includes('ghost')))
+        .toBe(true);
+  });
+
+  test('an unbound through table is omitted rather than stored as a blank',
+       () => {
+         const model = mnModel();
+         model.relationships[0].through = '';
+         const data = relationshipEntry(model).aspects![ASPECT].data!;
+         expect('through' in data).toBe(false);
+         // The logical shape survives: the edge still says what it pairs.
+         expect(data.fromColumns).toEqual(['j_orderkey']);
+       });
 });
 
 
@@ -657,8 +794,10 @@ describe('a purely logical model (no physical binding) emits cleanly', () => {
   test('every entity is published (anchor + 2 entities), no warnings', () => {
     const {entries, warnings} = generateCatalogResources(logicalModel(), OPTS);
     const kinds = entries.map(e => e.entryType.replace(/.*\//, ''));
-    expect(kinds).toEqual(
-        ['semantic-model', 'semantic-entity', 'semantic-entity']);
+    expect(kinds).toEqual([
+      'semantic-model', 'semantic-entity', 'semantic-entity',
+      'semantic-relationship'
+    ]);
     expect(warnings).toEqual([]);
   });
 

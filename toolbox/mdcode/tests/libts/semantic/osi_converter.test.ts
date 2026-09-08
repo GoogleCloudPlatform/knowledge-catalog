@@ -16,7 +16,7 @@ import * as path from 'node:path';
 import * as yaml from 'yaml';
 
 import {Field, Metric, Relationship, SemanticModel} from '../../../src/libts/semantic/ir';
-import {loadModels} from '../../../src/libts/semantic/loader';
+import {fromDocument, loadModels} from '../../../src/libts/semantic/loader';
 import {modelDocument, serializeModel} from '../../../src/libts/semantic/osi_converter';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -187,49 +187,48 @@ describe('expression + datatype + dimension mapping', () => {
 });
 
 
-describe('lossy edges are flagged', () => {
-  test(
-      'an association relationship warns and drops the junction detail', () => {
-        const rel: Relationship = {
-          name: 'enrollment',
-          source: {entity: 'student', columns: ['id']},
-          destination: {entity: 'course', columns: ['id']},
-          association: {
-            dataSource: 'p.d.enrollment',
-            keys: ['student_id', 'course_id'],
-            sourceColumns: ['student_id'],
-            destinationColumns: ['course_id'],
-          },
-        };
-        const model: SemanticModel = {
-          name: 'school',
-          entities: [
-            {
-              name: 'student',
-              dataSource: 'p.d.student',
-              keys: ['id'],
-              fields: []
-            },
-            {
-              name: 'course',
-              dataSource: 'p.d.course',
-              keys: ['id'],
-              fields: []
-            },
-          ],
-          relationships: [rel],
-          metrics: [],
-        };
-        const {yaml: text, warnings} = serializeModel(model);
-        expect(warnings.some(w => /association/i.test(w))).toBe(true);
-        // The direct-FK view is still emitted (from/to + columns), so it
-        // reloads.
-        const relDoc = yaml.parse(text).semantic_model[0].relationships[0];
-        expect(relDoc.from).toBe('student');
-        expect(relDoc.to).toBe('course');
-        expect(relDoc.from_columns).toEqual(['id']);
-      });
+describe('many-to-many relationships', () => {
+  test('an edge through a table of its own round-trips whole', () => {
+    const rel: Relationship = {
+      name: 'enrollment',
+      source: {entity: 'student', columns: ['student_id']},
+      destination: {entity: 'course', columns: ['course_id']},
+      through: 'p.d.enrollment',
+      keys: ['student_id', 'course_id'],
+      fields: [{name: 'grade', expression: 'grade', type: 'String'}],
+    };
+    const model: SemanticModel = {
+      name: 'school',
+      entities: [
+        {name: 'student', dataSource: 'p.d.student', keys: ['id'], fields: []},
+        {name: 'course', dataSource: 'p.d.course', keys: ['id'], fields: []},
+      ],
+      relationships: [rel],
+      metrics: [],
+    };
+    const {yaml: text, warnings} = serializeModel(model);
+    expect(warnings.some(w => /through/i.test(w))).toBe(false);
 
+    // `through` and what it brings are native keys now, so they survive
+    // serialization instead of collapsing to a direct-FK view.
+    const relDoc = yaml.parse(text).semantic_model[0].relationships[0];
+    expect(relDoc.from).toBe('student');
+    expect(relDoc.to).toBe('course');
+    expect(relDoc.through).toBe('p.d.enrollment');
+    expect(relDoc.keys).toEqual(['student_id', 'course_id']);
+    // The join columns are the same keys a foreign-key edge uses; `through`
+    // says they are on that table rather than on either endpoint.
+    expect(relDoc.from_columns).toEqual(['student_id']);
+    expect(relDoc.to_columns).toEqual(['course_id']);
+    expect(relDoc.fields[0].name).toBe('grade');
+
+    // And it reloads into the same IR.
+    const reloaded = fromDocument(yaml.parse(text)).models[0];
+    expect(reloaded.relationships[0]).toEqual(rel);
+  });
+});
+
+describe('lossy edges are flagged', () => {
   test('a non-GOOGLE vendor extension is dropped with a warning', () => {
     // The extended ('/google') profile has no custom_extensions carrier, so a
     // non-deployment-target vendor extension has no representation and is
@@ -350,6 +349,7 @@ describe('golden OSI document: each corpus fixture serializes to its exact YAML'
              'sales_bq_graph_target.yaml',
              'star_orders_customer.yaml',
              'tpcds_date_edge.yaml',
+             'school_manytomany.yaml',
            ];
            // Same load defaults as the KC e2e/pull goldens, so the OSI golden
            // and the pull golden are directly comparable.

@@ -82,7 +82,7 @@ each field reads. A profile sets binding and leaves declaration alone.
 | an entity's `source` (its store URI) | which entities, fields, relationships, or metrics exist, and what each means |
 | a field's column (its `expression`, a bare column reference) | a field's `label`, `description`, `dimension`, `datatype` |
 | whether a field is bound at all under this profile | the grain (`primary_key` / `unique_keys`) and graph shape (`from`/`to`, `from_columns`/`to_columns`) |
-| the deployment target | a field `expression` that is arbitrary SQL, which changes the computation; any `metric` definition; any `ai_context` / synonyms; a relationship or its junction `source` |
+| the deployment target | a field `expression` that is arbitrary SQL, which changes the computation; any `metric` definition; any `ai_context` / synonyms; a relationship or its `through` table |
 
 An element's `name` is not overridden — it is the key that pairs a profile
 element with the model element it binds. The grain and the join columns name

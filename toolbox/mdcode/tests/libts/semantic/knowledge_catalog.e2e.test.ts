@@ -30,12 +30,14 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 // Fixtures that get a KC golden. Chosen to exercise the distinct mappings:
 //   sales_bq_graph_target -> model aspect deploymentTargets + un-typed metric
 //     (dataType fallback); star_orders_customer -> a direct-FK relationship
-//     (schema-join link) + multiple entities/metrics; tpcds_date_edge ->
-//     temporal field types.
+//     (entry + schema-join link) + multiple entities/metrics; tpcds_date_edge
+//     -> temporal field types; school_manytomany -> an edge through a table of
+//     pairs, which gets an entry and no link.
 const CORPUS = [
   'sales_bq_graph_target.yaml',
   'star_orders_customer.yaml',
   'tpcds_date_edge.yaml',
+  'school_manytomany.yaml',
 ];
 
 // A fixed destination + default (dataplex-types/global) system types, so the

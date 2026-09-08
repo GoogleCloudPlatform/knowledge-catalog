@@ -33,8 +33,10 @@
 // (re-derived from its expression, as the loader does, when the catalog holds
 // one, else the value the emitter persisted), the model's deployment targets
 // (from the semantic-model aspect, back into the GOOGLE `custom_extensions`
-// block), and 1:1 / 1:N relationships (from the `schema-join` entry links a
-// pull fetched -- see `modelsFromCatalogResources`'s `entryLinks` argument).
+// block), and relationships (from the `semantic-relationship` entries, which
+// carry the whole edge -- see kc_relationships.ts -- falling back to the
+// `schema-join` entry links a pull fetched, see `modelsFromCatalogResources`'s
+// `entryLinks` argument, for a catalog written before those entries existed).
 // The per-field `semantics` block -- field/metric expressions and the DIMENSION
 // role
 // -- is gated off the catalog by default: the emitter writes it only under
@@ -43,19 +45,21 @@
 // push -> pull drops them. It cannot recover what the emitter never writes:
 // `ai_context.synonyms`/`examples` and field-level `ai_context` (only
 // model/entity/metric `instructions` are persisted, via `guidelines`),
-// `importedExpression`/`importedDialect` (the vendor-dialect SQL), and
-// many-to-many (association) relationships (whose edge lives only in the
-// BigQuery property graph). A `String`- or `Opaque`-typed METRIC also reads
+// `importedExpression`/`importedDialect` (the vendor-dialect SQL). A `String`-
+// or `Opaque`-typed METRIC also reads
 // back un-typed: the metric aspect persists only `dataType` (both collapse to
 // `STRING`, with no metadataType to disambiguate), so -- as with a plain STRING
-// field -- the reader leaves it un-typed rather than guess. Relationship NAMES
-// come back normalized (lowercased/hyphenated), since the emitter encodes the
-// name only in the link id (via `linkSlug`), not in the join aspect.
+// field -- the reader leaves it un-typed rather than guess. A FOREIGN-KEY
+// relationship's NAME comes back normalized (lowercased/hyphenated), since the
+// emitter encodes it only in the link id (via `linkSlug`), not in the join
+// aspect; a many-to-many one keeps its authored name, which its entry carries
+// verbatim as a display name.
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
 import {Action, AiContext, CustomExtension, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
 import {isActionEntry, readAction} from './kc_actions';
+import {isRelationshipEntry, readRelationshipEntry} from './kc_relationships';
 import {referencedEntityNames} from './sql_expr_utils';
 
 export interface ReadResult {
@@ -86,8 +90,10 @@ export function modelsFromCatalogResources(
   const metricEntries =
       entries.filter(e => semanticType(e) === 'semantic-metric');
   // Actions have no built-in system type; `kc_actions.ts` owns the custom one
-  // and recognizes an entry carrying it.
+  // and recognizes an entry carrying it. A many-to-many relationship is the
+  // same arrangement, in `kc_associations.ts`.
   const actionEntries = entries.filter(isActionEntry);
+  const relationshipEntries = entries.filter(isRelationshipEntry);
 
   if (!anchors.length) {
     warnings.push('no semantic-model entry found; nothing to reconstruct');
@@ -122,10 +128,22 @@ export function modelsFromCatalogResources(
     entityEntriesForModel.forEach(
         (e, i) => entityByEntryId.set(idOf(e.name), entities[i]));
 
-    // Relationships come from the schema-join entry links whose two endpoints
-    // are both this model's entity entries (M:N edges were never published --
-    // they live only in the BigQuery property graph -- so stay absent here).
-    const relationships =
+    // Relationships come from the `semantic-relationship` entries parented to
+    // this model, which hold the whole edge: its name verbatim, its endpoints
+    // and their columns, its instructions, and -- for a many-to-many edge --
+    // the table it runs through and the edge's own properties.
+    //
+    // A push that wrote those entries wrote one for EVERY relationship, so when
+    // any are present they are the complete set, and the schema-join links are
+    // the same edges in lossier form -- reading both would double every
+    // foreign-key relationship. The links are the fallback instead, for a
+    // catalog last written by a kcmd that published links only.
+    const relationshipEntriesForModel =
+        childrenOf(anchor.name, relationshipEntries);
+    const relationships = relationshipEntriesForModel.length ?
+        relationshipEntriesForModel
+            .map(e => readRelationshipEntry(e, entityNames, warnings))
+            .filter((r): r is Relationship => r !== undefined) :
         readRelationships(entryLinks, name, entityByEntryId, warnings);
 
     const model: SemanticModel = {name, entities, relationships, metrics};
@@ -147,8 +165,8 @@ export function modelsFromCatalogResources(
   // Flag children that resolved to no anchor at all (only possible with
   // multiple anchors, where the sole-anchor fallback does not apply).
   if (!soleAnchor) {
-    for (const child of [...entityEntries, ...metricEntries,
-                         ...actionEntries]) {
+    for (const child of [...entityEntries, ...metricEntries, ...actionEntries,
+                         ...relationshipEntries]) {
       if (!child.parentEntry || !anchorNames.has(child.parentEntry)) {
         warnings.push(`entry '${
             child.name}' has no resolvable parent semantic-model; omitted`);

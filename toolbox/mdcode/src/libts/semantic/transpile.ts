@@ -140,10 +140,10 @@ export async function transpileModel(
     for (const f of e.fields) add(f, `field '${e.name}.${f.name}'`);
   }
   for (const r of clone.relationships) {
-    // Direct FK edges carry no expressions; only an association (junction
+    // Direct FK edges carry no expressions; only a through-edge (a table
     // table) has edge-property fields, and only when hand-built IR supplies
     // them.
-    for (const f of r.association?.fields ?? []) {
+    for (const f of r.fields ?? []) {
       add(f, `relationship '${r.name}' field '${f.name}'`);
     }
   }

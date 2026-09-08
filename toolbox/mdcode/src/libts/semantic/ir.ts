@@ -219,47 +219,59 @@ export interface Relationship {
   name: string;
   source: RelationshipEnd;
   destination: RelationshipEnd;
-  // When present, this edge is a many-to-many backed by a junction table rather
-  // than a direct foreign key on the source entity. See Association.
-  association?: Association;
+  // When present, the edge runs THROUGH this table -- one holding one row
+  // per pair -- rather than over a foreign key on the source entity's own table.
+  // This is what makes the edge many-to-many; see below for why, and note that
+  // it changes what the endpoints' `columns` mean.
+  through?: string;
+  // The edge's own key, on the `through` table. Only a through-edge has one: a
+  // foreign-key edge is keyed by its source entity's key, which the generators
+  // look up from the entity rather than carry here.
+  keys?: string[];
+  // Properties of the pairing itself -- an enrollment's grade. Only a
+  // through-edge has any: a foreign-key edge has no table of its own to hold
+  // them.
+  fields?: Field[];
   description?: string;
   aiContext?: AiContext;
   customExtensions?: CustomExtension[];
 }
 
 /**
- * One endpoint of a relationship: the entity it attaches to and the columns on
- * that entity's own table that participate in the join.
+ * One endpoint of a relationship: the entity it attaches to and the columns that
+ * reach it.
+ *
+ * WHICH TABLE those columns sit on depends on the relationship. On a foreign-key
+ * edge they are on the endpoint's own table. On a through-edge they are on the
+ * `through` table, referencing this endpoint entity's declared key -- the
+ * endpoints themselves hold nothing, which is the whole point of routing the
+ * edge through a separate table.
  */
 export interface RelationshipEnd {
   entity: string;        // name-reference into SemanticModel.entities
-  columns: string[];     // join columns on this endpoint's table
+  columns: string[];     // join columns; see above for which table they are on
 }
 
 /**
- * An association (junction) table backing a many-to-many relationship.
+ * Why a many-to-many edge needs `Relationship.through`.
  *
  * A many-to-many link cannot be a foreign key: an FK column holds a single value
  * and so references at most one row (a to-one direction), which cannot encode a
  * pairing where each side maps to many of the other. The pairs instead live in a
- * separate junction table, one row per (source, destination) -- e.g. an
- * `enrollment` row per (student, course).
+ * table of their own, one row per (source, destination) -- an `enrollment` row
+ * per (student, course). That table is what `through` names.
  *
- * Unlike a direct foreign key -- which the open format expresses and the loader
- * produces -- a junction edge is backed by its OWN table (`dataSource`) with its
- * OWN key (`keys`) and may carry edge `fields` (properties of the association
- * itself, e.g. an enrollment's grade). Each side names the columns ON THE
- * JUNCTION TABLE that reference the corresponding endpoint entity's declared
- * `keys`. The open format has no association-table syntax yet, so this is
- * produced by hand-built IR (or a future format extension), not the loader.
+ * It stays a relationship rather than becoming its own construct: it has the
+ * same name, endpoints, and column mappings as any other edge, and both graph
+ * dialects render it as one more EDGE TABLE. What it adds is a table of its own,
+ * hence a key of its own (`keys`) and properties of its own (`fields`), and the
+ * endpoints' `columns` sitting on that table instead of on the endpoints.
+ *
+ * `through`, `keys`, and `fields` are native keys of the extended profile
+ * ('0.2.0.dev0/google') only -- vanilla Ossie has no syntax for a table of
+ * pairs. See
+ * loader.refineRelationship for the rules that keep the two shapes from mixing.
  */
-export interface Association {
-  dataSource: string;            // the junction table backing the edge
-  keys: string[];                // the edge's own key on the junction table
-  sourceColumns: string[];       // junction columns referencing the source entity's key
-  destinationColumns: string[];  // junction columns referencing the destination entity's key
-  fields?: Field[];              // edge properties (junction non-key columns)
-}
 
 /**
  * A metric: a model-level, named aggregate.

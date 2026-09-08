@@ -281,6 +281,98 @@
           }
         }
       }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.relationships.store_sales_to_date_dim",
+      "entryType": "projects/sqlgen-testing/locations/global/entryTypes/semantic-relationship",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model",
+      "entrySource": {
+        "displayName": "store_sales_to_date_dim"
+      },
+      "aspects": {
+        "sqlgen-testing.global.semantic-relationship": {
+          "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-relationship",
+          "data": {
+            "fromEntity": "store_sales",
+            "toEntity": "date_dim",
+            "fromColumns": [
+              "ss_sold_date_sk"
+            ],
+            "toColumns": [
+              "ss_sold_date_sk"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.relationships.store_sales_to_customer",
+      "entryType": "projects/sqlgen-testing/locations/global/entryTypes/semantic-relationship",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model",
+      "entrySource": {
+        "displayName": "store_sales_to_customer"
+      },
+      "aspects": {
+        "sqlgen-testing.global.semantic-relationship": {
+          "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-relationship",
+          "data": {
+            "fromEntity": "store_sales",
+            "toEntity": "customer",
+            "fromColumns": [
+              "ss_customer_sk"
+            ],
+            "toColumns": [
+              "c_customer_sk"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.relationships.store_sales_to_item",
+      "entryType": "projects/sqlgen-testing/locations/global/entryTypes/semantic-relationship",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model",
+      "entrySource": {
+        "displayName": "store_sales_to_item"
+      },
+      "aspects": {
+        "sqlgen-testing.global.semantic-relationship": {
+          "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-relationship",
+          "data": {
+            "fromEntity": "store_sales",
+            "toEntity": "item",
+            "fromColumns": [
+              "ss_item_sk"
+            ],
+            "toColumns": [
+              "i_item_sk"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model.relationships.store_sales_to_store",
+      "entryType": "projects/sqlgen-testing/locations/global/entryTypes/semantic-relationship",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/tpcds_model",
+      "entrySource": {
+        "displayName": "store_sales_to_store"
+      },
+      "aspects": {
+        "sqlgen-testing.global.semantic-relationship": {
+          "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-relationship",
+          "data": {
+            "fromEntity": "store_sales",
+            "toEntity": "store",
+            "fromColumns": [
+              "ss_store_sk"
+            ],
+            "toColumns": [
+              "s_store_sk"
+            ]
+          }
+        }
+      }
     }
   ],
   "entryLinks": [
@@ -446,10 +538,6 @@
     }
   ],
   "warnings": [
-    "entity 'date_dim': no keys declared in the source model",
-    "relationship 'store_sales_to_date_dim': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'store-sales-to-date-dim'), not 'store_sales_to_date_dim'.",
-    "relationship 'store_sales_to_customer': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'store-sales-to-customer'), not 'store_sales_to_customer'.",
-    "relationship 'store_sales_to_item': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'store-sales-to-item'), not 'store_sales_to_item'.",
-    "relationship 'store_sales_to_store': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'store-sales-to-store'), not 'store_sales_to_store'."
+    "entity 'date_dim': no keys declared in the source model"
   ]
 }

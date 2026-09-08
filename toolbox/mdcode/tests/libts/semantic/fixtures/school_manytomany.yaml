@@ -1,0 +1,64 @@
+# A many-to-many relationship: a student takes many courses and a course is
+# taken by many students, so the pairs live in an `enrollment` table of their
+# own rather than in a foreign key on either side.
+#
+# `through` (and the `keys`/`fields` it brings) is a native key of the extended
+# profile, so this document declares `0.2.0.dev0/google`. Its BigQuery and
+# Spanner DDL are the committed `school_manytomany.*.golden.sql` goldens, which
+# were run against a live BigQuery instance and traversed with a GQL MATCH.
+
+version: "0.2.0.dev0/google"
+
+semantic_model:
+  - name: school_graph
+    description: Students, courses, and the enrollments that pair them
+    entities:
+      - name: students
+        source: sqlgen-testing.bei_semantic_ir_verify.students
+        primary_key: [student_id]
+        fields:
+          - name: student_id
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: students.student_id
+          - name: name
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: students.name
+
+      - name: courses
+        source: sqlgen-testing.bei_semantic_ir_verify.courses
+        primary_key: [course_id]
+        fields:
+          - name: course_id
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: courses.course_id
+          - name: title
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: courses.title
+
+    relationships:
+      - name: enrollment
+        from: students
+        to: courses
+        # The edge runs through the enrollment table, so from_columns and
+        # to_columns are columns on THAT table, not on students or courses --
+        # neither endpoint holds a foreign key.
+        through: sqlgen-testing.bei_semantic_ir_verify.enrollment
+        keys: [enrollment_id]
+        from_columns: [student_id]
+        to_columns: [course_id]
+        # A property of the pairing, not of either endpoint.
+        fields:
+          - name: grade
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: enrollment.grade
+            description: Letter grade

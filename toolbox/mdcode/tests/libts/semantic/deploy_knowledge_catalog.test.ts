@@ -216,9 +216,10 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
     const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
 
     expect(result.success).toBe(true);
-    expect(result.created).toBe(5);  // anchor + 2 entities + 2 metrics
+    // anchor + 2 entities + 2 metrics + 1 relationship
+    expect(result.created).toBe(6);
     expect(result.linked).toBe(1);
-    expect(create).toHaveBeenCalledTimes(5);
+    expect(create).toHaveBeenCalledTimes(6);
     expect(createLink).toHaveBeenCalledTimes(1);
     expect(updateLink).not.toHaveBeenCalled();
     // Links are written to the same destination the entries are.

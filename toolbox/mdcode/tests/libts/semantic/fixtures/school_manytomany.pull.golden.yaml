@@ -1,0 +1,43 @@
+# (no warnings)
+version: 0.2.0.dev0/google
+semantic_model:
+  - name: school_graph
+    description: Students, courses, and the enrollments that pair them
+    entities:
+      - name: students
+        source: sqlgen-testing.bei_semantic_ir_verify.students
+        primary_key:
+          - student_id
+        fields:
+          - name: student_id
+            datatype: Opaque
+          - name: name
+            datatype: Opaque
+      - name: courses
+        source: sqlgen-testing.bei_semantic_ir_verify.courses
+        primary_key:
+          - course_id
+        fields:
+          - name: course_id
+            datatype: Opaque
+          - name: title
+            datatype: Opaque
+    relationships:
+      - name: enrollment
+        from: students
+        to: courses
+        through: sqlgen-testing.bei_semantic_ir_verify.enrollment
+        keys:
+          - enrollment_id
+        from_columns:
+          - student_id
+        to_columns:
+          - course_id
+        fields:
+          - name: grade
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: enrollment.grade
+            datatype: Opaque
+            description: Letter grade

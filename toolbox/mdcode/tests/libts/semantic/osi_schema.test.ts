@@ -54,12 +54,21 @@ const fixtures = yamlFixtures(fixturesDir);
 // them too and tolerate *only* missing-`expression` errors. Once PR #290 (the
 // sql-expressions companion aspect) regenerates these goldens with expressions
 // they pass with no special-casing, and any other schema drift still fails now.
-function onlyMissingExpression(errors: typeof validate.errors): boolean {
+function isMissingExpression(e: SchemaError): boolean {
+  return e.keyword === 'required' &&
+    (e.params as {missingProperty?: string}).missingProperty === 'expression';
+}
+
+// One schema error, as Ajv reports it.
+type SchemaError = NonNullable<typeof validate.errors>[number];
+
+// True when every error is one a tolerance below accounts for. A fixture with
+// no errors never reaches here, so an empty list is not a pass.
+function onlyTolerated(
+  errors: typeof validate.errors,
+  tolerated: Array<(e: SchemaError) => boolean>): boolean {
   return !!errors && errors.length > 0 &&
-    errors.every(
-      e => e.keyword === 'required' &&
-        (e.params as {missingProperty?: string}).missingProperty ===
-          'expression');
+    errors.every(e => tolerated.some(ok => ok(e)));
 }
 
 // `extends` (entity-level inheritance, the target of OWL rdfs:subClassOf) is a
@@ -159,6 +168,23 @@ function onlyActionsExtension(errors: typeof validate.errors): boolean {
         /\/semantic_model\/\d+$/.test(e.instancePath));
 }
 
+// An edge that runs THROUGH a table of its own is the other deliberate SUPERSET
+// of released Apache OSI. The released schema knows only the direct foreign-key
+// edge -- one carried by a column on the source entity's own table -- so it has
+// no keyword for the table an edge runs through, for that table's key, or for
+// the properties of the pairing it holds. A relationship carrying them trips
+// `additionalProperties: false` once per keyword. We tolerate EXACTLY those
+// three extra properties on a /relationships/<n> path and nothing else. When
+// upstream OSI adopts a through-table syntax, re-vendoring the schema makes this
+// pass with no special-casing.
+function isThroughSuperset(e: SchemaError): boolean {
+  const extraOk = new Set(['through', 'keys', 'fields']);
+  return e.keyword === 'additionalProperties' &&
+    /\/relationships\/\d+$/.test(e.instancePath) &&
+    extraOk.has(
+      (e.params as {additionalProperty?: string}).additionalProperty ?? '');
+}
+
 describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () => {
   test('at least one fixture is discovered', () => {
     expect(fixtures.length).toBeGreaterThan(0);
@@ -172,9 +198,14 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
       if (!ok) {
         // A .pull.golden.yaml from an expression-free push is a known #290 gap
         // when its ONLY failures are missing `expression`; anything else is a
-        // real regression and still fails.
+        // real regression and still fails. A through-edge fixture's pull
+        // faithfully reproduces that superset too, so that one tolerates both.
         if (rel.endsWith('.pull.golden.yaml') &&
-            onlyMissingExpression(validate.errors)) {
+            onlyTolerated(
+              validate.errors,
+              rel.startsWith('school_manytomany') ?
+                [isMissingExpression, isThroughSuperset] :
+                [isMissingExpression])) {
           return;
         }
         // The OWL import goldens are purely logical models (a pre-OSI superset,
@@ -199,6 +230,13 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
         // fails.
         if (rel.startsWith('actions_') &&
             onlyActionsExtension(validate.errors)) {
+          return;
+        }
+        // A relationship running through a table of its own is a deliberate
+        // superset too; tolerate exactly its three extra keywords, and only on
+        // the fixture that carries one (and the goldens generated from it).
+        if (rel.startsWith('school_manytomany') &&
+            onlyTolerated(validate.errors, [isThroughSuperset])) {
           return;
         }
         const details = (validate.errors ?? [])

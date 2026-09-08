@@ -259,10 +259,10 @@ are **not** probed before deploy — the live pre-flight is BigQuery-only (see
 ## What gets created in Knowledge Catalog
 
 Each element of your model maps to one catalog resource. Every resource type
-below except `semantic-action` is a built-in system type under
-`dataplex-types/global` — push references them, it never creates them.
-`semantic-action` is custom, and `kcmd init --semantic-model` creates it in your
-own project at `global`; push still writes only entries.
+below except `semantic-relationship` and `semantic-action` is a built-in system
+type under `dataplex-types/global` — push references them, it never creates
+them. Those two are custom, and `kcmd init --semantic-model` creates them in
+your own project at `global`; push still writes only entries.
 
 > Set `KC_TYPE_PROJECT` to read these system types from another project, and
 > `DATAPLEX_ENDPOINT` to target a non-prod Dataplex host; both default to
@@ -273,15 +273,31 @@ own project at `global`; push still writes only entries.
 | Model | `semantic-model` | entry — anchor / parent of the rest | `<model>` |
 | Entity | `semantic-entity` (+ built-in `schema` aspect) | entry | `<model>.entities.<entity>` |
 | Metric | `semantic-metric` | entry | `<model>.metrics.<metric>` |
-| Relationship | `schema-join` | entry link between the two entity entries | derived from the model and relationship names |
+| Relationship | `semantic-relationship` (custom type) | entry | `<model>.relationships.<relationship>` |
+| Relationship, foreign-key only | `schema-join` (in addition to the entry above) | entry link between the two entity entries | derived from the model and relationship names |
 | Action | `semantic-action` (custom type) | entry | `<model>.actions.<action>` |
 
 An entity entry carries its columns in the `schema` aspect (name, data type,
 description, and any `label` per field), plus the entity's keys and unique keys
-(`primaryKey` / `uniqueConstraints`); a `schema-join` link carries the
-relationship detail — the paired columns and foreign-key direction — in its
-aspect. Any element with `ai_context.instructions` (the model, an entity, or a
-metric) also gets a built-in `guidelines` aspect holding that text.
+(`primaryKey` / `uniqueConstraints`). Any element with `ai_context.instructions`
+(the model, an entity, or a metric) also gets a built-in `guidelines` aspect
+holding that text.
+
+Every relationship gets an **entry** of its own. A `schema-join` link cannot be
+the relationship's home: it holds exactly one source/target column pair, so it
+cannot describe an edge running through a table of pairs, and it has no field for
+the relationship's name — a pull can only recover the slug in its id. Dataplex
+has no custom *link* types either, only custom entry and aspect types. The
+`semantic-relationship` aspect holds the two entities the relationship pairs, the
+join columns, the `through` table with its key and fields when there is one, and
+the relationship's `ai_context.instructions`. All of it round-trips through
+`pull`, the relationship name verbatim.
+
+A relationship carried by a **foreign key** also gets its `schema-join` link, so
+Dataplex surfaces that read joins still see it. The entry is the fidelity record;
+the link is the graph-shaped projection. Pull reads the entries and ignores the
+links, falling back to them only for a catalog written before relationships had
+entries. See [Model spec §2.2.1](model_spec.md#221-many-to-many-through).
 
 An **action** entry carries its executor and its typed parameters in a
 `semantic-action` aspect, along with the action's `ai_context.instructions`.
@@ -402,8 +418,9 @@ and each aspect type attached, so a push needs, on the destination entry group:
   `semantic-entity`, and `semantic-metric` aspect types the push attaches — i.e.
   `dataplex.entryGroups.useSemanticModelAspect`, `useSemanticEntityAspect`, and
   `useSemanticMetricAspect`
-* `dataplex.aspectTypes.use` on the `semantic-action` aspect type, when the
-  model declares actions — that type is custom rather than built-in, so it is
+* `dataplex.aspectTypes.use` on the `semantic-relationship` aspect type, when the
+  model has relationships, and on the `semantic-action` aspect type, when it
+  declares actions — those types are custom rather than built-in, so they are
   authorized on the type resource instead of through an entry-group
   use-permission
 
@@ -419,16 +436,15 @@ needs more than push does, in the destination project:
 
 * `dataplex.entryGroups.create` — the destination entry group
 * `dataplex.aspectTypes.create` / `dataplex.aspectTypes.update` and
-  `dataplex.entryTypes.create` — the custom `semantic-action` pair. Init patches
-  an aspect type that is already there, so a project set up by an older `kcmd`
-  picks up template additions; an entry type that is already there is left
-  alone.
+  `dataplex.entryTypes.create` — the custom `semantic-relationship` and
+  `semantic-action` pairs. Init patches an aspect type that is already there, so
+  a project set up by an older `kcmd` picks up template additions; an entry type
+  that is already there is left alone.
 
-Only the entry-group permission is required. Actions are one optional
-construct, so init reports a refusal to create their types as a warning and
-carries on; every model that declares no action still pushes and pulls. Any
-other failure to create a type stops init, rather than leaving a later push to
-hit an opaque parsing error.
+Only the entry-group permission is required. Relationships and actions are both
+optional constructs, so init reports a refusal to create their types as a warning
+and carries on; a model that uses neither still pushes and pulls. Any other failure to create a type stops init, rather than leaving a
+later push to hit an opaque parsing error.
 
 `kcmd pull` needs read access to the same entry group instead — to list its
 entries and fetch each `semantic-*` entry with its aspects.

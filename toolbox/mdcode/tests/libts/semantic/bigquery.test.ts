@@ -9,9 +9,9 @@
 //
 // This file holds only what a loader fixture CANNOT express, because the open
 // AI-first format the loader reads is a subset of the IR:
-//   - an M:N association edge (its own backing junction table, KEY, and edge
-//     properties) — the open format has no association-table syntax, so its IR
-//     is hand-built here and checked against a committed golden file.
+//   - a through-edge whose alias, KEY, join columns, and REFERENCES labels are
+//     all reserved words — the loader would reject those names, so that IR is
+//     hand-built here and checked against a committed golden file.
 //   - IR-contract cases the loader never produces: a COUNT(*) metric with a
 //     declared attach entity, and a metric whose declared entity disagrees with
 //     its expression (the loader always derives the entity FROM the
@@ -48,71 +48,26 @@ const GEN_OPTS: GenerateOptions = {
 };
 
 
-describe(
-    'M:N association edge (no association-table syntax in the open format yet)',
-    () => {
-      // Hand-built because the loader's relationship schema is direct-FK only
-      // (from/to/columns) — it cannot express an edge backed by its own
-      // association table with its own KEY and edge properties. The expected
-      // DDL is a committed golden file
-      // (`school_manytomany.bigquery.golden.sql`) so the output stays
-      // reviewable as text; these exact strings were run against a live
-      // BigQuery instance and traversed with a GQL MATCH.
-      const SCHOOL: SemanticModel = {
-        name: 'school_graph',
-        entities: [
-          {
-            name: 'students',
-            dataSource: 'sqlgen-testing.bei_semantic_ir_verify.students',
-            keys: ['student_id'],
-            fields: [
-              {name: 'student_id', expression: 'students.student_id'},
-              {name: 'name', expression: 'students.name'}
-            ]
-          },
-          {
-            name: 'courses',
-            dataSource: 'sqlgen-testing.bei_semantic_ir_verify.courses',
-            keys: ['course_id'],
-            fields: [
-              {name: 'course_id', expression: 'courses.course_id'},
-              {name: 'title', expression: 'courses.title'}
-            ]
-          },
-        ],
-        relationships: [
-          {
-            name: 'enrollment',
-            source: {entity: 'students', columns: ['student_id']},
-            destination: {entity: 'courses', columns: ['course_id']},
-            association: {
-              dataSource: 'sqlgen-testing.bei_semantic_ir_verify.enrollment',
-              keys: ['enrollment_id'],
-              sourceColumns: ['student_id'],
-              destinationColumns: ['course_id'],
-              fields: [{
-                name: 'grade',
-                expression: 'enrollment.grade',
-                description: 'Letter grade'
-              }]
-            }
-          },
-        ],
-        metrics: [],
-      };
-      const SCHOOL_OPTS: GenerateOptions = {
-        project: 'sqlgen-testing',
-        dataset: 'bei_semantic_ir_verify'
-      };
+describe('many-to-many edge', () => {
+  // Loaded from `school_manytomany.yaml`, which authors the table the edge runs
+  // through with the extended profile's `through` key, so this covers the whole
+  // path from the format to the DDL. The expected DDL is a committed golden file
+  // (`school_manytomany.bigquery.golden.sql`) so the output stays reviewable as
+  // text; these exact strings were run against a live BigQuery instance and
+  // traversed with a GQL MATCH.
+  const SCHOOL = loadFixture('school_manytomany.yaml');
+  const SCHOOL_OPTS: GenerateOptions = {
+    project: 'sqlgen-testing',
+    dataset: 'bei_semantic_ir_verify'
+  };
 
-      test('the association graph matches its committed golden DDL', () => {
-        const {ddl} = generatePropertyGraph(SCHOOL, SCHOOL_OPTS);
-        const golden = fs.readFileSync(
-            path.join(FIXTURES, 'school_manytomany.bigquery.golden.sql'),
-            'utf8');
-        expect(ddl).toBe(golden);
-      });
-    });
+  test('the many-to-many graph matches its committed golden DDL', () => {
+    const {ddl} = generatePropertyGraph(SCHOOL, SCHOOL_OPTS);
+    const golden = fs.readFileSync(
+        path.join(FIXTURES, 'school_manytomany.bigquery.golden.sql'), 'utf8');
+    expect(ddl).toBe(golden);
+  });
+});
 
 
 describe('IR-contract metric cases the loader cannot produce', () => {
@@ -943,11 +898,11 @@ describe('inherited property rendering (shared-label consistency)', () => {
       });
 });
 
-describe('reserved-word names in an M:N association edge are quoted', () => {
-  // The open format has no association-table syntax, so this hand-built IR is
-  // the only path that exercises renderAssociationEdge's identifier quoting: the
-  // edge alias, KEY, SOURCE KEY / DESTINATION KEY columns, and both REFERENCES
-  // labels, each named with a GoogleSQL reserved keyword.
+describe('reserved-word names in a through-edge are quoted', () => {
+  // The loader rejects reserved-word names, so this hand-built IR is the only
+  // path that exercises renderThroughEdge's identifier quoting: the edge alias,
+  // KEY, SOURCE KEY / DESTINATION KEY columns, and both REFERENCES labels, each
+  // named with a GoogleSQL reserved keyword.
   const RW_ASSOC: SemanticModel = {
     name: 'rw_assoc',
     entities: [
@@ -968,13 +923,8 @@ describe('reserved-word names in an M:N association edge are quoted', () => {
       name: 'from',
       source: {entity: 'Order', columns: ['order']},
       destination: {entity: 'Group', columns: ['id']},
-      association: {
-        dataSource: 'proj.ds.order_group',
-        keys: ['order'],
-        sourceColumns: ['order'],
-        destinationColumns: ['id'],
-        fields: [],
-      },
+      through: 'proj.ds.order_group',
+      keys: ['order'],
     }],
     metrics: [],
   };

@@ -263,6 +263,21 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     expect(report.droppedRelationships[0].name).toBe('PlacedBy');
   });
 
+  test('a through-edge is not dropped by an unbound field of the same name',
+       () => {
+         // The edge's join columns are on the table it runs THROUGH, not on
+         // either endpoint, so a profile cannot unbind them -- and a same-named
+         // field on the endpoint must not be mistaken for one.
+         const m = irModel();
+         const order = m.entities.find(e => e.name === 'Order')!;
+         delete order.fields.find(f => f.name === 'customerKey')!.expression;
+         m.relationships[0].through = 'p.d.order_customer';
+         m.relationships[0].keys = ['id'];
+         const {model, report} = pruneUnavailable(m, 'operational');
+         expect(relNames(model)).toEqual(['PlacedBy']);
+         expect(report.droppedRelationships).toEqual([]);
+       });
+
   test('the input is never mutated', () => {
     const m = irModel();
     const before = JSON.stringify(m);

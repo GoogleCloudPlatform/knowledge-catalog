@@ -409,7 +409,15 @@ function firstUnboundReferenced(
 
 // The first join field of a relationship that is unbound on its own end, or
 // null when both ends' join columns are bound.
+//
+// An edge with a `through` table is never dropped here: its join columns are on
+// that table rather than on either endpoint, so they are not this model's
+// fields and a profile cannot unbind them. Reading them as `Entity.column` would
+// be a false match against a same-named field of the endpoint. Such an edge
+// still falls with an endpoint: unbinding an entity's key makes that entity
+// unavailable, and the loop above drops every edge touching it.
 function unboundJoinField(r: Relationship, unbound: Set<string>): string|null {
+  if (r.through) return null;
   for (const c of r.source?.columns ?? []) {
     const key = `${r.source.entity}.${c}`;
     if (unbound.has(key)) return key;

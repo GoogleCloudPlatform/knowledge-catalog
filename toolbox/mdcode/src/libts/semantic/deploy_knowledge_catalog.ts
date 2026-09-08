@@ -22,11 +22,11 @@
 //   * Reconcile deletions: an entity or metric removed from a still-present
 //     model leaves an orphaned entry under its anchor; after writing, delete
 //     any entry this push owns (by entry-id prefix) that was not re-emitted.
-//   * Relationship edges are published as schema-join entry links between the
-//     two entity entries, written after that model's entries (both endpoints
-//     must exist first). A re-push upserts the link's aspect; a many-to-many
-//     (association) edge is not published yet (the emitter warns and skips it).
-//     The caller additionally needs `dataplex.entryGroups.useSchemaJoinEntryLink`
+//   * Every relationship is published as an entry among that model's entries.
+//     A foreign-key edge is ALSO published as a schema-join entry link between
+//     the two entity entries, written after those entries (both endpoints must
+//     exist first); a re-push upserts the link's aspect. For the links the
+//     caller additionally needs `dataplex.entryGroups.useSchemaJoinEntryLink`
 //     and `useSchemaJoinAspect` on the destination entry group.
 //
 // This is a library module: it emits no console output. Warnings and the

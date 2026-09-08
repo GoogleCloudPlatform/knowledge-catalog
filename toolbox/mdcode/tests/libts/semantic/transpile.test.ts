@@ -195,8 +195,8 @@ describe('transpileModel', () => {
     expect(input).toEqual(snapshot);
   });
 
-  test('transpiles association (junction) edge-property fields', async () => {
-    const withAssoc: SemanticModel = {
+  test('transpiles a through-edge\'s own property fields', async () => {
+    const withThrough: SemanticModel = {
       name: 'm',
       entities: [
         {name: 'student', dataSource: 'p.d.student', keys: ['sid'], fields: []},
@@ -206,24 +206,20 @@ describe('transpileModel', () => {
         name: 'enrollment',
         source: {entity: 'student', columns: ['sid']},
         destination: {entity: 'course', columns: ['cid']},
-        association: {
-          dataSource: 'p.d.enrollment',
-          keys: ['eid'],
-          sourceColumns: ['sid'],
-          destinationColumns: ['cid'],
-          fields: [{
-            name: 'grade',
-            importedExpression: 'IFF(g>0,g,0)',
-            importedDialect: 'SNOWFLAKE'
-          }],
-        },
+        through: 'p.d.enrollment',
+        keys: ['eid'],
+        fields: [{
+          name: 'grade',
+          importedExpression: 'IFF(g>0,g,0)',
+          importedDialect: 'SNOWFLAKE'
+        }],
       }],
       metrics: [],
     };
     const {transpiler} = fakeTranspiler(() => 'IF(g > 0, g, 0)');
-    const {model, warnings} = await transpileModel(withAssoc, {transpiler});
+    const {model, warnings} = await transpileModel(withThrough, {transpiler});
 
-    expect(model.relationships[0].association!.fields![0].expression)
+    expect(model.relationships[0].fields![0].expression)
         .toBe('IF(g > 0, g, 0)');
     expect(warnings.some(
                w => w.includes(`relationship 'enrollment' field 'grade'`) &&

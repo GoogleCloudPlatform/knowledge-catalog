@@ -21,7 +21,8 @@
 // TO ADD A NEW CUSTOM TYPE. Append a record. Provisioning, naming and the init
 // wiring are generic over this list, so no other file in this directory needs
 // to change; what does need writing is the encoding that fills the aspect, the
-// way kc_actions.ts does for `semantic-action`.
+// way kc_actions.ts does for `semantic-action` and kc_relationships.ts does for
+// `semantic-relationship`.
 //
 // A CUSTOM TYPE IS ONE ENTRY TYPE PLUS ONE ASPECT TYPE that share an id, the
 // way the built-in `semantic-metric` entry type and aspect type share theirs.
@@ -196,6 +197,187 @@ const ACTION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
   },
 };
 
+// The id of the relationship type. kc_relationships.ts holds the encoding that
+// fills its aspect.
+export const RELATIONSHIP_TYPE_ID = 'semantic-relationship';
+
+// The aspect that carries a relationship -- any relationship, one-to-many and
+// many-to-many alike.
+//
+// The built-in `schema-join` entry link already models a join, but only a direct
+// foreign key: it holds ONE source/target column pair. A many-to-many edge is
+// two joins through a third table, so it does not fit, and a custom entry LINK
+// type is not available -- Dataplex accepts only its own link types. schema-join
+// also has no field for the relationship's own name, which is why a link's name
+// survives only in its lowercased, hyphenated id. That leaves an entry, which is
+// what this type is: one per relationship, parented to the model anchor beside
+// the entities and metrics. A foreign-key edge still emits its schema-join link
+// as well, for the Dataplex surfaces that already read links.
+//
+// The endpoints are recorded as entity NAMES rather than as entry references
+// because the two entity entries are already the link endpoints a consumer
+// resolves by name everywhere else in this encoding (a metric's `entity`, an
+// action parameter's `type`), and a name survives the project-number
+// normalization that rewrites resource names on the way back.
+//
+// `through`, `keys` and `fields` are set only on a many-to-many edge: it is the
+// one shape with a table of its own, hence a key of its own and properties --
+// an enrollment's grade -- belonging to neither endpoint. They ride here rather
+// than in the built-in `schema` aspect for the same reason `instructions` does
+// not use `guidelines`: a pull derives which aspect types to hydrate from the
+// project the ENTRY type lives in, and a custom entry type lives in the
+// destination project, where no built-in aspect type exists.
+const RELATIONSHIP_ASPECT_TYPE: Omit<AspectType, 'name'> = {
+  displayName: 'Semantic Relationship',
+  description:
+      'A relationship in a semantic model: the two entities it connects, the ' +
+      'columns that reach them, and -- when it is many-to-many -- the table ' +
+      'it runs through.',
+  metadataTemplate: {
+    name: RELATIONSHIP_TYPE_ID,
+    type: 'record',
+    recordFields: [
+      {
+        index: 1,
+        name: 'fromEntity',
+        type: 'string',
+        constraints: {required: true},
+        annotations: {
+          displayName: 'From Entity',
+          description:
+              'Name of the entity at the source end. It is the SOURCE of the ' +
+              'edge in a property graph.',
+        },
+      },
+      {
+        index: 2,
+        name: 'toEntity',
+        type: 'string',
+        constraints: {required: true},
+        annotations: {
+          displayName: 'To Entity',
+          description:
+              'Name of the entity at the destination end. It is the ' +
+              'DESTINATION of the edge in a property graph.',
+        },
+      },
+      {
+        index: 3,
+        name: 'through',
+        type: 'string',
+        annotations: {
+          displayName: 'Through Table',
+          description:
+              'Resource name of the table a many-to-many edge runs through, ' +
+              'holding one row per (from, to) pair. Empty on a foreign-key ' +
+              'edge, which has no table of its own, and on a model with no ' +
+              'physical binding.',
+        },
+      },
+      {
+        index: 4,
+        name: 'keys',
+        type: 'array',
+        arrayItems: {name: 'key', type: 'string'},
+        annotations: {
+          displayName: 'Keys',
+          description:
+              'The edge\'s own key columns, on the table it runs through. ' +
+              'Empty on a foreign-key edge, which is keyed by its source ' +
+              'entity.',
+        },
+      },
+      {
+        index: 5,
+        name: 'fromColumns',
+        type: 'array',
+        arrayItems: {name: 'column', type: 'string'},
+        annotations: {
+          displayName: 'From Columns',
+          description:
+              'Columns reaching the from entity: on that entity\'s own table ' +
+              'for a foreign-key edge, on the through table for a ' +
+              'many-to-many one.',
+        },
+      },
+      {
+        index: 6,
+        name: 'toColumns',
+        type: 'array',
+        arrayItems: {name: 'column', type: 'string'},
+        annotations: {
+          displayName: 'To Columns',
+          description:
+              'Columns reaching the to entity: on that entity\'s own table ' +
+              'for a foreign-key edge, on the through table for a ' +
+              'many-to-many one.',
+        },
+      },
+      {
+        index: 7,
+        name: 'fields',
+        type: 'array',
+        arrayItems: {
+          name: 'field',
+          type: 'record',
+          recordFields: [
+            {
+              index: 1,
+              name: 'name',
+              type: 'string',
+              constraints: {required: true},
+              annotations: {displayName: 'Name'},
+            },
+            {
+              index: 2,
+              name: 'dataType',
+              type: 'string',
+              annotations: {
+                displayName: 'Data Type',
+                description: 'The field\'s logical datatype.',
+              },
+            },
+            {
+              index: 3,
+              name: 'description',
+              type: 'string',
+              annotations: {displayName: 'Description'},
+            },
+            {
+              index: 4,
+              name: 'expression',
+              type: 'string',
+              annotations: {
+                displayName: 'Expression',
+                description:
+                    'The through-table column the field binds to. Empty on ' +
+                    'a model with no physical binding.',
+              },
+            },
+          ],
+        },
+        annotations: {
+          displayName: 'Fields',
+          description:
+              'Properties of a many-to-many edge itself, belonging to ' +
+              'neither endpoint (an enrollment\'s grade).',
+        },
+      },
+      {
+        index: 8,
+        name: 'instructions',
+        type: 'string',
+        annotations: {
+          displayName: 'Instructions',
+          description:
+              'Guidance for AI consumers (the relationship\'s ai_context ' +
+              'instructions).',
+        },
+      },
+    ],
+  },
+};
+
 // Every type kcmd provisions. This list is the whole of what is custom.
 export const CUSTOM_TYPES: readonly CustomType[] = [
   {
@@ -205,6 +387,14 @@ export const CUSTOM_TYPES: readonly CustomType[] = [
       description: 'A write operation defined on a semantic model.',
     },
     aspectType: ACTION_ASPECT_TYPE,
+  },
+  {
+    id: RELATIONSHIP_TYPE_ID,
+    entryType: {
+      displayName: 'Semantic Relationship',
+      description: 'A relationship between two entities of a semantic model.',
+    },
+    aspectType: RELATIONSHIP_ASPECT_TYPE,
   },
 ];
 

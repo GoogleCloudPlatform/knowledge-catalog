@@ -150,10 +150,67 @@ const datasetBase = z.object({
   custom_extensions: z.array(customExtensionSchema).optional(),
 });
 
+// The shape rules a relationship must satisfy under either version, shared by
+// the base shape above and the strict per-load schemas in buildDocumentSchema
+// so the two cannot drift.
+//
+// Both shapes of edge bind with `from_columns`/`to_columns`; `through` changes
+// which table those columns are on, and brings a key and properties of its own
+// that a foreign-key edge has nowhere to put.
+function refineRelationship(
+    r: {name: string; from_columns?: string[]; to_columns?: string[];
+        through?: unknown; keys?: unknown; fields?: unknown},
+    ctx: z.RefinementCtx) {
+  if ((r.from_columns === undefined) !== (r.to_columns === undefined)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `relationship '${
+                   r.name}': from_columns and to_columns must be given ` +
+          `together (both bind the edge) or both omitted (a logical edge); one ` +
+          `without the other is a half-bound join.`,
+    });
+  }
+  if (r.through !== undefined && r.from_columns === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `relationship '${r.name}': an edge through '${
+                   r.through}' must give from_columns and to_columns -- the ` +
+          `columns on that table reaching each endpoint. Without them nothing ` +
+          `says which pairs it holds.`,
+    });
+  }
+  for (const [key, value] of
+           [['keys', r.keys], ['fields', r.fields]] as const) {
+    if (value !== undefined && r.through === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `relationship '${r.name}': '${key}' needs a 'through' table. ` +
+            `A foreign-key edge is carried by its source entity's table, so it ` +
+            `has no table of its own to hold ${
+                     key === 'keys' ? 'a key' : 'properties'}.`,
+      });
+    }
+  }
+}
+
 const relationshipSchema = z.object({
                               name: z.string(),
                               from: z.string(),
                               to: z.string(),
+                              // The table the edge runs THROUGH, present only on
+                              // a many-to-many edge (GOOGLE_VERSION only). It
+                              // holds one row per pair, so it is what
+                              // `from_columns`/`to_columns` are columns ON. See
+                              // Relationship.through in ./ir.
+                              through: z.string().optional(),
+                              // The edge's own key on the `through` table.
+                              // Optional: when omitted the generators key the
+                              // edge by its two column lists, deduplicated.
+                              keys: z.array(z.string()).min(1).optional(),
+                              // Properties of the pairing itself -- an
+                              // enrollment's grade. Same shape as an entity's
+                              // fields.
+                              fields: z.array(fieldBase).optional(),
                               // Join columns are the physical binding of the
                               // edge and are OPTIONAL, so a purely logical
                               // relationship (an ontology edge, direction only)
@@ -170,15 +227,7 @@ const relationshipSchema = z.object({
                               custom_extensions:
                                   z.array(customExtensionSchema).optional(),
                             }).superRefine((r, ctx) => {
-  if ((r.from_columns === undefined) !== (r.to_columns === undefined)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: `relationship '${
-                   r.name}': from_columns and to_columns must be given ` +
-          `together (both bind the edge) or both omitted (a logical edge); one ` +
-          `without the other is a half-bound join.`,
-    });
-  }
+  refineRelationship(r, ctx);
 });
 
 const metricSchema = z.object({
@@ -348,6 +397,19 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
             // either `bindingOptional`.
           });
 
+  // An edge property is the same shape as an entity's field, minus the
+  // extension carrier the version does not allow.
+  const edgeField = z.object({
+                       name: z.string(),
+                       expression: expressionSchema.optional(),
+                       datatype: z.enum(DATA_TYPES).optional(),
+                       description: z.string().optional(),
+                       label: z.string().optional(),
+                       dimension: dimensionSchema.optional(),
+                       ai_context: aiContextSchema.optional(),
+                       ...ce,
+                     }).strict();
+
   const relationship =
       z.object({
          name: z.string(),
@@ -358,20 +420,20 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          description: z.string().optional(),
          ai_context: aiContextSchema.optional(),
          ...ce,
+         // Many-to-many is a native extension: vanilla Ossie has no
+         // syntax for a table of pairs and no `custom_extensions` encoding,
+         // so under OSSIE_VERSION these keys are rejected as unknown rather
+         // than silently dropped.
+         ...(extended ? {
+           through: z.string().optional(),
+           keys: z.array(z.string()).min(1).optional(),
+           fields: z.array(edgeField).optional(),
+         } :
+                        {}),
        })
           .strict()
           .superRefine((r, ctx) => {
-            if ((r.from_columns === undefined) !==
-                (r.to_columns === undefined)) {
-              ctx.addIssue({
-                code: z.ZodIssueCode.custom,
-                message:
-                    `relationship '${
-                        r.name}': from_columns and to_columns must be given ` +
-                    `together (both bind the edge) or both omitted (a logical edge); one ` +
-                    `without the other is a half-bound join.`,
-              });
-            }
+            refineRelationship(r, ctx);
           });
 
   const metric =
@@ -662,7 +724,10 @@ function convertModel(
   const entityNameSet = new Set(entityNames);
 
   const relationships =
-      (m.relationships ?? []).map(r => convertRelationship(r, entityNameSet));
+      (m.relationships ?? [])
+          .map(
+              r => convertRelationship(
+                  r, entityNameSet, opts, warnings, dialect));
   rejectDuplicateNames(
       relationships.map(r => r.name), 'relationship name', `model '${m.name}'`);
 
@@ -774,18 +839,21 @@ function convertField(
   return field;
 }
 
-// Maps an OSI foreign-key relationship onto the IR edge. `source.columns` are
-// the FK columns on the `from` table (`from_columns`); `destination.columns`
-// are the referenced key columns on the `to` table (`to_columns`), paired
-// positionally. A logical relationship carries no columns (both endpoints
-// empty); a graph push requires them and rejects a column-less edge (see
+// Maps an OSI relationship onto the IR edge. `source.columns` and
+// `destination.columns` are `from_columns` and `to_columns`; which table those
+// columns sit on depends on the edge. A foreign-key edge puts `from_columns` on
+// the `from` table and `to_columns` on the `to` table, paired positionally; an
+// edge with a `through` table puts both on that table, one list reaching each
+// endpoint. A logical relationship carries no columns (both endpoints empty); a
+// graph push requires them and rejects a column-less edge (see
 // validatePushRequirements). The source entity's own primary key is not
 // duplicated here -- downstream consumers look it up from the entity. A
 // malformed relationship (an endpoint not declared in the model, or mismatched
 // column arity) is a hard error, not a warning: the resulting edge would be
 // structurally invalid.
 function convertRelationship(
-    r: RelationshipDoc, entityNames: Set<string>): Relationship {
+    r: RelationshipDoc, entityNames: Set<string>, opts: LoadOptions,
+    warnings: string[], dialect: string): Relationship {
   const ctx = `relationship '${r.name}'`;
   if (!entityNames.has(r.from)) {
     throw new Error(
@@ -797,7 +865,11 @@ function convertRelationship(
   }
   const fromColumns = r.from_columns ?? [];
   const toColumns = r.to_columns ?? [];
-  if (fromColumns.length !== toColumns.length) {
+  // A foreign key pairs its two lists positionally, so their lengths must
+  // match. A through table's do not pair with each other at all -- each list
+  // reaches a different entity's key -- so a composite key on one side and a
+  // single column on the other is valid there.
+  if (r.through === undefined && fromColumns.length !== toColumns.length) {
     throw new Error(
         `${ctx}: from_columns (${fromColumns.length}) and to_columns ` +
         `(${
@@ -810,6 +882,9 @@ function convertRelationship(
     source: {entity: r.from, columns: fromColumns},
     destination: {entity: r.to, columns: toColumns},
   };
+  if (r.through !== undefined) {
+    bindThrough(relationship, r, opts, warnings, dialect);
+  }
   const description = composeDescription(r.description);
   if (description) relationship.description = description;
   const ai = aiContextOrUndefined(r.ai_context);
@@ -817,6 +892,35 @@ function convertRelationship(
   const ce = toCustomExtensions(r.custom_extensions);
   if (ce) relationship.customExtensions = ce;
   return relationship;
+}
+
+// Fills in the through-table half of a many-to-many relationship. The endpoint
+// columns are already on `relationship` -- they are the same authored keys a
+// foreign-key edge uses, just pointing at the through table -- so this adds only
+// what a through-edge has extra: the table, its key, and its properties.
+//
+// `keys` is the edge's own key. The format leaves it optional because the pair
+// of endpoint column lists is already unique in the common case, so when it is
+// omitted the key is those two lists concatenated and deduplicated -- the same
+// default the BigQuery and Spanner generators would otherwise have to invent
+// separately. Give it explicitly when the table has a surrogate key, or when a
+// pair may legitimately repeat (an enrollment per term).
+function bindThrough(
+    relationship: Relationship,
+    r: {name: string; through?: string; keys?: string[]; fields?: FieldDoc[]},
+    opts: LoadOptions, warnings: string[], dialect: string) {
+  const ctxLabel = `relationship '${relationship.name}'`;
+  const fields = (r.fields ?? [])
+                     .map(f => convertField(f, relationship.name, warnings,
+                                            dialect));
+  rejectDuplicateNames(fields.map(f => f.name), 'field name', ctxLabel);
+
+  relationship.through = parseSource(r.through!, opts, warnings, ctxLabel);
+  relationship.keys = r.keys ??
+      [...new Set([
+        ...relationship.source.columns, ...relationship.destination.columns
+      ])];
+  if (fields.length) relationship.fields = fields;
 }
 
 function convertMetric(

@@ -3,7 +3,7 @@
 // The IR (./ir) is pure semantics. This module is one of its consumers, a
 // sibling to ./bigquery: it emits a single `CREATE OR REPLACE PROPERTY GRAPH`
 // statement over the entities' existing Spanner input tables. It shares the IR,
-// the inheritance-resolution pass, and the edge/association shapes with the
+// the inheritance-resolution pass, and the edge shapes with the
 // BigQuery generator, but differs from it in three ways that follow from
 // Spanner Graph's DDL:
 //
@@ -23,7 +23,7 @@
 // https://docs.cloud.google.com/spanner/docs/reference/standard-sql/graph-schema-statements
 //
 
-import {Association, Entity, Field, Relationship, SemanticModel} from './ir';
+import {Entity, Field, Relationship, SemanticModel} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
 import {stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIdentifier, quoteIfReserved} from './sql_identifiers';
@@ -246,9 +246,8 @@ function renderNodeTable(
 function renderEdgeTable(
     rel: Relationship, entitiesByName: Map<string, Entity>,
     warnings: string[]): string {
-  if (rel.association) {
-    return renderAssociationEdge(
-        rel, rel.association, entitiesByName, warnings);
+  if (rel.through) {
+    return renderThroughEdge(rel, rel.through, entitiesByName, warnings);
   }
   // A direct foreign key: the SOURCE entity's own table backs the edge (one
   // edge row per source row). Its FK columns reference the destination's key
@@ -299,19 +298,19 @@ function renderEdgeTable(
 }
 
 
-// Renders a many-to-many edge backed by an association (junction) table. The
-// edge has its OWN backing table and KEY, each endpoint's SOURCE/DESTINATION
-// KEY names the junction columns referencing that entity's declared key, and
-// the junction's own `fields` become edge PROPERTIES.
-function renderAssociationEdge(
-    rel: Relationship, assoc: Association, entitiesByName: Map<string, Entity>,
+// Renders a many-to-many edge, which runs through a table of its own. The edge
+// has its OWN backing table and KEY, each endpoint's SOURCE/DESTINATION KEY
+// names the columns on that table referencing the entity's declared key, and
+// the edge's own `fields` become PROPERTIES.
+function renderThroughEdge(
+    rel: Relationship, through: string, entitiesByName: Map<string, Entity>,
     warnings: string[]): string {
   const backing =
-      spannerTable(assoc.dataSource, warnings, `relationship '${rel.name}'`);
-  if (!assoc.keys?.length) {
+      spannerTable(through, warnings, `relationship '${rel.name}'`);
+  if (!rel.keys?.length) {
     warnings.push(
-        `relationship '${rel.name}': association table has no KEY; the edge ` +
-        `table will be invalid (an edge requires a KEY)`);
+        `relationship '${rel.name}': the table it runs through has no KEY; ` +
+        `the edge table will be invalid (an edge requires a KEY)`);
   }
 
   const refColumns = (end: {entity: string; columns: string[]}): string => {
@@ -328,22 +327,22 @@ function renderAssociationEdge(
 
   const lines = [
     line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
-    line(2, `KEY(${assoc.keys.map(quoteIfReserved).join(', ')})`),
+    line(2, `KEY(${(rel.keys ?? []).map(quoteIfReserved).join(', ')})`),
     line(
         2,
-        `SOURCE KEY(${assoc.sourceColumns.map(quoteIfReserved).join(', ')}) ` +
+        `SOURCE KEY(${rel.source.columns.map(quoteIfReserved).join(', ')}) ` +
             `REFERENCES ${quoteIfReserved(rel.source.entity)}(${
                 refColumns(rel.source)})`),
     line(
         2,
         `DESTINATION KEY(${
-            assoc.destinationColumns.map(quoteIfReserved).join(', ')}) ` +
+            rel.destination.columns.map(quoteIfReserved).join(', ')}) ` +
             `REFERENCES ${quoteIfReserved(rel.destination.entity)}(${
                 refColumns(rel.destination)})`),
   ];
 
   const properties =
-      (assoc.fields ?? []).map(f => renderFieldProperty(f, rel.name));
+      (rel.fields ?? []).map(f => renderFieldProperty(f, rel.name));
   if (properties.length) lines.push(propertiesBlock(properties));
 
   return lines.join('\n');

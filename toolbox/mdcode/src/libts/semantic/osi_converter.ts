@@ -36,9 +36,10 @@
 // any other vendor extension on the IR is dropped with a warning (its carrier's
 // fate under '/google' is still open). See serialize.test.ts.
 //
-// An `association` (junction-table) relationship has no open-format syntax (the
-// loader cannot produce one), so only its direct foreign-key view (from/to +
-// columns) is serialized; the junction detail is dropped with a note.
+// A many-to-many relationship round-trips whole: `through`, `keys`, and
+// `fields` are native keys of the extended profile, so the table the edge runs
+// through, its own key, the columns on it, and its properties are all written
+// back.
 
 import * as yaml from 'yaml';
 
@@ -81,8 +82,8 @@ export interface SerializeResult {
  * `pull` writes one file per model
  * (catalog/EntryGroups/<entryGroup>/<model>.yaml).
  *
- * Warnings flag IR content that has no loadable representation (an association
- * relationship's junction detail), so the caller can surface the lossy edge.
+ * Warnings flag IR content that has no loadable representation, so the caller
+ * can surface the lossy edge.
  *
  * `logical` marks the model as a purely logical one (no physical binding), so
  * the missing-source and missing-expression warnings -- which flag a lossy pull
@@ -194,7 +195,8 @@ function modelDoc(model: SemanticModel, warnings: string[], logical: boolean):
     deployment_target: deploymentTarget,
     entities: datasets,
     relationships: nonEmpty(
-        (model.relationships ?? []).map(r => relationshipDoc(r, warnings))),
+        (model.relationships ?? [])
+            .map(r => relationshipDoc(r, warnings, logical))),
     metrics: nonEmpty((model.metrics ?? []).map(m => metricDoc(m, warnings))),
     actions:
         nonEmpty((model.actions ?? []).map(a => actionDoc(a, warnings))),
@@ -308,25 +310,28 @@ function executorDoc(ex: Executor): Record<string, any> {
 }
 
 // Inverts loader.convertRelationship: `from`/`to` are the endpoint entities and
-// `from_columns`/`to_columns` are their positional join columns. An association
-// (junction-table) edge has no open-format syntax, so only this direct-FK view
-// is emitted and the junction detail is flagged.
+// `from_columns`/`to_columns` are the columns that reach them. A many-to-many
+// edge adds the table it runs `through` -- the table those columns are on --
+// plus the key and properties that table gives it.
+//
+// `keys` is always written even though the format lets it be omitted: the
+// loader's default is derived from the two column lists, and re-deriving it on
+// the way out would silently rewrite an edge whose authored key differed from
+// that default.
 function relationshipDoc(
-    rel: Relationship, warnings: string[]): Record<string, any> {
-  if (rel.association) {
-    warnings.push(
-        `relationship '${
-            rel.name}': association (junction-table) detail has no ` +
-        `open-format representation and is not serialized; only its foreign-key ` +
-        `endpoints are written.`);
-  }
+    rel: Relationship, warnings: string[],
+    logical: boolean): Record<string, any> {
   dropExtensions(rel.customExtensions, `relationship '${rel.name}'`, warnings);
   return compact({
     name: rel.name,
     from: rel.source.entity,
     to: rel.destination.entity,
+    through: rel.through,
+    keys: rel.through ? nonEmpty(rel.keys ?? []) : undefined,
     from_columns: nonEmpty(rel.source.columns),
     to_columns: nonEmpty(rel.destination.columns),
+    fields:
+        nonEmpty((rel.fields ?? []).map(f => fieldDoc(f, warnings, logical))),
     description: rel.description,
     ai_context: aiContextDoc(rel.aiContext),
   });

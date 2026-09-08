@@ -6,8 +6,8 @@
 // showing the exact generated DDL and warnings. Prefer adding a fixture +
 // golden there.
 //
-// This file holds only what a loader fixture CANNOT express: an M:N association
-// edge (the open format has no association-table syntax, so its IR is
+// This file holds only what a loader fixture CANNOT express: a through-edge
+// named entirely with reserved words (the loader rejects those, so its IR is
 // hand-built and checked against a committed golden), and degenerate/negative
 // inputs and pure GenerateOptions behavior (graph naming, bare table mapping).
 
@@ -16,84 +16,48 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {SemanticModel} from '../../../src/libts/semantic/ir';
+import {loadModels} from '../../../src/libts/semantic/loader';
 import {GenerateOptions, generateSpannerPropertyGraph} from '../../../src/libts/semantic/spanner';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
 
-describe(
-    'M:N association edge (no association-table syntax in the open format yet)',
-    () => {
-      // Hand-built because the loader's relationship schema is direct-FK only;
-      // it cannot express an edge backed by its own association table with its
-      // own KEY and edge properties. The expected DDL is a committed golden
-      // (`school_manytomany.spanner.golden.sql`), the Spanner counterpart to
-      // the BigQuery association golden, so the two shapes are reviewable side
-      // by side.
-      const SCHOOL: SemanticModel = {
-        name: 'school_graph',
-        entities: [
-          {
-            name: 'students',
-            dataSource: 'sqlgen-testing.bei_semantic_ir_verify.students',
-            keys: ['student_id'],
-            fields: [
-              {name: 'student_id', expression: 'students.student_id'},
-              {name: 'name', expression: 'students.name'}
-            ]
-          },
-          {
-            name: 'courses',
-            dataSource: 'sqlgen-testing.bei_semantic_ir_verify.courses',
-            keys: ['course_id'],
-            fields: [
-              {name: 'course_id', expression: 'courses.course_id'},
-              {name: 'title', expression: 'courses.title'}
-            ]
-          },
-        ],
-        relationships: [
-          {
-            name: 'enrollment',
-            source: {entity: 'students', columns: ['student_id']},
-            destination: {entity: 'courses', columns: ['course_id']},
-            association: {
-              dataSource: 'sqlgen-testing.bei_semantic_ir_verify.enrollment',
-              keys: ['enrollment_id'],
-              sourceColumns: ['student_id'],
-              destinationColumns: ['course_id'],
-              fields: [{
-                name: 'grade',
-                expression: 'enrollment.grade',
-                description: 'Letter grade'
-              }]
-            }
-          },
-        ],
-        metrics: [],
-      };
+// Loads a fixture to its IR, the way the BigQuery suite does.
+function loadFixture(fixture: string): SemanticModel {
+  const text = fs.readFileSync(path.join(FIXTURES, fixture), 'utf8');
+  const {models} = loadModels(
+      text, {defaultProject: 'sqlgen-testing', defaultDataset: 'demo'});
+  return models[0];
+}
 
-      test('the association graph matches its committed golden DDL', () => {
+describe('many-to-many edge', () => {
+  // Loaded from `school_manytomany.yaml`, the same document the BigQuery suite
+  // renders, so one authored many-to-many model is shown deploying to either
+  // store. The expected DDL is a committed golden
+  // (`school_manytomany.spanner.golden.sql`), the Spanner counterpart to the
+  // BigQuery golden, so the two shapes are reviewable side by side.
+  const SCHOOL = loadFixture('school_manytomany.yaml');
+
+  test('the many-to-many graph matches its committed golden DDL', () => {
+    const {ddl} = generateSpannerPropertyGraph(SCHOOL);
+    const golden = path.join(FIXTURES, 'school_manytomany.spanner.golden.sql');
+    if (process.env.UPDATE_GOLDENS) {
+      fs.writeFileSync(golden, ddl);
+      return;
+    }
+    expect(ddl).toBe(fs.readFileSync(golden, 'utf8'));
+  });
+
+  test(
+      'an edge property carries no OPTIONS (Spanner has no per-element options)',
+      () => {
+        // The edge's own `grade` field has a description; on BigQuery that
+        // becomes an OPTIONS clause, on Spanner it is dropped.
         const {ddl} = generateSpannerPropertyGraph(SCHOOL);
-        const golden =
-            path.join(FIXTURES, 'school_manytomany.spanner.golden.sql');
-        if (process.env.UPDATE_GOLDENS) {
-          fs.writeFileSync(golden, ddl);
-          return;
-        }
-        expect(ddl).toBe(fs.readFileSync(golden, 'utf8'));
+        expect(ddl).toContain('grade');
+        expect(ddl).not.toContain('OPTIONS');
       });
-
-      test(
-          'an edge property carries no OPTIONS (Spanner has no per-element options)',
-          () => {
-            // The junction's `grade` field has a description; on BigQuery that
-            // becomes an OPTIONS clause, on Spanner it is dropped.
-            const {ddl} = generateSpannerPropertyGraph(SCHOOL);
-            expect(ddl).toContain('grade');
-            expect(ddl).not.toContain('OPTIONS');
-          });
-    });
+});
 
 
 describe('graph naming', () => {
@@ -325,11 +289,11 @@ describe('degenerate inputs', () => {
   });
 });
 
-describe('reserved-word names in an M:N association edge are quoted', () => {
-  // The open format has no association-table syntax, so this hand-built IR is
-  // the only path that exercises renderAssociationEdge's identifier quoting on
-  // the Spanner leg: the edge alias, KEY, SOURCE KEY / DESTINATION KEY columns,
-  // and both REFERENCES labels, each named with a GoogleSQL reserved keyword.
+describe('reserved-word names in a through-edge are quoted', () => {
+  // The loader rejects reserved-word names, so this hand-built IR is the only
+  // path that exercises renderThroughEdge's identifier quoting on the Spanner
+  // leg: the edge alias, KEY, SOURCE KEY / DESTINATION KEY columns, and both
+  // REFERENCES labels, each named with a GoogleSQL reserved keyword.
   // Table names stay bare (Spanner graphs live in one database).
   const RW_ASSOC: SemanticModel = {
     name: 'rw_assoc',
@@ -351,13 +315,8 @@ describe('reserved-word names in an M:N association edge are quoted', () => {
       name: 'from',
       source: {entity: 'Order', columns: ['order']},
       destination: {entity: 'Group', columns: ['id']},
-      association: {
-        dataSource: 'proj.ds.order_group',
-        keys: ['order'],
-        sourceColumns: ['order'],
-        destinationColumns: ['id'],
-        fields: [],
-      },
+      through: 'proj.ds.order_group',
+      keys: ['order'],
     }],
     metrics: [],
   };

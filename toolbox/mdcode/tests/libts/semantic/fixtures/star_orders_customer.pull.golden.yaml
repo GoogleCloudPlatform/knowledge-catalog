@@ -34,7 +34,7 @@ semantic_model:
             datatype: Opaque
             description: Customer name
     relationships:
-      - name: orders-to-customer
+      - name: orders_to_customer
         from: orders
         to: customer
         from_columns:
