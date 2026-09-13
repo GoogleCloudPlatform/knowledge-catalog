@@ -56,6 +56,7 @@ import {
   SemanticModel,
   ViolationEffect,
 } from '../ir';
+import {blankStringLiterals, STRING_LITERAL} from '../sql_expr_utils';
 import {quoteIfReserved, referencedParameters} from '../sql_identifiers';
 
 
@@ -531,20 +532,6 @@ function parseExpression(
 }
 
 
-// The expression with every single-quoted span blanked out, character for
-// character, so a scan can find structure without seeing inside a literal.
-// Offsets are preserved, which is the point: the caller matches against the
-// mask and slices the original at the same index.
-//
-// Without it `Account.status = 'ON HOLD OR CLOSED'` splits on the OR inside
-// the string and the rule is refused for a fault it does not have. `isLiteral`
-// already bars an embedded quote or backslash, so a literal is exactly the
-// text between one pair of quotes.
-function maskLiterals(expression: string): string {
-  return expression.replace(/'[^']*'/g, m => `'${'.'.repeat(m.length - 2)}'`);
-}
-
-
 // Splits on top-level AND/OR, matched as whole words so a field named `brand`
 // survives. There are no parentheses to nest -- parseExpression refuses them --
 // so every operator found is top level.
@@ -552,7 +539,15 @@ function splitOnLogicalOperators(expression: string):
     {parts: string[]; joiners: string[]} {
   const parts: string[] = [];
   const joiners: string[] = [];
-  const masked = maskLiterals(expression);
+  // Scan a copy with the literals masked, so `Account.status = 'ON HOLD OR
+  // CLOSED'` does not come apart inside the quotes. The mask is the same length
+  // as what it replaces, so every index still points into the original.
+  //
+  // `blankStringLiterals` fills with spaces, which is wrong here: a blanked
+  // literal would join the whitespace on either side of it, and `\s+AND\s+`
+  // would then match across the space the literal used to occupy. The filler
+  // has to be something `\s` does not match.
+  const masked = expression.replace(STRING_LITERAL, m => '.'.repeat(m.length));
   const pattern = /\s+(AND|OR)\s+/gi;
   let last = 0;
   let match: RegExpExecArray|null;
@@ -634,12 +629,12 @@ function parseOperand(
 
 
 // The first comparison operator in `text`, longest match first so `>=` is not
-// read as `>` with a stray `=` after it. Read against the masked text, so an
-// operator character inside a string literal -- `'a>b' = Order.tag` -- is not
-// mistaken for the comparison.
+// read as `>` with a stray `=` after it. Read with the literals blanked, so an
+// operator character inside a string -- `'a>b' = Order.tag` -- is not mistaken
+// for the comparison.
 function findOperator(text: string): {operator: string; index: number}|null {
   let best: {operator: string; index: number}|null = null;
-  const masked = maskLiterals(text);
+  const masked = blankStringLiterals(text);
   for (const operator of OPERATORS) {
     const index = masked.indexOf(operator);
     if (index < 0) continue;
