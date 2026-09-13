@@ -192,12 +192,26 @@ describe('a tool this runtime would refuse', () => {
     expect(tool.description).not.toContain('will not work');
   });
 
-  test('a guarded action is not runnable while nothing checks the guard', () => {
+  test('a guard this runtime can check leaves the action runnable', () => {
+    // Being checked is not being blocked. The rule is lowered to a probe and
+    // run when the action runs, and a tool marked unrunnable over it would
+    // withhold a call that works.
     const guarded = withExecutor(
         model, {...RUNNABLE, guards: ['RequestedQuantityIsPositive']});
     const [tool] = actionTools({runtime: rt(guarded)});
+    expect(tool.runnable).toBe(true);
+    expect(tool.unavailable).toBeUndefined();
+  });
+
+  test('a guard this runtime cannot check is not runnable', () => {
+    // The fixture settles this one by judgment, and there is no judge here.
+    // The model says the call is checked, so running it would run it
+    // unchecked, which is not the action the model describes.
+    const guarded = withExecutor(
+        model, {...RUNNABLE, guards: ['LargeOrderIsJustified']});
+    const [tool] = actionTools({runtime: rt(guarded)});
     expect(tool.runnable).toBe(false);
-    expect(tool.unavailable).toContain('RequestedQuantityIsPositive');
+    expect(tool.unavailable).toContain('LargeOrderIsJustified');
     expect(tool.unavailable).toContain('refused rather than run unchecked');
   });
 
@@ -716,9 +730,22 @@ describe('sorting the tools an adapter can actually offer', () => {
     expect(withheld).toEqual([]);
   });
 
-  test('a guarded action is withheld, and says why', () => {
-    // A guard is the case that matters: the model says this write must be
-    // checked, no checker exists, so the tool must not be offered as callable.
+  test('an action whose guard cannot be checked is withheld, and says why',
+       () => {
+         // The model says this write is checked before it runs and the rule is
+         // settled by judgment, so the tool must not be offered as callable.
+         const guarded = withExecutor(
+             model, {...RUNNABLE, guards: ['LargeOrderIsJustified']});
+         const {callable, withheld} =
+             callableTools(modelTools({runtime: rt(guarded)}));
+         expect(callable.map(t => t.name)).toEqual([
+           'find_orders', 'find_customer'
+         ]);
+         expect(withheld.map(t => t.name)).toEqual(['place_order']);
+         expect(withheld[0].unavailable).toContain('LargeOrderIsJustified');
+       });
+
+  test('an action whose guard can be checked is offered', () => {
     const guarded = {
       ...withExecutor(model, {...RUNNABLE, guards: ['UnderReview']}),
       constraints: [{
@@ -729,9 +756,8 @@ describe('sorting the tools an adapter can actually offer', () => {
     };
     const {callable, withheld} =
         callableTools(modelTools({runtime: rt(guarded)}));
-    expect(callable.map(t => t.name)).toEqual(['find_orders', 'find_customer']);
-    expect(withheld.map(t => t.name)).toEqual(['place_order']);
-    expect(withheld[0].unavailable).toContain('UnderReview');
+    expect(callable.map(t => t.name)).toContain('place_order');
+    expect(withheld).toEqual([]);
   });
 
   test('the instruction is carried through untouched', () => {

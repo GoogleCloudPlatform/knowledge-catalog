@@ -23,16 +23,21 @@
 // which this module cannot call and could not roll back if it did; for those
 // the caller supplies a handler that produces the statements.
 //
-// What this does NOT do yet: evaluate the model's constraints. A constraint is
-// still text nothing checks, so an action that NAMES one in `guards` is REFUSED
-// here rather than run unchecked -- see `unsafeToRunUnchecked`. Refusing is the
-// point. A model that declares a rule and a runtime that quietly ignores it is
-// worse than no runtime at all, because the model states the call is checked
+// Where the model's rules come in. A constraint takes effect here through
+// `guards` on the action: each rule the action names is lowered to a probe and
+// run inside this same transaction -- before the write when it reads one of the
+// call's arguments, after the write when it reads only stored state -- and a
+// violation rolls the whole thing back and reports the rule's own words. See
+// constraint_eval.ts.
+//
+// A rule that cannot be lowered REFUSES the action rather than letting it run
+// unchecked. A model that declares a rule and a runtime that quietly ignores it
+// is worse than no runtime at all, because the model states the call is checked
 // and nothing says otherwise.
 //
 // A constraint no action names gates nothing here, because it gates nothing
 // anywhere: a rule takes effect where something references it, and `guards` is
-// that reference for an action (see Action.guards in ir.ts). Refusing on a
+// that reference for an action (see Action.guards in ir.ts). Checking a
 // constraint that merely reads data the action writes would mean publishing a
 // rule silently stopped calls that succeeded the day before, which is the
 // property that reference rule exists to guarantee.
@@ -50,6 +55,15 @@ import {
 } from '../ir';
 import {quoteIfReserved, referencedParameters} from '../sql_identifiers';
 
+import {
+  ConstraintViolation,
+  lowerGuards,
+  UncheckedRule,
+  probeStatement,
+  ProbeTiming,
+  strictestEffect,
+  violationFrom,
+} from './constraint_eval';
 import {runtimeClient, SemanticRuntime} from './runtime';
 
 
@@ -91,6 +105,32 @@ export type ActionHandler = (ctx: ActionContext) => Promise<ActionPlan>;
 export type ActionOutcome = {
   status: 'committed';
   commitTimestamp?: string;
+  refs: Record<string, EntityRef>;
+  // Rules that did not hold and let the write through anyway, which is what
+  // `on_violation: warn` asks for. Present only when there are some.
+  warnings?: ConstraintViolation[];
+  // Advisory rules the action named and this runtime could not evaluate. They
+  // stop nothing, so the write stands, and they are reported rather than
+  // dropped: a report the model asked for and did not get is worth knowing.
+  unchecked?: UncheckedRule[];
+}|{
+  // A rule the model states stopped the write. Kept apart from `error` because
+  // it is not a failure: the runtime did what the model asked of it, and the
+  // caller's next move is to change the request or to get an approval rather
+  // than to look for a fault. Nothing was written.
+  status: 'refused';
+  // The strictest effect among the rules that stopped the call. `reject` is
+  // final. `escalate` means somebody is entitled to say yes, though nothing
+  // here holds the write while they decide: it is rolled back, and the action
+  // is run again once it is approved.
+  effect: 'reject'|'escalate';
+  // The rules that stopped it. A rule violated on the same call whose effect is
+  // `warn` is not among them: it asks for the write to proceed and be reported,
+  // and nothing was committed for it to qualify.
+  violations: ConstraintViolation[];
+  // Every violation as one piece of text, each rule's own description first,
+  // for a caller that reports rather than routes.
+  message: string;
   refs: Record<string, EntityRef>;
 }|{
   status: 'error';
@@ -137,6 +177,13 @@ export async function runAction(opts: RunActionOptions):
   // fails without having opened a transaction at all.
   const refusal = whyRefusedWithoutRunning(model, action, opts.handler);
   if (refusal) return {status: 'error', message: refusal};
+
+  // Lowered before anything opens, and by the same call the refusal check just
+  // made: the probes that run are the ones it proved buildable, so an action
+  // reported as runnable cannot then meet a rule that turns out to be
+  // uncheckable.
+  const lowered = lowerGuards(model, action);
+  const probes = lowered.probes;
 
   // Also before touching the store, because there may be none to touch.
   const client = runtimeClient(opts.runtime);
@@ -204,6 +251,34 @@ export async function runAction(opts: RunActionOptions):
         }
         const refs = resolved.refs;
 
+        // A probe binds the action's own parameters, so a guarded action is
+        // bound here even when a handler is what supplies the writes.
+        let probeValues: Bindings|undefined;
+        if (probes.length) {
+          const bound = bindArguments(model, action, args, refs);
+          if ('error' in bound) {
+            return await rollback({status: 'error', message: bound.error});
+          }
+          probeValues = bound;
+        }
+        const check = async (timing: ProbeTiming) => {
+          const violations: ConstraintViolation[] = [];
+          for (const probe of probes) {
+            if (probe.timing !== timing) continue;
+            const rows = await query(probeStatement(
+                probe, probeValues!.params, probeValues!.types));
+            if (rows.length) violations.push(violationFrom(probe, rows));
+          }
+          return violations;
+        };
+
+        // Before the write, because a rule that reads an argument is asking
+        // whether this call may proceed at all, and a call that may not should
+        // cost the store no writes.
+        const beforeWrite = await check('before');
+        const refusedBefore = refusedBy(action, beforeWrite, refs);
+        if (refusedBefore) return await rollback(refusedBefore);
+
         // The bindings exist to fill the model's OWN statements, so they are
         // built only when the model is what supplies them. A handler is given
         // `refs` whole and may write a composite key, which this pass refuses
@@ -224,6 +299,14 @@ export async function runAction(opts: RunActionOptions):
         for (const stmt of plan.statements) {
           await run(stmt);
         }
+
+        // After the write and still inside the transaction, which is the one
+        // moment the post-state both exists and can still be undone.
+        const afterWrite = await check('after');
+        const refusedAfter = refusedBy(action, afterWrite, refs);
+        if (refusedAfter) return await rollback(refusedAfter);
+        const warnings =
+            [...beforeWrite, ...afterWrite].filter(v => v.effect === 'warn');
 
         // Deliberately NOT rolled back. Once commit has been called the
         // transaction's fate is the server's, and a deadline or a 5xx is
@@ -282,6 +365,8 @@ export async function runAction(opts: RunActionOptions):
           status: 'committed',
           commitTimestamp: committed.result?.commitTimestamp,
           refs,
+          ...(warnings.length ? {warnings} : {}),
+          ...(lowered.unchecked.length ? {unchecked: lowered.unchecked} : {}),
         } as ActionOutcome;
       } catch (err) {
         try {
@@ -365,13 +450,14 @@ export function whyRefusedWithoutRunning(
         `that performs the write as DML, or declare the action with a 'sql' ` +
         `executor.`;
   }
-  const unchecked = unsafeToRunUnchecked(model, action);
+  const unchecked = guardsNotCheckable(model, action);
   if (unchecked) return unchecked;
-  // The refusals left are about filling the model's OWN statements, so they
-  // apply only when the model is what supplies them. A handler writes its own
-  // DML, is handed `refs` whole, and may well spell a composite key across
-  // several parameters -- none of what follows is owed by it.
-  if (handler) return null;
+  // The refusals left are about filling statements with the action's own
+  // parameters. A handler writes its own DML, is handed `refs` whole, and may
+  // well spell a composite key across several parameters, so none of what
+  // follows is owed by it -- unless the action is guarded, because a probe
+  // binds those parameters whoever supplies the write.
+  if (handler && !(action.guards ?? []).length) return null;
   return unbindableByThisRuntime(model, action);
 }
 
@@ -411,45 +497,57 @@ function unbindableByThisRuntime(
 }
 
 
-// Why a rule the model states has to stop `action`, or null if none does.
+// Why a rule the model states has to stop `action` from running at all, or null
+// if none does.
 //
 // One question, and it is narrower than "could some rule bear on this write":
-// does the action name a constraint that has to be checked before it runs,
-// which nothing can check yet. `guards` is what gives a constraint effect over
-// a call -- a rule no action names is a catalogued rule no call consults -- so
-// the model's own answer to "what gates this" is the list, and reading further
-// would be this module inventing an obligation the model does not state.
+// does the action name a constraint this runtime cannot check. `guards` is what
+// gives a constraint effect over a call -- a rule no action names is a
+// catalogued rule no call consults -- so the model's own answer to "what gates
+// this" is the list, and reading further would be this module inventing an
+// obligation the model does not state.
+//
+// A guard it CAN check is not a refusal. It is lowered to a probe and run, and
+// the call goes ahead or does not on what the probe finds. What refuses is a
+// guard that cannot be lowered -- a rule settled by judgment, an expression
+// outside the grammar, a field the profile bound to nothing -- because running
+// the action then means running it unchecked, which is not what the model says
+// it is.
 //
 // An action naming no guard therefore runs. That is not this module judging the
 // write safe; it is the model saying no rule gates the call. What the write
-// does is the author's, which is what `affects` describes and what the
-// evaluator will check against the statements once it exists.
-function unsafeToRunUnchecked(
-    model: SemanticModel, action: Action): string|null {
-  // A guard names a constraint the author says is checked before the call.
-  // One whose `onViolation` is `warn` reports rather than refuses, so an
-  // evaluator would let the write through, and refusing here would make a
-  // model that states advisory rules permanently unrunnable. Only a name the
-  // model declares AS advisory stands down -- a guard naming nothing this
-  // model declares still refuses, because it is not something to guess about.
-  const advisory = new Set((model.constraints ?? [])
-                               .filter(c => c.onViolation === 'warn')
-                               .map(c => c.name));
-  const guards = (action.guards ?? []).filter(g => !advisory.has(g));
-  if (guards.length) {
-    return `Action '${action.name}' is guarded by ${quoteList(guards)}, and ` +
-        `this runtime does not evaluate constraints yet. Running it would ` +
-        `apply a write the model says must be checked first, so it is ` +
-        `refused rather than run unchecked.`;
-  }
-  return null;
+// does is the author's, which is what `affects` describes.
+function guardsNotCheckable(model: SemanticModel, action: Action): string|null {
+  const errors = lowerGuards(model, action).errors;
+  if (!errors.length) return null;
+  return `Action '${action.name}' cannot be run: ${errors.join('; ')}. ` +
+      `Running it would apply a write the model says is checked first, so ` +
+      `it is refused rather than run unchecked.`;
 }
 
 
-function quoteList(names: readonly string[]): string {
-  const quoted = names.map(n => `'${n}'`);
-  if (quoted.length === 1) return quoted[0];
-  return `${quoted.slice(0, -1).join(', ')} and ${quoted[quoted.length - 1]}`;
+// What a set of violations does to the write, or null if it goes ahead.
+//
+// `warn` is the one effect that stops nothing: the model asked for the
+// violation to be reported and the write to proceed, so it rides out on a
+// committed outcome instead of stopping here. The rest roll back, and the
+// strictest effect among the rules that fired is what the action does -- being
+// told a supervisor could approve a write that another rule forbids outright
+// would send the caller to ask for something nobody can give.
+function refusedBy(
+    action: Action, violations: ConstraintViolation[],
+    refs: Record<string, EntityRef>): ActionOutcome|null {
+  const effect = strictestEffect(violations);
+  if (effect !== 'reject' && effect !== 'escalate') return null;
+  const stopping = violations.filter(v => v.effect !== 'warn');
+  const reasons = stopping.map(v => v.message).join(' ');
+  const message = effect === 'reject' ?
+      `Action '${action.name}' was refused and nothing was written. ${
+          reasons}` :
+      `Action '${action.name}' needs an approval, and nothing was written. ${
+          reasons} Nothing is held while somebody decides: the transaction ` +
+          `was rolled back, so run the action again once it is approved.`;
+  return {status: 'refused', effect, violations: stopping, message, refs};
 }
 
 

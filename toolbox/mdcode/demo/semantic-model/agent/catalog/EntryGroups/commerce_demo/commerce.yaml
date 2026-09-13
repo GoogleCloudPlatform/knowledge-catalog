@@ -134,7 +134,7 @@ semantic_model:
           decides it.
 
       - name: OrderTotalMatchesLineItems
-        expression: Order.total == SUM(LineItem.amount)
+        expression: Order.total = SUM(LineItem.amount)
         on_violation: reject
         description: >-
           An order's total must equal the sum of its line items, with credits

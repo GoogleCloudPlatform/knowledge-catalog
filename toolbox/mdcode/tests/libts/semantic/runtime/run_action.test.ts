@@ -641,15 +641,39 @@ describe('an action whose write is declared in the model', () => {
 });
 
 
-// Nothing evaluates a constraint yet, so an action that says it is checked
-// before it runs must not run. `guards` is what says that, and it is the only
-// thing that does: a constraint takes effect where something references it.
-describe('a guarded action is refused, not run unchecked', () => {
+// A constraint takes effect over a call because the action names it in
+// `guards`, and these tests are about what happens then: the rule is lowered to
+// a probe, the probe runs inside the action's own transaction, and what it
+// finds decides whether the write stands.
+describe('a guard the runtime checks', () => {
+  // Reads stored state alone, so it is asked after the write.
   const balance: Constraint = {
     name: 'NonNegativeBalance',
     expression: 'Account.balance >= 0',
     description: 'An account cannot go negative.',
   };
+  // Reads one of the call's arguments, so it is asked before the write.
+  const ceiling: Constraint = {
+    name: 'UnderCeiling',
+    expression: 'amount <= 50',
+    description: 'A credit over 50 is above the self-service ceiling.',
+    onViolation: 'escalate',
+  };
+  const positive: Constraint = {
+    name: 'PositiveAmount',
+    expression: 'amount > 0',
+    description: 'A credit must be for a positive amount.',
+  };
+  // Fragments identifying each probe in what the fake was asked. The balance
+  // probe reads a table; the argument-only ones have no table to read, so
+  // GoogleSQL gives them a one-row source.
+  const BALANCE_PROBE = 'COALESCE((balance >= 0)';
+  const ARGUMENT_PROBE = 'UNNEST([1])';
+
+  const guardedBy = (constraints: Constraint[]) => ({
+    actions: [{...credit, guards: constraints.map(c => c.name)}],
+    constraints,
+  });
 
   const runWith = (over: Partial<SemanticModel>, fake = resolvingFake()) =>
       act({
@@ -659,30 +683,143 @@ describe('a guarded action is refused, not run unchecked', () => {
         client: fake.client,
       });
 
-  test('an action that names a guard is refused', async () => {
-    const outcome = await runWith({
-      actions: [{...credit, guards: ['NonNegativeBalance']}],
-      constraints: [balance],
-    });
-    if (outcome.status !== 'error') throw new Error('expected an error');
-    expect(outcome.message).toContain("guarded by 'NonNegativeBalance'");
-    expect(outcome.message).toContain('does not evaluate constraints yet');
+  test('a rule that holds lets the write through', async () => {
+    const fake = resolvingFake();
+    const outcome = await runWith(guardedBy([balance]), fake);
+    if (outcome.status !== 'committed') throw new Error(outcome.message);
+    // The probe really ran. A guard that passes and a guard that was skipped
+    // produce the same outcome, and only one of them is the runtime working.
+    expect(fake.sql.filter(s => s.includes(BALANCE_PROBE))).toHaveLength(1);
   });
 
-  test('a refused action never opens a transaction', async () => {
-    // The point of deciding before the store is touched: there is nothing to
-    // roll back, and no session to leak.
+  test('a rule over stored state is asked after the write', async () => {
+    // Inside the same transaction, which is the one moment the post-state both
+    // exists and can still be undone.
     const fake = resolvingFake();
-    await runWith(
-        {
-          actions: [{...credit, guards: ['NonNegativeBalance']}],
-          constraints: [balance],
-        },
-        fake);
-    expect(fake.statements).toHaveLength(0);
-    expect(fake.sessionsOpened).toBe(0);
-    expect(fake.rolledBack).toBe(false);
+    await runWith(guardedBy([balance]), fake);
+    expect(fake.sql.findIndex(s => s.includes(BALANCE_PROBE)))
+        .toBeGreaterThan(fake.sql.findIndex(s => s.startsWith('UPDATE')));
   });
+
+  test('a violated rule rolls the write back and reports the author words',
+       async () => {
+         const fake = resolvingFake([{match: BALANCE_PROBE, rows: [['1']]}]);
+         const outcome = await runWith(guardedBy([balance]), fake);
+         if (outcome.status !== 'refused') throw new Error('expected a refusal');
+         expect(outcome.effect).toBe('reject');
+         expect(outcome.message).toContain('An account cannot go negative.');
+         expect(outcome.message).toContain("'NonNegativeBalance'");
+         // Which row broke it, so the caller can say something specific.
+         expect(outcome.message).toContain('Violating Account: 1');
+         expect(fake.rolledBack).toBe(true);
+         expect(fake.committed).toBe(false);
+       });
+
+  test('a rule over the arguments alone is asked before anything is written',
+       async () => {
+         // A rule reading an argument is asking whether this call may proceed
+         // at all, and a call that may not should cost the store no writes.
+         const fake = resolvingFake([{match: ARGUMENT_PROBE, rows: [['1']]}]);
+         const outcome = await runWith(guardedBy([ceiling]), fake);
+         if (outcome.status !== 'refused') throw new Error('expected a refusal');
+         expect(fake.sql.some(s => s.startsWith('INSERT'))).toBe(false);
+         expect(fake.sql.some(s => s.startsWith('UPDATE'))).toBe(false);
+       });
+
+  test('an argument reaches the probe as a parameter, interpolating nothing',
+       async () => {
+         const fake = resolvingFake();
+         await runWith(guardedBy([ceiling]), fake);
+         const probe = fake.statements.find(s => s.sql.includes(ARGUMENT_PROBE));
+         expect(probe!.sql).toContain('@amount');
+         expect(probe!.sql).not.toContain('100');
+         expect(probe!.params).toEqual({amount: 100});
+       });
+
+  test('a probe carries only the parameters it names', async () => {
+    // The action takes an account too. A statement carrying a parameter it
+    // never reads is one the store may refuse.
+    const fake = resolvingFake();
+    await runWith(guardedBy([ceiling]), fake);
+    const probe = fake.statements.find(s => s.sql.includes(ARGUMENT_PROBE));
+    expect(Object.keys(probe!.params ?? {})).toEqual(['amount']);
+  });
+
+  test('a rule needing an approval says nobody is holding the write',
+       async () => {
+         // There is no approval queue here. Saying the write is "held for
+         // review" would leave the caller waiting for something that is not
+         // coming.
+         const fake = resolvingFake([{match: ARGUMENT_PROBE, rows: [['1']]}]);
+         const outcome = await runWith(guardedBy([ceiling]), fake);
+         if (outcome.status !== 'refused') throw new Error('expected a refusal');
+         expect(outcome.effect).toBe('escalate');
+         expect(outcome.message)
+             .toContain('run the action again once it is approved');
+         expect(fake.rolledBack).toBe(true);
+       });
+
+  test('the strictest effect among the broken rules is what happens',
+       async () => {
+         // Sending the caller to ask for an approval that cannot authorize the
+         // other rule spends somebody's time on a write that was never going
+         // to land.
+         const fake = resolvingFake([{match: ARGUMENT_PROBE, rows: [['1']]}]);
+         const outcome = await runWith(guardedBy([ceiling, positive]), fake);
+         if (outcome.status !== 'refused') throw new Error('expected a refusal');
+         expect(outcome.effect).toBe('reject');
+         expect(outcome.violations.map(v => v.constraint))
+             .toEqual(['UnderCeiling', 'PositiveAmount']);
+       });
+
+  test('a rule that only reports lets the write through and is carried out',
+       async () => {
+         const advisory: Constraint = {
+           name: 'RoundAmount',
+           expression: 'amount <= 10',
+           description: 'Credits over 10 are usually reviewed.',
+           onViolation: 'warn',
+         };
+         const fake = resolvingFake([{match: ARGUMENT_PROBE, rows: [['1']]}]);
+         const outcome = await runWith(guardedBy([advisory]), fake);
+         if (outcome.status !== 'committed') throw new Error(outcome.message);
+         expect(fake.committed).toBe(true);
+         // A caller that never sees it has been told the write was clean when
+         // it was not.
+         expect(outcome.warnings?.map(v => v.constraint)).toEqual(
+             ['RoundAmount']);
+       });
+
+  test('a rule this runtime cannot check refuses before the store is touched',
+       async () => {
+         // Nothing to roll back, and no session to leak. Running the action
+         // would apply a write the model says is checked first.
+         const fake = resolvingFake();
+         const outcome = await runWith(
+             guardedBy([{
+               name: 'CreditIsJustified',
+               judgment: 'The memo must name a specific service failure.',
+               onViolation: 'reject',
+             }]),
+             fake);
+         if (outcome.status !== 'error') throw new Error('expected an error');
+         expect(outcome.message).toContain('runs no judge');
+         expect(outcome.message).toContain('refused rather than run unchecked');
+         expect(fake.statements).toHaveLength(0);
+         expect(fake.sessionsOpened).toBe(0);
+         expect(fake.rolledBack).toBe(false);
+       });
+
+  test('a rule over an entity the call does not name is refused, not widened',
+       async () => {
+         // Dropping the scope would turn the probe into a table scan holding
+         // read locks for the length of the write.
+         const outcome = await runWith(guardedBy(
+             [{name: 'EntriesArePositive', expression: 'Entry.amount > 0'}]));
+         if (outcome.status !== 'error') throw new Error('expected an error');
+         expect(outcome.message)
+             .toContain("takes no Entry parameter");
+       });
 
   test('an action writing data a constraint reads runs, if it names no guard',
        async () => {
@@ -734,16 +871,17 @@ describe('a guarded action is refused, not run unchecked', () => {
          expect(outcome.message).toContain("guarded by 'NoSuchRule'");
        });
 
-  test('several guards are all named', async () => {
+  test('every rule it cannot check is named, not just the first', async () => {
     const outcome = await runWith({
-      actions: [{...credit, guards: ['ZBalance', 'AEntry']}],
+      actions: [{...credit, guards: ['ZSpansTwo', 'ACallsAFunction']}],
       constraints: [
-        {name: 'ZBalance', expression: 'Account.balance >= 0'},
-        {name: 'AEntry', expression: 'Entry.amount > 0'},
+        {name: 'ZSpansTwo', expression: 'Account.balance >= Entry.amount'},
+        {name: 'ACallsAFunction', expression: 'Account.balance >= ABS(amount)'},
       ],
     });
     if (outcome.status !== 'error') throw new Error('expected an error');
-    expect(outcome.message).toContain("'ZBalance' and 'AEntry'");
+    expect(outcome.message).toContain("'ZSpansTwo'");
+    expect(outcome.message).toContain("'ACallsAFunction'");
   });
 });
 

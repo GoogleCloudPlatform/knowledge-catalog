@@ -23,7 +23,7 @@
  * knob it can turn.
  *
  * One thing the runtime cannot yet do shows through here. Nothing evaluates a
- * constraint, so runAction refuses any action that names one in `guards`
+ * constraint it cannot lower, so runAction refuses an action that names one
  * rather than running it unchecked. A tool for such an action would fail every
  * time it was called, which is a bad thing to hand a caller that cannot see
  * why. So a tool carries `runnable`, and an adapter binds the ones that are;
@@ -111,6 +111,18 @@ export interface ToolResult {
    * The statements ran and the commit itself failed to answer.
    */
   unknown?: boolean;
+  /**
+   * Set when a rule the model states stopped the write. Distinct from a plain
+   * failure: the call was understood and answered, and the answer was no.
+   */
+  refused?: boolean;
+  /**
+   * Set when somebody is entitled to say yes. The write did not happen and is
+   * not held anywhere; the caller's move is to get the approval and call again.
+   */
+  needsApproval?: boolean;
+  /** Rules that did not hold and let the write through, each in its own words. */
+  warnings?: string[];
   /** What the caller should do next, when the outcome permits only one thing. */
   whatToDo?: string;
 }
@@ -204,15 +216,14 @@ function toolDescription(
 }
 
 
-// Which rules a caller will meet. `guards` names the ones checked before the
-// write; a constraint over stored state is checked after it and is not named
-// here, because a caller cannot do anything differently about one.
+// Which rules a caller will meet, so it can ask for something that satisfies
+// them rather than learn them one refusal at a time.
 //
-// An ADVISORY guard is not named either. A constraint whose `onViolation` is
-// `warn` reports and lets the write through, so the runtime stands down and
-// the call goes ahead -- telling a caller it is "gated" by a rule that gates
-// nothing is the one kind of claim this file must not make. Saying less is the
-// honest half of saying it accurately.
+// An ADVISORY rule is left out. A constraint whose `onViolation` is `warn`
+// reports the violation and lets the write through, so it gates nothing, and
+// telling a caller it is "gated" by a rule that stops nothing is the one kind
+// of claim this file must not make. Saying less is the honest half of saying
+// it accurately.
 function gatingRules(action: Action, model: SemanticModel): string[] {
   const gating = new Set((model.constraints ?? [])
                              .filter(c => c.onViolation !== 'warn')
@@ -304,8 +315,38 @@ export function describeOutcome(outcome: ActionOutcome): ToolResult {
       }
       const result: ToolResult = {applied: true, actedOn};
       if (outcome.commitTimestamp) result.committedAt = outcome.commitTimestamp;
+      // A rule that reported rather than stopped the write. It travels with the
+      // success because that is the whole of what `warn` asks for, and a caller
+      // that never sees it has been told the write was clean when it was not.
+      const warnings = (outcome.warnings ?? []).map(v => v.message);
+      // An advisory rule nothing could evaluate. It stopped nothing, so the
+      // write stands; saying so is the difference between a clean write and
+      // one whose advice was never sought.
+      for (const rule of outcome.unchecked ?? []) {
+        warnings.push(
+            `Advisory rule '${rule.constraint}' was not checked: ` +
+            `${rule.reason}. It reports rather than stops a write, so the ` +
+            `action went ahead.`);
+      }
+      if (warnings.length) result.warnings = warnings;
       return result;
     }
+    case 'refused':
+      // Not an error, and the difference matters to what the caller does next.
+      // A refusal is the model answering: retrying the same call reaches the
+      // same rule, so the only moves are to change the request or, where the
+      // rule allows one, to get an approval.
+      return {
+        applied: false,
+        refused: true,
+        ...(outcome.effect === 'escalate' ? {needsApproval: true} : {}),
+        reason: outcome.message,
+        whatToDo: outcome.effect === 'escalate' ?
+            'Do not retry unchanged. Report what needs approving and why, ' +
+                'or propose a request that stays within the rule.' :
+            'Do not retry unchanged. Change the request so the rule holds, ' +
+                'or report that it cannot be done. Nothing was written.',
+      };
     case 'error':
       // `indeterminate` is the one outcome where "applied: false" would be a
       // lie the caller acts on: it retries, and the write lands twice.

@@ -274,15 +274,14 @@ Four stages, and a rule that stops at the first one does nothing:
 ```
   declared                referenced             checked            a breach
   ─────────────────       ─────────────────      ──────────────     ───────────
-  constraints:            actions:               before the call,   reject
-    - name: X       ──▶     - name: Y      ──▶   with the      ──▶  escalate
-      expression: …           guards: [X]        arguments bound    warn
-      or judgment: …
+  constraints:            actions:               a query settles    reject
+    - name: X       ──▶     - name: Y      ──▶   an expression; ──▶ escalate
+      expression: …           guards: [X]        a language model   warn
+      or judgment: …                             a judgment
 
-  a rule in the           the only thing that    a query settles    on_violation
-  catalog, inert          gives it effect        an expression;     names one of
-                                                 a language model   the three
-                                                 a judgment
+  a rule in the           the only thing that    when it runs       on_violation
+  catalog, inert          gives it effect        follows from       names one of
+                                                 what it reads      the three
 ```
 
 An expression over stored data states a condition the data must satisfy:
@@ -328,14 +327,13 @@ that reads the action's parameters has no other moment to run. One over stored
 data, named as a guard, states that the call must not proceed on data that is
 already broken.
 
-Every guard is checked before the call, with the arguments bound. What each rule
-reads decides how much that moment can tell you. A rule over the parameters is
-settled completely there, since the arguments are the whole of what it reads. A
-rule over stored data is a condition on the state a write produces, and checking
-it before the call reports only that the call is not starting from a broken
-state. It does not report that the call leaves a sound one. Nothing in the model
-binds a rule to the result of a write, which is the gap between what a data rule
-says and what a guard can enforce.
+When a guard runs follows from what its expression reads, and the model never
+states it. A rule over the action's parameters is settled before any statement
+runs, since the arguments are the whole of what it reads. A rule over stored
+data is a condition on the state a write produces, so it runs after the
+statements and inside the same transaction, and a breach rolls that write back.
+The difference is derived from the expression rather than authored, so a rule
+stays one sentence whether it decides the call or its result.
 
 Whatever dispatches the call is what checks its guards. Handing a rule to the
 store instead works only for some rules. A condition on a single row lowers to a
@@ -448,7 +446,7 @@ constraint, carrying its own outcome in its own `on_violation`:
         severity: medium
 
       - name: OrderTotalMatchesLineItems          # rule 3
-        expression: Order.total == SUM(LineItem.amount)
+        expression: Order.total = SUM(LineItem.amount)
         description: >-
           An order's total must equal the sum of its line items, with credits
           subtracted.
@@ -509,10 +507,16 @@ of every `guards` list it would be a rule the catalog records and no call
 consults, and the strongest word in the policy would be the one with the least
 effect.
 
-Naming it makes `IssueCredit` refuse to run against an order whose books already
-disagree. Catching the credit that *breaks* the agreement is a different check,
-against the state the write produces, and the model cannot bind one yet. Rule 3
-is the rule in this policy whose enforcement is furthest from what it says.
+Naming it binds the rule to the state the write produces. A rule over stored
+data runs after the statements and inside the same transaction, so `IssueCredit`
+refuses the credit that *breaks* the agreement, rather than only the one raised
+against an order whose books already disagree.
+
+Rule 3 is also where this policy meets the limit of what the runtime lowers.
+`SUM` over a child table is a function call, and the expressions that become a
+query are comparisons over fields, parameters and literals. Rule 3 is named,
+published, and still not checked, and because it says `reject`, a call to
+`IssueCredit` is refused rather than run past it.
 
 **Rules 4 and 5 are why the second body exists.** Neither reduces to arithmetic
 over `Order` and `LineItem`, and before `judgment` they had nowhere to go but a
@@ -574,10 +578,11 @@ guards are expressions.
 **Status: nothing calls a judge.** `kcmd` parses `judgment`, validates it,
 publishes it and reads it back, and publishes a derived `evaluation` field
 saying whether the rule is `deterministic` or `judged` so a consumer can select
-on it. No component asks a model to settle a judgment, and nothing combines
-guard outcomes. The two calls above are what the published policy says should
-happen, and `kcmd` publishes the fields an engine needs in order to make it
-happen.
+on it. No component asks a model to settle a judgment. Rule 4 says `warn`, so a
+call goes ahead and the rule is reported as not checked. Rule 5 says `reject`,
+so `IssueCredit` as published above is refused before either call reaches a
+gate. The two calls are what the published policy says should happen, and `kcmd`
+publishes the fields an engine needs in order to make it happen.
 
 `kcmd` reports a mismatch from either side. A guard that names no constraint
 fails the push. A constraint over parameters that no action names loads with a
@@ -585,12 +590,20 @@ warning, because nothing will ever evaluate it. That scan reads expressions
 only: a judgment is prose, in which a word matching a parameter name is not a
 read of that parameter.
 
-**Status: nothing evaluates a guard yet.** `kcmd` parses `guards`, resolves each
-name, publishes the list, and reads it back. No component checks a guard against
-live data, so a guard states what must hold before the call and stops no call by
-itself. What it does stop is the call running unchecked:
-[`kcmd action run`](#7-run-it) refuses a guarded action outright rather than
-apply a write the model says is checked first.
+**Status: expression guards are checked.** `kcmd` parses `guards`, resolves each
+name, and turns every expression it can into a query against the store. Those
+queries run in the same transaction as the write: a rule over the parameters
+before the statements, a rule over stored data after them. A violation carries
+its own `on_violation` word back to the caller, and several violations combine
+by the rule above.
+
+A guard the runtime cannot turn into a query is what remains. A judgment is one,
+since nothing calls a judge, and so is an expression outside the grammar, such
+as rule 3's `SUM`. What happens then follows the rule's own `on_violation`. One
+that would `reject` or `escalate` refuses the action, because running it would
+apply a write the model says is checked first. One that would `warn` lets the
+write through and is reported back as not checked, since an advisory rule stops
+nothing even when it is evaluated.
 
 ## 3. Say what it changes
 
@@ -777,12 +790,6 @@ kcmd action run TransferFunds --arg source="Alice Checking" \
     --arg target=ACC-2 --arg amount=250
 ```
 
-That second command does not succeed against the model built up on this page,
-and the reason is worth knowing before the mechanics: `TransferFunds` is guarded
-by `AmountIsPositive`, nothing evaluates a constraint yet, and `kcmd` refuses a
-call rather than apply a write the model says must be checked first. What
-follows describes an action that names no guard, which is what runs today.
-
 `kcmd action list` is what the model declares as runnable — parameters,
 executor, guards, blast radius — and each entry ends with the command line that
 runs it, so reading the listing is enough to make the call:
@@ -863,7 +870,7 @@ does not limit the blast radius either — it *declares* it, so that a reader
 knows what the write is about and an evaluator can one day check the statements
 against what was declared.
 
-`kcmd action run` does three things:
+`kcmd action run` does four things:
 
 ```
   kcmd action run TransferFunds --arg source="Alice Checking" --arg amount=250
@@ -875,24 +882,34 @@ against what was declared.
      │ bind      @source = 7      as Integer, the key's declared type
      │           @amount = 250    as Decimal, so 9 is less than 10
      │
-     │ apply     BEGIN
-     │             UPDATE account SET balance = balance - @amount
-     │               WHERE account_id = @source
-     │           COMMIT
+     │ check     SELECT 1 AS violated FROM UNNEST([1])
+     │           WHERE NOT COALESCE((@amount > 0), FALSE)
+     │           AmountIsPositive, before any statement runs
+     │
+     │ apply     UPDATE account SET balance = balance - @amount
+     │             WHERE account_id = @source
      ▼
-   committed      ·      nothing written      ·      unknown, do not retry
+   committed  ·  refused  ·  nothing written  ·  unknown, do not retry
 ```
+
+One transaction spans all four steps, so a guard that finds a violation and a
+statement that fails both leave nothing behind. A guard over stored data runs
+after the statements rather than before them, where it reads the state the write
+produced. The `NOT COALESCE(…, FALSE)` wrapper makes a predicate that returns
+NULL count as a breach rather than as silence.
 
 Nothing is interpolated into a statement; every argument is a query parameter
 of the store type its declared ontology type implies. Any failure before the
-commit rolls back, so no partial write survives, and a commit the store
-*refuses* wrote nothing either. The commonest refusal is Spanner's `ABORTED`
-under lock contention, and the answer to it is to run the action again.
+commit rolls back, so no partial write survives, and a commit the store rejects
+wrote nothing either. The commonest rejection is Spanner's `ABORTED` under lock
+contention, and the answer to it is to run the action again.
 
-The third outcome is the one `kcmd` cannot settle: a timeout or a 5xx, where
-the store may have applied the write and lost the response. It is reported as
-unknown rather than as a rollback, because a caller told "nothing happened"
-would retry a write that did.
+**Refused** is the model's answer rather than the store's: a guard was
+violated, so the transaction was rolled back and the caller is told which rule
+stopped the call. **Unknown** is the outcome `kcmd` cannot settle: a timeout or
+a 5xx, where the store may have applied the write and lost the response. It is
+reported as unknown rather than as a rollback, because a caller told "nothing
+happened" would retry a write that did.
 
 Where the write goes is the model's Spanner deployment target under the selected
 profile. The command line never names a database: `--profile` changes the store,
@@ -908,35 +925,96 @@ transaction and could not be rolled back if the commit failed. Supply a handler
 that performs the write as DML, or declare the action with a 'sql' executor.
 ```
 
-### A guarded action is refused, not run unchecked
+### What a violated guard does
 
-Nothing evaluates a constraint yet. A model that declares a rule and a runtime
-that quietly ignores it is worse than no runtime, because the model states the
-write is checked and nothing says otherwise — so `kcmd action run` refuses such
-a call instead:
+A violated guard stops the write and answers in the words the constraint's
+`description` gives, so the caller reads the policy rather than a predicate. A
+rule that declares `reject` ends the call:
 
 ```
-Error: Action 'TransferFunds' is guarded by 'AmountIsPositive', and this runtime
-does not evaluate constraints yet. Running it would apply a write the model says
-must be checked first, so it is refused rather than run unchecked.
+$ kcmd action run TransferFunds --arg source="Alice Checking" --arg target=ACC-2 --arg amount=0
+Running 'TransferFunds' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
+Refused (reject): Action 'TransferFunds' was refused and nothing was written. A
+transfer must move at least one unit. Ask the caller for the amount again before
+retrying. Stopped by 'AmountIsPositive' (amount > 0).
 ```
 
-What makes a call "such a call" is `guards`, and only `guards` — the same rule
-[section 2](#2-gate-it-with-a-constraint) states, applied here. A constraint the
-action does not name is a rule this call does not consult, and the runtime does
-not go looking for one: a constraint that merely reads a concept the action
-writes gates nothing, and neither does declaring constraints in a model whose
-action leaves `affects` out. Refusing on either would mean publishing a rule
-could start refusing calls that succeeded the day before, which is exactly what
-making the reference explicit prevents.
+A rule that declares `escalate` ends it the same way and adds what would change
+the answer. Here is the credit policy from
+[section 2](#a-policy-whose-rules-end-differently), with the two guards this
+runtime cannot check left off the action, taking the 30-dollar credit:
 
-A guard whose constraint declares `onViolation: warn` is the one guard that does
-not refuse. Such a rule reports a violation rather than rejecting one, so an
-evaluator would let the write through, and gating on it would leave a model that
-states advisory rules permanently unrunnable.
+```
+$ kcmd action run IssueCredit --arg order=12345 --arg amount=30 --arg memo="shipping charge applied in error"
+Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
+Refused (escalate): Action 'IssueCredit' needs an approval, and nothing was
+written. A credit over 25 dollars is above the self-service limit. A supervisor
+decides it. Stopped by 'CreditUnderSelfServiceLimit' (amount <= 25). Nothing is
+held while somebody decides: the transaction was rolled back, so run the action
+again once it is approved.
+```
 
-Every refusal is decided before a session is opened, so a refused action leaves
-no transaction behind.
+Both exit non-zero, because the caller asked for a write and did not get one.
+Neither is reported as an error: the model was consulted and said no, which is
+the runtime working. A rule that declares `warn` commits and reports the
+violation alongside the commit.
+
+When one call violates several guards the strictest outcome applies, by the
+rule [section 2](#two-calls-through-that-policy) states, and every violated
+rule is named in the message rather than only the one that decided it.
+
+What makes a rule a guard of this call is `guards`, and only `guards`. A
+constraint the action does not name is a rule this call does not consult, and
+the runtime does not go looking for one: a constraint that merely reads a
+concept the action writes gates nothing, and neither does declaring constraints
+in a model whose action leaves `affects` out. Checking either would mean
+publishing a rule could start refusing calls that succeeded the day before,
+which is what making the reference explicit prevents.
+
+### A guard the runtime cannot check
+
+Two kinds of guard do not become a query. A judgment is one, since nothing calls
+a judge. An expression outside the grammar is the other: the comparisons that
+lower are over an entity's stored fields, the action's parameters and literals,
+joined by `AND` and `OR`, so a function call or a parenthesised subexpression
+does not.
+
+A model that declares a rule and a runtime that quietly ignores it is worse than
+no runtime, because the model states the write is checked and nothing says
+otherwise. So a rule that would `reject` or `escalate` and cannot be checked
+stops the call, and every such rule is named:
+
+```
+$ kcmd action run IssueCredit --arg order=12345 --arg amount=30 --arg memo="shipping charge applied in error"
+Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
+Error: Action 'IssueCredit' cannot be run: constraint 'OrderTotalMatchesLineItems'
+cannot be checked: it uses parentheses or a function call (Order.total =
+SUM(LineItem.amount)), which the grammar does not parse; constraint
+'CreditIsNotSplitToAvoidReview' cannot be checked: it is settled by judgment
+rather than by an expression, and this runtime runs no judge. Running it would
+apply a write the model says is checked first, so it is refused rather than run
+unchecked.
+```
+
+An advisory rule is the exception. A rule that declares `warn` reports a
+violation rather than stopping one, so failing to check it cannot be grounds for
+stopping the call either; treating it as one would leave a model that states
+advisory rules permanently unrunnable. The write goes ahead and the rule is
+reported as not checked, which is the part worth having: a report the model
+asked for and did not get is worth knowing about.
+
+```
+$ kcmd action run IssueCredit --arg order=12345 --arg amount=20 --arg memo="shipping charge applied in error"
+Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
+  order: '12345' -> Order 12345
+  not checked: advisory rule 'CreditMemoNamesAServiceFailure' (constraint
+  'CreditMemoNamesAServiceFailure' cannot be checked: it is settled by judgment
+  rather than by an expression, and this runtime runs no judge)
+Committed at 2026-09-13T18:00:00Z.
+```
+
+A rule that cannot be checked is found while the guards are lowered, before any
+session is opened, so that refusal leaves no transaction behind.
 
 ## 8. Hand it to an agent
 
@@ -957,19 +1035,13 @@ changes nothing.
 Model 'payments' (payments_eg), profile 'operational':
   store: my-project/my-instance/semantic_agent_demo
 
-  action  transfer_funds  (TransferFunds)  [NOT RUNNABLE]
+  action  transfer_funds  (TransferFunds)
       Move money from one account to another.
 
       Resolve both accounts before calling. Name the account the money leaves
       as `source`.
 
       This call is gated by AmountIsPositive.
-
-      Calling this will not work: Action 'TransferFunds' is guarded by
-      'AmountIsPositive', and this runtime does not evaluate constraints yet.
-      Running it would apply a write the model says must be checked first, so
-      it is refused rather than run unchecked. Report that rather than
-      retrying.
       source: string -- Which Account this applies to. Give its key, or text
           that identifies exactly one; the call fails when nothing matches or
           more than one does.
@@ -1061,10 +1133,10 @@ thing:
   actions[].executor               ───▶  what the write tool runs
 ```
 
-Two lines come from neither file. `[NOT RUNNABLE]` and the paragraph under it
-are the runtime's answer to whether this call could succeed. The second
-paragraph of the instruction is the derivation's own text about using the
-tools, identical for every model.
+Two things come from neither file. Whether a tool can be called at all is the
+runtime's answer rather than a key, and a tool it cannot offer is marked and
+carries the reason. The second paragraph of the instruction is the derivation's
+own text about using the tools, identical for every model.
 
 Nothing in the listing was written for a particular agent, which is the
 property worth being able to see: it reads the same whether the caller is ADK,
@@ -1074,8 +1146,8 @@ LangChain, or a person deciding whether the model says enough yet.
 
 A **write tool** runs the action. Invoking `transfer_funds` performs the same
 resolve, bind and transact that [`kcmd action run TransferFunds`](#7-run-it)
-performs, with the same argument resolution, the same single transaction and
-the same three outcomes.
+performs, with the same argument resolution, the same guards, the same single
+transaction and the same four outcomes.
 
 A **lookup tool** reads one entity: exact match on any bound field, combined
 with AND, capped at 50 rows. No joins, no ranges, no aggregation, no ordering.
@@ -1092,10 +1164,12 @@ allows the collision to be noticed at all.
 
 ### A tool says whether it can be called
 
-`transfer_funds` above is listed and marked `[NOT RUNNABLE]`. `TransferFunds`
-names a guard, nothing evaluates constraints yet, and so the [refusal from
-section 7](#a-guarded-action-is-refused-not-run-unchecked) is reported here
-instead — before any agent exists, rather than inside a transaction.
+`transfer_funds` above is listed with no caveat. `AmountIsPositive` is an
+expression over one of the action's parameters, so the runtime can check it, and
+naming it as a guard costs the tool nothing. An action guarded by a rule the
+runtime [cannot check](#a-guard-the-runtime-cannot-check) is the other case, and
+it is reported here — before any agent exists, rather than inside a
+transaction.
 
 The tool is still returned, still named and still described. An action the
 model declares should not vanish from what the model offers; what it is waiting
@@ -1106,7 +1180,7 @@ on is the useful thing to print. Both halves carry a `runnable` flag, and
 |-------------------------------|---------------------------|
 | a profile withdrew the executor | the entity is abstract, so it has no table |
 | the executor is remote and no handler was supplied | no profile bound it to a table |
-| it names a guard, as above | its binding is a query rather than a table |
+| it names a guard this runtime cannot check | its binding is a query rather than a table |
 | a parameter references an entity keyed by several columns | |
 | the statements ask for a generated key a UUID cannot fill | |
 
@@ -1204,18 +1278,21 @@ not. The place to put it is the model.
 operational store: a commerce model, a binding profile, and one file of 56 lines
 that names no table, no column and no business term. Thirteen of those lines are
 the adapter onto the agent framework. Its README walks the same four steps and
-states what the run cannot yet do — the $30 credit it issues is over the model's
-declared $25 self-service ceiling and is written anyway, because nothing
-evaluates constraints.
+states what the run cannot yet do.
 
 ## What is not modeled yet
 
-This is a prototype. Three things a reader reasonably expects are absent.
+This is a prototype. Four things a reader reasonably expects are absent.
 
-- **Nothing checks the write.** No component evaluates a constraint or a guard.
-  A guarded action is refused rather than run, so the gap is loud where a model
-  states a rule gates the call, but it is still a gap: the correctness of what a
-  statement does belongs to whoever wrote it.
+- **No judge settles a judgment.** An expression guard is turned into a query
+  and checked; a judgment is published and nothing reads it. An action guarded
+  by one is stopped rather than run past it, unless the rule is advisory, so the
+  gap is loud wherever a model states a judged rule gates the call.
+- **The expression grammar is narrow.** Comparisons over an entity's stored
+  fields, the action's parameters and literals, joined by `AND` and `OR`. A
+  function call, a subquery or a rule spanning two entities does not lower, and
+  the action is stopped rather than run past it. Beyond the guards, the
+  correctness of what a statement does belongs to whoever wrote it.
 - **`kcmd` calls no executor but its own.** A `sql` action runs; an `mcp`,
   `rest` or `grpc` one is published for whoever dispatches it, which is why
   those three name coordinates rather than a statement.

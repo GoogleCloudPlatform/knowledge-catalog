@@ -1553,11 +1553,25 @@ async function runOneAction(
     console.error(`Error: ${outcome.message}`);
     return 1;
   }
+  // A refusal exits non-zero, because the caller asked for a write and did not
+  // get one -- but it is not reported as an error, because nothing went wrong.
+  // The model was consulted and said no, which is the runtime working.
+  if (outcome.status === 'refused') {
+    console.log(`Refused (${outcome.effect}): ${outcome.message}`);
+    return 1;
+  }
   // What each reference turned out to be. An agent said "Alice"; this is the
   // row it wrote to, which is the part worth reading back.
   for (const [param, ref] of Object.entries(outcome.refs)) {
     console.log(
         `  ${param}: '${ref.input}' -> ${ref.entity} ${ref.keys.join('/')}`);
+  }
+  for (const warning of outcome.warnings ?? []) {
+    console.log(`  warning: ${warning.message}`);
+  }
+  for (const rule of outcome.unchecked ?? []) {
+    console.log(`  not checked: advisory rule '${rule.constraint}' (${
+        rule.reason})`);
   }
   console.log(`Committed${
       outcome.commitTimestamp ? ` at ${outcome.commitTimestamp}` : ''}.`);

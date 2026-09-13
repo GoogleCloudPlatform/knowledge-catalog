@@ -73,9 +73,12 @@ kcmd action run <name> --arg <name>=<value> ...
 `list` prints every action the models in the scope declare, with the store a run
 would reach and the command line that runs each one. `run` executes one against
 the Spanner database the selected profile's deployment target names; only a
-`sql` executor runs, and an action that names a constraint in `guards` is
-refused rather than run unchecked, because nothing evaluates a constraint yet.
-See [Run it](actions.md#7-run-it).
+`sql` executor runs. Every constraint an action names in `guards` is checked in
+the same transaction as the write: one over the parameters before the
+statements, one over stored data after them. A violation rolls the write back
+and reports which rule stopped the call. A guard this runtime cannot turn into a
+query — a judgment, or an expression outside the grammar — stops the action
+unless the rule is advisory. See [Run it](actions.md#7-run-it).
 
 | Flag | Effect |
 |------|--------|
@@ -97,8 +100,8 @@ runs nothing.
 
 A tool the runtime cannot call is listed and marked `[NOT RUNNABLE]` rather than
 dropped, with the reason in its description, so a refusal is visible before any
-agent exists. To see what a guard costs today, add a constraint to an action's
-`guards` and run this again.
+agent exists. An action guarded by a rule the runtime cannot check is one such
+case; an action guarded by an expression it can check is offered normally.
 
 A model whose profile names no Spanner database offers no tools, because calling
 one needs a store. That model is reported as offering none and the rest of the
