@@ -167,6 +167,20 @@ export class SpannerDataClient extends api.ApiClient {
     });
   }
 
+  // Runs one statement outside any read-write transaction, as a single-use
+  // strong read. For a plain read -- showing state, resolving a display name --
+  // there is nothing to commit, and holding a transaction open for it would add
+  // a round trip and a rollback that say nothing.
+  async executeQuery(sessionName: string, stmt: Statement):
+      Promise<api.ApiResult<ResultSet>> {
+    return await this._post<ResultSet>(`${sessionName}:executeSql`, {
+      transaction: {singleUse: {readOnly: {strong: true}}},
+      sql: stmt.sql,
+      params: stmt.params,
+      paramTypes: stmt.paramTypes,
+    });
+  }
+
   async commit(sessionName: string, transactionId: string):
       Promise<api.ApiResult<{commitTimestamp?: string}>> {
     this._seqno.delete(transactionId);
