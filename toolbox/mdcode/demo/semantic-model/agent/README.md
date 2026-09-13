@@ -1,13 +1,13 @@
 # Build an agent that acts on a semantic model
 
-This is a recipe. Follow it and you end up with an agent that takes an English
-request and changes a row in Spanner, and with an understanding of why almost
-none of the work was agent work.
+This is a recipe. Follow it and you get an agent that takes a natural language
+request and changes a row in an operational store. The point of the recipe is
+how little of that turns out to be agent work.
 
 The whole agent is one file, `agent.ts`, 56 lines of code. Not one of them
-mentions credits, orders, customers, Spanner tables or SQL. It runs four steps:
-create the runtime, derive the tools, adapt them to the framework, run.
-Everything that knows what business this is lives in the model, where it
+mentions credits, orders, customers, tables or SQL. The file does four things:
+it creates the runtime, derives the tools, adapts them to the framework, and
+runs. Everything that knows what business this is lives in the model, and
 outlives the agent.
 
 Everything else you need is already a command: `kcmd` for the model and its
@@ -16,8 +16,8 @@ actions, `gcloud` for the store, ADK for the agent.
 ## The scenario
 
 The business is a small ecommerce operation: customers, their orders, and the
-lines that make up an order. One thing can be done to it — credit a customer
-against an order — and three policy rules say when that is allowed.
+lines that make up an order. There is one thing you can do to it: credit a
+customer against an order. Three policy rules say when that is allowed.
 
 [Step 6](#6-run-it) runs the request a support desk gets every day. A customer
 was charged for shipping that was supposed to be free, and someone inside the
@@ -30,8 +30,10 @@ line types proves only that the tools can be called.
 
 ## Before you start
 
-You need a cloud project with a Spanner instance, and application-default
-credentials, which serve both Spanner and Gemini.
+You need a cloud project and application-default credentials, which serve both
+the store and Gemini. This walkthrough binds the model to Spanner, so the
+project needs a Spanner instance; another profile would point the same model
+somewhere else.
 
 ```bash
 gcloud auth application-default login
@@ -54,15 +56,15 @@ one.
 `catalog/EntryGroups/commerce_demo/commerce.yaml` says what the business is:
 three entities, the relationships between them, one action, three rules. It
 names no table, no column and no SQL. The same file would serve if the orders
-lived in AlloyDB.
+lived in another store.
 
 `catalog/EntryGroups/commerce_demo/commerce.profiles/spanner.yaml` says where
 the business lives: a table per entity, a column per field, and the two
 statements that perform `IssueCredit` — insert a negative line, then recompute
 the order total from its lines. A profile may supply physical facts and nothing
-else; the loader rejects one that tries to add an entity or change what one
-means. So reading that one file tells you the whole of what is
-deployment-specific here, including where it runs:
+else: the loader rejects a profile that adds an entity or changes what an entity
+means. So that one file holds everything deployment-specific here, down to which
+database the model runs against:
 
 ```yaml
 deployment_target: //spanner.googleapis.com/projects/sqlgen-testing/instances/graph-unified-solution-demo/databases/semantic_agent_demo/propertyGraphs/commerce
@@ -70,8 +72,8 @@ deployment_target: //spanner.googleapis.com/projects/sqlgen-testing/instances/gr
 
 Point that line at your own instance and everything follows it: the commands
 below create and drop the database it names, the tools read and write there, and
-the agent bills Gemini to the same project. There is nothing else to keep in
-step.
+the agent bills Gemini to the same project unless `GOOGLE_CLOUD_PROJECT` is
+already set. There is nothing else to keep in step.
 
 Both files sit in a `kcmd` workspace (`catalog.yaml` scopes it and names
 `spanner` as the default profile), so the CLI and the agent read the same two
@@ -93,14 +95,13 @@ files rather than two copies that can drift.
 ```
 
 This is the part people reflexively write into the agent's source, and it is the
-part that should least be there. It is true of every agent that acts on this
-model, including the ones nobody has written yet, and a rule an agent keeps
-privately can be changed without the people who own the model finding out.
+part that belongs there least. The persona holds for every agent that acts on
+this model, including the ones nobody has written yet. A rule an agent keeps to
+itself can be changed without the people who own the model finding out.
 
 Only what is specific to *this business* belongs there. How to use a lookup, and
-what to do when a write is refused, are properties of the derived tools rather
-than of commerce, so the derivation supplies those and the model does not repeat
-them.
+what to do when a write is refused, belong to the derived tools rather than to
+commerce, so the derivation supplies them and the model does not repeat them.
 
 The persona also settles which of two agents this is. An internal one reads and
 writes every customer's orders; a customer-facing one would see only its own
@@ -126,13 +127,13 @@ gcloud spanner databases create "$DATABASE" \
   --instance="$INSTANCE" --project="$PROJECT" --ddl-file=schema.sql
 ```
 
-`schema.sql` is three tables. It is a file rather than a command because
+`schema.sql` creates three tables. It is a file rather than a command because
 `--ddl-file` wants one, and because `kcmd push` deploys a graph over tables that
 already exist rather than creating them.
 
-Then the rows — two customers, three orders, six line items. Order 12345 is the
-one the request is about: placed on Labor Day 2026, carrying the $30 shipping
-charge that was not supposed to be there.
+Then seed the rows: two customers, three orders, six line items. Order 12345 is
+the one the request is about, placed on Labor Day 2026 and carrying the $30
+shipping charge that was not supposed to be there.
 
 ```bash
 gcloud spanner databases execute-sql "$DATABASE" \
@@ -160,10 +161,10 @@ gcloud spanner databases execute-sql "$DATABASE" \
 ```
 
 That leaves order 12345 at $165.85 over four line items, 12346 at $18.00, and
-12347 at $200.00. Orders 12346 and 12347 are here so that the lookups have to
-tell 12345 apart from something; the request needs neither. To start over,
-drop the database with the command under [Cleaning up](#cleaning-up) and run
-these four again.
+12347 at $200.00. Orders 12346 and 12347 are here to give the lookups something
+to tell 12345 apart from; the request needs neither. To start over, drop the
+database with the command under [Cleaning up](#cleaning-up) and run these four
+again.
 
 ## 3. Check what the model declares
 
@@ -201,10 +202,10 @@ Committed at 2026-09-12T20:46:28.033336Z.
 ```
 
 `order=12346` was text; the runtime resolved it to a row and says which one. The
-total moved from $18.00 to $15.00 with nobody doing arithmetic — the second
-statement recomputes it from the lines, so the order cannot stop adding up
-however the action is called. Both statements ran in one read-write transaction.
-Read it back with plain SQL:
+total moved from $18.00 to $15.00 with nobody doing arithmetic, because the
+second statement recomputes it from the lines. However the action is called, the
+order's total matches its lines. Both statements ran in one read-write
+transaction. Read it back with plain SQL:
 
 ```console
 $ gcloud spanner databases execute-sql semantic_agent_demo \
@@ -218,8 +219,8 @@ order_id  placed_on   total
 
 ## 4. Look at the tools before writing the agent
 
-`kcmd agent tools` prints exactly what an agent will be handed. No API key, no
-language model, no agent code yet:
+`kcmd agent tools` prints exactly what an agent will be handed, before there is
+an API key, a language model, or a line of agent code:
 
 ```console
 $ ../../../dist/kcmd agent tools
@@ -294,19 +295,19 @@ Model 'commerce' (commerce_demo), profile 'spanner':
       you cannot approve it yourself. Finish by saying what you changed.
 ```
 
-Every line of that came from somewhere other than an agent. The action's
-description and its `ai_context.instructions` became the tool description; its
-typed parameters became typed tool parameters; each entity's description and
-bound fields became a lookup and its filters. The instruction is the model's
-persona followed by the tool contract the derivation itself defines.
+Every line of that came out of the model. The action's description and its
+`ai_context.instructions` became the tool description; its typed parameters
+became typed tool parameters; each entity's description and bound fields became
+a lookup and its filters. The instruction is the model's persona followed by the
+tool contract the derivation itself defines.
 
 Look at `type: string -- item, tax, fee, or credit.` in particular. That line is
-the field's description in `commerce.yaml`, and the only written-down place a
-caller can learn that a shipping charge is a `fee`. Until this demo ran a real
-request, the derivation dropped it and put boilerplate there instead; the agent
-guessed `type: "shipping"`, got nothing back, and spent a turn finding out. The
-fix went into `agent_tools.ts` rather than into this demo, because every filter
-over a coded field had the same hole, in every model.
+the field's description in `commerce.yaml`, and it is the only place a caller
+can learn that a shipping charge is a `fee`. An earlier derivation dropped it
+and wrote boilerplate instead, and the agent guessed `type: "shipping"`, got
+nothing back, and spent a turn finding out. The fix went into `agent_tools.ts`
+rather than into this demo, because every filter over a coded field had the same
+hole, in every model.
 
 The read tools are narrow by design — exact match on any bound field, ANDed,
 capped, no joins, ranges or totals. That is enough to find the object an action
@@ -357,17 +358,17 @@ const agent = new LlmAgent({
 });
 ```
 
-Step 3 is the only part that is ADK's shape rather than the model's, and it is a
-rename: a derived parameter already carries a JSON type and a description, which
-is the whole of a function declaration. ADK takes a plain schema object, so
-there is no schema library in here and nothing to keep in step with the
-derivation's types.
+Step 3 is the only part shaped by ADK rather than by the model, and all it does
+is rename fields: a derived parameter already carries a JSON type and a
+description, which is the whole of a function declaration. ADK takes a plain
+schema object, so there is no schema library in here and nothing to keep in step
+with the derivation's types.
 
 Step 2 is one call because every adapter has to make the same split over
 `[...lookups, ...actions]`. A tool the runtime cannot run is still worth naming,
 yet offering it as callable spends a turn on a call that cannot succeed.
-`callableTools` makes that split in the library, and handing back `withheld`
-separately makes dropping it in silence something you have to choose.
+`callableTools` makes that split in the library, and returning `withheld`
+separately means you have to choose to drop it silently.
 
 What `agent.ts` adds to the sketch is the loop that prints each call and each
 answer, the usage line, and one line appended to the instruction —
@@ -383,18 +384,17 @@ does not. Without that line the agent guesses a year, drops the filter and
 scans, or stops to ask which date you meant — all three happened. With it, three
 consecutive runs got `placedOn: "2026-09-07"` on the first try.
 
-It goes in the agent rather than the model on purpose. Today's date is a fact
-about when this process is running rather than a fact about commerce, so
-`commerce.yaml` would be wrong tomorrow. That is the line the file draws, and
-the test it exists to fail is the other side of it: the moment something about
-*this business* has to be written here, the model was missing that thing, and
-the fix belongs in the model.
+That line goes in the agent rather than the model on purpose. Today's date is a
+fact about when the process runs rather than a fact about commerce, so
+`commerce.yaml` would be wrong tomorrow. The boundary works the other way too:
+the moment something about *this business* has to be written into `agent.ts`,
+the model was missing it, and the fix belongs in the model.
 
 ## 6. Run it
 
-The run takes one request, phrased the way the person with the problem would
-phrase it. ADK logs an `INFO` line per model call; the transcripts below leave
-those out, and the two load-time warnings from
+The request below is phrased the way the person with the problem would phrase
+it. ADK logs an `INFO` line per model call; the transcripts leave those out, and
+the two load-time warnings from
 [step 3](#3-check-what-the-model-declares) still print first.
 
 ```console
@@ -433,8 +433,8 @@ li-12345-4                            12345     tax     11.36   Sales tax
 The credit exactly offsets the fee, which is what the request asked for. The
 credit line's key was generated by the runtime, because the action's `affects`
 says the call creates a `LineItem`; the profile's INSERT names it as
-`@newLineItemKey`. Order 12345 is $135.85 afterwards, down from $165.85 — nobody
-subtracted, the action's second statement re-summed the lines.
+`@newLineItemKey`. Order 12345 is $135.85 afterwards, down from $165.85, and
+nobody subtracted: the action's second statement re-summed the lines.
 
 What the agent is *not* doing is the more interesting half. It never writes SQL:
 the statements are in the binding profile, authored once and reviewed there. It
@@ -455,22 +455,22 @@ Four files carry the business, and you can list them:
 | the seed commands in [step 2](#2-create-the-store) | two customers, three orders, six lines |
 
 `agent.ts` is not on that list, and neither is anything under `src/`. Swap those
-four for a different business and the same 56 lines run it — that is the claim
-this demo is making, and the file list is how you check it.
+four for a different business and the same 56 lines run it. That is the claim
+this demo makes, and the file list is how you check it.
 
-Two things are worth knowing about how short that list stayed. This case wanted
-a filter over a coded field, and the fix went into `agent_tools.ts` where it
-helps every model, rather than into a hand-written tool here. It also wanted
-today's date, and that went into `agent.ts` because it is a fact about the run
-rather than about commerce. Each new use case pushes on the boundary in one of
-those two directions; the useful question is always which.
+The list stayed short because of two decisions. This case wanted a filter over a
+coded field, and the fix went into `agent_tools.ts`, where it helps every model,
+rather than into a hand-written tool here. It also wanted today's date, and that
+went into `agent.ts` because it is a fact about the run rather than about
+commerce. Each new use case pushes on the boundary in one of those two
+directions, and the useful question is always which.
 
 ## What is not wired up yet
 
 Start with the thing the run above got wrong. The third policy rule says a
 credit over $25 is above the self-service ceiling and a supervisor decides it.
-The agent wrote $30 and asked nobody. That is not the agent disobeying — it is
-the policy being written down and not attached.
+The agent wrote $30 and asked nobody. The agent did not disobey: the policy is
+written down and never attached to anything.
 
 `commerce.yaml` declares three constraints, one per policy rule, and references
 none of them. A constraint is inert until an action names it in
@@ -492,11 +492,11 @@ again.
       ...
 ```
 
-Refusing is the point. A write the model says must be checked is not run because
-the checker is missing; it is not run *unchecked*. The tool is still derived,
-still named and still described — an action the model declares should not vanish
-from what the model offers — and `agent.ts` reports it and leaves it unbound, so
-the agent has no call to make and nothing to retry.
+Refusing is the point. The model says this write must be checked and the checker
+is missing, so the write is refused rather than run unchecked. The tool is still
+derived, still named and still described, because an action the model declares
+should not vanish from what the model offers. `agent.ts` reports it and leaves
+it unbound, so the agent has no call to make and nothing to retry.
 
 Re-run the same request with the guard attached and you get the reading half and
 none of the writing half:
@@ -518,9 +518,9 @@ I cannot issue credits or modify orders. A person will have to decide how to pro
 It still did the work worth doing — found the order, found the charge, named the
 amount — and order 12345 is still $165.85.
 
-So the demo can reach either end of the policy story and not the middle: write,
-or refuse. There are two rungs where there should be three, and the
-missing one is "ask a person, then apply it if they say yes".
+So the demo reaches both ends of the policy story, write and refuse, and not the
+middle. There are two rungs where there should be three, and the missing one is
+"ask a person, then apply it if they say yes".
 
 The model already says which rule wants that rung. `CreditUnderReviewThreshold`
 carries `on_violation: escalate`, and `escalate` means the write is held and an
@@ -528,15 +528,15 @@ approver decides. What is missing is not the declaration but anything that acts
 on it. Most action frameworks ship a blanket "this action needs confirmation"
 flag on the action instead; a rule that escalates only when a predicate is
 violated says more, and costs more to honor, because something has to evaluate
-the predicate. That evaluator is the next piece of work. The two warnings at
-load time are the same gap, stated at load time.
+the predicate. That evaluator is the next piece of work. The two warnings in
+[step 3](#3-check-what-the-model-declares) report the same gap at load time.
 
 The other missing piece is access control. A business that runs an internal desk
 agent usually wants a customer-facing one too, restricted to the caller's own
-orders, with the identity passed in the tool call and checked below the agent.
-Only the internal one is here. The lookups take no caller identity and there is
-nothing to scope them by, so the second agent cannot be built from this model
-today.
+orders. That needs the caller's identity passed in the tool call and checked
+below the agent. Only the internal one is here: the lookups take no caller
+identity and there is nothing to scope them by, so the second agent cannot be
+built from this model today.
 
 ## Cleaning up
 

@@ -6,7 +6,7 @@
 //                 the customer got charged. Please issue them a credit to
 //                 offset the charge."
 //
-// Nothing here mentions credits, orders, Spanner tables or an operations desk.
+// Nothing here mentions credits, orders, database tables or an operations desk.
 // Four steps: create the runtime, derive the tools, adapt them to ADK, run.
 // Point it at another semantic model and it is another agent, with no edit to
 // this file. That is the property it exists to test -- so the moment something
@@ -29,7 +29,7 @@ const [runtime] = runtimes;
 if (!runtime.store) throw new Error(runtime.storeError);
 
 // ADK reaches Gemini through Vertex with the credentials and the project the
-// Spanner calls already use, so the binding profile is still the only place
+// store calls already use, so the binding profile is still the only place
 // that says where this runs. Set before the agent is built, because the client
 // reads them then.
 process.env.GOOGLE_GENAI_USE_ENTERPRISE ??= 'true';

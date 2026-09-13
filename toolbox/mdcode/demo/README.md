@@ -260,9 +260,9 @@ bun cleanup.ts
 ## Agent
 
 This demo derives an agent's tools from a semantic model and runs them against a
-live Spanner database: one lookup tool per entity, one write tool per action,
-with names, types and calling guidance all read out of the model. An English
-request goes in and a row changes.
+live operational store: one lookup tool per entity, one write tool per action,
+with names, types and calling guidance all read out of the model. A natural
+language request goes in and a row changes.
 
 It needs a Spanner instance rather than BigQuery, and it installs its own
 dependency (`@google/adk`) under `semantic-model/agent/` so the library's
