@@ -5,18 +5,19 @@ request and changes a row in Spanner, and with an understanding of why almost
 none of the work was agent work.
 
 The whole agent is one file, `agent.ts`, 56 lines of code. Not one of them
-mentions credits, orders, customers, Spanner tables or SQL. Four steps: create
-the runtime, derive the tools, adapt them to the framework, run. Everything that
-knows what business this is lives in the model, where it outlives the agent.
+mentions credits, orders, customers, Spanner tables or SQL. It runs four steps:
+create the runtime, derive the tools, adapt them to the framework, run.
+Everything that knows what business this is lives in the model, where it
+outlives the agent.
 
 Everything else you need is already a command: `kcmd` for the model and its
 actions, `gcloud` for the store, ADK for the agent.
 
 ## The scenario
 
-A small ecommerce business: customers, their orders, and the lines that make up
-an order. One thing can be done to it — credit a customer against an order —
-and three policy rules say when that is allowed.
+The business is a small ecommerce operation: customers, their orders, and the
+lines that make up an order. One thing can be done to it — credit a customer
+against an order — and three policy rules say when that is allowed.
 
 [Step 6](#6-run-it) runs the request a support desk gets every day. A customer
 was charged for shipping that was supposed to be free, and someone inside the
@@ -29,8 +30,8 @@ line types proves only that the tools can be called.
 
 ## Before you start
 
-A cloud project with a Spanner instance, and application-default credentials —
-used for both Spanner and Gemini.
+You need a cloud project with a Spanner instance, and application-default
+credentials, which serve both Spanner and Gemini.
 
 ```bash
 gcloud auth application-default login
@@ -47,7 +48,8 @@ npm run build                # builds dist/kcmd
 
 ## 1. Write the model
 
-Two files, and the split between them is the whole design.
+The model is two files, split so that nothing physical appears in the logical
+one.
 
 `catalog/EntryGroups/commerce_demo/commerce.yaml` says what the business is:
 three entities, the relationships between them, one action, three rules. It
@@ -106,9 +108,10 @@ caller's. Only the internal one is built here.
 
 ## 2. Create the store
 
-Four `gcloud` commands, and none of them names a database. Ask the model where
-it lives instead — `kcmd action list --store` prints the deployment target as
-`project/instance/database` and nothing else, so a shell can read it:
+Four `gcloud` commands create the store, and none of them names a database. Ask
+the model where it lives instead — `kcmd action list --store` prints the
+deployment target as `project/instance/database` and nothing else, so a shell
+can read it:
 
 ```bash
 cd demo/semantic-model/agent
@@ -312,7 +315,8 @@ enough, write a query rather than widening the tool.
 
 ## 5. Write the agent
 
-All of it. The four steps, with the framework's own API doing the work:
+Here is the whole agent: the four steps, with the framework's own API doing the
+work:
 
 ```ts
 // 1. Build the runtime kcmd builds -- the model paired with the store the
@@ -388,9 +392,9 @@ the fix belongs in the model.
 
 ## 6. Run it
 
-One request, phrased the way the person with the problem would phrase it. ADK
-logs an `INFO` line per model call;
-the transcripts below leave those out, and the two load-time warnings from
+The run takes one request, phrased the way the person with the problem would
+phrase it. ADK logs an `INFO` line per model call; the transcripts below leave
+those out, and the two load-time warnings from
 [step 3](#3-check-what-the-model-declares) still print first.
 
 ```console
@@ -406,11 +410,11 @@ $ bun agent.ts "Find the order for Morgan Ellis (morgan.ellis@example.com) that 
 I issued a credit of 30.00 to order 12345 for Morgan Ellis, to offset the shipping charge.
 ```
 
-Four tool calls, and the request named none of the things they took. A name and
-an email became a customer id; a holiday became a date; "the customer got
-charged" became a line of type `fee`; the amount to credit was read off that
-line rather than supplied. Nowhere does the agent decide *how* to issue a credit
-— that is one call, and the model owns what it does.
+The agent made four tool calls, and the request named none of the things they
+took. A name and an email became a customer id; a holiday became a date; "the
+customer got charged" became a line of type `fee`; the amount to credit was read
+off that line rather than supplied. Nowhere does the agent decide *how* to issue
+a credit — that is one call, and the model owns what it does.
 
 Check it with SQL:
 
@@ -441,7 +445,7 @@ treat a customer, because that opinion is in `commerce.yaml`.
 
 ## What in here is about ecommerce
 
-Four files, and you can list them:
+Four files carry the business, and you can list them:
 
 | File | What it holds |
 | --- | --- |
@@ -536,7 +540,8 @@ today.
 
 ## Cleaning up
 
-One command. Everything the demo made is in the database the model names.
+One command removes it all, because everything the demo made is in the database
+the model names.
 
 ```bash
 gcloud spanner databases delete "$DATABASE" \
