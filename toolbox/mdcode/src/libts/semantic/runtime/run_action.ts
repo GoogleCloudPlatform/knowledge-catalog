@@ -57,6 +57,7 @@ import {quoteIfReserved, referencedParameters} from '../sql_identifiers';
 
 import {
   ConstraintViolation,
+  effectOf,
   lowerGuards,
   UncheckedRule,
   probeStatement,
@@ -184,6 +185,10 @@ export async function runAction(opts: RunActionOptions):
   // uncheckable.
   const lowered = lowerGuards(model, action);
   const probes = lowered.probes;
+  // Grows during the run: a probe the store refuses joins the rules that could
+  // not be lowered in the first place, since both leave a rule the model named
+  // unevaluated and both are worth reporting under the same heading.
+  const unchecked: UncheckedRule[] = [...lowered.unchecked];
 
   // Also before touching the store, because there may be none to touch.
   const client = runtimeClient(opts.runtime);
@@ -261,12 +266,30 @@ export async function runAction(opts: RunActionOptions):
           }
           probeValues = bound;
         }
+        // A probe that the store refuses is the same situation as a rule that
+        // could not be lowered, and it is answered the same way: an advisory
+        // rule is reported as unchecked and the write goes on, anything
+        // stricter stops the call. Letting a `warn` probe's StoreError escape
+        // would roll the transaction back over a rule whose whole contract is
+        // that it stops nothing -- the carve-off `lowerGuards` makes, undone
+        // one layer down.
         const check = async (timing: ProbeTiming) => {
           const violations: ConstraintViolation[] = [];
           for (const probe of probes) {
             if (probe.timing !== timing) continue;
-            const rows = await query(probeStatement(
-                probe, probeValues!.params, probeValues!.types));
+            let rows;
+            try {
+              rows = await query(probeStatement(
+                  probe, probeValues!.params, probeValues!.types));
+            } catch (err) {
+              if (effectOf(probe.constraint) !== 'warn') throw err;
+              unchecked.push({
+                constraint: probe.constraint.name,
+                reason: `its probe could not be run (${
+                    err instanceof Error ? err.message : String(err)})`,
+              });
+              continue;
+            }
             if (rows.length) violations.push(violationFrom(probe, rows));
           }
           return violations;
@@ -366,7 +389,7 @@ export async function runAction(opts: RunActionOptions):
           commitTimestamp: committed.result?.commitTimestamp,
           refs,
           ...(warnings.length ? {warnings} : {}),
-          ...(lowered.unchecked.length ? {unchecked: lowered.unchecked} : {}),
+          ...(unchecked.length ? {unchecked} : {}),
         } as ActionOutcome;
       } catch (err) {
         try {

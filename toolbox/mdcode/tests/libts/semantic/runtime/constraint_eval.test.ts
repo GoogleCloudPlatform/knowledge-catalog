@@ -89,13 +89,30 @@ const ISSUE_CREDIT: Action = {
   ],
 };
 
+// Two references to the SAME entity, which is the shape a transfer takes and
+// the shape that catches a probe scoped to only one of them.
+const MOVE_CREDIT: Action = {
+  name: 'MoveCredit',
+  description: 'Move a credit from one order to another.',
+  executor: {
+    kind: 'sql',
+    sql: {statements: ['UPDATE Orders SET Total = Total WHERE OrderId = @from']},
+  },
+  parameters: [
+    {name: 'from', type: 'Order', isEntityRef: true},
+    {name: 'to', type: 'Order', isEntityRef: true},
+    {name: 'amount', type: 'Decimal', isEntityRef: false},
+  ],
+};
+
+
 function modelWith(over: Partial<SemanticModel> = {}): SemanticModel {
   return {
     name: 'commerce',
     entities: [ORDER, ENTRY, LINE, PARTY],
     relationships: [],
     metrics: [],
-    actions: [ISSUE_CREDIT],
+    actions: [ISSUE_CREDIT, MOVE_CREDIT],
     ...over,
   };
 }
@@ -122,6 +139,32 @@ function reasonOf(lowered: Lowering): string {
 
 
 describe('what the probe reads and when it runs', () => {
+  test('every parameter of the entity is in scope, not just the first', () => {
+    // The failure this guards against is silent: scoping to `from` alone
+    // would probe one of the two rows the action writes and report the rule
+    // as checked, which is the one outcome the lowering must never produce.
+    const probe = probeOf(lower('Order.total >= 0', MOVE_CREDIT));
+    expect(probe.sql).toContain('WHERE OrderId IN (@from, @to)');
+    expect(probe.sql).not.toContain('OrderId = @from');
+  });
+
+  test('both references are bound to the probe', () => {
+    const params = {from: 1, to: 2, amount: 5};
+    const types = {
+      from: {code: 'INT64'},
+      to: {code: 'INT64'},
+      amount: {code: 'NUMERIC'},
+    };
+    const statement = probeStatement(
+        probeOf(lower('Order.total >= 0', MOVE_CREDIT)), params, types);
+    expect(statement.params).toEqual({from: 1, to: 2});
+  });
+
+  test('one reference still reads as a plain equality', () => {
+    expect(probeOf(lower('Order.total >= 0')).sql)
+        .toContain('WHERE OrderId = @order');
+  });
+
   test('a rule over stored state alone reads the table, after the write',
        () => {
          const probe = probeOf(lower('Order.total >= 0'));
@@ -176,6 +219,31 @@ describe('the expressions the grammar accepts', () => {
   test('comparisons joined by AND keep their own parentheses', () => {
     expect(probeOf(lower('Order.total >= 0 AND Order.total <= 100000')).sql)
         .toContain('NOT COALESCE((Total >= 0) AND (Total <= 100000), FALSE)');
+  });
+
+  test('a literal containing AND or OR is one operand, not a join', () => {
+    // The scan for AND/OR runs over the whole expression, so a rule whose
+    // string happens to spell one of them used to come apart in the middle
+    // of the quotes and be refused for a fault it does not have.
+    expect(probeOf(lower("Order.status != 'held AND pending'")).sql)
+        .toContain("NOT COALESCE((Status != 'held AND pending'), FALSE)");
+    expect(probeOf(lower("Order.status != 'ON HOLD OR CLOSED'")).sql)
+        .toContain("NOT COALESCE((Status != 'ON HOLD OR CLOSED'), FALSE)");
+  });
+
+  test('an operator inside a literal is not the comparison', () => {
+    expect(probeOf(lower("'a>b' != Order.status")).sql)
+        .toContain("NOT COALESCE(('a>b' != Status), FALSE)");
+  });
+
+  test('a joined rule whose literal also spells a joiner', () => {
+    // Both scans have to agree about where the literal ends: the real AND
+    // joins the two comparisons, the one inside the quotes does not.
+    expect(probeOf(lower(
+               "Order.status != 'held AND pending' AND Order.total >= 0"))
+               .sql)
+        .toContain(
+            "(Status != 'held AND pending') AND (Total >= 0)");
   });
 
   test('OR is carried through as written', () => {
@@ -305,13 +373,6 @@ describe('the expressions it refuses, and what it says about them', () => {
         .toContain('Line has a 2-part key');
   });
 
-  test('a string literal containing AND, rather than mis-splitting it', () => {
-    // The split runs before the literals are read, so this expression comes
-    // apart in the wrong place. What matters is that the pieces then fail to
-    // parse: it is refused, never lowered to something that is not the rule.
-    expect(reasonOf(lower("Order.status != 'held AND pending'")))
-        .toContain('is not a field, a parameter or a literal');
-  });
 });
 
 

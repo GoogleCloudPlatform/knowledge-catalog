@@ -378,11 +378,18 @@ function violating(predicate: string): string {
 // a table scan. Checking stored state at large is a different binding point --
 // a conformance sweep over the data rather than a gate on one call -- and it
 // needs its own reference instead of this one silently standing in for it.
+//
+// EVERY parameter of that entity is in scope, not the first one found.
+// `TransferFunds(source: Account, target: Account, amount)` writes both
+// accounts, so a rule over `Account` that asked only about `source` would let
+// the write that breaks `target` through while reporting the rule as checked.
+// A gate that answers about some of the rows it was asked about is worse than
+// one that refuses, because its answer is believed.
 function scopeToTouchedRows(
     action: Action, entity: Entity): {predicate: string}|{error: string} {
-  const param =
-      action.parameters.find(p => p.isEntityRef && p.type === entity.name);
-  if (!param) {
+  const params =
+      action.parameters.filter(p => p.isEntityRef && p.type === entity.name);
+  if (!params.length) {
     return {
       error: `it reads ${entity.name}, and action '${action.name}' takes no ` +
           `${entity.name} parameter, so the probe could not be limited to ` +
@@ -397,7 +404,13 @@ function scopeToTouchedRows(
           `runtime binds an object reference as a single value`,
     };
   }
-  return {predicate: `${keys.columns[0]} = @${param.name}`};
+  const key = keys.columns[0];
+  if (params.length === 1) {
+    return {predicate: `${key} = @${params[0].name}`};
+  }
+  return {
+    predicate: `${key} IN (${params.map(p => `@${p.name}`).join(', ')})`,
+  };
 }
 
 
@@ -518,6 +531,20 @@ function parseExpression(
 }
 
 
+// The expression with every single-quoted span blanked out, character for
+// character, so a scan can find structure without seeing inside a literal.
+// Offsets are preserved, which is the point: the caller matches against the
+// mask and slices the original at the same index.
+//
+// Without it `Account.status = 'ON HOLD OR CLOSED'` splits on the OR inside
+// the string and the rule is refused for a fault it does not have. `isLiteral`
+// already bars an embedded quote or backslash, so a literal is exactly the
+// text between one pair of quotes.
+function maskLiterals(expression: string): string {
+  return expression.replace(/'[^']*'/g, m => `'${'.'.repeat(m.length - 2)}'`);
+}
+
+
 // Splits on top-level AND/OR, matched as whole words so a field named `brand`
 // survives. There are no parentheses to nest -- parseExpression refuses them --
 // so every operator found is top level.
@@ -525,10 +552,11 @@ function splitOnLogicalOperators(expression: string):
     {parts: string[]; joiners: string[]} {
   const parts: string[] = [];
   const joiners: string[] = [];
+  const masked = maskLiterals(expression);
   const pattern = /\s+(AND|OR)\s+/gi;
   let last = 0;
   let match: RegExpExecArray|null;
-  while ((match = pattern.exec(expression)) !== null) {
+  while ((match = pattern.exec(masked)) !== null) {
     parts.push(expression.slice(last, match.index));
     joiners.push(match[1].toUpperCase());
     last = match.index + match[0].length;
@@ -606,11 +634,14 @@ function parseOperand(
 
 
 // The first comparison operator in `text`, longest match first so `>=` is not
-// read as `>` with a stray `=` after it.
+// read as `>` with a stray `=` after it. Read against the masked text, so an
+// operator character inside a string literal -- `'a>b' = Order.tag` -- is not
+// mistaken for the comparison.
 function findOperator(text: string): {operator: string; index: number}|null {
   let best: {operator: string; index: number}|null = null;
+  const masked = maskLiterals(text);
   for (const operator of OPERATORS) {
-    const index = text.indexOf(operator);
+    const index = masked.indexOf(operator);
     if (index < 0) continue;
     if (!best || index < best.index ||
         (index === best.index && operator.length > best.operator.length)) {

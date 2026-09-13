@@ -324,8 +324,7 @@ runs:
 `guards` holds the names of constraints the same model declares, and it is how a
 constraint acquires effect over an action. Both kinds of rule belong there. One
 that reads the action's parameters has no other moment to run. One over stored
-data, named as a guard, states that the call must not proceed on data that is
-already broken.
+data, named as a guard, states that the call must leave the data sound.
 
 When a guard runs follows from what its expression reads, and the model never
 states it. A rule over the action's parameters is settled before any statement
@@ -334,6 +333,12 @@ data is a condition on the state a write produces, so it runs after the
 statements and inside the same transaction, and a breach rolls that write back.
 The difference is derived from the expression rather than authored, so a rule
 stays one sentence whether it decides the call or its result.
+
+A rule over stored data is asked only of the rows the call names, and of every
+one of them. `TransferFunds` takes two `Account` parameters and writes both, so
+a rule over `Account` is asked about the source and the target together. Scoping
+it to the first of the two would report the rule as checked while letting
+through the write that breaks the second.
 
 Whatever dispatches the call is what checks its guards. Handing a rule to the
 store instead works only for some rules. A condition on a single row lowers to a
@@ -928,21 +933,25 @@ that performs the write as DML, or declare the action with a 'sql' executor.
 ### What a violated guard does
 
 A violated guard stops the write and answers in the words the constraint's
-`description` gives, so the caller reads the policy rather than a predicate. A
-rule that declares `reject` ends the call:
+`description` gives, so the caller reads the policy rather than a predicate.
+Both runs below take the credit policy from
+[section 2](#a-policy-whose-rules-end-differently) with the two guards this
+runtime cannot check left off the action.
+
+A rule that declares `reject` ends the call. The policy as written has no
+rejecting rule a query settles, so this run adds one — `CreditAmountIsPositive`,
+`amount > 0` — and asks for a credit of nothing:
 
 ```
-$ kcmd action run TransferFunds --arg source="Alice Checking" --arg target=ACC-2 --arg amount=0
-Running 'TransferFunds' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
-Refused (reject): Action 'TransferFunds' was refused and nothing was written. A
-transfer must move at least one unit. Ask the caller for the amount again before
-retrying. Stopped by 'AmountIsPositive' (amount > 0).
+$ kcmd action run IssueCredit --arg order=12345 --arg amount=0 --arg memo="shipping charge applied in error"
+Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
+Refused (reject): Action 'IssueCredit' was refused and nothing was written. A
+credit must return at least one cent. Ask the caller for the amount again before
+retrying. Stopped by 'CreditAmountIsPositive' (amount > 0).
 ```
 
 A rule that declares `escalate` ends it the same way and adds what would change
-the answer. Here is the credit policy from
-[section 2](#a-policy-whose-rules-end-differently), with the two guards this
-runtime cannot check left off the action, taking the 30-dollar credit:
+the answer. Taking the 30-dollar credit:
 
 ```
 $ kcmd action run IssueCredit --arg order=12345 --arg amount=30 --arg memo="shipping charge applied in error"
@@ -960,8 +969,10 @@ the runtime working. A rule that declares `warn` commits and reports the
 violation alongside the commit.
 
 When one call violates several guards the strictest outcome applies, by the
-rule [section 2](#two-calls-through-that-policy) states, and every violated
-rule is named in the message rather than only the one that decided it.
+rule [section 2](#two-calls-through-that-policy) states, and every rule that
+stopped the call is named in the message rather than only the strictest. A rule
+that declares `warn` is not among them: it asks for the write to proceed and be
+reported, and a refused call wrote nothing for it to report on.
 
 What makes a rule a guard of this call is `guards`, and only `guards`. A
 constraint the action does not name is a rule this call does not consult, and
@@ -1010,7 +1021,7 @@ Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/sem
   not checked: advisory rule 'CreditMemoNamesAServiceFailure' (constraint
   'CreditMemoNamesAServiceFailure' cannot be checked: it is settled by judgment
   rather than by an expression, and this runtime runs no judge)
-Committed at 2026-09-13T18:00:00Z.
+Committed at 2026-09-13T21:09:10.688549Z.
 ```
 
 A rule that cannot be checked is found while the guards are lowered, before any
@@ -1282,7 +1293,7 @@ states what the run cannot yet do.
 
 ## What is not modeled yet
 
-This is a prototype. Four things a reader reasonably expects are absent.
+This is a prototype. Five things a reader reasonably expects are absent.
 
 - **No judge settles a judgment.** An expression guard is turned into a query
   and checked; a judgment is published and nothing reads it. An action guarded
@@ -1293,6 +1304,14 @@ This is a prototype. Four things a reader reasonably expects are absent.
   function call, a subquery or a rule spanning two entities does not lower, and
   the action is stopped rather than run past it. Beyond the guards, the
   correctness of what a statement does belongs to whoever wrote it.
+- **A guard cannot ask about the state before the write.** Whether a rule runs
+  before the statements or after them is derived from whether it reads a
+  parameter, so a condition over stored data alone is always asked of the
+  post-state. `Order.status = 'OPEN'` on an action that closes the order is a
+  precondition no model can currently express: written as a guard it is checked
+  after the close and fails every call. Say it with a parameter the rule can
+  read, or leave it to the statement's own `WHERE` clause, until the model has a
+  way to name the moment.
 - **`kcmd` calls no executor but its own.** A `sql` action runs; an `mcp`,
   `rest` or `grpc` one is published for whoever dispatches it, which is why
   those three name coordinates rather than a statement.

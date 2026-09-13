@@ -486,11 +486,12 @@ takes: the $30 credit is refused with `escalate`, the transaction rolls back,
 and the agent is told a supervisor decides it. See
 [What a violated guard does](../../../docs/semantic-model/actions.md#what-a-violated-guard-does).
 
-Two of the three rules are less straightforward. `CreditWithinOrderTotal` reads
-`Order.total`, so it is a rule over stored data and runs after the statements
-inside the same transaction. `OrderTotalMatchesLineItems` aggregates over a
-child table, which the expression grammar does not parse, so naming it stops the
-action rather than checking it.
+Two of the three rules are less straightforward. `CreditWithinOrderTotal` is
+`amount <= Order.total`, which reads the orders table and the `amount` parameter
+both, so its probe queries the order the call names and still runs before any
+statement. `OrderTotalMatchesLineItems` aggregates over a child table, which the
+expression grammar does not parse, so naming it stops the action rather than
+checking it.
 
 Wiring the guards and re-running the request live is the next step for this
 demo, and the transcript above is what it looks like before that happens.

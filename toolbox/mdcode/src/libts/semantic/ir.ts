@@ -616,12 +616,13 @@ export function constraintEvaluation(c: Constraint): ConstraintEvaluation {
  * schema changes that. `onViolation` is required on a judgment so that the
  * consequence of that non-determinism is always stated rather than inherited.
  *
- * STATUS: authored, validated and published; not yet enforced. kcmd carries a
- * constraint to Knowledge Catalog, where an agent can read the rules a model
- * requires. No component evaluates one, so nothing today rejects a write that
- * would break it. Enforcement is the point of declaring them: an operational
- * agent running an action writes to a live store, and a bad write corrupts
- * data. The rule has to be stated and governed before it can be checked.
+ * STATUS: an expression is enforced where an action names the constraint in
+ * `guards`; a judgment is not. kcmd lowers such an expression into one query
+ * against the store and runs it in the write's own transaction, so a rule that
+ * does not hold rolls the write back. An expression outside that grammar, and
+ * every judgment, is carried to Knowledge Catalog for a reader to enforce and
+ * stops the action here rather than being run past. A constraint no action
+ * names is inert either way, which is what makes publishing one safe.
  *
  * `description` is the error text a violation would surface, so write it to
  * steer an agent's next move -- "reduce the order quantity or choose another

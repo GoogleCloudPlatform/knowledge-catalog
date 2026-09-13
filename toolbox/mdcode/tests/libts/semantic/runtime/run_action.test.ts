@@ -790,6 +790,44 @@ describe('a guard the runtime checks', () => {
              ['RoundAmount']);
        });
 
+  test('an advisory rule whose probe the store refuses does not stop the write',
+       async () => {
+         // The carve-out `lowerGuards` makes for an advisory rule has to hold
+         // one layer down too. A `warn` probe that fails -- a column dropped
+         // under the model, a type the store will not compare -- must not roll
+         // back a write that the rule itself would have let through.
+         const advisory: Constraint = {
+           name: 'RoundAmount',
+           expression: 'amount <= 10',
+           description: 'Credits over 10 are usually reviewed.',
+           onViolation: 'warn',
+         };
+         const fake = resolvingFake();
+         fake.failOn = [ARGUMENT_PROBE];
+         const outcome = await runWith(guardedBy([advisory]), fake);
+         if (outcome.status !== 'committed') throw new Error(outcome.message);
+         expect(fake.committed).toBe(true);
+         expect(fake.rolledBack).toBe(false);
+         // Reported rather than dropped: the model asked for a check it did
+         // not get, which is the part a caller can act on.
+         expect(outcome.unchecked?.map(u => u.constraint)).toEqual(
+             ['RoundAmount']);
+         expect(outcome.unchecked?.[0].reason)
+             .toContain('its probe could not be run');
+       });
+
+  test('a stricter rule whose probe the store refuses stops the write',
+       async () => {
+         // The same failure under a rule that stops things is a store error,
+         // because nothing here knows whether the rule holds.
+         const fake = resolvingFake();
+         fake.failOn = [ARGUMENT_PROBE];
+         const outcome = await runWith(guardedBy([positive]), fake);
+         expect(outcome.status).toBe('error');
+         expect(fake.committed).toBe(false);
+         expect(fake.rolledBack).toBe(true);
+       });
+
   test('a rule this runtime cannot check refuses before the store is touched',
        async () => {
          // Nothing to roll back, and no session to leak. Running the action
