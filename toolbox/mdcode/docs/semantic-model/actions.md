@@ -1125,8 +1125,8 @@ reads the model the CLI reads, under the same profile, with the same merge and
 the same warnings:
 
 ```ts
-import {createSemanticRuntimes} from './src/libts/semantic/open';
-import {modelTools, callableTools} from './src/libts/semantic/agent_tools';
+import {createSemanticRuntimes} from './src/libts/semantic/runtime/runtime';
+import {modelTools, callableTools} from './src/libts/semantic/runtime/agent_tools';
 
 const runtimes = await createSemanticRuntimes({profile: 'operational'});
 if ('error' in runtimes) throw new Error(runtimes.error);

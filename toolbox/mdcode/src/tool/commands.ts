@@ -14,17 +14,17 @@ import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets} from '../libts/semantic/deployment_target';
-import {ActionTool, EntityTool, modelTools} from '../libts/semantic/agent_tools';
+import {ActionTool, EntityTool, modelTools} from '../libts/semantic/runtime/agent_tools';
 import {Action, ActionParameter} from '../libts/semantic/ir';
 import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
-import {runAction, runtimeClient, SemanticRuntime} from '../libts/semantic/runtime';
+import {runAction} from '../libts/semantic/runtime/run_action';
 import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryDataSources, validatePushRequirements, validateRunnable} from '../libts/semantic/validate';
-import {createSemanticRuntimes} from '../libts/semantic/open';
-import {Store} from '../libts/semantic/store';
+import {createSemanticRuntimes, runtimeClient, SemanticRuntime} from '../libts/semantic/runtime/runtime';
+import {Store} from '../libts/semantic/runtime/store';
 import {
   AvailabilityReport,
   DEFAULT_PROFILE,

@@ -37,64 +37,19 @@
 // rule silently stopped calls that succeeded the day before, which is the
 // property that reference rule exists to guarantee.
 
-import * as spanner from '../gcp/spanner';
+import * as spanner from '../../gcp/spanner';
 
+import {spannerTable} from '../binding';
 import {
   Action,
   ActionParameter,
   Entity,
   generatedKeyParam,
   SemanticModel,
-} from './ir';
-import {spannerTable} from './spanner';
-import {quoteIfReserved, referencedParameters} from './sql_identifiers';
-import {spannerClientFor, Store} from './store';
+} from '../ir';
+import {quoteIfReserved, referencedParameters} from '../sql_identifiers';
 
-
-/**
- * A semantic model made operational: the model as authored under one binding
- * profile, and the store it runs against.
- *
- * The pair is the unit every caller works in. A model alone says what things
- * mean; a store alone is a database with no idea what its tables are for.
- * `runAction` and the agent tool derivations all take one of these, so no
- * caller can pair a model with a store from a different profile by accident.
- */
-export interface SemanticRuntime {
-  model: SemanticModel;
-  /**
-   * The model file this was authored in -- the `.yaml` basename, not a path.
-   * Carried so a message about this model can point at the author's file.
-   */
-  document: string;
-  /** Where the model's data lives. Absent when this profile binds no store. */
-  store?: Store;
-  /** Why there is no store. Set exactly when `store` is absent. */
-  storeError?: string;
-  /** Which binding profile produced this. Provenance, for messages. */
-  profile: string;
-  /** The entry group the model is scoped to. */
-  entryGroup: string;
-}
-
-
-/**
- * The Spanner client a runtime can run statements on, or why it has none.
- * Two different answers collapse into one question here -- the profile binds
- * no store at all, or binds one this path cannot execute against -- and each
- * sends the reader somewhere different, so each keeps its own wording.
- */
-export function runtimeClient(runtime: SemanticRuntime):
-    spanner.SpannerDataClient|{error: string} {
-  if (!runtime.store) {
-    return {
-      error: runtime.storeError ??
-          `Model '${runtime.model.name}' has no store under profile '${
-              runtime.profile}'.`,
-    };
-  }
-  return spannerClientFor(runtime.store);
-}
+import {runtimeClient, SemanticRuntime} from './runtime';
 
 
 // An entity-typed argument, resolved to the row it denotes.

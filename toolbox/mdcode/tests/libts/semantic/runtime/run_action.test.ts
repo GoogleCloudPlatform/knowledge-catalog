@@ -11,9 +11,10 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import * as spanner from '../../../src/libts/gcp/spanner';
-import {Action, Constraint, SemanticModel} from '../../../src/libts/semantic/ir';
-import {ActionPlan, runAction, RunActionOptions, SemanticRuntime} from '../../../src/libts/semantic/runtime';
+import * as spanner from '../../../../src/libts/gcp/spanner';
+import {Action, Constraint, SemanticModel} from '../../../../src/libts/semantic/ir';
+import {SemanticRuntime} from '../../../../src/libts/semantic/runtime/runtime';
+import {ActionPlan, runAction, RunActionOptions} from '../../../../src/libts/semantic/runtime/run_action';
 
 
 // `runAction` takes a runtime: a model paired with the store it runs against.

@@ -10,9 +10,9 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import {SemanticModel} from '../../../src/libts/semantic/ir';
-import {loadModels} from '../../../src/libts/semantic/loader';
-import {resolveStore, spannerClientFor} from '../../../src/libts/semantic/store';
+import {SemanticModel} from '../../../../src/libts/semantic/ir';
+import {loadModels} from '../../../../src/libts/semantic/loader';
+import {resolveStore, spannerClientFor} from '../../../../src/libts/semantic/runtime/store';
 
 const DB = '//spanner.googleapis.com/projects/p/instances/i/databases/d';
 const DATASET = '//bigquery.googleapis.com/projects/p/datasets/s';

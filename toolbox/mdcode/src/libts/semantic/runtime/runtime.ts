@@ -14,21 +14,68 @@
 // The CLI calls this too, so there is one answer to "what does this scope say"
 // rather than one per caller.
 
-import * as context from '../gcp/context';
-import {SemanticModelLayout} from '../layouts/semantic-model';
-import {CatalogSnapshot} from '../snapshot';
-import {Sources} from '../source';
-import {SemanticModelSource} from '../sources/semantic-model';
+import * as context from '../../gcp/context';
+import * as spanner from '../../gcp/spanner';
+import {SemanticModelLayout} from '../../layouts/semantic-model';
+import {CatalogSnapshot} from '../../snapshot';
+import {Sources} from '../../source';
+import {SemanticModelSource} from '../../sources/semantic-model';
+import {SemanticModel} from '../ir';
+import {loadSemanticModels} from '../loader';
+import {resolveInheritance} from '../resolve_inheritance';
+import {DEFAULT_PROFILE, mergeProfileOntoDoc} from '../resolve_profiles';
 
-import {loadSemanticModels} from './loader';
-import {resolveInheritance} from './resolve_inheritance';
-import {DEFAULT_PROFILE, mergeProfileOntoDoc} from './resolve_profiles';
-import {SemanticRuntime} from './runtime';
-import {resolveStore} from './store';
+import {resolveStore, spannerClientFor, Store} from './store';
+
+
+/**
+ * A semantic model made operational: the model as authored under one binding
+ * profile, and the store it runs against.
+ *
+ * The pair is the unit every caller works in. A model alone says what things
+ * mean; a store alone is a database with no idea what its tables are for.
+ * `runAction` and the agent tool derivations all take one of these, so no
+ * caller can pair a model with a store from a different profile by accident.
+ */
+export interface SemanticRuntime {
+  model: SemanticModel;
+  /**
+   * The model file this was authored in -- the `.yaml` basename, not a path.
+   * Carried so a message about this model can point at the author's file.
+   */
+  document: string;
+  /** Where the model's data lives. Absent when this profile binds no store. */
+  store?: Store;
+  /** Why there is no store. Set exactly when `store` is absent. */
+  storeError?: string;
+  /** Which binding profile produced this. Provenance, for messages. */
+  profile: string;
+  /** The entry group the model is scoped to. */
+  entryGroup: string;
+}
+
+
+/**
+ * The Spanner client a runtime can run statements on, or why it has none.
+ * Two different answers collapse into one question here -- the profile binds
+ * no store at all, or binds one this path cannot execute against -- and each
+ * sends the reader somewhere different, so each keeps its own wording.
+ */
+export function runtimeClient(runtime: SemanticRuntime):
+    spanner.SpannerDataClient|{error: string} {
+  if (!runtime.store) {
+    return {
+      error: runtime.storeError ??
+          `Model '${runtime.model.name}' has no store under profile '${
+              runtime.profile}'.`,
+    };
+  }
+  return spannerClientFor(runtime.store);
+}
 
 
 /** How to create the runtimes. Every field has the answer `kcmd` would give. */
-export interface OpenOptions {
+export interface CreateRuntimeOptions {
   /** Directory holding `catalog.yaml`. Defaults to the current directory. */
   path?: string;
   /**
@@ -55,7 +102,7 @@ export interface OpenOptions {
  * purely logical model yields a runtime with no store -- readable and
  * inspectable, not runnable -- instead of an error that stops the scope.
  */
-export async function createSemanticRuntimes(options: OpenOptions = {}):
+export async function createSemanticRuntimes(options: CreateRuntimeOptions = {}):
     Promise<SemanticRuntime[]|{error: string}> {
   const base = options.path ?? '.';
   const ctx = options.ctx ?? context.ApiContext.default();

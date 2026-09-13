@@ -30,18 +30,18 @@
  * model declares should not vanish from a listing of what the model declares.
  */
 
-import {Action, Entity, SemanticModel} from './ir';
+import {spannerTable} from '../binding';
+import {Action, Entity, SemanticModel} from '../ir';
+import {quoteIfReserved} from '../sql_identifiers';
+
 import {
   ActionHandler,
   ActionOutcome,
   bindScalar,
   runAction,
-  runtimeClient,
-  SemanticRuntime,
   whyRefusedWithoutRunning,
-} from './runtime';
-import {spannerTable} from './spanner';
-import {quoteIfReserved} from './sql_identifiers';
+} from './run_action';
+import {runtimeClient, SemanticRuntime} from './runtime';
 
 
 /** The JSON types a tool parameter can take. */

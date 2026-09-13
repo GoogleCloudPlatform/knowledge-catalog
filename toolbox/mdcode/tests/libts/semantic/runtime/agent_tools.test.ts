@@ -13,13 +13,13 @@ import {describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import {actionTools, callableTools, describeOutcome, entityTools, modelTools} from '../../../src/libts/semantic/agent_tools';
-import {Action, Constraint, Entity, SemanticModel} from '../../../src/libts/semantic/ir';
-import {loadModels} from '../../../src/libts/semantic/loader';
-import {SemanticRuntime} from '../../../src/libts/semantic/runtime';
-import * as spanner from '../../../src/libts/gcp/spanner';
+import {actionTools, callableTools, describeOutcome, entityTools, modelTools} from '../../../../src/libts/semantic/runtime/agent_tools';
+import {Action, Constraint, Entity, SemanticModel} from '../../../../src/libts/semantic/ir';
+import {loadModels} from '../../../../src/libts/semantic/loader';
+import {SemanticRuntime} from '../../../../src/libts/semantic/runtime/runtime';
+import * as spanner from '../../../../src/libts/gcp/spanner';
 
-const FIXTURES = path.join(__dirname, 'fixtures');
+const FIXTURES = path.join(__dirname, '..', 'fixtures');
 
 // The tools never touch it: every test here reads the derivation, not a call.
 const NO_CLIENT = {} as any;

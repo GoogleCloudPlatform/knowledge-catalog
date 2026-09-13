@@ -12,12 +12,12 @@
 // the same database describe ONE store; the profile is how a caller found it,
 // not what it is.
 
-import {BigQueryClient} from '../gcp/bigquery';
-import * as context from '../gcp/context';
-import {SpannerDataClient} from '../gcp/spanner';
+import {BigQueryClient} from '../../gcp/bigquery';
+import * as context from '../../gcp/context';
+import {SpannerDataClient} from '../../gcp/spanner';
 
-import {googleDeploymentTargets} from './deployment_target';
-import {SemanticModel} from './ir';
+import {googleDeploymentTargets} from '../deployment_target';
+import {SemanticModel} from '../ir';
 
 
 /** A Spanner database. The only backend an action can write to today. */
