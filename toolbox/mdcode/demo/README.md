@@ -256,3 +256,16 @@ bun pull.ts --bundle /tmp/acme_pulled
 ```bash
 bun cleanup.ts
 ```
+
+## Agent
+
+This demo derives an agent's tools from a semantic model and runs them against a
+live Spanner database: one lookup tool per entity, one write tool per action,
+with names, types and calling guidance all read out of the model. An English
+request goes in and a row changes.
+
+It needs a Spanner instance rather than BigQuery, and it installs its own
+dependency (`@google/adk`) under `agent/` so the library's dependency list stays
+free of agent frameworks.
+
+See [agent/README.md](agent/README.md).

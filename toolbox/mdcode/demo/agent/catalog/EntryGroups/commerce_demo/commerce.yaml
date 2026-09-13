@@ -1,0 +1,141 @@
+# What the business is, and what one agent is allowed to do to it.
+#
+# The scenario is not invented here. It is the worked example in "Ontologies,
+# actions and policies -- a simple illustration": three entities, one credit
+# action, and three policy rules, stated in prose. This file is that prose
+# written down as a model, and the README runs the specific case the doc poses.
+# Where the two differ, the doc is right and this is a bug.
+#
+# Nothing here says where the data lives, what the columns are called, or what
+# SQL performs the write. Those are physical facts, and they are in
+# commerce.profiles/spanner.yaml. This file would read the same if the orders
+# were in AlloyDB.
+#
+# Three constraints are declared and none is referenced. A constraint is inert
+# until an action names it in `guards`, and today's runtime evaluates none of
+# them -- so naming one here would make the action unrunnable rather than
+# checked. They are written down now because the policy exists now; wiring them
+# up is the next step, not a forgotten one. Add `guards: [CreditUnderReviewThreshold]`
+# to the action and re-run `kcmd agent tools` to see exactly what that costs today.
+
+version: "0.2.0.dev0/google"
+
+semantic_model:
+  - name: commerce
+    description: Customers, their orders, and the lines that make up an order
+
+    # How this business wants to be acted on. It is here rather than in the
+    # agent's source because it is true of every agent that acts on this model,
+    # including the ones nobody has written yet -- and because a rule an agent
+    # keeps privately is a rule that can be changed without the people who own
+    # the model finding out. Agents come and go; the model stays.
+    #
+    # Only what is specific to this business belongs here. How to use a lookup
+    # tool, and what to do when a write is refused, are properties of the tools
+    # rather than of commerce, so the derivation supplies those and this does
+    # not repeat them.
+    ai_context:
+      instructions: >-
+        You are working an internal operations desk for this business, fixing
+        orders on behalf of the people who run it. A request describes an order
+        the way a person does -- a customer's name, a day, what went wrong --
+        so expect to be given a description where the model expects a number,
+        and expect to have to read an order's lines to find out what was
+        actually charged.
+
+    entities:
+      - name: Customer
+        primary_key: [customerId]
+        fields:
+          - {name: customerId, datatype: Integer}
+          - name: name
+            datatype: String
+            description: The customer's display name, e.g. "Andy Brook".
+          - {name: email, datatype: String}
+
+      - name: Order
+        description: >-
+          A customer order. Its total is the sum of its line items: items, tax
+          and fees add, credits subtract. A positive total is money owed to the
+          company.
+        primary_key: [orderId]
+        fields:
+          - {name: orderId, datatype: Integer}
+          - {name: customerId, datatype: Integer}
+          - name: placedOn
+            datatype: Date
+            description: The day the order was placed.
+          - name: total
+            datatype: Decimal
+            description: What the customer owes on this order, in dollars.
+          - {name: status, datatype: String, description: OPEN or CLOSED.}
+
+      - name: LineItem
+        description: >-
+          One line of an order. A charge line is positive; a credit line is
+          negative, so that the order total is always a plain sum.
+        primary_key: [lineItemId]
+        fields:
+          - {name: lineItemId, datatype: String}
+          - {name: orderId, datatype: Integer}
+          - name: type
+            datatype: String
+            description: item, tax, fee, or credit.
+          - {name: amount, datatype: Decimal}
+          - {name: memo, datatype: String}
+
+    relationships:
+      - name: PlacedBy
+        from: Order
+        to: Customer
+        from_columns: [customer_id]
+        to_columns: [customer_id]
+      - name: BelongsTo
+        from: LineItem
+        to: Order
+        from_columns: [order_id]
+        to_columns: [order_id]
+
+    actions:
+      - name: IssueCredit
+        description: >-
+          Credit a customer against one order -- a late delivery, a coupon, a
+          shipping charge applied in error. The credit is added as a negative
+          line and the order total is recomputed from the lines.
+        parameters:
+          - {name: order, type: Order}
+          - {name: amount, type: Decimal}
+          - {name: memo, type: String}
+        # What this call reaches. `operation: create` on LineItem is also what
+        # tells the runtime to generate the new row's key, which the profile's
+        # INSERT names as @newLineItemKey.
+        affects:
+          - {concept: LineItem, operation: create, fields: [type, amount, memo]}
+          - {concept: Order, operation: modify, fields: [total]}
+        ai_context:
+          instructions: >-
+            Give the order as its number, the amount in dollars, and a memo
+            saying why. Look the order up first if you were given a customer
+            name rather than a number: an Order is identified by its key alone.
+
+    constraints:
+      - name: CreditWithinOrderTotal
+        expression: amount <= Order.total
+        on_violation: escalate
+        description: >-
+          A credit cannot exceed the total of the order it credits. Lower the
+          credit amount, or split it across the orders it actually covers.
+
+      - name: CreditUnderReviewThreshold
+        expression: amount <= 25
+        on_violation: escalate
+        description: >-
+          A credit over $25 is above the self-service ceiling. A supervisor
+          decides it.
+
+      - name: OrderTotalMatchesLineItems
+        expression: Order.total == SUM(LineItem.amount)
+        on_violation: reject
+        description: >-
+          An order's total must equal the sum of its line items, with credits
+          subtracted. Nobody can approve an order that does not add up.

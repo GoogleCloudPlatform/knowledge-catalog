@@ -1,0 +1,12 @@
+{
+  "name": "kcmd-agent-demo",
+  "private": true,
+  "description": "Agent framework binding for the commerce demo. Separate from kcmd's own package because nothing in the library depends on an agent framework, and a demo should not put one on the library's dependency list.",
+  "scripts": {
+    "check": "tsc --ignoreConfig --noEmit --skipLibCheck --strict --target esnext --module preserve --moduleResolution bundler --types bun agent.ts"
+  },
+  "dependencies": {
+    "@google/adk": "^2.0.0",
+    "@google/genai": "^2.22.0"
+  }
+}

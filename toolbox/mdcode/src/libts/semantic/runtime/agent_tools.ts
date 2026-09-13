@@ -14,7 +14,8 @@
  * The description is framework-neutral on purpose. Nothing here imports an
  * agent framework, so binding these to Google ADK, to LangChain, or to an MCP
  * server is a short adapter the caller writes, and adding a second framework
- * costs nothing in this file.
+ * costs nothing in this file. See demo/agent/agent.ts for the ADK adapter,
+ * which is a dozen lines.
  *
  * What this module does NOT do is decide anything. A tool built here is a way
  * to ask. Every refusal is decided by runAction, and an agent that calls a
