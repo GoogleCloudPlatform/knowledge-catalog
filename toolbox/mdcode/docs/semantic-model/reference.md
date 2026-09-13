@@ -90,14 +90,14 @@ kcmd agent tools
 ```
 
 Prints what an agent would be handed for the models in the scope: one lookup
-tool per entity and one tool per action, each with its description, the calling
-guidance the model wrote, and one line per parameter carrying that field's own
-description. Reads the model and nothing else — no store is touched and nothing
-is run.
+tool per entity, and one tool per action. Each carries its description, the
+calling guidance the model wrote, and one line per parameter giving that field's
+own description. Reading the model is all this does — it touches no store and
+runs nothing.
 
-A tool the runtime cannot call is listed with the reason rather than dropped, so
-a refusal is visible before any agent exists: attach a constraint to an action's
-`guards` and re-run this to see exactly what it costs today. See
+A tool the runtime cannot call is listed with its reason rather than dropped, so
+a refusal is visible before any agent exists. To see what a guard costs today,
+add a constraint to an action's `guards` and run this again. See
 [Hand it to an agent](actions.md#8-hand-it-to-an-agent).
 
 | Flag | Effect |

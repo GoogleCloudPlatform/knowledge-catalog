@@ -898,8 +898,8 @@ import {modelTools} from './src/libts/semantic/agent_tools';
 const {lookups, actions, instruction} = modelTools({model, client});
 ```
 
-`kcmd agent tools` prints all three, so what an agent will be handed can be read
-before an agent exists.
+`kcmd agent tools` prints all three, so you can read what an agent will be
+handed before an agent exists.
 
 `actions` holds one write tool per action. Its name is the action's, snake-cased;
 its description is the action's description followed by its
@@ -916,11 +916,12 @@ binding and every filter value is a bound parameter, so no caller text reaches
 the SQL.
 
 `modelTools` returns both halves with their names settled against each other. An
-entity `Account` and an action `FindAccount` both want to be called
-`find_account`, and deriving them together is the only place that can notice: the
-action keeps the name, because it is the author's own, and the lookup takes
-`lookup_account`. `actionTools` and `entityTools` are also exported for a caller
-that wants one half, and each names its own tools without seeing the other.
+entity `Account` and an action `FindAccount` both derive the name
+`find_account`, and deriving them together is the only place that can notice the
+collision: the action keeps the name, because it is the author's own, and the
+lookup takes `lookup_account`. `actionTools` and `entityTools` are also exported
+for a caller that wants one half, and each names its own tools without seeing
+the other.
 
 ### The instruction is not the agent's to write
 
@@ -929,13 +930,13 @@ because two different people own them.
 
 The first is the model's own `ai_context.instructions` — what this business asks
 of anything that acts on it. It belongs to the model because it is true of every
-agent that acts on the model, including the ones nobody has written yet, and
-because a rule an agent keeps in its own source can be changed without the
-people who own the model finding out. Agents are replaced when frameworks
-change; the model is not.
+agent that acts on the model, including the ones nobody has written yet. It also
+belongs there because a rule an agent keeps in its own source can be changed
+without the people who own the model finding out. Agents are replaced when
+frameworks change; the model is not.
 
 The second is about the tools rather than the business: what a lookup is for,
-and what a refused write means. That half is owed by the derivation, because it
+and what a refused write means. The derivation owes that half, because it
 describes a contract this module defines and the model never stated. Written
 into each agent instead, it is the same paragraph copied into every adapter,
 drifting in each one.
@@ -951,16 +952,16 @@ halves carry `runnable`, and when it is false, `unavailable` says why.
 
 For an action: a withdrawn executor, a remote executor with no handler, a guard
 nothing checks, an object reference to a composite-keyed entity, or a generated
-key the statement asks for that a UUID cannot fill. The verdict is asked of the
-runtime rather than worked out again, so the two cannot drift — a tool
-advertised as runnable that refuses every call spends the agent's turn and
-teaches it nothing, and one withheld that would have worked is never discovered
-at all.
+key the statement asks for that a UUID cannot fill. `modelTools` asks the
+runtime for that verdict rather than working it out again, so the two cannot
+drift. Drift costs something in both directions: a tool advertised as runnable
+that refuses every call spends the agent's turn and teaches it nothing, and one
+withheld that would have worked is never discovered at all.
 
 For a lookup: an abstract entity, which has no table of its own; an entity no
-profile bound to one; or an entity whose binding is not a plain table. The same
-function answers the question here and reports it at call time, for the same
-reason.
+profile bound to one; or an entity whose binding is not a plain table. One
+function decides whether a lookup can run and also reports the problem at call
+time, so those two answers cannot drift either.
 
 The tool is still returned and still named either way. An action the model
 declares should not vanish from what the model offers; an adapter binds the
@@ -979,10 +980,9 @@ nothing can establish, reported as unknown with an explicit "do not retry",
 because a caller reading it as "nothing happened" applies the write twice.
 
 `handler` may be passed for an executor this runtime cannot perform itself. It is
-not passed to an action with a `sql` executor: the claim such an action makes is
-that what runs is what the catalog published, and one handler serves the whole
-model, so passing it through would retract that claim for every such action at
-once.
+not passed to an action with a `sql` executor. Such an action claims that what
+runs is what the catalog published, and one handler serves the whole model, so
+passing it through would retract that claim for every such action at once.
 
 Opening the workspace is `openWorkspace` and `spannerStore` from
 `semantic/workspace`, the same pair `kcmd action` uses — so an agent reads the
