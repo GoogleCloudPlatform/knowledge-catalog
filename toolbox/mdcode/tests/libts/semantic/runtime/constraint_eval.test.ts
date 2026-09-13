@@ -196,6 +196,20 @@ describe('what the probe reads and when it runs', () => {
          expect(probe.sql).toContain('NOT COALESCE((@amount <= Total), FALSE)');
        });
 
+  test('a rule needing both moments is refused rather than timed as one',
+       () => {
+         // One probe runs at one moment. Timing this by whether any comparison
+         // reads a parameter would check `Order.total >= 0` against the
+         // pre-state and never look again, so the write that drives the total
+         // negative commits while the rule reports as checked.
+         const reason = reasonOf(lower('Order.total >= 0 AND amount > 0'));
+         expect(reason).toContain("about this call's arguments");
+         expect(reason).toContain('about stored data');
+         // The same holds for OR, which cannot be split into two probes at all.
+         expect(reasonOf(lower('Order.total >= 0 OR amount > 0')))
+             .toContain('about stored data');
+       });
+
   test('the probe is scoped to the rows the call names', () => {
     // Without the scope this is a table scan holding read locks for the length
     // of the write, which is how a gate gets switched off.
@@ -230,6 +244,18 @@ describe('the expressions the grammar accepts', () => {
     expect(probeOf(lower("Order.status != 'ON HOLD OR CLOSED'")).sql)
         .toContain("NOT COALESCE((Status != 'ON HOLD OR CLOSED'), FALSE)");
   });
+
+  test('a literal spelling an operator the grammar bars is still a literal',
+       () => {
+         // The gates that refuse `==` and parentheses read the expression with
+         // its literals blanked. Reading raw text refused these two for a fault
+         // they do not have, which on a reject-class guard leaves the action
+         // permanently unrunnable.
+         expect(probeOf(lower("Order.status = 'a==b'")).sql)
+             .toContain("NOT COALESCE((Status = 'a==b'), FALSE)");
+         expect(probeOf(lower("Order.status = 'see (attached)'")).sql)
+             .toContain("NOT COALESCE((Status = 'see (attached)'), FALSE)");
+       });
 
   test('an operator inside a literal is not the comparison', () => {
     expect(probeOf(lower("'a>b' != Order.status")).sql)

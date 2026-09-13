@@ -208,12 +208,29 @@ export function lowerGuard(
         `them together in 'guards'`);
   }
 
-  // A rule that reads a parameter asks about this call, so it is answered
-  // before the write; one that reads only stored state asks whether the data
-  // is sound, which only the post-state can answer.
-  const readsParameter = parsed.comparisons.some(
-      c => c.left.kind === 'parameter' || c.right.kind === 'parameter');
-  const timing: ProbeTiming = readsParameter ? 'before' : 'after';
+  // A comparison that reads a parameter asks about this call, so it is
+  // answered before the write; one that reads only stored state asks whether
+  // the data is sound, which only the post-state can answer.
+  const readsParameter = (c: Comparison) =>
+      c.left.kind === 'parameter' || c.right.kind === 'parameter';
+  const readsField = (c: Comparison) =>
+      c.left.kind === 'field' || c.right.kind === 'field';
+  const aboutTheCall = parsed.comparisons.filter(readsParameter);
+  const aboutTheData =
+      parsed.comparisons.filter(c => !readsParameter(c) && readsField(c));
+
+  // One probe runs at one moment, so an expression that needs both cannot be
+  // lowered whole. Timing it by whether any comparison reads a parameter would
+  // put the stored half against the pre-state and never look again: the write
+  // that breaks it commits, and the rule reports as checked.
+  if (aboutTheCall.length && aboutTheData.length) {
+    return fail(
+        `it asks both about this call's arguments and about stored data ` +
+        `(${constraint.expression}); the first is answered before the write ` +
+        `and the second after it, so write one constraint for each and list ` +
+        `them together in 'guards'`);
+  }
+  const timing: ProbeTiming = aboutTheCall.length ? 'before' : 'after';
 
   if (!entityNames.size) {
     // No table to read: the rule is entirely about the call's own arguments.
@@ -508,13 +525,18 @@ function parseExpression(
     parameters: Map<string, {name: string}>): ParsedExpression|{error: string} {
   const text = expression.trim();
   if (!text) return {error: 'it declares no expression'};
-  if (text.includes('==')) {
+  // Both gates below read the text with its literals blanked. A rule whose
+  // literal happens to spell `==` or hold a bracket -- `Order.status = 'a==b'`,
+  // `Order.note = 'see (attached)'` -- says nothing about the grammar, and
+  // refusing it leaves a reject-class guard permanently unrunnable.
+  const bare = blankStringLiterals(text);
+  if (bare.includes('==')) {
     return {
       error: `it writes '==' (${text}); equality in the expression language ` +
           `is a single '='`,
     };
   }
-  if (/[()]/.test(text)) {
+  if (/[()]/.test(bare)) {
     return {
       error: `it uses parentheses or a function call (${
           text}), which the grammar does not parse`,

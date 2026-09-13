@@ -1311,7 +1311,11 @@ This is a prototype. Five things a reader reasonably expects are absent.
   precondition no model can currently express: written as a guard it is checked
   after the close and fails every call. Say it with a parameter the rule can
   read, or leave it to the statement's own `WHERE` clause, until the model has a
-  way to name the moment.
+  way to name the moment. For the same reason a rule that asks about both at
+  once, such as `Order.total >= 0 AND amount > 0`, is refused rather than timed
+  as one: a probe runs at a single moment, and checking the stored half against
+  the pre-state would let the write that breaks it commit while the rule reports
+  as checked. Write one constraint for each and name both in `guards`.
 - **`kcmd` calls no executor but its own.** A `sql` action runs; an `mcp`,
   `rest` or `grpc` one is published for whoever dispatches it, which is why
   those three name coordinates rather than a statement.
