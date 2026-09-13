@@ -480,9 +480,17 @@ It still did the work worth doing — found the order, found the charge, named t
 amount — and order 12345 is still $165.85.
 
 So the demo can reach either end of the doc's policy story and not the middle:
-write, or refuse. "Queue it for a person, and apply it when they approve" needs
-a constraint evaluator, which is the next piece of work. The two warnings at load
-time are that gap stated at load time.
+write, or refuse. There are two rungs where there should be three, and the
+missing one is "ask a person, then apply it if they say yes".
+
+The model already says which rule wants that rung. `CreditUnderReviewThreshold`
+carries `on_violation: escalate`, and `escalate` means the write is held and an
+approver decides. What is missing is not the declaration but anything that acts
+on it. Most action frameworks ship a blanket "this action needs confirmation"
+flag on the action instead; a rule that escalates only when a predicate is
+violated says more, and costs more to honor, because something has to evaluate
+the predicate. That evaluator is the next piece of work. The two warnings at
+load time are the same gap, stated at load time.
 
 The other thing the doc has and this does not is its Data Access Controls. There
 are meant to be two agents over this model — an internal one that reads and
