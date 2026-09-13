@@ -138,11 +138,19 @@ export function resolveStore(model: SemanticModel, ctx?: context.ApiContext):
   const {spanner, bigQuery, malformed} = googleDeploymentTargets(model);
   const declared = spanner.length + bigQuery.length;
 
-  if (declared > 1) {
+  // Ambiguity is per backend, not across them. A model may publish its graph
+  // to BigQuery for analysis and to Spanner for operations under one profile,
+  // and that pair names one store to run against rather than two: Spanner is
+  // the only backend an action writes to, so it is the operational store and
+  // the BigQuery target is a second destination for the same model. Two
+  // targets of the SAME backend is the case nothing can decide.
+  const operational = spanner.length ? spanner : bigQuery;
+  if (operational.length > 1) {
+    const backend = spanner.length ? 'Spanner' : 'BigQuery';
     return {
-      error: `Model '${model.name}' declares ${declared} deployment targets ` +
-          `under this profile, so which store it runs against is ambiguous. ` +
-          `Give each its own profile.`,
+      error: `Model '${model.name}' declares ${operational.length} ${
+          backend} deployment targets under this profile, so which store it ` +
+          `runs against is ambiguous. Give each its own profile.`,
     };
   }
   if (!declared) {

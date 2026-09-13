@@ -44,6 +44,7 @@ import {
   Action,
   ActionParameter,
   Entity,
+  fieldBinding,
   generatedKeyParam,
   SemanticModel,
 } from '../ir';
@@ -752,7 +753,7 @@ async function resolveEntityRef(
   const keyTypes: string[] = [];
   for (const key of entity.keys) {
     const field = entity.fields.find(f => f.name === key);
-    const expr = (field?.expression ?? '').trim();
+    const expr = (field ? fieldBinding(field) ?? '' : '').trim();
     if (!expr || !/^[A-Za-z_]\w*$/.test(expr)) {
       return {
         error: `Cannot resolve a ${entity.name}: its key field '${
@@ -847,7 +848,7 @@ function identifyingColumn(entity: Entity): string|null {
             field.name)) {
       continue;
     }
-    const expr = (field.expression ?? '').trim();
+    const expr = (fieldBinding(field) ?? '').trim();
     if (!expr || !/^[A-Za-z_]\w*$/.test(expr)) continue;
     return quoteIfReserved(expr);
   }

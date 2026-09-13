@@ -24,7 +24,7 @@ import {runAction} from '../libts/semantic/runtime/run_action';
 import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryDataSources, validatePushRequirements, validateRunnable} from '../libts/semantic/validate';
 import {createSemanticRuntimes, runtimeClient, SemanticRuntime} from '../libts/semantic/runtime/runtime';
-import {Store} from '../libts/semantic/runtime/store';
+import {spannerClientFor, Store} from '../libts/semantic/runtime/store';
 import {
   AvailabilityReport,
   DEFAULT_PROFILE,
@@ -1341,9 +1341,16 @@ export async function agent(
     // interpret.
     console.log(
         `Model '${model.name}' (${entryGroup}), profile '${profile}':`);
-    if (!store) {
+    // A store this path cannot execute against is the same answer as no
+    // store, and has to be reported the same way: every tool would be listed
+    // uncallable, and a caller reading the exit code would take a listing that
+    // offers nothing for a listing that offers everything.
+    const unusable = store ? spannerClientFor(store) : undefined;
+    const why = store ? (unusable && 'error' in unusable ? unusable.error : '') :
+                        storeError ?? '';
+    if (!store || why) {
       console.log('  offers no tools under this profile.');
-      console.log(wrapTo(storeError ?? '', BODY_INDENT));
+      console.log(wrapTo(why, BODY_INDENT));
       console.log();
       incomplete = true;
       continue;

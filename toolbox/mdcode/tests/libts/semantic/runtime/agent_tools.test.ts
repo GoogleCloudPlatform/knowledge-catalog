@@ -827,3 +827,50 @@ describe('what a caller is told about an outcome', () => {
     }
   });
 });
+
+
+// `fieldBinding` is ir.ts's stated single source of truth for whether a field
+// is bound, and a field awaiting transpilation carries only the vendor
+// expression it was imported with. `createSemanticRuntimes` transpiles nothing,
+// so that is exactly the state a vendor-imported model reaches these tools in.
+// Consulting `expression` alone reported every one of its entities as having
+// no column to read, and told the caller to push the model with a binding
+// profile -- which is not the problem and would not fix it.
+describe('an entity whose fields await transpilation', () => {
+  const model = loadFixtureModel('actions_place_order.yaml');
+
+  function untranspiled(name: string): Entity[] {
+    return model.entities.map(entity => {
+      if (entity.name !== name) return entity;
+      return {
+        ...entity,
+        fields: entity.fields.map(
+            field => ({
+              ...field,
+              expression: undefined,
+              importedExpression: field.expression,
+              importedDialect: 'SNOWFLAKE',
+            })),
+      };
+    });
+  }
+
+  test('is readable, because the imported expression names a real column',
+       () => {
+         const tool =
+             entityTools({runtime: rt({...model, entities: untranspiled('customer')})})
+                 .find(t => t.entityName === 'customer')!;
+         expect(tool.runnable).toBe(true);
+         expect(tool.unavailable).toBeUndefined();
+       });
+
+  test('offers the same filters it would after transpilation', () => {
+    const before = entityTools({runtime: rt(model)})
+                       .find(t => t.entityName === 'customer')!;
+    const after =
+        entityTools({runtime: rt({...model, entities: untranspiled('customer')})})
+            .find(t => t.entityName === 'customer')!;
+    expect(after.parameters.map(p => p.name))
+        .toEqual(before.parameters.map(p => p.name));
+  });
+});

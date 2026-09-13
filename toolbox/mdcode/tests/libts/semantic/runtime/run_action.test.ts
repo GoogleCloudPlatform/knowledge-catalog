@@ -1192,3 +1192,34 @@ describe('an argument given as empty text', () => {
     expect(outcome.message).toContain('was not given a value');
   });
 });
+
+
+// The write side reads a binding the same way the read side does. A key field
+// carrying only its imported vendor expression still names a real column, so
+// resolving a reference against it is a lookup rather than a refusal.
+describe('an entity key that awaits transpilation', () => {
+  test('resolves against the imported column', async () => {
+    const fake = new FakeSpanner([{match: 'FROM Account', rows: [['1']]}]);
+    const outcome = await run(fake, {
+      model: model({
+        entities: [{
+          name: 'Account',
+          dataSource: 'demo.payments.Account',
+          keys: ['accountId'],
+          fields: [
+            {
+              name: 'accountId',
+              importedExpression: 'account_id',
+              importedDialect: 'SNOWFLAKE',
+              type: 'String',
+            },
+          ],
+        }],
+      }),
+    });
+    expect(fake.statements[0].sql).toContain('account_id = @ref0');
+    if (outcome.status === 'error') {
+      throw new Error(`expected a resolved reference: ${outcome.message}`);
+    }
+  });
+});

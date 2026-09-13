@@ -125,3 +125,50 @@ describe('a binding that disagrees with the target', () => {
     expect('error' in store).toBe(false);
   });
 });
+
+
+// A model may name more than one destination: the same graph published to
+// BigQuery for analysis and to Spanner for operations is one model deployed
+// twice, not two models. Which of those is the store an action runs against is
+// not in doubt -- only Spanner accepts a write -- so the pair resolves. Two
+// destinations of the SAME backend is the case nothing here can decide.
+describe('a model that declares more than one deployment target', () => {
+  function targets(uris: string[], source: string): SemanticModel {
+    return {
+      ...bound(`${DB}/propertyGraphs/g`, source),
+      customExtensions: [{
+        vendorName: 'GOOGLE',
+        data: JSON.stringify({deploymentTargets: uris}),
+      }],
+    };
+  }
+
+  test('Spanner alongside BigQuery resolves to the Spanner store', () => {
+    const store = resolveStore(targets(
+        [`${DB}/propertyGraphs/g`, `${DATASET}/propertyGraphs/g`],
+        `${DB}/tables/Customer`));
+    if ('error' in store) throw new Error(store.error);
+    expect(store.kind).toBe('spanner');
+    expect(store.name).toBe('projects/p/instances/i/databases/d');
+  });
+
+  test('two Spanner targets is ambiguous, and the message says which backend',
+       () => {
+         const store = resolveStore(targets(
+             [`${DB}/propertyGraphs/g`, `//spanner.googleapis.com/projects/p/instances/i/databases/d2/propertyGraphs/g`],
+             `${DB}/tables/Customer`));
+         expect('error' in store).toBe(true);
+         if (!('error' in store)) return;
+         expect(store.error).toContain('2 Spanner deployment targets');
+         expect(store.error).toContain('Give each its own profile.');
+       });
+
+  test('two BigQuery targets is ambiguous in the same way', () => {
+    const store = resolveStore(targets(
+        [`${DATASET}/propertyGraphs/g`, `//bigquery.googleapis.com/projects/p/datasets/s2/propertyGraphs/g`],
+        `${DATASET}/tables/Customer`));
+    expect('error' in store).toBe(true);
+    if (!('error' in store)) return;
+    expect(store.error).toContain('2 BigQuery deployment targets');
+  });
+});

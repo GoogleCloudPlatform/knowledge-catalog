@@ -31,7 +31,7 @@
  */
 
 import {spannerTable} from '../binding';
-import {Action, Entity, SemanticModel} from '../ir';
+import {Action, Entity, fieldBinding, SemanticModel} from '../ir';
 import {quoteIfReserved} from '../sql_identifiers';
 
 import {
@@ -616,7 +616,7 @@ interface BoundField {
 function boundFields(entity: Entity): BoundField[] {
   const bound: BoundField[] = [];
   for (const field of entity.fields) {
-    const expr = (field.expression ?? '').trim();
+    const expr = (fieldBinding(field) ?? '').trim();
     if (!expr || !/^[A-Za-z_]\w*$/.test(expr)) continue;
     // A field with no declared type travels as text, which is the carrier
     // every scalar has a faithful string form in.
