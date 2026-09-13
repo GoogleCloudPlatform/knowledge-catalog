@@ -789,7 +789,7 @@ runs it, so reading the listing is enough to make the call:
 
 ```
 Model 'payments' (payments_eg), profile 'operational':
-  store: sqlgen-testing/graph-unified-solution-demo/semantic_agent_demo
+  store: my-project/my-instance/semantic_agent_demo
   TransferFunds: Move money from one account to another.
     parameters: source (Account, reference), target (Account, reference), amount (Float)
     executor:   sql
@@ -955,7 +955,7 @@ changes nothing.
 
 ```
 Model 'payments' (payments_eg), profile 'operational':
-  store: sqlgen-testing/graph-unified-solution-demo/semantic_agent_demo
+  store: my-project/my-instance/semantic_agent_demo
 
   action  transfer_funds  (TransferFunds)  [NOT RUNNABLE]
       Move money from one account to another.

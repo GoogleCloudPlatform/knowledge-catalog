@@ -1,2 +1,2 @@
-scope: semantic-model.sqlgen-testing.us-central1.commerce_demo
+scope: semantic-model.my-project.us-central1.commerce_demo
 default_profile: spanner

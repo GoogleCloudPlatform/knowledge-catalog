@@ -67,13 +67,15 @@ means. So that one file holds everything deployment-specific here, down to which
 database the model runs against:
 
 ```yaml
-deployment_target: //spanner.googleapis.com/projects/sqlgen-testing/instances/graph-unified-solution-demo/databases/semantic_agent_demo/propertyGraphs/commerce
+deployment_target: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_agent_demo/propertyGraphs/commerce
 ```
 
-Point that line at your own instance and everything follows it: the commands
-below create and drop the database it names, the tools read and write there, and
-the agent bills Gemini to the same project unless `GOOGLE_CLOUD_PROJECT` is
-already set. There is nothing else to keep in step.
+`my-project` and `my-instance` are placeholders. Every command and transcript
+below shows them in place of the project and instance the captured runs used.
+Point this line at your own project and instance, and everything follows it:
+the commands below create and drop the database it names, the tools read and
+write there, and the agent bills Gemini to the same project unless
+`GOOGLE_CLOUD_PROJECT` is already set. There is nothing else to keep in step.
 
 Both files sit in a `kcmd` workspace (`catalog.yaml` scopes it and names
 `spanner` as the default profile), so the CLI and the agent read the same two
@@ -171,7 +173,7 @@ again.
 ```console
 $ ../../../dist/kcmd action list
 Model 'commerce' (commerce_demo), profile 'spanner':
-  store: sqlgen-testing/graph-unified-solution-demo/semantic_agent_demo
+  store: my-project/my-instance/semantic_agent_demo
   IssueCredit: Credit a customer against one order -- a late delivery, a coupon, a shipping charge applied in error. The credit is added as a negative line and the order total is recomputed from the lines.
     parameters: order (Order, reference), amount (Decimal), memo (String)
     executor:   sql
@@ -196,7 +198,7 @@ The action runs from the command line before any agent exists:
 
 ```console
 $ ../../../dist/kcmd action run IssueCredit --arg order=12346 --arg amount=3.00 --arg memo="Coupon applied late"
-Running 'IssueCredit' on projects/sqlgen-testing/instances/graph-unified-solution-demo/databases/semantic_agent_demo...
+Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
   order: '12346' -> Order 12346
 Committed at 2026-09-12T20:46:28.033336Z.
 ```
@@ -209,7 +211,7 @@ transaction. Read it back with plain SQL:
 
 ```console
 $ gcloud spanner databases execute-sql semantic_agent_demo \
-    --instance=graph-unified-solution-demo --project=sqlgen-testing \
+    --instance=my-instance --project=my-project \
     --sql="SELECT order_id, placed_on, total FROM Orders ORDER BY order_id"
 order_id  placed_on   total
 12345     2026-09-07  165.85
@@ -225,7 +227,7 @@ an API key, a language model, or a line of agent code:
 ```console
 $ ../../../dist/kcmd agent tools
 Model 'commerce' (commerce_demo), profile 'spanner':
-  store: sqlgen-testing/graph-unified-solution-demo/semantic_agent_demo
+  store: my-project/my-instance/semantic_agent_demo
 
   action  issue_credit  (IssueCredit)
       Credit a customer against one order -- a late delivery, a coupon, a
@@ -420,7 +422,7 @@ Check it with SQL:
 
 ```console
 $ gcloud spanner databases execute-sql semantic_agent_demo \
-    --instance=graph-unified-solution-demo --project=sqlgen-testing \
+    --instance=my-instance --project=my-project \
     --sql="SELECT line_item_id, order_id, type, amount, memo FROM LineItem WHERE order_id = 12345 ORDER BY type"
 line_item_id                          order_id  type    amount  memo
 17d5bf3c-624a-48f6-9556-8243df7c71b7  12345     credit  -30     Credit for charged shipping fee on Labor Day order
