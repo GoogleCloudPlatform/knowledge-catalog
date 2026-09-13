@@ -30,14 +30,14 @@
  * model declares should not vanish from a listing of what the model declares.
  */
 
-import * as spanner from '../gcp/spanner';
-
 import {Action, Entity, SemanticModel} from './ir';
 import {
   ActionHandler,
   ActionOutcome,
   bindScalar,
   runAction,
+  runtimeClient,
+  SemanticRuntime,
   whyRefusedWithoutRunning,
 } from './runtime';
 import {spannerTable} from './spanner';
@@ -116,8 +116,8 @@ export interface ToolResult {
 
 
 export interface ActionToolOptions {
-  model: SemanticModel;
-  client: spanner.SpannerDataClient;
+  /** The model to derive tools from, and the store they would run against. */
+  runtime: SemanticRuntime;
   /**
    * Supplies the writes for an action whose executor lives in another system.
    * Without one, only a `sql` executor is runnable, because the runtime will
@@ -134,7 +134,8 @@ export interface ActionToolOptions {
  * agent over a read-only model has nothing to call.
  */
 export function actionTools(opts: ActionToolOptions): ActionTool[] {
-  return (opts.model.actions ?? []).map(action => toolFor(action, opts));
+  return (opts.runtime.model.actions ?? [])
+      .map(action => toolFor(action, opts));
 }
 
 
@@ -150,20 +151,24 @@ function toolFor(action: Action, opts: ActionToolOptions): ActionTool {
   // Asked of the runtime rather than worked out again here. Two copies of this
   // rule drift, and neither direction of the drift is visible: a tool said to
   // be runnable that refuses every call, or one withheld that would have run.
-  const blocked =
-      whyRefusedWithoutRunning(opts.model, action, handler) ?? undefined;
+  // Two ways a call cannot go through, reported in the order that helps: what
+  // is wrong with THIS action first, since it names something to fix in the
+  // model, then the runtime having no store, which is the same sentence on
+  // every tool and says nothing about this one.
+  const model = opts.runtime.model;
+  const blocked = whyRefusedWithoutRunning(model, action, handler) ??
+      noStore(opts.runtime) ?? undefined;
   const tool: ActionTool = {
     name: snakeCase(action.name),
     actionName: action.name,
-    description: toolDescription(action, opts.model, blocked),
+    description: toolDescription(action, model, blocked),
     parameters: action.parameters.map(toolParameter),
     runnable: !blocked,
     async invoke(args: Record<string, unknown>): Promise<ToolResult> {
       const outcome = await runAction({
-        model: opts.model,
+        runtime: opts.runtime,
         actionName: action.name,
         args,
-        client: opts.client,
         handler,
       });
       return describeOutcome(outcome);
@@ -382,8 +387,8 @@ export interface EntityTool {
 
 
 export interface EntityToolOptions {
-  model: SemanticModel;
-  client: spanner.SpannerDataClient;
+  /** The model to derive lookups from, and the store they would read. */
+  runtime: SemanticRuntime;
   /** Most rows one call returns. Defaults to 50. */
   rowLimit?: number;
 }
@@ -408,7 +413,8 @@ const DEFAULT_ROW_LIMIT = 50;
  * reaches the SQL text.
  */
 export function entityTools(opts: EntityToolOptions): EntityTool[] {
-  return (opts.model.entities ?? []).map(entity => lookupFor(entity, opts));
+  return (opts.runtime.model.entities ?? [])
+      .map(entity => lookupFor(entity, opts));
 }
 
 
@@ -457,7 +463,7 @@ export function modelTools(opts: ActionToolOptions&EntityToolOptions):
         distinct(`lookup_${snakeCase(tool.entityName)}`, taken) :
         distinct(tool.name, taken);
   }
-  return {lookups, actions, instruction: instructionFor(opts.model)};
+  return {lookups, actions, instruction: instructionFor(opts.runtime.model)};
 }
 
 
@@ -544,7 +550,7 @@ function distinct(base: string, taken: Set<string>): string {
 
 function lookupFor(entity: Entity, opts: EntityToolOptions): EntityTool {
   const bound = boundFields(entity);
-  const unavailable = whyUnreadable(entity, bound);
+  const unavailable = whyUnreadable(entity, bound) ?? noStore(opts.runtime);
   return {
     name: `find_${snakeCase(entity.name)}`,
     entityName: entity.name,
@@ -561,6 +567,16 @@ function lookupFor(entity: Entity, opts: EntityToolOptions): EntityTool {
       return await runLookup(entity, bound, args, opts);
     },
   };
+}
+
+
+// Why nothing derived from this runtime can be called, or null when it can
+// be. Both halves of a runtime are needed to make a call: a model says what to
+// do and a store is where it happens, and a runtime carrying only the first is
+// a model an agent can read about but not use.
+function noStore(runtime: SemanticRuntime): string|null {
+  const client = runtimeClient(runtime);
+  return 'error' in client ? client.error : null;
 }
 
 
@@ -709,10 +725,13 @@ async function runLookup(
   // permission, no such table, no session to be had -- is not a different kind
   // of thing, and throwing would reach an adapter as a crashed tool call
   // rather than as something the agent can report and work around.
+  const client = runtimeClient(opts.runtime);
+  if ('error' in client) return {...empty, problem: client.error};
+
   let rows: Array<Array<string|null>>;
   try {
-    rows = await opts.client.withSession(async sessionName => {
-      const res = await opts.client.executeQuery(
+    rows = await client.withSession(async sessionName => {
+      const res = await client.executeQuery(
           sessionName, {sql, params, paramTypes});
       if (res.status < 200 || res.status >= 300) {
         throw new Error(res.message ?? `${res.status}`);

@@ -48,6 +48,53 @@ import {
 } from './ir';
 import {spannerTable} from './spanner';
 import {quoteIfReserved, referencedParameters} from './sql_identifiers';
+import {spannerClientFor, Store} from './store';
+
+
+/**
+ * A semantic model made operational: the model as authored under one binding
+ * profile, and the store it runs against.
+ *
+ * The pair is the unit every caller works in. A model alone says what things
+ * mean; a store alone is a database with no idea what its tables are for.
+ * `runAction` and the agent tool derivations all take one of these, so no
+ * caller can pair a model with a store from a different profile by accident.
+ */
+export interface SemanticRuntime {
+  model: SemanticModel;
+  /**
+   * The model file this was authored in -- the `.yaml` basename, not a path.
+   * Carried so a message about this model can point at the author's file.
+   */
+  document: string;
+  /** Where the model's data lives. Absent when this profile binds no store. */
+  store?: Store;
+  /** Why there is no store. Set exactly when `store` is absent. */
+  storeError?: string;
+  /** Which binding profile produced this. Provenance, for messages. */
+  profile: string;
+  /** The entry group the model is scoped to. */
+  entryGroup: string;
+}
+
+
+/**
+ * The Spanner client a runtime can run statements on, or why it has none.
+ * Two different answers collapse into one question here -- the profile binds
+ * no store at all, or binds one this path cannot execute against -- and each
+ * sends the reader somewhere different, so each keeps its own wording.
+ */
+export function runtimeClient(runtime: SemanticRuntime):
+    spanner.SpannerDataClient|{error: string} {
+  if (!runtime.store) {
+    return {
+      error: runtime.storeError ??
+          `Model '${runtime.model.name}' has no store under profile '${
+              runtime.profile}'.`,
+    };
+  }
+  return spannerClientFor(runtime.store);
+}
 
 
 // An entity-typed argument, resolved to the row it denotes.
@@ -106,10 +153,9 @@ export type ActionOutcome = {
 
 
 export interface RunActionOptions {
-  model: SemanticModel;
+  runtime: SemanticRuntime;
   actionName: string;
   args: Record<string, unknown>;
-  client: spanner.SpannerDataClient;
   // Supplies the writes for an action whose executor lives in another system.
   // Omit it for a `sql` executor, whose writes are in the model.
   handler?: ActionHandler;
@@ -122,7 +168,8 @@ export interface RunActionOptions {
 // reason and try again.
 export async function runAction(opts: RunActionOptions):
     Promise<ActionOutcome> {
-  const {model, client, args} = opts;
+  const {model} = opts.runtime;
+  const args = opts.args;
   const action = (model.actions ?? []).find(a => a.name === opts.actionName);
   if (!action) {
     return {
@@ -134,6 +181,10 @@ export async function runAction(opts: RunActionOptions):
   // fails without having opened a transaction at all.
   const refusal = whyRefusedWithoutRunning(model, action, opts.handler);
   if (refusal) return {status: 'error', message: refusal};
+
+  // Also before touching the store, because there may be none to touch.
+  const client = runtimeClient(opts.runtime);
+  if ('error' in client) return {status: 'error', message: client.error};
 
   // Whether a transaction was ever opened. A session that could not be
   // created, or a `beginReadWrite` that threw, fails with nothing to roll

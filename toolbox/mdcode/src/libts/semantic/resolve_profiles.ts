@@ -23,6 +23,8 @@
 //     availability report. Availability propagates UP the dependency graph from
 //     the fields a profile binds.
 
+import * as yaml from 'yaml';
+
 import {Action, fieldBinding, Metric, Relationship, SemanticModel} from './ir';
 import {
   blankStringLiterals,
@@ -517,4 +519,32 @@ function connectingRelationshipKept(
   const set = new Set(refEntities);
   return kept.some(
       r => set.has(r.source.entity) && set.has(r.destination.entity));
+}
+
+
+/**
+ * Parses a logical model document and a binding profile document, merges the
+ * profile onto the model by name, and returns the merged authoring text plus
+ * any merge warnings. Shared by every path that reads a profile -- push,
+ * `profiles`, and creating a runtime -- so the three parse, merge, warn and
+ * fail identically; on a parse error or a binding-contract violation it
+ * returns `error` for the caller to surface.
+ */
+export function mergeProfileOntoDoc(
+    logicalText: string, profileText: string,
+    profileName: string): {text: string; warnings: string[]}|{error: string} {
+  let logicalDoc: unknown;
+  let profileDoc: unknown;
+  try {
+    logicalDoc = yaml.parse(logicalText);
+    profileDoc = yaml.parse(profileText);
+  } catch (err: any) {
+    return {
+      error: `could not parse the model or profile '${profileName}': ${
+          err?.message ?? err}`,
+    };
+  }
+  const merged = mergeProfile(logicalDoc, profileDoc, profileName);
+  if (merged.error) return {error: merged.error};
+  return {text: yaml.stringify(merged.doc), warnings: merged.warnings};
 }

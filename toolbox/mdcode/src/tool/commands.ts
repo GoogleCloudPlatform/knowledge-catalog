@@ -20,18 +20,15 @@ import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
-import {runAction} from '../libts/semantic/runtime';
+import {runAction, runtimeClient, SemanticRuntime} from '../libts/semantic/runtime';
 import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryDataSources, validatePushRequirements, validateRunnable} from '../libts/semantic/validate';
-import {
-  mergeProfileOntoDoc,
-  openWorkspace,
-  spannerStore,
-  Workspace,
-} from '../libts/semantic/workspace';
+import {createSemanticRuntimes} from '../libts/semantic/open';
+import {Store} from '../libts/semantic/store';
 import {
   AvailabilityReport,
   DEFAULT_PROFILE,
+  mergeProfileOntoDoc,
   pruneUnavailable,
 } from '../libts/semantic/resolve_profiles';
 import {Sources} from '../libts/source';
@@ -1205,15 +1202,14 @@ export async function action(
   const named =
       typeof options.profile === 'string' ? options.profile : undefined;
 
-  const opened = await openWorkspace({profile: named, ctx});
+  const opened = await createSemanticRuntimes({profile: named, ctx});
   if ('error' in opened) {
     console.error(`Error: ${opened.error}`);
     return 1;
   }
 
-  return command === 'list' ?
-      listActions(opened, ctx, options) :
-      await runOneAction(opened.models, ctx, name, options);
+  return command === 'list' ? listActions(opened, options) :
+                              await runOneAction(opened, ctx, name, options);
 }
 
 
@@ -1221,7 +1217,7 @@ export async function action(
 // the command that runs it, filled in with the declared parameters, so reading
 // the listing is enough to make the call without going back to the YAML.
 function listActions(
-    ws: Workspace, ctx: context.ApiContext, options: ActionOptions): number {
+    runtimes: SemanticRuntime[], options: ActionOptions): number {
   // `--store` answers one question -- where would a run land -- on one line
   // with nothing else on it, so a script can read it. Creating, seeding and
   // dropping the database an action writes to has to address the database the
@@ -1231,36 +1227,33 @@ function listActions(
     // One line, because the caller is `STORE=$(kcmd action list --store)` and
     // a second line makes that variable address the wrong database. A scope
     // holding several models has no single answer, so it says so instead.
-    if (ws.models.length > 1) {
+    if (runtimes.length > 1) {
       console.error(
-          `Error: this scope holds ${ws.models.length} models, which may ` +
+          `Error: this scope holds ${runtimes.length} models, which may ` +
           `name different databases, so --store has no single answer. Narrow ` +
           `the scope to one model.`);
       return 1;
     }
-    for (const {model} of ws.models) {
-      const store = spannerStore(model, ctx);
-      if ('error' in store) {
-        console.error(`Error: ${store.error}`);
+    for (const {store, storeError} of runtimes) {
+      if (!store) {
+        console.error(`Error: ${storeError}`);
         return 1;
       }
-      console.log(`${store.project}/${store.instance}/${store.database}`);
+      console.log(storeLine(store));
     }
     return 0;
   }
 
-  for (const {model} of ws.models) {
-    console.log(`Model '${model.name}' (${ws.entryGroup}), profile '${
-        ws.profile}':`);
+  for (const {model, store, storeError, profile, entryGroup} of runtimes) {
+    console.log(
+        `Model '${model.name}' (${entryGroup}), profile '${profile}':`);
     // Where a run lands, said once at the top rather than left to be inferred
     // from a profile file the reader would have to go open.
-    const store = spannerStore(model, ctx);
-    if ('error' in store) {
+    if (!store) {
       console.log('  store: unavailable under this profile');
-      console.log(wrapTo(store.error, BODY_INDENT));
+      console.log(wrapTo(storeError ?? '', BODY_INDENT));
     } else {
-      console.log(
-          `  store: ${store.project}/${store.instance}/${store.database}`);
+      console.log(`  store: ${storeLine(store)}`);
     }
     const actions = model.actions ?? [];
     if (!actions.length) {
@@ -1331,36 +1324,34 @@ export async function agent(
   const ctx = context.ApiContext.default();
   const named =
       typeof options.profile === 'string' ? options.profile : undefined;
-  const opened = await openWorkspace({profile: named, ctx});
+  const opened = await createSemanticRuntimes({profile: named, ctx});
   if ('error' in opened) {
     console.error(`Error: ${opened.error}`);
     return 1;
   }
 
   let incomplete = false;
-  for (const {model} of opened.models) {
+  for (const runtime of opened) {
+    const {model, store, storeError, profile, entryGroup} = runtime;
     // A tool is a thing that can be called, and calling one needs a store, so
     // there is no honest listing without one. A model whose profile supplies
     // no store offers no tools, which is reported for that model rather than
     // ending the command: the rest of the scope still has an answer, and a
     // partial listing followed by an error is the one outcome a reader cannot
     // interpret.
-    const store = spannerStore(model, ctx);
-    console.log(`Model '${model.name}' (${opened.entryGroup}), profile '${
-        opened.profile}':`);
-    if ('error' in store) {
+    console.log(
+        `Model '${model.name}' (${entryGroup}), profile '${profile}':`);
+    if (!store) {
       console.log('  offers no tools under this profile.');
-      console.log(wrapTo(store.error, BODY_INDENT));
+      console.log(wrapTo(storeError ?? '', BODY_INDENT));
       console.log();
       incomplete = true;
       continue;
     }
-    console.log(
-        `  store: ${store.project}/${store.instance}/${store.database}`);
+    console.log(`  store: ${storeLine(store)}`);
     console.log();
 
-    const {lookups, actions, instruction} =
-        modelTools({model, client: store.client});
+    const {lookups, actions, instruction} = modelTools({runtime});
     for (const tool of actions) printActionTool(tool);
     for (const tool of lookups) printLookupTool(tool);
     console.log('  instruction:');
@@ -1368,6 +1359,17 @@ export async function agent(
     console.log();
   }
   return incomplete ? 1 : 0;
+}
+
+
+// How a store is written down for a reader: the resource it addresses, with
+// the backend named when it is not the Spanner one an action expects. Shared
+// by `--store`, which a script reads, and the listing header a person reads,
+// so the two never disagree about where a run would land.
+function storeLine(store: Store): string {
+  return store.kind === 'spanner' ?
+      `${store.project}/${store.instance}/${store.database}` :
+      `bigquery:${store.project}/${store.dataset}`;
 }
 
 
@@ -1473,8 +1475,8 @@ function runLine(a: Action): string {
 
 // Runs one action against the store its model's deployment target names.
 async function runOneAction(
-    models: LoadedModel[], ctx: context.ApiContext, name: string|undefined,
-    options: ActionOptions): Promise<number> {
+    runtimes: SemanticRuntime[], ctx: context.ApiContext,
+    name: string|undefined, options: ActionOptions): Promise<number> {
   if (!name) {
     console.error(
         'Error: `kcmd action run` needs an action name; `kcmd action list` ' +
@@ -1483,10 +1485,10 @@ async function runOneAction(
   }
 
   const declaring =
-      models.filter(m => (m.model.actions ?? []).some(a => a.name === name));
+      runtimes.filter(r => (r.model.actions ?? []).some(a => a.name === name));
   if (!declaring.length) {
     const known =
-        models.flatMap(m => (m.model.actions ?? []).map(a => a.name)).sort();
+        runtimes.flatMap(r => (r.model.actions ?? []).map(a => a.name)).sort();
     console.error(
         `Error: no model in this scope declares an action '${name}'` +
         (known.length ? `; declared: ${known.join(', ')}.` : '.'));
@@ -1495,11 +1497,11 @@ async function runOneAction(
   if (declaring.length > 1) {
     console.error(
         `Error: '${name}' is declared by ${declaring.length} models (${
-            declaring.map(m => m.model.name).join(', ')}), so which one to ` +
+            declaring.map(r => r.model.name).join(', ')}), so which one to ` +
         `run is ambiguous.`);
     return 1;
   }
-  const model = declaring[0].model;
+  const runtime = declaring[0];
 
   // `list` reads the model as authored and is happy with whatever it finds.
   // `run` executes it, and the runtime's refusal gate trusts what validation
@@ -1511,7 +1513,8 @@ async function runOneAction(
   // Only the model being run. A scope holds many documents, and a typo in one
   // the run will not touch is a real error to fix but not a reason to refuse
   // this call -- refusing on it would report a model the reader did not name.
-  const invalid = validateRunnable([declaring[0]]);
+  const invalid =
+      validateRunnable([{document: runtime.document, model: runtime.model}]);
   if (invalid.length) {
     for (const e of invalid) console.error(`Error: ${e}`);
     return 1;
@@ -1523,15 +1526,22 @@ async function runOneAction(
     return 1;
   }
 
-  const store = spannerStore(model, ctx);
-  if ('error' in store) {
-    console.error(`Error: ${store.error}`);
+  if (!runtime.store) {
+    console.error(`Error: ${runtime.storeError}`);
     return 1;
   }
 
-  console.log(`Running '${name}' on ${store.client.database}...`);
-  const outcome = await runAction(
-      {model, actionName: name, args: parsed.args, client: store.client});
+  // Before the banner, because the banner says where the run lands and a
+  // store no statement can reach is not somewhere it lands.
+  const client = runtimeClient(runtime);
+  if ('error' in client) {
+    console.error(`Error: ${client.error}`);
+    return 1;
+  }
+
+  console.log(`Running '${name}' on ${runtime.store.name}...`);
+  const outcome =
+      await runAction({runtime, actionName: name, args: parsed.args});
   if (outcome.status === 'error') {
     console.error(`Error: ${outcome.message}`);
     return 1;

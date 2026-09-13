@@ -81,7 +81,7 @@ See [Run it](actions.md#7-run-it).
 |------|--------|
 | `--arg <name>=<value>` | Bind one action parameter. Repeat the flag for each one; the value is text, parsed against the parameter's declared ontology type. `run` only. |
 | `--profile [name]` | Read the model under this binding profile. Its deployment target names the database the action runs against, so this is how you change stores. Defaults to `default_profile`, else the model's inline bindings. |
-| `--store` | Print only where a run would land, as `project/instance/database`, on one line and nothing else, for a script to read rather than parse back out of the listing. Errors when the scope holds more than one model, since those may name different databases. `list` only. |
+| `--store` | Print only where a run would land, on one line and nothing else, for a script to read rather than parse back out of the listing: `project/instance/database` for a Spanner store, `bigquery:project/dataset` for a BigQuery one. Errors when the scope holds more than one model, since those may name different databases. `list` only. |
 
 ### agent
 

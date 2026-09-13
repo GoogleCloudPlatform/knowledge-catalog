@@ -16,12 +16,34 @@ import * as path from 'node:path';
 import {actionTools, callableTools, describeOutcome, entityTools, modelTools} from '../../../src/libts/semantic/agent_tools';
 import {Action, Constraint, Entity, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
+import {SemanticRuntime} from '../../../src/libts/semantic/runtime';
 import * as spanner from '../../../src/libts/gcp/spanner';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
 // The tools never touch it: every test here reads the derivation, not a call.
 const NO_CLIENT = {} as any;
+
+// A model paired with a store, which is what the derivations take. The store
+// is real enough to be there -- a runtime carrying none yields tools that
+// refuse, which is its own test below -- and its client answers only the
+// tests that make a call.
+function rt(model: SemanticModel, client: unknown = NO_CLIENT): SemanticRuntime {
+  return {
+    model,
+    document: 'test',
+    store: {
+      kind: 'spanner',
+      name: 'projects/p/instances/i/databases/d',
+      project: 'p',
+      instance: 'i',
+      database: 'd',
+      client: client as spanner.SpannerDataClient,
+    },
+    profile: 'default',
+    entryGroup: 'eg',
+  };
+}
 
 
 // A store that records the statements it is asked for and answers nothing.
@@ -93,7 +115,7 @@ const RUNNABLE: Partial<Action> = {
 
 describe('action tools', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
-  const tools = actionTools({model, client: NO_CLIENT});
+  const tools = actionTools({runtime: rt(model)});
 
   test('one tool per action, named the way tool APIs expect', () => {
     expect(tools).toHaveLength(1);
@@ -141,7 +163,7 @@ describe('action tools', () => {
 
   test('a model with no actions yields no write tools', () => {
     const readOnly: SemanticModel = {...model, actions: []};
-    expect(actionTools({model: readOnly, client: NO_CLIENT})).toEqual([]);
+    expect(actionTools({runtime: rt(readOnly)})).toEqual([]);
   });
 
   test('a tool offers no way to approve anything', () => {
@@ -164,7 +186,7 @@ describe('a tool this runtime would refuse', () => {
 
   test('an action runnable here is marked so, with no excuse attached', () => {
     const [tool] = actionTools(
-        {model: withExecutor(model, RUNNABLE), client: NO_CLIENT});
+        {runtime: rt(withExecutor(model, RUNNABLE))});
     expect(tool.runnable).toBe(true);
     expect(tool.unavailable).toBeUndefined();
     expect(tool.description).not.toContain('will not work');
@@ -173,7 +195,7 @@ describe('a tool this runtime would refuse', () => {
   test('a guarded action is not runnable while nothing checks the guard', () => {
     const guarded = withExecutor(
         model, {...RUNNABLE, guards: ['RequestedQuantityIsPositive']});
-    const [tool] = actionTools({model: guarded, client: NO_CLIENT});
+    const [tool] = actionTools({runtime: rt(guarded)});
     expect(tool.runnable).toBe(false);
     expect(tool.unavailable).toContain('RequestedQuantityIsPositive');
     expect(tool.unavailable).toContain('refused rather than run unchecked');
@@ -181,7 +203,7 @@ describe('a tool this runtime would refuse', () => {
 
   test('a remote executor is not runnable without a handler', () => {
     // The fixture's own action: MCP commits outside the transaction.
-    const [tool] = actionTools({model, client: NO_CLIENT});
+    const [tool] = actionTools({runtime: rt(model)});
     expect(tool.runnable).toBe(false);
     expect(tool.unavailable).toContain('MCP');
     expect(tool.unavailable).toContain('rolled back');
@@ -191,7 +213,7 @@ describe('a tool this runtime would refuse', () => {
     const handler = async () => ({statements: []});
     const ungated = withExecutor(model, {guards: []});
     const [tool] =
-        actionTools({model: ungated, client: NO_CLIENT, handler});
+        actionTools({runtime: rt(ungated), handler});
     expect(tool.runnable).toBe(true);
   });
 
@@ -199,14 +221,14 @@ describe('a tool this runtime would refuse', () => {
     // An executor is a physical facet. The action is fine; this binding
     // simply does not perform it.
     const unbound = withExecutor(model, {executor: undefined, guards: []});
-    const [tool] = actionTools({model: unbound, client: NO_CLIENT});
+    const [tool] = actionTools({runtime: rt(unbound)});
     expect(tool.runnable).toBe(false);
     expect(tool.unavailable).toContain('no executor');
     expect(tool.unavailable).toContain('somewhere else');
   });
 
   test('the reason reaches the description, where a caller will read it', () => {
-    const [tool] = actionTools({model, client: NO_CLIENT});
+    const [tool] = actionTools({runtime: rt(model)});
     expect(tool.description).toContain('will not work');
     expect(tool.description).toContain('Report that rather than retrying');
   });
@@ -235,7 +257,7 @@ describe('what counts as runnable is the runtime\'s answer, not a copy', () => {
       onViolation: 'warn',
     };
     const [tool] =
-        actionTools({model: guardedBy(advisory, 'AmountIsLarge'), client: NO_CLIENT});
+        actionTools({runtime: rt(guardedBy(advisory, 'AmountIsLarge'))});
     expect(tool.runnable).toBe(true);
     expect(tool.unavailable).toBeUndefined();
   });
@@ -245,7 +267,7 @@ describe('what counts as runnable is the runtime\'s answer, not a copy', () => {
     // guess about. A tool that called it anyway would fail every time.
     const other: Constraint = {name: 'SomethingElse', expression: 'x > 0'};
     const [tool] =
-        actionTools({model: guardedBy(other, 'NoSuchRule'), client: NO_CLIENT});
+        actionTools({runtime: rt(guardedBy(other, 'NoSuchRule'))});
     expect(tool.runnable).toBe(false);
     expect(tool.unavailable).toContain('NoSuchRule');
   });
@@ -272,7 +294,7 @@ describe('a binding this runtime cannot fill is refused before the store', () =>
               e),
     };
     const [tool] = actionTools(
-        {model: withExecutor(composite, RUNNABLE), client: NO_CLIENT});
+        {runtime: rt(withExecutor(composite, RUNNABLE))});
     expect(tool.runnable).toBe(false);
     expect(tool.unavailable).toContain('2 parts');
   });
@@ -301,7 +323,7 @@ describe('a binding this runtime cannot fill is refused before the store', () =>
               } :
               e),
     };
-    const [tool] = actionTools({model: typed, client: NO_CLIENT});
+    const [tool] = actionTools({runtime: rt(typed)});
     expect(tool.runnable).toBe(false);
     expect(tool.unavailable).toContain('UUID');
   });
@@ -322,7 +344,7 @@ describe('a binding this runtime cannot fill is refused before the store', () =>
              },
            },
          });
-         const [tool] = actionTools({model: creates, client: NO_CLIENT});
+         const [tool] = actionTools({runtime: rt(creates)});
          expect(tool.runnable).toBe(true);
        });
 
@@ -337,8 +359,7 @@ describe('a binding this runtime cannot fill is refused before the store', () =>
               e),
     };
     const [tool] = actionTools({
-      model: withExecutor(composite, {guards: []}),
-      client: NO_CLIENT,
+      runtime: rt(withExecutor(composite, {guards: []})),
       handler: async () => ({statements: []}),
     });
     expect(tool.runnable).toBe(true);
@@ -360,7 +381,7 @@ describe('what a tool says it is gated by', () => {
     };
     const base = withExecutor(model, {...RUNNABLE, guards: ['AmountIsLarge']});
     const [tool] = actionTools(
-        {model: {...base, constraints: [advisory]}, client: NO_CLIENT});
+        {runtime: rt({...base, constraints: [advisory]})});
     expect(tool.runnable).toBe(true);
     expect(tool.description).not.toContain('gated by');
   });
@@ -373,7 +394,7 @@ describe('what a tool says it is gated by', () => {
     };
     const base = withExecutor(model, {...RUNNABLE, guards: ['QuantityIsSane']});
     const [tool] = actionTools(
-        {model: {...base, constraints: [blocking]}, client: NO_CLIENT});
+        {runtime: rt({...base, constraints: [blocking]})});
     expect(tool.description).toContain('gated by QuantityIsSane');
   });
 });
@@ -384,7 +405,7 @@ describe('a lookup that could not return a row says so up front', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
 
   function lookupFor(entities: Entity[], name: string) {
-    return entityTools({model: {...model, entities}, client: NO_CLIENT})
+    return entityTools({runtime: rt({...model, entities})})
         .find(t => t.entityName === name)!;
   }
 
@@ -434,8 +455,7 @@ describe('a handler does not displace an action\'s own statements', () => {
   test('the model\'s DML runs, not the handler\'s', async () => {
     const store = new FakeStore();
     const [tool] = actionTools({
-      model: withExecutor(model, RUNNABLE),
-      client: store.client,
+      runtime: rt(withExecutor(model, RUNNABLE), store.client),
       handler: async () => ({statements: [{sql: HANDLER_SQL}]}),
     });
     const result = await tool.invoke({customer: 'Alice', quantity: 2});
@@ -451,8 +471,7 @@ describe('a handler does not displace an action\'s own statements', () => {
          // there is nothing this runtime can run.
          const store = new FakeStore();
          const [tool] = actionTools({
-           model: withExecutor(model, {guards: []}),
-           client: store.client,
+           runtime: rt(withExecutor(model, {guards: []}), store.client),
            handler: async () => ({statements: [{sql: HANDLER_SQL}]}),
          });
          expect(tool.runnable).toBe(true);
@@ -465,7 +484,7 @@ describe('a handler does not displace an action\'s own statements', () => {
 
 describe('entity tools', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
-  const tools = entityTools({model, client: NO_CLIENT});
+  const tools = entityTools({runtime: rt(model)});
 
   test('one lookup tool per entity', () => {
     expect(tools.map(t => t.name)).toEqual(model.entities.map(
@@ -515,7 +534,7 @@ semantic_model:
             expression: type
           - {name: amount, datatype: Decimal, expression: amount}
 `).models[0];
-  const [lineItem] = entityTools({model, client: NO_CLIENT});
+  const [lineItem] = entityTools({runtime: rt(model)});
 
   test("the field's own description leads", () => {
     const type = lineItem.parameters.find(p => p.name === 'type')!;
@@ -561,7 +580,7 @@ describe('how a lookup filter reaches the store', () => {
 
   test('the column is compared as itself, not cast to text', async () => {
     const store = new FakeStore();
-    const [tool] = entityTools({model: typedOrders(), client: store.client});
+    const [tool] = entityTools({runtime: rt(typedOrders(), store.client)});
     await tool.invoke({o_orderkey: '12345'});
 
     const [stmt] = store.statements;
@@ -573,7 +592,7 @@ describe('how a lookup filter reaches the store', () => {
   test('a value the field\'s type has no room for is reported, not matched',
        async () => {
          const store = new FakeStore();
-         const [tool] = entityTools({model: typedOrders(), client: store.client});
+         const [tool] = entityTools({runtime: rt(typedOrders(), store.client)});
          const rows = await tool.invoke({o_orderkey: 'not-a-number'});
          expect(rows.problem).toContain('Integer');
          expect(rows.problem).toContain('No orders has o_orderkey');
@@ -587,7 +606,7 @@ describe('how a lookup filter reaches the store', () => {
     // of the first rows, which comes back to the agent looking like an answer.
     // `bindScalar` draws the line in the same place for the write path.
     const store = new FakeStore();
-    const [tool] = entityTools({model, client: store.client});
+    const [tool] = entityTools({runtime: rt(model, store.client)});
     await tool.invoke({o_orderkey: ''});
 
     const [stmt] = store.statements;
@@ -597,7 +616,7 @@ describe('how a lookup filter reaches the store', () => {
 
   test('an omitted filter is not a filter', async () => {
     const store = new FakeStore();
-    const [tool] = entityTools({model, client: store.client});
+    const [tool] = entityTools({runtime: rt(model, store.client)});
     await tool.invoke({o_orderkey: undefined});
 
     const [stmt] = store.statements;
@@ -628,7 +647,7 @@ describe('a lookup the store will not answer', () => {
     const store = new FakeStore();
     store.queryStatus = 403;
     store.queryMessage = 'caller lacks spanner.databases.select';
-    const [tool] = entityTools({model: bound(), client: store.client});
+    const [tool] = entityTools({runtime: rt(bound(), store.client)});
     const rows = await tool.invoke({});
     expect(rows.problem).toContain('Could not read orders');
     expect(rows.problem).toContain('spanner.databases.select');
@@ -638,7 +657,7 @@ describe('a lookup the store will not answer', () => {
   test('a session that cannot be opened is reported too', async () => {
     const store = new FakeStore();
     store.sessionThrows = true;
-    const [tool] = entityTools({model: bound(), client: store.client});
+    const [tool] = entityTools({runtime: rt(bound(), store.client)});
     const rows = await tool.invoke({});
     expect(rows.problem).toContain('Could not read orders');
     expect(rows.problem).toContain('403');
@@ -659,7 +678,7 @@ describe('one name space for everything a model offers', () => {
       ...model,
       actions: [{...model.actions![0], name: 'FindCustomer'}],
     };
-    const {lookups, actions} = modelTools({model: clashing, client: NO_CLIENT});
+    const {lookups, actions} = modelTools({runtime: rt(clashing)});
     expect(actions.map(t => t.name)).toEqual(['find_customer']);
     expect(lookups.map(t => t.name)).toEqual(['find_orders', 'lookup_customer']);
   });
@@ -672,12 +691,12 @@ describe('one name space for everything a model offers', () => {
         {...model.actions![0], name: 'issue-credit'},
       ],
     };
-    const {actions} = modelTools({model: twins, client: NO_CLIENT});
+    const {actions} = modelTools({runtime: rt(twins)});
     expect(actions.map(t => t.name)).toEqual(['issue_credit', 'issue_credit_2']);
   });
 
   test('nothing is renamed when nothing collides', () => {
-    const {lookups, actions} = modelTools({model, client: NO_CLIENT});
+    const {lookups, actions} = modelTools({runtime: rt(model)});
     expect(actions.map(t => t.name)).toEqual(['place_order']);
     expect(lookups.map(t => t.name)).toEqual(['find_orders', 'find_customer']);
   });
@@ -690,7 +709,7 @@ describe('sorting the tools an adapter can actually offer', () => {
 
   test('everything runnable is offered, lookups before actions', () => {
     const {callable, withheld} =
-        callableTools(modelTools({model: runnable, client: NO_CLIENT}));
+        callableTools(modelTools({runtime: rt(runnable)}));
     expect(callable.map(t => t.name)).toEqual([
       'find_orders', 'find_customer', 'place_order'
     ]);
@@ -709,14 +728,14 @@ describe('sorting the tools an adapter can actually offer', () => {
       }] as Constraint[],
     };
     const {callable, withheld} =
-        callableTools(modelTools({model: guarded, client: NO_CLIENT}));
+        callableTools(modelTools({runtime: rt(guarded)}));
     expect(callable.map(t => t.name)).toEqual(['find_orders', 'find_customer']);
     expect(withheld.map(t => t.name)).toEqual(['place_order']);
     expect(withheld[0].unavailable).toContain('UnderReview');
   });
 
   test('the instruction is carried through untouched', () => {
-    const tools = modelTools({model: runnable, client: NO_CLIENT});
+    const tools = modelTools({runtime: rt(runnable)});
     expect(callableTools(tools).instruction).toBe(tools.instruction);
   });
 });
@@ -730,7 +749,7 @@ describe('the instruction an agent is given comes from the model', () => {
       ...model,
       aiContext: {instructions: 'You work a returns desk for this business.'},
     };
-    const {instruction} = modelTools({model: stated, client: NO_CLIENT});
+    const {instruction} = modelTools({runtime: rt(stated)});
     expect(instruction.startsWith('You work a returns desk for this business.'))
         .toBe(true);
   });
@@ -740,7 +759,7 @@ describe('the instruction an agent is given comes from the model', () => {
          // The half that describes the tools is the derivation's to state: it
          // is a contract this module defines, and a model that says nothing
          // has not thereby withdrawn it.
-         const {instruction} = modelTools({model, client: NO_CLIENT});
+         const {instruction} = modelTools({runtime: rt(model)});
          expect(model.aiContext?.instructions).toBeUndefined();
          expect(instruction).toContain('Never invent an identifier');
          expect(instruction).toContain('lookup tools');
@@ -752,7 +771,7 @@ describe('the instruction an agent is given comes from the model', () => {
       ...model,
       aiContext: {instructions: 'You work a returns desk.'},
     };
-    const {instruction} = modelTools({model: stated, client: NO_CLIENT});
+    const {instruction} = modelTools({runtime: rt(stated)});
     expect(instruction).toContain('You work a returns desk.\n\nNever invent');
   });
 });

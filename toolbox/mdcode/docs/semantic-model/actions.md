@@ -1041,30 +1041,41 @@ at all.
 
 ### Calling it from code
 
-`kcmd agent tools` prints the derivation; `modelTools` returns it. The model
-and the store come from `openWorkspace` and `spannerStore`, the same pair `kcmd
-action` uses, so an agent reads the model the CLI reads, under the same
-profile, with the same merge and the same warnings:
+`kcmd agent tools` prints the derivation; `modelTools` returns it. Both take a
+**semantic runtime**: one model paired with the store the profile binds it to.
+`createSemanticRuntimes` assembles them the way `kcmd action` does, so an agent
+reads the model the CLI reads, under the same profile, with the same merge and
+the same warnings:
 
 ```ts
-import {openWorkspace, spannerStore} from './src/libts/semantic/workspace';
+import {createSemanticRuntimes} from './src/libts/semantic/open';
 import {modelTools, callableTools} from './src/libts/semantic/agent_tools';
 
-const ws = await openWorkspace({profile: 'operational'});
-if ('error' in ws) throw new Error(ws.error);
+const runtimes = await createSemanticRuntimes({profile: 'operational'});
+if ('error' in runtimes) throw new Error(runtimes.error);
 
-const {model} = ws.models[0];
-const store = spannerStore(model);
-if ('error' in store) throw new Error(store.error);
+const runtime = runtimes[0];
+if (!runtime.store) throw new Error(runtime.storeError);
 
-const {callable, withheld, instruction} =
-    callableTools(modelTools({model, client: store.client}));
+const {callable, withheld, instruction} = callableTools(modelTools({runtime}));
 ```
 
-Go through `spannerStore` rather than building a client yourself. It is also
-the check that every entity is bound to a table in the database the profile
-targets, and a lookup derived from a model bound to some other system would
-otherwise read whatever table of that name the store happens to hold.
+One call returns a runtime for every model document in the entry group. Each
+carries the store its deployment target names, the profile it was built under,
+and the document it was authored in, so a message about one model can say which
+file and which profile produced it.
+
+A store is typed by its backend: `runtime.store.kind` is `'spanner'` or
+`'bigquery'`, and only a Spanner store can be written to. A model whose profile
+binds no store at all still gets a runtime, with `storeError` saying why. Its
+tools are still derived, each marked unavailable for that reason, so an agent
+is told what the model offers and why it cannot reach it.
+
+Go through `createSemanticRuntimes` rather than building a client yourself. It
+is also the check that every entity is bound to a table in the store the
+profile targets, and a lookup derived from a model bound to some other system
+would otherwise read whatever table of that name the target store happens to
+hold.
 
 `modelTools` returns `{lookups, actions, instruction}` — the three things the
 listing printed. `callableTools` then sorts both halves into the ones this

@@ -446,8 +446,10 @@ describe('kcmd action run: where the write would go', () => {
         {profile: 'analytical', arg: ['order=12345', 'amount=30']});
     expect(code).toBe(1);
     const out = logs.join('\n');
-    expect(out).toContain('declares no Spanner deployment target');
-    expect(out).toContain('this profile deploys to BigQuery');
+    expect(out).toContain('deploys to the BigQuery dataset');
+    expect(out).toContain("statements run against Spanner");
+    // Refused before the run banner: a dataset is not somewhere a run lands.
+    expect(out).not.toContain('Running');
   });
 
   test('refuses a binding whose sources sit in a different database than ' +
@@ -460,7 +462,8 @@ describe('kcmd action run: where the write would go', () => {
          expect(code).toBe(1);
          const out = logs.join('\n');
          expect(out).toContain(
-             "binds 'Order' to projects/acme-ops/instances/prod/databases/commerce");
+             "binds 'Order' to //spanner.googleapis.com/projects/acme-ops/" +
+             'instances/prod/databases/commerce/tables/Orders');
          expect(out).toContain(
              'deployment target is projects/acme-ops/instances/prod/databases/archive');
          expect(out).toContain('address a table by name alone');
@@ -479,7 +482,9 @@ describe('kcmd action run: where the write would go', () => {
          expect(code).toBe(1);
          const out = logs.join('\n');
          expect(out).toContain("binds 'Order' to acme-analytics.sales.orders");
-         expect(out).toContain('not a table in this database');
+         expect(out).toContain(
+             'deployment target is projects/acme-ops/instances/prod/databases/commerce');
+         expect(out).toContain('address a table by name alone');
        });
 });
 
