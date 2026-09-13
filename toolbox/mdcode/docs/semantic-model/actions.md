@@ -8,10 +8,30 @@ An action does not contain the write. It names the operation, types the
 operation's inputs against the ontology, and says which concepts the call
 changes. It also points at the **executor** that performs it — an MCP tool, a
 REST endpoint, a gRPC method, or DML — which is the one physical part of an
-action, and so may come from a binding profile rather than the model.
-Publishing it puts the
-operation in the same place as the data it acts on, so an agent that discovers
-the model discovers what it can do as well as what it can ask.
+action, and so may come from a binding profile rather than the model. Publishing
+it puts the operation in the same place as the data it acts on, so an agent that
+discovers the model discovers what it can do as well as what it can ask.
+
+Two files decide everything below. The model says what the operation is; a
+binding profile says where it runs. Together they make one runnable thing,
+and everything a caller or an agent gets is derived from them:
+
+```mermaid
+graph LR
+    M["the model<br>concepts, actions, constraints"]
+    P["a binding profile<br>tables, columns, executor, target"]
+    RT(["one model, bound<br>ready to run"])
+    ST["the store<br>where a write lands"]
+    AG["what an agent is handed<br>write tools, lookup tools, instruction"]
+
+    M --> RT
+    P --> RT
+    RT --> ST
+    RT --> AG
+```
+
+Nothing is written twice: each key appears in one of those two files, and
+everything else is derived from it.
 
 ## When to use it
 
@@ -249,6 +269,22 @@ adds it to the catalog and changes nothing by itself. A constraint takes effect
 where something references it and nowhere else, so publishing a rule cannot
 silently start refusing calls that succeeded yesterday.
 
+Four stages, and a rule that stops at the first one does nothing:
+
+```
+  declared                referenced             checked            a breach
+  ─────────────────       ─────────────────      ──────────────     ───────────
+  constraints:            actions:               before the call,   reject
+    - name: X       ──▶     - name: Y      ──▶   with the      ──▶  escalate
+      expression: …           guards: [X]        arguments bound    warn
+      or judgment: …
+
+  a rule in the           the only thing that    a query settles    on_violation
+  catalog, inert          gives it effect        an expression;     names one of
+                                                 a language model   the three
+                                                 a judgment
+```
+
 An expression over stored data states a condition the data must satisfy:
 
 ```yaml
@@ -301,9 +337,6 @@ state. It does not report that the call leaves a sound one. Nothing in the model
 binds a rule to the result of a write, which is the gap between what a data rule
 says and what a guard can enforce.
 
-A rule meant to report rather than block is one that declares `warn`, checked at
-the same moment and let through.
-
 Whatever dispatches the call is what checks its guards. Handing a rule to the
 store instead works only for some rules. A condition on a single row lowers to a
 store-level `CHECK`. One that aggregates across a child table, such as an order
@@ -313,13 +346,11 @@ BigQuery.
 The reference lives on the action rather than on the constraint, because the
 same rule may gate `TransferFunds` and leave `CloseAccount` alone.
 
-`guards` and `on_violation` answer different questions, and both can be set. A
-guard says *when* the constraint is checked — before the write, with the
-arguments bound. `on_violation` says what a breach does: `reject` refuses the
-call, `escalate` holds it for an approver, `warn` reports it and lets the write
-proceed. So guarding a constraint that declares `warn` is a real shape rather
-than a contradiction: it is how a rule the organization is not yet ready to
-block on still gets checked at the moment of the call and reported back.
+`guards` and `on_violation` are independent, as the two right-hand columns
+above are: one says when the constraint is checked, the other what a breach
+does. Guarding a constraint that declares `warn` is therefore a real shape: it
+is how a rule the organization is not yet ready to block on still gets checked
+at the moment of the call and reported back.
 
 ### When no expression decides it
 
@@ -380,19 +411,22 @@ so two conditions that end differently cannot share a constraint.
 
 Real policies have several rules, and the rules rarely end the same way. Take
 the policy governing a customer-service credit, stated the way a business states
-it:
+it, with the two things the model has to settle about each rule beside it:
 
-1. a credit may not exceed the total of the order it credits;
-2. a credit over 25 dollars needs a supervisor's decision;
-3. an order's total always equals the sum of its line items;
-4. the memo on a credit must name a specific service failure;
-5. a credit must not be one larger credit split up to stay under the 25-dollar
-   limit.
+```
+  the business rule                        written as   a breach
+  ──────────────────────────────────────   ──────────   ────────
+  1  no credit above the order's total     expression   escalate
+  2  over 25 dollars needs a supervisor    expression   escalate
+  3  the total equals the line items       expression   reject
+  4  the memo names a service failure      judgment     warn
+  5  not one credit split to evade review  judgment     reject
+```
 
-Five rules, three different outcomes, and two of them that no query settles. The
-model has an `Order` with a `total`, a `LineItem` with an `amount` and a `memo`,
-and an `IssueCredit` action taking the order, the amount and the memo. Each rule
-becomes one constraint, carrying its own outcome in its own `on_violation`:
+Five rules, three outcomes, two that no query settles. The model has an `Order`
+with a `total`, a `LineItem` with an `amount` and a `memo`, and an `IssueCredit`
+action taking the order, the amount and the memo. Each rule becomes one
+constraint, carrying its own outcome in its own `on_violation`:
 
 ```yaml
     constraints:
@@ -498,38 +532,34 @@ which unappealable rules a model settles gets an answer from one query.
 
 ### Two calls through that policy
 
-A 30-dollar credit for a shipping charge billed in error, against an order
-totalling 142 dollars:
+Two calls against order 12345, which totals 142 dollars. One is a 30-dollar
+credit for a shipping charge billed in error; the other is three 9-dollar
+credits raised within the hour, each memo reading some version of "customer
+asked":
 
 ```
-IssueCredit(order=12345, amount=30.00,
-            memo="refund of the shipping charge applied in error during the Labor Day sale")
+                                  amount=30.00,          amount=9.00 x3,
+                                  "shipping charge       "customer asked"
+                                   applied in error"
+  ──────────────────────────────  ─────────────────────  ─────────────────────
+  1  within the order's total     holds                  holds
+  2  under the 25-dollar limit    violated ─▶ escalate   holds
+  3  total matches line items     holds                  holds
+  4  memo names a failure         holds                  violated ─▶ warn
+  5  not split to evade review    holds                  violated ─▶ reject
+  ──────────────────────────────  ─────────────────────  ─────────────────────
+  strictest outcome wins          held for a supervisor  refused, with the
+                                                         memo warning reported
 ```
 
-Rules 1 and 3 hold: 30 is within the order, and the order's total agrees with
-its line items. Rule 2 is violated, since 30 is over the self-service limit, and
-its word is `escalate`. Rules 4 and 5 hold: the memo names a specific failure,
-and a single credit is not a split one. One violation, so the call is held for a
-supervisor, who reviews it as a credit against an order rather than as a SQL
-diff.
-
-Now three 9-dollar credits raised against the same order within the hour, each
-memo reading some version of "customer asked":
-
-```
-IssueCredit(order=12345, amount=9.00, memo="customer asked")
-```
-
-Rules 1, 2 and 3 all hold — 9 is inside the order, inside the limit, and the
-order's books agree — so every gate a query can compute lets this through. Rule 4 is violated and warns. Rule 5
-is violated and rejects. This is the case the judged rules were added for: the
-policy is being evaded precisely by staying inside the arithmetic.
+The supervisor who gets the first call reviews a credit against an order rather
+than a SQL diff. The second call is the case the judged rules were added for:
+every gate a query can compute lets it through, because the policy is evaded by
+staying inside the arithmetic.
 
 When one call violates several guards, the strictest outcome applies: any
 `reject` refuses the call; failing that, any `escalate` holds it; failing that,
-any `warn` lets it through with the violations reported. So the first call is
-held, and the second is refused with the memo warning reported alongside the
-refusal.
+any `warn` lets it through with the violations reported.
 
 That combination is fixed, and no part of the model states it. It is why an
 action can name any number of guards without the author writing how to combine
@@ -773,10 +803,21 @@ Model 'payments' (payments_eg), profile 'operational':
 An entity-typed parameter takes an object reference rather than a value, so
 `--arg source="Alice Checking"` has to become one specific row before anything
 can run. Two separate things decide which rows an action touches, and conflating
-them is the easiest way to misread what an action does.
+them is the easiest way to misread what an action does:
 
-**Resolving an argument — one row, chosen by `kcmd`.** For each entity-typed
-parameter, `kcmd` runs one lookup against that entity's table before the write:
+```
+              resolving an argument     targeting the write
+              ───────────────────────   ──────────────────────────────────
+  what        --arg source=             the statement's own WHERE clause
+                "Alice Checking"
+  who runs    kcmd, before the write    the store, in the transaction
+  how many    exactly one row, or       however many rows it matches;
+              the call fails            kcmd does not constrain it
+  gives       @source = 7               the rows the write lands on
+```
+
+**Resolving an argument.** For each entity-typed parameter, `kcmd` runs one
+lookup against that entity's table before the write:
 
 ```sql
 SELECT account_id FROM account
@@ -815,39 +856,43 @@ disambiguate.
 Both are reported rather than guessed at, because both are things the caller can
 act on.
 
-**Targeting the write — however many rows the statement says.** Resolution
-produces a *value*, which the statement then uses. Which rows the write lands on
-is decided entirely by the statement's own `WHERE`, and `kcmd` does not
-constrain it:
-
-```sql
-UPDATE account SET balance = balance - @amount WHERE account_id = @source
-```
-
-This one updates a single row because it filters on the key. A statement reading
-`WHERE status = 'dormant'` would update every dormant account, and nothing would
-stop it. `affects` does not limit the blast radius either — it *declares* it, so
-that a reader knows what the write is about and an evaluator can one day check
-the statements against what was declared. The statement is what decides.
+**Targeting the write.** Resolution produces a *value*, which the statement then
+uses; how many rows that statement lands on is its own `WHERE` clause's
+business, and nothing would stop one that hits every dormant account. `affects`
+does not limit the blast radius either — it *declares* it, so that a reader
+knows what the write is about and an evaluator can one day check the statements
+against what was declared.
 
 `kcmd action run` does three things:
 
-- **Resolve.** Each entity-typed argument becomes the one row it denotes, as
-  above.
-- **Bind.** Every argument becomes a query parameter of the store type its
-  declared ontology type implies — a `Decimal` amount is compared as a number
-  rather than as text, which is the difference between `9` being less than `10`
-  and not. Nothing is interpolated into a statement.
-- **Apply.** A read-write transaction is opened, the action's statements run
-  inside it in order, and it commits. Any failure before the commit rolls back,
-  so no partial write survives. A commit the store *refuses* wrote nothing
-  either, and is reported that way — the commonest refusal is Spanner's
-  `ABORTED` under lock contention, and the answer to it is to run the action
-  again. What `kcmd` cannot settle for you is a commit that is neither accepted
-  nor refused: a timeout or a 5xx, where the store may have applied the write
-  and lost the response. That one reports the outcome as unknown rather than
-  claiming a rollback, because a caller told "nothing happened" would retry a
-  write that did.
+```
+  kcmd action run TransferFunds --arg source="Alice Checking" --arg amount=250
+     │
+     │ resolve   SELECT account_id FROM account
+     │           WHERE account_id = @ref0 OR name = @ref LIMIT 2
+     │           exactly one row, or the call fails         ──▶  7
+     │
+     │ bind      @source = 7      as Integer, the key's declared type
+     │           @amount = 250    as Decimal, so 9 is less than 10
+     │
+     │ apply     BEGIN
+     │             UPDATE account SET balance = balance - @amount
+     │               WHERE account_id = @source
+     │           COMMIT
+     ▼
+   committed      ·      nothing written      ·      unknown, do not retry
+```
+
+Nothing is interpolated into a statement; every argument is a query parameter
+of the store type its declared ontology type implies. Any failure before the
+commit rolls back, so no partial write survives, and a commit the store
+*refuses* wrote nothing either. The commonest refusal is Spanner's `ABORTED`
+under lock contention, and the answer to it is to run the action again.
+
+The third outcome is the one `kcmd` cannot settle: a timeout or a 5xx, where
+the store may have applied the write and lost the response. It is reported as
+unknown rather than as a rollback, because a caller told "nothing happened"
+would retry a write that did.
 
 Where the write goes is the model's Spanner deployment target under the selected
 profile. The command line never names a database: `--profile` changes the store,
@@ -970,24 +1015,56 @@ Model 'payments' (payments_eg), profile 'operational':
 
 That is three things — one **write tool** for the action, one **lookup tool**
 for each entity, and one **instruction** for whatever agent holds them. Every
-line of it traces back to the YAML in the earlier sections, or to the
-derivation itself:
+line of it comes from a key in one of the two files, and each key produces one
+thing:
 
-| In the listing | Where it came from |
-|----------------|--------------------|
-| `transfer_funds` | the action's name, `TransferFunds`, in snake_case |
-| `Move money from one account to another.` | the action's `description` |
-| `Resolve both accounts before calling.` | the action's `ai_context.instructions` |
-| `This call is gated by AmountIsPositive.` | the action's `guards` |
-| `source: string` | the parameter `{name: source, type: Account}`. It is an object reference, so the tool takes text and resolves it to one row |
-| `amount: number` | the parameter `{name: amount, type: Float}` |
-| `[NOT RUNNABLE]`, and the `Calling this will not work` paragraph | the runtime, asked whether this call could succeed |
-| `find_account` | the entity `Account` |
-| `A customer's money at this bank.` | that entity's `description` |
-| `accountId: integer` | `Account`'s field `accountId`, declared `Integer` |
-| `open, frozen or closed.` | that field's own `description` |
-| `Never move money between two accounts` | the model's `ai_context.instructions` |
-| the second paragraph of the instruction | the derivation's own fixed text about using the tools, the same for every model |
+```
+  the model                              what the agent is handed
+  ─────────────────────────────────      ───────────────────────────────────
+  actions:
+    - name: TransferFunds          ───▶  action  transfer_funds
+      description: Move money…     ───▶      Move money from one account to
+                                               another.
+      ai_context:
+        instructions: Resolve…     ───▶      Resolve both accounts before
+                                               calling.
+      guards: [AmountIsPositive]   ───▶      This call is gated by
+                                               AmountIsPositive.
+      parameters:
+        - name: source
+          type: Account            ───▶      source: string -- Which Account
+                                               this applies to. Give its key…
+        - name: amount
+          type: Float              ───▶      amount: number -- The amount, as
+                                               a number.
+
+  entities:
+    - name: Account                ───▶  lookup  find_account
+      description: A customer's…   ───▶      A customer's money at this bank.
+      fields:
+        - name: accountId
+          datatype: Integer        ───▶      accountId: integer
+        - name: status
+          description: open,…      ───▶      status: string -- open, frozen
+                                               or closed.
+
+  ai_context:
+    instructions: Never move…      ───▶  instruction:
+                                             Never move money between two
+                                             accounts held by the same…
+
+  the binding profile                    what the agent is handed
+  ─────────────────────────────────      ───────────────────────────────────
+  deployment_target                ───▶  store: <project>/<instance>/<db>
+  entities[].source                ───▶  the table a lookup reads
+  fields[].expression              ───▶  the column it filters on
+  actions[].executor               ───▶  what the write tool runs
+```
+
+Two lines come from neither file. `[NOT RUNNABLE]` and the paragraph under it
+are the runtime's answer to whether this call could succeed. The second
+paragraph of the instruction is the derivation's own text about using the
+tools, identical for every model.
 
 Nothing in the listing was written for a particular agent, which is the
 property worth being able to see: it reads the same whether the caller is ADK,
