@@ -1351,12 +1351,17 @@ export async function agent(
 }
 
 
+// A wrapped parameter line is indented past its name, so a continuation is not
+// mistaken for the next parameter.
+const PARAM_CONTINUATION = '          ';
+
 function printActionTool(tool: ActionTool): void {
   console.log(`  action  ${tool.name}  (${tool.actionName})`);
   console.log(indentBlock(tool.description));
   for (const p of tool.parameters) {
-    console.log(`      ${p.name}: ${p.type}${p.required ? '' : '?'}  -- ${
-        p.description}`);
+    console.log(wrapTo(
+        `${p.name}: ${p.type}${p.required ? '' : '?'}  -- ${p.description}`,
+        BODY_INDENT, PARAM_CONTINUATION));
   }
   if (!tool.runnable) {
     console.log(indentBlock(`NOT RUNNABLE: ${tool.unavailable}`));
@@ -1373,7 +1378,9 @@ function printLookupTool(tool: EntityTool): void {
   // hides the half of it the model wrote.
   for (const p of tool.parameters) {
     const said = describedPart(p.description);
-    console.log(`      ${p.name}: ${p.type}${said ? `  -- ${said}` : ''}`);
+    console.log(wrapTo(
+        `${p.name}: ${p.type}${said ? `  -- ${said}` : ''}`, BODY_INDENT,
+        PARAM_CONTINUATION));
   }
   if (!tool.runnable) {
     console.log(indentBlock(`NOT READABLE: ${tool.unavailable}`));
@@ -1399,8 +1406,34 @@ function describedPart(description: string): string {
 function indentBlock(text: string): string {
   return text.trim()
       .split('\n')
-      .map(line => line.trim() ? `      ${line.trim()}` : '')
+      .map(line => line.trim() ? wrapTo(line.trim(), BODY_INDENT) : '')
       .join('\n');
+}
+
+
+// This listing is read by a person deciding whether the model says enough, and
+// some of what it prints -- a model's instructions, the reason a tool is
+// withheld -- runs to several hundred characters. Emitting that as one line
+// leaves the terminal to fold it at column zero, which loses the indent that
+// shows what belongs to which tool. So it is folded here instead, and a
+// continuation is indented past the first line to keep the structure visible.
+const LISTING_WIDTH = 79;
+const BODY_INDENT = '      ';
+
+function wrapTo(text: string, indent: string, hanging = indent): string {
+  const lines: string[] = [];
+  let line = '';
+  for (const word of text.split(/\s+/).filter(w => w)) {
+    const prefix = lines.length ? hanging : indent;
+    if (line && `${prefix}${line} ${word}`.length > LISTING_WIDTH) {
+      lines.push(prefix + line);
+      line = word;
+    } else {
+      line = line ? `${line} ${word}` : word;
+    }
+  }
+  if (line) lines.push((lines.length ? hanging : indent) + line);
+  return lines.join('\n');
 }
 
 

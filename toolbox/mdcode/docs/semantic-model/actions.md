@@ -34,6 +34,7 @@ semantic_model:
   - name: payments
     entities:
       - name: Account
+        description: A customer's money at this bank.
         primary_key: [accountId]
         source: my-project.bank.account
         fields:
@@ -41,8 +42,9 @@ semantic_model:
           - { name: name,           datatype: String,  expression: name }
           - { name: balance,        datatype: Float,   expression: balance }
           - { name: minimumBalance, datatype: Float,   expression: minimum_balance }
-          - { name: status,         datatype: String,  expression: status }
+          - { name: status,         datatype: String,  expression: status, description: "open, frozen or closed." }
       - name: Transfer
+        description: One movement of money between two accounts.
         primary_key: [transferId]
         source: my-project.bank.transfer
         fields:
@@ -70,6 +72,10 @@ semantic_model:
           instructions: >-
             Resolve both accounts before calling. Name the account the money
             leaves as `source`.
+    ai_context:                             # model level: true of every caller
+      instructions: >-
+        Never move money between two accounts held by the same customer
+        without saying so in your answer.
 ```
 
 The rest of the model — the deployment target, the entity bindings, the
@@ -753,11 +759,12 @@ runs it, so reading the listing is enough to make the call:
 
 ```
 Model 'payments' (payments_eg), profile 'operational':
+  store: sqlgen-testing/graph-unified-solution-demo/semantic_agent_demo
   TransferFunds: Move money from one account to another.
     parameters: source (Account, reference), target (Account, reference), amount (Float)
     executor:   sql
     guards:     AmountIsPositive
-    affects:    Account (modify), Transfer (create)
+    affects:    Account (modify), Transfer (create), TransferDebits (create)
     run:        kcmd action run TransferFunds --arg source=<Account> --arg target=<Account> --arg amount=<Float>
 ```
 
@@ -888,106 +895,219 @@ no transaction behind.
 
 ## 8. Hand it to an agent
 
-An agent needs two things from a model: a way to look at what is there, and a
-way to change it. Both are already declared, so `agent_tools` reads them out
-rather than inventing a tool schema.
+An agent needs two things from a model: a way to find what is there, and a way
+to change it. The entities already say what can be looked at and the actions
+already say what can be done, so neither half is written by hand. One command
+prints what an agent would be handed:
 
-```ts
-import {modelTools} from './src/libts/semantic/agent_tools';
-
-const {lookups, actions, instruction} = modelTools({model, client});
+```bash
+kcmd agent tools
 ```
 
-`kcmd agent tools` prints all three, so you can read what an agent will be
-handed before an agent exists.
+Run against the model built up on this page, it prints the listing below.
+Reading the model is all it does: it opens no session, calls nothing, and
+changes nothing.
 
-`actions` holds one write tool per action. Its name is the action's, snake-cased;
-its description is the action's description followed by its
-`ai_context.instructions`; its parameters are the action's parameters, with each
-ontology type mapped to a JSON one and each entity-typed parameter described as
-the reference it is. Invoking it runs the action — the same resolve, bind and
-transact `kcmd action run` performs.
+```
+Model 'payments' (payments_eg), profile 'operational':
+  store: sqlgen-testing/graph-unified-solution-demo/semantic_agent_demo
 
-`lookups` holds one read tool per entity: exact match on any bound field,
-combined with AND, capped at 50 rows. No joins, no ranges, no aggregation, no
-ordering. That is enough for an agent to find the object an action needs, and it
-keeps the generated SQL checkable by eye. Table and column names come from the
-binding and every filter value is a bound parameter, so no caller text reaches
-the SQL.
+  action  transfer_funds  (TransferFunds)
+      Move money from one account to another.
 
-`modelTools` returns both halves with their names settled against each other. An
-entity `Account` and an action `FindAccount` both derive the name
-`find_account`, and deriving them together is the only place that can notice the
-collision: the action keeps the name, because it is the author's own, and the
-lookup takes `lookup_account`. `actionTools` and `entityTools` are also exported
-for a caller that wants one half, and each names its own tools without seeing
-the other.
+      Resolve both accounts before calling. Name the account the money leaves
+      as `source`.
+
+      This call is gated by AmountIsPositive.
+
+      Calling this will not work: Action 'TransferFunds' is guarded by
+      'AmountIsPositive', and this runtime does not evaluate constraints yet.
+      Running it would apply a write the model says must be checked first, so
+      it is refused rather than run unchecked. Report that rather than
+      retrying.
+      source: string -- Which Account this applies to. Give its key, or text
+          that identifies exactly one; the call fails when nothing matches or
+          more than one does.
+      target: string -- Which Account this applies to. Give its key, or text
+          that identifies exactly one; the call fails when nothing matches or
+          more than one does.
+      amount: number -- The amount, as a number.
+      NOT RUNNABLE: Action 'TransferFunds' is guarded by 'AmountIsPositive',
+      and this runtime does not evaluate constraints yet. Running it would
+      apply a write the model says must be checked first, so it is refused
+      rather than run unchecked.
+
+  lookup  find_account  (Account)
+      A customer's money at this bank.
+
+      Returns accountId, name, balance, minimumBalance, status. Every argument
+      is an exact match and every one is optional; giving none returns the
+      first rows. This tool cannot join, compare ranges, or total anything.
+      accountId: integer
+      name: string
+      balance: number
+      minimumBalance: number
+      status: string -- open, frozen or closed.
+
+  lookup  find_transfer  (Transfer)
+      One movement of money between two accounts.
+
+      Returns transferId, amount, debitedId. Every argument is an exact match
+      and every one is optional; giving none returns the first rows. This tool
+      cannot join, compare ranges, or total anything.
+      transferId: integer
+      amount: number
+      debitedId: integer
+
+  instruction:
+      Never move money between two accounts held by the same customer without
+      saying so in your answer.
+
+      Never invent an identifier. When you are given a name or a description
+      instead of one, find it with the lookup tools rather than asking for it
+      -- that is what they are for, and asking wastes the caller's time. Never
+      compute a total or a balance yourself; the tools do that. When a tool
+      reports that a write did not happen, read the reason it gives and repeat
+      it plainly; if it says a person has to decide, say so and stop, because
+      you cannot approve it yourself. Finish by saying what you changed.
+```
+
+That is three things — one **write tool** for the action, one **lookup tool**
+for each entity, and one **instruction** for whatever agent holds them. Every
+line of it traces back to the YAML in the earlier sections, or to the
+derivation itself:
+
+| In the listing | Where it came from |
+|----------------|--------------------|
+| `transfer_funds` | the action's name, `TransferFunds`, in snake_case |
+| `Move money from one account to another.` | the action's `description` |
+| `Resolve both accounts before calling.` | the action's `ai_context.instructions` |
+| `This call is gated by AmountIsPositive.` | the action's `guards` |
+| `source: string` | the parameter `{name: source, type: Account}`. It is an object reference, so the tool takes text and resolves it to one row |
+| `amount: number` | the parameter `{name: amount, type: Float}` |
+| `NOT RUNNABLE: ...` | the runtime, asked whether this call could succeed |
+| `find_account` | the entity `Account` |
+| `A customer's money at this bank.` | that entity's `description` |
+| `accountId: integer` | `Account`'s field `accountId`, declared `Integer` |
+| `open, frozen or closed.` | that field's own `description` |
+| `Never move money between two accounts` | the model's `ai_context.instructions` |
+| the second paragraph of the instruction | the derivation's own fixed text about using the tools, the same for every model |
+
+Nothing in the listing was written for a particular agent, which is the
+property worth being able to see: it reads the same whether the caller is ADK,
+LangChain, or a person deciding whether the model says enough yet.
+
+### What the two kinds of tool do
+
+A **write tool** runs the action. Invoking `transfer_funds` performs the same
+resolve, bind and transact that [`kcmd action run TransferFunds`](#7-run-it)
+performs, with the same argument resolution, the same single transaction and
+the same three outcomes.
+
+A **lookup tool** reads one entity: exact match on any bound field, combined
+with AND, capped at 50 rows. No joins, no ranges, no aggregation, no ordering.
+That is enough to turn `"Alice Checking"` into the account id the write tool
+needs, and it keeps the generated SQL checkable by eye. Table and column names
+come from the binding and every filter value is a bound parameter, so no caller
+text reaches the SQL.
+
+A lookup is named for its entity, and an action keeps its own name when the two
+collide. An entity `Account` beside an action `FindAccount` both derive
+`find_account`: the action takes it, because that name is the author's own, and
+the lookup becomes `lookup_account`. Deriving both halves together is what
+allows the collision to be noticed at all.
+
+### A tool says whether it can be called
+
+`transfer_funds` above is listed and marked `NOT RUNNABLE`. `TransferFunds`
+names a guard, nothing evaluates constraints yet, and so the [refusal from
+section 7](#a-guarded-action-is-refused-not-run-unchecked) is reported here
+instead — before any agent exists, rather than inside a transaction.
+
+The tool is still returned, still named and still described. An action the
+model declares should not vanish from what the model offers; what it is waiting
+on is the useful thing to print. Both halves carry a `runnable` flag, and
+`unavailable` carries the reason:
+
+| A write tool is withheld when | A lookup is withheld when |
+|-------------------------------|---------------------------|
+| a profile withdrew the executor | the entity is abstract, so it has no table |
+| the executor is remote and no handler was supplied | no profile bound it to a table |
+| it names a guard, as above | its binding is not a plain table |
+| a parameter references an entity keyed by several columns | |
+| the statements ask for a generated key a UUID cannot fill | |
+
+The derivation asks the runtime for that verdict rather than working it out
+again, so the two cannot drift. Drift costs something in both directions: a
+tool advertised as runnable that refuses every call spends the agent's turn and
+teaches it nothing, and one withheld that would have worked is never discovered
+at all.
+
+### Calling it from code
+
+`kcmd agent tools` prints the derivation; `modelTools` returns it. The model
+and the store come from `openWorkspace` and `spannerStore`, the same pair `kcmd
+action` uses, so an agent reads the model the CLI reads, under the same
+profile, with the same merge and the same warnings:
+
+```ts
+import {openWorkspace, spannerStore} from './src/libts/semantic/workspace';
+import {modelTools, callableTools} from './src/libts/semantic/agent_tools';
+
+const ws = await openWorkspace({profile: 'operational'});
+if ('error' in ws) throw new Error(ws.error);
+
+const {model} = ws.models[0];
+const store = spannerStore(model);
+if ('error' in store) throw new Error(store.error);
+
+const {callable, withheld, instruction} =
+    callableTools(modelTools({model, client: store.client}));
+```
+
+`modelTools` returns `{lookups, actions, instruction}` — the three things the
+listing printed. `callableTools` then sorts both halves into the ones this
+binding can serve and the ones it cannot, which is a split every adapter has to
+make and the same split every time. Offer `callable` to the agent, and report
+`withheld` rather than hiding it. `actionTools` and `entityTools` are exported
+for a caller that wants one half.
+
+Each tool is a name, a description, typed parameters and `invoke(args)`, so
+binding one to ADK, to LangChain or to an MCP server is a short adapter over
+that shape, and a second framework costs nothing here. Nothing in this module
+imports an agent framework.
+
+`invoke` answers with three states rather than two. A write that landed and one
+that did not are the obvious pair; the third is a commit whose result nothing
+can establish, reported as unknown with an explicit "do not retry", because a
+caller reading it as "nothing happened" applies the write twice.
+
+`handler` may be passed for an executor this runtime cannot perform itself. It
+is not passed to an action with a `sql` executor. Such an action claims that
+what runs is what the catalog published, and one handler serves the whole
+model, so passing it through would retract that claim for every such action at
+once.
 
 ### The instruction is not the agent's to write
 
-`instruction` is what to tell an agent holding these tools, and it has two parts
-because two different people own them.
+The instruction at the foot of the listing has two parts, because two different
+people own them.
 
-The first is the model's own `ai_context.instructions` — what this business asks
-of anything that acts on it. It belongs to the model because it is true of every
-agent that acts on the model, including the ones nobody has written yet. It also
-belongs there because a rule an agent keeps in its own source can be changed
-without the people who own the model finding out. Agents are replaced when
-frameworks change; the model is not.
+The first is the model's own `ai_context.instructions` — what this business
+asks of anything that acts on it. It belongs to the model because it is true of
+every agent that acts on the model, including the ones nobody has written yet.
+It also belongs there because a rule an agent keeps in its own source can be
+changed without the people who own the model finding out. Agents are replaced
+when frameworks change; the model is not.
 
-The second is about the tools rather than the business: what a lookup is for,
-and what a refused write means. The derivation owes that half, because it
+The second part is about the tools rather than the business: what a lookup is
+for, and what a refused write means. The derivation owes that half, because it
 describes a contract this module defines and the model never stated. Written
 into each agent instead, it is the same paragraph copied into every adapter,
 drifting in each one.
 
 So an agent that appends a persona of its own is saying something the model did
 not. The place to put it is the model.
-
-### A tool says whether it can be called
-
-A refusal the model alone decides is a refusal every call would meet, so it can
-be decided before the tool is offered rather than inside a transaction. Both
-halves carry `runnable`, and when it is false, `unavailable` says why.
-
-For an action: a withdrawn executor, a remote executor with no handler, a guard
-nothing checks, an object reference to a composite-keyed entity, or a generated
-key the statement asks for that a UUID cannot fill. `modelTools` asks the
-runtime for that verdict rather than working it out again, so the two cannot
-drift. Drift costs something in both directions: a tool advertised as runnable
-that refuses every call spends the agent's turn and teaches it nothing, and one
-withheld that would have worked is never discovered at all.
-
-For a lookup: an abstract entity, which has no table of its own; an entity no
-profile bound to one; or an entity whose binding is not a plain table. One
-function decides whether a lookup can run and also reports the problem at call
-time, so those two answers cannot drift either.
-
-The tool is still returned and still named either way. An action the model
-declares should not vanish from what the model offers; an adapter binds the
-runnable ones and reports the rest.
-
-### The framework binding is the caller's
-
-Nothing in this module imports an agent framework. A tool is a name, a
-description, typed parameters and a function, so binding one to ADK, to
-LangChain or to an MCP server is a short adapter the caller writes, and a second
-framework costs nothing here.
-
-An outcome comes back as three states rather than two. A write that landed and
-one that did not are the obvious pair; the third is a commit whose result
-nothing can establish, reported as unknown with an explicit "do not retry",
-because a caller reading it as "nothing happened" applies the write twice.
-
-`handler` may be passed for an executor this runtime cannot perform itself. It is
-not passed to an action with a `sql` executor. Such an action claims that what
-runs is what the catalog published, and one handler serves the whole model, so
-passing it through would retract that claim for every such action at once.
-
-Opening the workspace is `openWorkspace` and `spannerStore` from
-`semantic/workspace`, the same pair `kcmd action` uses — so an agent reads the
-model the CLI reads, under the same profile, with the same merge and the same
-warnings.
 
 ## What is not modeled yet
 
