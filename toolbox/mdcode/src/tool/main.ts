@@ -141,10 +141,32 @@ cli.command(
     .option(
         '--profile [name]',
         'Read the model under this binding profile; its deployment target names the database the action runs against; defaults to default_profile, else the inline bindings')
+    .option(
+        '--store',
+        'Print only where a run would land, as project/instance/database, for a script to read (`list` only)')
     .action(async (command, name, options) => {
       let exitCode = 1;
       try {
         exitCode = await commands.action(command, name, options);
+      } catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+
+      process.exit(exitCode);
+    });
+
+
+cli.command(
+       'agent <command>',
+       'Agent bindings for a semantic model (command: `tools`, what an agent is offered)')
+    .option(
+        '--profile [name]',
+        'Read the model under this binding profile; defaults to default_profile, else the inline bindings')
+    .action(async (command, options) => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.agent(command, options);
       } catch (err: any) {
         console.error('Error:', err.message || err);
         exitCode = 1;
