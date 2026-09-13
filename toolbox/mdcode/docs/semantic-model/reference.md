@@ -70,17 +70,39 @@ kcmd action list
 kcmd action run <name> --arg <name>=<value> ...
 ```
 
-`list` prints every action the models in the scope declare, with the command
-line that runs each one. `run` executes one against the Spanner database the
-selected profile's deployment target names; only a `sql` executor runs, and an
-action that names a constraint in `guards` is refused rather than run
-unchecked, because nothing evaluates a constraint yet. See
-[Run it](actions.md#7-run-it).
+`list` prints every action the models in the scope declare, with the store a run
+would reach and the command line that runs each one. `run` executes one against
+the Spanner database the selected profile's deployment target names; only a
+`sql` executor runs, and an action that names a constraint in `guards` is
+refused rather than run unchecked, because nothing evaluates a constraint yet.
+See [Run it](actions.md#7-run-it).
 
 | Flag | Effect |
 |------|--------|
 | `--arg <name>=<value>` | Bind one action parameter. Repeat the flag for each one; the value is text, parsed against the parameter's declared ontology type. `run` only. |
 | `--profile [name]` | Read the model under this binding profile. Its deployment target names the database the action runs against, so this is how you change stores. Defaults to `default_profile`, else the model's inline bindings. |
+| `--store` | Print only where a run would land, as `project/instance/database`, and nothing else, for a script to read rather than parse back out of the listing. `list` only. |
+
+### agent
+
+```bash
+kcmd agent tools
+```
+
+Prints what an agent would be handed for the models in the scope: one lookup
+tool per entity and one tool per action, each with its description, the calling
+guidance the model wrote, and one line per parameter carrying that field's own
+description. Reads the model and nothing else — no store is touched and nothing
+is run.
+
+A tool the runtime cannot call is listed with the reason rather than dropped, so
+a refusal is visible before any agent exists: attach a constraint to an action's
+`guards` and re-run this to see exactly what it costs today. See
+[Hand it to an agent](actions.md#8-hand-it-to-an-agent).
+
+| Flag | Effect |
+|------|--------|
+| `--profile [name]` | Read the model under this binding profile. Defaults to `default_profile`, else the model's inline bindings. |
 
 ## What gets created in BigQuery
 
