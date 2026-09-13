@@ -12,19 +12,20 @@ knows what business this is lives in the model, where it outlives the agent.
 Everything else you need is already a command: `kcmd` for the model and its
 actions, `gcloud` for the store, ADK for the agent.
 
-## Where the scenario comes from
+## The scenario
 
-It is the worked example in *Ontologies, actions and policies — a simple
-illustration*: an ecommerce business, three entities, one credit action, three
-policy rules, and one specific task posed at the end. Using someone else's
-scenario is the point. A demo that invents its own example can quietly shape
-that example to fit what the code already does. The exercise the doc sets —
-"how do we concretely represent the ontology, action and policy in this case?"
-— is answerable only if the case is fixed first.
+A small ecommerce business: customers, their orders, and the lines that make up
+an order. One thing can be done to it — credit a customer against an order —
+and three policy rules say when that is allowed.
 
-So the model below is that prose written down, the seed data is that doc's
-order #12345, and [step 6](#6-run-it) runs the doc's task verbatim. Where the
-two disagree, the doc is right and this is a bug.
+[Step 6](#6-run-it) runs the request a support desk gets every day. A customer
+was charged for shipping that was supposed to be free, and someone inside the
+company has to find the order and put the money back. The request names no
+identifier: it gives a customer's name, a holiday, and a description of what
+went wrong.
+
+That is the shape worth testing. A request that already speaks in order ids and
+line types proves only that the tools can be called.
 
 ## Before you start
 
@@ -99,9 +100,9 @@ what to do when a write is refused, are properties of the derived tools rather
 than of commerce, so the derivation supplies those and the model does not repeat
 them.
 
-That persona is the doc's own. It distinguishes the internal agent that can
-read and write every customer's orders from the customer-facing agent that can
-only see its own caller's. Only the first one is built here.
+The persona also settles which of two agents this is. An internal one reads and
+writes every customer's orders; a customer-facing one would see only its own
+caller's. Only the internal one is built here.
 
 ## 2. Create the store
 
@@ -127,14 +128,14 @@ gcloud spanner databases create "$DATABASE" \
 already exist rather than creating them.
 
 Then the rows — two customers, three orders, six line items. Order 12345 is the
-doc's: Andy Brook's, placed on Labor Day 2026, carrying the $30 shipping charge
-that was not supposed to be there.
+one the request is about: placed on Labor Day 2026, carrying the $30 shipping
+charge that was not supposed to be there.
 
 ```bash
 gcloud spanner databases execute-sql "$DATABASE" \
   --instance="$INSTANCE" --project="$PROJECT" \
   --sql="INSERT INTO Customer (customer_id, name, email) VALUES
-    (1, 'Andy Brook', 'andybrook@gmail.com'),
+    (1, 'Morgan Ellis', 'morgan.ellis@example.com'),
     (2, 'Dana Reyes', 'dana.reyes@example.com')"
 
 gcloud spanner databases execute-sql "$DATABASE" \
@@ -157,7 +158,7 @@ gcloud spanner databases execute-sql "$DATABASE" \
 
 That leaves order 12345 at $165.85 over four line items, 12346 at $18.00, and
 12347 at $200.00. Orders 12346 and 12347 are here so that the lookups have to
-tell 12345 apart from something; nothing in the doc needs them. To start over,
+tell 12345 apart from something; the request needs neither. To start over,
 drop the database with the command under [Cleaning up](#cleaning-up) and run
 these four again.
 
@@ -243,7 +244,7 @@ Model 'commerce' (commerce_demo), profile 'spanner':
       every one is optional; giving none returns the first rows. This tool
       cannot join, compare ranges, or total anything.
       customerId: integer
-      name: string -- The customer's display name, e.g. "Andy Brook".
+      name: string -- The customer's display name, e.g. "Morgan Ellis".
       email: string
 
   lookup  find_order  (Order)
@@ -297,12 +298,12 @@ bound fields became a lookup and its filters. The instruction is the model's
 persona followed by the tool contract the derivation itself defines.
 
 Look at `type: string -- item, tax, fee, or credit.` in particular. That line is
-the doc's enum, written in `commerce.yaml` as the field's description, and the
-only written-down place a caller can learn that a shipping charge is a `fee`.
-Until this demo ran the doc's task, the derivation dropped it and put boilerplate
-there instead; the agent guessed `type: "shipping"`, got nothing back, and spent
-a turn finding out. The fix went into `agent_tools.ts` rather than into this
-demo, because every filter over a coded field had the same hole, in every model.
+the field's description in `commerce.yaml`, and the only written-down place a
+caller can learn that a shipping charge is a `fee`. Until this demo ran a real
+request, the derivation dropped it and put boilerplate there instead; the agent
+guessed `type: "shipping"`, got nothing back, and spent a turn finding out. The
+fix went into `agent_tools.ts` rather than into this demo, because every filter
+over a coded field had the same hole, in every model.
 
 The read tools are narrow by design — exact match on any bound field, ANDed,
 capped, no joins, ranges or totals. That is enough to find the object an action
@@ -372,9 +373,9 @@ answer, the usage line, and one line appended to the instruction —
       new Date().toISOString().slice(0, 10)}.`,
 ```
 
-The doc's request says "Labor Day" and the filter wants `2026-09-07`. Turning one
-into the other needs a calendar, which a language model has, and a clock, which
-it does not. Without that line the agent guesses a year, drops the filter and
+The request says "Labor Day" and the filter wants `2026-09-07`. Turning one into
+the other needs a calendar, which a language model has, and a clock, which it
+does not. Without that line the agent guesses a year, drops the filter and
 scans, or stops to ask which date you meant — all three happened. With it, three
 consecutive runs got `placedOn: "2026-09-07"` on the first try.
 
@@ -387,21 +388,22 @@ the fix belongs in the model.
 
 ## 6. Run it
 
-This is the doc's task, word for word. ADK logs an `INFO` line per model call;
+One request, phrased the way the person with the problem would phrase it. ADK
+logs an `INFO` line per model call;
 the transcripts below leave those out, and the two load-time warnings from
 [step 3](#3-check-what-the-model-declares) still print first.
 
 ```console
-$ bun agent.ts "Find the order for Andy Brook (andybrook@gmail.com) that was placed on Labor Day. It was supposed to get free shipping but we had a glitch and the customer got charged. Please issue them a credit to offset the charge."
-  -> find_customer({"name":"Andy Brook","email":"andybrook@gmail.com"})
-  <- {"entity":"Customer","fields":["customerId","name","email"],"rows":[["1","Andy Brook","andybrook@gmail.com"]],"truncated":false}
-  -> find_order({"placedOn":"2026-09-07","customerId":1})
+$ bun agent.ts "Find the order for Morgan Ellis (morgan.ellis@example.com) that was placed on Labor Day. It was supposed to get free shipping but we had a glitch and the customer got charged. Please issue them a credit to offset the charge."
+  -> find_customer({"name":"Morgan Ellis","email":"morgan.ellis@example.com"})
+  <- {"entity":"Customer","fields":["customerId","name","email"],"rows":[["1","Morgan Ellis","morgan.ellis@example.com"]],"truncated":false}
+  -> find_order({"customerId":1,"placedOn":"2026-09-07"})
   <- {"entity":"Order","fields":["orderId","customerId","placedOn","total","status"],"rows":[["12345","1","2026-09-07","165.85","OPEN"]],"truncated":false}
   -> find_line_item({"orderId":12345,"type":"fee"})
   <- {"entity":"LineItem","fields":["lineItemId","orderId","type","amount","memo"],"rows":[["li-12345-3","12345","fee","30","Shipping"]],"truncated":false}
-  -> issue_credit({"memo":"Free shipping credit","order":"12345","amount":30})
-  <- {"applied":true,"actedOn":{"order":["12345"]},"committedAt":"2026-09-12T20:53:35.982928Z"}
-I have applied a credit of 30 to order 12345 for Andy Brook to offset the shipping charge. The credit memo is "Free shipping credit".
+  -> issue_credit({"memo":"Credit for charged shipping fee on Labor Day order","order":"12345","amount":30})
+  <- {"applied":true,"actedOn":{"order":["12345"]},"committedAt":"2026-09-13T18:16:11.020320Z"}
+I issued a credit of 30.00 to order 12345 for Morgan Ellis, to offset the shipping charge.
 ```
 
 Four tool calls, and the request named none of the things they took. A name and
@@ -417,7 +419,7 @@ $ gcloud spanner databases execute-sql semantic_agent_demo \
     --instance=graph-unified-solution-demo --project=sqlgen-testing \
     --sql="SELECT line_item_id, order_id, type, amount, memo FROM LineItem WHERE order_id = 12345 ORDER BY type"
 line_item_id                          order_id  type    amount  memo
-e2b783f9-566d-4f09-ac91-1fc5544c1680  12345     credit  -30     Free shipping credit
+17d5bf3c-624a-48f6-9556-8243df7c71b7  12345     credit  -30     Credit for charged shipping fee on Labor Day order
 li-12345-3                            12345     fee     30      Shipping
 li-12345-1                            12345     item    89.99   Cast iron skillet
 li-12345-2                            12345     item    34.5    Enamel saucepan
@@ -446,28 +448,28 @@ Four files, and you can list them:
 | `catalog/EntryGroups/commerce_demo/commerce.yaml` | the ontology, the action, the three policy rules, the persona |
 | `catalog/.../commerce.profiles/spanner.yaml` | tables, columns, the two SQL statements, the deployment target |
 | `schema.sql` | three `CREATE TABLE`s |
-| the seed commands in [step 2](#2-create-the-store) | Andy Brook's order |
+| the seed commands in [step 2](#2-create-the-store) | two customers, three orders, six lines |
 
 `agent.ts` is not on that list, and neither is anything under `src/`. Swap those
 four for a different business and the same 56 lines run it — that is the claim
 this demo is making, and the file list is how you check it.
 
-Two things are worth knowing about how short that list stayed. The doc's case
-wanted a filter over a coded field, and the fix went into `agent_tools.ts` where
-it helps every model, rather than into a hand-written tool here. The doc's case
-also wanted today's date, and that went into `agent.ts` because it is a fact
-about the run rather than about commerce. Each new use case pushes on the
-boundary in one of those two directions; the useful question is always which.
+Two things are worth knowing about how short that list stayed. This case wanted
+a filter over a coded field, and the fix went into `agent_tools.ts` where it
+helps every model, rather than into a hand-written tool here. It also wanted
+today's date, and that went into `agent.ts` because it is a fact about the run
+rather than about commerce. Each new use case pushes on the boundary in one of
+those two directions; the useful question is always which.
 
 ## What is not wired up yet
 
-Start with the thing the run above got wrong. The doc's third rule says a credit
-of $25 or more needs a person to approve it, and the doc's own walkthrough sends
-this $30 credit to a review queue. The run above wrote it. That is not the agent
-disobeying — it is the policy being written down and not attached.
+Start with the thing the run above got wrong. The third policy rule says a
+credit over $25 is above the self-service ceiling and a supervisor decides it.
+The agent wrote $30 and asked nobody. That is not the agent disobeying — it is
+the policy being written down and not attached.
 
-`commerce.yaml` declares three constraints, one per rule in the doc, and
-references none of them. A constraint is inert until an action names it in
+`commerce.yaml` declares three constraints, one per policy rule, and references
+none of them. A constraint is inert until an action names it in
 `guards`, and this runtime does not evaluate constraints yet — so naming one
 makes the action *unrunnable* rather than checked. Try it: add
 `guards: [CreditUnderReviewThreshold]` to the action and run `kcmd agent tools`
@@ -492,26 +494,28 @@ still named and still described — an action the model declares should not vani
 from what the model offers — and `agent.ts` reports it and leaves it unbound, so
 the agent has no call to make and nothing to retry.
 
-Re-run the doc's task with the guard attached and you get the reading half and
+Re-run the same request with the guard attached and you get the reading half and
 none of the writing half:
 
 ```console
-$ bun agent.ts "Find the order for Andy Brook (andybrook@gmail.com) that was placed on Labor Day. ..."
+$ bun agent.ts "Find the order for Morgan Ellis (morgan.ellis@example.com) that was placed on Labor Day. ..."
 (withheld) issue_credit: Action 'IssueCredit' is guarded by 'CreditUnderReviewThreshold', and this runtime does not evaluate constraints yet. Running it would apply a write the model says must be checked first, so it is refused rather than run unchecked.
-  -> find_customer({"name":"Andy Brook","email":"andybrook@gmail.com"})
-  <- {"entity":"Customer","fields":["customerId","name","email"],"rows":[["1","Andy Brook","andybrook@gmail.com"]],"truncated":false}
+  -> find_customer({"email":"morgan.ellis@example.com","name":"Morgan Ellis"})
+  <- {"entity":"Customer","fields":["customerId","name","email"],"rows":[["1","Morgan Ellis","morgan.ellis@example.com"]],"truncated":false}
   -> find_order({"customerId":1,"placedOn":"2026-09-07"})
   <- {"entity":"Order","fields":["orderId","customerId","placedOn","total","status"],"rows":[["12345","1","2026-09-07","165.85","OPEN"]],"truncated":false}
   -> find_line_item({"orderId":12345,"type":"fee"})
   <- {"entity":"LineItem","fields":["lineItemId","orderId","type","amount","memo"],"rows":[["li-12345-3","12345","fee","30","Shipping"]],"truncated":false}
-I found that Andy Brook (customer ID 1) was charged $30 for shipping on order 12345, placed on 2026-09-07 (Labor Day). The line item ID for this charge is li-12345-3. I cannot directly issue a credit to offset this charge with the tools I have.
+The customer Morgan Ellis (ID 1) has an order (ID 12345) placed on 2026-09-07. This order includes a shipping fee of $30.00 (line item ID li-12345-3).
+
+I cannot issue credits or modify orders. A person will have to decide how to proceed with the credit.
 ```
 
 It still did the work worth doing — found the order, found the charge, named the
 amount — and order 12345 is still $165.85.
 
-So the demo can reach either end of the doc's policy story and not the middle:
-write, or refuse. There are two rungs where there should be three, and the
+So the demo can reach either end of the policy story and not the middle: write,
+or refuse. There are two rungs where there should be three, and the
 missing one is "ask a person, then apply it if they say yes".
 
 The model already says which rule wants that rung. `CreditUnderReviewThreshold`
@@ -523,10 +527,9 @@ violated says more, and costs more to honor, because something has to evaluate
 the predicate. That evaluator is the next piece of work. The two warnings at
 load time are the same gap, stated at load time.
 
-The other thing the doc has and this does not is its Data Access Controls. There
-are meant to be two agents over this model — an internal one that reads and
-writes every customer's orders, and a customer-facing one restricted to its own
-caller, with the identity passed in the tool call and checked below the agent.
+The other missing piece is access control. A business that runs an internal desk
+agent usually wants a customer-facing one too, restricted to the caller's own
+orders, with the identity passed in the tool call and checked below the agent.
 Only the internal one is here. The lookups take no caller identity and there is
 nothing to scope them by, so the second agent cannot be built from this model
 today.

@@ -1,10 +1,10 @@
 # What the business is, and what one agent is allowed to do to it.
 #
-# The scenario is not invented here. It is the worked example in "Ontologies,
-# actions and policies -- a simple illustration": three entities, one credit
-# action, and three policy rules, stated in prose. This file is that prose
-# written down as a model, and the README runs the specific case the doc poses.
-# Where the two differ, the doc is right and this is a bug.
+# The business is a small ecommerce operation: customers, their orders, and the
+# lines that make up an order. One thing can be done to it -- credit a customer
+# against an order -- and three policy rules say when that is allowed. The
+# README runs one request against it, the kind a support desk gets every day: a
+# customer was charged for shipping that should have been free.
 #
 # Nothing here says where the data lives, what the columns are called, or what
 # SQL performs the write. Those are physical facts, and they are in
@@ -50,7 +50,7 @@ semantic_model:
           - {name: customerId, datatype: Integer}
           - name: name
             datatype: String
-            description: The customer's display name, e.g. "Andy Brook".
+            description: The customer's display name, e.g. "Morgan Ellis".
           - {name: email, datatype: String}
 
       - name: Order

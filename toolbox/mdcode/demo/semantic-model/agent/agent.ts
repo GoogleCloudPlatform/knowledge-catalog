@@ -1,9 +1,10 @@
 // The demo agent, in full. There is no second file.
 //
-//   bun agent.ts "Find the order for Andy Brook (andybrook@gmail.com) that
-//                 was placed on Labor Day. It was supposed to get free
-//                 shipping but we had a glitch and the customer got charged.
-//                 Please issue them a credit to offset the charge."
+//   bun agent.ts "Find the order for Morgan Ellis
+//                 (morgan.ellis@example.com) that was placed on Labor Day. It
+//                 was supposed to get free shipping but we had a glitch and
+//                 the customer got charged. Please issue them a credit to
+//                 offset the charge."
 //
 // Nothing here mentions credits, orders, Spanner tables or an operations desk.
 // Four steps: create the runtime, derive the tools, adapt them to ADK, run.
