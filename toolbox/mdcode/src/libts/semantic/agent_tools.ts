@@ -156,7 +156,7 @@ function toolFor(action: Action, opts: ActionToolOptions): ActionTool {
     name: snakeCase(action.name),
     actionName: action.name,
     description: toolDescription(action, opts.model, blocked),
-    parameters: action.parameters.map(p => toolParameter(p, opts.model)),
+    parameters: action.parameters.map(toolParameter),
     runnable: !blocked,
     async invoke(args: Record<string, unknown>): Promise<ToolResult> {
       const outcome = await runAction({
@@ -218,9 +218,11 @@ function gatingRules(action: Action, model: SemanticModel): string[] {
 // An entity-typed parameter takes a reference the runtime resolves, so the
 // description says so rather than demanding a key the caller may not have. A
 // scalar parameter takes its own type.
-function toolParameter(
-    param: {name: string; type: string; isEntityRef?: boolean},
-    model: SemanticModel): ToolParameter {
+function toolParameter(param: {
+  name: string,
+  type: string,
+  isEntityRef?: boolean,
+}): ToolParameter {
   if (param.isEntityRef) {
     return {
       name: param.name,
@@ -350,7 +352,8 @@ function joinNames(names: string[]): string {
 export interface EntityRows {
   entity: string;
   fields: string[];
-  rows: string[][];
+  /** `null` where the column is NULL: a CAST of NULL is still NULL. */
+  rows: Array<Array<string|null>>;
   /** True when the row cap cut the answer short, so a caller can narrow it. */
   truncated: boolean;
   /** Set instead of rows when the entity cannot be read, saying why. */
@@ -662,7 +665,11 @@ async function runLookup(
   const params: Record<string, unknown> = {};
   const paramTypes: Record<string, {code: string}> = {};
   for (const [name, value] of Object.entries(args)) {
-    if (value === undefined || value === null || value === '') continue;
+    // Absent means unfiltered; empty means the empty string. `bindScalar`
+    // draws the line in the same place for the write path, and a caller that
+    // sends '' for an unset filter gets no rows rather than the first fifty
+    // of the table read back as though they matched.
+    if (value === undefined || value === null) continue;
     const field = bound.find(f => f.name === name);
     if (!field) {
       return {
@@ -702,7 +709,7 @@ async function runLookup(
   // permission, no such table, no session to be had -- is not a different kind
   // of thing, and throwing would reach an adapter as a crashed tool call
   // rather than as something the agent can report and work around.
-  let rows: string[][];
+  let rows: Array<Array<string|null>>;
   try {
     rows = await opts.client.withSession(async sessionName => {
       const res = await opts.client.executeQuery(

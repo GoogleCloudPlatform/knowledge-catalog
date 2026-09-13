@@ -912,7 +912,7 @@ changes nothing.
 Model 'payments' (payments_eg), profile 'operational':
   store: sqlgen-testing/graph-unified-solution-demo/semantic_agent_demo
 
-  action  transfer_funds  (TransferFunds)
+  action  transfer_funds  (TransferFunds)  [NOT RUNNABLE]
       Move money from one account to another.
 
       Resolve both accounts before calling. Name the account the money leaves
@@ -932,10 +932,6 @@ Model 'payments' (payments_eg), profile 'operational':
           that identifies exactly one; the call fails when nothing matches or
           more than one does.
       amount: number -- The amount, as a number.
-      NOT RUNNABLE: Action 'TransferFunds' is guarded by 'AmountIsPositive',
-      and this runtime does not evaluate constraints yet. Running it would
-      apply a write the model says must be checked first, so it is refused
-      rather than run unchecked.
 
   lookup  find_account  (Account)
       A customer's money at this bank.
@@ -985,7 +981,7 @@ derivation itself:
 | `This call is gated by AmountIsPositive.` | the action's `guards` |
 | `source: string` | the parameter `{name: source, type: Account}`. It is an object reference, so the tool takes text and resolves it to one row |
 | `amount: number` | the parameter `{name: amount, type: Float}` |
-| `NOT RUNNABLE: ...` | the runtime, asked whether this call could succeed |
+| `[NOT RUNNABLE]`, and the `Calling this will not work` paragraph | the runtime, asked whether this call could succeed |
 | `find_account` | the entity `Account` |
 | `A customer's money at this bank.` | that entity's `description` |
 | `accountId: integer` | `Account`'s field `accountId`, declared `Integer` |
@@ -1019,7 +1015,7 @@ allows the collision to be noticed at all.
 
 ### A tool says whether it can be called
 
-`transfer_funds` above is listed and marked `NOT RUNNABLE`. `TransferFunds`
+`transfer_funds` above is listed and marked `[NOT RUNNABLE]`. `TransferFunds`
 names a guard, nothing evaluates constraints yet, and so the [refusal from
 section 7](#a-guarded-action-is-refused-not-run-unchecked) is reported here
 instead — before any agent exists, rather than inside a transaction.
@@ -1033,7 +1029,7 @@ on is the useful thing to print. Both halves carry a `runnable` flag, and
 |-------------------------------|---------------------------|
 | a profile withdrew the executor | the entity is abstract, so it has no table |
 | the executor is remote and no handler was supplied | no profile bound it to a table |
-| it names a guard, as above | its binding is not a plain table |
+| it names a guard, as above | its binding is a query rather than a table |
 | a parameter references an entity keyed by several columns | |
 | the statements ask for a generated key a UUID cannot fill | |
 
@@ -1064,6 +1060,11 @@ if ('error' in store) throw new Error(store.error);
 const {callable, withheld, instruction} =
     callableTools(modelTools({model, client: store.client}));
 ```
+
+Go through `spannerStore` rather than building a client yourself. It is also
+the check that every entity is bound to a table in the database the profile
+targets, and a lookup derived from a model bound to some other system would
+otherwise read whatever table of that name the store happens to hold.
 
 `modelTools` returns `{lookups, actions, instruction}` — the three things the
 listing printed. `callableTools` then sorts both halves into the ones this

@@ -580,6 +580,29 @@ describe('how a lookup filter reaches the store', () => {
          // Nothing was asked of the store: there is no row it could mean.
          expect(store.statements).toHaveLength(0);
        });
+
+  test('an empty string filters on the empty string', async () => {
+    // The dangerous reading is the other one. Dropping '' as though the filter
+    // were absent turns a lookup meant to find one row into an unfiltered read
+    // of the first rows, which comes back to the agent looking like an answer.
+    // `bindScalar` draws the line in the same place for the write path.
+    const store = new FakeStore();
+    const [tool] = entityTools({model, client: store.client});
+    await tool.invoke({o_orderkey: ''});
+
+    const [stmt] = store.statements;
+    expect(stmt.sql).toContain('WHERE o_orderkey = @f_0');
+    expect(stmt.params!['f_0']).toBe('');
+  });
+
+  test('an omitted filter is not a filter', async () => {
+    const store = new FakeStore();
+    const [tool] = entityTools({model, client: store.client});
+    await tool.invoke({o_orderkey: undefined});
+
+    const [stmt] = store.statements;
+    expect(stmt.sql).not.toContain('WHERE');
+  });
 });
 
 

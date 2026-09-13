@@ -1228,6 +1228,16 @@ function listActions(
   // action writes to, and the profile's deployment target is what decides
   // that; a second place to say it is a second place to say it differently.
   if (options.store) {
+    // One line, because the caller is `STORE=$(kcmd action list --store)` and
+    // a second line makes that variable address the wrong database. A scope
+    // holding several models has no single answer, so it says so instead.
+    if (ws.models.length > 1) {
+      console.error(
+          `Error: this scope holds ${ws.models.length} models, which may ` +
+          `name different databases, so --store has no single answer. Narrow ` +
+          `the scope to one model.`);
+      return 1;
+    }
     for (const {model} of ws.models) {
       const store = spannerStore(model, ctx);
       if ('error' in store) {
@@ -1245,10 +1255,13 @@ function listActions(
     // Where a run lands, said once at the top rather than left to be inferred
     // from a profile file the reader would have to go open.
     const store = spannerStore(model, ctx);
-    console.log(`  store: ${
-        'error' in store ?
-            '(no Spanner deployment target under this profile)' :
-            `${store.project}/${store.instance}/${store.database}`}`);
+    if ('error' in store) {
+      console.log('  store: unavailable under this profile');
+      console.log(wrapTo(store.error, BODY_INDENT));
+    } else {
+      console.log(
+          `  store: ${store.project}/${store.instance}/${store.database}`);
+    }
     const actions = model.actions ?? [];
     if (!actions.length) {
       console.log('  declares no actions.');
@@ -1324,17 +1337,24 @@ export async function agent(
     return 1;
   }
 
+  let incomplete = false;
   for (const {model} of opened.models) {
     // A tool is a thing that can be called, and calling one needs a store, so
-    // there is no honest listing without one. The profile that names no
-    // Spanner target is the profile under which this model offers no tools.
+    // there is no honest listing without one. A model whose profile supplies
+    // no store offers no tools, which is reported for that model rather than
+    // ending the command: the rest of the scope still has an answer, and a
+    // partial listing followed by an error is the one outcome a reader cannot
+    // interpret.
     const store = spannerStore(model, ctx);
-    if ('error' in store) {
-      console.error(`Error: ${store.error}`);
-      return 1;
-    }
     console.log(`Model '${model.name}' (${opened.entryGroup}), profile '${
         opened.profile}':`);
+    if ('error' in store) {
+      console.log('  offers no tools under this profile.');
+      console.log(wrapTo(store.error, BODY_INDENT));
+      console.log();
+      incomplete = true;
+      continue;
+    }
     console.log(
         `  store: ${store.project}/${store.instance}/${store.database}`);
     console.log();
@@ -1347,7 +1367,7 @@ export async function agent(
     console.log(indentBlock(instruction));
     console.log();
   }
-  return 0;
+  return incomplete ? 1 : 0;
 }
 
 
@@ -1356,22 +1376,21 @@ export async function agent(
 const PARAM_CONTINUATION = '          ';
 
 function printActionTool(tool: ActionTool): void {
-  console.log(`  action  ${tool.name}  (${tool.actionName})`);
+  console.log(`  action  ${tool.name}  (${tool.actionName})${
+      tool.runnable ? '' : '  [NOT RUNNABLE]'}`);
   console.log(indentBlock(tool.description));
   for (const p of tool.parameters) {
     console.log(wrapTo(
         `${p.name}: ${p.type}${p.required ? '' : '?'}  -- ${p.description}`,
         BODY_INDENT, PARAM_CONTINUATION));
   }
-  if (!tool.runnable) {
-    console.log(indentBlock(`NOT RUNNABLE: ${tool.unavailable}`));
-  }
   console.log();
 }
 
 
 function printLookupTool(tool: EntityTool): void {
-  console.log(`  lookup  ${tool.name}  (${tool.entityName})`);
+  console.log(`  lookup  ${tool.name}  (${tool.entityName})${
+      tool.runnable ? '' : '  [NOT READABLE]'}`);
   console.log(indentBlock(tool.description));
   // One line per filter, like an action's parameters: the point of this
   // command is that it shows what the agent gets, and a bare list of names
