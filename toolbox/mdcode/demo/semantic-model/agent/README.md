@@ -36,12 +36,12 @@ gcloud auth application-default login
 ```
 
 Build the CLI from the `toolbox/mdcode` package root. From step 2 on,
-everything runs in `demo/agent`, which is why `kcmd` appears as
-`../../dist/kcmd`.
+everything runs in `demo/semantic-model/agent`, which is why `kcmd` appears as
+`../../../dist/kcmd`.
 
 ```bash
 npm run build                # builds dist/kcmd
-(cd demo/agent && npm install)
+(cd demo/semantic-model/agent && npm install)
 ```
 
 ## 1. Write the model
@@ -110,8 +110,8 @@ it lives instead — `kcmd action list --store` prints the deployment target as
 `project/instance/database` and nothing else, so a shell can read it:
 
 ```bash
-cd demo/agent
-IFS=/ read -r PROJECT INSTANCE DATABASE <<<"$(../../dist/kcmd action list --store)"
+cd demo/semantic-model/agent
+IFS=/ read -r PROJECT INSTANCE DATABASE <<<"$(../../../dist/kcmd action list --store)"
 ```
 
 Naming it a second time here is how you end up seeding one database while the
@@ -164,7 +164,7 @@ these four again.
 ## 3. Check what the model declares
 
 ```console
-$ ../../dist/kcmd action list
+$ ../../../dist/kcmd action list
 Model 'commerce' (commerce_demo), profile 'spanner':
   store: sqlgen-testing/graph-unified-solution-demo/semantic_agent_demo
   IssueCredit: Credit a customer against one order -- a late delivery, a coupon, a shipping charge applied in error. The credit is added as a negative line and the order total is recomputed from the lines.
@@ -190,7 +190,7 @@ yet](#what-is-not-wired-up-yet).
 The action runs from the command line before any agent exists:
 
 ```console
-$ ../../dist/kcmd action run IssueCredit --arg order=12346 --arg amount=3.00 --arg memo="Coupon applied late"
+$ ../../../dist/kcmd action run IssueCredit --arg order=12346 --arg amount=3.00 --arg memo="Coupon applied late"
 Running 'IssueCredit' on projects/sqlgen-testing/instances/graph-unified-solution-demo/databases/semantic_agent_demo...
   order: '12346' -> Order 12346
 Committed at 2026-09-12T20:46:28.033336Z.
@@ -218,7 +218,7 @@ order_id  placed_on   total
 language model, no agent code yet:
 
 ```console
-$ ../../dist/kcmd agent tools
+$ ../../../dist/kcmd agent tools
 Model 'commerce' (commerce_demo), profile 'spanner':
   store: sqlgen-testing/graph-unified-solution-demo/semantic_agent_demo
 

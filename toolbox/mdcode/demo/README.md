@@ -265,7 +265,7 @@ with names, types and calling guidance all read out of the model. An English
 request goes in and a row changes.
 
 It needs a Spanner instance rather than BigQuery, and it installs its own
-dependency (`@google/adk`) under `agent/` so the library's dependency list stays
-free of agent frameworks.
+dependency (`@google/adk`) under `semantic-model/agent/` so the library's
+dependency list stays free of agent frameworks.
 
-See [agent/README.md](agent/README.md).
+See [semantic-model/agent/README.md](semantic-model/agent/README.md).

@@ -15,8 +15,8 @@
 import {FunctionTool, InMemoryRunner, LlmAgent} from '@google/adk';
 import {Type} from '@google/genai';
 
-import {callableTools, modelTools} from '../../src/libts/semantic/runtime/agent_tools';
-import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
+import {callableTools, modelTools} from '../../../src/libts/semantic/runtime/agent_tools';
+import {createSemanticRuntimes} from '../../../src/libts/semantic/runtime/runtime';
 
 // 1. Build the runtime exactly as `kcmd` builds it -- same directory, same
 //    default profile, same merge, same warnings -- which pairs the model with

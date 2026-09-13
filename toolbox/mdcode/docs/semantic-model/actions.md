@@ -1200,10 +1200,10 @@ not. The place to put it is the model.
 
 ### A worked example
 
-`demo/agent/` is an agent built this way, running against a live Spanner
-database: a commerce model, a binding profile, and one file of 56 lines that
-names no table, no column and no business term. Thirteen of those lines are the
-adapter onto the agent framework. Its README walks the same four steps and
+`demo/semantic-model/agent/` is an agent built this way, running against a live
+Spanner database: a commerce model, a binding profile, and one file of 56 lines
+that names no table, no column and no business term. Thirteen of those lines are
+the adapter onto the agent framework. Its README walks the same four steps and
 states what the run cannot yet do — the $30 credit it issues is over the model's
 declared $25 self-service ceiling and is written anyway, because nothing
 evaluates constraints.
