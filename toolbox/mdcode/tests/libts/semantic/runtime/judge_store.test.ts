@@ -374,4 +374,34 @@ describe('reading a statement before it is sent', () => {
     const refused = readOnly('   ');
     expect((refused as {problem: string}).problem).toContain('nothing');
   });
+
+  test('accepts a read whose first word is inside parentheses', () => {
+    // A union of two reads is written this way, and the parenthesis is not
+    // the word the check is looking for.
+    expect(readOnly('(SELECT 1) UNION ALL (SELECT 2)')).toHaveProperty('sql');
+    expect(readOnly('(SELECT total FROM orders)')).toHaveProperty('sql');
+  });
+
+  test('accepts a keyword written against its operand', () => {
+    expect(readOnly('SELECT*FROM orders')).toHaveProperty('sql');
+  });
+
+  test('refuses a word that merely starts like one of the two', () => {
+    const refused = readOnly('SELECTED FROM orders');
+    expect(refused).toHaveProperty('problem');
+  });
+
+  test('reads a hash comment as a comment, which GoogleSQL does', () => {
+    expect(readOnly('SELECT 1 # ;\nFROM orders')).toHaveProperty('sql');
+  });
+
+  test('a hash comment cannot hide a second command behind an apostrophe',
+     () => {
+       // An unrecognised `#` comment is worse than a missed comment: the
+       // apostrophe opens a quoted run that blanks everything after it, and
+       // the semicolon stops being visible to the check above.
+       const refused = readOnly("SELECT 1 # it's\n; DELETE FROM orders");
+       expect((refused as {problem: string}).problem)
+           .toContain('more than one statement');
+     });
 });

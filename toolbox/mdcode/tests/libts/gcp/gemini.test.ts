@@ -271,6 +271,21 @@ function reading(sql: unknown) {
   };
 }
 
+// One response asking for several reads at once, which Gemini does.
+function readingAll(sqls: string[]) {
+  return {
+    status: 200,
+    result: {
+      candidates: [{
+        content: {
+          parts: sqls.map(
+              sql => ({functionCall: {name: 'read_store', args: {sql}}})),
+        },
+      }],
+    },
+  };
+}
+
 // Answers each call from `responses` in order, staying on the last one after
 // it runs out, and hands back every body that was posted.
 async function exchange(judge: GeminiJudge, responses: any[]) {
@@ -356,6 +371,23 @@ describe('a judge that can read the store', () => {
     const contents = bodies[bodies.length - 1].contents;
     expect(contents[contents.length - 1].parts[0].text)
         .toContain(`${MAX_READS} reads`);
+  });
+
+  test('spends the budget per statement, not per turn', async () => {
+    // A turn can carry several calls, so a budget counted in turns would run
+    // three times the reads the model was told it had. The statements over the
+    // limit are answered rather than dropped, so that the model can tell which
+    // of the ones it asked for actually ran.
+    const store = storeAnswering();
+    const judge = new GeminiJudge(CTX, {store});
+    const three = ['SELECT 1 FROM orders', 'SELECT 2 FROM orders',
+                   'SELECT 3 FROM orders'];
+    const {bodies} = await exchange(
+        judge, [readingAll(three), readingAll(three), answering(THINKING)]);
+    expect(store.asked).toHaveLength(MAX_READS);
+    const contents = bodies[bodies.length - 1].contents;
+    const refused = JSON.stringify(contents).match(/would be read/g) ?? [];
+    expect(refused.length).toBe(three.length * 2 - MAX_READS);
   });
 
   test('costs one call more than it makes reads', async () => {

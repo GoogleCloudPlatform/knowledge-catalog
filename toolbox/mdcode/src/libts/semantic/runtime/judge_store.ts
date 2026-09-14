@@ -24,13 +24,23 @@
 // a SELECT, so the server rejects anything that is not a query -- which is what
 // catches the case a keyword check does not, PostgreSQL's data-modifying common
 // table expression, legal at the top level of a statement and illegal inside a
-// subquery. Only the third of these is a guarantee; the first two are there to
-// turn a server error into a sentence the judge can act on.
+// subquery. The wrap is the strongest of the three, and the first two are there
+// to turn a server error into a sentence the judge can act on. Where the wrap
+// stops short is a query that calls a function which writes: that is still a
+// query, so the server runs it, and on AlloyDB it commits, because that client
+// sends a statement outside any transaction it opened and PostgreSQL commits
+// what it wraps implicitly. Spanner's query path is read-only and has no such
+// opening.
 //
 // The second objection is prompt injection: the caller writes the memo, the
 // memo reaches the judge, and the judge writes the SQL. The fence in gemini.ts
-// marks caller-written text as data, and the wrapping above bounds what a
-// judge convinced by it could do to one read of the tables it was already shown.
+// marks caller-written text as data, and the limits below bound what a judge
+// convinced by it can draw out: a few reads, one query each, twenty rows apiece
+// and two hundred characters per value. What is NOT bounded is which tables a
+// read names. The schema says which tables the model declares, and no check
+// holds a statement to it, so a read reaches whatever the credentials behind
+// the action reach, and rows it returns can be quoted back in the reason the
+// verdict gives.
 //
 // What none of this fixes is timing. A judge reads before the transaction
 // opens, so two concurrent calls can each read the same total and each pass.
@@ -143,17 +153,24 @@ export function modelJudgeStore(
 
 
 /** An entity a judge can be told about: one table, and the columns behind it. */
-interface ReadableEntity {
+export interface ReadableEntity {
   entity: Entity;
   table: string;
   fields: BoundField[];
 }
 
 
-// The same test the lookup tools apply, for the same reason: an abstract
-// entity has no table, a field bound to an expression is not a column, and a
-// data source that is not a table reference cannot be read from.
-function readableEntities(
+/**
+ * What a judge would be shown under this runtime: one entry per entity the
+ * model declares, the profile binds to a table, and a statement can name.
+ *
+ * The same test the lookup tools apply, for the same reason: an abstract
+ * entity has no table, a field bound to an expression is not a column, and a
+ * data source that is not a table reference cannot be read from. Exported so
+ * that `action list` can tell whether offering a reading judge would work
+ * before it prints a command line suggesting one.
+ */
+export function readableEntities(
     runtime: SemanticRuntime, dialect: SqlDialect): ReadableEntity[] {
   const readable: ReadableEntity[] = [];
   for (const entity of runtime.model.entities ?? []) {
@@ -221,11 +238,15 @@ export function readOnly(sql: string): {sql: string}|{problem: string} {
     };
   }
   const body = semicolon === -1 ? sql : sql.slice(0, semicolon);
-  const first = (semicolon === -1 ? blanked : blanked.slice(0, semicolon))
-                    .trim()
-                    .split(/[\s(]+/)[0] ??
-      '';
-  if (!/^(select|with)$/i.test(first)) {
+  // Leading parentheses come off first, because a union of two reads is written
+  // `(SELECT ...) UNION ALL (SELECT ...)`, and the keyword is matched as a
+  // prefix rather than as a whole token, because `SELECT*FROM t` is a read as
+  // well. Both were refused by an earlier form of this check, and a refusal the
+  // judge can do nothing about spends one of the few reads it is allowed.
+  const head = (semicolon === -1 ? blanked : blanked.slice(0, semicolon))
+                   .replace(/^[\s(]+/, '');
+  if (!/^(select|with)\b/i.test(head)) {
+    const first = head.split(/\s+/)[0] ?? '';
     return {
       problem: `A read begins with SELECT or WITH; this one begins with '${
           first || 'nothing'}'. This store is read-only.`,
@@ -241,8 +262,8 @@ export function readOnly(sql: string): {sql: string}|{problem: string} {
 //
 // Written here rather than borrowed because the two dialects quote differently
 // and this has to be right for both: PostgreSQL nests block comments and has
-// dollar quoting, GoogleSQL has backticked identifiers, and both double a quote
-// to escape it. Where the two disagree the more suspicious reading wins, since
+// dollar quoting, GoogleSQL has backticked identifiers and a `#` line comment,
+// and both double a quote to escape it. Where the two disagree the more suspicious reading wins, since
 // the consequence of reading a run as quoted is a refusal and the consequence
 // of reading a quoted run as code is nothing -- the statement is still wrapped.
 function blankOpaque(sql: string): string {
@@ -255,7 +276,11 @@ function blankOpaque(sql: string): string {
   let i = 0;
   while (i < sql.length) {
     const ch = sql[i];
-    if (ch === '-' && sql[i + 1] === '-') {
+    // `--` in both dialects, `#` in GoogleSQL. Missing the second one costs
+    // more than a comment: an apostrophe inside an unrecognised `#` comment
+    // opens a quoted run that blanks the rest of the statement, and a semicolon
+    // after it stops being visible to the single-statement check below.
+    if ((ch === '-' && sql[i + 1] === '-') || ch === '#') {
       const end = sql.indexOf('\n', i);
       const stop = end === -1 ? sql.length : end;
       blank(i, stop);

@@ -213,7 +213,13 @@ export class GeminiJudge extends ApiClient implements Judge {
   private async _gather(contents: Content[]): Promise<void> {
     const store = this._store;
     if (!store) return;
-    for (let round = 0; round < MAX_READS; round++) {
+    // Counted in statements rather than in turns. A model may put several
+    // function calls in one turn, and Gemini does, so a budget spent per turn
+    // would run twelve reads against a limit the prompt told the model was
+    // four. The turn count is bounded as well, because a turn whose calls all
+    // arrive empty spends nothing and would otherwise repeat.
+    let reads = 0;
+    for (let round = 0; round < MAX_READS && reads < MAX_READS; round++) {
       const parts =
           (await this._generate(contents, 'read'))?.candidates?.[0]?.content
               ?.parts ??
@@ -228,14 +234,23 @@ export class GeminiJudge extends ApiClient implements Judge {
       const answers: Part[] = [];
       for (const call of calls) {
         const sql = call.args?.['sql'];
-        const result = typeof sql === 'string' && sql.trim() ?
-            await store.read(sql) :
-            {
-              columns: [],
-              rows: [],
-              truncated: false,
-              problem: 'No statement was given.',
-            };
+        const empty = {columns: [], rows: [], truncated: false};
+        let result;
+        if (typeof sql !== 'string' || !sql.trim()) {
+          result = {...empty, problem: 'No statement was given.'};
+        } else if (reads >= MAX_READS) {
+          // The rest of a turn that asked for more than the budget holds. Told
+          // per call rather than dropped, so the model learns which of its
+          // statements ran and which did not.
+          result = {
+            ...empty,
+            problem: `That would be read ${reads + 1}, and ${
+                MAX_READS} is the limit. Answer with what you have.`,
+          };
+        } else {
+          reads++;
+          result = await store.read(sql);
+        }
         answers.push({
           functionResponse: {
             name: call.name ?? READ_STORE.name,
@@ -251,8 +266,8 @@ export class GeminiJudge extends ApiClient implements Judge {
     contents.push({
       role: 'user',
       parts: [{
-        text: `You have made ${MAX_READS} reads, which is the limit. Answer ` +
-            `now with what you have.`,
+        text: `You have made ${reads} reads, and ${MAX_READS} is the limit. ` +
+            `Answer now with what you have.`,
       }],
     });
   }
