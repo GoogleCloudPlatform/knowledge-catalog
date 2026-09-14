@@ -304,11 +304,16 @@ describe('resolving an entity-typed argument', () => {
   });
 
   test('rejects a missing required reference', async () => {
-    const outcome =
-        await run(resolvingFake(), {args: {target: 'A2', amount: 100}});
+    // The message alone does not pin this. `resolveArguments` says the same
+    // sentence from inside the transaction, so the assertion below holds with
+    // the pre-flight deleted. What the pre-flight buys is saying it before a
+    // session is opened.
+    const fake = resolvingFake();
+    const outcome = await run(fake, {args: {target: 'A2', amount: 100}});
     if (outcome.status !== 'error') throw new Error('expected an error');
     expect(outcome.message)
         .toContain("requires 'source', a reference to a Account");
+    expect(fake.sessionsOpened).toBe(0);
   });
 
   test('leaves scalar arguments alone', async () => {
@@ -955,6 +960,41 @@ describe('a guard settled by judgment', () => {
          expect(outcome.warnings?.[0]).toContain('is an expression');
        });
 
+  test('a guard stating no rule at all is not called an expression',
+       async () => {
+         // A constraint may reach the runtime with neither body through the
+         // library entry point. Reporting it as an expression names a kind of
+         // rule the constraint never states, and the citation cannot quote one
+         // either, so the caller is given nothing to check the claim against.
+         const bodyless: Constraint = {name: 'NoRule', onViolation: 'warn'};
+         const fake = resolvingFake();
+         const outcome = await runWith([bodyless], holds(), fake);
+         if (outcome.status !== 'committed') throw new Error(outcome.message);
+         expect(fake.committed).toBe(true);
+         expect(outcome.warnings?.[0]).toContain('NoRule');
+         expect(outcome.warnings?.[0]).toContain('states no rule to check');
+         expect(outcome.warnings?.[0]).not.toContain('expression');
+       });
+
+  test('an advisory expression guard lets the judged one still be asked',
+       async () => {
+         // An expression guard declaring `warn` stands down, so an action
+         // guarding on both kinds does reach the judge and does commit. The
+         // expression still gets its own warning line.
+         const ceiling: Constraint = {
+           name: 'CreditUnderCeiling',
+           expression: 'amount <= 25',
+           onViolation: 'warn',
+         };
+         const judge = holds();
+         const fake = resolvingFake();
+         const outcome = await runWith([ceiling, justified], judge, fake);
+         if (outcome.status !== 'committed') throw new Error(outcome.message);
+         expect(judge.asked).toHaveLength(1);
+         expect(outcome.warnings?.some(w => w.includes('CreditUnderCeiling')))
+             .toBe(true);
+       });
+
   test('a judgment with no words refuses rather than asking about nothing',
        async () => {
          // An empty rule put to a judge comes back "not enough to tell", so
@@ -966,7 +1006,10 @@ describe('a guard settled by judgment', () => {
          if (outcome.status !== 'error') throw new Error('expected an error');
          expect(judge.asked).toHaveLength(0);
          expect(outcome.message).toContain('CreditIsJustified');
-         expect(outcome.message).toContain('judgment with no words');
+         expect(outcome.message)
+             .toContain(
+                 `'CreditIsJustified', which states a judgment with no ` +
+                 `words in it.`);
        });
 
   test('an advisory judgment with no words is reported, never asked',
@@ -1039,6 +1082,30 @@ describe('a guard settled by judgment', () => {
     expect(whyRefusedWithoutRunning(guarded, action, undefined, holds()))
         .toBeNull();
   });
+});
+
+
+describe('the pre-flight over an incomplete call', () => {
+  test('leaves a scalar alone when a handler supplies the write', async () => {
+    // A handler is handed the arguments whole and decides for itself which of
+    // them it needs, so binding every declared scalar on its behalf would
+    // refuse a call it can perform. Only the entity references are the
+    // runtime's business here, because the runtime resolves those itself.
+    const fake = resolvingFake();
+    const outcome = await run(fake, {args: {source: 'A1', target: 'A2'}});
+    if (outcome.status !== 'committed') throw new Error(outcome.message);
+    expect(fake.committed).toBe(true);
+  });
+
+  test('still refuses a missing entity reference under a handler',
+       async () => {
+         // The runtime resolves references itself, whoever performs the write.
+         const fake = resolvingFake();
+         const outcome = await run(fake, {args: {source: 'A1', amount: 100}});
+         if (outcome.status !== 'error') throw new Error('expected an error');
+         expect(outcome.message).toContain('target');
+         expect(fake.sessionsOpened).toBe(0);
+       });
 });
 
 

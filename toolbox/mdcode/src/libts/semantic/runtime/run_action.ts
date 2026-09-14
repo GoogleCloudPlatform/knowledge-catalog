@@ -500,10 +500,12 @@ function unsafeToRunUnchecked(
                             c.judgment !== undefined && !c.judgment.trim())
                     .map(c => c.name);
   if (blank.length) {
-    return `Action '${action.name}' is guarded by ${
-               quoteList(blank)}, which state a judgment with no words in ` +
-        `it. There is nothing to put to a judge, so the action is refused ` +
-        `rather than run unchecked.`;
+    const says = blank.length === 1 ?
+        'states a judgment with no words in it' :
+        'state judgments with no words in them';
+    return `Action '${action.name}' is guarded by ${quoteList(blank)}, ` +
+        `which ${says}. There is nothing to put to a judge, so the action ` +
+        `is refused rather than run unchecked.`;
   }
   const judged = new Set(judgedConstraints(model).map(c => c.name));
   // An expression is text nothing computes here, and a name the model does not
@@ -685,12 +687,17 @@ function unsettledGuards(model: SemanticModel, action: Action, judge?: Judge):
       // whatever came back.
       if (judge) continue;
       out.push({constraint, why: 'this run was given no judge to ask.'});
-    } else {
+    } else if ((constraint.expression ?? '').trim()) {
       out.push({
         constraint,
         why: 'its rule is an expression, and this runtime does not evaluate ' +
             'one.',
       });
+    } else {
+      // Neither body. `kcmd` validates the model first, so this arrives only
+      // through the library entry point, and calling it an expression there
+      // sends the author looking for a rule the constraint never states.
+      out.push({constraint, why: 'it states no rule to check.'});
     }
   }
   return out;

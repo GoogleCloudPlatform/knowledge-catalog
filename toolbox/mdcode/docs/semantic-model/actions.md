@@ -1047,12 +1047,16 @@ same way. An advisory rule reports that it went unchecked and the write
 proceeds; a rule declaring `reject` or `escalate` stops the call, carrying the
 error the judge raised.
 
-**Status: an action guarding on both kinds is still refused.** The expression
-half has nothing to settle it, and that refusal is decided before any judge is
-asked, so a mixed action never reaches the model. Three of the five guards
+**Status: an expression guard that refuses stops the call before any judge is
+asked.** A guard stated as an expression and declaring `reject` or `escalate`
+has nothing here to settle it, so the action is refused and no model is
+reached. One declaring `warn` stands down, so an action guarding on both kinds
+does reach the judge and does commit, with a warning line for the expression
+nothing checked. Three of the five guards
 [section 2](#a-policy-whose-rules-end-differently) puts on `IssueCredit` are
-expressions. The runs here therefore guard on the judged rule alone, which is
-also why they load with the all-judged warning that section describes.
+expressions, and all three declare `escalate` or `reject`. The runs here
+therefore guard on the judged rule alone, which is also why they load with the
+all-judged warning that section describes.
 
 ## 8. Hand it to an agent
 
