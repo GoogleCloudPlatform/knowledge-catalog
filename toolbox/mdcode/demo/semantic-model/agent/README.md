@@ -475,47 +475,26 @@ The agent wrote $30 and asked nobody. The agent did not disobey: the policy is
 written down and never attached to anything.
 
 `commerce.yaml` declares three constraints, one per policy rule, and references
-none of them. A constraint is inert until an action names it in
-`guards`, and this runtime does not evaluate constraints yet — so naming one
-makes the action *unrunnable* rather than checked. Try it: add
-`guards: [CreditUnderReviewThreshold]` to the action and run `kcmd agent tools`
-again.
+none of them. A constraint is inert until an action names it in `guards`, so a
+rule nobody named is a rule no call consults, whatever it says.
 
-```console
-  action  issue_credit  (IssueCredit)  [NOT RUNNABLE]
-      ...
-      This call is gated by CreditUnderReviewThreshold.
+`CreditUnderReviewThreshold` is the rule the run above walked past, and it reads
+`amount <= 25` — a comparison over the action's own parameter, which the runtime
+turns into a query and checks before any statement runs. Adding
+`guards: [CreditUnderReviewThreshold]` to `IssueCredit` is therefore all it
+takes: the $30 credit is refused with `escalate`, the transaction rolls back,
+and the agent is told a supervisor decides it. See
+[What a violated guard does](../../../docs/semantic-model/actions.md#what-a-violated-guard-does).
 
-      Calling this will not work: Action 'IssueCredit' is guarded by
-      'CreditUnderReviewThreshold', and this runtime does not evaluate
-      constraints yet. Running it would apply a write the model says must be
-      checked first, so it is refused rather than run unchecked. Report that
-      rather than retrying.
-      ...
-```
+Two of the three rules are less straightforward. `CreditWithinOrderTotal` is
+`amount <= Order.total`, which reads the orders table and the `amount` parameter
+both, so its probe queries the order the call names and still runs before any
+statement. `OrderTotalMatchesLineItems` aggregates over a child table, which the
+expression grammar does not parse, so naming it stops the action rather than
+checking it.
 
-Refusing is the point. The model says this write must be checked and the checker
-is missing, so the write is refused rather than run unchecked. The tool is still
-derived, still named and still described, because an action the model declares
-should not vanish from what the model offers. `agent.ts` reports it and leaves
-it unbound, so the agent has no call to make and nothing to retry.
-
-Re-run the same request with the guard attached and you get the reading half and
-none of the writing half:
-
-```console
-$ bun agent.ts "Find the order for Morgan Ellis (morgan.ellis@example.com) that was placed on Labor Day. ..."
-(withheld) issue_credit: Action 'IssueCredit' is guarded by 'CreditUnderReviewThreshold', and this runtime does not evaluate constraints yet. Running it would apply a write the model says must be checked first, so it is refused rather than run unchecked.
-  -> find_customer({"email":"morgan.ellis@example.com","name":"Morgan Ellis"})
-  <- {"entity":"Customer","fields":["customerId","name","email"],"rows":[["1","Morgan Ellis","morgan.ellis@example.com"]],"truncated":false}
-  -> find_order({"customerId":1,"placedOn":"2026-09-07"})
-  <- {"entity":"Order","fields":["orderId","customerId","placedOn","total","status"],"rows":[["12345","1","2026-09-07","165.85","OPEN"]],"truncated":false}
-  -> find_line_item({"orderId":12345,"type":"fee"})
-  <- {"entity":"LineItem","fields":["lineItemId","orderId","type","amount","memo"],"rows":[["li-12345-3","12345","fee","30","Shipping"]],"truncated":false}
-The customer Morgan Ellis (ID 1) has an order (ID 12345) placed on 2026-09-07. This order includes a shipping fee of $30.00 (line item ID li-12345-3).
-
-I cannot issue credits or modify orders. A person will have to decide how to proceed with the credit.
-```
+Wiring the guards and re-running the request live is the next step for this
+demo, and the transcript above is what it looks like before that happens.
 
 It still did the work worth doing — found the order, found the charge, named the
 amount — and order 12345 is still $165.85.

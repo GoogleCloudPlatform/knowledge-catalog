@@ -3,7 +3,9 @@
 //
 // Almost nothing here reaches a store, and that is not a compromise: `list`
 // never opens one, and every `run` covered but the last fails before the first
-// request. The exception fakes the Spanner client's own surface, because what
+// request. `IssueCredit` names a guard settled by judgment, which this runtime
+// cannot check and therefore refuses, so a `run` of it stops at the runtime
+// without a session being opened. The exception fakes the Spanner client's own surface, because what
 // it checks is the QUESTION the runtime asks the store. The
 // argument parse, the choice of database, and the runtime's own refusal to run
 // an action a constraint is supposed to decide all happen before a session
@@ -27,8 +29,8 @@ const CTX = new ApiContext('test-project', 'us', 'test-token');
 const SPANNER = '//spanner.googleapis.com/projects/acme-ops/instances/prod';
 
 // The model as authored: bound to Spanner, with one action the runtime could
-// run and one it could not, plus the two constraint shapes -- an invariant over
-// stored data and a guard over an argument.
+// run and one it could not, plus three constraint shapes -- an invariant over
+// stored data, a guard over an argument, and a rule settled by judgment.
 const MODEL = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
@@ -58,7 +60,7 @@ semantic_model:
         parameters:
           - {name: order, type: Order}
           - {name: amount, type: Decimal}
-        guards: [CreditIsPositive]
+        guards: [CreditIsPositive, CreditIsJustified]
         affects:
           - {concept: Entry, operation: create}
       - name: NotifyCustomer
@@ -75,6 +77,10 @@ semantic_model:
       - name: CreditIsPositive
         expression: amount > 0
         description: A credit must be for a positive amount.
+      - name: CreditIsJustified
+        judgment: The request must name a specific service failure.
+        on_violation: escalate
+        description: A credit needs a stated reason.
 `;
 
 // The same model with nothing to run.
@@ -395,7 +401,7 @@ describe('kcmd action run: what it will not send to a store', () => {
          // below is about the guard, which is proof the parse succeeded.
          const code = await action('run', 'IssueCredit', {arg: 'amount=30'});
          expect(code).toBe(1);
-         expect(logs.join('\n')).toContain('does not evaluate constraints yet');
+         expect(logs.join('\n')).toContain('runs no judge');
        });
 
   test('refuses an action whose executor runs outside the transaction',
@@ -406,19 +412,18 @@ describe('kcmd action run: what it will not send to a store', () => {
          expect(logs.join('\n')).toContain('which runs outside this transaction');
        });
 
-  test('refuses a guarded action while nothing evaluates the guard',
-       async () => {
-         writeWorkspace();
-         const code = await action(
-             'run', 'IssueCredit', {arg: ['order=12345', 'amount=30']});
-         expect(code).toBe(1);
-         const out = logs.join('\n');
-         expect(out).toContain("is guarded by 'CreditIsPositive'");
-         // It got as far as choosing a database, so the refusal is the
-         // runtime's and not a wiring failure earlier on.
-         expect(out).toContain(
-             "Running 'IssueCredit' on projects/acme-ops/instances/prod/databases/commerce");
-       });
+  test('refuses an action whose guard it cannot check', async () => {
+    writeWorkspace();
+    const code = await action(
+        'run', 'IssueCredit', {arg: ['order=12345', 'amount=30']});
+    expect(code).toBe(1);
+    const out = logs.join('\n');
+    expect(out).toContain("constraint 'CreditIsJustified' cannot be checked");
+    // It got as far as choosing a database, so the refusal is the
+    // runtime's and not a wiring failure earlier on.
+    expect(out).toContain(
+        "Running 'IssueCredit' on projects/acme-ops/instances/prod/databases/commerce");
+  });
 });
 
 
@@ -506,14 +511,14 @@ describe('kcmd action run: which model has to be valid', () => {
          withWarehouse();
          const code = await action(
              'run', 'IssueCredit', {arg: ['order=12345', 'amount=30']});
-         // Still refused -- IssueCredit is guarded and nothing evaluates a
-         // guard yet -- but refused on its OWN terms.
+         // Still refused -- IssueCredit names a guard this runtime cannot
+         // check -- but refused on its OWN terms.
          expect(code).toBe(1);
          // The broken document is still WARNED about -- it is a real problem,
          // reported where it is. What must not happen is it becoming the
          // reason this call failed.
          const errors = logs.filter(l => l.startsWith('Error:')).join('\n');
-         expect(errors).toContain("is guarded by 'CreditIsPositive'");
+         expect(errors).toContain("'CreditIsJustified' cannot be checked");
          expect(errors).not.toContain('Pallet');
          expect(errors).not.toContain('warehouse');
        });
@@ -569,7 +574,7 @@ describe('kcmd action: what the command line can actually contain', () => {
          const out = logs.join('\n');
          expect(out).not.toContain('given twice');
          // It gets as far as the refusal, which is where this model stops.
-         expect(out).toContain('CreditIsPositive');
+         expect(out).toContain('CreditIsJustified');
        });
 
   test('a genuinely repeated argument is still reported', async () => {
