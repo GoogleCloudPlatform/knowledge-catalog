@@ -1036,7 +1036,10 @@ Committed at 2026-09-14T06:02:40.218987Z.
 guard stops no call, so the call runs even with no judge supplied — and the
 warning names the rule and ends "was not checked: this run was given no judge to
 ask." Committing in silence would tell the caller that every rule passed when
-one of them was never put to anybody.
+one of them was never put to anybody. An advisory guard stated as an expression
+is reported the same way. Supplying a judge settles the rules written in words
+and settles no expression, so each expression guard the run skipped gets its own
+warning line.
 
 **A judge that cannot be reached has not given a verdict.** A failed model call
 says nothing about whether the rule holds, and `on_violation` routes that the

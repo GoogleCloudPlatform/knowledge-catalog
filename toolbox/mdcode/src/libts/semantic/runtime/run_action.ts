@@ -155,6 +155,12 @@ export async function runAction(opts: RunActionOptions):
       whyRefusedWithoutRunning(model, action, opts.handler, opts.judge);
   if (refusal) return {status: 'error', message: refusal};
 
+  // Resolved before the judge, not after. There may be no store to touch at
+  // all, and a run that could never have written must not first spend seconds
+  // and a model call finding that out.
+  const client = runtimeClient(opts.runtime);
+  if ('error' in client) return {status: 'error', message: client.error};
+
   // A judged guard settles HERE, before a transaction exists. A model call
   // takes seconds, and holding the store's write locks across one costs more
   // than it buys, so the order is: ask, refuse with nothing touched, then open
@@ -162,29 +168,24 @@ export async function runAction(opts: RunActionOptions):
   // never the state the write produced, which means a rule about the RESULT of
   // a write has to be an expression.
   const warnings: string[] = [];
-  const judged = judgedGuards(model, action);
-  if (judged.length && opts.judge) {
-    // Returned rather than thrown. A throw from here reaches the catch at the
-    // end, which has no transaction to report on and would announce this as a
-    // failure to start on the database.
-    const asked = await askJudges(action, args, judged, opts.judge);
-    if ('error' in asked) return {status: 'error', message: asked.error};
-    warnings.push(...asked.warnings);
-  } else {
-    // Every judged guard still standing here is advisory, because anything
-    // stricter was refused above. An advisory rule nobody asked about is a
-    // check the model wanted and did not get, and a caller shown no line for
-    // it reads the write as having passed every rule.
-    for (const c of judged) {
-      warnings.push(
-          `${citation(c)} was not checked: this run was given no judge ` +
-          `to ask.`);
+  if (opts.judge) {
+    const judged = judgedGuards(model, action);
+    if (judged.length) {
+      // Returned rather than thrown. A throw from here reaches the catch at
+      // the end, which has no transaction to report on and would announce this
+      // as a failure to start on the database.
+      const asked = await askJudges(action, args, judged, opts.judge);
+      if ('error' in asked) return {status: 'error', message: asked.error};
+      warnings.push(...asked.warnings);
     }
   }
-
-  // Also before touching the store, because there may be none to touch.
-  const client = runtimeClient(opts.runtime);
-  if ('error' in client) return {status: 'error', message: client.error};
+  // Every guard still unsettled here is advisory, because anything stricter
+  // was refused above. An advisory rule nothing checked is a check the model
+  // asked for and did not get, and a caller shown no line for it reads the
+  // write as having passed every rule the model states.
+  for (const {constraint, why} of unsettledGuards(model, action, opts.judge)) {
+    warnings.push(`${citation(constraint)} was not checked: ${why}`);
+  }
 
   // Whether a transaction was ever opened. A session that could not be
   // created, or a `beginReadWrite` that threw, fails with nothing to roll
@@ -481,6 +482,21 @@ function unsafeToRunUnchecked(
                                .filter(c => c.onViolation === 'warn')
                                .map(c => c.name));
   const guards = (action.guards ?? []).filter(g => !advisory.has(g));
+  // A judgment with no words in it is nothing to put to a judge. `kcmd`
+  // validates the model first, so this arrives only through the library entry
+  // point, where asking anyway would refuse every call and cite a rule it
+  // cannot quote.
+  const blank = (model.constraints ?? [])
+                    .filter(
+                        c => guards.includes(c.name) &&
+                            c.judgment !== undefined && !c.judgment.trim())
+                    .map(c => c.name);
+  if (blank.length) {
+    return `Action '${action.name}' is guarded by ${
+               quoteList(blank)}, which state a judgment with no words in ` +
+        `it. There is nothing to put to a judge, so the action is refused ` +
+        `rather than run unchecked.`;
+  }
   const judged = new Set(judgedConstraints(model).map(c => c.name));
   // An expression is text nothing computes here, and a name the model does not
   // declare is nothing at all. Both refuse whether or not a judge was handed
@@ -516,12 +532,15 @@ function judgedConstraints(model: SemanticModel): readonly Constraint[] {
 }
 
 
-// The judged rules `action` names in its `guards`, advisory ones included. An
-// advisory rule never stops the call, and it still has something to report.
+// The judged rules `action` names in its `guards` that a judge can actually
+// be asked about. Advisory ones are included, because a rule that never stops
+// the call still has something to report. One whose judgment states no words
+// is left out: it is nothing to ask, and `unsettledGuards` reports it.
 function judgedGuards(
     model: SemanticModel, action: Action): readonly Constraint[] {
   const guards = new Set(action.guards ?? []);
-  return judgedConstraints(model).filter(c => guards.has(c.name));
+  return judgedConstraints(model).filter(
+      c => guards.has(c.name) && (c.judgment ?? '').trim());
 }
 
 
@@ -537,13 +556,25 @@ async function askJudges(
     const advisory = constraint.onViolation === 'warn';
     let verdict: JudgeVerdict;
     try {
-      verdict = await judge.decide({
+      const answer = await judge.decide({
         constraint: constraint.name,
         rule: (constraint.judgment ?? '').trim(),
         action: action.name,
         actionDescription: action.description,
         arguments: args,
       });
+      // Read inside the try. `Judge` is a seam a caller implements, so a
+      // verdict can arrive without the fields its type promises, and reaching
+      // into a malformed one below would throw out of `runAction` -- which
+      // states that it returns an outcome for every expected failure.
+      if (typeof answer?.holds !== 'boolean') {
+        throw new Error(
+            `judge ${judge.name} did not say whether the rule holds`);
+      }
+      verdict = {
+        holds: answer.holds,
+        reason: typeof answer.reason === 'string' ? answer.reason : '',
+      };
     } catch (err) {
       // A judge that could not be reached has not said the rule fails; it has
       // said nothing. Routing that is what `onViolation` is for: an advisory
@@ -586,12 +617,50 @@ async function askJudges(
 }
 
 
-// How a rule is named in a report: what it is called, and the words it states.
-// Quoting the rule saves the reader a trip to the model to find out what the
-// name refers to.
+// How a rule is named in a report: what it is called, and the rule it states,
+// whichever of the two bodies states it. Quoting it saves the reader a trip to
+// the model to find out what the name refers to.
 function citation(constraint: Constraint): string {
-  const rule = (constraint.judgment ?? '').trim();
+  const rule =
+      (constraint.judgment ?? constraint.expression ?? '').trim();
   return rule ? `'${constraint.name}' ("${rule}")` : `'${constraint.name}'`;
+}
+
+
+// The guards nothing settled on this run, each with why. Reached only after
+// `unsafeToRunUnchecked` has refused everything stricter, so what turns up
+// here is advisory: it did not stop the write, and it still has to be
+// reported rather than left to read as a rule that passed.
+function unsettledGuards(model: SemanticModel, action: Action, judge?: Judge):
+    ReadonlyArray<{constraint: Constraint; why: string}> {
+  const named = new Set(action.guards ?? []);
+  const out: Array<{constraint: Constraint; why: string}> = [];
+  for (const constraint of model.constraints ?? []) {
+    if (!named.has(constraint.name)) continue;
+    if (constraintEvaluation(constraint) === 'judged') {
+      if (!(constraint.judgment ?? '').trim()) {
+        // Refused outright when the guard is anything stricter. An advisory
+        // one is never refused, so it lands here instead of reaching a judge
+        // as an empty rule.
+        out.push({
+          constraint,
+          why: 'its judgment states no words to put to a judge.',
+        });
+        continue;
+      }
+      // One that had a judge was already put to it, and `askJudges` reported
+      // whatever came back.
+      if (judge) continue;
+      out.push({constraint, why: 'this run was given no judge to ask.'});
+    } else {
+      out.push({
+        constraint,
+        why: 'its rule is an expression, and this runtime does not evaluate ' +
+            'one.',
+      });
+    }
+  }
+  return out;
 }
 
 

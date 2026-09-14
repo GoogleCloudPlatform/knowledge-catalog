@@ -913,6 +913,73 @@ describe('a guard settled by judgment', () => {
          expect(fake.sessionsOpened).toBe(0);
        });
 
+  test('an advisory guard stated as an expression is reported as unchecked',
+       async () => {
+         // Supplying a judge settles the rules stated in words and nothing
+         // else. An expression guard that never stopped the call was never
+         // checked either, and a caller shown no line for it reads the commit
+         // as having met every rule the model states.
+         const ceiling: Constraint = {
+           name: 'CreditUnderCeiling',
+           expression: 'amount <= 25',
+           onViolation: 'warn',
+         };
+         const fake = resolvingFake();
+         const outcome = await runWith([ceiling], holds(), fake);
+         if (outcome.status !== 'committed') throw new Error(outcome.message);
+         expect(fake.committed).toBe(true);
+         expect(outcome.warnings?.[0]).toContain('CreditUnderCeiling');
+         expect(outcome.warnings?.[0]).toContain('amount <= 25');
+         expect(outcome.warnings?.[0]).toContain('is an expression');
+       });
+
+  test('a judgment with no words refuses rather than asking about nothing',
+       async () => {
+         // An empty rule put to a judge comes back "not enough to tell", so
+         // every call would be refused and the citation could not quote what
+         // was broken.
+         const judge = holds();
+         const blank: Constraint = {...justified, judgment: '   '};
+         const outcome = await runWith([blank], judge);
+         if (outcome.status !== 'error') throw new Error('expected an error');
+         expect(judge.asked).toHaveLength(0);
+         expect(outcome.message).toContain('CreditIsJustified');
+         expect(outcome.message).toContain('judgment with no words');
+       });
+
+  test('an advisory judgment with no words is reported, never asked',
+       async () => {
+         // An advisory guard is never refused, so this is the one path on
+         // which an empty rule could still have reached a judge.
+         const judge = holds();
+         const blank: Constraint = {...advisory, judgment: ''};
+         const outcome = await runWith([blank], judge);
+         if (outcome.status !== 'committed') throw new Error(outcome.message);
+         expect(judge.asked).toHaveLength(0);
+         expect(outcome.warnings?.[0]).toContain('states no words');
+       });
+
+  test('a verdict missing its answer is reported, not thrown', async () => {
+    // `Judge` is a seam a caller implements, so a verdict can arrive without
+    // the fields its type promises. runAction states that it returns an
+    // outcome for every expected failure, and a TypeError escaping it would
+    // reach the CLI as a stack trace and an agent tool as a rejection.
+    const malformed = new ScriptedJudge({} as unknown as JudgeVerdict);
+    const outcome = await runWith([justified], malformed);
+    if (outcome.status !== 'error') throw new Error('expected an error');
+    expect(outcome.message).toContain('did not say whether the rule holds');
+    expect(outcome.message).toContain('nothing was written');
+  });
+
+  test('a verdict that does not hold and states no reason still refuses',
+       async () => {
+         const terse = new ScriptedJudge(
+             {holds: false, reason: undefined as unknown as string});
+         const outcome = await runWith([justified], terse);
+         if (outcome.status !== 'error') throw new Error('expected an error');
+         expect(outcome.message).toContain('does not hold for this call');
+       });
+
   test('an advisory guard nobody could ask about is reported, not dropped',
        async () => {
          // A warn rule does not stop the call, so the call runs with no judge.

@@ -22,9 +22,10 @@
  * tool it should not have gets back an outcome it has to report rather than a
  * knob it can turn.
  *
- * One thing the runtime cannot yet do shows through here. Nothing evaluates a
- * constraint, so runAction refuses any action that names one in `guards`
- * rather than running it unchecked. A tool for such an action would fail every
+ * One thing the runtime cannot yet do shows through here. A rule stated in
+ * words is settled by a judge and this module supplies none, and a rule stated
+ * as an expression is settled by nothing at all, so runAction refuses any
+ * action that names either in `guards` rather than running it unchecked. A tool for such an action would fail every
  * time it was called, which is a bad thing to hand a caller that cannot see
  * why. So a tool carries `runnable`, and an adapter binds the ones that are;
  * the rest are still returned, named and explained, because an action the
@@ -76,7 +77,7 @@ export interface ActionTool {
   /**
    * Whether calling this would reach the store. False when the runtime would
    * refuse it before opening a transaction -- today, because the action names
-   * a guard and nothing evaluates constraints yet, or because this binding
+   * a guard that nothing available here settles, or because this binding
    * supplies no executor. `invoke` still works and still reports the refusal;
    * this is here so an adapter can decline to offer a tool that cannot work.
    */
