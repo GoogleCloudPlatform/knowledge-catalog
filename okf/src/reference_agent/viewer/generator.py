@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from urllib.parse import unquote
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -70,7 +71,7 @@ def _extract_links(body: str, doc_dir: Path, bundle_root: Path) -> list[str]:
     seen: set[str] = set()
     bundle_root_resolved = bundle_root.resolve()
     for m in _LINK_RE.finditer(body):
-        target = m.group(1)
+        target = unquote(m.group(1))
         if "://" in target or target.startswith("/"):
             continue
         try:
