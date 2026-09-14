@@ -321,6 +321,28 @@ describe('kcmd action list', () => {
          expect(out).not.toContain('kcmd action run IssueCredit');
        });
 
+  test('the run line names --judge when a guard is settled by judgment',
+       async () => {
+         // Copying the line is the whole point of printing it. A judged guard
+         // refuses without a judge, so a line omitting the flag would send the
+         // reader to a refusal it could have predicted.
+         writeWorkspace(MODEL.replace(
+             '      - name: CreditIsPositive\n' +
+                 '        expression: amount > 0\n',
+             '      - name: CreditIsPositive\n' +
+                 '        judgment: The credit must be for a positive amount.\n' +
+                 '        on_violation: reject\n'));
+         const code = await action('list', undefined);
+         expect(code).toBe(0);
+         const out = logs.join('\n');
+         expect(out).toContain(
+             'run:        kcmd action run IssueCredit --judge ' +
+             '--arg order=<Order>');
+         // The other action names no guard at all, so it gains nothing.
+         expect(out).toContain(
+             'run:        kcmd action run NotifyCustomer --arg order=<Order>');
+       });
+
   test('says so when a model declares no actions', async () => {
     writeWorkspace(NO_ACTIONS);
     const code = await action('list', undefined);

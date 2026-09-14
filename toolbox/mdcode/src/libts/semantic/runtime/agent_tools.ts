@@ -22,27 +22,24 @@
  * tool it should not have gets back an outcome it has to report rather than a
  * knob it can turn.
  *
- * One thing the runtime cannot yet do shows through here. A rule stated in
- * words is settled by a judge and this module supplies none, and a rule stated
- * as an expression is settled by nothing at all, so runAction refuses any
- * action that names either in `guards` rather than running it unchecked. A tool for such an action would fail every
- * time it was called, which is a bad thing to hand a caller that cannot see
- * why. So a tool carries `runnable`, and an adapter binds the ones that are;
- * the rest are still returned, named and explained, because an action the
- * model declares should not vanish from a listing of what the model declares.
+ * What the runtime can settle shows through here, because it decides which
+ * tools are worth handing out. A guard stated as a `judgment` is settled by
+ * asking a judge, so passing one in is what makes the actions it gates
+ * callable. A guard stated as an `expression` is text nothing computes here,
+ * so runAction refuses any action naming one rather than running it unchecked,
+ * judge or no judge. A tool for such an action would fail every time it was
+ * called, which is a bad thing to hand a caller that cannot see why. So a tool
+ * carries `runnable`, and an adapter binds the ones that are; the rest are
+ * still returned, named and explained, because an action the model declares
+ * should not vanish from a listing of what the model declares.
  */
 
 import {boundTable, spannerTable} from '../binding';
 import {Action, Entity, fieldBinding, SemanticModel} from '../ir';
 
 import {dialectFor} from './dialect';
-import {
-  ActionHandler,
-  ActionOutcome,
-  bindScalar,
-  runAction,
-  whyRefusedWithoutRunning,
-} from './run_action';
+import {Judge} from './judge';
+import {ActionHandler, ActionOutcome, bindScalar, runAction, whyRefusedWithoutRunning,} from './run_action';
 import {runtimeClient, SemanticRuntime} from './runtime';
 
 
@@ -76,10 +73,12 @@ export interface ActionTool {
   parameters: ToolParameter[];
   /**
    * Whether calling this would reach the store. False when the runtime would
-   * refuse it before opening a transaction -- today, because the action names
-   * a guard that nothing available here settles, or because this binding
-   * supplies no executor. `invoke` still works and still reports the refusal;
-   * this is here so an adapter can decline to offer a tool that cannot work.
+   * refuse it before opening a transaction -- because the action names a guard
+   * nothing here can settle, or because this binding supplies no executor.
+   * Which guards can be settled depends on what was passed in: a judged guard
+   * needs a `judge`, and an expression needs an evaluator that does not exist
+   * yet. `invoke` still works and still reports the refusal; this is here so
+   * an adapter can decline to offer a tool that cannot work.
    */
   runnable: boolean;
   /** Why `runnable` is false, in words a caller can report. */
@@ -112,7 +111,9 @@ export interface ToolResult {
    * The statements ran and the commit itself failed to answer.
    */
   unknown?: boolean;
-  /** What the caller should do next, when the outcome permits only one thing. */
+  /**
+   * What the caller should do next, when the outcome permits only one thing.
+   */
   whatToDo?: string;
   /**
    * What a rule reported without stopping the write. An advisory guard whose
@@ -133,6 +134,17 @@ export interface ActionToolOptions {
    * not wrap a call it could not roll back.
    */
   handler?: ActionHandler;
+  /**
+   * Settles the guards the model states in words. An action guarded by a
+   * judgment is refused without one, so passing a judge here is what makes
+   * such an action offerable at all.
+   *
+   * The same judge answers `runnable` and the call, which is why it is passed
+   * to the derivation rather than to each invocation: a tool derived with a
+   * judge and then called without one would be advertised as runnable and
+   * refused mid-call.
+   */
+  judge?: Judge;
 }
 
 
@@ -155,8 +167,7 @@ function toolFor(action: Action, opts: ActionToolOptions): ActionTool {
   // function for the whole model, so passing it through unconditionally would
   // retract that claim for every action at once -- silently, since runAction
   // prefers a handler over the action's own statements.
-  const handler =
-      action.executor?.kind === 'sql' ? undefined : opts.handler;
+  const handler = action.executor?.kind === 'sql' ? undefined : opts.handler;
   // Asked of the runtime rather than worked out again here. Two copies of this
   // rule drift, and neither direction of the drift is visible: a tool said to
   // be runnable that refuses every call, or one withheld that would have run.
@@ -165,7 +176,8 @@ function toolFor(action: Action, opts: ActionToolOptions): ActionTool {
   // model, then the runtime having no store, which is the same sentence on
   // every tool and says nothing about this one.
   const model = opts.runtime.model;
-  const blocked = whyRefusedWithoutRunning(model, action, handler) ??
+  const blocked =
+      whyRefusedWithoutRunning(model, action, handler, opts.judge) ??
       noStore(opts.runtime) ?? undefined;
   const tool: ActionTool = {
     name: snakeCase(action.name),
@@ -179,6 +191,7 @@ function toolFor(action: Action, opts: ActionToolOptions): ActionTool {
         actionName: action.name,
         args,
         handler,
+        judge: opts.judge,
       });
       return describeOutcome(outcome);
     },
@@ -205,8 +218,9 @@ function toolDescription(
     parts.push(`This call is gated by ${joinNames(gates)}.`);
   }
   if (blocked) {
-    parts.push(`Calling this will not work: ${blocked} Report that rather ` +
-               `than retrying.`);
+    parts.push(
+        `Calling this will not work: ${blocked} Report that rather ` +
+        `than retrying.`);
   }
   return parts.join('\n\n');
 }
@@ -543,8 +557,10 @@ function instructionFor(model: SemanticModel): string {
       'caller\'s time. Never compute a total or a balance yourself; the ' +
       'tools do that. When a tool reports that a write did not happen, read ' +
       'the reason it gives and repeat it plainly; if it says a person has to ' +
-      'decide, say so and stop, because you cannot approve it yourself. ' +
-      'Finish by saying what you changed.');
+      'decide, say so and stop, because you cannot approve it yourself. When ' +
+      'a write did happen and the tool returns warnings, the change landed ' +
+      'and a rule still went unmet or unchecked: report both, because ' +
+      'nobody else will. Finish by saying what you changed.');
   return parts.join('\n\n');
 }
 
@@ -655,9 +671,7 @@ function filterDescription(entity: Entity, field: BoundField): string {
 
 function lookupDescription(entity: Entity, bound: BoundField[]): string {
   const parts: string[] = [];
-  parts.push(
-      entity.description?.trim() ||
-      `Look up ${entity.name} records.`);
+  parts.push(entity.description?.trim() || `Look up ${entity.name} records.`);
   if (bound.length) {
     parts.push(
         `Returns ${bound.map(f => f.name).join(', ')}. Every argument is an ` +
@@ -717,8 +731,8 @@ async function runLookup(
     if ('error' in value_) {
       return {
         ...empty,
-        problem: `${value_.error} No ${entity.name} has ${field.name} = '${
-            value}'.`,
+        problem:
+            `${value_.error} No ${entity.name} has ${field.name} = '${value}'.`,
       };
     }
     const bind = `f_${predicates.length}`;
@@ -745,8 +759,8 @@ async function runLookup(
   let rows: Array<Array<string|null>>;
   try {
     rows = await client.withSession(async sessionName => {
-      const res = await client.executeQuery(
-          sessionName, {sql, params, paramTypes});
+      const res =
+          await client.executeQuery(sessionName, {sql, params, paramTypes});
       if (res.status < 200 || res.status >= 300) {
         throw new Error(res.message ?? `${res.status}`);
       }

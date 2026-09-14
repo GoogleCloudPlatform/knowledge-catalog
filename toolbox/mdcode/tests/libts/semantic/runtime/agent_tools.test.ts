@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import {actionTools, callableTools, describeOutcome, entityTools, modelTools} from '../../../../src/libts/semantic/runtime/agent_tools';
 import {Action, Constraint, Entity, SemanticModel} from '../../../../src/libts/semantic/ir';
 import {loadModels} from '../../../../src/libts/semantic/loader';
+import {Judge} from '../../../../src/libts/semantic/runtime/judge';
 import {SemanticRuntime} from '../../../../src/libts/semantic/runtime/runtime';
 import * as spanner from '../../../../src/libts/gcp/spanner';
 
@@ -270,6 +271,66 @@ describe('what counts as runnable is the runtime\'s answer, not a copy', () => {
         actionTools({runtime: rt(guardedBy(other, 'NoSuchRule'))});
     expect(tool.runnable).toBe(false);
     expect(tool.unavailable).toContain('NoSuchRule');
+  });
+
+  // What the caller holds is half of the verdict. A judged guard is settled by
+  // asking, so whether such an action can be offered depends on whether a
+  // judge was passed to the derivation -- and the derivation has to say so
+  // both ways round, or an adapter either withholds a tool that works or
+  // offers one that is refused on its first call.
+  const judged: Constraint = {
+    name: 'CreditIsJustified',
+    judgment: 'The memo must name what went wrong.',
+    onViolation: 'reject',
+  };
+
+  const neverAsked: Judge = {
+    name: 'test judge',
+    decide: () => {
+      throw new Error('the derivation must not call a judge');
+    },
+  };
+
+  test('a judged guard withholds the tool when no judge was supplied', () => {
+    const [tool] =
+        actionTools({runtime: rt(guardedBy(judged, 'CreditIsJustified'))});
+    expect(tool.runnable).toBe(false);
+    expect(tool.unavailable).toContain('no judge');
+  });
+
+  test('a judge makes an action guarded by a judgment offerable', () => {
+    const [tool] = actionTools(
+        {runtime: rt(guardedBy(judged, 'CreditIsJustified')),
+         judge: neverAsked});
+    expect(tool.runnable).toBe(true);
+    expect(tool.unavailable).toBeUndefined();
+  });
+
+  test('deriving the tools asks the judge nothing', () => {
+    // `neverAsked` throws, so this passing is the assertion: a judge settles a
+    // rule when an action runs, and listing what an agent is offered runs
+    // none. A derivation that spent a model call per guarded action would make
+    // `kcmd agent tools` cost money to read.
+    const [tool] = actionTools(
+        {runtime: rt(guardedBy(judged, 'CreditIsJustified')),
+         judge: neverAsked});
+    expect(tool.actionName).toBe('PlaceOrder');
+  });
+
+  test('a judge does not make an expression computable', () => {
+    // Supplying a judge must not widen what is offered past what it settles.
+    // A caller sent to fetch a judge, who fetched one and was refused again,
+    // has been sent the wrong way.
+    const computable: Constraint = {
+      name: 'QuantityIsPositive',
+      expression: 'quantity > 0',
+      onViolation: 'reject',
+    };
+    const [tool] = actionTools(
+        {runtime: rt(guardedBy(computable, 'QuantityIsPositive')),
+         judge: neverAsked});
+    expect(tool.runnable).toBe(false);
+    expect(tool.unavailable).toContain('does not evaluate constraints');
   });
 });
 

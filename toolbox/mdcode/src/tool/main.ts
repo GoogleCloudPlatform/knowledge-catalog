@@ -169,6 +169,9 @@ cli.command(
     .option(
         '--profile [name]',
         'Read the model under this binding profile; defaults to default_profile, else the inline bindings')
+    .option(
+        '--judge [model]',
+        'List what an agent holding a judge is offered, naming a Gemini model or taking the default; without it, an action guarded by a rule stated in words is marked NOT RUNNABLE. No model is called either way')
     .action(async (command, options) => {
       let exitCode = 1;
       try {

@@ -22,9 +22,12 @@ export interface JudgeRequest {
   // What the caller is trying to do, and why the model says it exists.
   action: string;
   actionDescription?: string;
-  // The arguments as the caller stated them, which is the whole of what a
-  // judge sees. It runs before the transaction opens and reads no store, so it
-  // is shown the proposal rather than its consequences.
+  // The arguments as the caller stated them, which is the whole of what this
+  // request carries. An implementation may consult whatever else it holds --
+  // one built over a store connection can read the rows a rule names, and
+  // nothing here forbids it -- but a judge is asked before the transaction
+  // opens, so what it cannot be shown is the state the write would produce. A
+  // rule about that has no binding point here.
   arguments: Record<string, unknown>;
 }
 

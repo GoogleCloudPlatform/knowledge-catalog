@@ -101,9 +101,14 @@ runs nothing.
 A tool the runtime cannot call is listed and marked `[NOT RUNNABLE]` rather than
 dropped, with the reason in its description, so a refusal is visible before any
 agent exists. To see what a guard costs today, add a constraint to an action's
-`guards` and run this again. This command supplies no judge, so an action
-guarded by a `judgment` is marked unrunnable here even though
-`kcmd action run --judge` would settle it.
+`guards` and run this again. What is offerable depends on what the caller holds,
+so an action guarded by a `judgment` is marked unrunnable without `--judge` and
+callable with it.
+
+| Flag | Effect |
+|------|--------|
+| `--profile [name]` | Read the model under this binding profile. Defaults to `default_profile`, else the model's inline bindings. |
+| `--judge [model]` | List what an agent holding a judge is offered: an action guarded by a rule stated in words is callable rather than `[NOT RUNNABLE]`. Takes a Gemini model id, defaulting to `gemini-2.5-flash`, on the same region rule as [`action run --judge`](#action). No model is called either way — a judge settles a rule when an action runs, and this listing runs none. |
 
 A model whose profile names no Spanner database offers no tools, because calling
 one needs a store. That model is reported as offering none and the rest of the

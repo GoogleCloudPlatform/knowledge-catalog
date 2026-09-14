@@ -15,7 +15,7 @@ import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets} from '../libts/semantic/deployment_target';
 import {ActionTool, EntityTool, modelTools} from '../libts/semantic/runtime/agent_tools';
-import {Action, ActionParameter} from '../libts/semantic/ir';
+import {Action, ActionParameter, constraintEvaluation, SemanticModel} from '../libts/semantic/ir';
 import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
@@ -1285,7 +1285,7 @@ function listActions(
                 .join(', ')}`);
       }
       if (a.executor) {
-        console.log(`    run:        ${runLine(a)}`);
+        console.log(`    run:        ${runLine(a, model)}`);
       } else {
         console.log(
             `    run:        bind an executor in a profile to run this.`);
@@ -1300,6 +1300,9 @@ export interface AgentOptions {
   // `string|boolean` for the same reason the others are: cac yields `true` for
   // a bare `--profile` and `false` for `--no-profile`.
   profile?: string|boolean;
+  // `--judge [model]`: derive the listing as an agent holding a judge would
+  // see it. `true` for a bare `--judge`, which takes the default model.
+  judge?: string|boolean;
 }
 
 
@@ -1318,6 +1321,14 @@ export interface AgentOptions {
 // print. `kcmd action run` calls the write half; the read half is a SELECT the
 // tool would issue, and `gcloud spanner databases execute-sql` will run it.
 //
+// What the listing can call depends on what the caller holds, so `--judge`
+// takes the same argument `kcmd action run` does. Without it an action guarded
+// by a rule stated in words is marked NOT RUNNABLE, which is accurate for a
+// caller holding no judge and misleading about an agent that holds one -- the
+// point of this command is to show what the agent will be handed, and the
+// judge is part of what decides that. No model is called here either way: a
+// judge is asked when an action runs, and the listing runs none.
+//
 // Returns a process exit code (0 on success).
 export async function agent(
     command: string, options: AgentOptions = {}): Promise<number> {
@@ -1335,6 +1346,14 @@ export async function agent(
     console.error(`Error: ${opened.error}`);
     return 1;
   }
+
+  // Built the way `kcmd action run --judge` builds it, from the context this
+  // command already holds, so the listing and the run agree about who answers.
+  const judge = options.judge ?
+      new GeminiJudge(
+          ctx, typeof options.judge === 'string' ? {model: options.judge} : {}) :
+      undefined;
+  if (judge) console.log(`Rules stated in words go to ${judge.name}.`);
 
   let incomplete = false;
   for (const runtime of opened) {
@@ -1364,7 +1383,7 @@ export async function agent(
     console.log(`  store: ${storeLine(store)}`);
     console.log();
 
-    const {lookups, actions, instruction} = modelTools({runtime});
+    const {lookups, actions, instruction} = modelTools({runtime, judge});
     for (const tool of actions) printActionTool(tool);
     for (const tool of lookups) printLookupTool(tool);
     console.log('  instruction:');
@@ -1487,9 +1506,17 @@ function describeParameter(p: ActionParameter): string {
 
 
 // The command line that runs an action, with a placeholder per parameter.
-function runLine(a: Action): string {
+//
+// A guard settled by judgment needs `--judge`, and the line says so, because a
+// suggested command that is certain to be refused is worse than no suggestion:
+// the reader tries it, reads a refusal, and has to work out that the fix is a
+// flag this listing knew about all along.
+function runLine(a: Action, model: SemanticModel): string {
   const args = a.parameters.map(p => ` --arg ${p.name}=<${p.type}>`).join('');
-  return `kcmd action run ${a.name}${args}`;
+  const guards = new Set(a.guards ?? []);
+  const judged = (model.constraints ?? []).some(
+      c => guards.has(c.name) && constraintEvaluation(c) === 'judged');
+  return `kcmd action run ${a.name}${judged ? ' --judge' : ''}${args}`;
 }
 
 

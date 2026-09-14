@@ -2,8 +2,8 @@
 #
 # The business is a small ecommerce operation: customers, their orders, and the
 # lines that make up an order. One thing can be done to it -- credit a customer
-# against an order -- and three policy rules say when that is allowed. The
-# README runs one request against it, the kind a support desk gets every day: a
+# against an order -- and the rules below say when that is allowed. The README
+# runs one request against it, the kind a support desk gets every day: a
 # customer was charged for shipping that should have been free.
 #
 # Nothing here says where the data lives, what the columns are called, or what
@@ -14,12 +14,12 @@
 # This file is the same bytes under both, which is the claim the pair exists to
 # make.
 #
-# Three constraints are declared and none is referenced. A constraint is inert
-# until an action names it in `guards`, and today's runtime evaluates none of
-# them -- so naming one here would make the action unrunnable rather than
-# checked. They are written down now because the policy exists now; wiring them
-# up is the next step, not a forgotten one. Add `guards: [CreditUnderReviewThreshold]`
-# to the action and re-run `kcmd agent tools` to see exactly what that costs today.
+# The same policy is written twice, once in arithmetic and once in words. A
+# constraint carries either an `expression` a query settles or a `judgment` a
+# language model settles, and `IssueCredit` guards on the judgments, because
+# those are the ones something can answer today. The expressions are declared
+# and named by nothing, which makes them inert: a constraint takes effect where
+# something references it.
 
 version: "0.2.0.dev0/google"
 
@@ -115,12 +115,30 @@ semantic_model:
         affects:
           - {concept: LineItem, operation: create, fields: [type, amount, memo]}
           - {concept: Order, operation: modify, fields: [total]}
+        # Which rules this call must pass, and the only place a constraint
+        # takes effect. All three are judgments, so every gate here costs a
+        # model call -- the loader says so at load time, and it is the price of
+        # gating on the half of the policy something can settle today.
+        guards:
+          - CreditUnderReviewThresholdWithJudge
+          - CreditMemoNamesAServiceFailure
+          - CreditIsNotSplitToAvoidReview
         ai_context:
           instructions: >-
             Give the order as its number, the amount in dollars, and a memo
             saying why. Look the order up first if you were given a customer
             name rather than a number: an Order is identified by its key alone.
+            Say in the memo what actually went wrong on the order -- a late
+            delivery, a damaged item, a shipping charge applied in error --
+            and, if this credit is part of a larger amount owed, say that and
+            give the total. A rule reads the memo, so a fact left out of it is
+            a fact the rule cannot weigh.
 
+    # Rules a query settles. All three are correct, none is referenced, and
+    # nothing evaluates one yet -- naming one in `guards` would make the action
+    # unrunnable rather than checked. They stay because they are the rules as
+    # they should end up: arithmetic a query settles costs no model call and
+    # cannot answer two identical calls differently.
     constraints:
       - name: CreditWithinOrderTotal
         expression: amount <= Order.total
@@ -128,6 +146,13 @@ semantic_model:
         description: >-
           A credit cannot exceed the total of the order it credits. Lower the
           credit amount, or split it across the orders it actually covers.
+        # No counterpart in words, because the judge this demo hires is handed
+        # the attempted call and nothing else, and `Order.total` is in the
+        # store. That is this judge rather than judges in general: `Judge` is
+        # an interface, and one built over a store connection would settle
+        # this. What argues for leaving it an expression is that a query
+        # answers the comparison for nothing and answers it the same way
+        # twice.
 
       - name: CreditUnderReviewThreshold
         expression: amount <= 25
@@ -135,6 +160,13 @@ semantic_model:
         description: >-
           A credit over $25 is above the self-service ceiling. A supervisor
           decides it.
+        # The one rule here that a judge CAN settle, because the threshold is
+        # read off the call's own `amount`. Stated in words below as
+        # `CreditUnderReviewThresholdWithJudge` -- the same rule, down to the
+        # description, differing only in who settles it -- and that twin is
+        # what the demo guards on. When the expression evaluator lands, the
+        # twin is the one to drop, which is why its name says how it is
+        # settled and this one's does not.
 
       - name: OrderTotalMatchesLineItems
         expression: Order.total == SUM(LineItem.amount)
@@ -142,3 +174,43 @@ semantic_model:
         description: >-
           An order's total must equal the sum of its line items, with credits
           subtracted. Nobody can approve an order that does not add up.
+        # No counterpart in words either, and out of reach of any judge, however
+        # much it can read: this constrains the state the write leaves behind,
+        # and guards are settled before the transaction opens. It wants to be
+        # checked inside the transaction, or declared in the schema.
+
+      # Rules stated in words, settled by a judge reading the attempted call.
+      # These are what `IssueCredit` guards on, and they carry all three
+      # consequences: escalate, warn and reject.
+      - name: CreditUnderReviewThresholdWithJudge
+        judgment: >-
+          The credit amount requested must not exceed 25 dollars, which is the
+          self-service ceiling for this desk. Read the amount as dollars.
+        on_violation: escalate
+        description: >-
+          A credit over $25 is above the self-service ceiling. A supervisor
+          decides it.
+
+      - name: CreditMemoNamesAServiceFailure
+        judgment: >-
+          The memo argument of this call must name a specific thing that went
+          wrong on the order: a late delivery, a damaged item, a shipping
+          charge applied in error. A memo saying only that the customer asked,
+          or that the credit is goodwill, or giving no reason at all, names no
+          failure and does not satisfy this rule.
+        on_violation: warn
+        description: >-
+          Say in the credit memo what actually went wrong with the order.
+
+      - name: CreditIsNotSplitToAvoidReview
+        judgment: >-
+          The credit requested must be the whole of what this order is owed,
+          not one piece of a larger amount divided to stay under the 25-dollar
+          self-service ceiling. A memo argument calling the credit a part, a
+          half, an instalment, the first or second of several, or a remainder,
+          or naming a total larger than the amount argument, does not satisfy
+          this rule.
+        on_violation: reject
+        description: >-
+          Raise this as a single credit for the full amount and send it for
+          supervisor review.

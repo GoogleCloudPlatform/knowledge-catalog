@@ -391,8 +391,27 @@ about handling a breach lives elsewhere.
 **Name fields model-qualified.** Write `LineItem.memo` rather than "the memo".
 `kcmd` resolves every `Entity.field` token in the text against the model and
 fails the push when the entity declares no such field, so a rename cannot leave
-the sentence pointing at nothing. The qualified name also tells the judge
-exactly which value to read.
+the sentence pointing at nothing. The qualified name also tells the judge which
+value to read.
+
+One caution comes with it. A guard is settled from the attempted call's
+arguments and nothing else, so a sentence phrased as a rule about stored data
+can be read as a rule the judge has no evidence for. An unassessable rule is
+held rather than reported, which costs a rule that never fires and says
+nothing. The rule above is settled correctly under this wording, but a guard
+that reads awkwardly as a statement about the call is worth rephrasing to name
+the argument, and worth testing against a case it should refuse. A rule that
+truly needs stored rows — comparing a credit against the order total, say — has
+no wording that reaches a judge given only the call, and belongs in an
+`expression` unless the judge supplied can query the store itself. Nothing in
+the `Judge` interface forbids one that does; the implementation shipped here
+makes a single model call with no tools.
+
+A rule about the state a write *leaves behind* is a different matter, and no
+judge settles it however much it can read. Guards are settled before the
+transaction opens, so a rule such as "an order's total equals the sum of its
+lines" has nothing to look at yet. That rule belongs inside the transaction or
+in the schema.
 
 **Say what does not count.** A rule with no negative example is graded against
 whatever the model guesses the author had in mind. "A memo that states only that
@@ -1218,10 +1237,31 @@ names a guard stated as an expression, nothing here evaluates one, and so the
 reported here instead — before any agent exists, rather than inside a
 transaction.
 
-`kcmd agent tools` supplies no judge, so an action guarded by a judgment is
-marked the same way and for the same reason: the derivation reports what the
-runtime would do with the judge it holds, and it holds none. Passing a judge
-through to the tools an agent is handed is the next step and is not taken yet.
+An action guarded by a judgment is marked the same way when the derivation
+holds no judge, and for the same reason: what is reported is what the runtime
+*would* do with what it is holding, and with no judge it would refuse. Supply
+one and the same action is offerable, with the same description and the same
+parameters:
+
+```console
+$ kcmd agent tools --judge
+Rules stated in words go to gemini-2.5-flash (us-central1).
+...
+  action  issue_credit  (IssueCredit)
+```
+
+The flag takes an optional model name, the same way
+[`kcmd action run --judge`](#a-guard-settled-in-words) does. What it does not do
+is call one: a judge settles a rule when an action runs, and printing what an
+agent is offered runs none, so this listing costs nothing however many guarded
+actions it names.
+
+The judge belongs to the derivation rather than to each invocation, which is the
+one place this is easy to get wrong. Whether a guarded action can be offered *at
+all* depends on holding a judge, so the same object has to answer `runnable` and
+answer the call. A tool derived with a judge and then invoked without one would
+be advertised as callable and refused mid-call, which is the drift the next
+paragraph is about.
 
 The tool is still returned, still named and still described. An action the
 model declares should not vanish from what the model offers; what it is waiting
@@ -1262,6 +1302,11 @@ if (!runtime.store) throw new Error(runtime.storeError);
 
 const {callable, withheld, instruction} = callableTools(modelTools({runtime}));
 ```
+
+`modelTools` also takes `judge`, and passing one is what makes an action guarded
+by a judgment callable at all. `GeminiJudge` implements the seam over Vertex AI;
+anything with a `decide` method does. Omit it and such an action is still
+derived, still named and still described, and reported in `withheld`.
 
 One call returns a runtime for every model document in the entry group. Each
 carries the store its deployment target names, the profile it was built under,
@@ -1327,12 +1372,23 @@ not. The place to put it is the model.
 ### A worked example
 
 `demo/semantic-model/agent/` is an agent built this way, running against a live
-operational store: a commerce model, a binding profile, and one file of 56 lines
-that names no table, no column and no business term. Thirteen of those lines are
-the adapter onto the agent framework. Its README walks the same four steps and
-states what the run cannot yet do — the $30 credit it issues is over the model's
-declared $25 self-service ceiling and is written anyway, because that ceiling is
-an expression and nothing evaluates one.
+operational store: a commerce model, a binding profile, and one file of 66 lines
+that names no table, no column, no business term and no dollar threshold.
+Thirteen of those lines are the adapter onto the agent framework. Its README
+walks the same steps and reaches all three of `on_violation`'s outcomes against
+that store: a $30 credit held because the model's $25 self-service ceiling is
+`escalate`, a credit written with a warning because the memo names no service
+failure, and a credit refused outright because the memo admits it is one piece of
+a larger amount.
+
+It also states what that costs and what it cannot do. The model guards on three
+judgments, so the demo pays three model calls per attempted write and loads with
+the all-judged warning; the two rules that compare the call against stored rows
+are declared but not enforced, one because the judge it hires reads no store and
+one because it constrains the state after the write. And the split-credit
+rule fires only because the model tells callers to disclose a split in the memo,
+which makes it a check on honest mistakes rather than a control — the version
+that would hold regardless is an expression over what is already stored.
 
 ## What is not modeled yet
 

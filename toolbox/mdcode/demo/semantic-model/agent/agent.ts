@@ -7,15 +7,22 @@
 //                 offset the charge."
 //
 // Nothing here mentions credits, orders, database tables or an operations desk.
-// Four steps: create the runtime, derive the tools, adapt them to ADK, run.
-// Point it at another semantic model and it is another agent, with no edit to
-// this file. That is the property it exists to test -- so the moment something
-// about this business has to be written here, the model was missing it and the
-// fix belongs there.
+// Five steps: create the runtime, hire a judge, derive the tools, adapt them to
+// ADK, run. Point it at another semantic model and it is another agent, with no
+// edit to this file. That is the property it exists to test -- so the moment
+// something about this business has to be written here, the model was missing
+// it and the fix belongs there.
+//
+// The judge is a capability rather than a policy: it can settle a rule stated
+// in words, and WHICH rules it is asked are the ones the model names in
+// `guards`. So supplying one here says nothing about commerce, the same way
+// supplying a database connection does not.
 
 import {FunctionTool, InMemoryRunner, LlmAgent} from '@google/adk';
 import {Type} from '@google/genai';
 
+import {ApiContext} from '../../../src/libts/gcp/context';
+import {GeminiJudge} from '../../../src/libts/gcp/gemini';
 import {callableTools, modelTools} from '../../../src/libts/semantic/runtime/agent_tools';
 import {createSemanticRuntimes} from '../../../src/libts/semantic/runtime/runtime';
 import {closeStore} from '../../../src/libts/semantic/runtime/store';
@@ -42,15 +49,34 @@ process.env.GOOGLE_GENAI_USE_ENTERPRISE ??= 'true';
 process.env.GOOGLE_CLOUD_PROJECT ??= runtime.store.project;
 process.env.GOOGLE_CLOUD_LOCATION ??= 'us-central1';
 
-// 2. Derive what the model offers, and keep what this binding can serve.
-//    `kcmd agent tools` prints all of it before a language model is involved.
+// 2. Hire something that can settle a rule stated in words. Pointed at the
+//    same project the store is in, so the binding profile is still the only
+//    place that says where any of this runs.
+//
+//    It may well be the same Gemini model the agent runs on, and it is not
+//    the same call: the judge is asked one rule about one set of attempted
+//    arguments, under a system instruction of its own, outside the agent's
+//    conversation. So there is nothing in the transcript for the agent to
+//    argue with, and no turn in which it can talk the gate round.
+const judge = new GeminiJudge(ApiContext.default(), {
+  project: process.env.GOOGLE_CLOUD_PROJECT,
+  location: process.env.GOOGLE_CLOUD_LOCATION,
+  model: process.env.DEMO_JUDGE_MODEL,
+});
+
+// 3. Derive what the model offers, and keep what this binding can serve.
+//    `kcmd agent tools --judge` prints all of it before an agent exists. The
+//    judge goes to the derivation rather than to each call: it is what decides
+//    whether a guarded action is offerable at all, and a tool offered on the
+//    strength of a judge and then called without one would be refused
+//    mid-call.
 const {callable, withheld, instruction} =
-    callableTools(modelTools({runtime}));
+    callableTools(modelTools({runtime, judge}));
 for (const tool of withheld) {
   console.error(`(withheld) ${tool.name}: ${tool.unavailable}`);
 }
 
-// 3. Adapt each one to ADK. A derived parameter already carries a JSON type and
+// 4. Adapt each one to ADK. A derived parameter already carries a JSON type and
 //    a description, which is the whole of a function declaration -- so this
 //    changes the shape and none of the content.
 const tools = callable.map(
@@ -69,8 +95,11 @@ const tools = callable.map(
       execute: (args: unknown) => tool.invoke(args as Record<string, unknown>),
     }));
 
-// 4. Run, printing each call and each answer so the transcript shows which
-//    tools the agent chose and what the store said back.
+// 5. Run, printing each call and each answer so the transcript shows which
+//    tools the agent chose and what the store said back. A refusal and a
+//    warning both come back inside a tool answer, so both are already in the
+//    transcript; what the agent does with them is the derived instruction's
+//    business rather than this file's.
 //
 // The instruction is the model's, not this file's: what this business asks of
 // anything acting on it is in `ai_context` in commerce.yaml, and how to use a
