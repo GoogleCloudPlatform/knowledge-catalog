@@ -169,11 +169,54 @@ export class BigQueryClientMock extends bigquery.BigQueryClient {
     return { status: 404, message: 'Not found' };
   }
 
+  async getTable(project: string, dataset: string, table: string): Promise<gcp.ApiResult<bigquery.Table>> {
+    const name = `projects/${project}/datasets/${dataset}/tables/${table}`;
+    const resource = this.mockTables.get(name);
+    if (resource) {
+      return { status: 200, result: resource };
+    }
+    return { status: 404, message: 'Not found' };
+  }
+
   async *listTables(project: string, dataset: string): AsyncGenerator<bigquery.Table> {
     for (const table of this.mockTables.values()) {
       if (table.tableReference.projectId === project && table.tableReference.datasetId === dataset) {
         yield table;
       }
     }
+  }
+
+  // Reachable sources for the dry-run probe (validateBigQueryDataSources). Use
+  // for reference forms tables.get cannot address, e.g. a four-part REST-catalog
+  // name; a three-part table added via addMockTable is reachable too.
+  public mockSources: Set<string> = new Set();
+
+  addMockSource(ref: string) {
+    this.mockSources.add(ref);
+  }
+
+  // Dry-run table probe: a query of the form `SELECT 1 FROM \`<ref>\`` resolves
+  // against the reachable set (mockSources, plus any three-part table added via
+  // addMockTable). An unknown reference returns a BigQuery-style "Not found" so
+  // the validator reports it; a non-probe query is a benign success.
+  async query(project: string, sql: string, location?: string, dryRun?: boolean):
+      Promise<gcp.ApiResult<bigquery.QueryResponse>> {
+    const m = /FROM `([^`]+)`/.exec(sql);
+    if (dryRun && m) {
+      return this.isReachableSource(m[1]) ?
+          {status: 200, result: {}} :
+          {status: 400, message: `Not found: Table ${m[1]} was not found`};
+    }
+    return {status: 200, result: {}};
+  }
+
+  private isReachableSource(ref: string): boolean {
+    if (this.mockSources.has(ref)) return true;
+    const parts = ref.split('.');
+    if (parts.length === 3) {
+      return this.mockTables.has(
+          `projects/${parts[0]}/datasets/${parts[1]}/tables/${parts[2]}`);
+    }
+    return false;
   }
 }

@@ -1,0 +1,115 @@
+version: 0.2.0.dev0/google
+semantic_model:
+  - name: sales
+    description: Sales orders with customer attributes
+    deployment_target: //bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales
+    entities:
+      - name: orders
+        source: samples.tpch.orders
+        primary_key:
+          - o_orderkey
+        fields:
+          - name: o_orderkey
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: o_orderkey
+          - name: o_custkey
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: o_custkey
+          - name: o_totalprice
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: o_totalprice
+      - name: customer
+        source: samples.tpch.customer
+        primary_key:
+          - c_custkey
+        fields:
+          - name: c_custkey
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: c_custkey
+          - name: c_name
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: c_name
+    relationships:
+      - name: orders_to_customer
+        from: orders
+        to: customer
+        from_columns:
+          - o_custkey
+        to_columns:
+          - c_custkey
+    metrics:
+      - name: total_revenue
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: SUM(orders.o_totalprice)
+        description: Total order revenue
+    actions:
+      - name: PlaceOrder
+        description: Create an order for a customer
+        executor:
+          mcp:
+            server: //agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/commerce
+            tool: place_order
+        parameters:
+          - name: customer
+            type: customer
+          - name: quantity
+            type: Integer
+        guards:
+          - RequestedQuantityIsPositive
+        affects:
+          - concept: orders
+            operation: create
+            fields:
+              - o_orderkey
+              - o_totalprice
+          - concept: orders_to_customer
+            operation: create
+          - customer
+        ai_context:
+          instructions: Resolve the buyer to a customer before calling.
+    constraints:
+      - name: NonNegativeOrderTotal
+        expression: orders.o_totalprice >= 0
+        description: An order's total cannot be negative. Reduce the quantity or check
+          the unit price before retrying.
+        ai_context:
+          instructions: Quote the shortfall in the customer's own currency when refusing.
+          synonyms:
+            - NoNegativeTotals
+            - NonNegativeTotal
+          examples:
+            - Why was my order rejected?
+      - name: PositiveQuantity
+        expression: OrderedAs.quantity > 0
+        description: An order line must be for at least one unit.
+      - name: OrderWithinStandingLimit
+        expression: orders.o_totalprice <= 100000
+        description: An order this large is above the standing limit and needs a sales
+          manager to sign off. Ask for approval, or split the order.
+        on_violation: escalate
+        severity: high
+      - name: RequestedQuantityIsPositive
+        expression: quantity > 0
+        description: A request must be for at least one unit. Ask the caller for the
+          quantity again before retrying.
+      - name: LargeOrderIsJustified
+        judgment: An order whose orders.o_totalprice is far above what this customer
+          usually places must be explained by something in the request itself,
+          such as a stated event or a contract reference. A round number alone
+          is not an explanation.
+        description: Say what makes this order larger than usual, then resubmit for
+          approval.
+        on_violation: escalate
+        severity: medium

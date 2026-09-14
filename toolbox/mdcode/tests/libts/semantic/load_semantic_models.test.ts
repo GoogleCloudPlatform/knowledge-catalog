@@ -14,7 +14,8 @@ import {loadSemanticModels} from '../../../src/libts/semantic/loader';
 // A minimal loader-valid document: one model, one dataset (with a primary key
 // so it does not warn), no metrics.
 function doc(modelName: string, source = 'proj.ds.tbl'): string {
-  return `semantic_model:
+  return `version: 0.2.0.dev0
+semantic_model:
   - name: ${modelName}
     datasets:
       - name: orders
@@ -45,7 +46,8 @@ describe('loadSemanticModels', () => {
   test('prefixes loader warnings with the originating document name', () => {
     // A dataset with no primary_key makes the loader warn; the warning must
     // carry the document name so a multi-document push stays diagnosable.
-    const noKey = `semantic_model:
+    const noKey = `version: 0.2.0.dev0
+semantic_model:
   - name: sales
     datasets:
       - name: orders

@@ -32,8 +32,7 @@ EDGE TABLES (
     KEY(o_orderkey)
     SOURCE KEY(o_orderkey) REFERENCES orders(o_orderkey)
     DESTINATION KEY(o_custkey) REFERENCES customer(c_custkey)
-)
-OPTIONS(description="Orders and customers with vendor-dialect expressions");
+);
 
 -- warnings --
 -- note: no 'BIGQUERY' dialect for one or more expressions; using the portable 'ANSI_SQL' dialect verbatim ('BIGQUERY' accepts the ANSI core subset — supply 'BIGQUERY' variants only for BIGQUERY-specific SQL)

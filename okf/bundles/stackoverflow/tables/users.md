@@ -3,7 +3,7 @@ type: BigQuery Table
 resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow/tables/users
 title: Stack Overflow Users
 description: Contains information about registered users on the Stack Overflow platform.
-tags: stackoverflow, users, community, reputation
+tags: [stackoverflow, users, community, reputation]
 generated:
   by: reference_agent/gemini-2.5-flash
   at: '2026-07-10T22:51:02+00:00'

@@ -1,0 +1,332 @@
+{
+  "entries": [
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-model",
+      "entrySource": {
+        "displayName": "sales",
+        "description": "Sales orders with customer attributes"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-model": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-model",
+          "data": {
+            "deploymentTargets": [
+              "//bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.entities.orders",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "orders"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "source": {
+              "resources": [
+                "//bigquery.googleapis.com/projects/samples/datasets/tpch/tables/orders"
+              ]
+            }
+          }
+        },
+        "dataplex-types.global.schema": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema",
+          "data": {
+            "fields": [
+              {
+                "name": "o_orderkey",
+                "dataType": "STRING",
+                "metadataType": "OTHER"
+              },
+              {
+                "name": "o_custkey",
+                "dataType": "STRING",
+                "metadataType": "OTHER"
+              },
+              {
+                "name": "o_totalprice",
+                "dataType": "STRING",
+                "metadataType": "OTHER"
+              }
+            ],
+            "primaryKey": {
+              "fields": [
+                "o_orderkey"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.entities.customer",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "customer"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-entity": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
+          "data": {
+            "source": {
+              "resources": [
+                "//bigquery.googleapis.com/projects/samples/datasets/tpch/tables/customer"
+              ]
+            }
+          }
+        },
+        "dataplex-types.global.schema": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema",
+          "data": {
+            "fields": [
+              {
+                "name": "c_custkey",
+                "dataType": "STRING",
+                "metadataType": "OTHER"
+              },
+              {
+                "name": "c_name",
+                "dataType": "STRING",
+                "metadataType": "OTHER"
+              }
+            ],
+            "primaryKey": {
+              "fields": [
+                "c_custkey"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.metrics.total_revenue",
+      "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-metric",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "total_revenue",
+        "description": "Total order revenue"
+      },
+      "aspects": {
+        "dataplex-types.global.semantic-metric": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-metric",
+          "data": {
+            "entity": "orders",
+            "dataType": "STRING"
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.actions.PlaceOrder",
+      "entryType": "projects/sqlgen-testing/locations/global/entryTypes/semantic-action",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "PlaceOrder",
+        "description": "Create an order for a customer"
+      },
+      "aspects": {
+        "sqlgen-testing.global.semantic-action": {
+          "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-action",
+          "data": {
+            "executorKind": "mcp",
+            "mcpServer": "//agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/commerce",
+            "mcpTool": "place_order",
+            "parameters": [
+              {
+                "name": "customer",
+                "type": "customer",
+                "isEntityRef": true
+              },
+              {
+                "name": "quantity",
+                "type": "Integer",
+                "isEntityRef": false
+              }
+            ],
+            "guards": [
+              "RequestedQuantityIsPositive"
+            ],
+            "affects": [
+              {
+                "concept": "orders",
+                "operation": "create",
+                "fields": [
+                  "o_orderkey",
+                  "o_totalprice"
+                ]
+              },
+              {
+                "concept": "orders_to_customer",
+                "operation": "create"
+              },
+              {
+                "concept": "customer"
+              }
+            ],
+            "instructions": "Resolve the buyer to a customer before calling."
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.constraints.NonNegativeOrderTotal",
+      "entryType": "projects/sqlgen-testing/locations/global/entryTypes/semantic-constraint",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "NonNegativeOrderTotal",
+        "description": "An order's total cannot be negative. Reduce the quantity or check the unit price before retrying."
+      },
+      "aspects": {
+        "sqlgen-testing.global.semantic-constraint": {
+          "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-constraint",
+          "data": {
+            "expression": "orders.o_totalprice >= 0",
+            "evaluation": "deterministic",
+            "aiContext": {
+              "instructions": "Quote the shortfall in the customer's own currency when refusing.",
+              "synonyms": [
+                "NoNegativeTotals",
+                "NonNegativeTotal"
+              ],
+              "examples": [
+                "Why was my order rejected?"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.constraints.PositiveQuantity",
+      "entryType": "projects/sqlgen-testing/locations/global/entryTypes/semantic-constraint",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "PositiveQuantity",
+        "description": "An order line must be for at least one unit."
+      },
+      "aspects": {
+        "sqlgen-testing.global.semantic-constraint": {
+          "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-constraint",
+          "data": {
+            "expression": "OrderedAs.quantity > 0",
+            "evaluation": "deterministic"
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.constraints.OrderWithinStandingLimit",
+      "entryType": "projects/sqlgen-testing/locations/global/entryTypes/semantic-constraint",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "OrderWithinStandingLimit",
+        "description": "An order this large is above the standing limit and needs a sales manager to sign off. Ask for approval, or split the order."
+      },
+      "aspects": {
+        "sqlgen-testing.global.semantic-constraint": {
+          "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-constraint",
+          "data": {
+            "expression": "orders.o_totalprice <= 100000",
+            "evaluation": "deterministic",
+            "onViolation": "escalate",
+            "severity": "high"
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.constraints.RequestedQuantityIsPositive",
+      "entryType": "projects/sqlgen-testing/locations/global/entryTypes/semantic-constraint",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "RequestedQuantityIsPositive",
+        "description": "A request must be for at least one unit. Ask the caller for the quantity again before retrying."
+      },
+      "aspects": {
+        "sqlgen-testing.global.semantic-constraint": {
+          "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-constraint",
+          "data": {
+            "expression": "quantity > 0",
+            "evaluation": "deterministic"
+          }
+        }
+      }
+    },
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.constraints.LargeOrderIsJustified",
+      "entryType": "projects/sqlgen-testing/locations/global/entryTypes/semantic-constraint",
+      "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
+      "entrySource": {
+        "displayName": "LargeOrderIsJustified",
+        "description": "Say what makes this order larger than usual, then resubmit for approval."
+      },
+      "aspects": {
+        "sqlgen-testing.global.semantic-constraint": {
+          "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-constraint",
+          "data": {
+            "judgment": "An order whose orders.o_totalprice is far above what this customer usually places must be explained by something in the request itself, such as a stated event or a contract reference. A round number alone is not an explanation.",
+            "evaluation": "judged",
+            "onViolation": "escalate",
+            "severity": "medium"
+          }
+        }
+      }
+    }
+  ],
+  "entryLinks": [
+    {
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entryLinks/sales-orders-to-customer",
+      "entryLinkType": "projects/dataplex-types/locations/global/entryLinkTypes/schema-join",
+      "entryReferences": [
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.entities.orders",
+          "type": "UNSPECIFIED"
+        },
+        {
+          "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.entities.customer",
+          "type": "UNSPECIFIED"
+        }
+      ],
+      "aspects": {
+        "dataplex-types.global.schema-join": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema-join",
+          "data": {
+            "joins": [
+              {
+                "source": {
+                  "name": "samples.tpch.orders",
+                  "fields": [
+                    "o_custkey"
+                  ]
+                },
+                "target": {
+                  "name": "samples.tpch.customer",
+                  "fields": [
+                    "c_custkey"
+                  ]
+                },
+                "type": "FOREIGN_KEY",
+                "inferenceSource": "USER"
+              }
+            ],
+            "userManaged": true
+          }
+        }
+      }
+    }
+  ],
+  "warnings": [
+    "model 'sales': 1 action(s) published as semantic-action entries (Knowledge Catalog is the only system an action reaches).",
+    "model 'sales': 5 constraint(s) published as semantic-constraint entries (Knowledge Catalog is the only system a constraint reaches).",
+    "relationship 'orders_to_customer': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'orders-to-customer'), not 'orders_to_customer'."
+  ]
+}

@@ -7,7 +7,7 @@ generated: { by: reference_agent/gemini-2.5-pro, at: 2026-06-30T14:00:00Z }
 verified:
   - { by: human:jsmith@acme, at: 2026-07-01T09:00:00Z }
 status: stable
-stale_after: 2026-12-31
+stale_after: 2026-12-31T00:00:00Z
 not:
   - term: "revenue minus product cost only"
     why: "that is the pre-FY2026 definition (see gross-margin-legacy). It excluded fulfillment, shipping, and payment fees, and could not be reconciled to the general ledger."
@@ -17,12 +17,12 @@ sources:
     resource: policies/margin-standard.md
     title: Cost Allocation & Margin Standard (FY2026)
     author: human:jsmith@acme
-    last_modified: 2026-06-15
+    last_modified: 2026-06-15T00:00:00Z
   - id: revenue-policy
     resource: policies/revenue-recognition.md
     title: Revenue Recognition Policy (FY2026)
     author: human:jsmith@acme
-    last_modified: 2026-06-15
+    last_modified: 2026-06-15T00:00:00Z
 ---
 
 # Definition

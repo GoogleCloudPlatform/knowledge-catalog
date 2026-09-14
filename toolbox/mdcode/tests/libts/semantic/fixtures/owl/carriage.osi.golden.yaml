@@ -1,0 +1,29 @@
+version: 0.2.0.dev0/google
+semantic_model:
+  - name: carriage
+    description: Imported from OWL ontology http://example.com/people#
+    entities:
+      - name: Person
+        primary_key:
+          - personId
+        description: A human being.
+        fields:
+          - name: personId
+            datatype: String
+          - name: name
+            datatype: String
+          - name: legalName
+            datatype: String
+      - name: Robot
+        description: A machine, never a person.
+      - name: LifeStage
+    relationships:
+      - name: ancestorOf
+        from: Person
+        to: Person
+      - name: relatedTo
+        from: Person
+        to: Person
+      - name: uncleOf
+        from: Person
+        to: Person

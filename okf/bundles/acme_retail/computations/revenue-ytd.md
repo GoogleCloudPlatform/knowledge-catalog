@@ -15,18 +15,18 @@ generated: { by: reference_agent/gemini-2.5-pro, at: 2026-06-30T14:00:00Z }
 verified:
   - { by: human:jsmith@acme, at: 2026-07-01T09:00:00Z }
 status: stable
-stale_after: 2026-12-31
+stale_after: 2026-12-31T00:00:00Z
 sources:
   - id: revenue-policy
     resource: policies/revenue-recognition.md
     title: Revenue Recognition Policy (FY2026)
     author: human:jsmith@acme
-    last_modified: 2026-06-15
+    last_modified: 2026-06-15T00:00:00Z
   - id: orders-table
     resource: tables/orders.md
     title: Customer Orders (BigQuery table)
     author: team:data-platform
-    last_modified: 2026-07-01
+    last_modified: 2026-07-01T00:00:00Z
 ---
 
 # Computation
@@ -66,6 +66,6 @@ A run whose SQL does not match is treated as unattested; the consumer MUST refus
 
 # Freshness
 
-`stale_after: 2026-12-31` mirrors the revenue-recognition policy's annual review cycle. On 2027-01-01, a consumer running this computation SHOULD flag the result for re-verification before serving it, per the memory-aware consumer contract.
+`stale_after: 2026-12-31T00:00:00Z` mirrors the revenue-recognition policy's annual review cycle. On 2027-01-01, a consumer running this computation SHOULD flag the result for re-verification before serving it, per the memory-aware consumer contract.
 
 [^revenue-policy]: Revenue Recognition Policy (FY2026)

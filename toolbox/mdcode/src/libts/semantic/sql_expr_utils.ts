@@ -48,12 +48,17 @@ function entityQualifier(name: string, flags = ''): RegExp {
 }
 
 // Returns the entity names whose `<name>.` qualifier appears in an expression, in
-// the order they first appear, ignoring text inside string literals.
-export function referencedEntityNames(expression: string, entityNames: string[]): string[] {
+// the order they first appear, ignoring text inside string literals. Matching is
+// case-sensitive by default (the emitter's behavior); pass `caseInsensitive` to
+// detect a qualifier regardless of how it was cased.
+export function referencedEntityNames(
+    expression: string, entityNames: string[],
+    opts: { caseInsensitive?: boolean } = {}): string[] {
   const scannable = blankStringLiterals(expression);
+  const flags = opts.caseInsensitive ? 'i' : '';
   const hits: Array<{ name: string; at: number }> = [];
   for (const name of entityNames) {
-    const m = entityQualifier(name).exec(scannable);
+    const m = entityQualifier(name, flags).exec(scannable);
     if (m) hits.push({ name, at: m.index });
   }
   return hits.sort((a, b) => a.at - b.at).map(h => h.name);

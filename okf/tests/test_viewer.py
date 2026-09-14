@@ -44,7 +44,7 @@ def _make_bundle(root: Path) -> None:
         verified:
           - {by: 'process:finance-nightly', at: '2026-05-29T00:00:00+00:00'}
           - {by: 'human:ahormati', at: '2026-05-30T00:00:00+00:00'}
-        stale_after: '2020-01-01'
+        stale_after: '2020-01-01T00:00:00Z'
         sources:
           - {id: bq, resource: 'https://example.com/users', title: BigQuery}
         ---

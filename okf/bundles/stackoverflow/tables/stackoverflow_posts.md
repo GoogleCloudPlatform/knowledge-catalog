@@ -4,7 +4,7 @@ resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datas
 title: Stack Overflow Posts (Deprecated)
 description: A deprecated table containing Stack Overflow posts. Use the posts_answers
   or posts_questions tables instead.
-tags: stackoverflow, posts, deprecated
+tags: [stackoverflow, posts, deprecated]
 status: deprecated
 generated:
   by: reference_agent/gemini-2.5-flash

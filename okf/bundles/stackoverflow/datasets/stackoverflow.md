@@ -5,7 +5,7 @@ title: Stack Overflow Public Dataset
 description: This dataset contains a public archive of Stack Overflow data, including
   posts, users, and tags. It was last updated on 2022-11-25 and is no longer actively
   updated.
-tags: Stack Overflow, Q&A, developer, programming, public dataset
+tags: [Stack Overflow, Q&A, developer, programming, public dataset]
 generated:
   by: reference_agent/gemini-2.5-flash
   at: '2026-07-10T22:46:36+00:00'

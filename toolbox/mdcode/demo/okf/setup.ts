@@ -1,59 +1,123 @@
 import * as cp from 'child_process';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as kcmd from 'kcmd';
 import { YAML } from 'bun';
+import { manifestFile, parseDemoArgs } from './okf';
 
 const context = kcmd.gcp.ApiContext.default();
 const project = context.project;
 const location = context.location;
-const entryGroup = 'okf_ga4';
+const { entryGroup } = parseDemoArgs();
 
-function dataplex(cmd: string, data: string|null=null) {
-  cmd = 'gcloud dataplex ' + cmd + ` --project ${project} --location ${location}`;
-  cp.execSync(cmd, { encoding: 'utf8', input: data ?? undefined, stdio: 'inherit'});
+// Arguments go to gcloud as an argv array rather than a shell string, so an
+// entry group name from the command line is never word-split or interpreted by
+// a shell.
+function dataplex(args: string[], data: string|null=null) {
+  const argv = [...args, '--project', project, '--location', location];
+  cp.execFileSync('gcloud', argv, { encoding: 'utf8', input: data ?? undefined, stdio: 'inherit'});
 }
 
-try {
-  dataplex(`entry-groups create ${entryGroup}`);
+// The same call with every stream discarded, for a command run only for its
+// exit status.
+function dataplexQuiet(args: string[]) {
+  const argv = [...args, '--project', project, '--location', location];
+  cp.execFileSync('gcloud', argv, { encoding: 'utf8', stdio: ['ignore', 'ignore', 'ignore'] });
+}
+
+// Whether the resource is already there. The describe's output and its
+// NOT_FOUND on stderr are both discarded, so asking the question prints
+// nothing. A describe that fails for any other reason answers false too, and
+// the create that follows then fails loudly with the real cause.
+function describeExists(kind: string, name: string): boolean {
+  try {
+    dataplexQuiet(['dataplex', kind, 'describe', name]);
+    return true;
+  }
+  catch {
+    return false;
+  }
+}
+
+// Each of the three resources below is looked up before it is created, rather
+// than created and then recovered from the 409. There are two reasons. gcloud
+// prints that 409 as a red ERROR line of its own before this script can react
+// to it, and re-running the demo in a project that already holds the shared
+// types is the normal case rather than a fault. A create wrapped in a catch
+// also swallows every other failure: a 429 on the entry group would leave this
+// script exiting 0 with the manifest below written against an entry group that
+// does not exist. No create is guarded, so any real failure stops the run.
+if (describeExists('entry-groups', entryGroup)) {
+  console.log(`Using existing entry group ${entryGroup}`);
+}
+else {
+  dataplex(['dataplex', 'entry-groups', 'create', entryGroup]);
   console.log(`Created empty entry group ${entryGroup}`);
-  console.log();
 }
-catch {
-  // Might already exist
-}
+console.log();
 
-try {
-  dataplex(`aspect-types create okf --metadata-template-file-name=okf-aspect.json`);
+// Update rather than leave alone: a project left over from an earlier run of
+// this demo holds an older template, and pushing v0.2 signal against it fails
+// with an opaque "Unknown property" error. Dataplex rejects
+// backwards-incompatible template changes, so new fields in okf-aspect.json
+// must be appended with fresh indices; renumbering an existing field breaks
+// this update for everyone who already ran the demo.
+if (describeExists('aspect-types', 'okf')) {
+  dataplex(['dataplex', 'aspect-types', 'update', 'okf', '--metadata-template-file-name=okf-aspect.json']);
+  console.log('Updated existing aspect type okf to the current template');
+}
+else {
+  dataplex(['dataplex', 'aspect-types', 'create', 'okf', '--metadata-template-file-name=okf-aspect.json']);
   console.log('Created custom aspect type okf');
-  console.log();
 }
-catch {
-  // Might already exist
+console.log();
+
+// A custom entry type, so a search can tell an OKF document apart from anything
+// else in the project. It declares no required aspects: SPEC 8 index files
+// carry no signal layer, so requiring the okf aspect would reject them.
+const entryTypeFlags = [
+  '--display-name=OKF Document',
+  '--description=A document in an Open Knowledge Format bundle.',
+];
+
+if (describeExists('entry-types', 'okf-bundle')) {
+  dataplex(['dataplex', 'entry-types', 'update', 'okf-bundle', ...entryTypeFlags]);
+  console.log('Updated existing entry type okf-bundle');
 }
+else {
+  dataplex(['dataplex', 'entry-types', 'create', 'okf-bundle', ...entryTypeFlags]);
+  console.log('Created custom entry type okf-bundle');
+}
+console.log();
 
 const okfAspect = `${project}.${location}.okf`;
+const okfEntryType = `${project}.${location}.okf-bundle`;
 
-await Bun.file(path.join(process.cwd(), 'catalog.yaml')).write(YAML.stringify({
+// Every markdown file in the bundle is published as okf-bundle, so the built-in
+// generic type is gone from both lists. The list must stay non-empty: it is
+// what keeps the entry group's own root entry, which belongs to no file, from
+// being pulled down as one.
+const manifest = manifestFile(process.cwd());
+fs.mkdirSync(path.dirname(manifest), { recursive: true });
+await Bun.file(manifest).write(YAML.stringify({
   scope: `kb.${project}.${location}.${entryGroup}`,
   snapshot: {
     entries: [
-      'dataplex-types.global.generic'
+      okfEntryType
     ],
     aspects: [
-      'dataplex-types.global.generic',
       'dataplex-types.global.overview',
       okfAspect
     ]
   },
   publishing: {
     entries: [
-      'dataplex-types.global.generic'
+      okfEntryType
     ],
     aspects: [
-      'dataplex-types.global.generic',
       'dataplex-types.global.overview',
       okfAspect
     ]
   }
 }, null, 2));
-console.log('Created catalog.yaml manifest');
+console.log(`Created ${path.relative(process.cwd(), manifest)} manifest`);

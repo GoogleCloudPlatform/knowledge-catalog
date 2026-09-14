@@ -4,7 +4,7 @@ resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datas
 title: Stack Overflow Posts Wiki Placeholder
 description: Placeholder table for various Wiki-style posts within the Stack Overflow
   dataset.
-tags: stackoverflow, posts, wiki, placeholder, community
+tags: [stackoverflow, posts, wiki, placeholder, community]
 generated:
   by: reference_agent/gemini-2.5-flash
   at: '2026-07-10T22:59:18+00:00'

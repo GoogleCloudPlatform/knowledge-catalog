@@ -131,13 +131,29 @@ function runScenario(scenario: any) {
           }
           else {
             expect(fs.existsSync(absolutePath)).toBe(true);
-            if (typeof condition === 'string') {
-              const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
-              expect(actualContent.trim()).toBe(condition.trim());
-            }
-            else if (condition && typeof condition === 'object' && 'contains' in condition) {
-              const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
-              expect(actualContent).toContain(condition.contains);
+            const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
+            // A condition is one of: a bare string (exact match), a `{contains}`
+            // mapping, a `{notContains}` mapping, an empty `{}` mapping
+            // (existence only, already asserted above), or a list of such
+            // conditions.
+            const conditions = Array.isArray(condition) ? condition : [condition];
+            for (const c of conditions) {
+              if (typeof c === 'string') {
+                expect(actualContent.trim()).toBe(c.trim());
+              }
+              else if (c && typeof c === 'object' && 'contains' in c) {
+                expect(actualContent).toContain(c.contains);
+              }
+              else if (c && typeof c === 'object' && 'notContains' in c) {
+                expect(actualContent).not.toContain(c.notContains);
+              }
+              else if (c && typeof c === 'object' && Object.keys(c).length === 0) {
+                // Existence-only assertion; nothing more to check.
+              }
+              else {
+                throw new Error(
+                  `Unsupported fileSystem assertion for ${fpath}: ${JSON.stringify(c)}`);
+              }
             }
           }
         }

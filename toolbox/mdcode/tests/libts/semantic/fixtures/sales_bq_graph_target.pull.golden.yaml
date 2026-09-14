@@ -1,0 +1,17 @@
+# (no warnings)
+version: 0.2.0.dev0/google
+semantic_model:
+  - name: sales
+    deployment_target: //bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph
+    entities:
+      - name: orders
+        source: demo.sales.orders
+        primary_key:
+          - o_orderkey
+        fields:
+          - name: o_orderkey
+            datatype: Opaque
+          - name: o_totalprice
+            datatype: Opaque
+    metrics:
+      - name: total_revenue

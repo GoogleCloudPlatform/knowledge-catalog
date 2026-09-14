@@ -60,6 +60,17 @@ export class BigQueryClient extends api.ApiClient {
     return await this._get(name, params);
   }
 
+  // Fetches a single table's metadata. Used as a cheap existence/access probe
+  // before deploy: a 200 means the table is reachable, a 404 that it does not
+  // exist, a 403 that the caller cannot see it. `selectedFields` trims the
+  // response to the reference alone, since only the status is consulted.
+  async getTable(project: string, dataset: string, table: string): Promise<api.ApiResult<Table>> {
+    const name = `projects/${project}/datasets/${dataset}/tables/${table}`;
+    const params: Record<string, any> = { selectedFields: 'tableReference' };
+
+    return await this._get<Table>(name, params);
+  }
+
   async *listTables(project: string, dataset: string): AsyncGenerator<Table> {
     const name = `projects/${project}/datasets/${dataset}/tables`;
 
@@ -87,12 +98,17 @@ export class BigQueryClient extends api.ApiClient {
   // Executes a SQL statement (including DDL) synchronously via jobs.query.
   // When `location` is set it pins the job's processing location so it agrees
   // with getQueryResults/getJob; otherwise BigQuery infers it from the
-  // referenced tables.
-  async query(project: string, sql: string, location?: string): Promise<api.ApiResult<QueryResponse>> {
+  // referenced tables. With `dryRun` the statement is validated -- name
+  // resolution, table existence and access -- but not executed, so it serves as
+  // a cheap pre-flight probe over any reference form BigQuery can resolve.
+  async query(project: string, sql: string, location?: string, dryRun?: boolean): Promise<api.ApiResult<QueryResponse>> {
     const name = `projects/${project}/queries`;
     const body: Record<string, any> = { query: sql, useLegacySql: false };
     if (location) {
       body.location = location;
+    }
+    if (dryRun) {
+      body.dryRun = true;
     }
     return await this._post<QueryResponse>(name, body);
   }

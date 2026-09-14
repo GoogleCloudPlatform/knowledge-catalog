@@ -31,11 +31,14 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 //   sales_bq_graph_target -> model aspect deploymentTargets + un-typed metric
 //     (dataType fallback); star_orders_customer -> a direct-FK relationship
 //     (schema-join link) + multiple entities/metrics; tpcds_date_edge ->
-//     temporal field types.
+//     temporal field types; actions_place_order -> the custom
+//     `semantic-action` and `semantic-constraint` types, the only fixture that
+//     declares either.
 const CORPUS = [
   'sales_bq_graph_target.yaml',
   'star_orders_customer.yaml',
   'tpcds_date_edge.yaml',
+  'actions_place_order.yaml',
 ];
 
 // A fixed destination + default (dataplex-types/global) system types, so the

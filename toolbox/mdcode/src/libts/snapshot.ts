@@ -185,7 +185,20 @@ export class CatalogSnapshot {
   // This is only meant to be used within the syncing process (as part of pull operations).
   async _storeEntry(entry: dataplex.Entry): Promise<void> {
     const localName = this.manifest.source.localName(entry);
-    await this._layout.saveEntry(localName, toLocalEntry(entry, localName));
+    const local = toLocalEntry(entry, localName);
+
+    // Preserve the parent so a pull after a push round-trips it, mirroring the
+    // inverse conversion _fetchEntry applies on push: store the parent as a
+    // local name (Dataplex requires parentEntry to be in the same entry group,
+    // so localName always resolves), not the service name. Ingested entries
+    // never carry a parentEntry back to the service (toServiceEntry drops it),
+    // so recording one would be misleading -- skip them.
+    if (entry.parentEntry && !this.manifest.source.ingestedEntries) {
+      local.resource.parent =
+        this.manifest.source.localName({ ...entry, name: entry.parentEntry });
+    }
+
+    await this._layout.saveEntry(localName, local);
   }
 
   // Fetches a Dataplex entry from its local metadata representation.
@@ -206,8 +219,7 @@ export class CatalogSnapshot {
       entry,
       serviceName,
       this.manifest,
-      this._entryTypes,
-      this._aspectTypes
+      this._entryTypes
     );
   }
 }
@@ -245,8 +257,7 @@ function toLocalEntry(entry: dataplex.Entry, localName: string): md.Entry {
 function toServiceEntry(entry: md.Entry,
                         serviceName: string,
                         manifest: CatalogManifest,
-                        entryTypes: Map<string, dataplex.EntryType>,
-                        aspectTypes: Map<string, dataplex.AspectType>): dataplex.Entry {
+                        entryTypes: Map<string, dataplex.EntryType>): dataplex.Entry {
   const entryType = entryTypes.get(entry.type);
   if (!entryType) {
     throw new Error(`Unknown entry type ${entry.type} in snapshot`);
