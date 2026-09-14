@@ -1091,10 +1091,18 @@ async function resolveEntityRef(
     return {error: `No ${entity.name} matches '${input}'.`};
   }
 
+  // The SELECT list is cast to text; the WHERE clause above is deliberately not
+  // (see the note on predicates). A key read here is carried in an EntityRef
+  // and re-bound as a parameter later, so it has to come back in the form the
+  // runtime parses from -- and PostgreSQL hands a DATE back as a timestamp
+  // value, which is not that form. Casting the OUTPUT costs no index; casting
+  // the predicate would.
+  const selected = keyColumns.map(column => dialect.castToText(column));
+
   // LIMIT 2 is enough to tell "one match" from "more than one", and avoids
   // dragging back a large candidate set just to reject it.
   const rows = await query({
-    sql: `SELECT ${keyColumns.join(', ')} FROM ${table} WHERE ${
+    sql: `SELECT ${selected.join(', ')} FROM ${table} WHERE ${
         predicates.join(' OR ')} LIMIT 2`,
     params,
     paramTypes,

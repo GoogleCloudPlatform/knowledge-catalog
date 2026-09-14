@@ -51,6 +51,10 @@ export function validatePushRequirements(
     // BigQuery Graph OR Spanner Graph URI (we do not support zero or several
     // graphs per model). The target's host selects which deploy leg runs.
     //
+    // An AlloyDB target parses, and is still not one of those two: it names a
+    // database a model RUNS against rather than a graph a push publishes. It
+    // gets its own arm below so it is not reported as a typo.
+    //
     // A KC-only push (targetOptional) deploys no graph, so its deployment
     // target is irrelevant: skip the check entirely. Such a push may carry no
     // target (a logical model), one, or even both backends (whose KC aspect
@@ -64,6 +68,18 @@ export function validatePushRequirements(
                     .length} deploymentTargets; exactly one BigQuery ` +
             `Graph or Spanner Graph target is required under its GOOGLE ` +
             `custom_extension.`);
+      } else if (deployInfo.alloyDb.length) {
+        // Parseable, supported, and for the other command. AlloyDB has no
+        // property-graph DDL, so there is no graph here for a push to deploy
+        // -- which makes this a profile pointed at the wrong verb rather than
+        // a URI to correct, and the message says which verb it is for.
+        errors.push(
+            `model '${model.name}' (${document}) deploymentTarget '${
+                deployInfo.alloyDb[0].uri}' is an AlloyDB database, which a ` +
+            `model runs against rather than deploys to; AlloyDB has no ` +
+            `property graph for a push to publish. Push under a profile ` +
+            `whose target is a BigQuery or Spanner Graph, and use this one ` +
+            `to run actions against.`);
       } else if (deployInfo.bigQuery.length + deployInfo.spanner.length === 0) {
         // The single target is present but is not a supported graph URI.
         errors.push(

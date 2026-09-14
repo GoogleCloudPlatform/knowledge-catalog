@@ -8,8 +8,11 @@
 #
 # Nothing here says where the data lives, what the columns are called, or what
 # SQL performs the write. Those are physical facts, and they are in
-# commerce.profiles/spanner.yaml. This file would read the same if the orders
-# were in AlloyDB.
+# commerce.profiles/. There are two profiles -- spanner.yaml and alloydb.yaml --
+# pointing this one model at two different databases, with different table
+# names, a differently named column and a different SQL dialect between them.
+# This file is the same bytes under both, which is the claim the pair exists to
+# make.
 #
 # Three constraints are declared and none is referenced. A constraint is inert
 # until an action names it in `guards`, and today's runtime evaluates none of

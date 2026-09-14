@@ -240,8 +240,22 @@ describe('resolving an entity-typed argument', () => {
          // for the length of the write.
          const fake = resolvingFake();
          await run(fake);
-         expect(fake.statements[0].sql).not.toContain('CAST');
+         const where = fake.statements[0].sql.split(' WHERE ')[1];
+         expect(where).toBeDefined();
+         expect(where).not.toContain('CAST');
        });
+
+  test('reads each key back as text, which the predicate is not', async () => {
+    // The other half of the same decision. A key value read here is carried in
+    // an EntityRef and re-bound as a parameter later, so it has to come back in
+    // the form the runtime parses from -- which on PostgreSQL a DATE does not.
+    // Casting the OUTPUT costs no index, so this side is cast and the WHERE
+    // above is not.
+    const fake = resolvingFake();
+    await run(fake);
+    const select = fake.statements[0].sql.split(' FROM ')[0];
+    expect(select).toContain('CAST(account_id AS STRING)');
+  });
 
   test('drops a key predicate the input cannot possibly match', async () => {
     // 'A1' is not an Integer, so no INT64 key equals it. Comparing anyway

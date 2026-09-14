@@ -1,4 +1,8 @@
--- Tables the commerce model binds to.
+-- Tables the commerce model binds to under the `spanner` profile.
+--
+-- Its sibling is schema.alloydb.sql, which holds the same three entities in
+-- PostgreSQL under different table names. Neither file is the real one: each is
+-- a physical layout that a binding profile maps the same model onto.
 --
 -- A file because `gcloud spanner databases create --ddl-file` takes one, and
 -- because `kcmd push` deploys a graph over tables that already exist rather

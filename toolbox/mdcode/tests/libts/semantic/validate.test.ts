@@ -16,6 +16,12 @@ const BQ_TARGET =
 const SPANNER_TARGET =
     '//spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g';
 
+// A parsed AlloyDB deployment target. Not a graph target: it names a database
+// to run against, which is the whole reason a push has to say something other
+// than "typo" about it.
+const ALLOYDB_TARGET =
+    '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/db';
+
 function googleExt(targets: string[]): CustomExtension {
   return {
     vendorName: 'GOOGLE',
@@ -87,6 +93,28 @@ describe('validatePushRequirements', () => {
     expect(errs.length).toBe(1);
     expect(errs[0]).toContain(
         'not a valid BigQuery Graph or Spanner Graph URI');
+  });
+
+  // An AlloyDB target parses and is supported, and a push still cannot use it:
+  // AlloyDB has no property-graph DDL, so there is no graph to publish. The
+  // message has to separate that from the malformed case above, because the
+  // fix is a different command rather than a corrected URI.
+  test('an AlloyDB target is rejected as a store, not as a typo', () => {
+    const m = model({}, [googleExt([ALLOYDB_TARGET])]);
+    const errs = validatePushRequirements([loaded(m)]);
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain('is an AlloyDB database');
+    expect(errs[0]).toContain('runs against rather than deploys to');
+    expect(errs[0]).toContain(ALLOYDB_TARGET);
+    expect(errs[0]).not.toContain('is not a valid');
+  });
+
+  // A Knowledge-Catalog-only push deploys no graph at all, so it has no opinion
+  // about the target -- including this one.
+  test('an AlloyDB target passes when no graph is being deployed', () => {
+    const m = model({}, [googleExt([ALLOYDB_TARGET])]);
+    expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+        .toEqual([]);
   });
 
   test('more than one deployment target is rejected', () => {

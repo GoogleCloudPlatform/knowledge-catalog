@@ -1,10 +1,20 @@
 # One logical model, many physical bindings
 
-> **Scope.** `kcmd` deploys a merged model to the graph backend its
-> `deployment_target` names — BigQuery Graph or Spanner Graph — and to Knowledge
-> Catalog. A profile may bind an entity to another store (AlloyDB, a lake table)
-> and `kcmd` merges it and reports its availability, but deploying a binding to a
-> store other than BigQuery or Spanner is not yet supported.
+> **Scope.** A `deployment_target` answers two questions that are easy to
+> conflate: where the model is *published*, and where it *runs*.
+>
+> `kcmd push` publishes. It deploys a property graph to the backend the target
+> names — BigQuery Graph or Spanner Graph — and the logical model to Knowledge
+> Catalog, which takes it under any profile.
+>
+> An action's statements and an agent's lookups run, against an operational
+> store: **Spanner or AlloyDB**. An AlloyDB target runs and does not push, because
+> AlloyDB has no property-graph DDL for a push to deploy; a BigQuery target
+> pushes and does not run. A Spanner target does both.
+>
+> A profile may still bind an entity to any other store (a lake table, a
+> partner's schema). `kcmd` merges it and reports its availability, and neither
+> publishes nor runs it.
 
 A semantic model describes a business logically — its entities, the
 relationships between them, and the metrics over them — independent of where the

@@ -20,10 +20,15 @@ import {callableTools, modelTools} from '../../../src/libts/semantic/runtime/age
 import {createSemanticRuntimes} from '../../../src/libts/semantic/runtime/runtime';
 
 // 1. Build the runtime exactly as `kcmd` builds it -- same directory, same
-//    default profile, same merge, same warnings -- which pairs the model with
-//    the store it says it lives in. Neither the database nor the project is
-//    named here.
-const runtimes = await createSemanticRuntimes({path: import.meta.dir});
+//    merge, same warnings -- which pairs the model with the store it says it
+//    lives in. Neither the database nor the project is named here.
+//
+//    DEMO_PROFILE picks which binding profile to read, the way `kcmd
+//    --profile` does, and defaults to the one catalog.yaml names. It selects a
+//    deployment, not a backend: this file never learns whether the profile it
+//    got points at Spanner or at AlloyDB, and the run is the same either way.
+const runtimes = await createSemanticRuntimes(
+    {path: import.meta.dir, profile: process.env.DEMO_PROFILE});
 if ('error' in runtimes) throw new Error(runtimes.error);
 const [runtime] = runtimes;
 if (!runtime.store) throw new Error(runtime.storeError);

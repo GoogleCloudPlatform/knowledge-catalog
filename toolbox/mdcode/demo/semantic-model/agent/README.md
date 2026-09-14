@@ -4,11 +4,16 @@ This is a recipe. Follow it and you get an agent that takes a natural language
 request and changes a row in an operational store. The point of the recipe is
 how little of that turns out to be agent work.
 
-The whole agent is one file, `agent.ts`, 56 lines of code. Not one of them
+The whole agent is one file, `agent.ts`, 57 lines of code. Not one of them
 mentions credits, orders, customers, tables or SQL. The file does four things:
 it creates the runtime, derives the tools, adapts them to the framework, and
 runs. Everything that knows what business this is lives in the model, and
 outlives the agent.
+
+They do not mention a database either. [Step 7](#7-run-the-same-agent-against-alloydb)
+runs the identical file against AlloyDB instead of Spanner -- different tables,
+a different column name, a different SQL dialect -- by setting one environment
+variable.
 
 Everything else you need is already a command: `kcmd` for the model and its
 actions, `gcloud` for the store, ADK for the agent.
@@ -31,9 +36,9 @@ line types proves only that the tools can be called.
 ## Before you start
 
 You need a cloud project and application-default credentials, which serve both
-the store and Gemini. This walkthrough binds the model to Spanner, so the
-project needs a Spanner instance; another profile would point the same model
-somewhere else.
+the store and Gemini. Steps 1 to 6 bind the model to Spanner, so the project
+needs a Spanner instance. Step 7 does the same against AlloyDB and says what it
+needs there; you can stop after step 6 and have a working agent.
 
 ```bash
 gcloud auth application-default login
@@ -77,9 +82,15 @@ the commands below create and drop the database it names, the tools read and
 write there, and the agent bills Gemini to the same project unless
 `GOOGLE_CLOUD_PROJECT` is already set. There is nothing else to keep in step.
 
-Both files sit in a `kcmd` workspace (`catalog.yaml` scopes it and names
-`spanner` as the default profile), so the CLI and the agent read the same two
-files rather than two copies that can drift.
+There is a second profile next to it, `alloydb.yaml`, pointing the same model
+at a PostgreSQL database instead. It is not used until [step 7](#7-run-the-same-agent-against-alloydb);
+it is mentioned here because it is the reason the split is drawn where it is.
+The two profiles disagree about tables, about one column name and about SQL
+dialect, and `commerce.yaml` is the same bytes under both.
+
+The files sit in a `kcmd` workspace (`catalog.yaml` scopes it and names
+`spanner` as the default profile), so the CLI and the agent read the same files
+rather than copies that can drift.
 
 ### Put the persona in the model too
 
@@ -126,12 +137,14 @@ agent talks to another.
 
 ```bash
 gcloud spanner databases create "$DATABASE" \
-  --instance="$INSTANCE" --project="$PROJECT" --ddl-file=schema.sql
+  --instance="$INSTANCE" --project="$PROJECT" --ddl-file=schema.spanner.sql
 ```
 
-`schema.sql` creates three tables. It is a file rather than a command because
-`--ddl-file` wants one, and because `kcmd push` deploys a graph over tables that
-already exist rather than creating them.
+`schema.spanner.sql` creates three tables. It is a file rather than a command
+because `--ddl-file` wants one, and because `kcmd push` deploys a graph over
+tables that already exist rather than creating them. Its sibling
+`schema.alloydb.sql` holds the same three entities in PostgreSQL; neither is the
+real schema, which is the point.
 
 Then seed the rows: two customers, three orders, six line items. Order 12345 is
 the one the request is about, placed on Labor Day 2026 and carrying the $30
@@ -445,6 +458,182 @@ declares. It cannot compute a total — the action does that, in the same
 transaction as the write. And it carries no opinion of its own about how to
 treat a customer, because that opinion is in `commerce.yaml`.
 
+## 7. Run the same agent against AlloyDB
+
+Everything so far ran against Spanner. This step runs the same request against
+AlloyDB, and the interesting part is the size of the change: one environment
+variable on the command line, and one file that already exists in the repo.
+
+`catalog/EntryGroups/commerce_demo/commerce.profiles/alloydb.yaml` is the second
+binding profile. Put it beside `spanner.yaml` and the differences are the whole
+of what moving databases costs:
+
+| | `spanner` | `alloydb` |
+| --- | --- | --- |
+| deployment target | a property graph | a database, and no graph |
+| the order table | `Orders` | `purchase_order` |
+| the lines table | `LineItem` | `order_line` |
+| `Order.total` binds to | `total` | `order_total` |
+| dialect of the two statements | GoogleSQL | PostgreSQL |
+
+`commerce.yaml` is the same bytes under both. So is `agent.ts`. So are the tools
+the model derives — you can check that rather than take it:
+
+```console
+$ ../../../dist/kcmd agent tools --profile spanner > /tmp/spanner.txt
+$ ../../../dist/kcmd agent tools --profile alloydb > /tmp/alloydb.txt
+$ diff /tmp/spanner.txt /tmp/alloydb.txt
+1,2c1,2
+< Model 'commerce' (commerce_demo), profile 'spanner':
+<   store: my-project/my-instance/semantic_agent_demo
+---
+> Model 'commerce' (commerce_demo), profile 'alloydb':
+>   store: alloydb:my-project/us-central1/my-cluster/my-instance/semantic_agent_demo
+```
+
+Seventy lines of tools, four tool names, every parameter, every description
+and the whole instruction: identical. The two lines that differ are the two that
+say which deployment this is. That is the claim, and the `diff` is the proof.
+
+### What AlloyDB needs that Spanner did not
+
+AlloyDB has no data-plane REST API — there is no equivalent of
+`spanner.googleapis.com/.../executeSql`. SQL reaches it over the PostgreSQL wire
+protocol, which means a network path and a database user, and those are the two
+things to set up:
+
+* **Reachability.** The client asks the Admin API for the instance's address and
+  connects to port 5432. From inside the instance's VPC that is its private IP
+  and nothing else is needed. From a workstation outside it, enable a public IP
+  on the instance, or set `ALLOYDB_HOST` to whatever forwards there.
+* **A database user.** The client authenticates as the IAM principal your
+  application-default credentials belong to, using the access token as the
+  password. That principal has to exist as an AlloyDB IAM user and hold
+  privileges on the three tables. Set `ALLOYDB_USER` to override the name.
+
+The caller also needs `alloydb.instances.get` on the cluster, to look up the
+address and the cluster CA.
+
+### Create the store
+
+An AlloyDB cluster is the expensive object here and it bills from the moment it
+exists, so read [Cleaning up](#cleaning-up) before you create one.
+
+```bash
+PG_PROJECT=my-project
+PG_REGION=us-central1
+PG_CLUSTER=my-cluster
+PG_INSTANCE=my-instance
+
+gcloud alloydb clusters create "$PG_CLUSTER" \
+  --region="$PG_REGION" --project="$PG_PROJECT" \
+  --password="$(openssl rand -base64 24)" --network=default
+
+gcloud alloydb instances create "$PG_INSTANCE" \
+  --cluster="$PG_CLUSTER" --region="$PG_REGION" --project="$PG_PROJECT" \
+  --instance-type=PRIMARY --cpu-count=2 \
+  --database-flags=alloydb.iam_authentication=on \
+  --assign-inbound-public-ip=ASSIGN_IPV4
+```
+
+`alloydb.iam_authentication=on` is what lets the access token serve as the
+password. Then register yourself as a database user:
+
+```bash
+gcloud alloydb users create "$(gcloud config get-value account)" \
+  --cluster="$PG_CLUSTER" --region="$PG_REGION" --project="$PG_PROJECT" \
+  --type=IAM_BASED
+```
+
+Create the database, apply the schema and seed the same rows. `psql` connects as
+the built-in `postgres` user for this part, because creating a database and
+granting privileges is administration rather than anything the model does:
+
+```bash
+PGHOST=$(gcloud alloydb instances describe "$PG_INSTANCE" \
+  --cluster="$PG_CLUSTER" --region="$PG_REGION" --project="$PG_PROJECT" \
+  --format='value(publicIpAddress)')
+
+psql "host=$PGHOST user=postgres" -c "CREATE DATABASE semantic_agent_demo"
+psql "host=$PGHOST user=postgres dbname=semantic_agent_demo" -f schema.alloydb.sql
+```
+
+The same two customers, three orders and six line items as
+[step 2](#2-create-the-store), in the other schema's names:
+
+```bash
+psql "host=$PGHOST user=postgres dbname=semantic_agent_demo" <<'SQL'
+INSERT INTO customer (customer_id, name, email) VALUES
+  (1, 'Morgan Ellis', 'morgan.ellis@example.com'),
+  (2, 'Dana Reyes', 'dana.reyes@example.com');
+
+INSERT INTO purchase_order (order_id, customer_id, placed_on, order_total, status) VALUES
+  (12345, 1, DATE '2026-09-07', 165.85, 'OPEN'),
+  (12346, 1, DATE '2026-08-20',  18.00, 'OPEN'),
+  (12347, 2, DATE '2026-09-02', 200.00, 'OPEN');
+
+INSERT INTO order_line (line_item_id, order_id, type, amount, memo) VALUES
+  ('li-12345-1', 12345, 'item',  89.99, 'Cast iron skillet'),
+  ('li-12345-2', 12345, 'item',  34.50, 'Enamel saucepan'),
+  ('li-12345-3', 12345, 'fee',   30.00, 'Shipping'),
+  ('li-12345-4', 12345, 'tax',   11.36, 'Sales tax'),
+  ('li-12346-1', 12346, 'item',  18.00, 'Silicone spatula set'),
+  ('li-12347-1', 12347, 'item', 200.00, 'Stand mixer');
+SQL
+
+psql "host=$PGHOST user=postgres dbname=semantic_agent_demo" -c \
+  "GRANT SELECT, INSERT, UPDATE ON customer, purchase_order, order_line
+   TO \"$(gcloud config get-value account)\""
+```
+
+### There is no push
+
+`kcmd push` deploys a property graph, and AlloyDB has no property-graph DDL for
+one to land in. The `alloydb` profile's deployment target says so by naming a
+database and stopping there, and a push under it refuses rather than doing
+something approximate:
+
+```console
+$ ../../../dist/kcmd push --profile alloydb --validate-only
+Error: model 'commerce' (commerce) deploymentTarget '//alloydb.googleapis.com/projects/my-project/locations/us-central1/clusters/my-cluster/instances/my-instance/databases/semantic_agent_demo' is an AlloyDB database, which a model runs against rather than deploys to; AlloyDB has no property graph for a push to publish. Push under a profile whose target is a BigQuery or Spanner Graph, and use this one to run actions against.
+```
+
+Nothing in this demo depended on the graph. The agent's tools are derived from
+the model and the profile, and the action's statements go to the database
+directly — so the run below works with no push at all. What you give up is the
+graph itself: no `GRAPH_TABLE` queries and no catalog entry describing the
+relationships. Push under `spanner` when you want that; the two profiles are not
+exclusive, and a model can be published in one place and run in another.
+
+### Run it
+
+`DEMO_PROFILE` picks the profile, the same way `--profile` does for `kcmd`. The
+request is the one from [step 6](#6-run-it), word for word:
+
+```bash
+DEMO_PROFILE=alloydb bun agent.ts "Find the order for Morgan Ellis (morgan.ellis@example.com) that was placed on Labor Day. It was supposed to get free shipping but we had a glitch and the customer got charged. Please issue them a credit to offset the charge."
+```
+
+> **Not yet captured.** Every `kcmd` listing on this page, including the `diff`
+> above and the push refusal, is copied from a real run. The agent transcript
+> against a live AlloyDB cluster is not -- no cluster has been stood up for it
+> yet -- so there is no transcript here rather than a plausible one. Everything
+> up to the moment a connection opens is exercised by the unit tests; what is
+> unproven is the connection itself and the two statements on the other side.
+
+Check the result the same way, in the other dialect:
+
+```bash
+psql "host=$PGHOST user=postgres dbname=semantic_agent_demo" -c \
+  "SELECT line_item_id, order_id, type, amount, memo
+     FROM order_line WHERE order_id = 12345 ORDER BY type"
+```
+
+A credit line of `-30.00` with a generated key, and `purchase_order.order_total`
+down to `135.85` — the same outcome as
+[step 6](#6-run-it), reached by different SQL against different tables, from the
+same request through the same agent.
+
 ## What in here is about ecommerce
 
 Four files carry the business, and you can list them:
@@ -453,12 +642,17 @@ Four files carry the business, and you can list them:
 | --- | --- |
 | `catalog/EntryGroups/commerce_demo/commerce.yaml` | the ontology, the action, the three policy rules, the persona |
 | `catalog/.../commerce.profiles/spanner.yaml` | tables, columns, the two SQL statements, the deployment target |
-| `schema.sql` | three `CREATE TABLE`s |
-| the seed commands in [step 2](#2-create-the-store) | two customers, three orders, six lines |
+| `catalog/.../commerce.profiles/alloydb.yaml` | the same four things, for the other database |
+| `schema.spanner.sql`, `schema.alloydb.sql` | three `CREATE TABLE`s, twice |
+| the seed commands in [step 2](#2-create-the-store) and [step 7](#7-run-the-same-agent-against-alloydb) | two customers, three orders, six lines |
 
 `agent.ts` is not on that list, and neither is anything under `src/`. Swap those
-four for a different business and the same 56 lines run it. That is the claim
+files for a different business and the same 57 lines run it. That is the claim
 this demo makes, and the file list is how you check it.
+
+Note which rows doubled and which did not. Moving to a second database added a
+profile and a schema; it added no entity, no field, no action, no rule and no
+line of agent code.
 
 The list stayed short because of two decisions. This case wanted a filter over a
 coded field, and the fix went into `agent_tools.ts`, where it helps every model,
@@ -548,4 +742,12 @@ the model names.
 ```bash
 gcloud spanner databases delete "$DATABASE" \
   --instance="$INSTANCE" --project="$PROJECT"
+```
+
+If you also ran step 7, the AlloyDB cluster is the expensive half and goes
+separately. It bills while it exists, so delete it rather than leaving it idle.
+
+```bash
+gcloud alloydb clusters delete "$PG_CLUSTER" \
+  --region="$PG_REGION" --project="$PG_PROJECT" --force
 ```

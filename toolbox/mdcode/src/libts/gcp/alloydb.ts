@@ -250,7 +250,7 @@ export function toPositional(
 // definite. Anything unrecognized maps to 500, which the runtime reads as
 // indeterminate, because an error this code has never seen is not one to make
 // promises about.
-function statusForSqlState(sqlState: string|undefined): number {
+export function statusForSqlState(sqlState: string|undefined): number {
   if (!sqlState) return 500;
   // 40001 serialization_failure, 40P01 deadlock_detected: retryable, nothing
   // applied. 23xxx: an integrity constraint refused the statement outright.
@@ -283,7 +283,7 @@ export interface ResultSet {
 // a string, or null. Doing this here is what lets `run_action` and the agent
 // tools read both backends with one set of rules -- they already parse from
 // strings, because that is the only thing Spanner ever gave them.
-function asString(value: unknown): string|null {
+export function asString(value: unknown): string|null {
   if (value === null || value === undefined) return null;
   if (value instanceof Date) return value.toISOString();
   if (value instanceof Uint8Array) return Buffer.from(value).toString('base64');

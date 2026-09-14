@@ -143,7 +143,7 @@ cli.command(
         'Read the model under this binding profile; its deployment target names the database the action runs against; defaults to default_profile, else the inline bindings')
     .option(
         '--store',
-        'Print only where a run would land, as project/instance/database, for a script to read (`list` only)')
+        'Print only where a run would land: project/instance/database for Spanner, and the backend named ahead of the path for any other store (`list` only)')
     .option(
         '--judge [model]',
         'Settle guards the model states in words by asking Gemini on Vertex AI, naming a model or taking the default; without it, an action guarded by such a rule is refused rather than run unchecked (`run` only)')
