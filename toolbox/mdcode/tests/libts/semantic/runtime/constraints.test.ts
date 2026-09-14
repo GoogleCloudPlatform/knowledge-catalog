@@ -15,15 +15,18 @@ import {describe, expect, test} from 'bun:test';
 
 import {Action, Constraint, Entity, SemanticModel} from '../../../../src/libts/semantic/ir';
 import {
-  ConstraintProbe,
+  CheckPlan,
+  checkStatement,
+  ConstraintCheck,
   effectOf,
-  lowerGuard,
-  lowerGuards,
-  Lowering,
-  probeStatement,
+  GOOGLE_SQL,
+  planGuard,
+  planGuards,
+  SqlDialect,
   strictestEffect,
+  violating,
   violationFrom,
-} from '../../../../src/libts/semantic/runtime/constraint_eval';
+} from '../../../../src/libts/semantic/runtime/constraints';
 
 
 const ORDER: Entity = {
@@ -119,21 +122,25 @@ function modelWith(over: Partial<SemanticModel> = {}): SemanticModel {
 
 function lowerRule(
     constraint: Constraint, action: Action = ISSUE_CREDIT,
-    model: SemanticModel = modelWith()): Lowering {
-  return lowerGuard(model, action, constraint);
+    model: SemanticModel = modelWith()): CheckPlan {
+  return planGuard(model, action, constraint);
 }
 
-function lower(expression: string, action?: Action): Lowering {
+function lower(expression: string, action?: Action): CheckPlan {
   return lowerRule({name: 'Rule', expression}, action);
 }
 
-function probeOf(lowered: Lowering): ConstraintProbe {
+// The probe's query text is read often enough here to be worth flattening onto
+// the check, so an assertion about the SQL reads as one.
+function probeOf(lowered: CheckPlan): ConstraintCheck&{sql: string} {
   if (!lowered.ok) throw new Error(`expected a probe: ${lowered.reason}`);
-  return lowered.probe;
+  return {...lowered.check, sql: lowered.check.query.text};
 }
 
-function reasonOf(lowered: Lowering): string {
-  if (lowered.ok) throw new Error(`expected a refusal: ${lowered.probe.sql}`);
+function reasonOf(lowered: CheckPlan): string {
+  if (lowered.ok) {
+    throw new Error(`expected a refusal: ${lowered.check.query.text}`);
+  }
   return lowered.reason;
 }
 
@@ -155,7 +162,7 @@ describe('what the probe reads and when it runs', () => {
       to: {code: 'INT64'},
       amount: {code: 'NUMERIC'},
     };
-    const statement = probeStatement(
+    const statement = checkStatement(
         probeOf(lower('Order.total >= 0', MOVE_CREDIT)), params, types);
     expect(statement.params).toEqual({from: 1, to: 2});
   });
@@ -411,7 +418,7 @@ describe('lowering the guards of one action', () => {
   };
 
   const guardedBy = (constraints: Constraint[], guards: string[]) =>
-      lowerGuards(
+      planGuards(
           modelWith({constraints}), {...ISSUE_CREDIT, guards});
 
   test('a guard naming a constraint the model does not declare is an error',
@@ -423,8 +430,8 @@ describe('lowering the guards of one action', () => {
        });
 
   test('a guard it cannot check stops the action', () => {
-    const {probes, errors} = guardedBy([judged], ['Justified']);
-    expect(probes).toEqual([]);
+    const {checks, errors} = guardedBy([judged], ['Justified']);
+    expect(checks).toEqual([]);
     expect(errors).toHaveLength(1);
   });
 
@@ -441,15 +448,15 @@ describe('lowering the guards of one action', () => {
        });
 
   test('the checkable guards are still lowered alongside the rest', () => {
-    const {probes, errors} =
+    const {checks, errors} =
         guardedBy([positive, judged], ['Positive', 'Justified']);
-    expect(probes.map(p => p.constraint.name)).toEqual(['Positive']);
+    expect(checks.map(c => c.constraint.name)).toEqual(['Positive']);
     expect(errors).toHaveLength(1);
   });
 
   test('an action naming no guard produces nothing to run', () => {
-    const {probes, errors, unchecked} = guardedBy([positive], []);
-    expect(probes).toEqual([]);
+    const {checks, errors, unchecked} = guardedBy([positive], []);
+    expect(checks).toEqual([]);
     expect(errors).toEqual([]);
     expect(unchecked).toEqual([]);
   });
@@ -468,28 +475,91 @@ describe('binding a probe to the call', () => {
     // An action's parameter list is wider than any one rule, and a statement
     // carrying a parameter it never reads is one the store may refuse.
     const statement =
-        probeStatement(probeOf(lower('amount <= 25')), params, types);
+        checkStatement(probeOf(lower('amount <= 25')), params, types);
     expect(statement.params).toEqual({amount: 30});
     expect(statement.paramTypes).toEqual({amount: {code: 'NUMERIC'}});
   });
 
   test('carries the scope parameter too, when the probe reads a table', () => {
     const statement =
-        probeStatement(probeOf(lower('Order.total >= 0')), params, types);
+        checkStatement(probeOf(lower('Order.total >= 0')), params, types);
     expect(statement.params).toEqual({order: '12345'});
   });
 
   test('a probe naming no parameter carries none at all', () => {
-    const statement = probeStatement(
+    const statement = checkStatement(
         {
           constraint: {name: 'Rule', expression: 'TRUE = TRUE'},
           timing: 'before',
-          sql: 'SELECT 1 AS violated FROM UNNEST([1]) WHERE FALSE',
+          query: {
+            text: 'SELECT 1 AS violated FROM UNNEST([1]) WHERE FALSE',
+            parameters: [],
+          },
           columns: ['violated'],
         },
         params, types);
     expect(statement.params).toBeUndefined();
   });
+});
+
+
+describe('what the dialect decides, and what it does not', () => {
+  // A second dialect, standing in for one that reads the pushed property graph
+  // rather than the table: the same column of the same table, reached through
+  // a pattern variable instead of named bare.
+  const THROUGH_A_VARIABLE: SqlDialect = {
+    name: 'test',
+    columnRef: (column) => `o.${column}`,
+    parameterRef: (name) => `@${name}`,
+    entityProbe: ({table, keys, scope, predicate, limit}) =>
+        `MATCH (o:${table}) WHERE ${scope} AND ${violating(predicate)} ` +
+        `RETURN ${keys.map(k => `o.${k}`).join(', ')} LIMIT ${limit}`,
+    argumentProbe: (predicate) =>
+        `RETURN 1 AS violated WHERE ${violating(predicate)}`,
+  };
+
+  const inDialect = (expression: string, dialect: SqlDialect) => planGuard(
+      modelWith(), ISSUE_CREDIT, {name: 'Rule', expression}, dialect);
+
+  test('the same rule is written differently and resolved the same', () => {
+    // Binding is what the two share: both read column Total of table Orders,
+    // and only the way the reference is written down differs.
+    expect(probeOf(inDialect('Order.total >= 0', GOOGLE_SQL)).sql)
+        .toBe(
+            'SELECT OrderId FROM Orders WHERE OrderId = @order AND ' +
+            'NOT COALESCE((Total >= 0), FALSE) LIMIT 5');
+    expect(probeOf(inDialect('Order.total >= 0', THROUGH_A_VARIABLE)).sql)
+        .toBe(
+            'MATCH (o:Orders) WHERE o.OrderId = @order AND ' +
+            'NOT COALESCE((o.Total >= 0), FALSE) RETURN o.OrderId LIMIT 5');
+  });
+
+  test('everything but the writing is settled before a dialect is asked', () => {
+    // The grammar, the entity a rule reads and the moment it runs are decided
+    // in the analysis, so a dialect can neither widen what the runtime agrees
+    // to check nor move when it checks it.
+    for (const dialect of [GOOGLE_SQL, THROUGH_A_VARIABLE]) {
+      expect(reasonOf(inDialect('SUM(Order.total) > 0', dialect)))
+          .toContain('parentheses or a function call');
+      expect(reasonOf(inDialect('Order.total >= 0 AND amount > 0', dialect)))
+          .toContain('about stored data');
+      expect(probeOf(inDialect('Order.total >= 0', dialect)).timing)
+          .toBe('after');
+      expect(probeOf(inDialect('amount <= Order.total', dialect)).timing)
+          .toBe('before');
+    }
+  });
+
+  test('a check reports the parameters it wrote, whatever it wrote them as',
+       () => {
+         // The emitter names them rather than the caller scanning the text
+         // back out of it, so a dialect with another sigil binds correctly
+         // without anyone teaching the binder about it.
+         const check = probeOf(inDialect('amount <= Order.total', GOOGLE_SQL));
+         expect([...check.query.parameters].sort()).toEqual([
+           'amount', 'order'
+         ]);
+       });
 });
 
 

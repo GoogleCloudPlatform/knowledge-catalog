@@ -24,11 +24,11 @@
 // the caller supplies a handler that produces the statements.
 //
 // Where the model's rules come in. A constraint takes effect here through
-// `guards` on the action: each rule the action names is lowered to a probe and
+// `guards` on the action: each rule the action names becomes one check and is
 // run inside this same transaction -- before the write when it reads one of the
 // call's arguments, after the write when it reads only stored state -- and a
 // violation rolls the whole thing back and reports the rule's own words. See
-// constraint_eval.ts.
+// ./constraints.
 //
 // A rule that cannot be lowered REFUSES the action rather than letting it run
 // unchecked. A model that declares a rule and a runtime that quietly ignores it
@@ -56,15 +56,15 @@ import {
 import {quoteIfReserved, referencedParameters} from '../sql_identifiers';
 
 import {
+  CheckTiming,
+  checkStatement,
   ConstraintViolation,
   effectOf,
-  lowerGuards,
-  UncheckedRule,
-  probeStatement,
-  ProbeTiming,
+  planGuards,
   strictestEffect,
+  UncheckedRule,
   violationFrom,
-} from './constraint_eval';
+} from './constraints';
 import {runtimeClient, SemanticRuntime} from './runtime';
 
 
@@ -179,14 +179,14 @@ export async function runAction(opts: RunActionOptions):
   const refusal = whyRefusedWithoutRunning(model, action, opts.handler);
   if (refusal) return {status: 'error', message: refusal};
 
-  // Lowered before anything opens, and by the same call the refusal check just
-  // made: the probes that run are the ones it proved buildable, so an action
+  // Planned before anything opens, and by the same call the refusal check just
+  // made: the checks that run are the ones it proved buildable, so an action
   // reported as runnable cannot then meet a rule that turns out to be
   // uncheckable.
-  const lowered = lowerGuards(model, action);
-  const probes = lowered.probes;
-  // Grows during the run: a probe the store refuses joins the rules that could
-  // not be lowered in the first place, since both leave a rule the model named
+  const lowered = planGuards(model, action);
+  const checks = lowered.checks;
+  // Grows during the run: a check the store refuses joins the rules that could
+  // not be planned in the first place, since both leave a rule the model named
   // unevaluated and both are worth reporting under the same heading.
   const unchecked: UncheckedRule[] = [...lowered.unchecked];
 
@@ -256,41 +256,41 @@ export async function runAction(opts: RunActionOptions):
         }
         const refs = resolved.refs;
 
-        // A probe binds the action's own parameters, so a guarded action is
+        // A check binds the action's own parameters, so a guarded action is
         // bound here even when a handler is what supplies the writes.
         let probeValues: Bindings|undefined;
-        if (probes.length) {
+        if (checks.length) {
           const bound = bindArguments(model, action, args, refs);
           if ('error' in bound) {
             return await rollback({status: 'error', message: bound.error});
           }
           probeValues = bound;
         }
-        // A probe that the store refuses is the same situation as a rule that
-        // could not be lowered, and it is answered the same way: an advisory
+        // A check the store refuses is the same situation as a rule that
+        // could not be planned, and it is answered the same way: an advisory
         // rule is reported as unchecked and the write goes on, anything
-        // stricter stops the call. Letting a `warn` probe's StoreError escape
+        // stricter stops the call. Letting a `warn` check's StoreError escape
         // would roll the transaction back over a rule whose whole contract is
-        // that it stops nothing -- the carve-off `lowerGuards` makes, undone
+        // that it stops nothing -- the carve-off `planGuards` makes, undone
         // one layer down.
-        const check = async (timing: ProbeTiming) => {
+        const violationsAt = async (timing: CheckTiming) => {
           const violations: ConstraintViolation[] = [];
-          for (const probe of probes) {
-            if (probe.timing !== timing) continue;
+          for (const check of checks) {
+            if (check.timing !== timing) continue;
             let rows;
             try {
-              rows = await query(probeStatement(
-                  probe, probeValues!.params, probeValues!.types));
+              rows = await query(checkStatement(
+                  check, probeValues!.params, probeValues!.types));
             } catch (err) {
-              if (effectOf(probe.constraint) !== 'warn') throw err;
+              if (effectOf(check.constraint) !== 'warn') throw err;
               unchecked.push({
-                constraint: probe.constraint.name,
+                constraint: check.constraint.name,
                 reason: `its probe could not be run (${
                     err instanceof Error ? err.message : String(err)})`,
               });
               continue;
             }
-            if (rows.length) violations.push(violationFrom(probe, rows));
+            if (rows.length) violations.push(violationFrom(check, rows));
           }
           return violations;
         };
@@ -298,7 +298,7 @@ export async function runAction(opts: RunActionOptions):
         // Before the write, because a rule that reads an argument is asking
         // whether this call may proceed at all, and a call that may not should
         // cost the store no writes.
-        const beforeWrite = await check('before');
+        const beforeWrite = await violationsAt('before');
         const refusedBefore = refusedBy(action, beforeWrite, refs);
         if (refusedBefore) return await rollback(refusedBefore);
 
@@ -325,7 +325,7 @@ export async function runAction(opts: RunActionOptions):
 
         // After the write and still inside the transaction, which is the one
         // moment the post-state both exists and can still be undone.
-        const afterWrite = await check('after');
+        const afterWrite = await violationsAt('after');
         const refusedAfter = refusedBy(action, afterWrite, refs);
         if (refusedAfter) return await rollback(refusedAfter);
         const warnings =
@@ -541,7 +541,7 @@ function unbindableByThisRuntime(
 // write safe; it is the model saying no rule gates the call. What the write
 // does is the author's, which is what `affects` describes.
 function guardsNotCheckable(model: SemanticModel, action: Action): string|null {
-  const errors = lowerGuards(model, action).errors;
+  const errors = planGuards(model, action).errors;
   if (!errors.length) return null;
   return `Action '${action.name}' cannot be run: ${errors.join('; ')}. ` +
       `Running it would apply a write the model says is checked first, so ` +
