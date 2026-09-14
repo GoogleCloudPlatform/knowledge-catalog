@@ -913,6 +913,28 @@ describe('a guard settled by judgment', () => {
          expect(fake.sessionsOpened).toBe(0);
        });
 
+  test('a call missing an argument is answered before a judge is asked',
+       async () => {
+         // A judge handed an incomplete call answers about the rule, so the
+         // caller would be told the rule was broken rather than that an
+         // argument was never supplied -- and a model call would be spent
+         // saying it.
+         const judge = holds();
+         const fake = resolvingFake();
+         const outcome = await act({
+           model: guarding([justified]),
+           actionName: 'Credit',
+           args: {account: 'A1'},
+           client: fake.client,
+           judge,
+         });
+         if (outcome.status !== 'error') throw new Error('expected an error');
+         expect(judge.asked).toHaveLength(0);
+         expect(fake.sessionsOpened).toBe(0);
+         expect(outcome.message).toContain('amount');
+         expect(outcome.message).toContain('was not given a value');
+       });
+
   test('an advisory guard stated as an expression is reported as unchecked',
        async () => {
          // Supplying a judge settles the rules stated in words and nothing

@@ -155,6 +155,14 @@ export async function runAction(opts: RunActionOptions):
       whyRefusedWithoutRunning(model, action, opts.handler, opts.judge);
   if (refusal) return {status: 'error', message: refusal};
 
+  // Checked before the judge as well. A judge is asked whether a rule holds
+  // for a call, so a call missing one of its arguments comes back as a rule the
+  // caller broke rather than an argument the caller forgot -- and costs a model
+  // call to say it. The words are the ones the later passes use, so this only
+  // moves when they are said.
+  const unusable = argumentsNotUsable(action, args, !opts.handler);
+  if (unusable) return {status: 'error', message: unusable};
+
   // Resolved before the judge, not after. There may be no store to touch at
   // all, and a run that could never have written must not first spend seconds
   // and a model call finding that out.
@@ -614,6 +622,31 @@ async function askJudges(
     };
   }
   return {warnings};
+}
+
+
+// Why the arguments cannot fill this call, or null if they can. Runs the same
+// checks `resolveArguments` and `bindArguments` run, early enough that nothing
+// has been opened or asked. `binds` is false when a handler supplies the
+// writes: it is handed the arguments whole and decides for itself what it
+// needs, so only the object references are its business here.
+function argumentsNotUsable(
+    action: Action, args: Record<string, unknown>, binds: boolean): string|
+    null {
+  for (const param of action.parameters) {
+    const raw = args[param.name];
+    if (param.isEntityRef) {
+      if (raw === undefined || raw === null || `${raw}`.trim() === '') {
+        return `Action '${action.name}' requires '${param.name}', a ` +
+            `reference to a ${param.type}, but none was given.`;
+      }
+      continue;
+    }
+    if (!binds) continue;
+    const bound = bindScalar(param, raw);
+    if ('error' in bound) return bound.error;
+  }
+  return null;
 }
 
 
