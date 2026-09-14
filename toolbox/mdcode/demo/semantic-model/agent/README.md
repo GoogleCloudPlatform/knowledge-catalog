@@ -181,10 +181,15 @@ no stored data, so the rule asks about evidence the judge does not have. That is
 a reason to suspect such a wording rather than a rule about it — the same field
 name settles a judgment correctly in
 [the actions guide](../../../docs/semantic-model/actions.md#a-guard-settled-in-words).
-What generalises is the failure mode: a judgment the judge cannot assess is held,
-not reported, so it costs a rule that never fires and says nothing. Word a guard
-in terms of the call's own arguments, and test it against a case it should
-refuse.
+
+What generalises is the failure mode: a judged guard can pass a call it should
+have refused, and nothing says so. The judge is told that a rule it has not been
+given enough to tell about does not hold, so missing evidence is meant to come
+back as a refusal naming what is missing. That is an instruction to a model
+rather than a property of the runtime. The goodwill memo is a case where the
+model did not follow it: the rule came back held, and a guard that passes prints
+nothing. Word a guard in terms of the call's own arguments, and test it against
+a case it should refuse.
 
 ### Put the persona in the model too
 

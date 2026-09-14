@@ -396,16 +396,18 @@ value to read.
 
 One caution comes with it. A guard is settled from the attempted call's
 arguments and nothing else, so a sentence phrased as a rule about stored data
-can be read as a rule the judge has no evidence for. An unassessable rule is
-held rather than reported, which costs a rule that never fires and says
-nothing. The rule above is settled correctly under this wording, but a guard
-that reads awkwardly as a statement about the call is worth rephrasing to name
-the argument, and worth testing against a case it should refuse. A rule that
-truly needs stored rows — comparing a credit against the order total, say — has
-no wording that reaches a judge given only the call, and belongs in an
-`expression` unless the judge supplied can query the store itself. Nothing in
-the `Judge` interface forbids one that does; the implementation shipped here
-makes a single model call with no tools.
+can be read as a rule the judge has no evidence for. The judge is told to answer
+that such a rule does not hold and to say in its reason what is missing, which
+refuses the call rather than passing it. That instruction binds a model rather
+than the runtime, so the rule can come back held instead, which costs a rule
+that never fires and says nothing. The rule above is settled correctly under
+this wording, but a guard that reads awkwardly as a statement about the call is
+worth rephrasing to name the argument, and worth testing against a case it
+should refuse. A rule that truly needs stored rows — comparing a credit against
+the order total, say — has no wording that reaches a judge given only the call,
+and belongs in an `expression` unless the judge supplied can query the store
+itself. Nothing in the `Judge` interface forbids one that does; the
+implementation shipped here makes a single model call with no tools.
 
 A rule about the state a write *leaves behind* is a different matter, and no
 judge settles it however much it can read. Guards are settled before the
