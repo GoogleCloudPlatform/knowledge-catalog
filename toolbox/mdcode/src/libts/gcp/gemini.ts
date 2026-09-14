@@ -83,6 +83,7 @@ export class GeminiJudge extends ApiClient implements Judge {
   private readonly _project: string;
   private readonly _location: string;
   private readonly _model: string;
+  private readonly _pinThinkingOff: boolean;
 
   constructor(ctx: context.ApiContext, options: GeminiJudgeOptions = {}) {
     const location = options.location ?? DEFAULT_JUDGE_LOCATION;
@@ -90,6 +91,12 @@ export class GeminiJudge extends ApiClient implements Judge {
     this._location = location;
     this._project = options.project ?? ctx.project;
     this._model = options.model ?? DEFAULT_JUDGE_MODEL;
+    // Only for the model this file picked, whose limits it knows. A caller who
+    // names a model is naming one this code has never heard of: gemini-2.5-pro
+    // rejects a budget of 0 outright with `The model does not support setting
+    // thinking_budget to 0`, and an unreachable judge refuses every guarded
+    // write. So a named model is sent no budget and keeps its own default.
+    this._pinThinkingOff = options.model === undefined;
     this.name = `${this._model} (${this._location})`;
   }
 
@@ -111,7 +118,7 @@ export class GeminiJudge extends ApiClient implements Judge {
         // in front of a caller who is waiting, and thinking that runs long can
         // spend the output budget and end the call with no answer -- which a
         // `reject` guard turns into a refused write that was fine.
-        thinkingConfig: {thinkingBudget: 0},
+        ...(this._pinThinkingOff ? {thinkingConfig: {thinkingBudget: 0}} : {}),
         responseMimeType: 'application/json',
         responseSchema: VERDICT_SCHEMA,
       },
