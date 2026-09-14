@@ -72,11 +72,12 @@ kcmd action run <name> --arg <name>=<value> ...
 
 `list` prints every action the models in the scope declare, with the store a run
 would reach and the command line that runs each one. `run` executes one against
-the Spanner database the selected profile's deployment target names; only a
-`sql` executor runs. A guard whose constraint states its rule as a `judgment` is
-settled by `--judge` before the transaction opens; one stated as an `expression`
-is settled by nothing, so an action naming it is refused rather than run
-unchecked. See [Run it](actions.md#7-run-it).
+the Spanner or AlloyDB database the selected profile's deployment target names;
+only a `sql` executor runs. A guard whose constraint states its rule as a `judgment` is
+settled by `--judge` before the transaction opens, and by a judge that can query
+the model's tables when `--judge-reads-store` is passed as well. One stated as an
+`expression` is settled by nothing, so an action naming it is refused rather than
+run unchecked. See [Run it](actions.md#7-run-it).
 
 | Flag | Effect |
 |------|--------|
@@ -85,6 +86,7 @@ unchecked. See [Run it](actions.md#7-run-it).
 | `--store` | Print only where a run would land, on one line and nothing else, for a script to read rather than parse back out of the listing: `project/instance/database` for a Spanner store, `bigquery:project/dataset` for a BigQuery one. Errors when the scope holds more than one model, since those may name different databases. `list` only. |
 | `--judge [model]` | Settle each guard stated as a `judgment` by asking Gemini on Vertex AI, using the project and credentials `kcmd` already holds. Takes a model id, defaulting to `gemini-2.5-flash`. Without the flag, an action guarded by such a rule is refused rather than run unchecked, unless the rule declares `warn`, in which case the run commits and reports that the rule went unchecked. `run` only. |
 | `--judge-location <region>` | Ask the judge in this Vertex AI region. The region is where the argument values are sent, so a project that has to keep them somewhere in particular names that region here. Defaults to `us-central1`. The environment's `compute/region` is deliberately not read, because a region chosen for Compute Engine is often one Vertex AI does not serve. `global` is accepted and reaches the host that serves it. `run` only. |
+| `--judge-reads-store` | Let the judge query the model's own tables while it settles a rule, so a guard can compare the call against what is recorded rather than only against what the caller stated. The judge is shown the entities, tables and columns the selected profile binds, and the dialect that profile implies, and composes its own statement. Every statement is checked to be one read beginning with `SELECT` or `WITH`, wrapped in a subquery so that a data-modifying CTE cannot run, capped at 20 rows with each cell clipped, and printed. Costs one model call more per guard, plus one for each round of reading. Says what a judge may do rather than hiring one, so it needs `--judge`. `run` only. See [A guard that reads a row](actions.md#a-guard-that-reads-a-row). |
 
 ### agent
 

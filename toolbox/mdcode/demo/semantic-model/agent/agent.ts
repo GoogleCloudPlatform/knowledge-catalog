@@ -16,7 +16,9 @@
 // The judge is a capability rather than a policy: it can settle a rule stated
 // in words, and WHICH rules it is asked are the ones the model names in
 // `guards`. So supplying one here says nothing about commerce, the same way
-// supplying a database connection does not.
+// supplying a database connection does not. The same goes for letting it read:
+// what it may read is derived from the model, and which rules make it read is
+// decided by how they are worded.
 
 import {FunctionTool, InMemoryRunner, LlmAgent} from '@google/adk';
 import {Type} from '@google/genai';
@@ -24,6 +26,7 @@ import {Type} from '@google/genai';
 import {ApiContext} from '../../../src/libts/gcp/context';
 import {GeminiJudge} from '../../../src/libts/gcp/gemini';
 import {callableTools, modelTools} from '../../../src/libts/semantic/runtime/agent_tools';
+import {modelJudgeStore} from '../../../src/libts/semantic/runtime/judge_store';
 import {createSemanticRuntimes} from '../../../src/libts/semantic/runtime/runtime';
 import {closeStore} from '../../../src/libts/semantic/runtime/store';
 
@@ -58,10 +61,24 @@ process.env.GOOGLE_CLOUD_LOCATION ??= 'us-central1';
 //    arguments, under a system instruction of its own, outside the agent's
 //    conversation. So there is nothing in the transcript for the agent to
 //    argue with, and no turn in which it can talk the gate round.
+//
+//    It is given the model's own tables to read, which is what lets a rule
+//    compare the call against a number on record -- the order's total -- that
+//    the caller never has to state and has every reason to misstate. The
+//    tables are derived from the model under this profile, so this line adds a
+//    capability and still names nothing about commerce. Every read is printed,
+//    because a judge that went and looked did something on the caller's behalf
+//    that the transcript has to show.
+const judgeStore = modelJudgeStore(runtime, {
+  onRead: sql => console.log(`  (judge reads) ${sql.replace(/\s+/g, ' ')}`),
+});
+if ('error' in judgeStore) throw new Error(judgeStore.error);
+
 const judge = new GeminiJudge(ApiContext.default(), {
   project: process.env.GOOGLE_CLOUD_PROJECT,
   location: process.env.GOOGLE_CLOUD_LOCATION,
   model: process.env.DEMO_JUDGE_MODEL,
+  store: judgeStore,
 });
 
 // 3. Derive what the model offers, and keep what this binding can serve.

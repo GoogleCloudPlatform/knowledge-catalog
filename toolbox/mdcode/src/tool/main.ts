@@ -150,6 +150,9 @@ cli.command(
     .option(
         '--judge-location <region>',
         'Ask the judge in this Vertex AI region, which is where the argument values are sent; defaults to us-central1 (`run` only)')
+    .option(
+        '--judge-reads-store',
+        'Let the judge read the model\'s own tables while it decides, so a rule stated in words can compare the call against what is recorded; costs one model call more per guard and needs --judge (`run` only)')
     .action(async (command, name, options) => {
       let exitCode = 1;
       try {

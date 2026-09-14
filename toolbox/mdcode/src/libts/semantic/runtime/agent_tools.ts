@@ -630,7 +630,11 @@ function whyUnreadable(entity: Entity, bound: BoundField[]): string|null {
 // A field is readable when the profile bound it to a plain column. One bound
 // to an expression is skipped rather than guessed at, and an entity with no
 // plain-column fields yields a tool that reports the problem when called.
-interface BoundField {
+//
+// Exported because judge_store.ts needs the same answer. Two readers deciding
+// separately what counts as readable is how a judge comes to be shown a column
+// the lookup tool will not return.
+export interface BoundField {
   name: string;
   type: string;
   column: string;
@@ -639,7 +643,7 @@ interface BoundField {
 }
 
 
-function boundFields(entity: Entity): BoundField[] {
+export function boundFields(entity: Entity): BoundField[] {
   const bound: BoundField[] = [];
   for (const field of entity.fields) {
     const expr = (fieldBinding(field) ?? '').trim();

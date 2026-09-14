@@ -21,6 +21,8 @@ import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
 import {GeminiJudge} from '../libts/gcp/gemini';
+import {JudgeStore} from '../libts/semantic/runtime/judge';
+import {modelJudgeStore} from '../libts/semantic/runtime/judge_store';
 import {runAction} from '../libts/semantic/runtime/run_action';
 import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryDataSources, validatePushRequirements, validateRunnable} from '../libts/semantic/validate';
@@ -1177,6 +1179,10 @@ export interface ActionOptions {
   judge?: string|boolean;
   // `--judge-location <region>`: the Vertex AI region to ask in.
   judgeLocation?: string;
+  // `--judge-reads-store`: let the judge read the model's tables while it
+  // decides, so a rule stated in words can compare the call against what is
+  // recorded rather than only against what the caller said.
+  judgeReadsStore?: boolean;
 }
 
 
@@ -1586,15 +1592,47 @@ async function runOneAction(
     return 1;
   }
 
+  // Refused rather than ignored. A caller who asked for a reading judge and
+  // got an ordinary one is a caller whose rule about the order total quietly
+  // went unread, which is the failure this whole flag exists to avoid.
+  if (options.judgeReadsStore && !options.judge) {
+    console.error(
+        `Error: --judge-reads-store says what a judge may do; --judge is ` +
+        `what hires one. Pass both.`);
+    return 1;
+  }
+  // What the judge may read, if anything. Composed from this runtime, so the
+  // tables it can see are the ones the model declares under the profile this
+  // run is using, and its reads land on the database the write will land on.
+  let judgeStore: JudgeStore|undefined;
+  if (options.judgeReadsStore) {
+    const built = modelJudgeStore(runtime, {
+      // Printed as it is sent. A judge that read the store did something on
+      // the caller's behalf, and a transcript showing the verdict without the
+      // reads behind it is one nobody can check.
+      onRead: sql =>
+          console.log(`  the judge reads: ${sql.replace(/\s+/g, ' ').trim()}`),
+    });
+    if ('error' in built) {
+      console.error(`Error: ${built.error}`);
+      return 1;
+    }
+    judgeStore = built;
+  }
+
   // Built from the context this command already holds, so judging costs no
   // second trip to gcloud for a project and a token.
   const judge = options.judge ? new GeminiJudge(ctx, {
     ...(typeof options.judge === 'string' ? {model: options.judge} : {}),
     ...(options.judgeLocation ? {location: options.judgeLocation} : {}),
+    ...(judgeStore ? {store: judgeStore} : {}),
   }) : undefined;
 
   console.log(`Running '${name}' on ${runtime.store.name}...`);
   if (judge) console.log(`  rules stated in words go to ${judge.name}`);
+  if (judgeStore) {
+    console.log(`  it may read ${runtime.model.name}'s tables to settle them`);
+  }
   const outcome =
       await runAction({runtime, actionName: name, args: parsed.args, judge});
   if (outcome.status === 'error') {
