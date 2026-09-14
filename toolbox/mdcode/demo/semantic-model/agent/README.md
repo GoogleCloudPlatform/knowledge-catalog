@@ -620,13 +620,6 @@ export ALLOYDB_HOST="$PGHOST"
 DEMO_PROFILE=alloydb bun agent.ts "Find the order for Morgan Ellis (morgan.ellis@example.com) that was placed on Labor Day. It was supposed to get free shipping but we had a glitch and the customer got charged. Please issue them a credit to offset the charge."
 ```
 
-> **Not yet captured.** Every `kcmd` listing on this page, including the `diff`
-> above and the push refusal, is copied from a real run. The agent transcript
-> against a live AlloyDB cluster is not -- no cluster has been stood up for it
-> yet -- so there is no transcript here rather than a plausible one. Everything
-> up to the moment a connection opens is exercised by the unit tests; what is
-> unproven is the connection itself and the two statements on the other side.
-
 Check the result the same way, in the other dialect:
 
 ```bash
@@ -639,6 +632,57 @@ A credit line of `-30.00` with a generated key, and `purchase_order.order_total`
 down to `135.85` — the same outcome as
 [step 6](#6-run-it), reached by different SQL against different tables, from the
 same request through the same agent.
+
+### The same action without the model in the loop
+
+`kcmd action run` takes the action the agent would have called and calls it
+directly, with the arguments spelled out instead of chosen. It is the whole of
+the run below the agent — the connection, the entity reference, both statements
+and the commit — so it is worth doing once on a new store before handing the
+store to a model:
+
+```console
+$ ../../../dist/kcmd action run IssueCredit --profile alloydb \
+    --arg order=12345 --arg amount=30.00 --arg memo='Shipping charged in error'
+Running 'IssueCredit' on projects/my-project/locations/us-central1/clusters/my-cluster/instances/my-instance/databases/semantic_agent_demo...
+  order: '12345' -> Order 12345
+Committed at 2026-09-14T17:28:42.476Z.
+```
+
+`order: '12345' -> Order 12345` is the reference being resolved: the argument
+arrives as text and the runtime reads the key back out of `purchase_order`
+before either statement runs, so an order that does not exist is refused here
+rather than silently updating nothing. Afterwards:
+
+```console
+$ psql "host=$PGHOST user=$(gcloud config get-value account) dbname=semantic_agent_demo" -c \
+    "SELECT line_item_id, type, amount, memo FROM order_line
+       WHERE order_id = 12345 ORDER BY line_item_id"
+             line_item_id             |  type  | amount |           memo
+--------------------------------------+--------+--------+---------------------------
+ 3c6edaab-ed0a-4bae-864b-e3214365f852 | credit | -30.00 | Shipping charged in error
+ li-12345-1                           | item   |  89.99 | Cast iron skillet
+ li-12345-2                           | item   |  34.50 | Enamel saucepan
+ li-12345-3                           | fee    |  30.00 | Shipping
+ li-12345-4                           | tax    |  11.36 | Sales tax
+(5 rows)
+```
+
+The UUID is the key the runtime generated, because the action's `affects` says
+this call creates a `LineItem`. `order_total` reads `135.85`, recomputed from
+those five lines rather than adjusted by the credit amount.
+
+> **What on this page is copied from a real run, and what is not.** Every `kcmd`
+> listing here is, including the `diff` above, the push refusal, and the
+> `action run` and `psql` output just above -- those two are from a live AlloyDB
+> cluster, so the connection, the IAM token as the password, the cluster CA, the
+> `@name`-to-`$1` rewrite, both statements and the commit are all proven against
+> a real database rather than only against unit tests. The **agent** transcript
+> under `alloydb` is not captured: `@google/adk` does not install here, so the
+> model-in-the-loop leg of this section has been run only under `spanner`. What
+> that leg adds over `action run` is the model choosing the action and its
+> arguments, and `kcmd agent tools` shows it is offered the same two lines of
+> difference either way.
 
 ## What in here is about ecommerce
 
