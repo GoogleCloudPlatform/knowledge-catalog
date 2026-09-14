@@ -321,11 +321,15 @@ describe('kcmd action list', () => {
          expect(out).not.toContain('kcmd action run IssueCredit');
        });
 
-  test('the run line names --judge when a guard is settled by judgment',
+  test('the run line names both judge flags when a guard is judged',
        async () => {
          // Copying the line is the whole point of printing it. A judged guard
          // refuses without a judge, so a line omitting the flag would send the
-         // reader to a refusal it could have predicted.
+         // reader to a refusal it could have predicted. The same holds one step
+         // on: a judgment comparing the call against a stored row is refused
+         // without `--judge-reads-store`, and a constraint's wording does not
+         // say which judgments those are, so the line offers the read wherever
+         // the profile binds a table to read.
          writeWorkspace(MODEL.replace(
              '      - name: CreditIsPositive\n' +
                  '        expression: amount > 0\n',
@@ -337,7 +341,7 @@ describe('kcmd action list', () => {
          const out = logs.join('\n');
          expect(out).toContain(
              'run:        kcmd action run IssueCredit --judge ' +
-             '--arg order=<Order>');
+             '--judge-reads-store --arg order=<Order>');
          // The other action names no guard at all, so it gains nothing.
          expect(out).toContain(
              'run:        kcmd action run NotifyCustomer --arg order=<Order>');

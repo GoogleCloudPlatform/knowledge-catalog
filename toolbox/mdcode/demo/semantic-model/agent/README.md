@@ -336,11 +336,15 @@ Model 'commerce' (commerce_demo), profile 'spanner':
     executor:   sql
     guards:     CreditWithinOrderTotalWithJudge, CreditUnderReviewThresholdWithJudge, CreditMemoNamesAServiceFailure, CreditIsNotSplitToAvoidReview
     affects:    LineItem (create), Order (modify)
-    run:        kcmd action run IssueCredit --judge --arg order=<Order> --arg amount=<Decimal> --arg memo=<String>
+    run:        kcmd action run IssueCredit --judge --judge-reads-store --arg order=<Order> --arg amount=<Decimal> --arg memo=<String>
 ```
 
-The `run:` line names `--judge` because the guards are judged, and a suggested
-command certain to be refused is worse than no suggestion.
+The `run:` line names both judge flags because the guards are judged and the
+model has tables under this profile to read, and a suggested command certain to
+be refused is worse than no suggestion. Nothing in a constraint's wording says
+whether settling it takes a look at the store, so the line offers the reading
+judge wherever a read is possible, and a judge with nothing to look up looks
+nothing up.
 
 Three warnings print above this. Two of them name an expression that reads an
 argument of `IssueCredit` and report that nothing references it:
