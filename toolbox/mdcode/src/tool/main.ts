@@ -144,6 +144,9 @@ cli.command(
     .option(
         '--store',
         'Print only where a run would land, as project/instance/database, for a script to read (`list` only)')
+    .option(
+        '--judge [model]',
+        'Settle guards the model states in words by asking Gemini on Vertex AI, naming a model or taking the default; without it, an action guarded by such a rule is refused rather than run unchecked (`run` only)')
     .action(async (command, name, options) => {
       let exitCode = 1;
       try {

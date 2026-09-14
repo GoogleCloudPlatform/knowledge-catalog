@@ -571,13 +571,16 @@ costs a model call, none can lower to a store-level check, and each may decide
 two identical calls differently. `IssueCredit` is clear of it: three of its five
 guards are expressions.
 
-**Status: nothing calls a judge.** `kcmd` parses `judgment`, validates it,
-publishes it and reads it back, and publishes a derived `evaluation` field
-saying whether the rule is `deterministic` or `judged` so a consumer can select
-on it. No component asks a model to settle a judgment, and nothing combines
-guard outcomes. The two calls above are what the published policy says should
-happen, and `kcmd` publishes the fields an engine needs in order to make it
-happen.
+**Status: a judgment is settled; an expression is not.** `kcmd` parses
+`judgment`, validates it, publishes it and reads it back, and publishes a
+derived `evaluation` field saying whether the rule is `deterministic` or
+`judged` so a consumer can select on it. At run time,
+[`kcmd action run --judge`](#a-guard-settled-in-words) puts each judged guard to
+a language model and routes the verdict by `on_violation`. An expression is text
+nothing computes here, so an action naming one in `guards` is refused rather
+than run past it — and `IssueCredit` names three. The two calls above are
+therefore what the published policy says should happen rather than what `kcmd`
+does with this action today.
 
 `kcmd` reports a mismatch from either side. A guard that names no constraint
 fails the push. A constraint over parameters that no action names loads with a
@@ -585,12 +588,13 @@ warning, because nothing will ever evaluate it. That scan reads expressions
 only: a judgment is prose, in which a word matching a parameter name is not a
 read of that parameter.
 
-**Status: nothing evaluates a guard yet.** `kcmd` parses `guards`, resolves each
-name, publishes the list, and reads it back. No component checks a guard against
-live data, so a guard states what must hold before the call and stops no call by
-itself. What it does stop is the call running unchecked:
-[`kcmd action run`](#7-run-it) refuses a guarded action outright rather than
-apply a write the model says is checked first.
+**Status: a guard is checked where something can settle it.** `kcmd` parses
+`guards`, resolves each name, publishes the list, and reads it back. At run time
+a guard stated as a `judgment` is put to a language model and stops or reports
+the call according to its `on_violation`. A guard stated as an `expression` is
+checked against nothing, because no component evaluates an expression against
+live data, so [`kcmd action run`](#7-run-it) refuses an action naming one rather
+than apply a write the model says is checked first.
 
 ## 3. Say what it changes
 
@@ -779,9 +783,11 @@ kcmd action run TransferFunds --arg source="Alice Checking" \
 
 That second command does not succeed against the model built up on this page,
 and the reason is worth knowing before the mechanics: `TransferFunds` is guarded
-by `AmountIsPositive`, nothing evaluates a constraint yet, and `kcmd` refuses a
-call rather than apply a write the model says must be checked first. What
-follows describes an action that names no guard, which is what runs today.
+by `AmountIsPositive`, which is an expression, nothing here evaluates an
+expression, and `kcmd` refuses the call rather than apply a write the model says
+must be checked first. What follows describes an action that names no guard;
+[a guard stated in words](#a-guard-settled-in-words) is the kind that runs
+today.
 
 `kcmd action list` is what the model declares as runnable — parameters,
 executor, guards, blast radius — and each entry ends with the command line that
@@ -910,10 +916,10 @@ that performs the write as DML, or declare the action with a 'sql' executor.
 
 ### A guarded action is refused, not run unchecked
 
-Nothing evaluates a constraint yet. A model that declares a rule and a runtime
-that quietly ignores it is worse than no runtime, because the model states the
-write is checked and nothing says otherwise — so `kcmd action run` refuses such
-a call instead:
+Nothing here evaluates an expression against live data. A model that declares a
+rule and a runtime that quietly ignores it is worse than no runtime, because the
+model states the write is checked and nothing says otherwise — so
+`kcmd action run` refuses such a call instead:
 
 ```
 Error: Action 'TransferFunds' is guarded by 'AmountIsPositive', and this runtime
@@ -937,6 +943,113 @@ states advisory rules permanently unrunnable.
 
 Every refusal is decided before a session is opened, so a refused action leaves
 no transaction behind.
+
+### A guard settled in words
+
+A guard stated as a `judgment` needs something that can read a sentence, and
+`--judge` supplies one: Gemini on Vertex AI, reached with the project and the
+credentials `kcmd` already holds.
+
+```bash
+kcmd action run IssueCredit --arg order=12347 --arg amount=5 \
+    --arg memo="customer asked for a credit" --judge
+```
+
+That call runs against a commerce model carrying the credit policy from
+[section 2](#a-policy-whose-rules-end-differently). A profile binds
+`IssueCredit` to a `sql` executor, so `kcmd` performs the write itself, and the
+action's `guards` name the judged rule alone.
+
+Leave the flag off and the rule stops the call, because nothing was supplied to
+settle it:
+
+```
+Error: Action 'IssueCredit' is guarded by 'CreditMemoNamesAServiceFailure',
+which is settled by judgment rather than by an expression, and this runtime was
+given no judge to ask. Running it would apply a write the model says must be
+checked first, so it is refused rather than run unchecked.
+```
+
+Add the flag and the rule's own sentence goes to the model together with the
+attempted call. The verdict comes back with a reason, and this constraint
+declares `reject`:
+
+```
+Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
+  rules stated in words go to gemini-2.5-flash (us-central1)
+Error: Action 'IssueCredit' is guarded by 'CreditMemoNamesAServiceFailure'
+("LineItem.memo must name a specific, verifiable service failure on the order: a
+late delivery, a damaged item, a shipping charge applied in error. A memo that
+states only that the customer requested a credit does not satisfy this rule."),
+and gemini-2.5-flash (us-central1) judged that it does not hold for this call:
+Your memo 'customer asked for a credit' does not name a specific, verifiable
+service failure as required by the rule. Say what went wrong with the order in
+the credit memo. No transaction was opened, so nothing was written.
+```
+
+Four things are in that message and `kcmd` wrote none of them: the constraint's
+name, the author's own sentence, the judge's reason, and the constraint's
+`description`, which is the line telling the caller what to do instead. A memo
+that names a failure gets the write:
+
+```
+Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
+  rules stated in words go to gemini-2.5-flash (us-central1)
+  order: '12347' -> Order 12347
+Committed at 2026-09-14T06:06:38.679692Z.
+```
+
+**The rule is settled before the transaction opens.** A model call takes
+seconds, and holding the store's write locks across one costs more than it buys,
+so the order is: ask the judge, refuse with nothing touched, then open the
+transaction. The price is that the judge reads the attempted call and never the
+state the write produces, so a rule about that state has to be an expression.
+
+**The judge is given the attempted call.** It receives the rule's text, the
+action's name and description, and the arguments as the caller stated them —
+`order=12347` rather than the `Order` row that value resolves to. It reads no
+stored data at all.
+
+**The routing word decides what a verdict does.** `on_violation` is the same
+field [section 2](#2-gate-it-with-a-constraint) describes, and a judge's verdict
+enters it the way any other breach does. A rule declaring `escalate` stops the
+call and adds one sentence: "The model marks this rule 'escalate', so an
+approver may allow it; nothing here can." Nothing in `kcmd` is an approver, and
+a refusal that left this out would read as the end of the matter. A rule
+declaring `warn` lets the write through and reports the verdict:
+
+```
+Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
+  rules stated in words go to gemini-2.5-flash (us-central1)
+  order: '12347' -> Order 12347
+Warning: 'CreditMemoNamesAServiceFailure' ("LineItem.memo must name a specific,
+verifiable service failure on the order: a late delivery, a damaged item, a
+shipping charge applied in error. A memo that states only that the customer
+requested a credit does not satisfy this rule.") is advisory, and
+gemini-2.5-flash (us-central1) judged that it does not hold for this call: Your
+memo "customer asked for a credit" does not name a specific, verifiable service
+failure, which is required by the rule.
+Committed at 2026-09-14T06:02:40.218987Z.
+```
+
+**A rule nobody was able to ask about is reported as unchecked.** An advisory
+guard stops no call, so the call runs even with no judge supplied — and the
+warning names the rule and ends "was not checked: this run was given no judge to
+ask." Committing in silence would tell the caller that every rule passed when
+one of them was never put to anybody.
+
+**A judge that cannot be reached has not given a verdict.** A failed model call
+says nothing about whether the rule holds, and `on_violation` routes that the
+same way. An advisory rule reports that it went unchecked and the write
+proceeds; a rule declaring `reject` or `escalate` stops the call, carrying the
+error the judge raised.
+
+**Status: an action guarding on both kinds is still refused.** The expression
+half has nothing to settle it, and that refusal is decided before any judge is
+asked, so a mixed action never reaches the model. Three of the five guards
+[section 2](#a-policy-whose-rules-end-differently) puts on `IssueCredit` are
+expressions. The runs here therefore guard on the judged rule alone, which is
+also why they load with the all-judged warning that section describes.
 
 ## 8. Hand it to an agent
 
@@ -1093,9 +1206,15 @@ allows the collision to be noticed at all.
 ### A tool says whether it can be called
 
 `transfer_funds` above is listed and marked `[NOT RUNNABLE]`. `TransferFunds`
-names a guard, nothing evaluates constraints yet, and so the [refusal from
-section 7](#a-guarded-action-is-refused-not-run-unchecked) is reported here
-instead — before any agent exists, rather than inside a transaction.
+names a guard stated as an expression, nothing here evaluates one, and so the
+[refusal from section 7](#a-guarded-action-is-refused-not-run-unchecked) is
+reported here instead — before any agent exists, rather than inside a
+transaction.
+
+`kcmd agent tools` supplies no judge, so an action guarded by a judgment is
+marked the same way and for the same reason: the derivation reports what the
+runtime would do with the judge it holds, and it holds none. Passing a judge
+through to the tools an agent is handed is the next step and is not taken yet.
 
 The tool is still returned, still named and still described. An action the
 model declares should not vanish from what the model offers; what it is waiting
@@ -1205,17 +1324,19 @@ operational store: a commerce model, a binding profile, and one file of 56 lines
 that names no table, no column and no business term. Thirteen of those lines are
 the adapter onto the agent framework. Its README walks the same four steps and
 states what the run cannot yet do — the $30 credit it issues is over the model's
-declared $25 self-service ceiling and is written anyway, because nothing
-evaluates constraints.
+declared $25 self-service ceiling and is written anyway, because that ceiling is
+an expression and nothing evaluates one.
 
 ## What is not modeled yet
 
 This is a prototype. Three things a reader reasonably expects are absent.
 
-- **Nothing checks the write.** No component evaluates a constraint or a guard.
-  A guarded action is refused rather than run, so the gap is loud where a model
-  states a rule gates the call, but it is still a gap: the correctness of what a
-  statement does belongs to whoever wrote it.
+- **Only a rule stated in words is checked.** `kcmd action run --judge` settles
+  a guard whose constraint carries a `judgment`. No component evaluates an
+  expression against live data, and an action guarding on one is refused rather
+  than run. The gap is loud where a model states a rule gates the call, and it
+  is still a gap: the correctness of what a statement does belongs to whoever
+  wrote it.
 - **`kcmd` calls no executor but its own.** A `sql` action runs; an `mcp`,
   `rest` or `grpc` one is published for whoever dispatches it, which is why
   those three name coordinates rather than a statement.

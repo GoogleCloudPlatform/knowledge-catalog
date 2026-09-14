@@ -524,9 +524,12 @@ reads the document ([§6](#6-the-extension-mechanism)).
   constraint that no action names draws a load warning, since it can never run.
   An action whose every guard is judged draws one too: it has no gate a query
   can decide.
-  Status: authored, validated and published; no component evaluates a
-  constraint, so nothing today rejects a write that would break one, and nothing
-  calls a judge. Rules in [Reference → Validation](reference.md#validation).
+  Status: authored, validated and published; one of the two bodies is settled
+  at run time. `kcmd action run --judge` puts a guard carrying a `judgment` to
+  a language model before the transaction opens, and routes the verdict by
+  `on_violation`. No component evaluates an `expression` against live data, so
+  an action guarding on one is refused rather than run past the rule. Rules in
+  [Reference → Validation](reference.md#validation).
 
   A constraint MAY say two things about a violation, under two separate keys.
   **`on_violation`** is what a violation does to the write that tripped it:
