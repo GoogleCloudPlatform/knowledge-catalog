@@ -447,7 +447,10 @@ describe('kcmd action run: where the write would go', () => {
     expect(code).toBe(1);
     const out = logs.join('\n');
     expect(out).toContain('deploys to the BigQuery dataset');
-    expect(out).toContain("statements run against Spanner");
+    // Named by what it lacks -- an operational store -- rather than by one
+    // backend, because there is now more than one backend that would do.
+    expect(out).toContain('statements run against an operational database');
+    expect(out).toContain('Spanner or AlloyDB');
     // Refused before the run banner: a dataset is not somewhere a run lands.
     expect(out).not.toContain('Running');
   });

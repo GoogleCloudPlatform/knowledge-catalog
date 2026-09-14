@@ -32,10 +32,10 @@
  * model declares should not vanish from a listing of what the model declares.
  */
 
-import {spannerTable} from '../binding';
+import {boundTable, spannerTable} from '../binding';
 import {Action, Entity, fieldBinding, SemanticModel} from '../ir';
-import {quoteIfReserved} from '../sql_identifiers';
 
+import {dialectFor} from './dialect';
 import {
   ActionHandler,
   ActionOutcome,
@@ -680,9 +680,13 @@ async function runLookup(
   const unreadable = whyUnreadable(entity, bound);
   if (unreadable) return {...empty, problem: unreadable};
 
+  // Written for whichever store this runtime is bound to. The shape of the
+  // statement is the same either way; what differs is how a name is quoted
+  // and how a column is rendered as text.
+  const dialect = dialectFor(opts.runtime.store);
   const warnings: string[] = [];
-  const table =
-      spannerTable(entity.dataSource, warnings, `entity '${entity.name}'`);
+  const table = boundTable(
+      entity.dataSource, warnings, `entity '${entity.name}'`, dialect.quote);
 
   // Only field names the model declares reach the SQL, and every value is
   // bound. An argument naming an unknown field is a caller error worth
@@ -718,14 +722,14 @@ async function runLookup(
       };
     }
     const bind = `f_${predicates.length}`;
-    predicates.push(`${quoteIfReserved(field.column)} = @${bind}`);
+    predicates.push(`${dialect.quote(field.column)} = @${bind}`);
     params[bind] = value_.value;
     paramTypes[bind] = {code: value_.code};
   }
 
   const limit = opts.rowLimit ?? DEFAULT_ROW_LIMIT;
   const columns =
-      bound.map(f => `CAST(${quoteIfReserved(f.column)} AS STRING)`).join(', ');
+      bound.map(f => dialect.castToText(dialect.quote(f.column))).join(', ');
   const where = predicates.length ? ` WHERE ${predicates.join(' AND ')}` : '';
   // One row over the cap, so "there are more" can be told from "that is all".
   const sql = `SELECT ${columns} FROM ${table}${where} LIMIT ${limit + 1}`;

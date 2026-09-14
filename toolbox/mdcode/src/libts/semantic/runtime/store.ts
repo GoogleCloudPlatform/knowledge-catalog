@@ -3,15 +3,24 @@
 // A binding profile supplies a deployment target; this module turns that
 // declaration into something callable. Which backend it is belongs in the
 // answer rather than in the caller's assumptions: a profile may deploy to
-// Spanner or to BigQuery, and what may be done with the result differs by
-// which. `kind` is the discriminant, so a caller that needs to write asks for
-// a Spanner store instead of discovering at its first statement that it holds
-// a dataset.
+// Spanner, to AlloyDB or to BigQuery, and what may be done with the result
+// differs by which. `kind` is the discriminant, so a caller that needs to write
+// asks for a store that can take a write instead of discovering at its first
+// statement that it holds a dataset.
+//
+// Two of the three are OPERATIONAL: Spanner and AlloyDB hold rows an action
+// changes, and either can be the store a model runs against. They are different
+// databases, reached different ways and speaking different SQL, and the
+// distance between them is the point -- a model, its actions and an agent over
+// them do not name a backend anywhere, so which one a deployment uses is a line
+// in a binding profile. BigQuery is the third and is not operational: it is
+// where a graph goes to be analyzed.
 //
 // Identity is `name`, the resource the store addresses. Two profiles naming
 // the same database describe ONE store; the profile is how a caller found it,
 // not what it is.
 
+import {AlloyDbDataClient} from '../../gcp/alloydb';
 import {BigQueryClient} from '../../gcp/bigquery';
 import * as context from '../../gcp/context';
 import {SpannerDataClient} from '../../gcp/spanner';
@@ -20,7 +29,7 @@ import {googleDeploymentTargets} from '../deployment_target';
 import {SemanticModel} from '../ir';
 
 
-/** A Spanner database. The only backend an action can write to today. */
+/** A Spanner database. An operational store: an action can write to it. */
 export interface SpannerStore {
   kind: 'spanner';
   /** `projects/<p>/instances/<i>/databases/<d>`. The store's identity. */
@@ -29,6 +38,25 @@ export interface SpannerStore {
   instance: string;
   database: string;
   client: SpannerDataClient;
+}
+
+
+/** An AlloyDB database. An operational store: an action can write to it. */
+export interface AlloyDbStore {
+  kind: 'alloydb';
+  /**
+   * `projects/<p>/locations/<l>/clusters/<c>/instances/<i>/databases/<d>`.
+   * The store's identity, which on AlloyDB reaches all the way down to the
+   * PostgreSQL database: one instance holds several, and two of them are two
+   * stores.
+   */
+  name: string;
+  project: string;
+  location: string;
+  cluster: string;
+  instance: string;
+  database: string;
+  client: AlloyDbDataClient;
 }
 
 
@@ -43,12 +71,28 @@ export interface BigQueryStore {
 }
 
 
-export type Store = SpannerStore|BigQueryStore;
+export type Store = SpannerStore|AlloyDbStore|BigQueryStore;
+
+
+/**
+ * A client that can run a statement: the two operational backends' clients.
+ *
+ * They are separate classes over entirely different transports, and this union
+ * is what says they answer the same questions. Both offer the same six
+ * methods with the same result shape, so a caller holding one of these runs
+ * statements without knowing which database it reached -- which is what makes
+ * `run_action` and the agent tools one implementation rather than two.
+ */
+export type DataClient = SpannerDataClient|AlloyDbDataClient;
 
 
 // A Spanner table an entity is bound to.
 const SPANNER_TABLE_SOURCE =
     /^\/\/spanner\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/instances\/([A-Za-z0-9_-]+)\/databases\/([A-Za-z0-9_-]+)\/tables\/.+$/;
+
+// An AlloyDB table an entity is bound to.
+const ALLOYDB_TABLE_SOURCE =
+    /^\/\/alloydb\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/locations\/([A-Za-z0-9_-]+)\/clusters\/([A-Za-z0-9_-]+)\/instances\/([A-Za-z0-9_-]+)\/databases\/([A-Za-z0-9_-]+)\/tables\/.+$/;
 
 // A BigQuery table an entity is bound to. The loader rewrites the resource-name
 // URI an author may write into `project.dataset.table`, which is the form the
@@ -64,6 +108,11 @@ function storeOf(source: string): string|undefined {
   if (spanner) {
     return `projects/${spanner[1]}/instances/${spanner[2]}/databases/${
         spanner[3]}`;
+  }
+  const alloyDb = source.match(ALLOYDB_TABLE_SOURCE);
+  if (alloyDb) {
+    return `projects/${alloyDb[1]}/locations/${alloyDb[2]}/clusters/${
+        alloyDb[3]}/instances/${alloyDb[4]}/databases/${alloyDb[5]}`;
   }
   const bigQuery = source.match(BIGQUERY_TABLE_SOURCE);
   if (bigQuery) return `projects/${bigQuery[1]}/datasets/${bigQuery[2]}`;
@@ -135,22 +184,41 @@ function strayBindings(model: SemanticModel, store: string): string[] {
  */
 export function resolveStore(model: SemanticModel, ctx?: context.ApiContext):
     Store|{error: string} {
-  const {spanner, bigQuery, malformed} = googleDeploymentTargets(model);
-  const declared = spanner.length + bigQuery.length;
+  const {spanner, alloyDb, bigQuery, malformed} =
+      googleDeploymentTargets(model);
+  const declared = spanner.length + alloyDb.length + bigQuery.length;
 
-  // Ambiguity is per backend, not across them. A model may publish its graph
-  // to BigQuery for analysis and to Spanner for operations under one profile,
-  // and that pair names one store to run against rather than two: Spanner is
-  // the only backend an action writes to, so it is the operational store and
-  // the BigQuery target is a second destination for the same model. Two
-  // targets of the SAME backend is the case nothing can decide.
-  const operational = spanner.length ? spanner : bigQuery;
-  if (operational.length > 1) {
-    const backend = spanner.length ? 'Spanner' : 'BigQuery';
+  // Ambiguity is per ROLE, not per backend. A model may publish its graph to
+  // BigQuery for analysis and hold its rows in an operational database under
+  // one profile, and that pair names one store to run against rather than two:
+  // only an operational store takes a write, so it is the one a run resolves to
+  // and the BigQuery target is a second destination for the same model.
+  //
+  // Two targets that could each serve the SAME role is the case nothing can
+  // decide -- and with a second operational backend that is no longer only two
+  // of a kind. Spanner alongside AlloyDB is as undecidable as Spanner alongside
+  // Spanner: both hold rows, both take writes, and nothing in the model says
+  // which one this run means. So the check is over the whole operational set
+  // rather than over one backend's targets, and it names what it found instead
+  // of naming a single backend.
+  const operational = [...spanner, ...alloyDb];
+  const contenders = operational.length ? operational : bigQuery;
+  if (contenders.length > 1) {
+    // Several of one backend, or one each of two: the reader has a different
+    // thing to look at in each case, so each is said in its own words.
+    const counted = [
+      ...(spanner.length ? [`${spanner.length} Spanner`] : []),
+      ...(alloyDb.length ? [`${alloyDb.length} AlloyDB`] : []),
+      ...(operational.length ? [] : [`${bigQuery.length} BigQuery`]),
+    ];
+    const what = counted.length > 1 ?
+        `deployment targets on two operational backends (${
+            counted.join(' and ')})` :
+        `${counted[0]} deployment targets`;
     return {
-      error: `Model '${model.name}' declares ${operational.length} ${
-          backend} deployment targets under this profile, so which store it ` +
-          `runs against is ambiguous. Give each its own profile.`,
+      error: `Model '${model.name}' declares ${what} under this profile, so ` +
+          `which store it runs against is ambiguous. Give each its own ` +
+          `profile.`,
     };
   }
   if (!declared) {
@@ -168,25 +236,7 @@ export function resolveStore(model: SemanticModel, ctx?: context.ApiContext):
   }
 
   const api = ctx ?? context.ApiContext.default();
-  const store: Store = spanner.length ? {
-    kind: 'spanner',
-    name: `projects/${spanner[0].project}/instances/${
-        spanner[0].instance}/databases/${spanner[0].database}`,
-    project: spanner[0].project,
-    instance: spanner[0].instance,
-    database: spanner[0].database,
-    client: new SpannerDataClient(
-        api, spanner[0].project, spanner[0].instance, spanner[0].database),
-  } :
-                                        {
-                                          kind: 'bigquery',
-                                          name: `projects/${
-                                              bigQuery[0].project}/datasets/${
-                                              bigQuery[0].dataset}`,
-                                          project: bigQuery[0].project,
-                                          dataset: bigQuery[0].dataset,
-                                          client: new BigQueryClient(api),
-                                        };
+  const store = storeFor(spanner[0], alloyDb[0], bigQuery[0], api);
 
   const strays = strayBindings(model, store.name);
   if (strays.length) {
@@ -202,18 +252,76 @@ export function resolveStore(model: SemanticModel, ctx?: context.ApiContext):
 }
 
 
+// Builds the store from whichever target survived the checks above. Exactly one
+// of the three is defined by the time this is called.
+//
+// Constructing a client opens nothing -- each is a resource name and the means
+// to reach it until something calls it -- so this is as cheap for AlloyDB,
+// whose client does eventually hold a connection pool, as it is for the other
+// two.
+function storeFor(
+    spanner: {project: string; instance: string; database: string}|undefined,
+    alloyDb: {
+      project: string; location: string; cluster: string; instance: string;
+      database: string
+    }|undefined,
+    bigQuery: {project: string; dataset: string}|undefined,
+    api: context.ApiContext): Store {
+  if (spanner) {
+    return {
+      kind: 'spanner',
+      name: `projects/${spanner.project}/instances/${
+          spanner.instance}/databases/${spanner.database}`,
+      project: spanner.project,
+      instance: spanner.instance,
+      database: spanner.database,
+      client: new SpannerDataClient(
+          api, spanner.project, spanner.instance, spanner.database),
+    };
+  }
+  if (alloyDb) {
+    return {
+      kind: 'alloydb',
+      name: `projects/${alloyDb.project}/locations/${
+          alloyDb.location}/clusters/${alloyDb.cluster}/instances/${
+          alloyDb.instance}/databases/${alloyDb.database}`,
+      project: alloyDb.project,
+      location: alloyDb.location,
+      cluster: alloyDb.cluster,
+      instance: alloyDb.instance,
+      database: alloyDb.database,
+      client: new AlloyDbDataClient(
+          api, alloyDb.project, alloyDb.location, alloyDb.cluster,
+          alloyDb.instance, alloyDb.database),
+    };
+  }
+  return {
+    kind: 'bigquery',
+    name: `projects/${bigQuery!.project}/datasets/${bigQuery!.dataset}`,
+    project: bigQuery!.project,
+    dataset: bigQuery!.dataset,
+    client: new BigQueryClient(api),
+  };
+}
+
+
 /**
- * The Spanner client an action or a lookup needs, or why this store cannot
- * supply one. Both are executed as GoogleSQL inside a Spanner transaction, so
- * a BigQuery store is a store this path cannot use -- which is a different
+ * The client an action or a lookup runs statements on, or why this store
+ * cannot supply one.
+ *
+ * Two of the three stores can: Spanner and AlloyDB both hold rows and both take
+ * a write. A BigQuery store is one this path cannot use -- which is a different
  * answer from having no store at all, and is worth saying differently.
+ *
+ * What comes back is a client, not a backend. The caller runs statements
+ * through it without asking which database answered, and that is what keeps a
+ * cross-database deployment from being a second copy of the runtime.
  */
-export function spannerClientFor(store: Store): SpannerDataClient|
-    {error: string} {
-  if (store.kind === 'spanner') return store.client;
+export function dataClientFor(store: Store): DataClient|{error: string} {
+  if (store.kind === 'spanner' || store.kind === 'alloydb') return store.client;
   return {
     error: `This profile deploys to the BigQuery dataset ${store.name}, and ` +
-        `an action's statements run against Spanner. Select a profile whose ` +
-        `deployment target is a Spanner database.`,
+        `an action's statements run against an operational database. Select ` +
+        `a profile whose deployment target is a Spanner or AlloyDB database.`,
   };
 }

@@ -14,23 +14,33 @@
 import {quoteIdentifier} from './sql_identifiers';
 
 
-// Maps the IR's `dataSource` to the BARE Spanner table name the graph
-// references. A property graph names input tables within its own database, so
-// only the final segment of a qualified `project.dataset.table` (or any dotted
-// source) is meaningful; the leading qualifiers name where a BigQuery copy
-// lives and have no bearing on the Spanner table. A resource-name URI
+// How a table name is quoted for the SQL it is about to appear in. The rule
+// for FINDING the name is the same everywhere, so only the quoting varies:
+// GoogleSQL backticks a reserved or irregular name, PostgreSQL double-quotes
+// every name so the profile's stated case survives. Passed in rather than
+// chosen here, because the dialect is a property of the store the statement is
+// headed for, and a binding does not know which store is asking.
+export type QuoteFn = (identifier: string) => string;
+
+
+// Maps the IR's `dataSource` to the BARE table name a statement references. A
+// property graph names input tables within its own database, so only the final
+// segment of a qualified `project.dataset.table` (or any dotted source) is
+// meaningful; the leading qualifiers name where a BigQuery copy lives and have
+// no bearing on the operational table. A resource-name URI
 // (`//spanner.googleapis.com/.../tables/<t>`, or any other `scheme://.../<t>`)
 // names its table by the final PATH segment for the same reason — the leading
 // path locates the store, not the table. A verbatim query (contains whitespace)
 // cannot back a graph element table, so it is passed through parenthesized with
 // a warning.
-export function spannerTable(
-    dataSource: string, warnings: string[], context: string): string {
+export function boundTable(
+    dataSource: string, warnings: string[], context: string,
+    quote: QuoteFn): string {
   const trimmed = (dataSource ?? '').trim();
   if (!trimmed) {
     warnings.push(
         `${context}: empty data source; the table reference will be invalid`);
-    return quoteIdentifier('');
+    return quote('');
   }
   if (/\s/.test(trimmed)) {
     warnings.push(
@@ -45,7 +55,15 @@ export function spannerTable(
   // dotted reduction below.
   const source = isResourceUri(trimmed) ? finalPathSegment(trimmed) : trimmed;
   const last = splitDotted(source).map(unquote).pop() ?? source;
-  return quoteIdentifier(last);
+  return quote(last);
+}
+
+
+// `boundTable` in GoogleSQL, which is what the Spanner DDL generator wants and
+// what every caller wanted when there was one backend.
+export function spannerTable(
+    dataSource: string, warnings: string[], context: string): string {
+  return boundTable(dataSource, warnings, context, quoteIdentifier);
 }
 
 

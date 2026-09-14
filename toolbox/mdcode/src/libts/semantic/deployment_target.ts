@@ -1,15 +1,26 @@
 // Reads a model's GOOGLE deployment-target extension and classifies each
 // declared target URI.
 //
-// A semantic model names where its graph deploys with `deploymentTargets` in a
-// GOOGLE `custom_extensions` block (the loader folds a model-level
-// `deployment_target:` key into the same block). Two destination types are
+// A semantic model names where it deploys with `deploymentTargets` in a GOOGLE
+// `custom_extensions` block (the loader folds a model-level
+// `deployment_target:` key into the same block). Three destination types are
 // recognized here, each an AIP-122 resource name:
 //
 //   BigQuery Graph:
 //     //bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>
 //   Spanner Graph:
 //     //spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>
+//   AlloyDB database:
+//     //alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/instances/<i>/databases/<db>
+//
+// The first two name a GRAPH; the third names a DATABASE, and the difference is
+// not an oversight. AlloyDB has no property-graph DDL, so there is no graph to
+// address and a URI pretending otherwise would name something that cannot be
+// created. What an AlloyDB target says is where the model's rows live -- which
+// is the whole of what a runtime needs in order to read an entity and carry out
+// an action. A model bound to it deploys to Knowledge Catalog and runs; it does
+// not deploy a graph, and `validatePushRequirements` says so in those words
+// rather than reporting the URI as a typo.
 //
 // The deploy legs (deploy_bigquery, deploy_spanner) and the push-time validator
 // all derive their targets from this one reader, so a multi-destination push
@@ -39,6 +50,16 @@ const BQ_GRAPH_TARGET =
 const SPANNER_GRAPH_TARGET =
     /^\/\/spanner\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/instances\/([A-Za-z0-9_-]+)\/databases\/([A-Za-z0-9_-]+)\/propertyGraphs\/([A-Za-z0-9_-]+)$/;
 
+// An AlloyDB database. The segments are an AlloyDB instance resource name --
+// AlloyDB locates an instance by cluster and region rather than by instance id
+// alone, which is why there is a `locations` segment here and none in the
+// Spanner target -- followed by the PostgreSQL database inside it. A database
+// name is a PostgreSQL identifier, and the strict class serves the same purpose
+// as it does above: the name is interpolated into a connection string and into
+// generated SQL, so a permissive class would let a quote character through.
+const ALLOYDB_TARGET =
+    /^\/\/alloydb\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/locations\/([A-Za-z0-9_-]+)\/clusters\/([A-Za-z0-9_-]+)\/instances\/([A-Za-z0-9_-]+)\/databases\/([A-Za-z0-9_-]+)$/;
+
 
 export interface BigQueryGraphTarget {
   project: string;
@@ -55,6 +76,15 @@ export interface SpannerGraphTarget {
   uri: string;
 }
 
+export interface AlloyDbTarget {
+  project: string;
+  location: string;
+  cluster: string;
+  instance: string;
+  database: string;
+  uri: string;
+}
+
 export interface GoogleDeploymentTargets {
   // Every declared deploymentTarget URI, in declaration order.
   uris: string[];
@@ -62,9 +92,12 @@ export interface GoogleDeploymentTargets {
   bigQuery: BigQueryGraphTarget[];
   // The subset that parse as Spanner Graph targets.
   spanner: SpannerGraphTarget[];
-  // URIs that parse as NEITHER a BigQuery nor a Spanner Graph target (a
-  // host/scheme/segment/identifier typo, or an unsupported destination). Kept
-  // so a caller can name the typo instead of silently dropping it.
+  // The subset that parse as AlloyDB database targets. Not a graph: see the
+  // file header for why this one names a database.
+  alloyDb: AlloyDbTarget[];
+  // URIs that parse as NONE of the supported destinations (a host/scheme/
+  // segment/identifier typo, or an unsupported destination). Kept so a caller
+  // can name the typo instead of silently dropping it.
   malformed: string[];
 }
 
@@ -90,6 +123,7 @@ export function googleDeploymentTargets(model: SemanticModel):
   const uris: string[] = [];
   const bigQuery: BigQueryGraphTarget[] = [];
   const spanner: SpannerGraphTarget[] = [];
+  const alloyDb: AlloyDbTarget[] = [];
   const malformed: string[] = [];
 
   for (const ext of model.customExtensions ?? []) {
@@ -131,13 +165,26 @@ export function googleDeploymentTargets(model: SemanticModel):
         });
         continue;
       }
+      const ad = uri.match(ALLOYDB_TARGET);
+      if (ad) {
+        alloyDb.push({
+          project: ad[1],
+          location: ad[2],
+          cluster: ad[3],
+          instance: ad[4],
+          database: ad[5],
+          uri,
+        });
+        continue;
+      }
       // Matches no supported destination type: collect it as malformed
       // (rejected by the validator) rather than silently ignoring it.
       malformed.push(uri);
     }
   }
 
-  const result: GoogleDeploymentTargets = {uris, bigQuery, spanner, malformed};
+  const result:
+      GoogleDeploymentTargets = {uris, bigQuery, spanner, alloyDb, malformed};
   targetsCache.set(model, result);
   return result;
 }
@@ -146,8 +193,8 @@ export function googleDeploymentTargets(model: SemanticModel):
 // The BigQuery Graph deployment targets a model declares, plus any URIs that
 // parse as no supported destination type. A view over googleDeploymentTargets,
 // preserving the historical shape the BigQuery leg and Knowledge Catalog leg
-// consume. Note `malformed` excludes a valid Spanner Graph target: a Spanner
-// URI is a recognized destination, just not a BigQuery one, so it is not
+// consume. Note `malformed` excludes a valid Spanner Graph or AlloyDB target:
+// each is a recognized destination, just not a BigQuery one, so neither is
 // reported as a BigQuery typo.
 export function bigQueryGraphTargets(model: SemanticModel):
     {targets: BigQueryGraphTarget[]; malformed: string[]} {
@@ -162,6 +209,17 @@ export function spannerGraphTargets(model: SemanticModel):
     {targets: SpannerGraphTarget[]; malformed: string[]} {
   const {spanner, malformed} = googleDeploymentTargets(model);
   return {targets: spanner, malformed};
+}
+
+
+// The AlloyDB database targets a model declares. Symmetric to the two above in
+// shape, but there is no deploy leg behind it: an AlloyDB target is a store to
+// run against, not a graph to create, so the only callers are store resolution
+// and the messages that explain why a graph push has nothing to do.
+export function alloyDbTargets(model: SemanticModel):
+    {targets: AlloyDbTarget[]; malformed: string[]} {
+  const {alloyDb, malformed} = googleDeploymentTargets(model);
+  return {targets: alloyDb, malformed};
 }
 
 

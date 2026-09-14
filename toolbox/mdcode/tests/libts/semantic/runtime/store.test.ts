@@ -12,10 +12,12 @@ import {describe, expect, test} from 'bun:test';
 
 import {SemanticModel} from '../../../../src/libts/semantic/ir';
 import {loadModels} from '../../../../src/libts/semantic/loader';
-import {resolveStore, spannerClientFor} from '../../../../src/libts/semantic/runtime/store';
+import {dataClientFor, resolveStore} from '../../../../src/libts/semantic/runtime/store';
 
 const DB = '//spanner.googleapis.com/projects/p/instances/i/databases/d';
 const DATASET = '//bigquery.googleapis.com/projects/p/datasets/s';
+const PG =
+    '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/d';
 
 function model(body: string): SemanticModel {
   const loaded = loadModels(
@@ -62,12 +64,47 @@ describe('where a model says it lives', () => {
          expect(store.kind).toBe('bigquery');
          expect(store.name).toBe('projects/p/datasets/s');
 
-         const client = spannerClientFor(store);
+         const client = dataClientFor(store);
          expect('error' in client).toBe(true);
          if (!('error' in client)) return;
          expect(client.error).toContain('projects/p/datasets/s');
          expect(client.error).toContain('Spanner');
        });
+
+  // The same three questions asked of the other operational backend. That they
+  // have the same answers is the claim the cross-database demo rests on: a
+  // model says where it lives, and AlloyDB is one of the places it can say.
+  test('an AlloyDB target is a store, down to the database', () => {
+    const store = resolveStore(bound(PG, `${PG}/tables/customer`));
+    if ('error' in store) throw new Error(store.error);
+    expect(store.kind).toBe('alloydb');
+    if (store.kind !== 'alloydb') return;
+    expect(store.project).toBe('p');
+    expect(store.location).toBe('us-central1');
+    expect(store.cluster).toBe('c');
+    expect(store.instance).toBe('i');
+    expect(store.database).toBe('d');
+    expect(store.name).toBe(
+        'projects/p/locations/us-central1/clusters/c/instances/i/databases/d');
+    expect(store.client.database).toBe(store.name);
+
+    // And unlike BigQuery, it hands back a client rather than a reason.
+    const client = dataClientFor(store);
+    expect('error' in client).toBe(false);
+  });
+
+  // An AlloyDB target names a DATABASE, not a graph, because AlloyDB has no
+  // property-graph DDL to address. A URI carrying the graph segment the other
+  // two backends use names nothing that could be created, so it is not quietly
+  // accepted.
+  test('an AlloyDB target with a graph segment is not a target at all', () => {
+    const store =
+        resolveStore(bound(`${PG}/propertyGraphs/g`, `${PG}/tables/customer`));
+    expect('error' in store).toBe(true);
+    if (!('error' in store)) return;
+    expect(store.error).toContain('no deployment target');
+    expect(store.error).toContain('propertyGraphs/g');
+  });
 
   test('a model with no deployment target has no store', () => {
     const store = resolveStore(model(
@@ -162,6 +199,27 @@ describe('a model that declares more than one deployment target', () => {
          expect(store.error).toContain('2 Spanner deployment targets');
          expect(store.error).toContain('Give each its own profile.');
        });
+
+  // Ambiguity is about ROLE, not about backend. Spanner alongside AlloyDB is
+  // two targets that could each serve the same one -- both hold the rows, both
+  // take the write -- so it is as undecidable as two of either, and the message
+  // has to name both rather than reporting "2 Spanner" or picking a winner.
+  test('Spanner alongside AlloyDB is ambiguous, and both are named', () => {
+    const store = resolveStore(
+        targets([`${DB}/propertyGraphs/g`, PG], `${DB}/tables/Customer`));
+    expect('error' in store).toBe(true);
+    if (!('error' in store)) return;
+    expect(store.error).toContain('1 Spanner and 1 AlloyDB');
+    expect(store.error).toContain('two operational backends');
+    expect(store.error).toContain('Give each its own profile.');
+  });
+
+  test('AlloyDB alongside BigQuery resolves to the AlloyDB store', () => {
+    const store = resolveStore(
+        targets([PG, `${DATASET}/propertyGraphs/g`], `${PG}/tables/customer`));
+    if ('error' in store) throw new Error(store.error);
+    expect(store.kind).toBe('alloydb');
+  });
 
   test('two BigQuery targets is ambiguous in the same way', () => {
     const store = resolveStore(targets(

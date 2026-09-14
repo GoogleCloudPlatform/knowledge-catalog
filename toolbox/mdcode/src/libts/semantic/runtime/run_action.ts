@@ -42,7 +42,7 @@
 
 import * as spanner from '../../gcp/spanner';
 
-import {spannerTable} from '../binding';
+import {boundTable} from '../binding';
 import {
   Action,
   ActionParameter,
@@ -53,8 +53,9 @@ import {
   generatedKeyParam,
   SemanticModel,
 } from '../ir';
-import {quoteIfReserved, referencedParameters} from '../sql_identifiers';
+import {referencedParameters} from '../sql_identifiers';
 
+import {dialectFor, SqlDialect} from './dialect';
 import {Judge, JudgeVerdict} from './judge';
 import {runtimeClient, SemanticRuntime} from './runtime';
 
@@ -62,9 +63,9 @@ import {runtimeClient, SemanticRuntime} from './runtime';
 // An entity-typed argument, resolved to the row it denotes.
 export interface EntityRef {
   entity: string;
-  // Key values in the entity's declared key order, as strings (Spanner's REST
-  // surface returns every scalar as a string, and the runtime keeps them that
-  // way so a caller need not know the physical types).
+  // Key values in the entity's declared key order, as strings (both
+  // operational backends hand every scalar over as text, and the runtime keeps
+  // them that way so a caller need not know the physical types).
   keys: string[];
   // How the caller referred to it, kept for error messages.
   input: string;
@@ -79,6 +80,14 @@ export interface ActionPlan {
 }
 
 
+// Reads rows inside the open transaction. Every scalar arrives as text --
+// both operational backends hand their values over that way, and the runtime
+// keeps them so, so a caller need not know the physical types -- and a SQL
+// NULL arrives as `null`, which is the one value no text can stand in for.
+export type QueryFn = (stmt: spanner.Statement) =>
+    Promise<Array<Array<string|null>>>;
+
+
 // What the handler is given: the action, its arguments with entity-typed ones
 // already resolved, and a reader scoped to the open transaction (so a handler
 // can look at the pre-state before deciding what to write).
@@ -87,7 +96,7 @@ export interface ActionContext {
   action: Action;
   args: Record<string, unknown>;
   refs: Record<string, EntityRef>;
-  query(stmt: spanner.Statement): Promise<string[][]>;
+  query: QueryFn;
 }
 
 
@@ -251,7 +260,12 @@ export async function runAction(opts: RunActionOptions):
           return outcome;
         };
 
-        const resolved = await resolveArguments(model, action, args, query);
+        // The action's own statements were written for this store by
+        // whoever wrote the profile. The reference-resolving SELECTs below are
+        // written here, so they are the ones that need to know which dialect
+        // is listening.
+        const resolved = await resolveArguments(
+            model, action, args, query, dialectFor(opts.runtime.store));
         if ('error' in resolved) {
           return await rollback({status: 'error', message: resolved.error});
         }
@@ -969,7 +983,7 @@ function planFromExecutor(
 // pass through untouched; this is only about object references.
 async function resolveArguments(
     model: SemanticModel, action: Action, args: Record<string, unknown>,
-    query: (stmt: spanner.Statement) => Promise<string[][]>):
+    query: QueryFn, dialect: SqlDialect):
     Promise<{refs: Record<string, EntityRef>}|{error: string}> {
   const refs: Record<string, EntityRef> = {};
   for (const param of action.parameters) {
@@ -988,7 +1002,7 @@ async function resolveArguments(
             `model does not declare as an entity.`,
       };
     }
-    const resolved = await resolveEntityRef(entity, `${raw}`, query);
+    const resolved = await resolveEntityRef(entity, `${raw}`, query, dialect);
     if ('error' in resolved) return {error: resolved.error};
     refs[param.name] = resolved.ref;
   }
@@ -1004,12 +1018,11 @@ async function resolveArguments(
 // can act on: nothing matched (the reference is wrong) or several matched (the
 // reference is ambiguous, and the candidates are listed).
 async function resolveEntityRef(
-    entity: Entity, input: string,
-    query: (stmt: spanner.Statement) => Promise<string[][]>):
+    entity: Entity, input: string, query: QueryFn, dialect: SqlDialect):
     Promise<{ref: EntityRef}|{error: string}> {
   const warnings: string[] = [];
-  const table =
-      spannerTable(entity.dataSource, warnings, `entity '${entity.name}'`);
+  const table = boundTable(
+      entity.dataSource, warnings, `entity '${entity.name}'`, dialect.quote);
   if (warnings.length) {
     return {error: `Cannot resolve a ${entity.name}: ${warnings.join('; ')}.`};
   }
@@ -1025,7 +1038,7 @@ async function resolveEntityRef(
             key}' is not bound to a plain column.`,
       };
     }
-    keyColumns.push(quoteIfReserved(expr));
+    keyColumns.push(dialect.quote(expr));
     keyTypes.push(field?.type ?? 'String');
   }
   if (!keyColumns.length) {
@@ -1059,7 +1072,7 @@ async function resolveEntityRef(
   }
   // An identifying column is a String field by construction, so the input is
   // already a value of its type.
-  const label = identifyingColumn(entity);
+  const label = identifyingColumn(entity, dialect);
   if (label) {
     predicates.push(`${label} = @ref`);
     params['ref'] = input;
@@ -1096,7 +1109,19 @@ async function resolveEntityRef(
           rows.map(r => r.join('/')).join(', ')}); use a key to disambiguate.`,
     };
   }
-  return {ref: {entity: entity.name, keys: rows[0], input}};
+  // A key column cannot be NULL -- it is what identifies the row -- so a null
+  // here is the store disagreeing with the model about which columns the key
+  // is. Reported rather than carried: the value would go on to fill a
+  // statement parameter, and an empty string standing in for it would name a
+  // different row, or no row, without saying so.
+  const keys = rows[0];
+  if (keys.some(value => value === null)) {
+    return {
+      error: `Cannot resolve a ${entity.name}: the row matching '${
+          input}' has no value in a key column, so it cannot be referred to.`,
+    };
+  }
+  return {ref: {entity: entity.name, keys: keys as string[], input}};
 }
 
 
@@ -1104,7 +1129,8 @@ async function resolveEntityRef(
 // that is not part of the key and whose name reads as a name. Deliberately
 // conservative -- guessing wrong would make an agent's reference resolve to the
 // wrong row, which is worse than making it supply a key.
-function identifyingColumn(entity: Entity): string|null {
+function identifyingColumn(entity: Entity, dialect: SqlDialect): string|
+    null {
   const keys = new Set(entity.keys);
   for (const field of entity.fields) {
     if (keys.has(field.name)) continue;
@@ -1115,7 +1141,7 @@ function identifyingColumn(entity: Entity): string|null {
     }
     const expr = (fieldBinding(field) ?? '').trim();
     if (!expr || !/^[A-Za-z_]\w*$/.test(expr)) continue;
-    return quoteIfReserved(expr);
+    return dialect.quote(expr);
   }
   return null;
 }

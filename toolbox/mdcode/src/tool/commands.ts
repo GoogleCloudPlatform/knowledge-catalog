@@ -25,7 +25,7 @@ import {runAction} from '../libts/semantic/runtime/run_action';
 import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryDataSources, validatePushRequirements, validateRunnable} from '../libts/semantic/validate';
 import {createSemanticRuntimes, runtimeClient, SemanticRuntime} from '../libts/semantic/runtime/runtime';
-import {spannerClientFor, Store} from '../libts/semantic/runtime/store';
+import {dataClientFor, Store} from '../libts/semantic/runtime/store';
 import {
   AvailabilityReport,
   DEFAULT_PROFILE,
@@ -1351,7 +1351,7 @@ export async function agent(
     // store, and has to be reported the same way: every tool would be listed
     // uncallable, and a caller reading the exit code would take a listing that
     // offers nothing for a listing that offers everything.
-    const unusable = store ? spannerClientFor(store) : undefined;
+    const unusable = store ? dataClientFor(store) : undefined;
     const why = store ? (unusable && 'error' in unusable ? unusable.error : '') :
                         storeError ?? '';
     if (!store || why) {
@@ -1376,13 +1376,20 @@ export async function agent(
 
 
 // How a store is written down for a reader: the resource it addresses, with
-// the backend named when it is not the Spanner one an action expects. Shared
-// by `--store`, which a script reads, and the listing header a person reads,
-// so the two never disagree about where a run would land.
+// the backend named ahead of it for everything but Spanner, which is the one an
+// unprefixed line has always meant. Shared by `--store`, which a script reads,
+// and the listing header a person reads, so the two never disagree about where
+// a run would land.
 function storeLine(store: Store): string {
-  return store.kind === 'spanner' ?
-      `${store.project}/${store.instance}/${store.database}` :
-      `bigquery:${store.project}/${store.dataset}`;
+  switch (store.kind) {
+    case 'spanner':
+      return `${store.project}/${store.instance}/${store.database}`;
+    case 'alloydb':
+      return `alloydb:${store.project}/${store.location}/${store.cluster}/` +
+          `${store.instance}/${store.database}`;
+    case 'bigquery':
+      return `bigquery:${store.project}/${store.dataset}`;
+  }
 }
 
 

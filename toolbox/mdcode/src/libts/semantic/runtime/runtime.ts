@@ -15,7 +15,6 @@
 // rather than one per caller.
 
 import * as context from '../../gcp/context';
-import * as spanner from '../../gcp/spanner';
 import {SemanticModelLayout} from '../../layouts/semantic-model';
 import {CatalogSnapshot} from '../../snapshot';
 import {Sources} from '../../source';
@@ -25,7 +24,7 @@ import {loadSemanticModels} from '../loader';
 import {resolveInheritance} from '../resolve_inheritance';
 import {DEFAULT_PROFILE, mergeProfileOntoDoc} from '../resolve_profiles';
 
-import {resolveStore, spannerClientFor, Store} from './store';
+import {DataClient, dataClientFor, resolveStore, Store} from './store';
 
 
 /**
@@ -56,13 +55,17 @@ export interface SemanticRuntime {
 
 
 /**
- * The Spanner client a runtime can run statements on, or why it has none.
+ * The client a runtime can run statements on, or why it has none.
  * Two different answers collapse into one question here -- the profile binds
  * no store at all, or binds one this path cannot execute against -- and each
  * sends the reader somewhere different, so each keeps its own wording.
+ *
+ * Which database is behind it is not part of the answer. A caller asks a
+ * runtime for a client and runs statements on it; whether those reach Spanner
+ * or AlloyDB was settled by the binding profile, upstream of everything here.
  */
-export function runtimeClient(runtime: SemanticRuntime):
-    spanner.SpannerDataClient|{error: string} {
+export function runtimeClient(runtime: SemanticRuntime): DataClient|
+    {error: string} {
   if (!runtime.store) {
     return {
       error: runtime.storeError ??
@@ -70,7 +73,7 @@ export function runtimeClient(runtime: SemanticRuntime):
               runtime.profile}'.`,
     };
   }
-  return spannerClientFor(runtime.store);
+  return dataClientFor(runtime.store);
 }
 
 
@@ -166,9 +169,10 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     const resolved = resolveInheritance(authored);
     for (const w of resolved.warnings) warn(`Warning: ${w}`);
     // Resolving the store opens no connection -- a Spanner client is a base
-    // URL and a database path until something calls it -- so every runtime can
-    // carry its store, and a caller reads `store` rather than repeating the
-    // lookup and the three ways it fails.
+    // URL and a database path until something calls it, and an AlloyDB client
+    // holds off on its address lookup and its pool for the same reason -- so
+    // every runtime can carry its store, and a caller reads `store` rather
+    // than repeating the lookup and the three ways it fails.
     const store = resolveStore(resolved.model, ctx);
     runtimes.push({
       model: resolved.model,
