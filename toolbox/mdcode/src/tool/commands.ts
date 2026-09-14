@@ -1175,6 +1175,8 @@ export interface ActionOptions {
   // `--judge [model]`: settle the guards stated in words by asking Gemini.
   // `true` for a bare `--judge`, which takes the default model.
   judge?: string|boolean;
+  // `--judge-location <region>`: the Vertex AI region to ask in.
+  judgeLocation?: string;
 }
 
 
@@ -1552,10 +1554,10 @@ async function runOneAction(
 
   // Built from the context this command already holds, so judging costs no
   // second trip to gcloud for a project and a token.
-  const judge = options.judge ?
-      new GeminiJudge(
-          ctx, typeof options.judge === 'string' ? {model: options.judge} : {}) :
-      undefined;
+  const judge = options.judge ? new GeminiJudge(ctx, {
+    ...(typeof options.judge === 'string' ? {model: options.judge} : {}),
+    ...(options.judgeLocation ? {location: options.judgeLocation} : {}),
+  }) : undefined;
 
   console.log(`Running '${name}' on ${runtime.store.name}...`);
   if (judge) console.log(`  rules stated in words go to ${judge.name}`);

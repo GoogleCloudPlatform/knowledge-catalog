@@ -147,6 +147,9 @@ cli.command(
     .option(
         '--judge [model]',
         'Settle guards the model states in words by asking Gemini on Vertex AI, naming a model or taking the default; without it, an action guarded by such a rule is refused rather than run unchecked (`run` only)')
+    .option(
+        '--judge-location <region>',
+        'Ask the judge in this Vertex AI region, which is where the argument values are sent; defaults to us-central1 (`run` only)')
     .action(async (command, name, options) => {
       let exitCode = 1;
       try {

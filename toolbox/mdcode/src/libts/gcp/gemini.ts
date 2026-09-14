@@ -23,12 +23,15 @@ export const DEFAULT_JUDGE_MODEL = 'gemini-2.5-flash';
 
 
 // Vertex serves models from a region, and not every region serves every model.
-// A caller that knows better names one; everything else uses a region that
-// serves Gemini. What is deliberately NOT consulted is `gcloud config
-// get-value compute/region`, which is whatever the user set for Compute Engine
-// and is routinely somewhere Vertex is not -- `us`, say, which is not a Vertex
-// endpoint at all. Reading it would make a judge unreachable over an unrelated
-// setting, and an unreachable judge refuses writes that are fine.
+// A caller that knows better names one, through `--judge-location` or this
+// option; everything else uses a region that serves Gemini. The region is also
+// where the argument values are sent, so a project that has to keep them
+// somewhere in particular names that region. What is deliberately NOT consulted
+// is `gcloud config get-value compute/region`, which is whatever the user set
+// for Compute Engine and is routinely somewhere Vertex is not -- `us`, say,
+// which is not a Vertex endpoint at all. Reading it would make a judge
+// unreachable over an unrelated setting, and an unreachable judge refuses
+// writes that are fine.
 export const DEFAULT_JUDGE_LOCATION = 'us-central1';
 
 
@@ -91,12 +94,13 @@ export class GeminiJudge extends ApiClient implements Judge {
     this._location = location;
     this._project = options.project ?? ctx.project;
     this._model = options.model ?? DEFAULT_JUDGE_MODEL;
-    // Only for the model this file picked, whose limits it knows. A caller who
-    // names a model is naming one this code has never heard of: gemini-2.5-pro
-    // rejects a budget of 0 outright with `The model does not support setting
-    // thinking_budget to 0`, and an unreachable judge refuses every guarded
-    // write. So a named model is sent no budget and keeps its own default.
-    this._pinThinkingOff = options.model === undefined;
+    // Read off which model this is, so `--judge` and `--judge gemini-2.5-flash`
+    // send the same request. A budget of 0 is a per-model limit. The model this
+    // file picked accepts it; gemini-2.5-pro rejects it outright with `The model
+    // does not support setting thinking_budget to 0`, and an unreachable judge
+    // refuses every guarded write. So every other model is sent no budget and
+    // keeps its own default.
+    this._pinThinkingOff = this._model === DEFAULT_JUDGE_MODEL;
     this.name = `${this._model} (${this._location})`;
   }
 

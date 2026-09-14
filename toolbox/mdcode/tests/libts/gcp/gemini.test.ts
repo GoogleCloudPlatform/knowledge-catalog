@@ -96,17 +96,25 @@ describe('what the Gemini judge asks', () => {
          expect(body.generationConfig.thinkingConfig.thinkingBudget).toBe(0);
        });
 
-  test('leaves a model it was told to use on its own thinking default',
-       async () => {
-         // A budget of 0 is what the default model accepts. gemini-2.5-pro
-         // rejects it with 400 `The model does not support setting
-         // thinking_budget to 0`, and a judge that 400s refuses every guarded
-         // write, so a model this file did not pick is sent no budget.
-         const judge = new GeminiJudge(CTX, {model: 'gemini-2.5-pro'});
-         const {body} = await ask(judge, answering(OK));
-         expect(body.generationConfig.thinkingConfig).toBeUndefined();
-         expect(body.generationConfig.temperature).toBe(0);
-       });
+  test('leaves any other model on its own thinking default', async () => {
+    // A budget of 0 is what the default model accepts. gemini-2.5-pro rejects
+    // it with 400 `The model does not support setting thinking_budget to 0`,
+    // and a judge that 400s refuses every guarded write, so a model this file
+    // did not pick is sent no budget.
+    const judge = new GeminiJudge(CTX, {model: 'gemini-2.5-pro'});
+    const {body} = await ask(judge, answering(OK));
+    expect(body.generationConfig.thinkingConfig).toBeUndefined();
+    expect(body.generationConfig.temperature).toBe(0);
+  });
+
+  test('asks the default model the same way however it was chosen', async () => {
+    // Naming the model the flag would have defaulted to must not change the
+    // request. Keying on whether a model was named rather than on which model
+    // it is would leave thinking on for this spelling alone.
+    const judge = new GeminiJudge(CTX, {model: DEFAULT_JUDGE_MODEL});
+    const {body} = await ask(judge, answering(OK));
+    expect(body.generationConfig.thinkingConfig.thinkingBudget).toBe(0);
+  });
 
   test('fences the arguments and says they are data', async () => {
     // The caller who wrote these values is the party being judged, so the
