@@ -18,7 +18,8 @@
     "test:libts": "npx bun test ./tests/libts/scenarios.ts && npx bun test ./tests/libts/layouts/",
     "test:semantic": "npx bun test ./tests/libts/semantic/",
     "test:tool": "npx bun test ./tests/tool/",
-    "test": "npm run test:libts && npm run test:semantic && npm run test:tool",
+    "test:gcp": "npx bun test ./tests/libts/gcp/",
+    "test": "npm run test:libts && npm run test:gcp && npm run test:semantic && npm run test:tool",
     "x:mcp": "npx @modelcontextprotocol/inspector dist/kcmd mcp"
   },
   "keywords": [],
