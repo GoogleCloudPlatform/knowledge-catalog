@@ -35,6 +35,18 @@ export const DEFAULT_JUDGE_MODEL = 'gemini-2.5-flash';
 export const DEFAULT_JUDGE_LOCATION = 'us-central1';
 
 
+// Every Vertex region is served from its own prefixed host. `global` is the
+// one location that is not: it answers on the unprefixed host. Prefixing it
+// anyway builds a name that still resolves, because googleapis.com answers
+// wildcards, so the request reaches a frontend that knows nothing of the API
+// and returns an HTML 404. The judge is then unreachable, every guarded write
+// is refused, and the operator is handed a web page in place of a reason.
+function vertexHost(location: string): string {
+  return location === 'global' ? 'aiplatform.googleapis.com' :
+                                 `${location}-aiplatform.googleapis.com`;
+}
+
+
 // The shape the model must answer in, declared to the API rather than asked
 // for in the prompt so that a malformed answer is the service's error and not
 // something to parse around.
@@ -90,7 +102,7 @@ export class GeminiJudge extends ApiClient implements Judge {
 
   constructor(ctx: context.ApiContext, options: GeminiJudgeOptions = {}) {
     const location = options.location ?? DEFAULT_JUDGE_LOCATION;
-    super(`https://${location}-aiplatform.googleapis.com`, 'v1', ctx);
+    super(`https://${vertexHost(location)}`, 'v1', ctx);
     this._location = location;
     this._project = options.project ?? ctx.project;
     this._model = options.model ?? DEFAULT_JUDGE_MODEL;

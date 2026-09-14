@@ -53,6 +53,23 @@ describe('where the Gemini judge sends its request', () => {
          expect((judge as any)._endpoint).not.toContain('us-aiplatform');
        });
 
+  test('reaches `global` at the host that actually serves it', () => {
+    // `global` is a real Vertex location and the one that is not served from
+    // a prefixed host. `global-aiplatform.googleapis.com` still resolves,
+    // because googleapis.com answers wildcards, and returns an HTML 404. The
+    // judge is then unreachable and every guarded write is refused.
+    const judge = new GeminiJudge(CTX, {location: 'global'});
+    expect((judge as any)._endpoint).toBe('https://aiplatform.googleapis.com');
+  });
+
+  test('still names `global` as the location in the resource path',
+       async () => {
+         // The host drops the prefix. The resource keeps the location.
+         const judge = new GeminiJudge(CTX, {location: 'global'});
+         const {resource} = await ask(judge, answering(OK));
+         expect(resource).toContain('/locations/global/');
+       });
+
   test('a caller that names a region gets that region', () => {
     const judge = new GeminiJudge(CTX, {location: 'europe-west4'});
     expect((judge as any)._endpoint)
