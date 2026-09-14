@@ -391,6 +391,14 @@ and compared $3.00 against the $18.00 that came back. Nobody wrote that SQL: the
 rule names the order's total in words, and the judge was told which tables hold
 this model's data.
 
+One verdict in that run does not repeat reliably. `Coupon applied late` gives a
+cause without naming a thing that went wrong, which leaves it near the line
+`CreditMemoNamesAServiceFailure` draws, and some runs settle that rule the other
+way and print its advisory warning above the commit. The write lands either way,
+because the rule is advisory. A judged rule is settled afresh for every call, so
+a case close to the line a rule draws has no one fixed answer. That is a reason
+to keep the cases a rule must catch well clear of its line.
+
 `order=12346` was text; the runtime resolved it to a row and says which one. The
 total moved from $18.00 to $15.00 with nobody doing arithmetic, because the
 second statement recomputes it from the lines. Both statements ran in one
