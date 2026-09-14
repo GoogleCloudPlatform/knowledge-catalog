@@ -532,8 +532,12 @@ export interface GrpcExecutor {
  * consequence among the violated ones is what the action does. See
  * docs/semantic-model/actions.md for a worked policy.
  *
- * STATUS: the declared word is published and read back. Nothing evaluates a
- * constraint, so nothing routes on it yet.
+ * STATUS: the declared word is published, read back, and routed on for the
+ * rules something settles. A judgment is settled where an action names it in
+ * `guards`, and `warn` reports while `reject` and `escalate` stop the call;
+ * `escalate` says so in the refusal, because nothing here has an approver to
+ * route to. An expression is still text nothing computes, so its word decides
+ * nothing yet.
  */
 export const VIOLATION_EFFECTS = ['reject', 'escalate', 'warn'] as const;
 
@@ -616,12 +620,15 @@ export function constraintEvaluation(c: Constraint): ConstraintEvaluation {
  * schema changes that. `onViolation` is required on a judgment so that the
  * consequence of that non-determinism is always stated rather than inherited.
  *
- * STATUS: authored, validated and published; not yet enforced. kcmd carries a
- * constraint to Knowledge Catalog, where an agent can read the rules a model
- * requires. No component evaluates one, so nothing today rejects a write that
- * would break it. Enforcement is the point of declaring them: an operational
- * agent running an action writes to a live store, and a bad write corrupts
- * data. The rule has to be stated and governed before it can be checked.
+ * STATUS: authored, validated and published; one of the two bodies is
+ * enforced. kcmd carries a constraint to Knowledge Catalog, where an agent can
+ * read the rules a model requires. Where an action names a constraint in
+ * `guards`, a `judgment` is settled by a language model before the transaction
+ * opens, which is why it reads the attempted call and never the state the
+ * write produced: a rule about the RESULT of a write has to be an expression.
+ * A caller that supplies no judge gets no judgment settled -- the action is
+ * refused rather than run past the rule. An `expression` is text nothing
+ * computes yet, and an action guarding on one is refused the same way.
  *
  * `description` is the error text a violation would surface, so write it to
  * steer an agent's next move -- "reduce the order quantity or choose another

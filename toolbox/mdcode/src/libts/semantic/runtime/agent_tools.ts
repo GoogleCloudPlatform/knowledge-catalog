@@ -113,6 +113,13 @@ export interface ToolResult {
   unknown?: boolean;
   /** What the caller should do next, when the outcome permits only one thing. */
   whatToDo?: string;
+  /**
+   * What a rule reported without stopping the write. An advisory guard whose
+   * rule did not hold lands here, and so does one nothing was able to put to a
+   * judge. Dropping these would tell the agent the write met every rule the
+   * model states, which is the one thing it must not conclude on its own.
+   */
+  warnings?: string[];
 }
 
 
@@ -304,6 +311,7 @@ export function describeOutcome(outcome: ActionOutcome): ToolResult {
       }
       const result: ToolResult = {applied: true, actedOn};
       if (outcome.commitTimestamp) result.committedAt = outcome.commitTimestamp;
+      if (outcome.warnings?.length) result.warnings = outcome.warnings;
       return result;
     }
     case 'error':

@@ -23,12 +23,15 @@
 // which this module cannot call and could not roll back if it did; for those
 // the caller supplies a handler that produces the statements.
 //
-// What this does NOT do yet: evaluate the model's constraints. A constraint is
-// still text nothing checks, so an action that NAMES one in `guards` is REFUSED
-// here rather than run unchecked -- see `unsafeToRunUnchecked`. Refusing is the
-// point. A model that declares a rule and a runtime that quietly ignores it is
-// worse than no runtime at all, because the model states the call is checked
-// and nothing says otherwise.
+// Constraints, and which of them this settles. A rule stated as a `judgment`
+// is settled by asking a judge, before the transaction opens -- see
+// `askJudges`. A rule stated as an `expression` is still text nothing computes
+// here, so an action that NAMES one in `guards` is REFUSED rather than run
+// unchecked, and so is an action guarded by a judgment on a run that was given
+// no judge to ask. See `unsafeToRunUnchecked`. Refusing is the point. A model
+// that declares a rule and a runtime that quietly ignores it is worse than no
+// runtime at all, because the model states the call is checked and nothing
+// says otherwise.
 //
 // A constraint no action names gates nothing here, because it gates nothing
 // anywhere: a rule takes effect where something references it, and `guards` is
@@ -43,6 +46,8 @@ import {spannerTable} from '../binding';
 import {
   Action,
   ActionParameter,
+  Constraint,
+  constraintEvaluation,
   Entity,
   fieldBinding,
   generatedKeyParam,
@@ -50,6 +55,7 @@ import {
 } from '../ir';
 import {quoteIfReserved, referencedParameters} from '../sql_identifiers';
 
+import {Judge, JudgeVerdict} from './judge';
 import {runtimeClient, SemanticRuntime} from './runtime';
 
 
@@ -92,6 +98,12 @@ export type ActionOutcome = {
   status: 'committed';
   commitTimestamp?: string;
   refs: Record<string, EntityRef>;
+  // What a rule reported without stopping the write. A guard whose
+  // `onViolation` is `warn` puts its verdict here, and so does one whose judge
+  // could not be reached: the call committed, and the caller is told what went
+  // unmet or unchecked rather than left to read silence as "every rule
+  // passed".
+  warnings?: string[];
 }|{
   status: 'error';
   // A failure that stopped the write: an argument that resolved to nothing, an
@@ -115,6 +127,10 @@ export interface RunActionOptions {
   // Supplies the writes for an action whose executor lives in another system.
   // Omit it for a `sql` executor, whose writes are in the model.
   handler?: ActionHandler;
+  // Settles the guards this model states in words. Omitting it does not mean
+  // "run those unjudged": an action guarded by a judgment is refused, the same
+  // way one guarded by an expression is.
+  judge?: Judge;
 }
 
 
@@ -135,8 +151,36 @@ export async function runAction(opts: RunActionOptions):
   }
   // Decided BEFORE touching the store, so an action this runtime will not run
   // fails without having opened a transaction at all.
-  const refusal = whyRefusedWithoutRunning(model, action, opts.handler);
+  const refusal =
+      whyRefusedWithoutRunning(model, action, opts.handler, opts.judge);
   if (refusal) return {status: 'error', message: refusal};
+
+  // A judged guard settles HERE, before a transaction exists. A model call
+  // takes seconds, and holding the store's write locks across one costs more
+  // than it buys, so the order is: ask, refuse with nothing touched, then open
+  // the transaction. The price is that a judge reads the attempted call and
+  // never the state the write produced, which means a rule about the RESULT of
+  // a write has to be an expression.
+  const warnings: string[] = [];
+  const judged = judgedGuards(model, action);
+  if (judged.length && opts.judge) {
+    // Returned rather than thrown. A throw from here reaches the catch at the
+    // end, which has no transaction to report on and would announce this as a
+    // failure to start on the database.
+    const asked = await askJudges(action, args, judged, opts.judge);
+    if ('error' in asked) return {status: 'error', message: asked.error};
+    warnings.push(...asked.warnings);
+  } else {
+    // Every judged guard still standing here is advisory, because anything
+    // stricter was refused above. An advisory rule nobody asked about is a
+    // check the model wanted and did not get, and a caller shown no line for
+    // it reads the write as having passed every rule.
+    for (const c of judged) {
+      warnings.push(
+          `${citation(c)} was not checked: this run was given no judge ` +
+          `to ask.`);
+    }
+  }
 
   // Also before touching the store, because there may be none to touch.
   const client = runtimeClient(opts.runtime);
@@ -282,6 +326,7 @@ export async function runAction(opts: RunActionOptions):
           status: 'committed',
           commitTimestamp: committed.result?.commitTimestamp,
           refs,
+          ...(warnings.length ? {warnings} : {}),
         } as ActionOutcome;
       } catch (err) {
         try {
@@ -344,8 +389,8 @@ const DEFINITELY_NOT_COMMITTED = new Set([400, 401, 403, 404, 409, 412]);
  * always refuses, or one withheld that would have worked.
  */
 export function whyRefusedWithoutRunning(
-    model: SemanticModel, action: Action,
-    handler?: ActionHandler): string|null {
+    model: SemanticModel, action: Action, handler?: ActionHandler,
+    judge?: Judge): string|null {
   // No executor at all is a binding outcome, not a broken model: the executor
   // is a physical facet, so an action can be declared here and performable
   // only somewhere else. Say which it is, because the fix is in the profile
@@ -365,7 +410,7 @@ export function whyRefusedWithoutRunning(
         `that performs the write as DML, or declare the action with a 'sql' ` +
         `executor.`;
   }
-  const unchecked = unsafeToRunUnchecked(model, action);
+  const unchecked = unsafeToRunUnchecked(model, action, judge);
   if (unchecked) return unchecked;
   // The refusals left are about filling the model's OWN statements, so they
   // apply only when the model is what supplies them. A handler writes its own
@@ -425,7 +470,7 @@ function unbindableByThisRuntime(
 // does is the author's, which is what `affects` describes and what the
 // evaluator will check against the statements once it exists.
 function unsafeToRunUnchecked(
-    model: SemanticModel, action: Action): string|null {
+    model: SemanticModel, action: Action, judge?: Judge): string|null {
   // A guard names a constraint the author says is checked before the call.
   // One whose `onViolation` is `warn` reports rather than refuses, so an
   // evaluator would let the write through, and refusing here would make a
@@ -436,13 +481,124 @@ function unsafeToRunUnchecked(
                                .filter(c => c.onViolation === 'warn')
                                .map(c => c.name));
   const guards = (action.guards ?? []).filter(g => !advisory.has(g));
-  if (guards.length) {
-    return `Action '${action.name}' is guarded by ${quoteList(guards)}, and ` +
-        `this runtime does not evaluate constraints yet. Running it would ` +
-        `apply a write the model says must be checked first, so it is ` +
-        `refused rather than run unchecked.`;
+  const judged = new Set(judgedConstraints(model).map(c => c.name));
+  // An expression is text nothing computes here, and a name the model does not
+  // declare is nothing at all. Both refuse whether or not a judge was handed
+  // in, so both are answered first: a caller told to supply a judge, who
+  // supplied one and was refused again, has been sent the wrong way.
+  const uncomputable = guards.filter(g => !judged.has(g));
+  if (uncomputable.length) {
+    return `Action '${action.name}' is guarded by ${
+               quoteList(uncomputable)}, and this runtime does not evaluate ` +
+        `constraints yet. Running it would apply a write the model says must ` +
+        `be checked first, so it is refused rather than run unchecked.`;
+  }
+  // What is left is settled by asking, and nothing was supplied to ask.
+  // Refusing it HERE is what keeps this function and `runAction` in agreement:
+  // a tool advertised as runnable and then refused mid-call spends the
+  // caller's turn and teaches it nothing.
+  const unasked = guards.filter(g => judged.has(g));
+  if (unasked.length && !judge) {
+    return `Action '${action.name}' is guarded by ${quoteList(unasked)}, ` +
+        `which ${unasked.length === 1 ? 'is' : 'are'} settled by judgment ` +
+        `rather than by an expression, and this runtime was given no judge ` +
+        `to ask. Running it would apply a write the model says must be ` +
+        `checked first, so it is refused rather than run unchecked.`;
   }
   return null;
+}
+
+
+// The rules this model settles by judgment.
+function judgedConstraints(model: SemanticModel): readonly Constraint[] {
+  return (model.constraints ?? [])
+      .filter(c => constraintEvaluation(c) === 'judged');
+}
+
+
+// The judged rules `action` names in its `guards`, advisory ones included. An
+// advisory rule never stops the call, and it still has something to report.
+function judgedGuards(
+    model: SemanticModel, action: Action): readonly Constraint[] {
+  const guards = new Set(action.guards ?? []);
+  return judgedConstraints(model).filter(c => guards.has(c.name));
+}
+
+
+// Puts each judged guard to the judge, in the order the model declares them,
+// and stops at the first that refuses: a call already going to be refused does
+// not pay for the rest.
+async function askJudges(
+    action: Action, args: Record<string, unknown>,
+    constraints: readonly Constraint[],
+    judge: Judge): Promise<{warnings: string[]}|{error: string}> {
+  const warnings: string[] = [];
+  for (const constraint of constraints) {
+    const advisory = constraint.onViolation === 'warn';
+    let verdict: JudgeVerdict;
+    try {
+      verdict = await judge.decide({
+        constraint: constraint.name,
+        rule: (constraint.judgment ?? '').trim(),
+        action: action.name,
+        actionDescription: action.description,
+        arguments: args,
+      });
+    } catch (err) {
+      // A judge that could not be reached has not said the rule fails; it has
+      // said nothing. Routing that is what `onViolation` is for: an advisory
+      // rule reports it and the write proceeds, anything stricter stops the
+      // call.
+      const reason = err instanceof Error ? err.message : String(err);
+      if (advisory) {
+        warnings.push(
+            `${citation(constraint)} was not checked: ${sentence(reason)}`);
+        continue;
+      }
+      return {
+        error: `Action '${action.name}' is guarded by ${
+                   citation(constraint)}, and ${sentence(reason)} No ` +
+            `transaction was opened, so nothing was written.`,
+      };
+    }
+    if (verdict.holds) continue;
+    const found = `${judge.name} judged that it does not hold for this call${
+        verdict.reason.trim() ? `: ${sentence(verdict.reason)}` : '.'}`;
+    if (advisory) {
+      warnings.push(`${citation(constraint)} is advisory, and ${found}`);
+      continue;
+    }
+    // `escalate` states that an approver exists, which is a routing this
+    // runtime has nobody to route to. Saying so is the difference between a
+    // rule that ends the matter and one a person can still allow.
+    const appeal = constraint.onViolation === 'escalate' ?
+        ` The model marks this rule 'escalate', so an approver may allow it; ` +
+            `nothing here can.` :
+        '';
+    const steer = constraint.description?.trim();
+    return {
+      error: `Action '${action.name}' is guarded by ${citation(constraint)}, ` +
+          `and ${found}${appeal}${steer ? ` ${sentence(steer)}` : ''} No ` +
+          `transaction was opened, so nothing was written.`,
+    };
+  }
+  return {warnings};
+}
+
+
+// How a rule is named in a report: what it is called, and the words it states.
+// Quoting the rule saves the reader a trip to the model to find out what the
+// name refers to.
+function citation(constraint: Constraint): string {
+  const rule = (constraint.judgment ?? '').trim();
+  return rule ? `'${constraint.name}' ("${rule}")` : `'${constraint.name}'`;
+}
+
+
+// Ends a fragment that is about to be followed by another sentence.
+function sentence(text: string): string {
+  const trimmed = text.trim();
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
 

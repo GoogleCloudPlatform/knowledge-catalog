@@ -792,6 +792,25 @@ describe('what a caller is told about an outcome', () => {
     expect(result.unknown).toBeUndefined();
   });
 
+  test('a commit carries what a rule reported without stopping it', () => {
+    // An advisory guard that did not hold, or one nothing could put to a
+    // judge, still committed. An agent shown only `applied: true` would report
+    // a write that met every rule the model states.
+    const result = describeOutcome({
+      status: 'committed',
+      refs: {},
+      warnings: ["'CreditIsJustified' was not checked: no judge to ask."],
+    });
+    expect(result.applied).toBe(true);
+    expect(result.warnings).toEqual(
+        ["'CreditIsJustified' was not checked: no judge to ask."]);
+  });
+
+  test('a commit with nothing to report carries no warnings key', () => {
+    const result = describeOutcome({status: 'committed', refs: {}});
+    expect(result.warnings).toBeUndefined();
+  });
+
   test('a refusal is a failure the caller can read and act on', () => {
     const result =
         describeOutcome({status: 'error', message: "No Order matches 'xyz'."});
