@@ -18,6 +18,7 @@ import {Type} from '@google/genai';
 
 import {callableTools, modelTools} from '../../../src/libts/semantic/runtime/agent_tools';
 import {createSemanticRuntimes} from '../../../src/libts/semantic/runtime/runtime';
+import {closeStore} from '../../../src/libts/semantic/runtime/store';
 
 // 1. Build the runtime exactly as `kcmd` builds it -- same directory, same
 //    merge, same warnings -- which pairs the model with the store it says it
@@ -106,3 +107,8 @@ for await (const event of runner.runEphemeral(
     }
   }
 }
+
+// Under the Spanner profile this does nothing and could be left out. Under the
+// AlloyDB one it closes a pool of PostgreSQL connections, and without it the
+// open sockets keep the event loop alive and the agent never exits.
+await closeStore(runtime.store);

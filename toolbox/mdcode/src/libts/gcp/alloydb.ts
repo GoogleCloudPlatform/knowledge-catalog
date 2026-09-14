@@ -162,6 +162,90 @@ export interface PositionalStatement {
  * PostgreSQL has operators spelled with `@`, and a memo containing an email
  * address is an ordinary thing for an action to write.
  */
+// The index just past a stretch of `sql` beginning at `i` that the parser
+// reads as literal text -- a quoted string, a quoted identifier, a
+// dollar-quoted body, a line comment, a block comment -- or -1 if `i` begins
+// none of those.
+//
+// Two passes over a statement need this: rewriting its parameters, and deciding
+// whether it is one command or several. They have to agree about what counts as
+// literal, and the way to make two things agree is to give them one answer.
+function opaqueEnd(sql: string, i: number): number {
+  const ch = sql[i];
+
+  // A single-quoted string, or a quoted identifier. PostgreSQL escapes a quote
+  // by doubling it, which needs no special case: the closing quote of `'it''s'`
+  // is read as a close followed by an open, and the scan ends in the same place
+  // either way.
+  if (ch === `'` || ch === '"') {
+    const end = sql.indexOf(ch, i + 1);
+    return end === -1 ? sql.length : end + 1;
+  }
+
+  // A dollar-quoted body: `$tag$ ... $tag$`. Everything between the tags is
+  // literal, including `@`, `;` and quotes.
+  const dollar = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i));
+  if (dollar) {
+    const tag = dollar[0];
+    const end = sql.indexOf(tag, i + tag.length);
+    return end === -1 ? sql.length : end + tag.length;
+  }
+
+  if (ch === '-' && sql[i + 1] === '-') {
+    const end = sql.indexOf('\n', i);
+    return end === -1 ? sql.length : end;
+  }
+
+  if (ch === '/' && sql[i + 1] === '*') {
+    const end = sql.indexOf('*/', i + 2);
+    return end === -1 ? sql.length : end + 2;
+  }
+
+  return -1;
+}
+
+
+/**
+ * Whether `sql` carries a second command.
+ *
+ * A semicolon ending the only statement is still one command, and so is a
+ * comment or whitespace trailing it; anything else after a semicolon is
+ * another command.
+ *
+ * This is asked because a statement reaches this client from a binding profile,
+ * and a second command smuggled past a semicolon would run outside everything
+ * that examined the first -- its guards, its constraints, its parameters.
+ * PostgreSQL's extended protocol already refuses a multi-command string, but
+ * only when the call carries parameters: a statement that binds none goes out
+ * in simple query mode, where the server runs every command in it. Asking here
+ * makes the answer the same either way.
+ */
+export function hasMultipleCommands(sql: string): boolean {
+  let i = 0;
+  let ended = false;
+  while (i < sql.length) {
+    const opaque = opaqueEnd(sql, i);
+    if (opaque !== -1) {
+      // A comment after the final semicolon is trailing matter. A literal there
+      // is not a command either, but it is not nothing, and refusing it costs
+      // less than working out what it was meant to be.
+      const ch = sql[i];
+      if (ended && (ch === `'` || ch === '"' || ch === '$')) return true;
+      i = opaque;
+      continue;
+    }
+    const ch = sql[i];
+    if (ch === ';') {
+      ended = true;
+    } else if (ended && !/\s/.test(ch)) {
+      return true;
+    }
+    i++;
+  }
+  return false;
+}
+
+
 export function toPositional(
     sql: string, params: Record<string, unknown> = {},
     paramTypes: Record<string, {code: string}> = {}): PositionalStatement {
@@ -171,47 +255,15 @@ export function toPositional(
   let i = 0;
 
   while (i < sql.length) {
+    // Anything the parser reads as literal text is copied across untouched.
+    const opaque = opaqueEnd(sql, i);
+    if (opaque !== -1) {
+      out += sql.slice(i, opaque);
+      i = opaque;
+      continue;
+    }
+
     const ch = sql[i];
-
-    // A single-quoted string. PostgreSQL escapes a quote by doubling it, which
-    // needs no special case: the closing quote of `'it''s'` is read as a close
-    // followed by an open, and the scan ends in the same place either way.
-    if (ch === `'` || ch === '"') {
-      const end = sql.indexOf(ch, i + 1);
-      const stop = end === -1 ? sql.length : end + 1;
-      out += sql.slice(i, stop);
-      i = stop;
-      continue;
-    }
-
-    // A dollar-quoted body: `$tag$ ... $tag$`. Everything between the tags is
-    // literal, including `@` and including quotes.
-    const dollar = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i));
-    if (dollar) {
-      const tag = dollar[0];
-      const end = sql.indexOf(tag, i + tag.length);
-      const stop = end === -1 ? sql.length : end + tag.length;
-      out += sql.slice(i, stop);
-      i = stop;
-      continue;
-    }
-
-    if (ch === '-' && sql[i + 1] === '-') {
-      const end = sql.indexOf('\n', i);
-      const stop = end === -1 ? sql.length : end;
-      out += sql.slice(i, stop);
-      i = stop;
-      continue;
-    }
-
-    if (ch === '/' && sql[i + 1] === '*') {
-      const end = sql.indexOf('*/', i + 2);
-      const stop = end === -1 ? sql.length : end + 2;
-      out += sql.slice(i, stop);
-      i = stop;
-      continue;
-    }
-
     if (ch === '@') {
       const name = /^@([A-Za-z_][A-Za-z0-9_]*)/.exec(sql.slice(i));
       // An `@` that begins no identifier is an operator, not a parameter.
@@ -252,6 +304,13 @@ export function toPositional(
 // promises about.
 export function statusForSqlState(sqlState: string|undefined): number {
   if (!sqlState) return 500;
+  // 40003 statement_completion_unknown is the one member of class 40 that is
+  // not a rollback: PostgreSQL raises it when it cannot say whether the
+  // transaction committed. Reporting it as 409 would tell the runtime the write
+  // definitely did not land, and a caller acting on that would apply it a
+  // second time -- so it takes the indeterminate 500, which is what an unknown
+  // outcome is.
+  if (sqlState === '40003') return 500;
   // 40001 serialization_failure, 40P01 deadlock_detected: retryable, nothing
   // applied. 23xxx: an integrity constraint refused the statement outright.
   if (sqlState.startsWith('40') || sqlState.startsWith('23')) return 409;
@@ -300,8 +359,16 @@ export function asString(value: unknown): string|null {
 // imported as a type so that `tsc` type-checks this file without resolving
 // Bun's types, and so the shape being depended on is written down where it is
 // depended on.
+// What `unsafe` returns: a thenable that yields rows keyed by column name when
+// awaited directly, and rows as arrays when narrowed with `.values()` first.
+// This client always narrows -- see `_execute` for why a keyed row is the wrong
+// shape to read a result in.
+interface PgQuery extends Promise<any> {
+  values(): Promise<any>;
+}
+
 interface PgConnection {
-  unsafe(text: string, values?: unknown[]): Promise<any>;
+  unsafe(text: string, values?: unknown[]): PgQuery;
   release?(): void;
 }
 
@@ -347,6 +414,10 @@ export class AlloyDbDataClient {
   private _pool?: PgPool;
   private _connecting?: Promise<PgPool>;
   private readonly _sessions = new Map<string, PgConnection>();
+  // Sessions whose connection is inside a transaction block, so that one left
+  // open can be reset before the connection goes back to the pool. Entered on a
+  // BEGIN that succeeded, left on a COMMIT or ROLLBACK that did.
+  private readonly _inTransaction = new Set<string>();
   private _nextSession = 0;
 
   constructor(
@@ -383,6 +454,21 @@ export class AlloyDbDataClient {
     try {
       return await fn(sessionName);
     } finally {
+      // A connection goes back to the pool; a Spanner session is deleted. So a
+      // transaction still open here is not discarded with the session -- it
+      // would travel to whoever reserves this connection next, whose every
+      // statement would then fail with `25P02 current transaction is aborted`.
+      // The runtime leaves one open on purpose: when a commit's outcome is
+      // unknown it deliberately does not roll back, because it must not tell a
+      // caller the write did not happen. Cleaning the connection is a different
+      // question from what the caller is told, and it belongs here.
+      if (this._inTransaction.has(sessionName)) {
+        try {
+          await this._run(sessionName, 'ROLLBACK');
+        } catch {
+        }
+      }
+      this._inTransaction.delete(sessionName);
       this._sessions.delete(sessionName);
       // Releasing must not become the caller's result, for the reason the
       // Spanner client gives about deleting a session: a failure here after a
@@ -409,6 +495,7 @@ export class AlloyDbDataClient {
     if (begun.status < 200 || begun.status >= 300) {
       return {status: begun.status, message: begun.message};
     }
+    this._inTransaction.add(sessionName);
     return {status: 200, result: {id: sessionName}};
   }
 
@@ -470,8 +557,12 @@ export class AlloyDbDataClient {
     // honest about being an observation rather than the commit's own record.
     const committed = await this._run(sessionName, 'COMMIT');
     if (committed.status < 200 || committed.status >= 300) {
+      // Left marked as in a transaction. A COMMIT that failed may have rolled
+      // back or may have left the block open, and the connection is reset on
+      // release either way rather than guessed about here.
       return {status: committed.status, message: committed.message};
     }
+    this._inTransaction.delete(sessionName);
     const clock = await this._execute(sessionName, {sql: 'SELECT now()'});
     return {
       status: 200,
@@ -492,6 +583,7 @@ export class AlloyDbDataClient {
     if (rolled.status < 200 || rolled.status >= 300) {
       return {status: rolled.status, message: rolled.message};
     }
+    this._inTransaction.delete(sessionName);
     return {status: 200, result: {}};
   }
 
@@ -523,14 +615,25 @@ export class AlloyDbDataClient {
     }
     const {text, values} =
         toPositional(stmt.sql, stmt.params ?? {}, stmt.paramTypes ?? {});
+    if (hasMultipleCommands(text)) {
+      return {
+        status: 400,
+        message: `A statement sent to ${this._name} carries more than one ` +
+            `command. A statement from a profile or from the planner is one ` +
+            `statement; everything that examined this call examined the ` +
+            `first command, so the rest are refused rather than run ` +
+            `unexamined.`,
+      };
+    }
     let result: any;
     try {
-      // Bun refuses more than one command in a parameterized call, which is
-      // exactly the guard wanted here: a statement from a profile or from the
-      // planner is one statement, and a second one smuggled in after a
-      // semicolon would run outside everything that checked the first.
-      result = values.length ? await connection.unsafe(text, values) :
-                               await connection.unsafe(text);
+      // `.values()` asks for rows as arrays rather than as objects keyed by
+      // column name. Two columns of one SELECT can share an output name -- a
+      // profile may bind two fields to the same column -- and a keyed row would
+      // collapse them into one entry, shortening the row and shifting every
+      // caller, all of whom read a row by position.
+      result = values.length ? await connection.unsafe(text, values).values() :
+                               await connection.unsafe(text).values();
     } catch (err: any) {
       // A PostgreSQL error carries a SQLSTATE; a socket or TLS failure does
       // not, and 500 leaves it indeterminate, which is what an unanswered
@@ -713,17 +816,18 @@ async function loadBunSql(): Promise<{SQL: new (opts: any) => unknown}> {
 
 // Turns Bun's result into the Spanner-shaped ResultSet the runtime reads.
 //
-// Bun returns rows as objects keyed by column name and hangs the affected-row
-// count off the array. The runtime wants positional rows of strings and a
-// count, so both are derived here: the column order comes from the first row's
-// keys, which is the order the SELECT listed them.
-function shapeResult(result: any): ResultSet {
+// The rows arrive as arrays, because `_execute` asked for them that way, and
+// the affected-row count is hung off the array. So what is left to do is render
+// each value the way the Spanner client renders it.
+//
+// No column names are attached. `.values()` does not carry them, and the
+// runtime reads a row by position and never asks what a column was called --
+// naming them would mean inventing names nobody reads.
+export function shapeResult(result: any): ResultSet {
   const rows: any[] = Array.isArray(result) ? result : [];
-  const columns = rows.length ? Object.keys(rows[0]) : [];
   const count = result?.count;
   return {
-    metadata: {rowType: {fields: columns.map(name => ({name}))}},
-    rows: rows.map(row => columns.map(name => asString(row[name]))),
+    rows: rows.map(row => (row as unknown[]).map(value => asString(value))),
     ...(typeof count === 'number' ? {stats: {rowCountExact: `${count}`}} : {}),
   };
 }

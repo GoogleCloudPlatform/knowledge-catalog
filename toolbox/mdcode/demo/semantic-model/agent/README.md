@@ -4,7 +4,7 @@ This is a recipe. Follow it and you get an agent that takes a natural language
 request and changes a row in an operational store. The point of the recipe is
 how little of that turns out to be agent work.
 
-The whole agent is one file, `agent.ts`, 57 lines of code. Not one of them
+The whole agent is one file, `agent.ts`, 59 lines of code. Not one of them
 mentions credits, orders, customers, tables or SQL. The file does four things:
 it creates the runtime, derives the tools, adapts them to the framework, and
 runs. Everything that knows what business this is lives in the model, and
@@ -504,8 +504,11 @@ things to set up:
 
 * **Reachability.** The client asks the Admin API for the instance's address and
   connects to port 5432. From inside the instance's VPC that is its private IP
-  and nothing else is needed. From a workstation outside it, enable a public IP
-  on the instance, or set `ALLOYDB_HOST` to whatever forwards there.
+  and nothing else is needed. From a workstation outside it, set `ALLOYDB_HOST`
+  to an address that reaches the instance — the public IP, or whatever forwards
+  there. Enabling a public IP is not on its own enough: an AlloyDB instance is
+  VPC-attached and so always has a private address, the client prefers it
+  whenever it exists, and `ALLOYDB_HOST` is what says otherwise.
 * **A database user.** The client authenticates as the IAM principal your
   application-default credentials belong to, using the access token as the
   password. That principal has to exist as an AlloyDB IAM user and hold
@@ -611,6 +614,9 @@ exclusive, and a model can be published in one place and run in another.
 request is the one from [step 6](#6-run-it), word for word:
 
 ```bash
+# From outside the VPC, point the client at the address psql just used.
+export ALLOYDB_HOST="$PGHOST"
+
 DEMO_PROFILE=alloydb bun agent.ts "Find the order for Morgan Ellis (morgan.ellis@example.com) that was placed on Labor Day. It was supposed to get free shipping but we had a glitch and the customer got charged. Please issue them a credit to offset the charge."
 ```
 
@@ -647,7 +653,7 @@ Four files carry the business, and you can list them:
 | the seed commands in [step 2](#2-create-the-store) and [step 7](#7-run-the-same-agent-against-alloydb) | two customers, three orders, six lines |
 
 `agent.ts` is not on that list, and neither is anything under `src/`. Swap those
-files for a different business and the same 57 lines run it. That is the claim
+files for a different business and the same 59 lines run it. That is the claim
 this demo makes, and the file list is how you check it.
 
 Note which rows doubled and which did not. Moving to a second database added a

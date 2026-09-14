@@ -11,7 +11,7 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import {asString, statusForSqlState, toPositional} from '../../../src/libts/gcp/alloydb';
+import {asString, hasMultipleCommands, shapeResult, statusForSqlState, toPositional} from '../../../src/libts/gcp/alloydb';
 
 describe('named parameters become positional ones', () => {
   test('each name takes the next slot, in the order it appears', () => {
@@ -138,6 +138,16 @@ describe('a SQLSTATE reads as the status the runtime reasons about', () => {
     expect(statusForSqlState('57014')).toBe(500);
     expect(statusForSqlState(undefined)).toBe(500);
   });
+
+  // The one member of class 40 that is not a rollback. PostgreSQL raises it
+  // when it cannot say whether the transaction committed, so reporting it the
+  // way its neighbours are reported would tell the runtime the write definitely
+  // did not land -- and a caller acting on that applies it twice.
+  test('an unknown completion is 500, not the 409 its neighbours get', () => {
+    expect(statusForSqlState('40003')).toBe(500);
+    expect(statusForSqlState('40001')).toBe(409);
+    expect(statusForSqlState('40000')).toBe(409);
+  });
 });
 
 describe('a value is rendered the way Spanner renders it', () => {
@@ -158,5 +168,69 @@ describe('a value is rendered the way Spanner renders it', () => {
   test('jsonb comes back as its text, not as [object Object]', () => {
     expect(asString({a: 1})).toBe('{"a":1}');
     expect(asString([1, 'x'])).toBe('[1,"x"]');
+  });
+});
+
+
+describe('a second command is refused before it is sent', () => {
+  // PostgreSQL's extended protocol rejects a multi-command string on its own,
+  // but a statement that binds no parameters goes out in simple query mode,
+  // where the server runs all of them. So the answer cannot depend on how many
+  // parameters a statement happened to have, and neither do these.
+  test('one statement is one statement, with or without a trailing semicolon',
+       () => {
+         expect(hasMultipleCommands('UPDATE t SET a = 1')).toBe(false);
+         expect(hasMultipleCommands('UPDATE t SET a = 1;')).toBe(false);
+         expect(hasMultipleCommands('UPDATE t SET a = 1;  \n')).toBe(false);
+       });
+
+  test('a command after a semicolon is a second command', () => {
+    expect(hasMultipleCommands('UPDATE t SET a = 1; DROP TABLE t')).toBe(true);
+    expect(hasMultipleCommands('SELECT 1;SELECT 2')).toBe(true);
+  });
+
+  test('a trailing comment is not a command', () => {
+    expect(hasMultipleCommands('SELECT 1; -- done')).toBe(false);
+    expect(hasMultipleCommands('SELECT 1; /* done */')).toBe(false);
+  });
+
+  // The whole reason the check shares a lexer with `toPositional`: a semicolon
+  // that is part of a value has not ended anything.
+  test('a semicolon inside a literal, an identifier or a comment ends nothing',
+       () => {
+         expect(hasMultipleCommands(`UPDATE t SET memo = 'a; b'`)).toBe(false);
+         expect(hasMultipleCommands('SELECT "a;b" FROM t')).toBe(false);
+         expect(hasMultipleCommands('SELECT $$ a; b $$')).toBe(false);
+         expect(hasMultipleCommands('SELECT 1 -- a; b\n')).toBe(false);
+         expect(hasMultipleCommands('SELECT /* a; b */ 1')).toBe(false);
+       });
+
+  test('a comment before the semicolon belongs to the first command', () => {
+    expect(hasMultipleCommands('SELECT 1 /* note */; SELECT 2')).toBe(true);
+    expect(hasMultipleCommands('SELECT 1 /* note */;')).toBe(false);
+  });
+});
+
+describe('a result keeps its columns in the order the SELECT listed them', () => {
+  // Rows arrive from `.values()` as arrays rather than as objects keyed by
+  // column name, because two columns of one SELECT can share an output name --
+  // a profile may bind two fields to the same column -- and a keyed row would
+  // collapse them into one entry, shortening the row. Callers read by position,
+  // so a short row is not a missing value but every later value misread.
+  test('two columns sharing a name stay two columns', () => {
+    const shaped = shapeResult([['12.50', '12.50'], ['3.00', '3.00']]);
+    expect(shaped.rows).toEqual([['12.50', '12.50'], ['3.00', '3.00']]);
+  });
+
+  test('every value is rendered, nulls included', () => {
+    const shaped = shapeResult([[1, null, new Date(Date.UTC(2026, 0, 2))]]);
+    expect(shaped.rows).toEqual([['1', null, '2026-01-02T00:00:00.000Z']]);
+  });
+
+  test('an affected-row count rides along when Bun reports one', () => {
+    const rows: any = [];
+    rows.count = 2;
+    expect(shapeResult(rows).stats?.rowCountExact).toBe('2');
+    expect(shapeResult([]).stats).toBeUndefined();
   });
 });

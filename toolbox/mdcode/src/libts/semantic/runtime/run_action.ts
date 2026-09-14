@@ -1091,13 +1091,26 @@ async function resolveEntityRef(
     return {error: `No ${entity.name} matches '${input}'.`};
   }
 
-  // The SELECT list is cast to text; the WHERE clause above is deliberately not
-  // (see the note on predicates). A key read here is carried in an EntityRef
-  // and re-bound as a parameter later, so it has to come back in the form the
-  // runtime parses from -- and PostgreSQL hands a DATE back as a timestamp
-  // value, which is not that form. Casting the OUTPUT costs no index; casting
-  // the predicate would.
-  const selected = keyColumns.map(column => dialect.castToText(column));
+  // A key read here is carried in an EntityRef and re-bound as a parameter
+  // later, so it has to come back written the way `bindScalar` reads it.
+  //
+  // A Date is the one key type where that is not what arrives: PostgreSQL hands
+  // a `date` back as a timestamp value, which renders as a full ISO instant
+  // rather than the plain day `bindScalar` requires. Casting it to text asks
+  // the database for the day, which both backends spell the same way.
+  //
+  // Nothing else is cast, and a timestamp key least of all. Both backends
+  // already return one in RFC 3339, which is the form required; casting would
+  // REPLACE that with the SQL rendering -- `2026-09-07 00:00:00+00`, a
+  // two-digit offset -- which is not a form `bindScalar` accepts. A cast that
+  // was added for dates would have broken timestamps.
+  //
+  // Either way this is the SELECT list, not the WHERE clause: the predicates
+  // above stay uncast so an index can answer them (see the note there). Casting
+  // an output costs no index; casting a predicate would.
+  const selected = keyColumns.map(
+      (column, i) => keyTypes[i] === 'Date' ? dialect.castToText(column) :
+                                              column);
 
   // LIMIT 2 is enough to tell "one match" from "more than one", and avoids
   // dragging back a large candidate set just to reject it.

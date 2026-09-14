@@ -317,6 +317,24 @@ function storeFor(
  * through it without asking which database answered, and that is what keeps a
  * cross-database deployment from being a second copy of the runtime.
  */
+/**
+ * Releases whatever the store is holding open, so a process that is finished
+ * with it can end.
+ *
+ * Only AlloyDB holds anything. Spanner and BigQuery are reached with `fetch`,
+ * which keeps nothing between calls, but AlloyDB's data plane is a pool of
+ * PostgreSQL connections -- and an open socket keeps the event loop alive, so a
+ * program that simply stops doing work does not exit. `kcmd` never noticed
+ * because every command ends in `process.exit`; a program embedding the runtime
+ * would, which is what this is for.
+ *
+ * Safe to call on any store, and safe to call twice.
+ */
+export async function closeStore(store: Store): Promise<void> {
+  if (store.kind === 'alloydb') await store.client.close();
+}
+
+
 export function dataClientFor(store: Store): DataClient|{error: string} {
   if (store.kind === 'spanner' || store.kind === 'alloydb') return store.client;
   return {

@@ -12,7 +12,7 @@
 import {describe, expect, test} from 'bun:test';
 
 import * as spanner from '../../../../src/libts/gcp/spanner';
-import {Action, Constraint, SemanticModel} from '../../../../src/libts/semantic/ir';
+import {Action, Constraint, Field, SemanticModel} from '../../../../src/libts/semantic/ir';
 import {SemanticRuntime} from '../../../../src/libts/semantic/runtime/runtime';
 import {Judge, JudgeRequest, JudgeVerdict} from '../../../../src/libts/semantic/runtime/judge';
 import {ActionPlan, runAction, RunActionOptions, whyRefusedWithoutRunning} from '../../../../src/libts/semantic/runtime/run_action';
@@ -198,6 +198,22 @@ function resolvingFake(extra: Answer[] = []) {
   ]);
 }
 
+// The payments model with Account's key field declared as `type`. Only the
+// declared type of a key decides whether the SELECT that reads it back is cast,
+// so that is the one thing these vary.
+function keyedBy(type: Field['type']): SemanticModel {
+  const base = model();
+  return {
+    ...base,
+    entities: [{
+      ...base.entities![0],
+      fields: base.entities![0].fields.map(
+          f => f.name === 'accountId' ? {...f, type} : f),
+    }],
+  };
+}
+
+
 function run(
     fake: FakeSpanner, over: Partial<ActArgs> = {}) {
   return act({
@@ -245,16 +261,36 @@ describe('resolving an entity-typed argument', () => {
          expect(where).not.toContain('CAST');
        });
 
-  test('reads each key back as text, which the predicate is not', async () => {
+  test('reads a date key back as text, which the predicate is not', async () => {
     // The other half of the same decision. A key value read here is carried in
     // an EntityRef and re-bound as a parameter later, so it has to come back in
-    // the form the runtime parses from -- which on PostgreSQL a DATE does not.
-    // Casting the OUTPUT costs no index, so this side is cast and the WHERE
-    // above is not.
+    // the form the runtime parses from -- which on PostgreSQL a DATE does not:
+    // it arrives as a full ISO instant rather than a plain day. Casting the
+    // OUTPUT costs no index, so this side is cast and the WHERE above is not.
+    const fake = new FakeSpanner([{match: 'FROM Account', rows: [['1']]}]);
+    await run(fake, {model: keyedBy('Date')});
+    const select = fake.statements[0].sql.split(' FROM ')[0];
+    expect(select).toContain('CAST(account_id AS STRING)');
+  });
+
+  test('leaves a timestamp key alone, which the cast would corrupt', async () => {
+    // Only a date needs it. Both backends already hand a timestamp back in RFC
+    // 3339, which is the form the runtime re-binds from; the SQL rendering a
+    // cast would produce instead -- '2026-09-07 00:00:00+00', a two-digit
+    // offset -- is not. Casting every key type would fix the date and break
+    // this.
+    const fake = new FakeSpanner([{match: 'FROM Account', rows: [['1']]}]);
+    await run(fake, {model: keyedBy('DateTime')});
+    const select = fake.statements[0].sql.split(' FROM ')[0];
+    expect(select).not.toContain('CAST');
+    expect(select).toContain('account_id');
+  });
+
+  test('leaves an untyped key alone', async () => {
     const fake = resolvingFake();
     await run(fake);
     const select = fake.statements[0].sql.split(' FROM ')[0];
-    expect(select).toContain('CAST(account_id AS STRING)');
+    expect(select).not.toContain('CAST');
   });
 
   test('drops a key predicate the input cannot possibly match', async () => {
