@@ -399,9 +399,16 @@ before the transaction opens, so "an order's total equals the sum of its lines"
 has nothing to look at yet. Put that rule inside the transaction or in your
 schema.
 
-An action whose guards are *all* judged loads with a warning. Every gate then
-costs a model call, none can lower to a store-level check, and each may decide
-two identical calls differently.
+An action whose guards are *all* judged loads with a warning today. Every gate
+then costs a model call, none can lower to a store-level check, and each may
+decide two identical calls differently.
+
+The warning doesn't mean you've written something wrong. Some operations really
+are governed only by rules no expression settles, so an all-judged action can
+be exactly right. The warning puts that cost in your source rather than leaving
+you to find it in a published model. Whether a warning is the right response is
+still open, so treat it as current behavior rather than a rule to design
+around.
 
 **Status: a judgment is the one body kcmd settles.** At run time,
 [`kcmd action run --judge`](#a-guard-settled-in-words) puts each judged guard to
