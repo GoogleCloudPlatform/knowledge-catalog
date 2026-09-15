@@ -227,12 +227,11 @@ executor above, the model's `Account` and `accountId` appear as `account` and
 `account_id`. Those are the table and the column that the entity's `source` key
 and its fields' `expression` keys bind it to.
 
-`@parameter` references are the exception. They name the parameters the action
-declares, so they're the only names in a statement that come from your model
-rather than from your database.
+`@parameter` references are the exception: they name a value kcmd binds at call
+time rather than anything in your database.
 
-A statement that says `Account` where it means `account` still passes push,
-because push never asks your store whether a table exists. The error comes back
+A statement that says `accountId` where the column is `account_id` still passes
+push, because push never asks your store whether a table exists. The error comes
 from the store when the action runs, and it can read like a fault in the
 statement rather than a typo in a name. An entity named `Order` bound to a table
 named `Orders` produces
@@ -248,9 +247,9 @@ A `sql` executor buys you two things:
 - **Your blast radius is checkable.** A reader can compare `affects` against the
   statements instead of taking it on trust.
 - **A guard becomes a real gate.** An MCP, REST or gRPC call commits inside a
-  system kcmd doesn't control, so a check wrapped around it could only advise.
-  A refused `sql` action never opens a transaction, and one that fails partway
-  through rolls back.
+  system kcmd doesn't control, so a check wrapped around it could only advise
+  after the fact. kcmd settles every guard on a `sql` action before it opens a
+  transaction, so a refusal leaves the store untouched.
 
 That stays safe only while the statements stay narrow, and push holds you to it:
 
@@ -431,7 +430,8 @@ consistent:
    consequences, so two conditions that end differently can't share a
    constraint.
 
-All five are about wording. Claim no more in it than a judge can settle.
+All five are about wording. Claim no more in the wording than a judge can
+settle.
 
 A judge settles a guard from the call's arguments and whatever it could read, so
 a sentence about stored data can turn out to be a rule it has no evidence for.
@@ -473,10 +473,10 @@ a breach of it does.*
 
 The five rules produce three different outcomes, and the two written as
 judgments — the memo and the split credit — are the ones no query can settle.
-Each rule becomes one constraint carrying its own outcome in its own
-`on_violation`. The model behind them has an `Order` with a `total`, a
-`LineItem` with an `amount` and a `memo`, and an `IssueCredit` action taking the
-order, the amount and the memo:
+The model behind them has an `Order` with a `total`, a `LineItem` with an
+`amount` and a `memo`, and an `IssueCredit` action taking the order, the amount
+and the memo. Each rule becomes one constraint carrying its own outcome in its
+own `on_violation`:
 
 ```yaml
     constraints:
@@ -548,7 +548,7 @@ order, the amount and the memo:
           - CreditIsNotSplitToAvoidReview
 ```
 
-The `on_violation` column now carries the branching your policy describes in
+Each `on_violation` key carries one branch of what your policy describes in
 prose, in a form a search can read.
 
 **Rule 3 declares `reject`, because it's the one rule here nobody in the
@@ -559,8 +559,7 @@ broken rather than merely unusual. That word takes effect only once
 Naming it makes `IssueCredit` refuse to run against an order whose books already
 disagree. It won't catch a credit that *breaks* that agreement, because that
 means checking the state the write produces, and your model can't bind such a
-check yet. Rule 3 is the one rule here that a guard enforces more narrowly than
-it reads.
+check yet. A guard therefore enforces rule 3 more narrowly than the rule reads.
 
 **Rules 4 and 5 are the reason `judgment` exists.** Neither reduces to
 arithmetic over `Order` and `LineItem`, so before a judged body there was
@@ -704,10 +703,11 @@ own says the same thing the bare `Account` does, and it's written back as the
 bare form.
 
 **Status: a `create` record is the only thing that consumes `affects`.** It
-tells the runtime to generate the `@new<Concept>Key` a statement binds, and
-kcmd checks your model for that key before anything runs. A concept keyed by
-several columns, or by a key field that isn't a `String`, can't take a
-generated UUID, so kcmd refuses the call and withholds the write tool. Past
+tells the runtime to generate the `@new<Concept>Key` a statement binds. Where a
+statement actually binds one, kcmd checks your model first: a concept keyed by
+several columns, or by a key field that isn't a `String`, can't take a generated
+UUID, so kcmd refuses the call and withholds the write tool. A statement that
+supplies its own key is never refused over a generated one it doesn't use. Past
 that, kcmd parses `affects`, checks every concept against your model, publishes
 it and reads it back. No component computes an impact from it, routes on it, or
 checks it against what your executor does.
