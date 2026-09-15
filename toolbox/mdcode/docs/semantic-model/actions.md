@@ -286,9 +286,6 @@ ontology. Declaring one adds it to the catalog and changes nothing by itself. A
 constraint takes effect where something references it and nowhere else, so
 publishing a rule can't quietly start refusing calls that succeeded yesterday.
 
-A rule passes through four stages, and one that stops at the first does
-nothing:
-
 ```
   declared                referenced             checked            a breach
   ─────────────────       ─────────────────      ──────────────     ───────────
@@ -316,9 +313,6 @@ satisfy:
         description: >-
           An account cannot be taken below its minimum balance.
 ```
-
-A constraint on its own does nothing. An action has to name it as a guard
-before anything checks it.
 
 An expression that reads an action's **parameters** describes one call rather
 than the stored data, so the only moment you can check it is before that call
@@ -403,34 +397,32 @@ strong a consequence to inherit by silence.
 ### Writing a judgment
 
 A language model reads your sentence at review time with the proposed write in
-front of it. Five habits make that reading consistent.
+front of it. Five habits make that reading consistent:
 
-**State what must be true of the data.** Write the condition — *the memo must
-name a specific service failure*, and not the procedure, *check whether the
-memo is specific*. Your sentence describes a clean write, and everything
-about handling a breach lives elsewhere.
+1. **State what must be true of the data.** Write the condition — *the memo
+   must name a specific service failure*, and not the procedure, *check whether
+   the memo is specific*. Your sentence describes a clean write, and everything
+   about handling a breach lives elsewhere.
+2. **Name fields model-qualified.** Write `LineItem.memo` rather than "the
+   memo". kcmd resolves every `Entity.field` token in the text against your
+   model and fails the push when the entity declares no such field, so a rename
+   can't leave your sentence pointing at nothing. The qualified name also tells
+   the judge which value to read.
+3. **Say what doesn't count.** A rule with no negative example gets graded
+   against whatever the model guesses you had in mind. The sentence "A memo
+   that states only that the customer requested a credit does not satisfy this
+   rule" buys you more consistency than any further description of what a good
+   memo is.
+4. **Leave the consequence out of the prose.** What happens on a breach is
+   `on_violation`. A judgment ending "…otherwise escalate to a supervisor"
+   states a routing nothing reads, and the engine routes by the field
+   regardless.
+5. **Keep it to one condition.** When your sentence needs "and also", the
+   second half is a second constraint. One `on_violation` can't carry two
+   consequences, so two conditions that end differently can't share a
+   constraint.
 
-**Name fields model-qualified.** Write `LineItem.memo` rather than "the memo".
-kcmd resolves every `Entity.field` token in the text against your model and
-fails the push when the entity declares no such field, so a rename can't leave
-your sentence pointing at nothing. The qualified name also tells the judge which
-value to read.
-
-**Say what doesn't count.** A rule with no negative example gets graded against
-whatever the model guesses you had in mind. The sentence "A memo that states
-only that the customer requested a credit does not satisfy this rule" buys you
-more consistency than any further description of what a good memo is.
-
-**Leave the consequence out of the prose.** What happens on a breach is
-`on_violation`. A judgment ending "…otherwise escalate to a supervisor" states a
-routing nothing reads, and the engine routes by the field regardless.
-
-**Keep it to one condition.** When your sentence needs "and also", the second
-half is a second constraint. One `on_violation` can't carry two consequences, so
-two conditions that end differently can't share a constraint.
-
-Those five are about wording. Claim no more in the wording than a judge can
-settle.
+All five are about wording. Claim no more in it than a judge can settle.
 
 A judge settles a guard from the call's arguments and whatever it could read, so
 a sentence about stored data can turn out to be a rule it has no evidence for.
@@ -453,11 +445,9 @@ transaction or in your schema.
 
 ### A policy whose rules end differently
 
-Real policies have several rules, and the rules rarely end the same way. Take
-the policy governing a customer-service credit, stated the way a business states
-it. A support agent is about to issue one, and five separate rules bear on
-whether they may. The listing below puts each rule beside how it's written and
-what a breach of it does:
+Real policies have several rules, and the rules rarely end the same way. A
+support agent is about to issue a customer-service credit, and five separate
+rules bear on whether they may:
 
 ```
   the business rule                        written as   a breach
@@ -472,11 +462,12 @@ what a breach of it does:
 *Table 1: the five rules of the credit policy, how each one is written, and what
 a breach of it does.*
 
-Those five rules produce three different outcomes, and no query can settle two
-of the five. The model has an `Order` with a `total`, a `LineItem` with an
-`amount` and a `memo`, and an `IssueCredit` action taking the order, the amount
-and the memo. Each rule becomes one constraint, carrying its own outcome in its
-own `on_violation`:
+The five rules produce three different outcomes, and the two written as
+judgments — the memo and the split credit — are the ones no query can settle.
+Each rule becomes one constraint carrying its own outcome in its own
+`on_violation`. The model behind them has an `Order` with a `total`, a
+`LineItem` with an `amount` and a `memo`, and an `IssueCredit` action taking the
+order, the amount and the memo:
 
 ```yaml
     constraints:
@@ -548,8 +539,8 @@ own `on_violation`:
           - CreditIsNotSplitToAvoidReview
 ```
 
-Read down the `on_violation` column and you get the branching your policy
-describes in prose, in a column a search can read.
+The `on_violation` column now carries the branching your policy describes in
+prose, in a form a search can read.
 
 **Rule 3 declares `reject`, because it's the one rule here nobody in the
 business may approve.** An order whose total disagrees with its line items is
@@ -557,15 +548,16 @@ broken rather than merely unusual. That word takes effect only once
 `IssueCredit` names the rule in `guards`.
 
 Naming it makes `IssueCredit` refuse to run against an order whose books already
-disagree. Catching the credit that *breaks* the agreement is a different check,
-against the state the write produces, and your model can't bind one yet. Rule 3
-is the rule in this policy whose enforcement sits furthest from what it says.
+disagree. It won't catch a credit that *breaks* that agreement, because that
+means checking the state the write produces, and your model can't bind such a
+check yet. Rule 3 is the one rule here that a guard enforces more narrowly than
+it reads.
 
-**Rules 4 and 5 are why the second body exists.** Neither reduces to arithmetic
-over `Order` and `LineItem`, and before `judgment` they had nowhere to go but a
-policy document nothing links to. Not everything in the policy has to move,
-though. The threshold in rule 2 is arithmetic, so it stays an expression a query
-settles and no model call is spent on.
+**Rules 4 and 5 are the reason `judgment` exists.** Neither reduces to
+arithmetic over `Order` and `LineItem`, so before a judged body there was
+nowhere to put them but a policy document nothing links to. Not everything in
+the policy has to move, though. The threshold in rule 2 is arithmetic, so it
+stays an expression a query settles and no model call is spent on.
 
 **Rule 5 is a judgment that declares `reject`.** Splitting a credit to evade
 review is a rule the business means as unappealable, and no expression detects
