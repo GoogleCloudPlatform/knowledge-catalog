@@ -4,13 +4,13 @@ A semantic model says what the data means, and its metrics say what can be read
 from it. An **action** is the write-side counterpart: a named operation that
 changes state, declared over the same concepts as everything else in the model.
 
-An action does not contain the write. It names the operation, types the
-operation's inputs against the ontology, and says which concepts the call
-changes. It also points at the **executor** that performs it — an MCP tool, a
-REST endpoint, a gRPC method, or DML — which is the one physical part of an
-action, and so may come from a binding profile rather than the model. Publishing
-it puts the operation in the same place as the data it acts on, so an agent that
-discovers the model discovers what it can do as well as what it can ask.
+An action names the operation, types its inputs against the ontology, and says
+which concepts the call changes. How the write actually happens is kept
+separate, in the **executor** — an MCP tool, a REST endpoint, a gRPC method, or
+DML. That is the one physical part of an action, so it may come from a binding
+profile rather than the model. Publishing an action puts the operation in the
+same place as the data it acts on, so an agent that discovers the model
+discovers what it can do as well as what it can ask.
 
 Two files decide everything below. The model says what the operation is; a
 binding profile says where it runs. Together they make one runnable thing,
