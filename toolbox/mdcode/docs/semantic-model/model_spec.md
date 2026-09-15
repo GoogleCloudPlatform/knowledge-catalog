@@ -511,9 +511,9 @@ reads the document ([§6](#6-the-extension-mechanism)).
   branch, each with its own name, `on_violation` and `severity`, which `guards`
   on the action lists together. That keeps each branch independently searchable,
   revisable and owned, and it keeps the branches an expression *can* decide out
-  of prose that no query can read. [Actions → A policy whose rules end
-  differently](actions.md#a-policy-whose-rules-end-differently) works a
-  five-rule credit policy through end to end.
+  of prose that no query can read. [Actions → A credit policy, worked
+  through](actions.md#a-credit-policy-worked-through) works a five-rule credit
+  policy through end to end.
 
   A constraint takes effect only where something references it. Declaring one
   adds a rule to the catalog and refuses nothing, so publishing a rule cannot

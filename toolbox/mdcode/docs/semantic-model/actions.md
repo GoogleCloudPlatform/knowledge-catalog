@@ -319,6 +319,14 @@ a breach does. So guarding a constraint that declares `warn` is a real shape.
 Your organization may not be ready to block on a rule; guarding it anyway still
 gets the rule checked at the moment of the call and reported back.
 
+When one call violates several guards, the strictest outcome applies. Any
+`reject` refuses the call, failing that any `escalate` holds it, and failing
+that any `warn` lets it through with the violations reported. The precedence is
+fixed and nothing in your model states it, so an action can name any number of
+guards without you writing down how they combine. It is also how `forbid`
+overrides `permit` in Cedar and how a deny wins in Open Policy Agent, so a
+policy written this way lowers into either.
+
 kcmd reports a mismatch from either side. A guard that names no constraint fails
 the push. A constraint over parameters that no action names loads with a
 warning, because nothing will ever evaluate it. That scan reads expressions
@@ -391,6 +399,10 @@ before the transaction opens, so "an order's total equals the sum of its lines"
 has nothing to look at yet. Put that rule inside the transaction or in your
 schema.
 
+An action whose guards are *all* judged loads with a warning. Every gate then
+costs a model call, none can lower to a store-level check, and each may decide
+two identical calls differently.
+
 **Status: a judgment is the one body kcmd settles.** At run time,
 [`kcmd action run --judge`](#a-guard-settled-in-words) puts each judged guard to
 a language model and routes the verdict by `on_violation`.
@@ -441,7 +453,7 @@ value is on record and has to be read, because the judge decides for itself
 whether to look. The same rule refuses every call when it goes to a judge that
 can't read. See [a guard that reads a row](#a-guard-that-reads-a-row).
 
-### A policy whose rules end differently
+## A credit policy, worked through
 
 Real policies have several rules, and the rules rarely end the same way. A
 support agent is about to issue a customer-service credit, and five separate
@@ -541,14 +553,10 @@ Each `on_violation` key carries one branch of what your policy describes in
 prose, in a form a search can read.
 
 **Rule 3 declares `reject`, because it's the one rule here nobody in the
-business may approve.** An order whose total disagrees with its line items is
-broken rather than merely unusual. That word takes effect only once
-`IssueCredit` names the rule in `guards`.
-
-Naming it makes `IssueCredit` refuse to run against an order whose books already
-disagree. It won't catch a credit that *breaks* that agreement, because that
-means checking the state the write produces, and your model can't bind such a
-check yet. A guard therefore enforces rule 3 more narrowly than the rule reads.
+business may approve.** An order whose total disagrees with its line items is a
+broken order rather than an unusual one. As a guard the rule reaches less far
+than it reads. `IssueCredit` refuses to run against an order whose books already
+disagree, and lets through a credit that would break the agreement itself.
 
 **Rules 4 and 5 are the reason `judgment` exists.** Neither reduces to
 arithmetic over `Order` and `LineItem`, so before a judged body there was
@@ -565,7 +573,7 @@ publishes it instead of forbidding it, and makes it findable. Its `evaluation`
 field reads `judged`, so an auditor asking which unappealable rules your model
 settles gets an answer from one query.
 
-### Two calls through that policy
+### Two calls through the policy
 
 Here are two calls against order 12345, which totals $165.85. One is a
 30-dollar credit for a shipping charge billed in error. The other is three
@@ -596,19 +604,10 @@ for. Every gate a query can compute lets it through, because each 9-dollar
 credit sits under the order's total and under the 25-dollar ceiling on its own,
 and only reading the three together as one 27-dollar credit puts them over it.
 
-When one call violates several guards, the strictest outcome applies. Any
-`reject` refuses the call; failing that, any `escalate` holds it; failing that,
-any `warn` lets it through with the violations reported.
-
-That combination is fixed, and no part of your model states it, so your action
-can name any number of guards without you writing down how to combine them. The
-same precedence is how `forbid` overrides `permit` in Cedar and how a deny wins
-in Open Policy Agent, so a policy written this way lowers into either.
-
-An action whose guards are *all* judged loads with a warning. Every gate then
-costs a model call, none can lower to a store-level check, and each may decide
-two identical calls differently. `IssueCredit` stays clear of that: three of its
-five guards are expressions.
+Three of `IssueCredit`'s five guards are expressions, so it stays clear of the
+all-judged warning. The bottom row of table 2 applies the strictest-outcome
+rule from section 2 — an `escalate` with nothing stricter beside it holds the
+first call, and rule 5's `reject` decides the second.
 
 **Status: a run doesn't compute the strictest outcome.** `--judge` puts the
 judged guards to the judge in the order your model declares them and stops at
@@ -1033,8 +1032,8 @@ kcmd action run IssueCredit --arg order=12347 --arg amount=5 \
     --arg memo="customer asked for a credit" --judge
 ```
 
-That call runs against a commerce model carrying the credit policy from
-[section 2](#a-policy-whose-rules-end-differently). A profile binds
+That call runs against a commerce model carrying the [credit policy worked
+through earlier](#a-credit-policy-worked-through). A profile binds
 `IssueCredit` to a `sql` executor, so kcmd performs the write itself, and the
 action's `guards` name the judged rule alone.
 
@@ -1125,8 +1124,8 @@ a judge settles no expression.
 asked.** An expression declaring `reject` or `escalate` refuses the action above
 and no model is reached; one declaring `warn` stands down, and the run reaches
 the judge and commits, with a warning line for the expression nothing checked.
-Three of the five guards
-[section 2](#a-policy-whose-rules-end-differently) puts on `IssueCredit` are
+Three of the five guards the
+[credit policy](#a-credit-policy-worked-through) puts on `IssueCredit` are
 expressions declaring `escalate` or `reject`, so the runs here guard on the
 judged rule alone — which is also why they load with the all-judged warning.
 
