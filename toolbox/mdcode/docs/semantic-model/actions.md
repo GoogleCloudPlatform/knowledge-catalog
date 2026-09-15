@@ -394,30 +394,6 @@ fails the push when the entity declares no such field, so a rename cannot leave
 the sentence pointing at nothing. The qualified name also tells the judge which
 value to read.
 
-One caution comes with it. The judge settles a guard from the attempted call's
-arguments and from whatever it was able to read, so a sentence phrased as a rule
-about stored data can turn out to be a rule the judge has no evidence for. It is
-instructed to answer that such a rule does not hold and to name what is missing,
-which refuses the call rather than passing it. That instruction binds a model
-rather than the runtime, so the rule can come back held instead, leaving a guard
-that never fires and never says why. Two habits keep a rule out of that state:
-phrase the condition around the arguments the call carries, and try every judged
-guard against a case it ought to refuse before trusting it.
-
-A rule that does need a stored row — comparing a credit against the order
-total, say — reaches a judge only when the run passes `--judge-reads-store`,
-which lets the judge query the model's tables while it settles the rule. Word
-such a rule to say that the value is on record and has to be read, because the
-judge decides for itself whether to look. Put to a judge that cannot read, the
-same rule refuses every call, naming the value it could not get. See
-[a guard that reads a row](#a-guard-that-reads-a-row).
-
-A rule about the state a write *leaves behind* is a different matter, and no
-judge settles it however much it can read. Guards are settled before the
-transaction opens, so a rule such as "an order's total equals the sum of its
-lines" has nothing to look at yet. That rule belongs inside the transaction or
-in the schema.
-
 **Say what does not count.** A rule with no negative example is graded against
 whatever the model guesses the author had in mind. "A memo that states only that
 the customer requested a credit does not satisfy this rule" buys more
@@ -430,6 +406,28 @@ routing nothing reads, and the engine routes by the field regardless.
 **Keep it to one condition.** When the sentence needs "and also", the second
 half is a second constraint. One `on_violation` cannot carry two consequences,
 so two conditions that end differently cannot share a constraint.
+
+Those five are about wording. What a judge can settle bounds what the wording
+should claim.
+
+A judge settles a guard from the call's arguments and whatever it could read,
+so a sentence about stored data can turn out to be a rule it has no evidence
+for. It is instructed to refuse in that case and say what is missing, but that
+instruction binds a model rather than the runtime, so the rule can come back
+held instead — a guard that never fires and never says why. Phrase the condition
+around the arguments the call carries, and try every judged guard against a case
+it ought to refuse.
+
+A rule that does need a stored row — comparing a credit against the order total,
+say — is settled only when the run passes `--judge-reads-store`. Word it to say
+the value is on record and has to be read, because the judge decides for itself
+whether to look; put to a judge that cannot read, the same rule refuses every
+call. See [a guard that reads a row](#a-guard-that-reads-a-row).
+
+No judge settles a rule about the state a write *leaves behind*, however much it
+can read. Guards run before the transaction opens, so "an order's total equals
+the sum of its lines" has nothing to look at yet. That rule belongs inside the
+transaction or in the schema.
 
 ### A policy whose rules end differently
 
@@ -595,30 +593,23 @@ costs a model call, none can lower to a store-level check, and each may decide
 two identical calls differently. `IssueCredit` is clear of it: three of its five
 guards are expressions.
 
-**Status: a judgment is settled; an expression is not.** `kcmd` parses
-`judgment`, validates it, publishes it and reads it back, and publishes a
-derived `evaluation` field saying whether the rule is `deterministic` or
-`judged` so a consumer can select on it. At run time,
+**Status: a judgment is settled; an expression is not.** `kcmd` parses both
+bodies, validates them, publishes them with the `guards` that name them, and
+reads them all back, along with a derived `evaluation` field reading
+`deterministic` or `judged` so a consumer can select on it. At run time,
 [`kcmd action run --judge`](#a-guard-settled-in-words) puts each judged guard to
-a language model and routes the verdict by `on_violation`. An expression is text
-nothing computes here, so an action naming one in `guards` is refused rather
-than run past it — and `IssueCredit` names three. The two calls above are
-therefore what the published policy says should happen rather than what `kcmd`
-does with this action today.
+a language model and routes the verdict by `on_violation`. Nothing here
+evaluates an expression against live data, so
+[`kcmd action run`](#7-run-it) refuses an action whose `guards` name one rather
+than apply a write the model says must be checked first — and `IssueCredit`
+names three. The two calls above are therefore what the published policy says
+should happen rather than what `kcmd` does with this action today.
 
 `kcmd` reports a mismatch from either side. A guard that names no constraint
 fails the push. A constraint over parameters that no action names loads with a
 warning, because nothing will ever evaluate it. That scan reads expressions
 only: a judgment is prose, in which a word matching a parameter name is not a
 read of that parameter.
-
-**Status: a guard is checked where something can settle it.** `kcmd` parses
-`guards`, resolves each name, publishes the list, and reads it back. At run time
-a guard stated as a `judgment` is put to a language model and stops or reports
-the call according to its `on_violation`. A guard stated as an `expression` is
-checked against nothing, because no component evaluates an expression against
-live data, so [`kcmd action run`](#7-run-it) refuses an action naming one rather
-than apply a write the model says is checked first.
 
 ## 3. Say what it changes
 
@@ -805,11 +796,10 @@ kcmd action run TransferFunds --arg source="Alice Checking" \
     --arg target=ACC-2 --arg amount=250
 ```
 
-That second command does not succeed against the model built up on this page,
-and the reason is worth knowing before the mechanics: `TransferFunds` is guarded
-by `AmountIsPositive`, which is an expression, nothing here evaluates an
-expression, and `kcmd` refuses the call rather than apply a write the model says
-must be checked first. What follows describes an action that names no guard;
+That second command does not succeed against the model built up on this page:
+`TransferFunds` is guarded by an expression, and
+[an expression guard refuses the call](#why-a-guarded-action-is-refused). What
+follows describes an action that names no guard;
 [a guard stated in words](#a-guard-settled-in-words) is the kind that runs
 today.
 
@@ -866,7 +856,7 @@ The `WHERE` is built from two things the entity declares:
   not part of the key, bound to a plain column, and *named* `name`, `full_name`,
   `title`, `label` or `display_name`. `Account` declares `name`, so
   `"Alice Checking"` and the account id both find the same row. The match is on
-  the field's name in the model, not the column's name in the store.
+  the field's name in the model rather than the column's name in the store.
 
 The input is compared against each column as that column's own type, so a key
 declared `Integer` is only compared when the input is a number — `"Alice
@@ -938,7 +928,7 @@ transaction and could not be rolled back if the commit failed. Supply a handler
 that performs the write as DML, or declare the action with a 'sql' executor.
 ```
 
-### A guarded action is refused, not run unchecked
+### Why a guarded action is refused
 
 Nothing here evaluates an expression against live data. A model that declares a
 rule and a runtime that quietly ignores it is worse than no runtime, because the
@@ -951,19 +941,15 @@ does not evaluate constraints yet. Running it would apply a write the model says
 must be checked first, so it is refused rather than run unchecked.
 ```
 
-What makes a call "such a call" is `guards`, and only `guards` — the same rule
-[section 2](#2-gate-it-with-a-constraint) states, applied here. A constraint the
-action does not name is a rule this call does not consult, and the runtime does
-not go looking for one: a constraint that merely reads a concept the action
-writes gates nothing, and neither does declaring constraints in a model whose
-action leaves `affects` out. Refusing on either would mean publishing a rule
-could start refusing calls that succeeded the day before, which is exactly what
-making the reference explicit prevents.
+Only `guards` makes a call one of these, which is
+[section 2](#2-gate-it-with-a-constraint)'s rule applied here: a constraint the
+action does not name is one this call does not consult, and the runtime does not
+go looking for one. Otherwise publishing a rule could start refusing calls that
+succeeded the day before.
 
-A guard whose constraint declares `onViolation: warn` is the one guard that does
-not refuse. Such a rule reports a violation rather than rejecting one, so an
-evaluator would let the write through, and gating on it would leave a model that
-states advisory rules permanently unrunnable.
+The exception is a constraint declaring `onViolation: warn`. An advisory rule
+reports a violation rather than rejecting one, so gating on it would leave a
+model that states advisory rules permanently unrunnable.
 
 Every refusal is decided before a session is opened, so a refused action leaves
 no transaction behind.
@@ -1024,11 +1010,12 @@ Committed at 2026-09-14T06:06:38.679692Z.
 ```
 
 **The rule is settled before the transaction opens.** A model call takes
-seconds, and holding the store's write locks across one costs more than it buys,
-so the order is: ask the judge, refuse with nothing touched, then open the
-transaction. The price is that no judge sees the state the write produces,
-however much of the current state it can read, so a rule about that state has to
-be an expression.
+seconds, and holding write locks across one costs more than it buys, so the
+order is: ask the judge, refuse with nothing touched, then open the transaction.
+Two things follow. No judge sees the state the write produces, so a rule about
+that state has to be an expression. And a judge reads committed state, so two
+calls racing each other can each be allowed against a total that neither will
+leave behind — a rule that has to hold under concurrency is an expression too.
 
 **The judge is given the attempted call.** It receives the rule's text, the
 action's name and description, and the arguments as the caller stated them —
@@ -1048,59 +1035,48 @@ Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/sem
   rules stated in words go to gemini-2.5-flash (us-central1)
   order: '12347' -> Order 12347
 Warning: 'CreditMemoNamesAServiceFailure' ("LineItem.memo must name a specific,
-verifiable service failure on the order: a late delivery, a damaged item, a
-shipping charge applied in error. A memo that states only that the customer
-requested a credit does not satisfy this rule.") is advisory, and
+verifiable service failure on the order: ...") is advisory, and
 gemini-2.5-flash (us-central1) judged that it does not hold for this call: Your
 memo "customer asked for a credit" does not name a specific, verifiable service
 failure, which is required by the rule.
 Committed at 2026-09-14T06:02:40.218987Z.
 ```
 
-**A rule nobody was able to ask about is reported as unchecked.** An advisory
-guard stops no call, so the call runs even with no judge supplied — and the
-warning names the rule and ends "was not checked: this run was given no judge to
-ask." Committing in silence would tell the caller that every rule passed when
-one of them was never put to anybody. An advisory guard stated as an expression
-is reported the same way. Supplying a judge settles the rules written in words
-and settles no expression, so each expression guard the run skipped gets its own
-warning line.
-
-**A judge that cannot be reached has not given a verdict.** A failed model call
-says nothing about whether the rule holds, and `on_violation` routes that the
-same way. An advisory rule reports that it went unchecked and the write
-proceeds; a rule declaring `reject` or `escalate` stops the call, carrying the
-error the judge raised.
+**A rule nobody could ask about is reported as unchecked.** Whether no judge
+was supplied or the model call failed, nothing was learned about the rule, and
+`on_violation` routes that as it routes a breach. An advisory guard lets the
+write through and warns, naming the rule and ending "was not checked: this run
+was given no judge to ask"; committing in silence would tell the caller every
+rule passed when one was never put to anybody. A guard declaring `reject` or
+`escalate` stops the call. Expression guards the run skipped are reported the
+same way, one warning line each, because supplying a judge settles no
+expression.
 
 **Status: an expression guard that refuses stops the call before any judge is
-asked.** A guard stated as an expression and declaring `reject` or `escalate`
-has nothing here to settle it, so the action is refused and no model is
-reached. One declaring `warn` stands down, so an action guarding on both kinds
-does reach the judge and does commit, with a warning line for the expression
-nothing checked. Three of the five guards
+asked.** An expression declaring `reject` or `escalate` refuses the action above
+and no model is reached; one declaring `warn` stands down, and the run reaches
+the judge and commits, with a warning line for the expression nothing checked.
+Three of the five guards
 [section 2](#a-policy-whose-rules-end-differently) puts on `IssueCredit` are
-expressions, and all three declare `escalate` or `reject`. The runs here
-therefore guard on the judged rule alone, which is also why they load with the
-all-judged warning that section describes.
+expressions declaring `escalate` or `reject`, so the runs here guard on the
+judged rule alone — which is also why they load with the all-judged warning.
 
 ### A guard that reads a row
 
 Some rules cannot be settled from the call alone. *The credit must not exceed
 the total of the order it is applied to* compares an argument against a number
-that lives in the database, and the caller is under no obligation to state that
-number, or to state it correctly. `--judge-reads-store` sends the judge to read
-it.
+in the database, and the caller is under no obligation to state it correctly.
+`--judge-reads-store` sends the judge to read it.
 
-Two things have to be in place first. The flag says what a judge may do rather
-than hiring one, so pass `--judge` alongside it. And the entities the rule talks
-about have to be bound to tables by the profile the run uses, because that
-binding is the whole of what the judge is told about the database; with nothing
-bound, the run stops before it starts and says so.
+Two things have to be in place. The flag says what a judge may do rather than
+hiring one, so pass `--judge` alongside it. And the profile must bind the
+entities the rule talks about to tables, because that binding is the whole of
+what the judge is told about the database; with nothing bound, the run stops
+before it starts and says so.
 
-Then write the rule so that the judge goes and looks. It decides that for itself,
-from the sentence it is given, so the sentence has to say that the value is on
-record. This is the rule the demo under `demo/semantic-model/agent` puts first on
-`IssueCredit`:
+Then write the rule so the judge goes and looks — it decides that for itself,
+from the sentence it is given. This is the rule the demo under
+`demo/semantic-model/agent` puts first on `IssueCredit`:
 
 ```yaml
 - name: CreditWithinOrderTotalWithJudge
@@ -1133,9 +1109,9 @@ Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/sem
 Committed at 2026-09-15T03:39:42.804901Z.
 ```
 
-Nobody wrote that statement. The judge composed it from the rule's sentence and
-the tables the profile binds, and `kcmd` prints it because a read performed on
-the caller's behalf is something the caller should be able to check.
+Nobody wrote that statement: the judge composed it from the rule's sentence and
+the tables the profile binds. `kcmd` prints every one, because a read made on
+the caller's behalf is the caller's to check.
 
 **What the read buys is a verdict the caller cannot argue with.** The same order
 again, a credit of $200, and a memo asserting that the order is worth $900:
@@ -1144,54 +1120,45 @@ again, a credit of $200, and a memo asserting that the order is worth $900:
   the judge reads: SELECT total FROM Orders WHERE order_id = 12345
 Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotalWithJudge'
 ("The credit amount requested must not exceed the total of the order it is
-applied to. The `order` argument of this call identifies that order, and the
-order's total is on record rather than stated in the arguments, so read it
-before answering. Read both as dollars."), and gemini-2.5-flash (us-central1)
-judged that it does not hold for this call: The credit amount of 200.00 exceeds
-the order total of 162.85. The model marks this rule 'escalate', so an approver
-may allow it; nothing here can. A credit cannot exceed the total of the order it
-credits. Lower the credit amount, or split it across the orders it actually
-covers. No transaction was opened, so nothing was written.
+applied to. ..."), and gemini-2.5-flash (us-central1) judged that it does not
+hold for this call: The credit amount of 200.00 exceeds the order total of
+162.85. The model marks this rule 'escalate', so an approver may allow it;
+nothing here can. A credit cannot exceed the total of the order it credits.
+Lower the credit amount, or split it across the orders it actually covers. No
+transaction was opened, so nothing was written.
 ```
 
 The judge read the row, compared the argument against $162.85, and paid no
-attention to the $900 in the memo. Drop `--judge-reads-store` from that command
-and the rule refuses the call as well, for the opposite reason: it says it
-cannot get the total. A rule worded for a reading judge and then run without one
-refuses every call it guards.
+attention to the $900 in the memo. Drop the flag and the same call is refused
+for the opposite reason: the judge says it cannot get the total.
 
 **The judge sees what the model declares.** The entities, tables and columns in
-its instructions come from the binding profile, the same source the lookup tools
-come from, so a column the model does not bind is one the judge is never told
-exists. The dialect comes from there too. The rule above produces GoogleSQL
-against `Orders.total` under a Spanner profile and PostgreSQL against
-`purchase_order.order_total` under an AlloyDB one, with nobody writing either.
+its instructions come from the binding profile, so a column the model does not
+bind is one the judge is never told exists. The dialect comes from there too:
+the rule above produces GoogleSQL against `Orders.total` under a Spanner profile
+and PostgreSQL against `purchase_order.order_total` under an AlloyDB one.
 
-**A judge cannot write.** Every statement has to be a single command beginning
-with `SELECT` or `WITH`, checked after comments and quoted values are blanked out
-so that a `;` inside a memo cannot split one statement into two. What reaches the
-store is that text inside `SELECT * FROM (...) AS judge_read LIMIT 21`, and the
-wrapping is the part that makes this hold, because PostgreSQL accepts a
-data-modifying common table expression at the top level of a statement and
-refuses one inside a subquery. The wrapping stops short of a query that calls a
-function which writes, so give the action credentials that reach the tables the
-model binds and no more.
+**A judge cannot write.** Every statement must be a single command beginning
+with `SELECT` or `WITH`, and what reaches the store is that text wrapped as
+`SELECT * FROM (...) AS judge_read LIMIT 21`, which the server refuses unless it
+really is a query. The wrap stops short of a query calling a function that
+writes, so give the action credentials no wider than the tables the model
+binds.
 
 **Keep the rule settleable from a few rows.** At most 20 rows come back, each
-value is clipped at 200 characters, and the judge is told when its answer was cut
-short. A rule needing a scan, a join across the history, or a total of its own is
-a rule to write as an `expression`.
+value clipped at 200 characters, and the judge is told when its answer was cut
+short. A rule needing a scan, a join across the history, or a total of its own
+belongs in an `expression`.
 
 **Reading costs model calls.** Asking and answering cannot be the same request,
 so a guard with a store attached costs two calls rather than one even when it
 reads nothing, and each further round of reading adds one more. The demo's four
 judged guards read once between them and cost nine calls.
 
-**Two calls at once can each pass.** Guards settle before the transaction opens,
-so a judge reads committed state, and two credits racing each other can each read
-a total that neither of them will leave behind. A rule that has to hold under
-concurrency belongs in an `expression`, which can eventually be evaluated inside
-the transaction.
+The race described under
+[a guard settled in words](#a-guard-settled-in-words) applies here too, and
+reading does not change it: the judge reads committed state, before the
+transaction opens.
 
 ## 8. Hand it to an agent
 
@@ -1349,7 +1316,7 @@ allows the collision to be noticed at all.
 
 `transfer_funds` above is listed and marked `[NOT RUNNABLE]`. `TransferFunds`
 names a guard stated as an expression, nothing here evaluates one, and so the
-[refusal from section 7](#a-guarded-action-is-refused-not-run-unchecked) is
+[refusal from section 7](#why-a-guarded-action-is-refused) is
 reported here instead — before any agent exists, rather than inside a
 transaction.
 
