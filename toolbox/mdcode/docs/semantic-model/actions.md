@@ -128,58 +128,12 @@ kinds, and give any one executor a single kind only:
   with.
 - **`grpc`** — `{service, method}`. A service and the method on it.
 - **`sql`** — `{statements}`. The write itself, carried in your model instead
-  of named as a pointer to whoever performs it. See [writing the statements in
-  the model](#writing-the-statements-in-the-model).
+  of named as a pointer to whoever performs it, and the only kind kcmd runs.
+  See [carrying the write as DML](#carrying-the-write-as-dml).
 
 Both `description` and `ai_context.instructions` travel through to the catalog.
 Write those instructions for the agent that's going to call the action, the way
 the example does.
-
-### The executor is a binding
-
-Everything else your action declares is logical: what it takes, what gates it,
-what it changes. The executor isn't, because *how* the change gets carried out
-depends on where your rows live — DML when they sit in a relational database, a
-call to whoever owns them when they sit somewhere else, and different table
-names and a different dialect between one relational store and the next.
-
-So kcmd treats the executor as a physical binding, like an entity's `source`,
-and a [binding profile](profiles.md) can supply it or replace it:
-
-```yaml
-# commerce.profiles/operational.yaml — this store owns the rows, so it writes them
-semantic_model:
-  - name: payments
-    actions:
-      - name: TransferFunds
-        executor:
-          sql:
-            statements:
-              - UPDATE account SET balance = balance - @amount WHERE account_id = @source
-              - UPDATE account SET balance = balance + @amount WHERE account_id = @target
-```
-
-If your profile says nothing about an action, that action keeps your model's
-executor. The `mcp` executor in the model above is therefore the default for
-every store, and this profile overrides it for the one store that performs the
-write as DML. Write `executor: null` in a profile to withdraw it, which leaves
-you a read-only binding that performs no writes.
-
-Which file an executor belongs in depends on its kind. An `mcp`, `rest`, or
-`grpc` executor names an operation in another system, and that name usually
-doesn't change with the store, so put it in the model as the example does. A
-`sql` executor is the write itself, written in one database's own table and
-column names, so put it in that database's profile — unless your model will only
-ever have one store.
-
-Sometimes nobody has wired the write up yet, or another team owns it and you
-need your model only to record that it exists. Leave the executor out of both
-files for that case. Your action is then **declared but not performable**: it
-still states what it does, what gates it, and what it changes, which is the
-whole of what a reader needs. A catalog-only push — `--no-profile`, or a model
-with no deployment target — publishes it like any other action, and `kcmd
-profiles` lists it under `cannot run:` for each binding that supplies no
-executor for it.
 
 ### Parameters typed by an entity
 
@@ -190,13 +144,32 @@ resolve it against `Account`'s key rather than pass a bare number through. A
 parameter typed by a datatype, like `amount` above, is an ordinary value and
 refers to nothing.
 
-### Writing the statements in the model
+### Where the executor comes from
 
-The three kinds above name a system that performs the write, which leaves the
-write opaque to your model. Your model can state which concepts a call changes
-in an `affects` list, and nothing can check that list against reality. The
-fourth kind, `sql`, carries the write itself, so what your action does becomes
-readable — and checkable — from the model.
+Everything else your action declares is logical: what it takes, what gates
+it, what it changes. The executor isn't, because *how* the change gets
+carried out depends on where your rows live. kcmd therefore treats it as a
+physical binding, like an entity's `source`, so a [binding
+profile](profiles.md) can supply one or replace the one your model declares.
+An action a profile says nothing about keeps the executor the model gave it.
+
+Sometimes nobody has wired the write up yet, or another team owns it and you
+need your model only to record that it exists. Leave the executor out of both
+files for that case. Your action is then **declared but not performable**: it
+still states what it does, what gates it, and what it changes, which is the
+whole of what a reader needs. A catalog-only push — `--no-profile`, or a model
+with no deployment target — publishes it like any other action, and `kcmd
+profiles` lists it under `cannot run:` for each binding that supplies no
+executor for it.
+
+## Carrying the write as DML
+
+The first three kinds name a system that performs the write, which leaves the
+write itself opaque to your model: an `mcp` tool name says where the operation
+lives and nothing about what it touches. A `sql` executor carries the write
+instead, so what your action does becomes readable — and checkable — from the
+model, and kcmd can [run it](#7-run-it) rather than publishing it for another
+system to dispatch.
 
 ```yaml
       - name: TransferFunds
@@ -218,6 +191,15 @@ The transfer above debits one account and credits another, and a transfer that
 did only the first would lose money. kcmd opens one transaction, runs the
 statements in the order you wrote them, and commits at the end, so two writes
 that only make sense together never apply by halves.
+
+Carrying the write buys you two things:
+
+- **Your blast radius is checkable.** A reader can compare `affects` against the
+  statements instead of taking it on trust.
+- **A guard becomes a real gate.** An MCP, REST or gRPC call commits inside a
+  system kcmd doesn't control, so a check wrapped around it could only advise
+  after the fact. kcmd settles every guard on a `sql` action before it opens a
+  transaction, so a refusal leaves the store untouched.
 
 ### Statements use your database names
 
@@ -242,48 +224,32 @@ Syntax error: Unexpected keyword ORDER [at 1:8]
 
 instead of "no such table", because `ORDER` is a reserved word.
 
-A `sql` executor buys you two things:
+### Which file a `sql` executor belongs in
 
-- **Your blast radius is checkable.** A reader can compare `affects` against the
-  statements instead of taking it on trust.
-- **A guard becomes a real gate.** An MCP, REST or gRPC call commits inside a
-  system kcmd doesn't control, so a check wrapped around it could only advise
-  after the fact. kcmd settles every guard on a `sql` action before it opens a
-  transaction, so a refusal leaves the store untouched.
-
-That stays safe only while the statements stay narrow, and push holds you to it:
-
-- Write each statement as a **single `INSERT`, `UPDATE` or `DELETE`**. A
-  statement that reads is a query and belongs in a metric; one that reshapes the
-  schema isn't an action. A `;` inside a statement is rejected, because each
-  list entry runs on its own and anything after the separator would silently not
-  run.
-- Pass every value as a **bound `@parameter`** naming a parameter your action
-  declares. Nothing is interpolated into the statement text, so an argument
-  can't become SQL.
-- Expect no control flow, and no statement composed at call time. An action
-  whose body arrives with the call declares nothing, and a gate can't check what
-  was never declared.
-
-When an action **creates** a row, kcmd generates that row's primary key — a
-UUID — and binds it as `@new<Concept>Key`. The caller never supplies it,
-because an agent that picks its own primary keys can overwrite an existing row
-by choosing one already taken. Declaring the creation in `affects` turns the
-generation on:
+Because its statements name one database's own tables and columns, a `sql`
+executor usually belongs in that database's profile rather than in the
+model — unless your model will only ever have one store. An `mcp`, `rest` or
+`grpc` executor names an operation in another system, and that name usually
+doesn't change with the store, so it stays in the model the way `TransferFunds`
+declares its `mcp` tool above.
 
 ```yaml
+# commerce.profiles/operational.yaml — this store owns the rows, so it writes them
+semantic_model:
+  - name: payments
+    actions:
+      - name: TransferFunds
         executor:
           sql:
             statements:
-              - >-
-                INSERT INTO transfer (transfer_id, amount, debited_account_id)
-                VALUES (@newTransferKey, @amount, @source)
-        affects:
-          - { concept: Transfer, operation: create }
+              - UPDATE account SET balance = balance - @amount WHERE account_id = @source
+              - UPDATE account SET balance = balance + @amount WHERE account_id = @target
 ```
 
-kcmd runs a `sql` executor and no other kind — see [run it](#7-run-it). The
-other three are published for whoever reads your model to dispatch.
+This profile overrides the model's `mcp` executor for the one store that
+performs the write as DML. Write `executor: null` instead to withdraw an
+inherited executor, which leaves you a read-only binding that performs no
+writes.
 
 ## 2. Gate it with a constraint
 
@@ -702,15 +668,33 @@ Name the concept now and refine it later. Writing `- concept: Account` on its
 own says the same thing the bare `Account` does, and it's written back as the
 bare form.
 
-**Status: a `create` record is the only thing that consumes `affects`.** It
-tells the runtime to generate the `@new<Concept>Key` a statement binds. Where a
-statement actually binds one, kcmd checks your model first: a concept keyed by
-several columns, or by a key field that isn't a `String`, can't take a generated
-UUID, so kcmd refuses the call and withholds the write tool. A statement that
-supplies its own key is never refused over a generated one it doesn't use. Past
-that, kcmd parses `affects`, checks every concept against your model, publishes
-it and reads it back. No component computes an impact from it, routes on it, or
-checks it against what your executor does.
+### A created row gets its key from kcmd
+
+When an action **creates** a row, kcmd generates that row's primary key — a
+UUID — and binds it as `@new<Concept>Key`. The caller never supplies it,
+because an agent that picks its own primary keys can overwrite an existing row
+by choosing one already taken. Declaring the creation in `affects` turns the
+generation on:
+
+```yaml
+        executor:
+          sql:
+            statements:
+              - >-
+                INSERT INTO transfer (transfer_id, amount, debited_account_id)
+                VALUES (@newTransferKey, @amount, @source)
+        affects:
+          - { concept: Transfer, operation: create }
+```
+
+**Status: that key generation is the only thing `affects` drives.** Where a
+statement actually binds a generated key, kcmd checks your model first: a
+concept keyed by several columns, or by a key field that isn't a `String`,
+can't take a generated UUID, so kcmd refuses the call and withholds the write
+tool. A statement that supplies its own key is never refused over a generated
+one it doesn't use. Past that, kcmd parses `affects`, checks every concept
+against your model, publishes it and reads it back. No component computes an
+impact from it, routes on it, or checks it against what your executor does.
 
 ## 4. Check it before pushing
 
@@ -753,6 +737,23 @@ beside a `delete` are a hard error, and so is a field the concept doesn't
 declare. An operation outside `create` / `modify` / `delete` never gets this far
 — the vocabulary is closed, so your document doesn't parse at all. All of these
 checks are static, so they run on every push whatever the destination.
+
+### What push holds a statement to
+
+kcmd checks a `sql` executor further than the other three kinds, because it
+carries the write rather than a pointer to whoever performs it:
+
+- Write each statement as a **single `INSERT`, `UPDATE` or `DELETE`**. A
+  statement that reads is a query and belongs in a metric; one that reshapes the
+  schema isn't an action. A `;` inside a statement is rejected, because each
+  list entry runs on its own and anything after the separator would silently not
+  run.
+- Pass every value as a **bound `@parameter`** naming a parameter your action
+  declares. Nothing is interpolated into the statement text, so an argument
+  can't become SQL.
+- Expect no control flow, and no statement composed at call time. An action
+  whose body arrives with the call declares nothing, and a gate can't check what
+  was never declared.
 
 ## 5. Push it
 
