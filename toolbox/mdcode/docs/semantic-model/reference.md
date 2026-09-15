@@ -466,7 +466,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   the closed `create` / `modify` / `delete` vocabulary for `operation`, the
   rejection of a repeated guard name, and the rejection of a repeated
   concept-and-operation pair in `affects`. Every check here is static, so it
-  runs on every push, regardless of destination. Note that actions themselves
+  runs on every push, regardless of destination. Static means nothing here asks
+  the store a question, so a statement naming a table or a column that does not
+  exist passes push and fails when the action runs. Note that actions themselves
   deploy **only** through the Knowledge Catalog leg — a
   graph-only `--no-kc` push validates them but has nowhere to put them, and
   warns that they will not be deployed. *(static)*
