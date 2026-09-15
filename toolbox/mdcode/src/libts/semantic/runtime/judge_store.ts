@@ -1,52 +1,69 @@
-// Letting a judge read the store it is judging against.
+// The database a judge may read while it settles a guard.
 //
-// A rule stated in words divides into two kinds. One kind is about the call and
-// nothing else -- *the memo must name a specific service failure* -- and the
-// request carries everything needed to settle it. The other kind compares the
-// call against what is already recorded -- *a credit cannot exceed the total of
-// the order it credits* -- and nothing the caller states can settle that,
-// because the order's total is in the database and the caller does not have to
-// be honest about it.
+// `modelJudgeStore` builds the `JudgeStore` that judge.ts declares and
+// gcp/gemini.ts consumes. A run creates one when it is given
+// `--judge-reads-store`, and it holds two things:
 //
-// This builds the second kind a place to look. It is composed from the semantic
-// model under its binding profile, so what a judge can see is exactly the
-// tables and columns the model declares and the profile binds. An entity the
-// model does not declare is not in the schema the judge is shown and not in the
-// database as far as the judge is concerned.
+//   1. SCHEMA. A block of text naming the tables and columns the judge may
+//      use, which the caller puts in the model's instructions. It is composed
+//      from the semantic model under its binding profile, so an entity the
+//      model does not declare is absent from it, and absent from the database
+//      as far as the judge is concerned.
+//   2. READ. One method, which the model reaches as a tool call. It takes a
+//      statement the model wrote and gives back rows as text.
 //
-// Against letting a model write SQL there are two objections, and each gets an
-// answer rather than a promise.
+// Everything else here serves one of those two. `readableEntities` and
+// `schemaText` compose the first; `readOnly` and `blankOpaque` decide what may
+// reach the second.
 //
-// The first is that a model could write something that is not a read. Three
-// things stop it. A statement carrying more than one command is refused before
-// it is sent. A statement that does not begin with SELECT or WITH is refused
-// before it is sent. And what IS sent is the statement wrapped as a subquery of
-// a SELECT, so the server rejects anything that is not a query -- which is what
-// catches the case a keyword check does not, PostgreSQL's data-modifying common
-// table expression, legal at the top level of a statement and illegal inside a
-// subquery. The wrap is the strongest of the three, and the first two are there
-// to turn a server error into a sentence the judge can act on. Where the wrap
-// stops short is a query that calls a function which writes: that is still a
-// query, so the server runs it, and on AlloyDB it commits, because that client
-// sends a statement outside any transaction it opened and PostgreSQL commits
-// what it wraps implicitly. Spanner's query path is read-only and has no such
-// opening.
+// A guard wants one of these because a rule stated in words divides into two
+// kinds. One kind is about the call and nothing else -- *the memo must name a
+// specific service failure* -- and the request carries everything needed to
+// settle it. The other kind compares the call against what is already recorded
+// -- *a credit cannot exceed the total of the order it credits* -- and nothing
+// the caller states can settle that, because the order's total is in the
+// database and the caller does not have to be honest about it. The second kind
+// is what this file gives somewhere to look.
 //
-// The second objection is prompt injection: the caller writes the memo, the
-// memo reaches the judge, and the judge writes the SQL. The fence in gemini.ts
-// marks caller-written text as data, and the limits below bound what a judge
-// convinced by it can draw out: a few reads, one query each, twenty rows apiece
-// and two hundred characters per value. What is NOT bounded is which tables a
-// read names. The schema says which tables the model declares, and no check
-// holds a statement to it, so a read reaches whatever the credentials behind
-// the action reach, and rows it returns can be quoted back in the reason the
-// verdict gives.
+// `read` does three things to a statement, in this order:
 //
-// What none of this fixes is timing. A judge reads before the transaction
-// opens, so two concurrent calls can each read the same total and each pass.
-// A rule a query can settle belongs in an `expression`, evaluated where the
-// write happens; settling one here buys the ability to state it in words and
-// pays for it in exactly that race.
+//   1. CHECK. `readOnly` refuses anything that is not a single command
+//      beginning with SELECT or WITH. `blankOpaque` blanks comments and quoted
+//      runs first, so that a `;` inside a memo cannot pass for a second
+//      command.
+//   2. WRAP AND SEND. What survives goes to the store as
+//      `SELECT * FROM (<the statement>) AS judge_read LIMIT 21`.
+//   3. CAP. At most `rowLimit` rows come back and each value is clipped to
+//      `cellLimit` characters -- twenty and two hundred, unless the caller
+//      sets otherwise -- and the judge is told when either cap bit.
+//
+// Of those three, the second is the one that makes a read a read. Wrapping the
+// statement as a subquery makes the server reject anything that is not a query,
+// which catches
+// what a keyword check cannot: PostgreSQL accepts a data-modifying common table
+// expression at the top level of a statement and refuses one inside a subquery.
+// The other two steps are there to turn a server error into a sentence the
+// judge can act on. Where the wrap stops short is a query calling a function
+// that writes, which is still a query, so the server runs it; AlloyDB sends
+// statements outside any transaction this client opened and PostgreSQL commits
+// what it wraps implicitly, so such a call would take effect. Spanner's query
+// path is read-only and has no such opening.
+//
+// Assume a judge can be talked into writing a statement the caller chose: the
+// caller writes the memo, the memo reaches the judge, and the judge writes the
+// SQL. The fence in gemini.ts marks caller-written text as data. Past that,
+// what limits the damage is how little can come out -- a few reads, one query
+// each, twenty rows apiece, two hundred characters per value. What is NOT
+// limited is which tables a statement names. The schema says which tables the
+// model declares and no check holds a statement to it, so a read reaches
+// whatever the credentials behind the action reach, and rows it returns can be
+// quoted back in the reason the verdict gives.
+//
+// None of this fixes timing. A judge reads before the transaction opens, so two
+// concurrent calls can each read the same total and each pass. A rule a query
+// can settle belongs in an `expression`, evaluated where the write happens;
+// settling one here buys the ability to state it in words and pays for it in
+// that race.
 
 import {boundTable} from '../binding';
 import {Entity} from '../ir';
@@ -81,9 +98,13 @@ export interface JudgeStoreOptions {
 
 
 /**
- * A store a judge may read, composed from one runtime's bindings.
+ * The store to hand a `Judge`: the schema text its instructions carry, and the
+ * `read` its tool calls land on.
  *
- * Fails rather than returning a store that reads nothing: a judge handed a
+ * Composed from one runtime, so the tables are the ones that runtime's profile
+ * binds, and a judge's reads go to the database the write would go to.
+ *
+ * Returns an error rather than a store that reads nothing. A judge handed a
  * tool that refuses every call spends its reads finding that out, and the
  * caller who could have been told at setup time is the one who can fix it.
  */
@@ -107,6 +128,9 @@ export function modelJudgeStore(
 
   return {
     schema: schemaText(readable, dialect),
+    // Check, wrap and send, cap: the three steps the header lists. A problem
+    // at any of them comes back as `problem` on an otherwise empty result,
+    // because the model reads this and is expected to try again.
     async read(sql: string): Promise<JudgeQueryResult> {
       const empty = {columns: [], rows: [], truncated: false};
       const checked = readOnly(sql);
@@ -222,8 +246,12 @@ function clip(value: string|null, limit: number): string|null {
 
 
 /**
- * One statement, and a query. Returns the statement to wrap, or why it will
- * not be sent.
+ * Step 1 of `read`: decide whether a statement the model wrote may be sent.
+ *
+ * Passes it only if it is one command and that command is a query. Returns the
+ * statement to wrap, with any trailing semicolon removed, or a sentence saying
+ * why it will not be sent -- which the model is shown, so it says what to do
+ * instead rather than only what went wrong.
  *
  * Exported for the tests, which are the only reason to look at this in
  * isolation: what it refuses is the part worth pinning down.
@@ -257,8 +285,10 @@ export function readOnly(sql: string): {sql: string}|{problem: string} {
 
 
 // `sql` with the contents of every comment and every quoted run replaced by
-// spaces, so that the structure of the statement can be read off it. Positions
-// are preserved, which is what lets a caller index back into the original.
+// spaces, so that the structure of the statement can be read off it: after
+// this, a `;` or a keyword in the result is one the SQL parser would see too.
+// Positions are preserved, which is what lets a caller index back into the
+// original.
 //
 // Written here rather than borrowed because the two dialects quote differently
 // and this has to be right for both: PostgreSQL nests block comments and has

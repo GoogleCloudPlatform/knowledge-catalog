@@ -160,7 +160,13 @@ export interface GeminiJudgeOptions {
 }
 
 
-/** A judge that asks Gemini on Vertex AI. */
+/**
+ * A judge that asks Gemini on Vertex AI.
+ *
+ * `decide` is one `generateContent` call when the judge has no store. With one,
+ * it is two or more: see `_gather`, which is where the reading happens and
+ * where the reason for the extra call is written down.
+ */
 export class GeminiJudge extends ApiClient implements Judge {
   readonly name: string;
   private readonly _project: string;
