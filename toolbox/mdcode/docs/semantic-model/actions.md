@@ -12,9 +12,10 @@ profile rather than the model. Publishing an action puts the operation in the
 same place as the data it acts on, so an agent that discovers the model
 discovers what it can do as well as what it can ask.
 
-Two files decide everything below. The model says what the operation is; a
-binding profile says where it runs. Together they make one runnable thing,
-and everything a caller or an agent gets is derived from them:
+An action is written across two files. The model names the operation and its
+parameters; a binding profile names the tables, the columns, and the executor.
+kcmd combines them into a bound model, which is what reaches the store and what
+an agent is handed as tools:
 
 ```mermaid
 graph LR
@@ -29,9 +30,6 @@ graph LR
     RT --> ST
     RT --> AG
 ```
-
-Nothing is written twice: each key appears in one of those two files, and
-everything else is derived from it.
 
 ## When to use it
 
