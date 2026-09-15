@@ -168,8 +168,9 @@ The first three kinds name a system that performs the write, which leaves the
 write itself opaque to your model: an `mcp` tool name says where the operation
 lives and nothing about what it touches. A `sql` executor carries the write
 instead, so what your action does becomes readable — and checkable — from the
-model, and kcmd can [run it](#7-run-it) rather than publishing it for another
-system to dispatch.
+model, and kcmd can [run it](#7-run-it) rather than handing the write to another
+system to perform. Written into the model, it replaces the `mcp` executor
+`TransferFunds` declared above:
 
 ```yaml
       - name: TransferFunds
@@ -197,9 +198,10 @@ Carrying the write buys you two things:
 - **Your blast radius is checkable.** A reader can compare `affects` against the
   statements instead of taking it on trust.
 - **A guard becomes a real gate.** An MCP, REST or gRPC call commits inside a
-  system kcmd doesn't control, so a check wrapped around it could only advise
-  after the fact. kcmd settles every guard on a `sql` action before it opens a
-  transaction, so a refusal leaves the store untouched.
+  system kcmd doesn't control, so a write it performed can't be rolled back if
+  the rest of the action fails. A `sql` action's guards settle before kcmd opens
+  a transaction, and a call that doesn't clear them never reaches one, so a
+  refusal leaves the store untouched.
 
 ### Statements use your database names
 
@@ -253,11 +255,12 @@ writes.
 
 ## 2. Gate it with a constraint
 
-Section 1 gave you an action that runs. This section is how you stop it running
-when it shouldn't. A **constraint** is a named rule your model states over its
-ontology. Declaring one adds it to the catalog and changes nothing by itself. A
-constraint takes effect where something references it and nowhere else, so
-publishing a rule can't quietly start refusing calls that succeeded yesterday.
+The sections so far declared an action and gave it a write to perform. This
+section is how you stop it running when it shouldn't. A **constraint** is a
+named rule your model states over its ontology. Declaring one adds it to the
+catalog and changes nothing by itself. A constraint takes effect where
+something references it and nowhere else, so publishing a rule can't quietly
+start refusing calls that succeeded yesterday.
 
 ```
   declared                referenced             checked            a breach
@@ -383,9 +386,10 @@ judgment must state `on_violation`, and any of the three words will do. Omit it
 and the push fails, because an unmarked constraint would reject, and that's too
 strong a consequence to inherit by silence.
 
-No judge settles a rule about the state a write *leaves behind*, however much it
-can read. "An order's total equals the sum of its lines" has nothing to look at
-when a guard runs. Put that rule inside the transaction or in your schema.
+No judge settles a rule about the state a write *leaves behind*. A guard runs
+before the transaction opens, so "an order's total equals the sum of its lines"
+has nothing to look at yet. Put that rule inside the transaction or in your
+schema.
 
 **Status: a judgment is the one body kcmd settles.** At run time,
 [`kcmd action run --judge`](#a-guard-settled-in-words) puts each judged guard to
@@ -610,10 +614,10 @@ five guards are expressions.
 judged guards to the judge in the order your model declares them and stops at
 the first one that fails without being advisory. What comes back is that guard's
 outcome rather than the strictest of them, and a `warn` collected on the way
-there doesn't travel with the refusal. And because `IssueCredit`'s other three
-guards are expressions, [`kcmd action run`](#7-run-it) refuses it outright, so
-the two calls above are what the published policy says should happen rather than
-what kcmd does with this action today.
+there doesn't travel with the refusal. And [`kcmd action run`](#7-run-it) won't
+perform `IssueCredit` as declared here, so the two calls above are what the
+published policy says should happen rather than what kcmd does with this action
+today.
 
 ## 3. Say what it changes
 
@@ -709,7 +713,7 @@ trip:
 kcmd push --validate-only
 ```
 
-Four things about an action can be statically wrong once your document parses,
+Four things about any action can be statically wrong once your document parses,
 and each one is a hard error:
 
 ```
@@ -739,8 +743,8 @@ learns nothing.
 kcmd checks the rest of an `affects` entry just as strictly. Fields
 beside a `delete` are a hard error, and so is a field the concept doesn't
 declare. An operation outside `create` / `modify` / `delete` never gets this far
-— the vocabulary is closed, so your document doesn't parse at all. All of these
-checks are static, so they run on every push whatever the destination.
+— the vocabulary is closed, so your document doesn't parse at all. These checks
+are static, so they run on every push whatever the destination.
 
 ### What push holds a statement to
 
@@ -749,15 +753,16 @@ carries the write rather than a pointer to whoever performs it:
 
 - Write each statement as a **single `INSERT`, `UPDATE` or `DELETE`**. A
   statement that reads is a query and belongs in a metric; one that reshapes the
-  schema isn't an action. A `;` inside a statement is rejected, because each
+  schema isn't an action. A `;` anywhere but the end is rejected, because each
   list entry runs on its own and anything after the separator would silently not
   run.
 - Pass every value as a **bound `@parameter`** naming a parameter your action
-  declares. Nothing is interpolated into the statement text, so an argument
-  can't become SQL.
-- Expect no control flow, and no statement composed at call time. An action
-  whose body arrives with the call declares nothing, and a gate can't check what
-  was never declared.
+  declares, or the `@new<Concept>Key` a `create` in `affects` generates. Nothing
+  is interpolated into the statement text, so an argument can't become SQL.
+- Nothing else is available: no control flow, and no statement composed at call
+  time. `statements` is a fixed list in your model, so an action whose body
+  arrived with the call would declare nothing, and a gate can't check what was
+  never declared.
 
 ## 5. Push it
 

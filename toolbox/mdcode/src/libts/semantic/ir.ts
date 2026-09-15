@@ -419,21 +419,23 @@ export type Executor =
  * DML statements.
  *
  * The other three executor kinds name a system that performs the write, so what
- * the write does is opaque to the model. This one contains it, which buys three
+ * the write does is opaque to the model. This one contains it, which buys two
  * things the opaque kinds cannot offer.
  *
  *   - The blast radius is checkable. `affects` can be read against the
  *     statements rather than taken on trust.
  *   - A guard becomes a real gate. An MCP, REST or gRPC call commits inside a
- *     system the runtime does not control, so a check around it is advisory; a
- *     statement run in the runtime's own transaction can be rolled back.
- *   - The statements run where the constraints are probed, so the gate observes
- *     the uncommitted result of the write it is gating.
+ *     system the runtime does not control, so a write it performed could not be
+ *     rolled back if the rest of the action failed; a statement run in the
+ *     runtime's own transaction can be. Guards settle before that transaction
+ *     opens (see run_action.ts), so a refusal leaves the store untouched and no
+ *     check ever observes the write it gates.
  *
  * The narrowness is the safety argument, and validate.ts enforces it. A
- * statement is a single INSERT, UPDATE or DELETE. Every value it uses arrives as
- * a bound query parameter naming a declared action parameter, so nothing is
- * interpolated into the text and an argument cannot become SQL. There is no
+ * statement is a single INSERT, UPDATE or DELETE. Every value it uses arrives
+ * as a bound query parameter, and each one names either a declared action
+ * parameter or the key kcmd generates for a row the action creates, so nothing
+ * is interpolated into the text and an argument cannot become SQL. There is no
  * control flow, no statement composed at call time, and no way for a caller to
  * supply a statement of its own: an action whose body arrives with the call
  * declares nothing, and a gate cannot check what was never declared.
