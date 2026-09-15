@@ -42,8 +42,10 @@ An action does not answer a question about the data. Use a
 
 ## 1. Declare the action
 
-Actions sit at model level, beside metrics, and each one carries a name, an
-executor, and its parameters:
+Actions sit at model level, beside metrics, and each one carries a name, its
+parameters, and an executor. The name and the parameters are declared here and
+nowhere else. The executor is a default, because it is the one part a binding
+profile may replace:
 
 ```yaml
 version: "0.2.0.dev0/google"    # `actions` is a kcmd extension key
@@ -105,7 +107,7 @@ the tool's name within it. `rest` (`{endpoint, method}`) and `grpc`
 (`{service, method}`) are the other two remote kinds. A fourth, `sql`, carries
 the write itself rather than a pointer to whoever performs it — see
 [Writing the statements in the model](#writing-the-statements-in-the-model).
-Exactly one kind, where an executor is written at all.
+An executor carries exactly one of these four kinds.
 
 `description` and `ai_context.instructions` are both carried through to the
 catalog. Write the instructions for the agent that will call the action, as
@@ -135,10 +137,18 @@ semantic_model:
               - UPDATE account SET balance = balance + @amount WHERE account_id = @target
 ```
 
-An action the profile does not mention keeps whatever the model declared, so the
-executor written above serves as the default and a profile overrides only the
-stores that perform the write differently. `executor: null` in a profile
-withdraws it — a read-only binding that performs no writes at all.
+An action the profile does not mention keeps whatever the model declared. The
+`mcp` executor in the model above is therefore the default for every store, and
+this profile overrides it for the one store that performs the write as DML.
+`executor: null` in a profile withdraws it — a read-only binding that performs
+no writes at all.
+
+Which kind suits a model-level default differs. An `mcp`, `rest`, or `grpc`
+executor names an operation in another system, and that name usually does not
+change with the store, so the model is the right place for it, as above. A
+`sql` executor is the write itself, written in one database's own table and
+column names, so it belongs in that database's profile unless the model will
+only ever have one store.
 
 Writing no executor anywhere is allowed. The action is then **declared but not
 performable**: it still states what it does, what gates it, and what it changes,
