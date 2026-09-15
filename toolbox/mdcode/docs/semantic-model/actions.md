@@ -101,13 +101,17 @@ The rest of the model — the deployment target, the entity bindings, the
 relationships — is authored as it is for any model; see
 [Deploying a semantic model](README.md).
 
-The executor says where the operation lives. `mcp` (`{server, tool}`) references
-a tool already registered in Agent Registry by the server's resource name plus
-the tool's name within it. `rest` (`{endpoint, method}`) and `grpc`
-(`{service, method}`) are the other two remote kinds. A fourth, `sql`, carries
-the write itself rather than a pointer to whoever performs it — see
-[Writing the statements in the model](#writing-the-statements-in-the-model).
-An executor carries exactly one of these four kinds.
+The executor says where the operation lives, and carries exactly one of four
+kinds:
+
+1. **`mcp`** — `{server, tool}`. A tool already registered in Agent Registry,
+   named by the server's resource name and the tool's name within it.
+2. **`rest`** — `{endpoint, method}`. An HTTP endpoint and the verb to call it
+   with.
+3. **`grpc`** — `{service, method}`. A service and the method on it.
+4. **`sql`** — `{statements}`. The write itself, carried in the model rather
+   than named as a pointer to whoever performs it. See [Writing the statements
+   in the model](#writing-the-statements-in-the-model).
 
 `description` and `ai_context.instructions` are both carried through to the
 catalog. Write the instructions for the agent that will call the action, as
@@ -1307,7 +1311,7 @@ performs, with the same argument resolution, the same single transaction and
 the same three outcomes.
 
 A **lookup tool** reads one entity: exact match on any bound field, combined
-with AND, capped at 50 rows. No joins, no ranges, no aggregation, no ordering.
+with AND, capped at 50 rows. It cannot join, compare ranges, aggregate or order.
 That is enough to turn `"Alice Checking"` into the account id the write tool
 needs, and it keeps the generated SQL checkable by eye. Table and column names
 come from the binding and every filter value is a bound parameter, so no caller
