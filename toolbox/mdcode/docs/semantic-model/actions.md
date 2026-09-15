@@ -1,25 +1,27 @@
 # Modeling write operations
 
-Your semantic model defines what your data means, and its metrics define what
-you can read from it. An **action** is the write-side counterpart. It is a named
-operation that changes state, declared over the same concepts as the rest of
-your model.
+Your semantic model already tells an agent what your data means and which
+questions it can ask. Ask that agent to *do* something — refund an order, move
+money between two accounts, close a dormant account — and the model has nothing
+to say. The write exists somewhere, as a service call or an endpoint or a few
+lines of DML, but it's visible only to whoever built the service around it. Your
+agent either can't reach it, or reaches it through a hand-written tool that your
+model never sees and can't govern.
 
-When you declare an action, you name the operation, type its inputs against your
-ontology, and say which concepts the call changes. We keep the physical
-execution — how the write actually happens — in a separate field called the
-**executor**: an MCP tool, a REST endpoint, a gRPC method, or DML. That is the
-one physical part of an action, so it can reach the action from a binding
-profile instead of from your model.
+An **action** closes that gap. It's a named write operation declared over the
+same concepts as the rest of your model: you give it a name, type its inputs
+against your ontology, and say which concepts a call changes. Publishing it puts
+the operation in the same place as the data it acts on, so an agent that
+discovers your model discovers what it can change there, not just what it can
+ask.
 
-Publishing an action puts the operation in the same place as the data it acts
-on. An agent that discovers your model then discovers what it can change there,
-rather than only what it can ask.
-
-You write an action across two files. Your model names the operation and its
-parameters; a binding profile names the tables, the columns, and the executor.
-kcmd combines them into a bound model, and that bound model is what reaches your
-store and what an agent is handed as tools.
+One part of an action is physical — how the write actually happens. That part
+lives in a field called the **executor**, which names an MCP tool, a REST
+endpoint, a gRPC method, or DML. Keeping it separate lets a binding profile
+supply it, so you write an action across two files. Your model names the
+operation and its parameters; a binding profile names the tables, the columns,
+and the executor. kcmd combines them into a bound model, and that bound model is
+what reaches your store and what an agent gets handed as tools.
 
 ```mermaid
 graph LR
@@ -38,24 +40,31 @@ graph LR
 *Figure 1: your model and a binding profile combine into one bound model, which
 both reaches your store and supplies the tools an agent is handed.*
 
+The rest of this guide follows one action — moving money between two bank
+accounts — from a name in your model through to an agent that can call it. A
+second example, a customer-service credit, comes in once the rules get harder to
+write.
+
 ## When to use an action
 
-Declare an action when a write against this data already exists somewhere — a
-service call, an endpoint, some DML. Once you declare it, anything that reads
-your model knows the operation exists, what it takes, and where it lives. Until
-then, that write is visible only to whoever wrote the service around it.
+Declare an action when the write already exists. Somewhere in your organization
+there's a service call, an endpoint, or some DML that moves this money or issues
+this credit. Declaring it as an action doesn't reimplement any of that — it
+tells everything that reads your model that the operation is there, what it
+takes, and where it lives. Until you do, that write is visible only to the team
+that wrote the service around it.
 
-An action does not answer a question about your data. Use a
-[metric](README.md#1-author-the-logical-model) for that.
+If the call should hand back an answer instead of changing something, you want a
+[metric](README.md#1-author-the-logical-model) instead.
 
 ## 1. Declare the action
 
-Start here. The name and the parameters that you write in this step are the
-contract every later step builds on, and they live in your model and nowhere
-else.
+Start with the name and the parameters. They're the contract every later step
+builds on, and they live in your model and nowhere else — no profile can change
+them.
 
 Actions sit at model level, beside your metrics. Each one carries a name, its
-parameters, and an executor. Treat the executor as a default, because it is the
+parameters, and an executor. Treat that executor as a default, because it's the
 one part a binding profile can replace:
 
 ```yaml
@@ -109,36 +118,36 @@ semantic_model:
 ```
 
 You author the rest of the model — the deployment target, the entity bindings,
-the relationships — as you would for any model. See
+the relationships — the way you would for any model. See
 [Deploying a semantic model](README.md).
 
-The executor tells a consumer where the operation lives. Choose one of these
-four kinds, and give any one executor no more than a single kind:
+The executor tells a consumer where the operation lives. Pick one of these four
+kinds, and give any one executor a single kind only:
 
-1. **`mcp`** — `{server, tool}`. A tool that you have already registered in
-   Agent Registry, named by the server's resource name and the tool's name
-   within it.
+1. **`mcp`** — `{server, tool}`. A tool you've already registered in Agent
+   Registry, named by the server's resource name and the tool's name within it.
 2. **`rest`** — `{endpoint, method}`. An HTTP endpoint and the verb to call it
    with.
 3. **`grpc`** — `{service, method}`. A service and the method on it.
-4. **`sql`** — `{statements}`. The write itself, carried in your model rather
-   than named as a pointer to whoever performs it. See [writing the statements
-   in the model](#writing-the-statements-in-the-model).
+4. **`sql`** — `{statements}`. The write itself, carried in your model instead
+   of named as a pointer to whoever performs it. See [writing the statements in
+   the model](#writing-the-statements-in-the-model).
 
-We carry both `description` and `ai_context.instructions` through to the
-catalog. Write those instructions for the agent that will call the action, as
-above.
+Both `description` and `ai_context.instructions` travel through to the catalog.
+Write those instructions for the agent that's going to call the action, the way
+the example does.
 
 ### The executor is a binding
 
-Everything else your action declares is logical — what it takes, what gates it,
-what it changes. The executor is not. It says *how* the change is carried out,
-and that depends on your store. When the rows sit in a relational database, the
-write is DML. When they sit elsewhere, the write is a call to whoever owns them.
-Even two relational stores differ, each with its own table names and dialect.
+Everything else your action declares is logical: what it takes, what gates it,
+what it changes. The executor isn't. It says *how* the change gets carried out,
+and that depends on where your rows live. When they sit in a relational
+database, the write is DML. When they sit somewhere else, the write is a call to
+whoever owns them. Even two relational stores differ, each with its own table
+names and dialect.
 
-So we treat the executor as a physical binding, like an entity's `source`, and a
-[binding profile](profiles.md) can supply or replace it:
+So kcmd treats the executor as a physical binding, like an entity's `source`,
+and a [binding profile](profiles.md) can supply it or replace it:
 
 ```yaml
 # commerce.profiles/operational.yaml — this store owns the rows, so it writes them
@@ -156,14 +165,15 @@ semantic_model:
 If your profile says nothing about an action, that action keeps your model's
 executor. The `mcp` executor in the model above is therefore the default for
 every store, and this profile overrides it for the one store that performs the
-write as DML. Write `executor: null` in a profile to withdraw it, which gives
+write as DML. Write `executor: null` in a profile to withdraw it, which leaves
 you a read-only binding that performs no writes.
 
-The four kinds differ in whether they belong in your model. An `mcp`, `rest`, or
-`grpc` executor names an operation in another system, and that name usually does
-not change with the store, so put it in the model, as above. A `sql` executor is
-the write itself, written in one database's own table and column names, so put
-it in that database's profile unless your model will only ever have one store.
+Which file an executor belongs in depends on its kind. An `mcp`, `rest`, or
+`grpc` executor names an operation in another system, and that name usually
+doesn't change with the store, so put it in the model as the example does. A
+`sql` executor is the write itself, written in one database's own table and
+column names, so put it in that database's profile — unless your model will only
+ever have one store.
 
 Sometimes nobody has wired the write up yet, or another team owns it and you
 need your model only to record that it exists. Leave the executor out of both
@@ -176,12 +186,12 @@ executor for it.
 
 A push that also deploys a graph behaves the way it already does for your
 metrics: the catalog entries reflect the binding you pushed, pruned to what that
-binding can do. If a binding cannot perform an action, those entries omit it.
+binding can do. If a binding can't perform an action, those entries omit it.
 Your model owns its action entries for delete reconciliation, so pushing that
 binding removes an entry an earlier push published. The catalog holds one
 binding's view of your model, so name that binding as `default_profile` in
-`catalog.yaml`, choosing it as you would for a metric that a single store can
-answer.
+`catalog.yaml`, choosing it the way you would for a metric that a single store
+can answer.
 
 ### What an entity-typed parameter adds
 
@@ -192,8 +202,8 @@ string. A parameter typed against your model says what the input *denotes*:
 
 Writing `{name: source, type: Account}` says the argument names an account. A
 consumer generating a tool schema then knows to accept an identifier and resolve
-it against `Account`'s key rather than pass a number through. A parameter typed
-by a scalar datatype, such as `amount` above, is an ordinary value.
+it against `Account`'s key instead of passing a number through. A parameter
+typed by a scalar datatype, like `amount` above, is an ordinary value.
 
 ### Writing the statements in the model
 
@@ -225,51 +235,52 @@ the table and the column that `source` and `expression` bind the entity to.
 
 Every entity and field therefore carries two names, one in your model and one in
 your database. You write a metric in the model's names, and kcmd translates
-`Account.balance` into `account.balance` before any SQL reaches your store. **We
-do not translate an action's statements.** We hand them to your store as
+`Account.balance` into `account.balance` before any SQL reaches your store.
+**kcmd doesn't translate an action's statements.** They go to your store as
 written, so every table and column in one has to be the database's own name. The
 only model names in a statement are the `@parameter` references, which name the
 parameters your action declares.
 
-That is the price of carrying the write verbatim. A rewrite step could make the
-statement that runs differ from the statement you reviewed.
+Carrying the write verbatim is what costs you that translation. A rewrite step
+would make the statement that runs differ from the statement you reviewed.
 
 Nothing catches a model name before the call. Validation checks that each
 statement is one DML verb, contains no `;`, and binds only declared parameters —
 it never asks your store whether a table exists. A model name therefore fails at
-run time, from the store, and the message can be hard to read: an entity named
+run time, from the store, and the message can be hard to read. An entity named
 `Order` bound to a table named `Orders` produces
 
 ```
 Syntax error: Unexpected keyword ORDER [at 1:8]
 ```
 
-rather than "no such table", because `ORDER` is a reserved word.
+instead of "no such table", because `ORDER` is a reserved word.
 
-Carrying the write, rather than pointing at it, buys you three things:
+Carrying the write, instead of pointing at it, buys you three things:
 
 - **Your blast radius is checkable.** A reader can compare `affects` against the
   statements instead of taking it on trust.
 - **A guard becomes a real gate.** An MCP, REST or gRPC call commits inside a
-  system kcmd does not control, so a check wrapped around it is advisory. A
+  system kcmd doesn't control, so a check wrapped around it is advisory. A
   statement runs in the caller's own transaction and can be rolled back.
 - **The gate sees the write.** The statements run where the constraints are
-  probed, so a check observes the uncommitted result of the write it is gating.
+  probed, so a check observes the uncommitted result of the write it's gating.
 
-Narrowness is what makes that safe, and push holds you to it:
+That stays safe only while the statements stay narrow, and push holds you to it:
 
 - Write each statement as a **single `INSERT`, `UPDATE` or `DELETE`**. A
   statement that reads is a query and belongs in a metric; one that reshapes the
-  schema is not an action. We reject a `;` inside a statement, because each list
-  entry runs on its own and anything after the separator would silently not run.
+  schema isn't an action. A `;` inside a statement is rejected, because each
+  list entry runs on its own and anything after the separator would silently not
+  run.
 - Pass every value as a **bound `@parameter`** naming a parameter your action
-  declares. We interpolate nothing into the statement text, so an argument
-  cannot become SQL.
+  declares. Nothing is interpolated into the statement text, so an argument
+  can't become SQL.
 - Expect no control flow, and no statement composed at call time. An action
-  whose body arrives with the call declares nothing, and a gate cannot check
-  what was never declared.
+  whose body arrives with the call declares nothing, and a gate can't check what
+  was never declared.
 
-An action that **creates** a row needs a key for it, and that key cannot come
+An action that **creates** a row needs a key for it, and that key can't come
 from the caller: an agent that picks its own primary keys can overwrite an
 existing row by choosing one already taken. Declare the creation in `affects`
 and refer to the generated key as `@new<Concept>Key`:
@@ -285,16 +296,16 @@ and refer to the generated key as `@new<Concept>Key`:
           - { concept: Transfer, operation: create }
 ```
 
-kcmd runs a `sql` executor and no other kind — see [run it](#7-run-it). We
-publish the other three for whoever reads your model to dispatch.
+kcmd runs a `sql` executor and no other kind — see [run it](#7-run-it). The
+other three are published for whoever reads your model to dispatch.
 
 ## 2. Gate it with a constraint
 
-Section 1 gave you an action that runs. This step is how you stop it running
-when it should not. A **constraint** is a named rule your model states over its
+Section 1 gave you an action that runs. This section is how you stop it running
+when it shouldn't. A **constraint** is a named rule your model states over its
 ontology. Declaring one adds it to the catalog and changes nothing by itself. A
 constraint takes effect where something references it and nowhere else, so
-publishing a rule cannot quietly start refusing calls that succeeded yesterday.
+publishing a rule can't quietly start refusing calls that succeeded yesterday.
 
 A rule passes through four stages, and one that stops at the first does
 nothing:
@@ -316,7 +327,7 @@ nothing:
 *Figure 2: a constraint moves from declared, to referenced by an action, to
 checked before a call, to a breach routed by `on_violation`.*
 
-Write an expression over stored data to state a condition your data must
+Write an expression over stored data to state a condition your data has to
 satisfy:
 
 ```yaml
@@ -327,7 +338,7 @@ satisfy:
           An account cannot be taken below its minimum balance.
 ```
 
-On its own that is a catalogued rule and no more. Nothing consults it, and no
+On its own that's a catalogued rule and no more. Nothing consults it, and no
 write is refused for breaking it. It acquires effect when an action names it.
 
 An expression that reads an action's **parameters** describes one call rather
@@ -354,19 +365,19 @@ runs:
         guards: [AmountIsPositive]
 ```
 
-`guards` holds the names of constraints your model declares, and it is how a
+`guards` holds the names of constraints your model declares, and it's how a
 constraint acquires effect over an action. Put both kinds of rule there. A rule
 that reads the action's parameters has no other moment to run. A rule over
-stored data, named as a guard, says the call must not proceed on data that is
+stored data, named as a guard, says the call must not proceed on data that's
 already broken.
 
-We check every guard before the call, with the arguments bound. What each rule
+Every guard is checked before the call, with the arguments bound. What each rule
 reads decides how much that moment can tell you. A rule over the parameters is
 settled completely there, since the arguments are the whole of what it reads. A
 rule over stored data is a condition on the state that a write produces, so
-checking it before the call reports only that the call is not starting from a
-broken state. It does not report that the call leaves a sound one. Nothing in
-your model binds a rule to the result of a write, and that is the gap between
+checking it before the call reports only that the call isn't starting from a
+broken state. It doesn't report that the call leaves a sound one. Nothing in
+your model binds a rule to the result of a write, and that's the gap between
 what a data rule says and what a guard can enforce.
 
 Whatever dispatches the call is what checks its guards. Handing a rule to your
@@ -375,21 +386,21 @@ lowers to a store-level `CHECK`. One that aggregates across a child table, such
 as an order total matching the sum of its line items, lowers to neither Spanner
 nor BigQuery.
 
-Put the reference on the action rather than on the constraint, because the same
+Put the reference on the action, not on the constraint, because the same
 rule may gate `TransferFunds` and leave `CloseAccount` alone.
 
-`guards` and `on_violation` are independent, as the two right-hand columns of
-figure 2 are: one says when we check the constraint, the other says what a
-breach does. So guarding a constraint that declares `warn` is a real shape. Your
-organization may not be ready to block on a rule; guarding it anyway still gets
-the rule checked at the moment of the call and reported back.
+`guards` and `on_violation` are independent, the way the two right-hand columns
+of figure 2 are: one says when the constraint gets checked, the other says what
+a breach does. So guarding a constraint that declares `warn` is a real shape.
+Your organization may not be ready to block on a rule; guarding it anyway still
+gets the rule checked at the moment of the call and reported back.
 
 ### When no expression decides it
 
-Your business enforces some rules that cannot be written as a boolean. A credit
+Your business enforces some rules that can't be written as a boolean. A credit
 memo may or may not explain the failure it claims to refund. A discount may or
 may not be justified by the reason given. In both cases a query can read the
-text and cannot settle the question. Write such a rule in `judgment` instead of
+text and can't settle the question. Write such a rule in `judgment` instead of
 `expression`:
 
 ```yaml
@@ -409,7 +420,7 @@ text and cannot settle the question. Write such a rule in `judgment` instead of
 A constraint declares one body or the other, never both and never neither. A
 judgment has to state `on_violation`, and it may state any of the three words.
 Leaving the key out is the one thing it may not do: an unmarked constraint
-rejects, and that is too strong a consequence to inherit by silence.
+rejects, and that's too strong a consequence to inherit by silence.
 
 ### Writing a judgment
 
@@ -417,17 +428,17 @@ A language model reads your sentence at review time with the proposed write in
 front of it. Five habits make that reading consistent.
 
 **State what must be true of the data.** Write the condition — *the memo must
-name a specific service failure* — rather than the procedure — *check whether
-the memo is specific*. Your sentence describes a clean write, and everything
+name a specific service failure*, and not the procedure, *check whether the
+memo is specific*. Your sentence describes a clean write, and everything
 about handling a breach lives elsewhere.
 
-**Name fields model-qualified.** Write `LineItem.memo` rather than "the memo".
+**Name fields model-qualified.** Write `LineItem.memo`, not "the memo".
 kcmd resolves every `Entity.field` token in the text against your model and
-fails the push when the entity declares no such field, so a rename cannot leave
+fails the push when the entity declares no such field, so a rename can't leave
 your sentence pointing at nothing. The qualified name also tells the judge which
 value to read.
 
-**Say what does not count.** A rule with no negative example is graded against
+**Say what doesn't count.** A rule with no negative example gets graded against
 whatever the model guesses you had in mind. The sentence "A memo that states
 only that the customer requested a credit does not satisfy this rule" buys you
 more consistency than any further description of what a good memo is.
@@ -437,16 +448,16 @@ more consistency than any further description of what a good memo is.
 routing nothing reads, and the engine routes by the field regardless.
 
 **Keep it to one condition.** When your sentence needs "and also", the second
-half is a second constraint. One `on_violation` cannot carry two consequences,
-so two conditions that end differently cannot share a constraint.
+half is a second constraint. One `on_violation` can't carry two consequences, so
+two conditions that end differently can't share a constraint.
 
 Those five are about wording. Claim no more in the wording than a judge can
 settle.
 
 A judge settles a guard from the call's arguments and whatever it could read, so
 a sentence about stored data can turn out to be a rule it has no evidence for.
-We instruct it to refuse in that case and say what is missing, but that
-instruction binds a model rather than the runtime, so the rule can come back
+The instructions tell it to refuse in that case and say what's missing, but that
+instruction binds a model, not the runtime, so the rule can come back
 held instead — a guard that never fires and never says why. Phrase the condition
 around the arguments the call carries, and try every judged guard against a case
 it ought to refuse.
@@ -455,7 +466,7 @@ A rule that does need a stored row — comparing a credit against the order tota
 say — is settled when you run with `--judge-reads-store`. Word it to say the
 value is on record and has to be read, because the judge decides for itself
 whether to look. The same rule refuses every call when it goes to a judge that
-cannot read. See [a guard that reads a row](#a-guard-that-reads-a-row).
+can't read. See [a guard that reads a row](#a-guard-that-reads-a-row).
 
 No judge settles a rule about the state a write *leaves behind*, however much it
 can read. Guards run before the transaction opens, so "an order's total equals
@@ -466,8 +477,9 @@ transaction or in your schema.
 
 Real policies have several rules, and the rules rarely end the same way. Take
 the policy governing a customer-service credit, stated the way a business states
-it. The listing below puts the two things your model has to settle beside each
-rule:
+it. A support agent is about to issue one, and five separate rules bear on
+whether they may. The listing below puts the two things your model has to settle
+beside each rule:
 
 ```
   the business rule                        written as   a breach
@@ -561,9 +573,9 @@ own `on_violation`:
 Read down the `on_violation` column and you get the branching your policy
 describes in prose, in a column a search can read.
 
-**Rule 3 is named like the rest, because an unnamed rule does nothing.** It is
+**Rule 3 is named like the rest, because an unnamed rule does nothing.** It's
 the one rule here that nobody in the business may approve: an order whose total
-disagrees with its line items is broken rather than unusual, which is why it
+disagrees with its line items is broken, not merely unusual, which is why it
 says `reject`. That word buys you nothing until an action names the rule. Left
 out of every `guards` list it would be a rule the catalog records and no call
 consults, and the strongest word in your policy would be the one with the least
@@ -571,13 +583,13 @@ effect.
 
 Naming it makes `IssueCredit` refuse to run against an order whose books already
 disagree. Catching the credit that *breaks* the agreement is a different check,
-against the state the write produces, and your model cannot bind one yet. Rule 3
+against the state the write produces, and your model can't bind one yet. Rule 3
 is the rule in this policy whose enforcement sits furthest from what it says.
 
 **Rules 4 and 5 are why the second body exists.** Neither reduces to arithmetic
 over `Order` and `LineItem`, and before `judgment` they had nowhere to go but a
-policy document nothing links to. Note what stays computable alongside them: the
-threshold in rule 2 is arithmetic, so it remains an expression a query settles
+policy document nothing links to. Notice what stays computable alongside them:
+the threshold in rule 2 is arithmetic, so it stays an expression a query settles
 and no model call is spent on. Folding rules 2, 4 and 5 into one paragraph of
 prose, on the grounds that a model could read all three, would throw that away.
 
@@ -585,8 +597,8 @@ prose, on the grounds that a model could read all three, would throw that away.
 review is a rule the business means as unappealable, and no expression detects
 it, so the alternative to writing it this way is leaving it out of your model.
 The pairing carries a real cost, because a language model can decide two
-identical credits differently and `reject` leaves nobody to appeal to. We
-publish it rather than forbid it, and we make it findable: every constraint
+identical credits differently and `reject` leaves nobody to appeal to. kcmd
+publishes it instead of forbidding it, and makes it findable. Every constraint
 carries a derived `evaluation` field, which reads `judged` here, so an auditor
 asking which unappealable rules your model settles gets an answer from one
 query.
@@ -616,18 +628,18 @@ Here are two calls against order 12345, which totals 142 dollars. One is a
 *Table 2: how each of the two calls fares against the five rules, and the
 outcome that wins.*
 
-The supervisor who gets the first call reviews a credit against an order rather
-than a SQL diff. The second call is the case the judged rules were added for:
-every gate a query can compute lets it through, because the policy is evaded by
+The supervisor who gets the first call reviews a credit against an order, not a
+SQL diff. The second call is the case the judged rules were added for: every
+gate a query can compute lets it through, because the policy is evaded by
 staying inside the arithmetic.
 
 When one call violates several guards, the strictest outcome applies. Any
 `reject` refuses the call; failing that, any `escalate` holds it; failing that,
 any `warn` lets it through with the violations reported.
 
-That combination is fixed, and no part of your model states it. It is why your
+That combination is fixed, and no part of your model states it. It's why your
 action can name any number of guards without you writing down how to combine
-them. It is also how `forbid` overrides `permit` in Cedar and how a deny wins in
+them. It's also how `forbid` overrides `permit` in Cedar and how a deny wins in
 Open Policy Agent, so a policy written this way lowers into either.
 
 An action whose guards are *all* judged loads with a warning. Every gate then
@@ -635,9 +647,9 @@ costs a model call, none can lower to a store-level check, and each may decide
 two identical calls differently. `IssueCredit` stays clear of that: three of its
 five guards are expressions.
 
-**Status: we settle a judgment, and we do not settle an expression.** kcmd
-parses both bodies, validates them, publishes them with the `guards` that name
-them, and reads them all back, along with a derived `evaluation` field reading
+**Status: kcmd settles a judgment, and doesn't settle an expression.** It parses
+both bodies, validates them, publishes them with the `guards` that name them,
+and reads them all back, along with a derived `evaluation` field reading
 `deterministic` or `judged` so a consumer can select on it. At run time,
 [`kcmd action run --judge`](#a-guard-settled-in-words) puts each judged guard to
 a language model and routes the verdict by `on_violation`. No component here
@@ -645,12 +657,12 @@ evaluates an expression against live data, so
 [`kcmd action run`](#7-run-it) refuses an action whose `guards` name one rather
 than apply a write your model says must be checked first — and `IssueCredit`
 names three. The two calls above are therefore what the published policy says
-should happen, rather than what kcmd does with this action today.
+should happen, not what kcmd does with this action today.
 
 kcmd reports a mismatch from either side. A guard that names no constraint fails
 the push. A constraint over parameters that no action names loads with a
 warning, because nothing will ever evaluate it. That scan reads expressions
-only: a judgment is prose, in which a word matching a parameter name is not a
+only: a judgment is prose, in which a word matching a parameter name isn't a
 read of that parameter.
 
 ## 3. Say what it changes
@@ -664,9 +676,9 @@ where you declare it:
         affects: [Account, Transfer]
 ```
 
-That is the coarse form: these concepts are touched, in a way your model does
-not spell out. It is enough to answer *which actions can change an account at
-all*, which is already more than an executor name answers.
+That's the coarse form: these concepts are touched, in a way your model doesn't
+spell out. It's enough to answer *which actions can change an account at all*,
+which is already more than an executor name answers.
 
 A record says more — which operation, and which fields the call writes:
 
@@ -681,7 +693,7 @@ A record says more — which operation, and which fields the call writes:
             operation: create
 ```
 
-Be precise about the concepts you have worked out and coarse about the rest. The
+Be precise about the concepts you've worked out and coarse about the rest. The
 two shapes sit in one list together, so a vague entry costs you nothing on the
 ones you know. Every `concept` — bare, or named under the key — has to be
 something the same model declares.
@@ -698,19 +710,18 @@ entities beside it.
 
 Use `create`, `modify` or `delete` — the same three whatever the concept is.
 
-An edge is not only attached and detached. A junction table backs a many-to-many
+An edge isn't only attached and detached. A junction table backs a many-to-many
 relationship, and that table has fields of its own. *Modify the grade on an
 Enrollment* is therefore as ordinary a change as *modify an order's total*. A
-vocabulary that gave edges only `add` and `remove` could not express that
-change.
+vocabulary that gave edges only `add` and `remove` couldn't express that change.
 
 Add `fields` to narrow a `create` or a `modify` to the fields the call writes,
-which is what makes *which actions can change `Account.balance`* answerable. A
-`delete` takes the whole instance, so we reject a field named beside one rather
-than ignore it.
+which makes *which actions can change `Account.balance`* answerable. A
+`delete` takes the whole instance, so a field named beside one is rejected,
+not ignored.
 
 Name the concept now and refine it later. Writing `- concept: Account` on its
-own says the same thing the bare `Account` does, and we write it back as the
+own says the same thing the bare `Account` does, and it's written back as the
 bare form.
 
 **Status: nothing consumes `affects` yet.** kcmd parses it, checks every concept
@@ -719,7 +730,7 @@ impact from it, routes on it, or checks it against what your executor does.
 
 ## 4. Check it before pushing
 
-Run this before you push, so a typo costs you a second rather than a round
+Run this before you push, so a typo costs you a second instead of a round
 trip:
 
 ```bash
@@ -727,7 +738,7 @@ kcmd push --validate-only
 ```
 
 Four things about an action can be statically wrong once your document parses,
-and we treat each one as a hard error:
+and each one is a hard error:
 
 ```
 action 'TransferFunds' in model 'payments' (payments.yaml) has parameter
@@ -745,18 +756,18 @@ which is neither an entity nor a relationship this model declares.
 ```
 
 A parameter type that resolves to neither an entity nor a scalar means your
-model cannot say what that argument denotes, which is the whole contribution an
-action makes. An executor missing a coordinate cannot be dispatched by whatever
+model can't say what that argument denotes, which is the whole contribution an
+action makes. An executor missing a coordinate can't be dispatched by whatever
 picks the action up. A guard can name a constraint your model never declares;
 `AmountIsPostive` here misspells the `AmountIsPositive` declared above, which
 leaves you believing the write is checked when nothing checks it. An `affects`
-entry naming `Acount` describes a blast radius over a concept that does not
+entry naming `Acount` describes a blast radius over a concept that doesn't
 exist, so anything reading it reads about nothing.
 
 kcmd checks the rest of an entry the same way and for the same reason. Fields
-beside a `delete` are a hard error, and so is a field the concept does not
+beside a `delete` are a hard error, and so is a field the concept doesn't
 declare. An operation outside `create` / `modify` / `delete` never gets this far
-— the vocabulary is closed, so your document does not parse at all. All of these
+— the vocabulary is closed, so your document doesn't parse at all. All of these
 checks are static, so they run on every push whatever the destination.
 
 ## 5. Push it
@@ -774,7 +785,7 @@ push deploys none of them.
 ```
 
 A graph-only `kcmd push --no-kc` therefore validates your actions and then warns
-that it will not deploy them.
+that it won't deploy them.
 
 In Knowledge Catalog, each action becomes its own entry, parented to the model
 entry, the same way a metric does. The entry carries one aspect holding the
@@ -803,9 +814,10 @@ aspects:
     instructions: Resolve both accounts before calling. Name the account the money leaves as `source`.
 ```
 
-We publish `affects` as you wrote it and nothing more. Whether `TransferDebits`
-is an entity or an edge is not stored: a consumer that needs to know reads it
-off your model, which is the one thing that can say so correctly after a rename.
+`affects` is published as you wrote it and nothing more. Whether
+`TransferDebits` is an entity or an edge isn't stored: a consumer that needs to
+know reads it off your model, which is the one thing that can say so correctly
+after a rename.
 
 Remove an action from your document and the next push deletes its entry, because
 your model owns the `<model>.actions.` id prefix. A catalog search can list the
@@ -830,7 +842,7 @@ Pull collects the `semantic-action` entries under your model entry and rebuilds
 each action, so a name, a description, an executor, typed parameters, its
 `guards`, its `affects`, and `ai_context.instructions` survive the round trip
 unchanged. [What push and pull preserve](fidelity.md) lists which parts of a
-model survive that trip and which do not.
+model survive that trip and which don't.
 
 ## 7. Run it
 
@@ -843,7 +855,7 @@ kcmd action run TransferFunds --arg source="Alice Checking" \
     --arg target=ACC-2 --arg amount=250
 ```
 
-That second command does not succeed against the model built up on this page.
+That second command doesn't succeed against the model built up on this page.
 `TransferFunds` is guarded by an expression, and
 [an expression guard refuses the call](#why-a-guarded-action-is-refused). What
 follows describes an action that names no guard;
@@ -867,7 +879,7 @@ Model 'payments' (payments_eg), profile 'operational':
 
 ### How a row is identified
 
-An entity-typed parameter takes an object reference rather than a value, so
+An entity-typed parameter takes an object reference, not a value, so
 `--arg source="Alice Checking"` has to become one specific row before anything
 can run. Two separate things decide which rows your action touches, and
 conflating them is the easiest way to misread what an action does:
@@ -894,29 +906,28 @@ SELECT account_id FROM account
 WHERE account_id = @ref0 OR name = @ref LIMIT 2
 ```
 
-We build the `WHERE` from two things your entity declares:
+That `WHERE` comes from two things your entity declares:
 
 - **Its `primary_key`.** `Account` declares `primary_key: [accountId]`, and
-  `accountId` is bound to the column `account_id`, so we compare the input
+  `accountId` is bound to the column `account_id`, so the input is compared
   against that column. This answers "how does it know which column is the key" —
-  your model says so, and we infer nothing from the database. One argument
-  cannot name a key of several columns, so an entity keyed that way is reachable
+  your model says so, and nothing is inferred from the database. One argument
+  can't name a key of several columns, so an entity keyed that way is reachable
   only through the identifying field below.
 - **An identifying text field, if your entity has one.** That means a `String`
-  field that is not part of the key, bound to a plain column, and *named*
-  `name`, `full_name`, `title`, `label` or `display_name`. `Account` declares
-  `name`, so `"Alice Checking"` and the account id both find the same row. We
-  match on the field's name in your model rather than the column's name in your
-  store.
+  field that isn't part of the key, bound to a plain column, and *named* `name`,
+  `full_name`, `title`, `label` or `display_name`. `Account` declares `name`, so
+  `"Alice Checking"` and the account id both find the same row. The match is on
+  the field's name in your model, not the column's name in your store.
 
-We compare the input against each column as that column's own type, so a key
+Each input is compared against a column as that column's own type, so a key
 declared `Integer` is compared only when the input is a number. `"Alice
-Checking"` is not, so we drop that predicate rather than cast it. If nothing is
-left to compare, we send no query at all.
+Checking"` isn't, so that predicate is dropped instead of cast. If nothing is
+left to compare, no query is sent at all.
 
 One row has to come back, and one only. No match gives you `No Account matches
-'Alice Checking'.` Two or more rows are ambiguous, so we list the candidates by
-key and you pick one. A name is not required to be unique, so two accounts can
+'Alice Checking'.` Two or more rows are ambiguous, so the candidates are listed
+by key and you pick one. A name isn't required to be unique, so two accounts can
 carry `Alice Checking`:
 
 ```
@@ -924,13 +935,13 @@ Error: 'Alice Checking' matches more than one Account (7, 12); use a key to
 disambiguate.
 ```
 
-We report both rather than guess, because both are things you can act on.
+kcmd reports both instead of guessing, because both are things you can act on.
 
 **Targeting the write.** Resolution produces a *value*, which your statement
 then uses. How many rows that statement lands on is its own `WHERE` clause's
 business, and nothing would stop one that hits every dormant account. `affects`
-does not limit the blast radius either — it *declares* it, so that a reader
-knows what the write is about and an evaluator can one day check the statements
+doesn't limit the blast radius either — it *declares* it, so that a reader knows
+what the write is about and an evaluator can one day check the statements
 against what you declared.
 
 `kcmd action run` does three things:
@@ -956,16 +967,16 @@ against what you declared.
 *Figure 3: kcmd resolves each entity argument to a key, binds every value as a
 typed parameter, and applies the statements in one transaction.*
 
-We interpolate nothing into a statement. Every argument goes in as a query
+Nothing is interpolated into a statement. Every argument goes in as a query
 parameter, and the argument's declared ontology type decides the store type that
 parameter takes. Any failure before the commit rolls back, so no partial write
 survives, and a commit your store *refuses* wrote nothing either. The commonest
 refusal is Spanner's `ABORTED` under lock contention, and the answer to it is to
 run the action again.
 
-The third outcome is the one kcmd cannot settle: a timeout or a 5xx, where your
-store may have applied the write and lost the response. We report that as
-unknown rather than as a rollback. A caller who reads "nothing happened" would
+The third outcome is the one kcmd can't settle: a timeout or a 5xx, where your
+store may have applied the write and lost the response. That's reported as
+unknown, not as a rollback. A caller who reads "nothing happened" would
 retry a write your store had in fact applied.
 
 Where the write goes is your model's Spanner deployment target under the
@@ -973,8 +984,8 @@ selected profile. The command line never names a database. Use `--profile` to
 change the store, and [push](profiles.md) follows the same rule.
 
 Only a `sql` executor runs. An `mcp`, `rest` or `grpc` executor names an
-operation in another system, which kcmd cannot call and could not roll back if
-the commit failed, so we refuse rather than half-perform the write:
+operation in another system, which kcmd can't call and couldn't roll back if the
+commit failed, so the call is refused rather than half-performed:
 
 ```
 Error: Action 'TransferFunds' is executed by MCP, which runs outside this
@@ -995,17 +1006,17 @@ does not evaluate constraints yet. Running it would apply a write the model says
 must be checked first, so it is refused rather than run unchecked.
 ```
 
-Only `guards` makes a call one of these, which applies
-[section 2](#2-gate-it-with-a-constraint)'s rule here. If your action does not
-name a constraint, this call does not consult it, and the runtime does not go
-looking for one. Otherwise publishing a rule could start refusing calls that
+Only `guards` makes a call one of these, which is
+[section 2](#2-gate-it-with-a-constraint)'s rule applied here. If your action
+doesn't name a constraint, this call doesn't consult it, and the runtime doesn't
+go looking for one. Otherwise publishing a rule could start refusing calls that
 succeeded the day before.
 
 The exception is a constraint declaring `onViolation: warn`. An advisory rule
-reports a violation rather than rejecting one, so gating on it would
-permanently block every run of a model that states advisory rules.
+reports a violation instead of rejecting one, so gating on it would permanently
+block every run of a model that states advisory rules.
 
-We decide every refusal before opening a session, so a refused action leaves no
+Every refusal is decided before a session opens, so a refused action leaves no
 transaction behind.
 
 ### A guard settled in words
@@ -1063,7 +1074,7 @@ Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/sem
 Committed at 2026-09-14T06:06:38.679692Z.
 ```
 
-**We settle the rule before opening the transaction.** A model call takes
+**The rule is settled before the transaction opens.** A model call takes
 seconds, and holding write locks across one costs more than it buys, so the
 order is: ask the judge, refuse with nothing touched, then open the transaction.
 Two things follow. No judge sees the state that the write produces, so a rule
@@ -1072,9 +1083,9 @@ two calls racing each other can each be allowed against a total that neither
 will leave behind — a rule that has to hold under concurrency is an expression
 too.
 
-**We give the judge the attempted call.** It receives the rule's text, the
-action's name and description, and the arguments as the caller stated them —
-`order=12347` rather than the `Order` row that value resolves to. That is the
+**The judge gets the attempted call.** It receives the rule's text, the action's
+name and description, and the arguments as the caller stated them —
+`order=12347`, not the `Order` row that value resolves to. That's the
 whole of what it has, unless your run also passes `--judge-reads-store`.
 
 **The routing word decides what a verdict does.** `on_violation` is the same
@@ -1103,8 +1114,9 @@ no judge or the model call failed, nothing was learned about the rule, and
 write through and warns, naming the rule and ending "was not checked: this run
 was given no judge to ask". Committing in silence would tell you every rule
 passed when one was never put to anybody. A guard declaring `reject` or
-`escalate` stops the call. We report expression guards the run skipped the same
-way, one warning line each, because supplying a judge settles no expression.
+`escalate` stops the call. Expression guards the run skipped are reported the
+same way, one warning line each, because supplying a judge settles no
+expression.
 
 **Status: an expression guard that refuses stops the call before any judge is
 asked.** An expression declaring `reject` or `escalate` refuses the action above
@@ -1117,15 +1129,15 @@ judged rule alone — which is also why they load with the all-judged warning.
 
 ### A guard that reads a row
 
-Some rules cannot be settled from the call alone. *The credit must not exceed
-the total of the order it is applied to* compares an argument against a number
-in your database, and the caller is under no obligation to state it correctly.
+Some rules can't be settled from the call alone. *The credit must not exceed the
+total of the order it is applied to* compares an argument against a number in
+your database, and the caller is under no obligation to state it correctly.
 `--judge-reads-store` sends the judge to read it.
 
-Two things have to be in place. The flag says what a judge may do rather than
-hiring one, so pass `--judge` alongside it. And your profile has to bind the
+Two things have to be in place. The flag says what a judge may do; it doesn't
+hire one, so pass `--judge` alongside it. And your profile has to bind the
 entities the rule talks about to tables, because that binding is the whole of
-what we tell the judge about your database; with nothing bound, the run stops
+what the judge is told about your database; with nothing bound, the run stops
 before it starts and says so.
 
 Then write the rule so the judge goes and looks — it decides that for itself,
@@ -1167,7 +1179,7 @@ Nobody wrote that statement: the judge composed it from the rule's sentence and
 the tables your profile binds. kcmd prints every one, because a read made on
 your behalf is yours to check.
 
-**What the read buys you is a verdict the caller cannot argue with.** The same
+**What the read buys you is a verdict the caller can't argue with.** The same
 order again, a credit of $200, and a memo asserting the order is worth $900:
 
 ```
@@ -1184,15 +1196,15 @@ transaction was opened, so nothing was written.
 
 The judge read the row, compared the argument against $162.85, and paid no
 attention to the $900 in the memo. Drop the flag and the same call is refused
-for the opposite reason: the judge says it cannot get the total.
+for the opposite reason: the judge says it can't get the total.
 
 **The judge sees what your model declares.** The entities, tables and columns in
-its instructions come from your binding profile, so a column your model does not
-bind is one we never tell the judge exists. The dialect comes from there too:
+its instructions come from your binding profile, so a column your model doesn't
+bind is one the judge is never told exists. The dialect comes from there too:
 the rule above produces GoogleSQL against `Orders.total` under a Spanner profile
 and PostgreSQL against `purchase_order.order_total` under an AlloyDB one.
 
-**A judge cannot write.** Every statement has to be a single command beginning
+**A judge can't write.** Every statement has to be a single command beginning
 with `SELECT` or `WITH`, and what reaches your store is that text wrapped as
 `SELECT * FROM (...) AS judge_read LIMIT 21`, which the server refuses unless it
 really is a query. That wrap stops short of a query calling a function that
@@ -1200,24 +1212,24 @@ writes, so give the action credentials no wider than the tables your model
 binds.
 
 **Keep the rule settleable from a few rows.** At most 20 rows come back, each
-value clipped at 200 characters, and we tell the judge when its answer was cut
+value clipped at 200 characters, and the judge is told when its answer was cut
 short. A rule needing a scan, a join across the history, or a total of its own
 belongs in an `expression`.
 
-**Reading costs model calls.** Asking and answering cannot be the same request,
+**Reading costs model calls.** Asking and answering can't be the same request,
 so a guard with a store attached costs two calls rather than one even when it
 reads nothing, and each further round of reading adds one more. The demo's four
 judged guards read once between them and cost nine calls.
 
 The race described under
 [a guard settled in words](#a-guard-settled-in-words) applies here too, and
-reading does not change it: the judge reads committed state, before the
+reading doesn't change it: the judge reads committed state, before the
 transaction opens.
 
 ## 8. Hand it to an agent
 
-Here is what the previous seven steps were for. An agent needs two things from
-your model: a way to find what is there, and a way to change it. Your entities
+This is what the previous seven steps were for. An agent needs two things from
+your model: a way to find what's there, and a way to change it. Your entities
 already say what can be looked at and your actions already say what can be done,
 so you write neither half by hand. One command prints what an agent would be
 handed:
@@ -1290,9 +1302,9 @@ Model 'payments' (payments_eg), profile 'operational':
       you cannot approve it yourself. Finish by saying what you changed.
 ```
 
-That is three things — one **write tool** for the action, one **lookup tool**
-for each entity, and one **instruction** for whatever agent holds them. Every
-line of it comes from a key in one of your two files, and each key produces one
+That's three things — one **write tool** for the action, one **lookup tool** for
+each entity, and one **instruction** for whatever agent holds them. Every line
+of it comes from a key in one of your two files, and each key produces one
 thing:
 
 ```
@@ -1358,8 +1370,8 @@ performs, with the same argument resolution, the same single transaction and the
 same three outcomes.
 
 A **lookup tool** reads one entity: exact match on any bound field, combined
-with AND, capped at 50 rows. It cannot join, compare ranges, aggregate or order.
-That is enough to turn `"Alice Checking"` into the account id your write tool
+with AND, capped at 50 rows. It can't join, compare ranges, aggregate or order.
+That's enough to turn `"Alice Checking"` into the account id your write tool
 needs, and it keeps the generated SQL checkable by eye. Table and column names
 come from your binding and every filter value is a bound parameter, so no caller
 text reaches the SQL.
@@ -1367,20 +1379,21 @@ text reaches the SQL.
 A lookup is named for its entity, and an action keeps its own name when the two
 collide. An entity named `Account` and an action named `FindAccount` both derive
 `find_account`. The action takes that name, because you wrote it, and the lookup
-becomes `lookup_account`. Deriving both halves together is what lets us notice
-the collision at all.
+becomes `lookup_account`. The collision is visible only because both halves get
+derived together.
 
 ### A tool says whether it can be called
 
 `transfer_funds` above is listed and marked `[NOT RUNNABLE]`. `TransferFunds`
-names a guard stated as an expression, nothing here evaluates one, and so we
-report the [refusal from section 7](#why-a-guarded-action-is-refused) here
-instead — before any agent exists, rather than inside a transaction.
+names a guard stated as an expression, nothing here evaluates one, and so the
+[refusal from section 7](#why-a-guarded-action-is-refused) is reported here
+instead — before any agent exists, instead of inside a transaction.
 
-We mark an action guarded by a judgment the same way when the derivation holds
-no judge, and for the same reason: what we report is what the runtime *would* do
-with what it is holding, and with no judge it would refuse. Supply one, and the
-same action is offerable, with the same description and the same parameters:
+An action guarded by a judgment is marked the same way when the derivation holds
+no judge, and for the same reason: what gets reported is what the runtime
+*would* do with what it's holding, and with no judge it would refuse. Supply
+one, and the same action is offerable, with the same description and the same
+parameters:
 
 ```console
 $ kcmd agent tools --judge
@@ -1390,22 +1403,21 @@ Rules stated in words go to gemini-2.5-flash (us-central1).
 ```
 
 The flag takes an optional model name, the same way [`kcmd action run
---judge`](#a-guard-settled-in-words) does. The flag does not call a judge. A
+--judge`](#a-guard-settled-in-words) does. The flag doesn't call a judge. A
 judge settles a rule when an action runs, and printing what an agent is offered
 runs no action, so this listing costs you nothing however many guarded actions
 it names.
 
-The judge belongs to the derivation rather than to each invocation, which is the
+The judge belongs to the derivation, not to each invocation, which is the
 one place this is easy to get wrong. Whether a guarded action can be offered *at
 all* depends on holding a judge, so the same object has to answer `runnable` and
 answer the call. A tool derived with a judge and then invoked without one would
-be advertised as callable and refused mid-call, which is the drift the next
-paragraph is about.
+be advertised as callable and refused mid-call.
 
-We still return the tool, still named and still described. An action that your
-model declares should not vanish from the set your model offers, and the useful
-thing to print is what that action is waiting on. Both halves carry a
-`runnable` flag, and `unavailable` carries the reason:
+The tool still comes back, still named and still described. An action your model
+declares shouldn't vanish from the set your model offers, and the useful thing
+to print is what that action is waiting on. Both halves carry a `runnable` flag,
+and `unavailable` carries the reason:
 
 | A write tool is withheld when | A lookup is withheld when |
 |-------------------------------|---------------------------|
@@ -1415,14 +1427,14 @@ thing to print is what that action is waiting on. Both halves carry a
 | a parameter references an entity keyed by several columns | |
 | the statements ask for a generated key a UUID cannot fill | |
 
-*Table 5: the conditions under which we withhold a write tool or a lookup
-tool.*
+*Table 5: the conditions under which a write tool or a lookup tool is
+withheld.*
 
-The derivation asks the runtime for that verdict rather than working it out
-again, so the two cannot drift. Drift costs you something in both directions. A
-tool that is advertised as runnable but refuses every call spends your agent's
-turn and teaches it nothing. A tool withheld that would have worked is never
-discovered at all.
+The derivation asks the runtime for that verdict instead of working it out
+again, so the two can't drift. Drift costs you something in both directions. A
+tool advertised as runnable that refuses every call spends your agent's turn and
+teaches it nothing. A tool withheld that would have worked is never discovered
+at all.
 
 ### Calling it from code
 
@@ -1445,10 +1457,10 @@ if (!runtime.store) throw new Error(runtime.storeError);
 const {callable, withheld, instruction} = callableTools(modelTools({runtime}));
 ```
 
-`modelTools` also takes `judge`, and passing one is what makes an action guarded
-by a judgment callable at all. `GeminiJudge` implements the seam over Vertex AI;
-anything with a `decide` method does. Omit it and we still derive such an
-action, still named and still described, and report it in `withheld`.
+`modelTools` also takes `judge`, and an action guarded by a judgment is callable
+only when you pass one. `GeminiJudge` implements the seam over Vertex AI;
+anything with a `decide` method does. Omit it and such an action is still
+derived, still named and still described, and reported in `withheld`.
 
 One call returns a runtime for every model document in your entry group. Each
 runtime carries the store that its deployment target names, the profile it was
@@ -1457,35 +1469,35 @@ can say which file and which profile produced it.
 
 A store is typed by its backend: `runtime.store.kind` is `'spanner'` or
 `'bigquery'`, and only a Spanner store can be written to. A model whose profile
-binds no store at all still gets a runtime, with `storeError` saying why. We
-still derive its tools, each marked unavailable for that reason, so your agent
-is told what the model offers and why it cannot reach it.
+binds no store at all still gets a runtime, with `storeError` saying why. Its
+tools are still derived, each marked unavailable for that reason, so your agent
+is told what the model offers and why it can't reach it.
 
-Go through `createSemanticRuntimes` rather than building a client yourself. It
-is also the check that every entity is bound to a table in the store your
-profile targets. Without it, a model could be bound to some other system, and a
-lookup derived from that model would read whatever table of that name your
-target store happens to hold.
+Go through `createSemanticRuntimes` instead of building a client yourself. It's
+also the check that every entity is bound to a table in the store your profile
+targets. Without it, a model could be bound to some other system, and a lookup
+derived from that model would read whatever table of that name your target store
+happens to hold.
 
 `modelTools` returns `{lookups, actions, instruction}` — the three things the
 listing printed. `callableTools` then sorts both halves into the ones this
-binding can serve and the ones it cannot, which is a split every adapter has to
+binding can serve and the ones it can't, which is a split every adapter has to
 make and the same split every time. Offer `callable` to your agent, and report
-`withheld` rather than hiding it. We export `actionTools` and `entityTools` for
-a caller that wants one half.
+`withheld` instead of hiding it. `actionTools` and `entityTools` are exported
+for a caller that wants one half.
 
 Each tool is a name, a description, typed parameters and `invoke(args)`, so
 binding one to ADK, to LangChain or to an MCP server is a short adapter over
 that shape, and a second framework costs you nothing here. Nothing in this
 module imports an agent framework.
 
-`invoke` answers with three states. A write that landed and a write that did not
+`invoke` answers with three states. A write that landed and a write that didn't
 are the obvious two. The third is a commit whose result nothing can establish,
-which we report as unknown with an explicit "do not retry", because a caller
-reading it as "nothing happened" applies the write twice.
+reported as unknown with an explicit "do not retry", because a caller reading it
+as "nothing happened" applies the write twice.
 
-Pass `handler` for an executor this runtime cannot perform itself. We do not
-pass it to an action with a `sql` executor. Such an action claims that what runs
+Pass `handler` for an executor this runtime can't perform itself. It isn't
+passed to an action with a `sql` executor. Such an action claims that what runs
 is what the catalog published, and one handler serves the whole model, so
 passing it through would retract that claim for every such action at once.
 
@@ -1495,16 +1507,16 @@ The instruction at the foot of the listing has two parts, because two different
 people own them.
 
 One part is your model's own `ai_context.instructions` — what this business asks
-of anything that acts on it. It belongs to the model because it is true of every
+of anything that acts on it. It belongs to the model because it's true of every
 agent that acts on the model, including the ones nobody has written yet. It also
 belongs there because an agent can keep a rule in its own source, and someone
 can change that rule without the people who own the model finding out. Agents
-are replaced when frameworks change; your model is not.
+get replaced when frameworks change; your model doesn't.
 
-The other part is about the tools rather than the business: what a lookup is
+The other part is about the tools, not the business: what a lookup is
 for, and what a refused write means. The derivation owes that half, because it
 describes a contract this module defines and your model never stated. Written
-into each agent instead, it is the same paragraph copied into every adapter,
+into each agent instead, it's the same paragraph copied into every adapter,
 drifting in each one.
 
 So an agent that appends a persona of its own is saying something your model did
@@ -1519,10 +1531,10 @@ Thirteen of those lines are the adapter onto the agent framework. Its README
 walks the same steps and reaches all three of `on_violation`'s outcomes against
 that store: a $30 credit held because the model's $25 self-service ceiling is
 `escalate`, a credit written with a warning because the memo names no service
-failure, and a credit refused outright because the memo admits it is one piece
-of a larger amount.
+failure, and a credit refused outright because the memo admits it's one piece of
+a larger amount.
 
-It also states what that costs and what it cannot do. The model guards on four
+It also states what that costs and what it can't do. The model guards on four
 judgments and the judge it hires can query the store, so the demo loads with the
 all-judged warning and pays two model calls per guard, plus one for each round
 of reading. That came to nine calls in the run its README captures. One rule is
@@ -1531,22 +1543,22 @@ statement about the state the write leaves behind, and guards settle before the
 write. And the split-credit rule fires only because the model tells callers to
 disclose a split in the memo, which makes it a check on honest mistakes rather
 than a control. The version that would hold regardless counts the credits
-already on the order, which a reading judge could do and this model does not ask
+already on the order, which a reading judge could do and this model doesn't ask
 it to.
 
 ## What is not modeled yet
 
 This is a prototype. Three things you might reasonably expect are absent.
 
-- **We check only a rule stated in words.** `kcmd action run --judge` settles a
-  guard whose constraint carries a `judgment`. No component evaluates an
-  expression against live data, and we refuse an action guarding on one rather
-  than run it. The gap is loud where your model states that a rule gates the
-  call, and it is still a gap. Whoever wrote a statement owns the correctness of
+- **Only a rule stated in words gets checked.** `kcmd action run --judge`
+  settles a guard whose constraint carries a `judgment`. No component evaluates
+  an expression against live data, and an action guarding on one is refused
+  rather than run. The gap is loud where your model states that a rule gates the
+  call, and it's still a gap. Whoever wrote a statement owns the correctness of
   what it does.
 - **kcmd calls no executor but its own.** A `sql` action runs; an `mcp`, `rest`
   or `grpc` one is published for whoever dispatches it, which is why those three
-  name coordinates rather than a statement.
+  name coordinates instead of a statement.
 - **The store is Spanner or AlloyDB.** `kcmd action run` resolves, binds and
   transacts against the database your profile's deployment target names, which
   may be either of those. A model bound to BigQuery publishes its actions and
