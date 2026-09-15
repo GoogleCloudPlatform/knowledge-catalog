@@ -193,8 +193,8 @@ refers to nothing.
 ### Writing the statements in the model
 
 The three kinds above name a system that performs the write, which leaves the
-write opaque to your model: it can state which concepts a call changes in an
-`affects` list, and nothing can check that list against reality. The fourth
+write opaque to your model. Your model can state which concepts a call changes
+in an `affects` list, and nothing can check that list against reality. The fourth
 kind, `sql`, carries the write itself, so what your action does becomes
 readable — and checkable — from the model.
 
@@ -224,9 +224,8 @@ and its fields' `expression` keys bind it to.
 kcmd does translate a metric. You write `Account.balance`, and kcmd turns it
 into `account.balance` before any SQL reaches your store. An action's statements
 get no such pass, so the statement that runs is the one you reviewed. The only
-model names a
-statement may use are the `@parameter` references, which name the parameters the
-action declares.
+model names a statement may use are the `@parameter` references, which name the
+parameters the action declares.
 
 Nothing catches a model name before the call. Validation checks that each
 statement is one DML verb, contains no `;`, and binds only declared parameters —
@@ -265,7 +264,7 @@ That stays safe only while the statements stay narrow, and push holds you to it:
   was never declared.
 
 An action that **creates** a row needs a key for it, and that key can't come
-from the caller: an agent that picks its own primary keys can overwrite an
+from the caller. An agent that picks its own primary keys can overwrite an
 existing row by choosing one already taken. Declare the creation in `affects`
 and refer to the generated key as `@new<Concept>Key`:
 
@@ -401,9 +400,9 @@ text and can't settle the question. Write such a rule in `judgment` instead of
 ```
 
 A constraint declares one body or the other, never both and never neither. A
-judgment has to state `on_violation`, and it may state any of the three words.
-Leaving the key out is the one thing it may not do: an unmarked constraint
-rejects, and that's too strong a consequence to inherit by silence.
+judgment must state `on_violation`, and any of the three words will do. Omit it
+and the push fails, because an unmarked constraint would reject, and that's too
+strong a consequence to inherit by silence.
 
 ### Writing a judgment
 
@@ -461,8 +460,8 @@ transaction or in your schema.
 Real policies have several rules, and the rules rarely end the same way. Take
 the policy governing a customer-service credit, stated the way a business states
 it. A support agent is about to issue one, and five separate rules bear on
-whether they may. The listing below puts the two things your model has to settle
-beside each rule:
+whether they may. The listing below puts each rule beside how it's written and
+what a breach of it does:
 
 ```
   the business rule                        written as   a breach
@@ -556,12 +555,10 @@ own `on_violation`:
 Read down the `on_violation` column and you get the branching your policy
 describes in prose, in a column a search can read.
 
-**Rule 3 is named like the rest, because an unnamed rule does nothing.** It's
-the one rule here that nobody in the business may approve: an order whose total
-disagrees with its line items is broken rather than merely unusual, so the
-constraint
-declares `reject`. That word takes effect only once `IssueCredit` names the
-rule in `guards`.
+**Rule 3 declares `reject`, because it's the one rule here nobody in the
+business may approve.** An order whose total disagrees with its line items is
+broken rather than merely unusual. That word takes effect only once
+`IssueCredit` names the rule in `guards`.
 
 Naming it makes `IssueCredit` refuse to run against an order whose books already
 disagree. Catching the credit that *breaks* the agreement is a different check,
@@ -570,9 +567,9 @@ is the rule in this policy whose enforcement sits furthest from what it says.
 
 **Rules 4 and 5 are why the second body exists.** Neither reduces to arithmetic
 over `Order` and `LineItem`, and before `judgment` they had nowhere to go but a
-policy document nothing links to. Notice what stays computable alongside them:
-the threshold in rule 2 is arithmetic, so it stays an expression a query settles
-and no model call is spent on.
+policy document nothing links to. Not everything in the policy has to move,
+though. The threshold in rule 2 is arithmetic, so it stays an expression a query
+settles and no model call is spent on.
 
 **Rule 5 is a judgment that declares `reject`.** Splitting a credit to evade
 review is a rule the business means as unappealable, and no expression detects
@@ -611,19 +608,18 @@ outcome that wins.*
 
 The supervisor who gets the first call reviews a credit against an order
 rather than a SQL diff. The second call is the case the judged rules were added
-for: every
-gate a query can compute lets it through, because each 9-dollar credit sits
-under the order's total and under the 25-dollar ceiling on its own, and only
-reading the three together as one 27-dollar credit puts them over it.
+for. Every gate a query can compute lets it through, because each 9-dollar
+credit sits under the order's total and under the 25-dollar ceiling on its own,
+and only reading the three together as one 27-dollar credit puts them over it.
 
 When one call violates several guards, the strictest outcome applies. Any
 `reject` refuses the call; failing that, any `escalate` holds it; failing that,
 any `warn` lets it through with the violations reported.
 
-That combination is fixed, and no part of your model states it. It's why your
-action can name any number of guards without you writing down how to combine
-them. It's also how `forbid` overrides `permit` in Cedar and how a deny wins in
-Open Policy Agent, so a policy written this way lowers into either.
+That combination is fixed, and no part of your model states it, so your action
+can name any number of guards without you writing down how to combine them. The
+same precedence is how `forbid` overrides `permit` in Cedar and how a deny wins
+in Open Policy Agent, so a policy written this way lowers into either.
 
 An action whose guards are *all* judged loads with a warning. Every gate then
 costs a model call, none can lower to a store-level check, and each may decide
