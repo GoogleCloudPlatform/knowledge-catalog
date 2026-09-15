@@ -650,10 +650,10 @@ Be precise about the concepts you've worked out and coarse about the rest. The
 two shapes sit in one list together, so a vague entry costs you nothing on the
 ones you know.
 
-Each entry is checked against your ontology and never against the executor.
-kcmd confirms that the concept exists and that the fields do, and has no way to
-confirm the write stays inside what you named. `affects` declares the blast
-radius rather than limiting it.
+`affects` declares the blast radius rather than limiting it. Naming one field
+doesn't stop a statement from writing others, and naming two concepts doesn't
+stop a call from touching a third; the list records what you mean the call to
+do.
 
 ### What an entry may say
 
@@ -683,14 +683,12 @@ Name the concept now and refine it later. Writing `- concept: Account` on its
 own says the same thing the bare `Account` does, and it's written back as the
 bare form.
 
-### A created row gets its key from kcmd
+### Declaring a `create` turns on key generation
 
-An action whose statements **create** a row has that row's primary key
-generated for it — a UUID, bound as `@new<Concept>Key`. An agent that picks its
-own primary keys can overwrite an existing row by choosing one already taken,
-so where a statement binds that name the value comes from the runtime and no
-argument of the call can reach it. Declaring the creation in `affects` is what
-turns the generation on:
+One entry in `affects` does more than describe the write. Writing
+`operation: create` tells kcmd to generate the new row's primary key — a UUID,
+bound as `@new<Concept>Key` — which your statement then uses like any other
+bound value:
 
 ```yaml
         executor:
@@ -702,6 +700,11 @@ turns the generation on:
         affects:
           - { concept: Transfer, operation: create }
 ```
+
+The generation is there because an agent that picks its own primary keys can
+overwrite an existing row by choosing one already taken. So where a statement
+binds that name, the value comes from the runtime and no argument of the call
+can reach it.
 
 Only a `sql` executor generates a key. An `mcp`, `rest` or `grpc` action can
 declare a `create` and gets nothing bound, because the system on the other side
@@ -719,9 +722,10 @@ supplies its own key is never refused over a generated one it doesn't use.
 **Status: nothing compares `affects` to what your executor does.** kcmd parses
 it, checks the concepts against your ontology, publishes it and reads it back,
 and no component reconciles the declaration with the statements or the tool
-call. kcmd does route on `affects`, in two places. Resolving your model through
-a binding profile drops any action affecting a concept the profile can't bind,
-so that action never reaches the catalog. Publishing an action whose affected
+call. Three things beyond those checks read it. Key generation is the one
+above. Resolving your model through a binding profile drops any action
+affecting a concept the profile can't bind, so that action never reaches the
+catalog. Publishing an action whose affected
 concept has no entry in the same push warns you that the catalog now records a
 blast radius naming something it can't resolve.
 
