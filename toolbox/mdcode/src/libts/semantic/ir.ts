@@ -455,11 +455,12 @@ export const SQL_EXECUTOR_VERBS = ['INSERT', 'UPDATE', 'DELETE'] as const;
  * The bound parameter carrying the key of a row the action creates.
  *
  * An action that inserts a row needs a key for it, and the key cannot come from
- * the caller: an agent that picks its own primary keys can overwrite an existing
- * row by choosing a key that is already taken. So a runtime generates one per
- * `affects` entry whose operation is `create`, binds it under this name, and
- * records it as touched so the constraint probes cover the new row. A statement
- * refers to it the same way it refers to any other parameter.
+ * the caller. An agent that picks its own primary keys can overwrite an
+ * existing row by choosing a key that is already taken, so a runtime generates
+ * one per `affects` entry whose operation is `create` and binds it under this
+ * name. Only a `sql` executor reads it: planFromExecutor is what binds these,
+ * and it refuses any other kind. A statement refers to the key the same way it
+ * refers to any other parameter.
  */
 export function generatedKeyParam(concept: string): string {
   return `new${concept}Key`;

@@ -12,7 +12,7 @@ An **action** closes that gap. It's a named write operation declared over the
 same concepts as the rest of your model: you give it a name, type its inputs
 against your ontology, and say which concepts a call changes. Publishing it puts
 the operation in the same place as the data it acts on, so an agent that
-discovers your model discovers what it can change there, not just what it can
+discovers your model discovers what it can change there as well as what it can
 ask.
 
 One part of an action is physical — how the write actually happens. That part
@@ -85,7 +85,7 @@ semantic_model:
         primary_key: [transferId]
         source: my-project.bank.transfer
         fields:
-          - { name: transferId, datatype: Integer, expression: transfer_id }
+          - { name: transferId, datatype: String,  expression: transfer_id }
           - { name: amount,     datatype: Float,   expression: amount }
           - { name: debitedId,  datatype: Integer, expression: debited_account_id }
     relationships:
@@ -648,28 +648,36 @@ A record says more — which operation, and which fields the call writes:
 
 Be precise about the concepts you've worked out and coarse about the rest. The
 two shapes sit in one list together, so a vague entry costs you nothing on the
-ones you know. Every `concept` — bare, or named under the key — has to be
-something the same model declares.
+ones you know.
 
-### One key for both kinds
+Each entry is checked against your ontology and never against the executor.
+kcmd confirms that the concept exists and that the fields do, and has no way to
+confirm the write stays inside what you named. `affects` declares the blast
+radius rather than limiting it.
+
+### What an entry may say
 
 `concept` takes an entity or a relationship, written the same way for either
 kind — your model already records which one it is. `TransferDebits` above is
-the edge from the example model, and it sits in the list exactly like the two
-entities beside it.
+the edge from the example model, and it sits in the list beside the two
+entities. Either way the name has to be one the same model declares.
 
-### The operations
+`operation` is `create`, `modify` or `delete`, the same three whatever the
+concept is, and a fourth word means your document doesn't parse. Leaving it out
+gives you the coarse form one entry at a time, covering every operation on that
+concept. Two entries on one concept with the same operation are a hard load
+error, and a bare entry beside one with an operation warns, because the bare
+one already covered what the second narrows.
 
-Use `create`, `modify` or `delete` — the same three whatever the concept is.
+`fields` names what a `create` or a `modify` writes, which makes *which actions
+can change `Account.balance`* answerable. A `delete` takes the whole instance,
+so a field named beside one is rejected rather than ignored.
 
-`modify` covers an edge too: a junction table backs a many-to-many relationship
-and has fields of its own, so *modify the grade on an Enrollment* is as
-ordinary a change as *modify an order's total*.
-
-Add `fields` to narrow a `create` or a `modify` to the fields the call writes,
-which makes *which actions can change `Account.balance`* answerable. A
-`delete` takes the whole instance, so a field named beside one is rejected,
-not ignored.
+On a relationship, `fields` means the junction table's own columns, so *modify
+the grade on an Enrollment* is as ordinary a change as *modify an order's
+total*. A plain foreign-key edge carries no columns of its own, and
+`TransferDebits` is one, so naming a field on it is an error — the property you
+meant belongs to an endpoint entity.
 
 Name the concept now and refine it later. Writing `- concept: Account` on its
 own says the same thing the bare `Account` does, and it's written back as the
@@ -677,11 +685,12 @@ bare form.
 
 ### A created row gets its key from kcmd
 
-When an action **creates** a row, kcmd generates that row's primary key — a
-UUID — and binds it as `@new<Concept>Key`. The caller never supplies it,
-because an agent that picks its own primary keys can overwrite an existing row
-by choosing one already taken. Declaring the creation in `affects` turns the
-generation on:
+An action whose statements **create** a row has that row's primary key
+generated for it — a UUID, bound as `@new<Concept>Key`. An agent that picks its
+own primary keys can overwrite an existing row by choosing one already taken,
+so where a statement binds that name the value comes from the runtime and no
+argument of the call can reach it. Declaring the creation in `affects` is what
+turns the generation on:
 
 ```yaml
         executor:
@@ -694,14 +703,27 @@ generation on:
           - { concept: Transfer, operation: create }
 ```
 
-**Status: that key generation is the only thing `affects` drives.** Where a
-statement actually binds a generated key, kcmd checks your model first: a
-concept keyed by several columns, or by a key field that isn't a `String`,
-can't take a generated UUID, so kcmd refuses the call and withholds the write
-tool. A statement that supplies its own key is never refused over a generated
-one it doesn't use. Past that, kcmd parses `affects`, checks every concept
-against your model, publishes it and reads it back. No component computes an
-impact from it, routes on it, or checks it against what your executor does.
+Only a `sql` executor generates a key. An `mcp`, `rest` or `grpc` action can
+declare a `create` and gets nothing bound, because the system on the other side
+of the call makes the row and picks its own identifier for it.
+
+Where a statement binds a generated key, kcmd reads your model before running
+anything. An entity keyed by several columns, or by a key field that isn't a
+`String`, can't take a UUID, so kcmd refuses the call rather than letting the
+store reject a statement it can't explain. The check reads entities, so a
+relationship passes it — an edge declares no key to read — and so does an
+entity whose key names a field the model doesn't declare. It runs at the call
+rather than at the push, so no push check surfaces it. A statement that
+supplies its own key is never refused over a generated one it doesn't use.
+
+**Status: nothing compares `affects` to what your executor does.** kcmd parses
+it, checks the concepts against your ontology, publishes it and reads it back,
+and no component reconciles the declaration with the statements or the tool
+call. kcmd does route on `affects`, in two places. Resolving your model through
+a binding profile drops any action affecting a concept the profile can't bind,
+so that action never reaches the catalog. Publishing an action whose affected
+concept has no entry in the same push warns you that the catalog now records a
+blast radius naming something it can't resolve.
 
 ## 4. Check it before pushing
 
@@ -739,11 +761,19 @@ checked while nothing checks it. An `affects` entry naming `Acount` claims a
 blast radius over a concept that doesn't exist, so a consumer that reads it
 learns nothing.
 
-kcmd checks the rest of an `affects` entry just as strictly. Fields
-beside a `delete` are a hard error, and so is a field the concept doesn't
-declare. An operation outside `create` / `modify` / `delete` never gets this far
-— the vocabulary is closed, so your document doesn't parse at all. These checks
-are static, so they run on every push whatever the destination.
+kcmd checks the rest of an `affects` entry just as strictly. Fields beside a
+`delete` are a hard error, and so is a field the concept doesn't declare. An
+operation outside `create` / `modify` / `delete` never gets this far — the
+vocabulary is closed, so your document doesn't parse at all.
+
+The two checks that read your ontology stand down when a binding profile
+resolves your model. Resolving drops entities and relationships the profile
+can't bind, so holding `affects` to the ontology there would fail your deploy
+over a concept the profile removed rather than one you mistyped. An undeclared
+concept and an undeclared field fall back to the warning the loader already
+gave. A catalog-only push and `kcmd action run` read the author's model
+whole, so both treat the same two as hard errors. Fields beside a `delete` read
+only the entry, so that one fails everywhere.
 
 ### What push holds a statement to
 
@@ -940,10 +970,8 @@ kcmd reports both instead of guessing, because both are things you can act on.
 
 **Targeting the write.** Resolution produces a *value*, and your statement uses
 it. The statement's own `WHERE` clause decides how many rows it lands on, and
-nothing would stop one that hits every dormant account. `affects` declares the
-blast radius rather than limiting it, so that a reader knows what the write is
-about and an evaluator can one day check the statements against what you
-declared.
+nothing would stop one that hits every dormant account. That is what section 3
+means by `affects` declaring the blast radius rather than limiting it.
 
 `kcmd action run` does three things:
 
@@ -1293,7 +1321,7 @@ Model 'payments' (payments_eg), profile 'operational':
       Returns transferId, amount, debitedId. Every argument is an exact match
       and every one is optional; giving none returns the first rows. This tool
       cannot join, compare ranges, or total anything.
-      transferId: integer
+      transferId: string
       amount: number
       debitedId: integer
 
