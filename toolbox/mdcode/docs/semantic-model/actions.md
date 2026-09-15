@@ -35,10 +35,9 @@ everything else is derived from it.
 
 ## When to use it
 
-Declare an action when your organization already has an operation that changes
-the data this model describes, and you want that operation described where the
-data is described. Anything reading the model then knows the operation exists,
-what it takes, and where it lives.
+Declare an action when a write against this data already exists somewhere — a
+service call, an endpoint, some DML. Anything reading the model then knows the
+operation exists, what it takes, and where it lives.
 
 An action does not answer a question about the data. Use a
 [metric](README.md#1-author-the-logical-model) for that.
