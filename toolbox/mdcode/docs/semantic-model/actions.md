@@ -213,6 +213,12 @@ readable — and checkable — from the model.
           - { concept: Account, operation: modify, fields: [balance] }
 ```
 
+`statements` is a list because one business action is often more than one write.
+The transfer above debits one account and credits another, and a transfer that
+did only the first would lose money. kcmd opens one transaction, runs the
+statements in the order you wrote them, and commits at the end, so two writes
+that only make sense together never apply by halves.
+
 ### Statements use your database names
 
 **An action's statements reach your store exactly as you wrote them**, so every
@@ -237,15 +243,14 @@ Syntax error: Unexpected keyword ORDER [at 1:8]
 
 instead of "no such table", because `ORDER` is a reserved word.
 
-A `sql` executor buys you three things:
+A `sql` executor buys you two things:
 
 - **Your blast radius is checkable.** A reader can compare `affects` against the
   statements instead of taking it on trust.
 - **A guard becomes a real gate.** An MCP, REST or gRPC call commits inside a
-  system kcmd doesn't control, so a check wrapped around it is advisory. A
-  statement runs in the caller's own transaction and can be rolled back.
-- **The gate sees the write.** The statements run where the constraints are
-  probed, so a check observes the uncommitted result of the write it's gating.
+  system kcmd doesn't control, so a check wrapped around it could only advise.
+  A refused `sql` action never opens a transaction, and one that fails partway
+  through rolls back.
 
 That stays safe only while the statements stay narrow, and push holds you to it:
 
@@ -261,10 +266,11 @@ That stays safe only while the statements stay narrow, and push holds you to it:
   whose body arrives with the call declares nothing, and a gate can't check what
   was never declared.
 
-An action that **creates** a row needs a key for it, and that key can't come
-from the caller. An agent that picks its own primary keys can overwrite an
-existing row by choosing one already taken. Declare the creation in `affects`
-and refer to the generated key as `@new<Concept>Key`:
+When an action **creates** a row, kcmd generates that row's primary key — a
+UUID — and binds it as `@new<Concept>Key`. The caller never supplies it,
+because an agent that picks its own primary keys can overwrite an existing row
+by choosing one already taken. Declaring the creation in `affects` turns the
+generation on:
 
 ```yaml
         executor:
@@ -698,14 +704,13 @@ own says the same thing the bare `Account` does, and it's written back as the
 bare form.
 
 **Status: a `create` record is the only thing that consumes `affects`.** It
-tells the runtime to generate a key for that concept, and that generated key
-is the `@new<Concept>Key` your statements bind. Where a statement binds one,
-kcmd checks your model before anything runs. A concept keyed by several
-columns, or by a key field that isn't a `String`, can't take a generated UUID,
-so kcmd refuses the call and withholds the write tool. Past that, kcmd parses
-`affects`, checks every concept against your model, publishes it and reads it
-back. No component computes an impact from it, routes on it, or checks it
-against what your executor does.
+tells the runtime to generate the `@new<Concept>Key` a statement binds, and
+kcmd checks your model for that key before anything runs. A concept keyed by
+several columns, or by a key field that isn't a `String`, can't take a
+generated UUID, so kcmd refuses the call and withholds the write tool. Past
+that, kcmd parses `affects`, checks every concept against your model, publishes
+it and reads it back. No component computes an impact from it, routes on it, or
+checks it against what your executor does.
 
 ## 4. Check it before pushing
 
