@@ -15,16 +15,19 @@ import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets} from '../libts/semantic/deployment_target';
 import {ActionTool, EntityTool, modelTools} from '../libts/semantic/runtime/agent_tools';
-import {Action, ActionParameter} from '../libts/semantic/ir';
+import {Action, ActionParameter, constraintEvaluation} from '../libts/semantic/ir';
 import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
 import {GeminiJudge} from '../libts/gcp/gemini';
+import {JudgeStore} from '../libts/semantic/runtime/judge';
+import {modelJudgeStore, readableEntities} from '../libts/semantic/runtime/judge_store';
 import {runAction} from '../libts/semantic/runtime/run_action';
 import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryDataSources, validatePushRequirements, validateRunnable} from '../libts/semantic/validate';
 import {createSemanticRuntimes, runtimeClient, SemanticRuntime} from '../libts/semantic/runtime/runtime';
+import {dialectFor} from '../libts/semantic/runtime/dialect';
 import {dataClientFor, Store} from '../libts/semantic/runtime/store';
 import {
   AvailabilityReport,
@@ -1177,6 +1180,10 @@ export interface ActionOptions {
   judge?: string|boolean;
   // `--judge-location <region>`: the Vertex AI region to ask in.
   judgeLocation?: string;
+  // `--judge-reads-store`: let the judge read the model's tables while it
+  // decides, so a rule stated in words can compare the call against what is
+  // recorded rather than only against what the caller said.
+  judgeReadsStore?: boolean;
 }
 
 
@@ -1250,7 +1257,8 @@ function listActions(
     return 0;
   }
 
-  for (const {model, store, storeError, profile, entryGroup} of runtimes) {
+  for (const runtime of runtimes) {
+    const {model, store, storeError, profile, entryGroup} = runtime;
     console.log(
         `Model '${model.name}' (${entryGroup}), profile '${profile}':`);
     // Where a run lands, said once at the top rather than left to be inferred
@@ -1285,7 +1293,7 @@ function listActions(
                 .join(', ')}`);
       }
       if (a.executor) {
-        console.log(`    run:        ${runLine(a)}`);
+        console.log(`    run:        ${runLine(a, runtime)}`);
       } else {
         console.log(
             `    run:        bind an executor in a profile to run this.`);
@@ -1300,6 +1308,9 @@ export interface AgentOptions {
   // `string|boolean` for the same reason the others are: cac yields `true` for
   // a bare `--profile` and `false` for `--no-profile`.
   profile?: string|boolean;
+  // `--judge [model]`: derive the listing as an agent holding a judge would
+  // see it. `true` for a bare `--judge`, which takes the default model.
+  judge?: string|boolean;
 }
 
 
@@ -1318,6 +1329,14 @@ export interface AgentOptions {
 // print. `kcmd action run` calls the write half; the read half is a SELECT the
 // tool would issue, and `gcloud spanner databases execute-sql` will run it.
 //
+// What the listing can call depends on what the caller holds, so `--judge`
+// takes the same argument `kcmd action run` does. Without it an action guarded
+// by a rule stated in words is marked NOT RUNNABLE, which is accurate for a
+// caller holding no judge and misleading about an agent that holds one -- the
+// point of this command is to show what the agent will be handed, and the
+// judge is part of what decides that. No model is called here either way: a
+// judge is asked when an action runs, and the listing runs none.
+//
 // Returns a process exit code (0 on success).
 export async function agent(
     command: string, options: AgentOptions = {}): Promise<number> {
@@ -1335,6 +1354,14 @@ export async function agent(
     console.error(`Error: ${opened.error}`);
     return 1;
   }
+
+  // Built the way `kcmd action run --judge` builds it, from the context this
+  // command already holds, so the listing and the run agree about who answers.
+  const judge = options.judge ?
+      new GeminiJudge(
+          ctx, typeof options.judge === 'string' ? {model: options.judge} : {}) :
+      undefined;
+  if (judge) console.log(`Rules stated in words go to ${judge.name}.`);
 
   let incomplete = false;
   for (const runtime of opened) {
@@ -1364,7 +1391,7 @@ export async function agent(
     console.log(`  store: ${storeLine(store)}`);
     console.log();
 
-    const {lookups, actions, instruction} = modelTools({runtime});
+    const {lookups, actions, instruction} = modelTools({runtime, judge});
     for (const tool of actions) printActionTool(tool);
     for (const tool of lookups) printLookupTool(tool);
     console.log('  instruction:');
@@ -1487,9 +1514,28 @@ function describeParameter(p: ActionParameter): string {
 
 
 // The command line that runs an action, with a placeholder per parameter.
-function runLine(a: Action): string {
+//
+// A guard settled by judgment needs `--judge`, and the line says so, because a
+// suggested command that is certain to be refused is worse than no suggestion:
+// the reader tries it, reads a refusal, and has to work out that the fix is a
+// flag this listing knew about all along.
+//
+// `--judge-reads-store` rides along wherever the model has tables to read, for
+// that same reason one step further on. A judgment comparing the call against
+// what is recorded is refused without it, and nothing in a constraint's wording
+// marks which judgments those are, so the only line safe to suggest is the one
+// that can settle either kind. A judge with nothing to look up looks nothing
+// up, and the offer costs one model call.
+function runLine(a: Action, runtime: SemanticRuntime): string {
+  const model = runtime.model;
   const args = a.parameters.map(p => ` --arg ${p.name}=<${p.type}>`).join('');
-  return `kcmd action run ${a.name}${args}`;
+  const guards = new Set(a.guards ?? []);
+  const judged = (model.constraints ?? []).some(
+      c => guards.has(c.name) && constraintEvaluation(c) === 'judged');
+  const canRead = judged && !!runtime.store &&
+      readableEntities(runtime, dialectFor(runtime.store)).length > 0;
+  return `kcmd action run ${a.name}${judged ? ' --judge' : ''}${
+      canRead ? ' --judge-reads-store' : ''}${args}`;
 }
 
 
@@ -1559,15 +1605,47 @@ async function runOneAction(
     return 1;
   }
 
+  // Refused rather than ignored. A caller who asked for a reading judge and
+  // got an ordinary one is a caller whose rule about the order total quietly
+  // went unread, which is the failure this whole flag exists to avoid.
+  if (options.judgeReadsStore && !options.judge) {
+    console.error(
+        `Error: --judge-reads-store says what a judge may do; --judge is ` +
+        `what hires one. Pass both.`);
+    return 1;
+  }
+  // What the judge may read, if anything. Composed from this runtime, so the
+  // tables it can see are the ones the model declares under the profile this
+  // run is using, and its reads land on the database the write will land on.
+  let judgeStore: JudgeStore|undefined;
+  if (options.judgeReadsStore) {
+    const built = modelJudgeStore(runtime, {
+      // Printed as it is sent. A judge that read the store did something on
+      // the caller's behalf, and a transcript showing the verdict without the
+      // reads behind it is one nobody can check.
+      onRead: sql =>
+          console.log(`  the judge reads: ${sql.replace(/\s+/g, ' ').trim()}`),
+    });
+    if ('error' in built) {
+      console.error(`Error: ${built.error}`);
+      return 1;
+    }
+    judgeStore = built;
+  }
+
   // Built from the context this command already holds, so judging costs no
   // second trip to gcloud for a project and a token.
   const judge = options.judge ? new GeminiJudge(ctx, {
     ...(typeof options.judge === 'string' ? {model: options.judge} : {}),
     ...(options.judgeLocation ? {location: options.judgeLocation} : {}),
+    ...(judgeStore ? {store: judgeStore} : {}),
   }) : undefined;
 
   console.log(`Running '${name}' on ${runtime.store.name}...`);
   if (judge) console.log(`  rules stated in words go to ${judge.name}`);
+  if (judgeStore) {
+    console.log(`  it may read ${runtime.model.name}'s tables to settle them`);
+  }
   const outcome =
       await runAction({runtime, actionName: name, args: parsed.args, judge});
   if (outcome.status === 'error') {

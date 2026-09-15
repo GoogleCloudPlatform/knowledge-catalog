@@ -321,6 +321,32 @@ describe('kcmd action list', () => {
          expect(out).not.toContain('kcmd action run IssueCredit');
        });
 
+  test('the run line names both judge flags when a guard is judged',
+       async () => {
+         // Copying the line is the whole point of printing it. A judged guard
+         // refuses without a judge, so a line omitting the flag would send the
+         // reader to a refusal it could have predicted. The same holds one step
+         // on: a judgment comparing the call against a stored row is refused
+         // without `--judge-reads-store`, and a constraint's wording does not
+         // say which judgments those are, so the line offers the read wherever
+         // the profile binds a table to read.
+         writeWorkspace(MODEL.replace(
+             '      - name: CreditIsPositive\n' +
+                 '        expression: amount > 0\n',
+             '      - name: CreditIsPositive\n' +
+                 '        judgment: The credit must be for a positive amount.\n' +
+                 '        on_violation: reject\n'));
+         const code = await action('list', undefined);
+         expect(code).toBe(0);
+         const out = logs.join('\n');
+         expect(out).toContain(
+             'run:        kcmd action run IssueCredit --judge ' +
+             '--judge-reads-store --arg order=<Order>');
+         // The other action names no guard at all, so it gains nothing.
+         expect(out).toContain(
+             'run:        kcmd action run NotifyCustomer --arg order=<Order>');
+       });
+
   test('says so when a model declares no actions', async () => {
     writeWorkspace(NO_ACTIONS);
     const code = await action('list', undefined);

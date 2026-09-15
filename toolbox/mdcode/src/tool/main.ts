@@ -150,6 +150,9 @@ cli.command(
     .option(
         '--judge-location <region>',
         'Ask the judge in this Vertex AI region, which is where the argument values are sent; defaults to us-central1 (`run` only)')
+    .option(
+        '--judge-reads-store',
+        'Let the judge read the model\'s own tables while it decides, so a rule stated in words can compare the call against what is recorded; costs one model call more per guard and needs --judge (`run` only)')
     .action(async (command, name, options) => {
       let exitCode = 1;
       try {
@@ -169,6 +172,9 @@ cli.command(
     .option(
         '--profile [name]',
         'Read the model under this binding profile; defaults to default_profile, else the inline bindings')
+    .option(
+        '--judge [model]',
+        'List what an agent holding a judge is offered, naming a Gemini model or taking the default; without it, an action guarded by a rule stated in words is marked NOT RUNNABLE. No model is called either way')
     .action(async (command, options) => {
       let exitCode = 1;
       try {
