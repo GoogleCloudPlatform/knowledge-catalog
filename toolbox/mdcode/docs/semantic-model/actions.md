@@ -221,17 +221,13 @@ executor above, the model's `Account` and `accountId` appear as `account` and
 `account_id`. Those are the table and the column that the entity's `source` key
 and its fields' `expression` keys bind it to.
 
-kcmd does translate a metric. You write `Account.balance`, and kcmd turns it
-into `account.balance` before any SQL reaches your store. An action's statements
-get no such pass, so the statement that runs is the one you reviewed. The only
-model names a statement may use are the `@parameter` references, which name the
-parameters the action declares.
+The only model names a statement may use are the `@parameter` references, which
+name the parameters the action declares.
 
-Nothing catches a model name before the call. Validation checks that each
-statement is one DML verb, contains no `;`, and binds only declared parameters —
-it never asks your store whether a table exists. A model name therefore fails at
-run time, from the store, and the message can be hard to read. An entity named
-`Order` bound to a table named `Orders` produces
+Write a model name anywhere else and nothing tells you until the action runs.
+Push never asks your store whether a table exists, so the error comes back from
+the store itself, and it can read like a fault in the statement rather than a
+typo in a name. An entity named `Order` bound to a table named `Orders` produces
 
 ```
 Syntax error: Unexpected keyword ORDER [at 1:8]
@@ -239,7 +235,7 @@ Syntax error: Unexpected keyword ORDER [at 1:8]
 
 instead of "no such table", because `ORDER` is a reserved word.
 
-Carrying the write, instead of pointing at it, buys you three things:
+A `sql` executor buys you three things:
 
 - **Your blast radius is checkable.** A reader can compare `affects` against the
   statements instead of taking it on trust.
