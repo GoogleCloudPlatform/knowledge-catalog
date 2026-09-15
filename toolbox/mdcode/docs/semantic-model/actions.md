@@ -276,20 +276,16 @@ publishing a rule can't quietly start refusing calls that succeeded yesterday.
 *Figure 2: a constraint moves from declared, to referenced by an action, to
 checked before a call, to a breach routed by `on_violation`.*
 
-Write an expression over stored data to state a condition your data has to
-satisfy:
+A constraint states its rule in one of two bodies: an `expression`, when a query
+over your ontology decides the question, or a `judgment`, when no query can.
+Which one you wrote shows up on the published constraint as a derived
+`evaluation` field reading `deterministic` or `judged`, so a consumer can select
+on it.
 
-```yaml
-    constraints:
-      - name: BalanceStaysPositive
-        expression: Account.balance >= Account.minimumBalance
-        description: >-
-          An account cannot be taken below its minimum balance.
-```
+### Naming a constraint as a guard
 
-An expression that reads an action's **parameters** describes one call rather
-than the stored data, so the only moment you can check it is before that call
-runs:
+An action's `guards` list is what puts a constraint to work. Declare the rule,
+then name it on the action — one line on the `TransferFunds` from section 1:
 
 ```yaml
     constraints:
@@ -300,39 +296,19 @@ runs:
           amount again before retrying.
     actions:
       - name: TransferFunds
-        executor:
-          mcp:
-            server: //agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/payments
-            tool: transfer_funds
-        parameters:
-          - { name: source, type: Account }
-          - { name: target, type: Account }
-          - { name: amount, type: Float }
         guards: [AmountIsPositive]
 ```
 
 `guards` holds the names of constraints your model declares, and listing one
-there is what makes it apply to that action. Put both kinds of rule there. A
-rule that reads the action's parameters has no other moment to run. A rule over
-stored data, named as a guard, says the call must not proceed on data that's
-already broken.
+there is what makes it apply to that action. Both kinds of body go in the same
+list. Put the reference on the action rather than on the constraint, because the
+same rule may gate `TransferFunds` and leave `CloseAccount` alone.
 
-Every guard is checked before the call, with the arguments bound. A rule over
-the parameters is settled completely there, since the arguments are the whole
-of what it reads. A rule over stored data is a condition on the state that a
-write produces, so checking it before the call reports only that the call isn't
-starting from a broken state. It says nothing about the state the call leaves
-behind. Nothing in your model binds a rule to the result of a write, and that's
-the gap between what a data rule says and what a guard can enforce.
-
-Whatever dispatches the call is what checks its guards. Handing a rule to your
-store instead works for some rules and not others. A condition on a single row
-lowers to a store-level `CHECK`. One that aggregates across a child table, such
-as an order total matching the sum of its line items, lowers to neither Spanner
-nor BigQuery.
-
-Put the reference on the action rather than on the constraint, because the same
-rule may gate `TransferFunds` and leave `CloseAccount` alone.
+Whatever dispatches the call is what checks its guards, and it checks every one
+of them before the call, with the arguments bound and before any transaction
+opens. Nothing in your model binds a rule to the state a write leaves behind, so
+a guard reports on the arguments it was handed and on the data the call starts
+from, and on nothing else.
 
 `guards` and `on_violation` are independent, the way the two right-hand columns
 of figure 2 are: one says when the constraint gets checked, the other says what
@@ -340,7 +316,47 @@ a breach does. So guarding a constraint that declares `warn` is a real shape.
 Your organization may not be ready to block on a rule; guarding it anyway still
 gets the rule checked at the moment of the call and reported back.
 
-### When no expression decides it
+kcmd reports a mismatch from either side. A guard that names no constraint fails
+the push. A constraint over parameters that no action names loads with a
+warning, because nothing will ever evaluate it. That scan reads expressions
+only. A judgment is prose, and a word in it matching a parameter name is not a
+read of that parameter.
+
+### Rules a query settles
+
+Write the rule as an `expression` when a query over your ontology decides it. A
+condition over stored data names the entities and fields it reads:
+
+```yaml
+    constraints:
+      - name: BalanceStaysPositive
+        expression: Account.balance >= Account.minimumBalance
+        description: >-
+          An account cannot be taken below its minimum balance.
+```
+
+A condition over the action's parameters describes one call instead, the way
+`AmountIsPositive` above reads `amount` and nothing else. A rule like that is
+settled completely before the call, since the arguments are the whole of what it
+reads. A rule over stored data is a condition on the state that a write
+produces, so checking it before the call reports only that the call isn't
+starting from a broken state. It says nothing about the state the call leaves
+behind, and that gap is the difference between what a data rule says and what a
+guard can enforce.
+
+An expression can also go to your store rather than to whatever dispatches the
+call, and that works for some rules and not others. A condition on a single row
+lowers to a store-level `CHECK`. One that aggregates across a child table, such
+as an order total matching the sum of its line items, lowers to neither Spanner
+nor BigQuery.
+
+**Status: no component evaluates an expression against live data.** kcmd parses
+one, validates it, publishes it with the `guards` that name it, and reads it
+back. At run time [`kcmd action run`](#7-run-it) refuses an action whose
+`guards` name an expression rather than apply a write your model says must be
+checked first.
+
+### Rules no query settles
 
 Your business enforces some rules that can't be written as a boolean. A credit
 memo may or may not explain the failure it claims to refund. A discount may or
@@ -366,6 +382,14 @@ A constraint declares one body or the other, never both and never neither. A
 judgment must state `on_violation`, and any of the three words will do. Omit it
 and the push fails, because an unmarked constraint would reject, and that's too
 strong a consequence to inherit by silence.
+
+No judge settles a rule about the state a write *leaves behind*, however much it
+can read. "An order's total equals the sum of its lines" has nothing to look at
+when a guard runs. Put that rule inside the transaction or in your schema.
+
+**Status: a judgment is the one body kcmd settles.** At run time,
+[`kcmd action run --judge`](#a-guard-settled-in-words) puts each judged guard to
+a language model and routes the verdict by `on_violation`.
 
 ### Writing a judgment
 
@@ -412,11 +436,6 @@ say — is settled when you run with `--judge-reads-store`. Word it to say the
 value is on record and has to be read, because the judge decides for itself
 whether to look. The same rule refuses every call when it goes to a judge that
 can't read. See [a guard that reads a row](#a-guard-that-reads-a-row).
-
-No judge settles a rule about the state a write *leaves behind*, however much it
-can read. Guards run before the transaction opens, so "an order's total equals
-the sum of its lines" has nothing to look at yet. Put that rule inside the
-transaction or in your schema.
 
 ### A policy whose rules end differently
 
@@ -538,10 +557,9 @@ review is a rule the business means as unappealable, and no expression detects
 it, so the alternative to writing it this way is leaving it out of your model.
 The pairing carries a real cost, because a language model can decide two
 identical credits differently and `reject` leaves nobody to appeal to. kcmd
-publishes it instead of forbidding it, and makes it findable. Every constraint
-carries a derived `evaluation` field, which reads `judged` here, so an auditor
-asking which unappealable rules your model settles gets an answer from one
-query.
+publishes it instead of forbidding it, and makes it findable. Its `evaluation`
+field reads `judged`, so an auditor asking which unappealable rules your model
+settles gets an answer from one query.
 
 ### Two calls through that policy
 
@@ -588,28 +606,14 @@ costs a model call, none can lower to a store-level check, and each may decide
 two identical calls differently. `IssueCredit` stays clear of that: three of its
 five guards are expressions.
 
-**Status: kcmd settles a judgment, and doesn't settle an expression.** It parses
-both bodies, validates them, publishes them with the `guards` that name them,
-and reads them all back, along with a derived `evaluation` field reading
-`deterministic` or `judged` so a consumer can select on it. At run time,
-[`kcmd action run --judge`](#a-guard-settled-in-words) puts each judged guard to
-a language model and routes the verdict by `on_violation`. No component here
-evaluates an expression against live data, so
-[`kcmd action run`](#7-run-it) refuses an action whose `guards` name one rather
-than apply a write your model says must be checked first — and `IssueCredit`
-names three. The two calls above are therefore what the published policy says
-should happen rather than what kcmd does with this action today. A run doesn't
-compute the strictest outcome either. `--judge` puts the judged guards to the
-judge in the order your model declares them, and stops at the first one that
-fails without being advisory. What comes back is that guard's outcome rather
-than the strictest of them, and a `warn` collected on the way there doesn't
-travel with the refusal.
-
-kcmd reports a mismatch from either side. A guard that names no constraint fails
-the push. A constraint over parameters that no action names loads with a
-warning, because nothing will ever evaluate it. That scan reads expressions
-only: a judgment is prose, in which a word matching a parameter name isn't a
-read of that parameter.
+**Status: a run doesn't compute the strictest outcome.** `--judge` puts the
+judged guards to the judge in the order your model declares them and stops at
+the first one that fails without being advisory. What comes back is that guard's
+outcome rather than the strictest of them, and a `warn` collected on the way
+there doesn't travel with the refusal. And because `IssueCredit`'s other three
+guards are expressions, [`kcmd action run`](#7-run-it) refuses it outright, so
+the two calls above are what the published policy says should happen rather than
+what kcmd does with this action today.
 
 ## 3. Say what it changes
 
