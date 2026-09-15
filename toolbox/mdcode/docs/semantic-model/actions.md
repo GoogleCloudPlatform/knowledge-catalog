@@ -221,13 +221,15 @@ executor above, the model's `Account` and `accountId` appear as `account` and
 `account_id`. Those are the table and the column that the entity's `source` key
 and its fields' `expression` keys bind it to.
 
-The only model names a statement may use are the `@parameter` references, which
-name the parameters the action declares.
+`@parameter` references are the exception. They name the parameters the action
+declares, so they're the only names in a statement that come from your model
+rather than from your database.
 
-Write a model name anywhere else and nothing tells you until the action runs.
-Push never asks your store whether a table exists, so the error comes back from
-the store itself, and it can read like a fault in the statement rather than a
-typo in a name. An entity named `Order` bound to a table named `Orders` produces
+A statement that says `Account` where it means `account` still passes push,
+because push never asks your store whether a table exists. The error comes back
+from the store when the action runs, and it can read like a fault in the
+statement rather than a typo in a name. An entity named `Order` bound to a table
+named `Orders` produces
 
 ```
 Syntax error: Unexpected keyword ORDER [at 1:8]
@@ -397,7 +399,8 @@ strong a consequence to inherit by silence.
 ### Writing a judgment
 
 A language model reads your sentence at review time with the proposed write in
-front of it. Five habits make that reading consistent:
+front of it. kcmd calls that reader the judge. Five habits make that reading
+consistent:
 
 1. **State what must be true of the data.** Write the condition — *the memo
    must name a specific service failure*, and not the procedure, *check whether
