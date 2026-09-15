@@ -209,12 +209,13 @@ Look closely at what those statements say. The entity is `Account` and its field
 is `accountId`, but the statement writes `account` and `account_id`. Those are
 the table and the column that `source` and `expression` bind the entity to.
 
-A model gives everything two names, and a metric is written in the first of them:
-you write `Account.balance`, and `kcmd` translates it to `account.balance` before
-any SQL reaches the store. **An action's statements are not translated.** They
-are handed to the store exactly as written, so every table and column in one
-must be the database's own name. The only model names in a statement are the
-`@parameter` references, which name the action's declared parameters.
+Every entity and field therefore carries two names, one in the model and one in
+the database. You write a metric in the model's names, and `kcmd` translates
+`Account.balance` into `account.balance` before any SQL reaches the store. **An
+action's statements are not translated.** They are handed to the store exactly
+as written, so every table and column in one must be the database's own name.
+The only model names in a statement are the `@parameter` references, which name
+the action's declared parameters.
 
 That is the price of carrying the write verbatim. A rewrite step could make the
 statement that runs differ from the statement that was reviewed.
@@ -459,10 +460,11 @@ rule:
   5  not one credit split to evade review  judgment     reject
 ```
 
-Five rules, three outcomes, two that no query settles. The model has an `Order`
-with a `total`, a `LineItem` with an `amount` and a `memo`, and an `IssueCredit`
-action taking the order, the amount and the memo. Each rule becomes one
-constraint, carrying its own outcome in its own `on_violation`:
+Those five rules produce three different outcomes. No query can settle two of
+the five. The model has an `Order` with a `total`, a `LineItem` with an `amount`
+and a `memo`, and an `IssueCredit` action taking the order, the amount and the
+memo. Each rule becomes one constraint, carrying its own outcome in its own
+`on_violation`:
 
 ```yaml
     constraints:
@@ -1437,10 +1439,10 @@ binding one to ADK, to LangChain or to an MCP server is a short adapter over
 that shape, and a second framework costs nothing here. Nothing in this module
 imports an agent framework.
 
-`invoke` answers with three states rather than two. A write that landed and one
-that did not are the obvious pair; the third is a commit whose result nothing
-can establish, reported as unknown with an explicit "do not retry", because a
-caller reading it as "nothing happened" applies the write twice.
+`invoke` answers with three states. A write that landed and a write that did not
+are the obvious two. The third is a commit whose result nothing can establish,
+reported as unknown with an explicit "do not retry", because a caller reading it
+as "nothing happened" applies the write twice.
 
 `handler` may be passed for an executor this runtime cannot perform itself. It
 is not passed to an action with a `sql` executor. Such an action claims that
