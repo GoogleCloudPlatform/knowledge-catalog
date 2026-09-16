@@ -948,12 +948,9 @@ Model 'payments' (payments_eg), profile 'operational':
 
 `kcmd action run` performs one of those actions, against the database your
 model's deployment target names under the selected profile. The command line
-never names a database; `--profile` picks a different one, and
-[push](profiles.md) follows the same rule. The `TransferFunds` line won't
-succeed as printed, because its `guards` name `AmountIsPositive`, an
-expression, and kcmd refuses the call rather than run a write it can't check.
-Resolution, binding and the transaction run the same way for any action, so
-`TransferFunds` still shows all three.
+never names a database. The `TransferFunds` line above won't run as printed,
+because `AmountIsPositive` is an expression and kcmd refuses a call it can't
+check.
 
 ### What a run does
 
