@@ -1266,6 +1266,10 @@ transaction opens.
 
 ## 8. Hand it to an agent
 
+You don't write the tools an agent calls. You point an agent at your model, and
+what it can read, what it can change and what gates the change are all derived
+from it.
+
 Every entity in your model turns into a **lookup tool** that reads it, and every
 action turns into a **write tool** that runs it. Nothing else in the model
 becomes a tool of its own.
@@ -1595,11 +1599,17 @@ ceiling is `escalate`, a credit written with a warning because the memo names no
 service failure, and a credit refused outright because the memo admits it's one
 piece of a larger amount.
 
-It also states what that costs and what it can't do. The model guards on four
-judgments and the judge it hires can query the store, so the demo loads with
-the all-judged warning. It pays two model calls per guard, plus one for each
-round of reading — nine calls in the run its README captures. Two of its rules
-fall short of what they say:
+None of those three outcomes was decided in `agent.ts`. The ceiling, the memo
+rule and the split-credit rule came out of the model, and the runtime settled
+each one on the way through the call. Point the same file at a different model
+and profile and it runs a different business; the README lists the files that
+change for that, and `agent.ts` isn't among them.
+
+The README also states what that costs and what it can't do. The model guards on
+four judgments and the judge it hires can query the store, so the demo loads
+with the all-judged warning. It pays two model calls per guard, plus one for
+each round of reading — nine calls in the run the README captures. Two of its
+rules fall short of what they say:
 
 - **An order's total matching its line items is declared and not enforced.**
   It's a statement about the state the write leaves behind, and guards settle
