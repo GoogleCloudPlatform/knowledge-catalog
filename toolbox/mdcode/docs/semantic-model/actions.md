@@ -1266,18 +1266,19 @@ transaction opens.
 
 ## 8. Hand it to an agent
 
-An agent needs two things from your model: a way to find what's there, and a
-way to change it. Your entities supply the first and your actions supply the
-second, so both halves come out of the model you already have. One command
-prints what an agent would be handed:
+An agent needs two things from your model: a way to find what's there, and a way
+to change it. Your entities are how it finds the account, and your actions are
+how it moves the money, so both tools come out of the model you already have.
+
+`kcmd agent tools` prints the whole set — one tool per action, one per entity,
+and the instruction that goes with them. It reads your model and nothing else,
+so it opens no session and changes nothing:
 
 ```bash
 kcmd agent tools
 ```
 
-Run it against the model built up on this page and it prints the listing below.
-It only reads your model. It opens no session, calls nothing, and changes
-nothing.
+For the model built up on this page, that set is:
 
 ```
 Model 'payments' (payments_eg), profile 'operational':
@@ -1336,13 +1337,16 @@ Model 'payments' (payments_eg), profile 'operational':
       compute a total or a balance yourself; the tools do that. When a tool
       reports that a write did not happen, read the reason it gives and repeat
       it plainly; if it says a person has to decide, say so and stop, because
-      you cannot approve it yourself. Finish by saying what you changed.
+      you cannot approve it yourself. When a write did happen and the tool
+      returns warnings, the change landed and a rule still went unmet or
+      unchecked: report both, because nobody else will. Finish by saying what
+      you changed.
 ```
 
-That's three things — one **write tool** for the action, one **lookup tool** for
-each entity, and one **instruction** for whatever agent holds them. Every line
-of it comes from a key in one of your two files, and each key produces one
-thing:
+The listing holds three kinds of thing: one **write tool** for the action, one
+**lookup tool** for each entity, and one **instruction** for whatever agent
+holds them. Most of it traces back to a key in your model or your profile, one
+line of output per key:
 
 ```
   the model                              what the agent is handed
@@ -1390,16 +1394,17 @@ thing:
 *Table 4: which key in your model or your profile produces each line of the
 agent listing.*
 
-Two parts of the listing come from neither file. The runtime adds
-`[NOT RUNNABLE]` and the paragraph under it to say whether this call could
-succeed. The derivation adds the second paragraph of the instruction, its own
-text about using the tools, identical for every model.
+Two parts come from neither file. The step that turns a model into tools — the
+**derivation**, which this command and the library behind it both run — appends
+a paragraph to the instruction, its own text about using the tools, identical
+for every model. The runtime adds `[NOT RUNNABLE]` and the paragraph under it,
+which say whether this call could succeed.
 
 Nothing in the listing was written for a particular agent. It reads the same
 whether your caller is ADK, LangChain, or a person deciding whether the model
 says enough yet.
 
-### What the two kinds of tool do
+### What a write tool and a lookup tool do
 
 A **write tool** runs the action. Calling `transfer_funds` does the same
 resolve, bind and transact as [`kcmd action run TransferFunds`](#7-run-it) —
@@ -1416,23 +1421,26 @@ text reaches the SQL.
 A lookup is named for its entity, and an action keeps its own name when the two
 collide. An entity named `Account` and an action named `FindAccount` both derive
 `find_account`. The action takes that name, because you wrote it, and the lookup
-becomes `lookup_account`. The collision is visible only because both halves get
-derived together.
+becomes `lookup_account`. Deriving the write tools and the lookups together is
+what makes the collision visible at all.
 
 ### A tool says whether it can be called
 
 `transfer_funds` above is listed and marked `[NOT RUNNABLE]`. `TransferFunds`
-names a guard stated as an expression, nothing here evaluates one, and so the
-[refusal from section 7](#why-a-guarded-action-is-refused) is reported here
-instead — before any agent exists, instead of inside a transaction.
+names a guard stated as an expression, nothing in kcmd evaluates one, and so the
+[refusal from section 7](#why-a-guarded-action-is-refused) arrives here instead
+— before any agent exists, rather than inside a transaction.
 
 An action guarded by a judgment is marked the same way when the derivation holds
-no judge. The listing reports what the runtime *would* do with what it's
-holding, and with no judge it would refuse. Supply
-one, and the same action is offerable, with the same description and the same
-parameters:
+no judge, because the listing reports what the runtime would do with what it's
+holding. Supply a judge and the same action is offerable, with the same
+description and the same parameters:
 
 ```console
+$ kcmd agent tools
+...
+  action  issue_credit  (IssueCredit)  [NOT RUNNABLE]
+
 $ kcmd agent tools --judge
 Rules stated in words go to gemini-2.5-flash (us-central1).
 ...
@@ -1440,36 +1448,42 @@ Rules stated in words go to gemini-2.5-flash (us-central1).
 ```
 
 The flag takes an optional model name, the same way [`kcmd action run
---judge`](#a-guard-settled-in-words) does. The flag doesn't call a judge. A
-judge settles a rule when an action runs, and printing what an agent is offered
-runs no action, so this listing costs you nothing however many guarded actions
-it names.
+--judge`](#a-guard-settled-in-words) does, and it calls no judge. A judge
+settles a rule when an action runs, and printing what an agent is offered runs
+no action, so this listing costs you nothing however many guarded actions it
+names.
 
-The judge belongs to the derivation rather than to each invocation. Whether a
-guarded action can be offered *at all* depends on holding a judge, so the same
-object has to answer `runnable` and answer the call. A tool derived with a judge
-and then invoked without one would be advertised as callable and refused
-mid-call.
+A tool this binding can't serve still comes back, still named and still
+described — an action your model declares shouldn't vanish from the set your
+model offers — so the listing prints what it's waiting on instead. Write tools
+and lookups each carry a `runnable` flag, and `unavailable` carries the reason.
 
-The tool still comes back, still named and still described. An action your model
-declares shouldn't vanish from the set your model offers, so the listing prints
-what that action is waiting on instead. Both halves carry a `runnable` flag,
-and `unavailable` carries the reason.
+A **write tool** is withheld for one of four reasons:
 
-A write tool is withheld when a profile withdrew the executor, when the
-executor is remote and no handler was supplied, when it names a guard as above,
-or when a parameter references an entity keyed by several columns. A lookup is
-withheld for reasons of its own: the entity is abstract, so it has no table; no
-profile bound it to a table; or its binding is a query rather than a table.
+- This binding supplies no executor, because the model declared none or a
+  profile withdrew it with `executor: null`.
+- The executor is `mcp`, `rest` or `grpc`, and the caller supplied no handler
+  to perform the write.
+- It names a guard this runtime cannot settle — an expression, or a judgment
+  with no judge to ask.
+- A parameter refers to an entity whose key has several parts, which the
+  runtime can't bind to a statement as one value.
 
-The derivation asks the runtime for that verdict instead of working it out
-again, so the two can't drift. A tool advertised as runnable that refuses every
-call spends your agent's turn and teaches it nothing. A tool withheld that would
-have worked is never discovered at all.
+A **lookup** is withheld for reasons of its own:
+
+- The entity is abstract, so it groups its subtypes and has no table to read.
+- No field of it is bound to a plain column, so there is nothing to select.
+- Its `source` is empty, or reads as a query rather than a table.
+
+Either kind is withheld when the runtime has no store, because a call needs
+somewhere to land. The derivation asks the runtime for every one of these
+verdicts instead of working them out again, so the two can't drift: a tool
+advertised as runnable that refuses each call spends your agent's turn, and one
+withheld that would have worked is never tried.
 
 ### Calling it from code
 
-`kcmd agent tools` prints the derivation; `modelTools` returns it. Both take a
+`kcmd agent tools` prints these tools; `modelTools` returns them. Both take a
 **semantic runtime**: one model paired with the store your profile binds it to.
 `createSemanticRuntimes` assembles them the way `kcmd action` does, so your
 agent reads the model the CLI reads, under the same profile, with the same merge
@@ -1488,66 +1502,72 @@ if (!runtime.store) throw new Error(runtime.storeError);
 const {callable, withheld, instruction} = callableTools(modelTools({runtime}));
 ```
 
-`modelTools` also takes `judge`, and an action guarded by a judgment is callable
-only when you pass one. `GeminiJudge` implements the seam over Vertex AI;
-anything with a `decide` method does. Omit it and such an action is still
-derived, still named and still described, and reported in `withheld`.
-
-One call returns a runtime for every model document in your entry group. Each
-runtime carries the store that its deployment target names, the profile it was
-built under, and the document it was authored in, so a message about one model
-can say which file and which profile produced it.
-
-`runtime.store.kind` is `'spanner'`, `'alloydb'` or `'bigquery'`, and only the
-first two accept a write. Ask a BigQuery-backed runtime for a client and you get
-an error naming the dataset instead, because an action's statements need an
-operational database. A model whose profile binds no store at all still gets a
-runtime, with `storeError` saying why. Its tools are still derived, each marked
-unavailable for that reason, so your agent is told what the model offers and why
-it can't reach it.
-
-Go through `createSemanticRuntimes` instead of building a client yourself. It
-also checks that every entity is bound to a table in the store your profile
-targets. Without it, a model could be bound to some other system, and a lookup
-derived from that model would read whatever table of that name your target
-store happens to hold.
-
 `modelTools` returns `{lookups, actions, instruction}` — the three things the
-listing printed. `callableTools` then sorts both halves into the ones this
-binding can serve and the ones it can't, which is a split every adapter has to
-make and the same split every time. Offer `callable` to your agent, and report
-`withheld` instead of hiding it. `actionTools` and `entityTools` are exported
-for a caller that wants one half.
+listing printed. `callableTools` then sorts the lookups and the actions into the
+ones this binding can serve and the ones it can't, which is a split every
+adapter has to make and the same split every time. Offer `callable` to your
+agent, and report `withheld` instead of hiding it. `actionTools` and
+`entityTools` are exported for a caller that wants one kind.
 
 Each tool is a name, a description, typed parameters and `invoke(args)`, so
 binding one to ADK, to LangChain or to an MCP server is a short adapter over
 that shape, and a second framework costs you nothing here. Nothing in this
 module imports an agent framework.
 
-`invoke` answers with three states. A write that landed and a write that didn't
-are the obvious two. The third is a commit whose result nothing can establish,
-reported as unknown with an explicit "do not retry", because a caller reading it
-as "nothing happened" applies the write twice.
+`invoke` answers with three states: the write landed, the write didn't happen,
+or the statements ran and the commit gave no answer either way. That last one
+comes back as `unknown` alongside an explicit instruction not to retry, because
+a caller reading it as "nothing happened" applies the write twice. A write that
+landed carries `committedAt` and `actedOn`, the rows each argument resolved to;
+one that didn't carries `reason` and `whatToDo`. Either may carry `warnings`,
+and dropping those would tell your agent the write met every rule the model
+states.
 
-Pass `handler` for an executor this runtime can't perform itself. An action
-with a `sql` executor never receives it. Such an action promises that the
-catalog published the statements it runs, and one handler serves the whole
-model, so handing it through would break that promise for every `sql` action
-at once.
+`modelTools` also takes `judge`, and an action guarded by a judgment is callable
+only when you pass one. `GeminiJudge` implements the seam over Vertex AI, and so
+does anything carrying a name and a `decide` method. Omit it and such an action
+is still derived, still named and still described, and reported in `withheld`.
+The judge goes to the derivation rather than to each call because one object has
+to answer `runnable` and answer the call: a tool derived with a judge and then
+invoked without one would be advertised as callable and refused mid-call.
 
-### The instruction is not the agent's to write
+Pass `handler` for an executor this runtime can't perform itself. An action with
+a `sql` executor never receives it. Such an action promises that the catalog
+published the statements it runs, and one handler serves the whole model, so
+handing it through would break that promise for every `sql` action at once.
+
+One call to `createSemanticRuntimes` returns a runtime for every model document
+in your entry group. Each runtime carries the store that its deployment target
+names, the profile it was built under, and the document it was authored in, so a
+message about one model can say which file and which profile produced it.
+
+`runtime.store.kind` is `'spanner'`, `'alloydb'` or `'bigquery'`, and only a
+Spanner or AlloyDB store takes a write. Ask a BigQuery-backed runtime for a
+client and you get an error naming the dataset instead, because an action's
+statements need an operational database. A model whose profile binds no store at
+all still gets a runtime, with `storeError` saying why. Its tools are still
+derived, each marked unavailable for that reason, so your agent is told what the
+model offers and why it can't reach it.
+
+Go through `createSemanticRuntimes` instead of building a client yourself. It
+also checks that every entity is bound to a table in the store your profile
+targets. Without it, a model could be bound to some other system, and a lookup
+derived from that model would read whatever table of that name your target store
+happens to hold.
+
+### Who owns the instruction
 
 The instruction at the foot of the listing has two parts, because two different
 people own them.
 
 One part is your model's own `ai_context.instructions` — what this business asks
 of anything that acts on it, including the agents nobody has written yet. It
-belongs to the model because an agent can keep the same rule in its own source,
-where someone can change it without the people who own the model finding out.
-Agents get replaced when frameworks change; your model doesn't.
+belongs to the model because an agent carrying the same rule in its own source
+is a place someone can change that rule without the people who own the model
+finding out. Agents get replaced when frameworks change; your model doesn't.
 
 The other part is about the tools rather than the business: what a lookup is
-for, and what a refused write means. The derivation owes that half, because it
+for, and what a refused write means. The derivation owes that part, because it
 describes a contract this module defines and your model never stated. Write it
 into each agent instead and you copy the same paragraph into every adapter,
 where it drifts in each one.
@@ -1555,17 +1575,17 @@ where it drifts in each one.
 So an agent that appends a persona of its own is saying something your model did
 not. Put it in the model.
 
-### A worked example
+### The commerce demo, worked through
 
 `demo/semantic-model/agent/` is an agent built this way, running against a live
-operational store: a commerce model, a binding profile, and one file of 72 lines
-that names no table, no column, no business term and no dollar threshold.
-Thirteen of those lines are the adapter onto the agent framework. Its README
-walks the same steps and reaches all three of `on_violation`'s outcomes against
-that store: a $30 credit held because the model's $25 self-service ceiling is
-`escalate`, a credit written with a warning because the memo names no service
-failure, and a credit refused outright because the memo admits it's one piece of
-a larger amount.
+operational store: a commerce model, a binding profile, and an `agent.ts` of 72
+code lines that names no table, no column, no business term and no dollar
+threshold. Thirteen of those lines are the adapter onto the agent framework. Its
+README walks the same steps and reaches all three of `on_violation`'s outcomes
+against that store: a $30 credit held because the model's $25 self-service
+ceiling is `escalate`, a credit written with a warning because the memo names no
+service failure, and a credit refused outright because the memo admits it's one
+piece of a larger amount.
 
 It also states what that costs and what it can't do. The model guards on four
 judgments and the judge it hires can query the store, so the demo loads with
