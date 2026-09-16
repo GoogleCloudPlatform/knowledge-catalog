@@ -921,9 +921,22 @@ model survive that trip and which don't.
 
 ## 7. Run it
 
-`kcmd action list` prints the actions your model declares, each with its
-parameters, executor, guards and blast radius, and ends every entry with the
-command line that runs it:
+The sections so far declared an action, checked it and published it. This
+section is how you perform one against a real database and see what comes back.
+Nothing up to here has put the action in front of that database —
+[section 4](#4-check-it-before-pushing)'s checks read your model rather than
+your store, and no part of kcmd compares your statements against the tables
+they name. A `sql` action's statements are DML you wrote by hand, so you could
+paste them into a console yourself, and that would tell you the DML is valid
+and nothing else about the call. The runtime around the statement decides the
+rest: whether a guard stops the call, whether `source="Alice Checking"` picks
+out one `Account` row, whether `amount` arrives as the type your model
+declares.
+
+Start with `kcmd action list`, which reads your local files and reaches no
+database. It prints the actions your model declares — each with its
+parameters, executor, guards and blast radius, plus the command line that
+calls it where the profile binds an executor:
 
 ```bash
 kcmd action list
@@ -945,9 +958,9 @@ model's deployment target names under the selected profile. The command line
 never names a database; `--profile` picks a different one, and
 [push](profiles.md) follows the same rule. The `TransferFunds` line won't
 succeed as printed, because its `guards` name `AmountIsPositive`, an
-expression, and kcmd refuses a call that an expression guards. Resolution,
-binding and the transaction run the same way for any action, so `TransferFunds`
-still shows all three.
+expression, and kcmd refuses the call rather than run a write it can't check.
+Resolution, binding and the transaction run the same way for any action, so
+`TransferFunds` still shows all three.
 
 ### What a run does
 
@@ -1071,11 +1084,11 @@ radius rather than limiting it.
 
 ### Why a guarded action is refused
 
-Nothing in kcmd evaluates an expression against live data today, so `kcmd action
-run` refuses a call that an expression guards rather than running the write
-unchecked. Quietly ignoring a rule your model declares would be worse than no
-runtime at all, because anyone reading that model has every reason to think the
-write was checked. The refusal names the rule:
+Nothing in kcmd evaluates an expression against live data today, so `kcmd
+action run` refuses a call that a non-advisory expression guards rather than
+running the write unchecked. Quietly ignoring a rule your model declares would
+be worse than no runtime at all, because anyone reading that model has every
+reason to think the write was checked. The refusal names the rule:
 
 ```
 Error: Action 'TransferFunds' is guarded by 'AmountIsPositive', and this runtime
@@ -1088,9 +1101,9 @@ which is [section 2](#2-gate-it-with-a-constraint)'s rule applied here. A
 constraint your action doesn't name has no bearing on the call, and the runtime
 never goes looking for one.
 
-The exception is a constraint declaring `on_violation: warn`. An advisory rule
-reports a violation instead of rejecting one, so gating on it would permanently
-block every run of a model that states advisory rules.
+An advisory rule is one declaring `on_violation: warn`. It reports a violation
+instead of rejecting one, so gating on it would permanently block every run of
+a model that states advisory rules.
 
 A refusal like this is settled before a session opens, so a refused action
 leaves no transaction behind.
