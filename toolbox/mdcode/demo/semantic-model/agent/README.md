@@ -212,7 +212,7 @@ whole database in front of it, while `The memo argument of this call` names
 something it is already holding. That is a reason to suspect such a wording
 rather than a rule about it — the same field name settles a judgment correctly
 in
-[the actions guide](../../../docs/semantic-model/actions.md#a-guard-settled-in-words).
+[the actions guide](../../../docs/semantic-model/actions.md#when-the-rule-is-a-sentence).
 
 What generalises is the failure mode: a judged guard can pass a call it should
 have refused, and nothing says so. The judge is told that a rule it has not been
