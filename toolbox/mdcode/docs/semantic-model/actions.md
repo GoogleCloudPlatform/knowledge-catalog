@@ -703,10 +703,13 @@ bare form.
 
 ### Declaring a `create` turns on key generation
 
-One entry in `affects` does more than describe the write. Writing
-`operation: create` tells kcmd to generate the new row's primary key — a UUID,
-bound as `@new<Concept>Key` — which your statement then uses like any other
-bound value:
+A row your statement inserts needs a primary key, and the statement can supply
+one itself — `GENERATE_UUID()`, a literal, or the key column left out for the
+store to fill. Nothing in `affects` bears on any of those.
+
+`operation: create` asks kcmd for the key instead. It binds one extra name,
+`@new<Concept>Key`, to a UUID the runtime generates for the call, and your
+statement uses that name like any other bound value:
 
 ```yaml
         executor:
@@ -719,20 +722,42 @@ bound value:
           - { concept: Transfer, operation: create }
 ```
 
-The generation is there because an agent that picks its own primary keys can
-overwrite an existing row by choosing one already taken. So where a statement
-binds that name, the value comes from the runtime and no argument of the call
-can reach it.
+Reach for it when the key would otherwise arrive as an argument. An agent that
+picks its own primary keys can overwrite an existing row by choosing one
+already taken, and a value the runtime generates is one no argument of the call
+can reach. Every statement in the call that binds the name gets the same UUID,
+so a second insert can carry the new row's key as a foreign key. The call
+doesn't hand that key back — a committed run reports the rows your arguments
+resolved to and a commit timestamp — so anything that needs the new key has to
+use it inside the same call.
 
-Only a `sql` executor generates a key. An `mcp`, `rest` or `grpc` action can
-declare a `create` and gets nothing bound, because the system on the other side
-of the call makes the row and picks its own identifier for it.
+The name exists only where you declare the `create`. Bind `@newTransferKey`
+under `operation: modify`, under a bare `Transfer`, or with no `affects` at
+all, and the push fails, because the check that reads statements sees an
+undeclared parameter:
+
+```
+Error: action 'TransferFunds' in model 'payments' (payments) has a sql executor
+whose statement 1 binds '@newTransferKey', but action 'TransferFunds' declares
+no parameter of that name (to have the runtime generate it, declare 'affects:
+[{concept: Transfer, operation: create}]').
+```
+
+The tie between the two is kcmd's rather than the model's. `affects` describes
+a write for any reader of your model; kcmd is the one consumer that also treats
+a `create` as a request to generate the key, and only for a `sql` executor it
+runs itself. An `mcp`, `rest` or `grpc` action can declare a `create` and gets
+nothing bound, because the system on the other side of the call makes the row
+and picks its own identifier for it.
+
+Declaring a `create` and never binding the name costs nothing. The UUID is
+generated and dropped, and no check asks you to use it.
 
 A UUID only fits an entity keyed by a single `String` field, so kcmd reads your
 model before running anything and refuses the call when the key is shaped some
 other way, rather than letting the store reject a statement it can't explain.
-That check runs at the call, so no push reports it, and a statement that
-supplies its own key is never held to it.
+That check runs at the call, so no push reports it, and kcmd asks it only about
+a key some statement actually binds.
 
 **Status: nothing compares `affects` to what your executor does.** kcmd parses
 it, checks the concepts against your ontology, publishes it and reads it back,
@@ -755,32 +780,39 @@ it writes anything, so whatever this reports would have stopped your deploy:
 kcmd push --validate-only
 ```
 
-Four things about any action can be statically wrong once your document parses,
-and each one is a hard error:
+Once your document parses, four checks run over every action, and each one is a
+hard error:
+
+- **Every parameter's type resolves** — to an entity the model declares or to a
+  scalar datatype. A type that is neither leaves your model with nothing to say
+  about what that argument denotes.
+- **The executor carries both of its coordinates.** A `tool` without a
+  `server`, an `endpoint` without a `method`: whatever picks the action up has
+  nothing to dispatch.
+- **Every name in `guards` is a constraint the model declares.** This is the
+  one that costs you silently — a guard naming a constraint that doesn't exist
+  gates nothing, so you believe the write is checked while nothing checks it.
+- **Every `affects` concept is an entity or relationship the model declares.** A
+  blast radius over a concept that doesn't exist tells a consumer nothing.
+
+A model that breaks all four reports all four, one line each, and deploys
+nothing:
 
 ```
-action 'TransferFunds' in model 'payments' (payments.yaml) has parameter
+Error: action 'TransferFunds' in model 'payments' (payments) has parameter
 'target' whose type 'BankAccount' is neither a known entity nor a scalar
 datatype.
-
-action 'TransferFunds' in model 'payments' (payments.yaml) has an mcp executor
-whose 'tool' is missing or blank.
-
-action 'TransferFunds' in model 'payments' (payments.yaml) is guarded by
+Error: action 'TransferFunds' in model 'payments' (payments) has an mcp
+executor whose 'tool' is missing or blank.
+Error: action 'TransferFunds' in model 'payments' (payments) is guarded by
 'AmountIsPostive', but model 'payments' declares no constraint of that name.
-
-action 'TransferFunds' in model 'payments' (payments.yaml) affects 'Acount',
+Error: action 'TransferFunds' in model 'payments' (payments) affects 'Acount',
 which is neither an entity nor a relationship this model declares.
 ```
 
-A parameter type that resolves to neither an entity nor a scalar leaves your
-model with nothing to say about what that argument denotes. An executor missing
-a coordinate gives whatever picks the action up nothing to dispatch. A guard
-can name a constraint your model never declares; `AmountIsPostive` here
-misspells the `AmountIsPositive` declared above, so you believe the write is
-checked while nothing checks it. An `affects` entry naming `Acount` claims a
-blast radius over a concept that doesn't exist, so a consumer that reads it
-learns nothing.
+`AmountIsPostive` there misspells the `AmountIsPositive` the model declares, and
+`Acount` misspells `Account` — the two typos a reader of the document would
+skim straight past.
 
 kcmd checks the rest of an `affects` entry just as strictly. Fields beside a
 `delete` are a hard error, and so is a field the concept doesn't declare. An
@@ -806,9 +838,11 @@ carries the write rather than a pointer to whoever performs it:
   schema isn't an action. A `;` anywhere but the end is rejected, because each
   list entry runs on its own and anything after the separator would silently not
   run.
-- Pass every value as a **bound `@parameter`** naming a parameter your action
-  declares, or the `@new<Concept>Key` a `create` in `affects` generates. Nothing
-  is interpolated into the statement text, so an argument can't become SQL.
+- **Every `@name` a statement binds has to resolve** — to a parameter your
+  action declares, or to the `@new<Concept>Key` that a `create` in `affects`
+  generates. A value written any other way is left as you wrote it: a literal,
+  or a SQL function like `GENERATE_UUID()`, passes the check. Nothing is
+  interpolated into the statement text, so an argument can't become SQL.
 - Nothing else is available: no control flow, and no statement composed at call
   time. `statements` is a fixed list in your model, so an action whose body
   arrived with the call would declare nothing, and a gate can't check what was
