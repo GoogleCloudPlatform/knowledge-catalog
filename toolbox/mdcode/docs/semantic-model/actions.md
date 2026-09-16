@@ -1272,8 +1272,9 @@ becomes a tool of its own.
 
 The other parts either shape those tools or reach an agent not at all:
 
-- A **constraint** an action guards on becomes a line in that tool's
-  description, and settles whether the tool can be called at all.
+- A **constraint** reaches an agent only through an action that guards on it.
+  One that can refuse the call is named in that tool's description; one nothing
+  can settle leaves the tool uncallable.
 - Your model's **`ai_context`** becomes the **instruction** handed over with
   the set.
 - **Relationships** and **metrics** get no tool. A lookup reads one entity and
@@ -1526,9 +1527,9 @@ or the statements ran and the commit gave no answer either way. That last one
 comes back as `unknown` alongside an explicit instruction not to retry, because
 a caller reading it as "nothing happened" applies the write twice. A write that
 landed carries `committedAt` and `actedOn`, the rows each argument resolved to;
-one that didn't carries `reason` and `whatToDo`. Either may carry `warnings`,
-and dropping those would tell your agent the write met every rule the model
-states.
+one that didn't carries `reason` and `whatToDo`. Only a write that landed
+carries `warnings`, so dropping them tells your agent a write met every rule the
+model states when it didn't.
 
 `modelTools` also takes `judge`, and an action guarded by a judgment is callable
 only when you pass one. `GeminiJudge` implements the seam over Vertex AI, and so
