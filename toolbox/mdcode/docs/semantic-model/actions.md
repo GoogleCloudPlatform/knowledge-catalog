@@ -947,10 +947,7 @@ Model 'payments' (payments_eg), profile 'operational':
 ```
 
 `kcmd action run` performs one of those actions, against the database your
-model's deployment target names under the selected profile. The command line
-never names a database. The `TransferFunds` line above won't run as printed,
-because `AmountIsPositive` is an expression and kcmd refuses a call it can't
-check.
+model's deployment target names under the selected profile.
 
 ### What a run does
 
@@ -976,8 +973,8 @@ transaction:
    committed      ·      nothing written      ·      unknown, do not retry
 ```
 
-*Figure 3: one run of `TransferFunds`, from the argument the caller typed to the
-three ways it can end.*
+*Figure 3: the path of a run, from the argument the caller typed to the three
+ways it can end.*
 
 Nothing is interpolated into a statement. Every argument goes in as a query
 parameter, and the argument's declared ontology type decides the store type that
