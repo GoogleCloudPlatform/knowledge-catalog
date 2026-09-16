@@ -921,20 +921,13 @@ model survive that trip and which don't.
 
 ## 7. Run it
 
-The sections so far declared an action, checked it and published it. This
-section is how you perform one against a real database and see what comes back.
-Nothing up to here has put the action in front of that database —
-[section 4](#4-check-it-before-pushing)'s checks read your model rather than
-your store, and no part of kcmd compares your statements against the tables
-they name. A `sql` action's statements are DML you wrote by hand, so you could
-paste them into a console yourself, and that would tell you the DML is valid
-and nothing else about the call. The runtime around the statement decides the
-rest: whether a guard stops the call, whether `source="Alice Checking"` picks
-out one `Account` row, whether `amount` arrives as the type your model
-declares.
+The sections so far declared an action, checked it and published it, and none
+of that has put it in front of the database the write lands on. This section is
+how you run one there, with arguments you choose, and see what comes back.
+Pasting the statements into a SQL console would tell you the DML is valid; a
+run is what exercises everything wrapped around it.
 
-Start with `kcmd action list`, which reads your local files and reaches no
-database. It prints the actions your model declares — each with its
+`kcmd action list` prints the actions your model declares, each with its
 parameters, executor, guards and blast radius, plus the command line that
 calls it where the profile binds an executor:
 
