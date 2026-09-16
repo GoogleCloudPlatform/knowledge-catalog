@@ -334,29 +334,30 @@ describe('validatePushRequirements gates actions', () => {
     expect(errs).toEqual([]);
   });
 
-  test('a created row keys off a parameter the caller cannot supply', () => {
-    // The key of a new row cannot come from the caller: an agent that picks
-    // its own primary keys can overwrite an existing row by choosing one that
-    // is already taken. Declaring the create is what makes the generated name
-    // bindable, so an action that writes a key it never declared creating is
-    // told exactly which declaration is missing.
-    const stmt = 'INSERT INTO customer (id) VALUES (@newcustomerKey)';
-    const declared = validatePushRequirements([loaded([{
-      name: 'A',
-      executor: {kind: 'sql', sql: {statements: [stmt]}},
-      parameters: [],
-      affects: [{concept: 'customer', operation: 'create'}],
-    }])]);
-    expect(declared).toEqual([]);
+  test('a created row gets its key from the statement, whatever affects says',
+     () => {
+    // `affects` binds nothing. A statement that keys a new row with SQL the
+    // store evaluates passes whatever the action declares it changes, and a
+    // statement that binds a name no parameter declares fails either way.
+    const supplied = 'INSERT INTO customer (id) VALUES (GENERATE_UUID())';
+    const bound = 'INSERT INTO customer (id) VALUES (@who)';
+    for (const operation of ['create', 'modify'] as const) {
+      expect(validatePushRequirements([loaded([{
+        name: 'A',
+        executor: {kind: 'sql', sql: {statements: [supplied]}},
+        parameters: [],
+        affects: [{concept: 'customer', operation}],
+      }])])).toEqual([]);
 
-    const undeclared = validatePushRequirements([loaded([{
-      name: 'A',
-      executor: {kind: 'sql', sql: {statements: [stmt]}},
-      parameters: [],
-      affects: [{concept: 'customer', operation: 'modify'}],
-    }])]);
-    expect(undeclared.length).toBe(1);
-    expect(undeclared[0]).toContain('operation: create');
+      const errs = validatePushRequirements([loaded([{
+        name: 'A',
+        executor: {kind: 'sql', sql: {statements: [bound]}},
+        parameters: [],
+        affects: [{concept: 'customer', operation}],
+      }])]);
+      expect(errs.length).toBe(1);
+      expect(errs[0]).toContain('declares no parameter of that name');
+    }
   });
 
   test('a sql executor of nothing but blanks is a hard error', () => {
@@ -536,7 +537,7 @@ describe('Knowledge Catalog round trip across executor kinds', () => {
       executorKind: 'sql',
       sqlStatements: [
         'INSERT INTO orders (o_orderkey, o_custkey) VALUES ' +
-            '(@newordersKey, @buyer)',
+            '(GENERATE_UUID(), @buyer)',
         'DELETE FROM orders WHERE o_orderkey = @supersedes',
       ],
     });

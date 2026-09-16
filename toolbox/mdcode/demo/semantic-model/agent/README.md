@@ -1175,7 +1175,7 @@ psql "host=$PGHOST user=postgres dbname=semantic_agent_demo" -c \
      FROM order_line WHERE order_id = 12347 ORDER BY type"
 ```
 
-What that should show is a credit line of `-20.00` with a generated key and
+What that should show is a credit line of `-20.00` with a UUID key and
 `purchase_order.order_total` down to `180.00` — the outcome of
 [step 7](#7-the-other-two-outcomes), reached by different SQL against different
 tables, from the same request through the same agent. The note at the end of
@@ -1256,9 +1256,9 @@ $ psql "host=$PGHOST user=$(gcloud config get-value account) dbname=semantic_age
 (5 rows)
 ```
 
-The UUID is the key the runtime generated, because the action's `affects` says
-this call creates a `LineItem`. `order_total` reads `145.85`, recomputed from
-those five lines rather than adjusted by the credit amount.
+The key is a UUID, written by `gen_random_uuid()` inside the INSERT, so the
+new row's key never passes through the call. `order_total` reads `145.85`,
+recomputed from those five lines rather than adjusted by the credit amount.
 
 > **What on this page is copied from a real run, and what is not.** Every `kcmd`
 > listing here is, including the `diff` above, the push refusal, and the
@@ -1274,7 +1274,10 @@ those five lines rather than adjusted by the credit amount.
 > model-in-the-loop leg of this section has been run only under `spanner`. What
 > that leg adds over `action run` is the model choosing the action and its
 > arguments, and `kcmd agent tools` shows it is offered the same two lines of
-> difference either way.
+> difference either way. One edit to the INSERT postdates that run. It keyed the
+> new row from a bound parameter when the output above was captured and writes
+> `gen_random_uuid()` now, so the key column holds a UUID either way, but the
+> statement as it stands has not been sent to the cluster.
 
 ## What in here is about ecommerce
 

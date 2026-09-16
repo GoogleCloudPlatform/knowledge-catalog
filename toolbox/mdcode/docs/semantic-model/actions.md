@@ -701,71 +701,12 @@ Name the concept now and refine it later. Writing `- concept: Account` on its
 own says the same thing the bare `Account` does, and it's written back as the
 bare form.
 
-### Declaring a `create` turns on key generation
-
-A row your statement inserts needs a primary key, and the statement can supply
-one itself — `GENERATE_UUID()`, a literal, or the key column left out for the
-store to fill. Nothing in `affects` bears on any of those.
-
-`operation: create` asks kcmd for the key instead. It binds one extra name,
-`@new<Concept>Key`, to a UUID the runtime generates for the call, and your
-statement uses that name like any other bound value:
-
-```yaml
-        executor:
-          sql:
-            statements:
-              - >-
-                INSERT INTO transfer (transfer_id, amount, debited_account_id)
-                VALUES (@newTransferKey, @amount, @source)
-        affects:
-          - { concept: Transfer, operation: create }
-```
-
-Reach for it when the key would otherwise arrive as an argument. An agent that
-picks its own primary keys can overwrite an existing row by choosing one
-already taken, and a value the runtime generates is one no argument of the call
-can reach. Every statement in the call that binds the name gets the same UUID,
-so a second insert can carry the new row's key as a foreign key. A committed
-run reports the rows your arguments resolved to and a commit timestamp, never
-the key it generated, so anything needing that key has to use it in the same
-call.
-
-The name exists only where you declare the `create`. Bind `@newTransferKey`
-under `operation: modify`, under a bare `Transfer`, or with no `affects` at
-all, and the push fails, because the check that reads statements sees an
-undeclared parameter:
-
-```
-Error: action 'TransferFunds' in model 'payments' (payments) has a sql executor
-whose statement 1 binds '@newTransferKey', but action 'TransferFunds' declares
-no parameter of that name (to have the runtime generate it, declare 'affects:
-[{concept: Transfer, operation: create}]').
-```
-
-Reading a `create` as *generate me a key* is kcmd's own convention rather than
-something the model imposes. To every other reader `affects` just describes a
-write, and even kcmd reads it that way unless the executor is a `sql` one it
-runs itself. An `mcp`, `rest` or `grpc` action can declare a `create` and gets
-nothing bound, because the system on the other side of the call makes the row
-and picks its own identifier for it.
-
-Declaring a `create` and never binding the name costs nothing. The UUID is
-generated and dropped, and no check asks you to use it.
-
-A UUID only fits an entity keyed by a single `String` field, so kcmd reads your
-model before running anything and refuses the call when the key is shaped some
-other way, rather than letting the store reject a statement it can't explain.
-That check runs at the call, so no push reports it, and kcmd asks it only about
-a key some statement actually binds.
-
 **Status: nothing compares `affects` to what your executor does.** kcmd parses
 it, checks the concepts against your ontology, publishes it and reads it back,
 and no component reconciles the declaration with the statements or the tool
-call. Three things beyond those checks read it. Key generation is the one
-above. Resolving your model through a binding profile drops any action
-affecting a concept the profile can't bind, so that action never reaches the
-catalog. Publishing an action whose affected
+call. Two things beyond those checks read it. Resolving your model through a
+binding profile drops any action affecting a concept the profile can't bind, so
+that action never reaches the catalog. Publishing an action whose affected
 concept has no entry in the same push warns you that the catalog now records a
 blast radius naming something it can't resolve.
 
@@ -840,11 +781,14 @@ carries the write rather than a pointer to whoever performs it:
   schema isn't an action. A `;` anywhere but the end is rejected, because each
   list entry runs on its own and anything after the separator would silently not
   run.
-- **Every `@name` a statement binds has to resolve** — to a parameter your
-  action declares, or to the `@new<Concept>Key` that a `create` in `affects`
-  generates. Anything you write another way is left alone — a literal passes,
-  and so does a SQL function like `GENERATE_UUID()`. Nothing is interpolated
-  into the statement text, so an argument can't become SQL.
+- **Every `@name` a statement binds has to resolve** to a parameter your
+  action declares. Anything you write another way is left alone — a literal
+  passes, and so does a SQL function. Nothing is interpolated into the
+  statement text, so an argument can't become SQL.
+- **You choose where a new row's key comes from.** Write `GENERATE_UUID()`
+  into the `VALUES` list, pass the key in as an ordinary parameter, or leave the
+  key column out and let the store fill it. kcmd generates nothing on your
+  behalf, and nothing in `affects` bears on the choice.
 - Nothing else is available: no control flow, and no statement composed at call
   time. `statements` is a fixed list in your model, so an action whose body
   arrived with the call would declare nothing, and a gate can't check what was
@@ -1503,10 +1447,9 @@ and `unavailable` carries the reason.
 
 A write tool is withheld when a profile withdrew the executor, when the
 executor is remote and no handler was supplied, when it names a guard as above,
-when a parameter references an entity keyed by several columns, or when the
-statements ask for a generated key a UUID cannot fill. A lookup is withheld for
-reasons of its own: the entity is abstract, so it has no table; no profile
-bound it to a table; or its binding is a query rather than a table.
+or when a parameter references an entity keyed by several columns. A lookup is
+withheld for reasons of its own: the entity is abstract, so it has no table; no
+profile bound it to a table; or its binding is a query rather than a table.
 
 The derivation asks the runtime for that verdict instead of working it out
 again, so the two can't drift. A tool advertised as runnable that refuses every

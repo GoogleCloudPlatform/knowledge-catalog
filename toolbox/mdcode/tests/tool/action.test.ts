@@ -54,7 +54,7 @@ semantic_model:
             statements:
               - >-
                 INSERT INTO LedgerEntry (EntryId, OrderId, Amount)
-                VALUES (@newEntryKey, @order, @amount)
+                VALUES (GENERATE_UUID(), @order, @amount)
         parameters:
           - {name: order, type: Order}
           - {name: amount, type: Decimal}
@@ -667,11 +667,9 @@ describe('kcmd action run: the model has to be valid to run', () => {
       'an affects entry naming a concept the model does not declare is ' +
           'refused rather than run',
       async () => {
-        // A push rejects this outright. Left to run, the typo would reach
-        // the binder, which turns an `affects` entry whose operation is
-        // `create` into a generated key: the key would be minted for a concept
-        // that has no table, and the statement binding it would fail at the
-        // store reading like a fault in the SQL rather than a typo.
+        // A push rejects this outright, and running the model is running the
+        // same typo, so `action run` reports it by name rather than passing
+        // over an entry that resolves to nothing.
         writeWorkspace(TYPO);
         const code =
             await action('run', 'IssueCredit', {arg: ['order=A1', 'amount=5']});

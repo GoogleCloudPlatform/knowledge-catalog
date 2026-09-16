@@ -432,13 +432,17 @@ export type Executor =
  *     check ever observes the write it gates.
  *
  * The narrowness is the safety argument, and validate.ts enforces it. A
- * statement is a single INSERT, UPDATE or DELETE. Every value it uses arrives
- * as a bound query parameter, and each one names either a declared action
- * parameter or the key kcmd generates for a row the action creates, so nothing
- * is interpolated into the text and an argument cannot become SQL. There is no
- * control flow, no statement composed at call time, and no way for a caller to
- * supply a statement of its own: an action whose body arrives with the call
- * declares nothing, and a gate cannot check what was never declared.
+ * statement is a single INSERT, UPDATE or DELETE. Every `@name` it binds names
+ * a parameter the action declares, so an argument reaches the store as a bound
+ * value and never as SQL. There is no control flow, no statement composed at
+ * call time, and no way for a caller to supply a statement of its own: an
+ * action whose body arrives with the call declares nothing, and a gate cannot
+ * check what was never declared.
+ *
+ * A row the statement inserts needs a primary key, and the statement is what
+ * decides where it comes from: a UUID function the store offers, a value the
+ * caller passes as an ordinary parameter, or the key column left out for the
+ * store to fill. The runtime generates nothing on its behalf.
  */
 export interface SqlExecutor {
   // The statements, run in order inside the action's transaction. Each is a
@@ -450,21 +454,6 @@ export interface SqlExecutor {
 // so there is no SELECT here and no DDL: a statement that reads is a query and
 // belongs in a metric, and a statement that reshapes the schema is not an action.
 export const SQL_EXECUTOR_VERBS = ['INSERT', 'UPDATE', 'DELETE'] as const;
-
-/**
- * The bound parameter carrying the key of a row the action creates.
- *
- * An action that inserts a row needs a key for it, and the key cannot come from
- * the caller. An agent that picks its own primary keys can overwrite an
- * existing row by choosing a key that is already taken, so a runtime generates
- * one per `affects` entry whose operation is `create` and binds it under this
- * name. Only a `sql` executor reads it: planFromExecutor is what binds these,
- * and it refuses any other kind. A statement refers to the key the same way it
- * refers to any other parameter.
- */
-export function generatedKeyParam(concept: string): string {
-  return `new${concept}Key`;
-}
 
 /**
  * An MCP executor: references a tool already registered in Agent Registry, by

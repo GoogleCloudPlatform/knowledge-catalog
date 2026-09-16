@@ -50,7 +50,6 @@ import {
   constraintEvaluation,
   Entity,
   fieldBinding,
-  generatedKeyParam,
   SemanticModel,
 } from '../ir';
 import {referencedParameters} from '../sql_identifiers';
@@ -283,7 +282,7 @@ export async function runAction(opts: RunActionOptions):
           if ('error' in bound) {
             return await rollback({status: 'error', message: bound.error});
           }
-          plan = planFromExecutor(model, action, bound, generatedKeys(action));
+          plan = planFromExecutor(action, bound);
         }
         if ('error' in plan) {
           return await rollback({status: 'error', message: plan.error});
@@ -445,10 +444,10 @@ export function whyRefusedWithoutRunning(
 
 
 // Why this runtime could not fill the model's own statements for `action`, or
-// null if it could. Both answers are in the model and neither needs a row, so
-// both are owed HERE. Binding asks them again where the values are, which is
-// where they have to be enforced; asking only there would charge a caller a
-// transaction to be told something the model said all along.
+// null if it could. The answer is in the model and needs no row, so it is owed
+// HERE. Binding asks it again where the values are, which is where it has to be
+// enforced; asking only there would charge a caller a transaction to be told
+// something the model said all along.
 function unbindableByThisRuntime(
     model: SemanticModel, action: Action): string|null {
   for (const param of action.parameters) {
@@ -461,19 +460,6 @@ function unbindableByThisRuntime(
           `binds an object reference as a single value, so a composite key ` +
           `cannot be passed to a statement.`;
     }
-  }
-  const executor = action.executor;
-  if (executor?.kind !== 'sql') return null;
-  // Asked only for a key some statement actually binds, exactly as
-  // `planFromExecutor` asks it: an entity whose DML supplies its own key must
-  // not be refused over a generated value it never reads.
-  const referenced = new Set(
-      executor.sql.statements.flatMap(sql => referencedParameters(sql)));
-  for (const affected of action.affects ?? []) {
-    if (affected.operation !== 'create') continue;
-    if (!referenced.has(generatedKeyParam(affected.concept))) continue;
-    const unusable = unusableGeneratedKey(model, action, affected.concept);
-    if (unusable) return unusable;
   }
   return null;
 }
@@ -883,74 +869,25 @@ export function bindScalar(param: ActionParameter, raw: unknown):
 }
 
 
-// A key for every concept the action creates, named as the DML expects it. The
-// model's own statements bind `@new<Concept>Key`, so the value has to exist
-// before the statement runs -- which rules out letting the store assign it.
-//
-// The value is a UUID, so the key it fills has to be text. Whether that fits
-// is `unusableGeneratedKey`'s question, asked where a statement actually binds
-// one.
-function generatedKeys(action: Action): Record<string, string> {
-  const keys: Record<string, string> = {};
-  for (const affected of action.affects ?? []) {
-    if (affected.operation !== 'create') continue;
-    keys[affected.concept] = crypto.randomUUID();
-  }
-  return keys;
-}
-
-
-// Why a UUID cannot fill the key the action's DML asks for, or null if it can.
-// The store would reject an INT64 key bound as text, but it reports that as a
-// rejected statement -- naming neither the entity nor the reason -- so this
-// answers first, from the model.
-function unusableGeneratedKey(
-    model: SemanticModel, action: Action, concept: string): string|null {
-  const entity = (model.entities ?? []).find(e => e.name === concept);
-  if (!entity) return null;
-  const declared = entity.keys ?? [];
-  if (declared.length > 1) {
-    return `Action '${action.name}' binds a generated key for the ${
-        concept} it creates, but ${concept}'s key has ${
-        declared.length} parts. A composite key has to be written by the ` +
-        `statement itself.`;
-  }
-  const keyField = entity.fields.find(f => f.name === declared[0]);
-  const type = keyField?.type ?? 'String';
-  if (type !== 'String') {
-    return `Action '${action.name}' binds a generated key for the ${
-        concept} it creates, but ${concept}'s key '${declared[0]}' has type ${
-        type}, and the runtime generates a UUID -- which is text. Key ${
-        concept} by a String, or have the statement supply the key itself.`;
-  }
-  return null;
-}
-
-
-// Builds the plan from the action's own DML. Every `@name` in a statement is
-// either a declared parameter or a key this call generates; validate.ts refuses
-// a model where it is neither, so an unbound reference cannot reach here.
+// Builds the plan from the action's own DML. Every `@name` in a statement names
+// a parameter the action declares; validate.ts refuses a model where one does
+// not, so an unbound reference cannot reach here. A key for a row the statement
+// inserts is the statement's own business -- a UUID function, or a value the
+// caller passed like any other.
 function planFromExecutor(
-    model: SemanticModel, action: Action, bound: Bindings,
-    generated: Record<string, string>): ActionPlan|{error: string} {
+    action: Action, bound: Bindings): ActionPlan|{error: string} {
   const executor = action.executor;
   if (executor?.kind !== 'sql') {
     return {error: `Action '${action.name}' has no 'sql' executor.`};
   }
   // Null-prototype maps throughout. Parameter names come from the model, and
   // `'toString' in {}` is true, so a plain object would let `@toString` pass
-  // the "declared or generated" check below and reach the store bound to
+  // the "is it declared" check below and reach the store bound to
   // Object.prototype's own member.
   const values: Record<string, unknown> =
       Object.assign(Object.create(null), bound.params);
   const types: Record<string, {code: string}> =
       Object.assign(Object.create(null), bound.types);
-  const conceptOfKey: Record<string, string> = Object.create(null);
-  for (const [concept, key] of Object.entries(generated)) {
-    values[generatedKeyParam(concept)] = key;
-    types[generatedKeyParam(concept)] = {code: 'STRING'};
-    conceptOfKey[generatedKeyParam(concept)] = concept;
-  }
 
   const statements: spanner.Statement[] = [];
   for (const sql of executor.sql.statements) {
@@ -959,16 +896,9 @@ function planFromExecutor(
     for (const name of referencedParameters(sql)) {
       if (!Object.hasOwn(values, name)) {
         return {
-          error: `Action '${action.name}' binds '@${name}', which is neither ` +
-              `a parameter it declares nor a key it generates.`,
+          error: `Action '${action.name}' binds '@${name}', but declares no ` +
+              `parameter of that name.`,
         };
-      }
-      // Asked only where a statement actually binds a generated key: an
-      // INT64-keyed entity whose DML supplies its own key must not be refused
-      // over a value it never uses.
-      if (Object.hasOwn(conceptOfKey, name)) {
-        const unusable = unusableGeneratedKey(model, action, conceptOfKey[name]);
-        if (unusable) return {error: unusable};
       }
       params[name] = values[name];
       paramTypes[name] = types[name];

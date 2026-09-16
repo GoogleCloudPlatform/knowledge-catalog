@@ -488,9 +488,10 @@ reads the document ([§6](#6-the-extension-mechanism)).
   kind whose text the model can read, it is the only one with rules about that
   text: each statement MUST be a single `INSERT`, `UPDATE` or `DELETE`, MUST NOT
   contain a `;` other than a trailing one, and MUST reference only `@parameter`
-  names the action declares, plus `@new<Concept>Key` for each `affects` entry
-  whose `operation` is `create`. Those rules are what let every value be bound
-  rather than interpolated, so an argument cannot reach the store as SQL.
+  names the action declares. Those rules are what let every value be bound
+  rather than interpolated, so an argument cannot reach the store as SQL. Where
+  the key of an inserted row comes from is the statement's own business, and
+  `affects` has no bearing on it.
 
 - **`constraints` (extended profile only).** Model-level named invariants over
   the ontology, accepted only under `0.2.0.dev0/google`. Each states exactly one

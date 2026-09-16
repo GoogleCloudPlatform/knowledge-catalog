@@ -456,13 +456,14 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   fields-beside-a-`delete` check reads only the entry, so it still applies. A `sql` executor is checked further, because it carries the
   write itself rather than a pointer to whoever performs it: each statement must
   begin with `INSERT`, `UPDATE` or `DELETE`, must contain no `;` other than a
-  trailing one, and may reference only `@parameter` names the action declares —
-  plus `@new<Concept>Key` for each `affects` entry whose `operation` is
-  `create`, which a runtime generates rather than accepting from the caller.
+  trailing one, and may reference only `@parameter` names the action declares.
   Together those are what let every value be bound instead of interpolated, so
-  an argument cannot reach the store as SQL. Four further rules are enforced at
-  parse time: exactly one
-  executor kind (`executor requires exactly one kind, but 2 given (mcp, rest)`),
+  an argument cannot reach the store as SQL. Where the key of an inserted row
+  comes from is the statement's own business: a SQL function such as
+  `GENERATE_UUID()`, a declared parameter, or a key column left out for the
+  store to fill. `affects` has no bearing on it. Four further rules are enforced
+  at parse time: exactly one executor kind (`executor requires exactly one
+  kind, but 2 given (mcp, rest)`),
   the closed `create` / `modify` / `delete` vocabulary for `operation`, the
   rejection of a repeated guard name, and the rejection of a repeated
   concept-and-operation pair in `affects`. Every check here is static, so it
