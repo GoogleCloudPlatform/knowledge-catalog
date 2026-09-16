@@ -630,17 +630,22 @@ today.
 `affects` names the concepts a call writes to. An executor like
 `mcp: {server, tool}` says where the operation lives and nothing more, so no
 reader of your model can see what that tool writes; the blast radius of a call
-stays unknown until you declare it here:
+stays unknown until you declare it here.
+
+`affects` is a list, and every entry in it takes one of two shapes: a bare
+concept name, or a record that also says how the concept changes.
+
+**A bare name** says the concept is touched, in a way your model doesn't spell
+out:
 
 ```yaml
         affects: [Account, Transfer]
 ```
 
-That's the coarse form: these concepts are touched, in a way your model doesn't
-spell out. It's enough to answer *which actions can change an account at all*,
-which is already more than an executor name answers.
+That's enough to answer *which actions can change an account at all*, which is
+already more than an executor name answers.
 
-A record says more — which operation, and which fields the call writes:
+**A record** adds the operation and the fields the call writes:
 
 ```yaml
         affects:
@@ -653,9 +658,15 @@ A record says more — which operation, and which fields the call writes:
             operation: create
 ```
 
-Be precise about the concepts you've worked out and coarse about the rest. The
-two shapes sit in one list together, so a vague entry costs you nothing on the
-ones you know.
+You'll usually have worked some concepts out further than others. The two
+shapes go in one list together, so a coarse entry on the ones you haven't costs
+you nothing on the ones you have:
+
+```yaml
+        affects:
+          - { concept: Account, operation: modify, fields: [balance] }
+          - Transfer
+```
 
 `affects` declares the blast radius rather than limiting it. Naming one field
 doesn't stop a statement from writing others, and naming two concepts doesn't
@@ -717,14 +728,11 @@ Only a `sql` executor generates a key. An `mcp`, `rest` or `grpc` action can
 declare a `create` and gets nothing bound, because the system on the other side
 of the call makes the row and picks its own identifier for it.
 
-Where a statement binds a generated key, kcmd reads your model before running
-anything. An entity keyed by several columns, or by a key field that isn't a
-`String`, can't take a UUID, so kcmd refuses the call rather than letting the
-store reject a statement it can't explain. The check reads entities, so a
-relationship passes it — an edge declares no key to read — and so does an
-entity whose key names a field the model doesn't declare. It runs at the call
-rather than at the push, so no push check surfaces it. A statement that
-supplies its own key is never refused over a generated one it doesn't use.
+A UUID only fits an entity keyed by a single `String` field, so kcmd reads your
+model before running anything and refuses the call when the key is shaped some
+other way, rather than letting the store reject a statement it can't explain.
+That check runs at the call, so no push reports it, and a statement that
+supplies its own key is never held to it.
 
 **Status: nothing compares `affects` to what your executor does.** kcmd parses
 it, checks the concepts against your ontology, publishes it and reads it back,
@@ -738,8 +746,10 @@ blast radius naming something it can't resolve.
 
 ## 4. Check it before pushing
 
-Run this before you push, so a typo costs you a second instead of a round
-trip:
+`kcmd push --validate-only` runs the checks a push runs and deploys nothing. It
+loads your model, checks each action against the ontology that same model
+declares, and prints every error it finds. A push clears the same gate before
+it writes anything, so whatever this reports would have stopped your deploy:
 
 ```bash
 kcmd push --validate-only
@@ -810,20 +820,9 @@ carries the write rather than a pointer to whoever performs it:
 kcmd push
 ```
 
-Knowledge Catalog is the one system your action reaches. Every other push target
-deploys nothing for it and warns once:
-
-```
-Warning: [payments] 1 action(s) reach Knowledge Catalog only; the BigQuery
-push deploys none of them.
-```
-
-A graph-only `kcmd push --no-kc` therefore validates your actions and then warns
-that it won't deploy them.
-
-In Knowledge Catalog, each action becomes its own entry, parented to the model
-entry, the same way a metric does. The entry carries one aspect holding the
-executor and the typed parameters:
+Knowledge Catalog is the one system your action reaches. Each action becomes its
+own entry there, parented to the model entry, the same way a metric does. The
+entry carries one aspect holding the executor and the typed parameters:
 
 ```yaml
 # .../entryGroups/<group>/entries/payments.actions.TransferFunds
