@@ -479,12 +479,10 @@ rules bear on whether they may:
 *Table 1: the five rules of the credit policy, how each one is written, and what
 a breach of it does.*
 
-The five rules produce three different outcomes, and the two written as
-judgments — the memo and the split credit — are the ones no query can settle.
-The model behind them has an `Order` with a `total`, a `LineItem` with an
+Writing that policy down needs an `Order` with a `total`, a `LineItem` with an
 `amount` and a `memo`, and an `IssueCredit` action taking the order, the amount
-and the memo. Each rule becomes one constraint carrying its own outcome in its
-own `on_violation`:
+and the memo. Each rule becomes one constraint, and each states its own outcome
+in `on_violation`:
 
 ```yaml
     constraints:
