@@ -726,10 +726,10 @@ Reach for it when the key would otherwise arrive as an argument. An agent that
 picks its own primary keys can overwrite an existing row by choosing one
 already taken, and a value the runtime generates is one no argument of the call
 can reach. Every statement in the call that binds the name gets the same UUID,
-so a second insert can carry the new row's key as a foreign key. The call
-doesn't hand that key back — a committed run reports the rows your arguments
-resolved to and a commit timestamp — so anything that needs the new key has to
-use it inside the same call.
+so a second insert can carry the new row's key as a foreign key. A committed
+run reports the rows your arguments resolved to and a commit timestamp, never
+the key it generated, so anything needing that key has to use it in the same
+call.
 
 The name exists only where you declare the `create`. Bind `@newTransferKey`
 under `operation: modify`, under a bare `Transfer`, or with no `affects` at
@@ -743,9 +743,9 @@ no parameter of that name (to have the runtime generate it, declare 'affects:
 [{concept: Transfer, operation: create}]').
 ```
 
-The tie between the two is kcmd's rather than the model's. `affects` describes
-a write for any reader of your model; kcmd is the one consumer that also treats
-a `create` as a request to generate the key, and only for a `sql` executor it
+Reading a `create` as *generate me a key* is kcmd's own convention rather than
+something the model imposes. To every other reader `affects` just describes a
+write, and even kcmd reads it that way unless the executor is a `sql` one it
 runs itself. An `mcp`, `rest` or `grpc` action can declare a `create` and gets
 nothing bound, because the system on the other side of the call makes the row
 and picks its own identifier for it.
@@ -780,20 +780,22 @@ it writes anything, so whatever this reports would have stopped your deploy:
 kcmd push --validate-only
 ```
 
-Once your document parses, four checks run over every action, and each one is a
-hard error:
+Once your document parses, four checks run over every action, and a failure in
+any of them stops the push:
 
-- **Every parameter's type resolves** — to an entity the model declares or to a
-  scalar datatype. A type that is neither leaves your model with nothing to say
-  about what that argument denotes.
-- **The executor carries both of its coordinates.** A `tool` without a
-  `server`, an `endpoint` without a `method`: whatever picks the action up has
-  nothing to dispatch.
+- **Every parameter's type resolves** — to an entity the model declares, or to
+  a scalar datatype. A type that is neither leaves a caller guessing what to
+  pass.
+- **The executor has the fields its kind requires.** `server` and `tool` for
+  `mcp`, `endpoint` and `method` for `rest`, `service` and `method` for `grpc`,
+  at least one statement for `sql`. Leave one blank and whatever picks the
+  action up has nothing to call.
 - **Every name in `guards` is a constraint the model declares.** This is the
   one that costs you silently — a guard naming a constraint that doesn't exist
   gates nothing, so you believe the write is checked while nothing checks it.
-- **Every `affects` concept is an entity or relationship the model declares.** A
-  blast radius over a concept that doesn't exist tells a consumer nothing.
+- **Every `affects` concept is an entity or relationship the model declares.**
+  The list exists to answer *which actions change `Account`*. A typo is
+  invisible on the page and would drop the action out of that answer.
 
 A model that breaks all four reports all four, one line each, and deploys
 nothing:
@@ -840,9 +842,9 @@ carries the write rather than a pointer to whoever performs it:
   run.
 - **Every `@name` a statement binds has to resolve** — to a parameter your
   action declares, or to the `@new<Concept>Key` that a `create` in `affects`
-  generates. A value written any other way is left as you wrote it: a literal,
-  or a SQL function like `GENERATE_UUID()`, passes the check. Nothing is
-  interpolated into the statement text, so an argument can't become SQL.
+  generates. Anything you write another way is left alone — a literal passes,
+  and so does a SQL function like `GENERATE_UUID()`. Nothing is interpolated
+  into the statement text, so an argument can't become SQL.
 - Nothing else is available: no control flow, and no statement composed at call
   time. `statements` is a fixed list in your model, so an action whose body
   arrived with the call would declare nothing, and a gate can't check what was
