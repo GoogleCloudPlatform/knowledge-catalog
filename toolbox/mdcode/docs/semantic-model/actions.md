@@ -1270,23 +1270,22 @@ You don't write the tools an agent calls. You point an agent at your model, and
 what it can read, what it can change and what gates the change are all derived
 from it.
 
-Every entity in your model turns into a **lookup tool** that reads it, and every
-action turns into a **write tool** that runs it. Nothing else in the model
-becomes a tool of its own.
+The **derivation** is the step that turns a bound model into the set an agent is
+handed, and `kcmd` and the library behind it both run it. It produces a **write
+tool** for every action, a **lookup tool** for every entity, and one
+**instruction** from your model's `ai_context`.
 
-The other parts either shape those tools or reach an agent not at all:
+Nothing else in your model becomes a tool of its own. A constraint reaches an
+agent only through an action that guards on it. Relationships and metrics get no
+tool at all, so an agent walks a relationship by looking up each end itself, and
+nothing totals anything on its behalf.
 
-- A **constraint** reaches an agent only through an action that guards on it.
-  One that can refuse the call is named in that tool's description; one nothing
-  can settle leaves the tool uncallable.
-- Your model's **`ai_context`** becomes the **instruction** handed over with
-  the set.
-- **Relationships** and **metrics** get no tool. A lookup reads one entity and
-  can't join, so an agent walks a relationship by looking up each end itself,
-  and nothing totals anything on its behalf.
+### The set an agent is handed
 
-`kcmd agent tools` prints the whole set. It reads your model and nothing else,
-so it opens no session and changes nothing:
+`kcmd agent tools` prints every tool the derivation produces, with the
+instruction they arrive with. It reads your model under the profile you name and
+needs the store that profile binds, because what an agent can call depends on
+it. It opens no connection and runs nothing:
 
 ```bash
 kcmd agent tools
@@ -1357,6 +1356,21 @@ Model 'payments' (payments_eg), profile 'operational':
       you changed.
 ```
 
+`transfer_funds` is listed and marked `[NOT RUNNABLE]`. `TransferFunds` names a
+guard stated as an expression, nothing in kcmd evaluates one, and so the
+[refusal from section 7](#why-a-guarded-action-is-refused) arrives here instead
+— before any agent exists, rather than inside a transaction.
+
+A tool this binding can't serve still comes back, still named and still
+described — an action your model declares shouldn't vanish from the set your
+model offers — so the listing prints what it's waiting on instead.
+
+Nothing in the listing was written for a particular agent. It reads the same
+whether your caller is ADK, LangChain, or a person deciding whether the model
+says enough yet.
+
+### Where each line comes from
+
 Most of the listing traces back to a key in your model or your profile, one
 line of output per key:
 
@@ -1406,15 +1420,28 @@ line of output per key:
 *Table 4: which key in your model or your profile produces each line of the
 agent listing.*
 
-Two parts come from neither file. The step that turns a model into tools — the
-**derivation**, which this command and the library behind it both run — appends
-a paragraph to the instruction, its own text about using the tools, identical
-for every model. The runtime adds `[NOT RUNNABLE]` and the paragraph under it,
-which say whether this call could succeed.
+Two things come from neither file. The derivation appends a paragraph to the
+instruction, its own text about using the tools, identical for every model. The
+runtime adds `[NOT RUNNABLE]` and the paragraph under it, which say whether this
+call could succeed.
 
-Nothing in the listing was written for a particular agent. It reads the same
-whether your caller is ADK, LangChain, or a person deciding whether the model
-says enough yet.
+The instruction at the foot of the listing has two parts, because two different
+people own them.
+
+One part is your model's own `ai_context.instructions` — what this business asks
+of anything that acts on it, including the agents nobody has written yet. It
+belongs to the model because an agent carrying the same rule in its own source
+is a place someone can change that rule without the people who own the model
+finding out. Agents get replaced when frameworks change; your model doesn't.
+
+The other part is about the tools rather than the business: what a lookup is
+for, and what a refused write means. The derivation owes that part, because it
+describes a contract this module defines and your model never stated. Write it
+into each agent instead and you copy the same paragraph into every adapter,
+where it drifts in each one.
+
+So an agent that appends a persona of its own is saying something your model did
+not. Put it in the model.
 
 ### What a write tool and a lookup tool do
 
@@ -1436,17 +1463,24 @@ collide. An entity named `Account` and an action named `FindAccount` both derive
 becomes `lookup_account`. Deriving the write tools and the lookups together is
 what makes the collision visible at all.
 
-### A tool says whether it can be called
+### What a withheld tool is waiting on
 
-`transfer_funds` above is listed and marked `[NOT RUNNABLE]`. `TransferFunds`
-names a guard stated as an expression, nothing in kcmd evaluates one, and so the
-[refusal from section 7](#why-a-guarded-action-is-refused) arrives here instead
-— before any agent exists, rather than inside a transaction.
+Write tools and lookups each carry a `runnable` flag, and `unavailable` carries
+the reason. A **write tool** is withheld for one of four reasons:
 
-An action guarded by a judgment is marked the same way when the derivation holds
-no judge, because the listing reports what the runtime would do with what it's
-holding. Supply a judge and the same action is offerable, with the same
-description and the same parameters:
+- This binding supplies no executor, because the model declared none or a
+  profile withdrew it with `executor: null`.
+- The executor is `mcp`, `rest` or `grpc`, and the caller supplied no handler
+  to perform the write.
+- It names a guard this runtime cannot settle — an expression, or a judgment
+  with no judge to ask.
+- A parameter refers to an entity whose key has several parts, which the
+  runtime can't bind to a statement as one value.
+
+An action guarded by a judgment is withheld when the derivation holds no judge,
+because the listing reports what the runtime would do with what it's holding.
+Supply a judge and the same action is offerable, with the same description and
+the same parameters:
 
 ```console
 $ kcmd agent tools
@@ -1464,22 +1498,6 @@ The flag takes an optional model name, the same way [`kcmd action run
 settles a rule when an action runs, and printing what an agent is offered runs
 no action, so this listing costs you nothing however many guarded actions it
 names.
-
-A tool this binding can't serve still comes back, still named and still
-described — an action your model declares shouldn't vanish from the set your
-model offers — so the listing prints what it's waiting on instead. Write tools
-and lookups each carry a `runnable` flag, and `unavailable` carries the reason.
-
-A **write tool** is withheld for one of four reasons:
-
-- This binding supplies no executor, because the model declared none or a
-  profile withdrew it with `executor: null`.
-- The executor is `mcp`, `rest` or `grpc`, and the caller supplied no handler
-  to perform the write.
-- It names a guard this runtime cannot settle — an expression, or a judgment
-  with no judge to ask.
-- A parameter refers to an entity whose key has several parts, which the
-  runtime can't bind to a statement as one value.
 
 A **lookup** is withheld for reasons of its own:
 
@@ -1538,10 +1556,10 @@ model states when it didn't.
 `modelTools` also takes `judge`, and an action guarded by a judgment is callable
 only when you pass one. `GeminiJudge` implements the seam over Vertex AI, and so
 does anything carrying a name and a `decide` method. Omit it and such an action
-is still derived, still named and still described, and reported in `withheld`.
-The judge goes to the derivation rather than to each call because one object has
-to answer `runnable` and answer the call: a tool derived with a judge and then
-invoked without one would be advertised as callable and refused mid-call.
+is still derived and reported in `withheld`. The judge goes to the derivation
+rather than to each call because one object has to answer `runnable` and answer
+the call: a tool derived with a judge and then invoked without one would be
+advertised as callable and refused mid-call.
 
 Pass `handler` for an executor this runtime can't perform itself. An action with
 a `sql` executor never receives it. Such an action promises that the catalog
@@ -1566,26 +1584,6 @@ also checks that every entity is bound to a table in the store your profile
 targets. Without it, a model could be bound to some other system, and a lookup
 derived from that model would read whatever table of that name your target store
 happens to hold.
-
-### Who owns the instruction
-
-The instruction at the foot of the listing has two parts, because two different
-people own them.
-
-One part is your model's own `ai_context.instructions` — what this business asks
-of anything that acts on it, including the agents nobody has written yet. It
-belongs to the model because an agent carrying the same rule in its own source
-is a place someone can change that rule without the people who own the model
-finding out. Agents get replaced when frameworks change; your model doesn't.
-
-The other part is about the tools rather than the business: what a lookup is
-for, and what a refused write means. The derivation owes that part, because it
-describes a contract this module defines and your model never stated. Write it
-into each agent instead and you copy the same paragraph into every adapter,
-where it drifts in each one.
-
-So an agent that appends a persona of its own is saying something your model did
-not. Put it in the model.
 
 ### The commerce demo, worked through
 
