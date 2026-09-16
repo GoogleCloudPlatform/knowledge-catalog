@@ -460,10 +460,12 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   Together those are what let every value be bound instead of interpolated, so
   an argument cannot reach the store as SQL. Where the key of an inserted row
   comes from is the statement's own business: a SQL function such as
-  `GENERATE_UUID()`, a declared parameter, or a key column left out for the
-  store to fill. `affects` has no bearing on it. Four further rules are enforced
-  at parse time: exactly one executor kind (`executor requires exactly one
-  kind, but 2 given (mcp, rest)`),
+  `GENERATE_UUID()`, a declared parameter, or a key column left out where it
+  has a default. `affects` has no bearing on it. A declared parameter hands the
+  key to the caller, and since the verb check reads only a statement's first
+  word, an upsert passes and overwrites the row that key names. Four further
+  rules are enforced at parse time: exactly one executor kind (`executor
+  requires exactly one kind, but 2 given (mcp, rest)`),
   the closed `create` / `modify` / `delete` vocabulary for `operation`, the
   rejection of a repeated guard name, and the rejection of a repeated
   concept-and-operation pair in `affects`. Every check here is static, so it

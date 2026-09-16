@@ -786,9 +786,17 @@ carries the write rather than a pointer to whoever performs it:
   passes, and so does a SQL function. Nothing is interpolated into the
   statement text, so an argument can't become SQL.
 - **You choose where a new row's key comes from.** Write `GENERATE_UUID()`
-  into the `VALUES` list, pass the key in as an ordinary parameter, or leave the
-  key column out and let the store fill it. kcmd generates nothing on your
-  behalf, and nothing in `affects` bears on the choice.
+  into the `VALUES` list, pass the key in as an ordinary parameter, or, where
+  the key column has a default, leave it out and let the store fill it. kcmd
+  generates nothing on your behalf, and nothing in `affects` bears on the
+  choice.
+- **A key that arrives as an argument is a key the caller chooses.** An agent
+  filling that parameter can name a row that already exists, and nothing in
+  kcmd stops it, because the check on statement shape reads only the first
+  word. An upsert therefore passes and overwrites. Spanner spells one
+  `INSERT OR UPDATE` and AlloyDB spells one `INSERT ... ON CONFLICT`. A plain
+  `INSERT` fails on the duplicate instead. Generate the key inside the
+  statement unless something about the call needs the caller to pick it.
 - Nothing else is available: no control flow, and no statement composed at call
   time. `statements` is a fixed list in your model, so an action whose body
   arrived with the call would declare nothing, and a gate can't check what was

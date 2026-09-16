@@ -441,8 +441,11 @@ export type Executor =
  *
  * A row the statement inserts needs a primary key, and the statement is what
  * decides where it comes from: a UUID function the store offers, a value the
- * caller passes as an ordinary parameter, or the key column left out for the
- * store to fill. The runtime generates nothing on its behalf.
+ * caller passes as an ordinary parameter, or the key column left out where it
+ * has a default. The runtime generates nothing on its behalf. A key that comes
+ * in as a parameter is one the caller chooses, and the check in validate.ts
+ * reads only a statement's first word, so an upsert passes and overwrites the
+ * row that key names.
  */
 export interface SqlExecutor {
   // The statements, run in order inside the action's transaction. Each is a

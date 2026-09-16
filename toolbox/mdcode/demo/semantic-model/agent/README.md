@@ -1256,8 +1256,8 @@ $ psql "host=$PGHOST user=$(gcloud config get-value account) dbname=semantic_age
 (5 rows)
 ```
 
-The key is a UUID, written by `gen_random_uuid()` inside the INSERT, so the
-new row's key never passes through the call. `order_total` reads `145.85`,
+The key is a UUID. The INSERT writes it with `gen_random_uuid()`, so the new
+row's key never passes through the call. `order_total` reads `145.85`,
 recomputed from those five lines rather than adjusted by the credit amount.
 
 > **What on this page is copied from a real run, and what is not.** Every `kcmd`
@@ -1274,10 +1274,12 @@ recomputed from those five lines rather than adjusted by the credit amount.
 > model-in-the-loop leg of this section has been run only under `spanner`. What
 > that leg adds over `action run` is the model choosing the action and its
 > arguments, and `kcmd agent tools` shows it is offered the same two lines of
-> difference either way. One edit to the INSERT postdates that run. It keyed the
-> new row from a bound parameter when the output above was captured and writes
-> `gen_random_uuid()` now, so the key column holds a UUID either way, but the
-> statement as it stands has not been sent to the cluster.
+> difference either way. One edit postdates every run on this page. Under both
+> profiles the INSERT keyed the new row from a runtime-generated UUID when these
+> outputs were captured, and it now generates one inside the statement instead,
+> with `GENERATE_UUID()` under `spanner` and `gen_random_uuid()` under
+> `alloydb`. Any key shown above is still a UUID, but neither statement as it
+> stands has been sent to its store.
 
 ## What in here is about ecommerce
 
