@@ -1266,12 +1266,21 @@ transaction opens.
 
 ## 8. Hand it to an agent
 
-An agent needs two things from your model: a way to find what's there, and a way
-to change it. Your entities are how it finds the account, and your actions are
-how it moves the money, so both tools come out of the model you already have.
+Every entity in your model turns into a **lookup tool** that reads it, and every
+action turns into a **write tool** that runs it. Nothing else in the model
+becomes a tool of its own.
 
-`kcmd agent tools` prints the whole set — one tool per action, one per entity,
-and the instruction that goes with them. It reads your model and nothing else,
+The other parts either shape those tools or reach an agent not at all:
+
+- A **constraint** an action guards on becomes a line in that tool's
+  description, and settles whether the tool can be called at all.
+- Your model's **`ai_context`** becomes the **instruction** handed over with
+  the set.
+- **Relationships** and **metrics** get no tool. A lookup reads one entity and
+  can't join, so an agent walks a relationship by looking up each end itself,
+  and nothing totals anything on its behalf.
+
+`kcmd agent tools` prints the whole set. It reads your model and nothing else,
 so it opens no session and changes nothing:
 
 ```bash
@@ -1343,9 +1352,7 @@ Model 'payments' (payments_eg), profile 'operational':
       you changed.
 ```
 
-The listing holds three kinds of thing: one **write tool** for the action, one
-**lookup tool** for each entity, and one **instruction** for whatever agent
-holds them. Most of it traces back to a key in your model or your profile, one
+Most of the listing traces back to a key in your model or your profile, one
 line of output per key:
 
 ```
