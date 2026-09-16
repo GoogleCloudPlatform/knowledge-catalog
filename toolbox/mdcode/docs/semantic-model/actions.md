@@ -1268,7 +1268,7 @@ transaction opens.
 
 You don't write the tools an agent calls. You point an agent at your model, and
 what it can read, what it can change and what gates the change are all derived
-from it.
+from the model.
 
 The **derivation** is the step that turns a bound model into the set an agent is
 handed, and `kcmd` and the library behind it both run it. It produces a **write
@@ -1285,7 +1285,7 @@ nothing totals anything on its behalf.
 `kcmd agent tools` prints every tool the derivation produces, with the
 instruction they arrive with. It reads your model under the profile you name and
 needs the store that profile binds, because what an agent can call depends on
-it. It opens no connection and runs nothing:
+it. The command opens no connection and runs nothing:
 
 ```bash
 kcmd agent tools
@@ -1361,9 +1361,9 @@ guard stated as an expression, nothing in kcmd evaluates one, and so the
 [refusal from section 7](#why-a-guarded-action-is-refused) arrives here instead
 — before any agent exists, rather than inside a transaction.
 
-A tool this binding can't serve still comes back, still named and still
-described — an action your model declares shouldn't vanish from the set your
-model offers — so the listing prints what it's waiting on instead.
+A tool marked `[NOT RUNNABLE]` is **withheld**, and the listing keeps it,
+printed named and described, with what it's waiting on underneath, because an
+action your model declares shouldn't vanish from the set your model offers.
 
 Nothing in the listing was written for a particular agent. It reads the same
 whether your caller is ADK, LangChain, or a person deciding whether the model
@@ -1465,8 +1465,7 @@ what makes the collision visible at all.
 
 ### What a withheld tool is waiting on
 
-Write tools and lookups each carry a `runnable` flag, and `unavailable` carries
-the reason. A **write tool** is withheld for one of four reasons:
+A **write tool** is withheld for one of four reasons:
 
 - This binding supplies no executor, because the model declared none or a
   profile withdrew it with `executor: null`.
@@ -1479,7 +1478,7 @@ the reason. A **write tool** is withheld for one of four reasons:
 
 An action guarded by a judgment is withheld when the derivation holds no judge,
 because the listing reports what the runtime would do with what it's holding.
-Supply a judge and the same action is offerable, with the same description and
+Supply a judge and the same action is callable, with the same description and
 the same parameters:
 
 ```console
@@ -1493,11 +1492,11 @@ Rules stated in words go to gemini-2.5-flash (us-central1).
   action  issue_credit  (IssueCredit)
 ```
 
-The flag takes an optional model name, the same way [`kcmd action run
---judge`](#a-guard-settled-in-words) does, and it calls no judge. A judge
-settles a rule when an action runs, and printing what an agent is offered runs
-no action, so this listing costs you nothing however many guarded actions it
-names.
+`--judge` takes an optional model name, the same way [`kcmd action run
+--judge`](#a-guard-settled-in-words) does. Naming a model doesn't call one: a
+judge settles a rule when an action runs, and printing what an agent is offered
+runs no action, so this listing costs you nothing however many guarded actions
+it names.
 
 A **lookup** is withheld for reasons of its own:
 
@@ -1535,7 +1534,8 @@ const {callable, withheld, instruction} = callableTools(modelTools({runtime}));
 `modelTools` returns `{lookups, actions, instruction}` — the three things the
 listing printed. `callableTools` then sorts the lookups and the actions into the
 ones this binding can serve and the ones it can't, which is a split every
-adapter has to make and the same split every time. Offer `callable` to your
+adapter has to make and the same split every time. Each tool carries a
+`runnable` flag, and `unavailable` carries the reason. Offer `callable` to your
 agent, and report `withheld` instead of hiding it. `actionTools` and
 `entityTools` are exported for a caller that wants one kind.
 
