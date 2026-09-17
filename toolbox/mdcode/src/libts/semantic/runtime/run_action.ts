@@ -89,12 +89,14 @@ export type QueryFn = (stmt: spanner.Statement) =>
 
 // What the handler is given: the action, its arguments with entity-typed ones
 // already resolved, and a reader scoped to the open transaction (so a handler
-// can look at the pre-state before deciding what to write).
+// can look at the pre-state before deciding what to write). An optional
+// entity-typed parameter omitted by the caller has no entry in `refs`
+// (`refs[param.name]` is `undefined`).
 export interface ActionContext {
   model: SemanticModel;
   action: Action;
   args: Record<string, unknown>;
-  refs: Record<string, EntityRef>;
+  refs: Record<string, EntityRef|undefined>;
   query: QueryFn;
 }
 
@@ -158,8 +160,7 @@ export async function runAction(opts: RunActionOptions):
   }
   const args: Record<string, unknown> = {...opts.args};
   for (const param of action.parameters) {
-    if ((args[param.name] === undefined || args[param.name] === null) &&
-        param.default !== undefined) {
+    if (args[param.name] === undefined && param.default !== undefined) {
       args[param.name] = param.default;
     }
   }
@@ -633,13 +634,13 @@ async function askJudges(
 }
 
 
-function isParameterRequired(param: ActionParameter): boolean {
+export function isParameterRequired(param: ActionParameter): boolean {
   if (param.required !== undefined) return param.required;
   return param.default === undefined;
 }
 
 
-function storeTypeCode(dataType: string): string {
+function storeCodeFor(dataType: string): string {
   switch (dataType) {
     case 'Integer':
       return 'INT64';
@@ -657,6 +658,13 @@ function storeTypeCode(dataType: string): string {
     default:
       return 'STRING';
   }
+}
+
+
+function entityKeyType(model: SemanticModel, entityName: string): string {
+  const entity = (model.entities ?? []).find(e => e.name === entityName);
+  const keyField = entity?.fields.find(f => f.name === (entity.keys ?? [])[0]);
+  return keyField?.type ?? 'String';
 }
 
 
@@ -741,7 +749,7 @@ function unsettledGuards(model: SemanticModel, action: Action, judge?: Judge):
 
 
 // Ends a fragment that is about to be followed by another sentence.
-function sentence(text: string): string {
+export function sentence(text: string): string {
   const trimmed = text.trim();
   return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
@@ -773,15 +781,11 @@ function bindArguments(
     const required = isParameterRequired(param);
     const raw = args[param.name];
     if (!required && (raw === undefined || raw === null)) {
-      if (param.isEntityRef) {
-        const entity = (model.entities ?? []).find(e => e.name === param.type);
-        const keyField = entity?.fields.find(f => f.name === (entity.keys ?? [])[0]);
-        params[param.name] = null;
-        types[param.name] = {code: storeTypeCode(keyField?.type ?? 'String')};
-      } else {
-        params[param.name] = null;
-        types[param.name] = {code: storeTypeCode(param.type)};
-      }
+      const targetType = param.isEntityRef ?
+          entityKeyType(model, param.type) :
+          param.type;
+      params[param.name] = null;
+      types[param.name] = {code: storeCodeFor(targetType)};
       continue;
     }
     const bound = param.isEntityRef ?
@@ -811,10 +815,8 @@ function bindReference(
           `to a statement.`,
     };
   }
-  const entity = (model.entities ?? []).find(e => e.name === param.type);
-  const keyField = entity?.fields.find(f => f.name === (entity.keys ?? [])[0]);
   return bindScalar(
-      {name: param.name, type: keyField?.type ?? 'String'}, ref.keys[0]);
+      {name: param.name, type: entityKeyType(model, param.type)}, ref.keys[0]);
 }
 
 
@@ -861,6 +863,7 @@ export function bindScalar(param: ActionParameter, raw: unknown):
     };
   }
   const text = `${raw}`.trim();
+  const code = storeCodeFor(param.type);
   switch (param.type) {
     case 'Integer':
       if (!/^[-+]?\d+$/.test(text)) {
@@ -868,24 +871,24 @@ export function bindScalar(param: ActionParameter, raw: unknown):
       }
       // INT64 travels as a string over the REST surface; a JSON number would
       // lose precision above 2^53.
-      return {value: text, code: 'INT64'};
+      return {value: text, code};
     case 'Float':
       if (!Number.isFinite(Number(text))) {
         return {error: `'${param.name}' is a Float, but '${text}' is not.`};
       }
-      return {value: Number(text), code: 'FLOAT64'};
+      return {value: Number(text), code};
     case 'Decimal':
       if (!/^[-+]?\d+(\.\d+)?$/.test(text)) {
         return {error: `'${param.name}' is a Decimal, but '${text}' is not.`};
       }
       // NUMERIC travels as a string, for the same reason: an exact decimal
       // routed through a JSON number stops being exact.
-      return {value: text, code: 'NUMERIC'};
+      return {value: text, code};
     case 'Boolean':
       if (!/^(true|false)$/i.test(text)) {
         return {error: `'${param.name}' is a Boolean, but '${text}' is not.`};
       }
-      return {value: /^true$/i.test(text), code: 'BOOL'};
+      return {value: /^true$/i.test(text), code};
     case 'Date':
       // Spanner reads a DATE as YYYY-MM-DD and nothing else. '03/04/2026' is
       // the fourth of March to one reader and the third of April to another,
@@ -897,7 +900,7 @@ export function bindScalar(param: ActionParameter, raw: unknown):
               text}' is not one. Dates are written YYYY-MM-DD.`,
         };
       }
-      return {value: text, code: 'DATE'};
+      return {value: text, code};
     case 'DateTime':
     case 'DateTimeTz':
       if (!RFC3339_TIMESTAMP.test(text) || !isCalendarDay(text.slice(0, 10))) {
@@ -907,14 +910,14 @@ export function bindScalar(param: ActionParameter, raw: unknown):
               `2026-03-04T10:00:00Z, with the zone.`,
         };
       }
-      return {value: text, code: 'TIMESTAMP'};
+      return {value: text, code};
     default:
       // `raw`, not `text`. The trim above exists to parse a number or a date
       // off a command line; a String parameter is not parsed, it IS the value.
       // Trimming here would store `see ticket` for `--arg memo=" see ticket "`
       // -- the caller's text altered on the way to the store, by a rule
       // nothing states.
-      return {value: `${raw}`, code: 'STRING'};
+      return {value: `${raw}`, code};
   }
 }
 

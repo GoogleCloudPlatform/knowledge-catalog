@@ -11,9 +11,10 @@
 import {BigQueryClient} from '../gcp/bigquery';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
-import {Action, Constraint, Executor, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
+import {Action, ActionParameter, Constraint, Executor, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {LoadedModel} from './loader';
 import {resolveInheritance} from './resolve_inheritance';
+import {bindScalar} from './runtime/run_action';
 import {referencedParameters} from './sql_identifiers';
 
 // Checks every model against the push requirements and returns the collected
@@ -160,7 +161,7 @@ export function validatePushRequirements(
     // dispatch it, and each guard must name a constraint the model declares.
     // (The "exactly one executor kind" rule is already guaranteed by the loader
     // schema, so it cannot reach here.)
-    errors.push(...validateActions(model, document, !!opts.fieldsPruned));
+    errors.push(...validateActions(model, document, !!opts.fieldsPruned, true));
 
     // Constraints are logical invariants, target-independent like actions.
     errors.push(
@@ -185,7 +186,7 @@ export function validatePushRequirements(
 export function validateRunnable(models: LoadedModel[]): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
-    errors.push(...validateActions(model, document, false));
+    errors.push(...validateActions(model, document, false, false));
     errors.push(...validateConstraints(model, document, false));
   }
   return errors;
@@ -210,7 +211,8 @@ export function validateRunnable(models: LoadedModel[]): string[] {
 // described when it is not, and a consumer routing on it would route on a
 // concept that does not exist.
 function validateActions(
-    model: SemanticModel, document: string, fieldsPruned: boolean): string[] {
+    model: SemanticModel, document: string, fieldsPruned: boolean,
+    checkDescriptions: boolean): string[] {
   const errors: string[] = [];
   const actions = model.actions ?? [];
   if (!actions.length) return errors;
@@ -224,20 +226,46 @@ function validateActions(
   for (const action of actions) {
     const where =
         `action '${action.name}' in model '${model.name}' (${document})`;
-    const typeCounts = new Map<string, number>();
-    for (const param of action.parameters) {
-      typeCounts.set(param.type, (typeCounts.get(param.type) ?? 0) + 1);
-    }
+    const byType = new Map<string, ActionParameter[]>();
     for (const param of action.parameters) {
       if (param.isEntityRef === undefined) {
         errors.push(`${where} has parameter '${param.name}' whose type '${
             param.type}' is neither a known entity nor a scalar datatype.`);
       }
-      if ((typeCounts.get(param.type) ?? 0) > 1 && !param.description?.trim()) {
+      if (param.required === true && param.default !== undefined) {
         errors.push(
-            `${where} has multiple parameters of type '${param.type}', so ` +
-            `parameter '${param.name}' must have a 'description' to ` +
-            `distinguish it.`);
+            `${where} has parameter '${param.name}' with both ` +
+            `'required: true' and a 'default'; a parameter with a default is ` +
+            `optional.`);
+      }
+      if (param.default !== undefined && param.default !== null &&
+          param.isEntityRef === false) {
+        const bound = bindScalar(param, param.default);
+        if ('error' in bound) {
+          errors.push(
+              `${where} has parameter '${param.name}' whose default '${
+                  param.default}' is invalid: ${bound.error}`);
+        }
+      }
+      const list = byType.get(param.type) ?? [];
+      list.push(param);
+      byType.set(param.type, list);
+    }
+    if (checkDescriptions) {
+      for (const [type, params] of byType) {
+        if (params.length <= 1) continue;
+        const missing = params.filter(p => !p.description?.trim());
+        if (missing.length > 0) {
+          const names = missing.map(p => `'${p.name}'`);
+          errors.push(
+              `${where} has multiple parameters of type '${type}', so ${
+                  names.length === 1 ?
+                      `parameter ${names[0]}` :
+                      `parameters ${names.slice(0, -1).join(', ')} and ${
+                          names[names.length - 1]}`} must have a ` +
+              `'description' to distinguish ${
+                  names.length === 1 ? 'it' : 'them'}.`);
+        }
       }
     }
     // No executor is not an error: it is an action no binding performs here,

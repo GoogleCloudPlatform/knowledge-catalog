@@ -154,7 +154,8 @@ Each parameter may also carry:
   above, both `Account`), because the type alone cannot tell an agent which
   argument is which.
 - **`default`** — a fallback value substituted when the caller omits the
-  argument. Giving a parameter a default makes it optional.
+  argument. Giving a parameter a default makes it optional; setting
+  `required: true` alongside `default` is rejected.
 - **`required: false`** — marks a parameter optional with no fallback; an
   omitted call binds `NULL` in SQL.
 
@@ -767,11 +768,11 @@ nothing:
 
 ```
 Error: action 'TransferFunds' in model 'payments' (payments) has parameter
-'target' whose type 'BankAccount' is neither a known entity nor a scalar
+'amount' whose type 'Currency' is neither a known entity nor a scalar
 datatype.
 Error: action 'TransferFunds' in model 'payments' (payments) has multiple
-parameters of type 'Account', so parameter 'source' must have a 'description'
-to distinguish it.
+parameters of type 'Account', so parameters 'source' and 'target' must have a
+'description' to distinguish them.
 Error: action 'TransferFunds' in model 'payments' (payments) has an mcp
 executor whose 'tool' is missing or blank.
 Error: action 'TransferFunds' in model 'payments' (payments) is guarded by
@@ -1278,8 +1279,8 @@ Model 'payments' (payments_eg), profile 'operational':
       Resolve both accounts before calling.
 
       This call is gated by AmountIsPositive:
-      - AmountIsPositive: A transfer must move at least one unit. Ask the caller
-        for the amount again before retrying.
+      - AmountIsPositive: amount > 0. A transfer must move at least one unit.
+        Ask the caller for the amount again before retrying.
 
       Calling this will not work: Action 'TransferFunds' is guarded by
       'AmountIsPositive', and this runtime does not evaluate constraints yet.
@@ -1362,8 +1363,8 @@ line of output per key:
                                                calling.
       guards: [AmountIsPositive]   ───▶      This call is gated by
                                                AmountIsPositive:
-                                             - AmountIsPositive: A transfer must
-                                               move at least one unit…
+                                             - AmountIsPositive: amount > 0. A
+                                               transfer must move at least…
       parameters:
         - name: source
           type: Account

@@ -23,7 +23,7 @@ import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
 import {GeminiJudge} from '../libts/gcp/gemini';
 import {JudgeStore} from '../libts/semantic/runtime/judge';
 import {modelJudgeStore, readableEntities} from '../libts/semantic/runtime/judge_store';
-import {runAction} from '../libts/semantic/runtime/run_action';
+import {isParameterRequired, runAction} from '../libts/semantic/runtime/run_action';
 import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryDataSources, validatePushRequirements, validateRunnable} from '../libts/semantic/validate';
 import {createSemanticRuntimes, runtimeClient, SemanticRuntime} from '../libts/semantic/runtime/runtime';
@@ -1474,7 +1474,13 @@ function describedPart(description: string): string {
 function indentBlock(text: string): string {
   return text.trim()
       .split('\n')
-      .map(line => line.trim() ? wrapTo(line.trim(), BODY_INDENT) : '')
+      .map(line => {
+        const trimmed = line.trim();
+        if (!trimmed) return '';
+        const hanging =
+            trimmed.startsWith('- ') ? `${BODY_INDENT}  ` : BODY_INDENT;
+        return wrapTo(trimmed, BODY_INDENT, hanging);
+      })
       .join('\n');
 }
 
@@ -1509,11 +1515,19 @@ function wrapTo(text: string, indent: string, hanging = indent): string {
 // the difference between passing a value and passing something the runtime has
 // to look up first.
 function describeParameter(p: ActionParameter): string {
-  return `${p.name} (${p.type}${p.isEntityRef ? ', reference' : ''})`;
+  const tags: string[] = [p.type];
+  if (p.isEntityRef) tags.push('reference');
+  if (p.default !== undefined) {
+    tags.push(`default: ${p.default}`);
+  } else if (!isParameterRequired(p)) {
+    tags.push('optional');
+  }
+  return `${p.name} (${tags.join(', ')})`;
 }
 
 
-// The command line that runs an action, with a placeholder per parameter.
+// The command line that runs an action, with a placeholder per required
+// parameter.
 //
 // A guard settled by judgment needs `--judge`, and the line says so, because a
 // suggested command that is certain to be refused is worse than no suggestion:
@@ -1528,7 +1542,9 @@ function describeParameter(p: ActionParameter): string {
 // up, and the offer costs one model call.
 function runLine(a: Action, runtime: SemanticRuntime): string {
   const model = runtime.model;
-  const args = a.parameters.map(p => ` --arg ${p.name}=<${p.type}>`).join('');
+  const args = a.parameters.filter(isParameterRequired)
+                   .map(p => ` --arg ${p.name}=<${p.type}>`)
+                   .join('');
   const guards = new Set(a.guards ?? []);
   const judged = (model.constraints ?? []).some(
       c => guards.has(c.name) && constraintEvaluation(c) === 'judged');

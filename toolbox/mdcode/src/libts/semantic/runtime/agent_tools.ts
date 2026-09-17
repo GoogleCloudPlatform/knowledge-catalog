@@ -39,7 +39,7 @@ import {Action, ActionParameter, Constraint, Entity, fieldBinding, SemanticModel
 
 import {dialectFor} from './dialect';
 import {Judge} from './judge';
-import {ActionHandler, ActionOutcome, bindScalar, runAction, whyRefusedWithoutRunning,} from './run_action';
+import {ActionHandler, ActionOutcome, bindScalar, isParameterRequired, runAction, sentence, whyRefusedWithoutRunning,} from './run_action';
 import {runtimeClient, SemanticRuntime} from './runtime';
 
 
@@ -224,9 +224,11 @@ function toolDescription(
     const names = joinNames(gates.map(c => c.name));
     const rules = gates
         .map(c => {
-          const rule =
-              c.description?.trim() || c.judgment?.trim() || c.expression?.trim();
-          return rule ? `- ${c.name}: ${rule}` : undefined;
+          const body = (c.judgment ?? c.expression ?? '').trim();
+          const desc = (c.description ?? '').trim();
+          const text = body && desc ? `${sentence(body)} ${sentence(desc)}` :
+                                      (body || desc);
+          return text ? `- ${c.name}: ${text}` : undefined;
         })
         .filter((s): s is string => s !== undefined);
     if (rules.length) {
@@ -269,15 +271,16 @@ function gatingConstraints(action: Action, model: SemanticModel): Constraint[] {
 // scalar parameter takes its own type.
 function toolParameter(param: ActionParameter): ToolParameter {
   const said = param.description?.trim();
-  const required = param.required ?? (param.default === undefined);
+  const required = isParameterRequired(param);
+  const guidance = scalarFormatGuidance(param.type);
   const out: ToolParameter = param.isEntityRef ?
       {
         name: param.name,
         type: 'string',
         description: said ?
-            `${said} Give its key, or text that identifies exactly one ${
-                param.type}; the call fails when nothing matches or more ` +
-                `than one does.` :
+            `${sentence(said)} Give its key, or text that identifies exactly ` +
+                `one ${param.type}; the call fails when nothing matches or ` +
+                `more than one does.` :
             `Which ${param.type} this applies to. Give its key, or text ` +
                 `that identifies exactly one; the call fails when nothing ` +
                 `matches or more than one does.`,
@@ -286,11 +289,26 @@ function toolParameter(param: ActionParameter): ToolParameter {
       {
         name: param.name,
         type: jsonType(param.type),
-        description: said || `The ${param.name}, as ${article(param.type)}.`,
+        description: said ?
+            (guidance ? `${sentence(said)} ${guidance}` : said) :
+            `The ${param.name}, as ${article(param.type)}.`,
         required,
       };
   if (param.default !== undefined) out.default = param.default;
   return out;
+}
+
+
+function scalarFormatGuidance(dataType: string): string|undefined {
+  switch (dataType) {
+    case 'Date':
+    case 'Time':
+    case 'DateTime':
+    case 'DateTimeTz':
+      return `As ${article(dataType)}.`;
+    default:
+      return undefined;
+  }
 }
 
 

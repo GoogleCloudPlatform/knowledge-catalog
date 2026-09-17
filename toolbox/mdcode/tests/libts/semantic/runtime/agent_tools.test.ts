@@ -216,7 +216,7 @@ describe('action tools', () => {
 
   test('the tool description includes the gating constraint rule text', () => {
     expect(tools[0].description).toContain(
-        'RequestedQuantityIsPositive: A request must be for at least one unit.');
+        'RequestedQuantityIsPositive: quantity > 0. A request must be for at least one unit.');
   });
 });
 
@@ -475,12 +475,31 @@ describe('what a tool says it is gated by', () => {
     const blocking: Constraint = {
       name: 'QuantityIsSane',
       expression: 'quantity > 0',
+      description: 'Ask finance first.',
       onViolation: 'reject',
     };
     const base = withExecutor(model, {...RUNNABLE, guards: ['QuantityIsSane']});
     const [tool] = actionTools(
         {runtime: rt({...base, constraints: [blocking]})});
     expect(tool.description).toContain('gated by QuantityIsSane');
+    expect(tool.description).toContain(
+        '- QuantityIsSane: quantity > 0. Ask finance first.');
+  });
+
+  test('authored parameter descriptions normalize terminators and keep temporal format guidance', () => {
+    const base = withExecutor(model, {
+      ...RUNNABLE,
+      parameters: [
+        {name: 'customer', type: 'customer', isEntityRef: true, description: 'The buyer'},
+        {name: 'settledOn', type: 'Date', isEntityRef: false, description: 'When the transfer settles.'},
+      ],
+    });
+    const [tool] = actionTools({runtime: rt(base)});
+    expect(tool.parameters[0].description).toBe(
+        'The buyer. Give its key, or text that identifies exactly one ' +
+        'customer; the call fails when nothing matches or more than one does.');
+    expect(tool.parameters[1].description).toBe(
+        'When the transfer settles. As a date, YYYY-MM-DD.');
   });
 });
 

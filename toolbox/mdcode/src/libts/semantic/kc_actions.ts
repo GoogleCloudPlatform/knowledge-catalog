@@ -181,7 +181,8 @@ function actionAspectData(action: Action): Record<string, any> {
           isEntityRef: p.isEntityRef,
           description: p.description,
           required: p.required,
-          default: p.default !== undefined ? String(p.default) : undefined,
+          default: p.default !== undefined ? JSON.stringify(p.default) :
+                                             undefined,
         })),
     guards: action.guards?.length ? action.guards : undefined,
     affects: action.affects?.length ? action.affects.map(affectedConceptData) :
@@ -359,7 +360,7 @@ function readParameter(
     param.required = p.required;
   }
   if (p?.default !== undefined && p.default !== '') {
-    param.default = parseDefaultFromAspect(p.default, type);
+    param.default = parseDefaultFromAspect(p.default);
   }
   if (entityNames.has(type)) {
     param.isEntityRef = true;
@@ -378,17 +379,17 @@ function readParameter(
   return param;
 }
 
-function parseDefaultFromAspect(raw: unknown, type: string): unknown {
+function parseDefaultFromAspect(raw: unknown): unknown {
   if (typeof raw !== 'string') return raw;
-  if (type === 'Boolean') {
-    if (raw === 'true') return true;
-    if (raw === 'false') return false;
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed === 'number' && String(parsed) !== raw) {
+      return raw;
+    }
+    return parsed;
+  } catch {
+    return raw;
   }
-  if (type === 'Integer' || type === 'Float' || type === 'Decimal') {
-    const n = Number(raw);
-    if (!Number.isNaN(n)) return n;
-  }
-  return raw;
 }
 
 // One affected concept from its aspect record, the inverse of

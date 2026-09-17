@@ -14,7 +14,7 @@ import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {fromDocument, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
-import {validatePushRequirements} from '../../../src/libts/semantic/validate';
+import {validatePushRequirements, validateRunnable} from '../../../src/libts/semantic/validate';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 const OPTS = {
@@ -690,5 +690,50 @@ describe('parameter description, required, and default', () => {
     expect(validatePushRequirements(
         [{document: 'test.yaml', model: withDesc.models[0]}],
         {targetOptional: true})).toEqual([]);
+  });
+
+  test('validateRunnable does not reject duplicate parameter types lacking descriptions', () => {
+    const missingDesc = withActions([{
+      name: 'TransferFunds',
+      executor: MCP,
+      parameters: [
+        {name: 'source', type: 'customer'},
+        {name: 'target', type: 'customer'},
+      ],
+    }]);
+    expect(validateRunnable([{document: 'test.yaml', model: missingDesc.models[0]}])).toEqual([]);
+  });
+
+  test('KC round-trip preserves empty string, null, literal "null", and exact decimal defaults', () => {
+    const {models} = withActions([{
+      name: 'EdgeCases',
+      executor: MCP,
+      parameters: [
+        {name: 'blankStr', type: 'String', default: ''},
+        {name: 'nullVal', type: 'String', default: null},
+        {name: 'literalNull', type: 'String', default: 'null'},
+        {name: 'exactDec', type: 'Decimal', default: '0.1000000000000000055'},
+        {name: 'largeInt', type: 'Integer', default: '9007199254740993'},
+      ],
+    }]);
+    const cat = generateCatalogResources(models[0], OPTS);
+    const pulled = modelsFromCatalogResources(cat.entries, cat.entryLinks);
+    expect(pulled.models[0].actions![0].parameters).toEqual(models[0].actions![0].parameters);
+  });
+
+  test('validator rejects required: true alongside default and invalid scalar defaults', () => {
+    const contradictory = withActions([{
+      name: 'BadDefault',
+      executor: MCP,
+      parameters: [
+        {name: 'currency', type: 'String', required: true, default: 'USD'},
+        {name: 'amount', type: 'Float', default: 'banana'},
+      ],
+    }]);
+    const errs = validatePushRequirements(
+        [{document: 'test.yaml', model: contradictory.models[0]}],
+        {targetOptional: true});
+    expect(errs.some(e => e.includes('\'required: true\' and a \'default\''))).toBe(true);
+    expect(errs.some(e => e.includes('default \'banana\' is invalid'))).toBe(true);
   });
 });

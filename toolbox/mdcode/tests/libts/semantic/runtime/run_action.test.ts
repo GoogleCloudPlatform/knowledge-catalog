@@ -1669,4 +1669,32 @@ describe('optional and defaulted parameters', () => {
     expect(outcome.status).toBe('committed');
     expect(fake.statements[0].params).toEqual({name: 'Alice', memo: null});
   });
+
+  test('explicit null clears a defaulted field rather than restoring the default', async () => {
+    const fake = new FakeSpanner();
+    const outcome = await run(fake, {
+      actionName: 'CreateAccount',
+      args: {name: 'Alice', status: null},
+      handler: undefined,
+      model: model({
+        actions: [{
+          name: 'CreateAccount',
+          executor: {
+            kind: 'sql',
+            sql: {
+              statements: [
+                'INSERT INTO Account (account_id, name, status) VALUES (GENERATE_UUID(), @name, @status)',
+              ],
+            },
+          },
+          parameters: [
+            {name: 'name', type: 'String', isEntityRef: false},
+            {name: 'status', type: 'String', default: 'open', isEntityRef: false},
+          ],
+        }],
+      }),
+    });
+    expect(outcome.status).toBe('committed');
+    expect(fake.statements[0].params).toEqual({name: 'Alice', status: null});
+  });
 });

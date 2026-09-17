@@ -306,6 +306,28 @@ describe('kcmd action list', () => {
          expect(out).toContain('run:        kcmd action run NotifyCustomer --arg order=<Order>');
        });
 
+  test('shows defaults and optionality in parameters and omits them from the run line',
+       async () => {
+         const optionalModel = MODEL.replace(
+             '          - {name: order, type: Order}\n          - {name: amount, type: Decimal}',
+             '          - {name: order, type: Order}\n' +
+                 '          - {name: amount, type: Decimal}\n' +
+                 '          - {name: currency, type: String, default: USD}\n' +
+                 '          - {name: memo, type: String, required: false}');
+         writeWorkspace(optionalModel);
+         const code = await action('list', undefined);
+         expect(code).toBe(0);
+         const out = logs.join('\n');
+         expect(out).toContain(
+             'parameters: order (Order, reference), amount (Decimal), ' +
+             'currency (String, default: USD), memo (String, optional)');
+         expect(out).toContain(
+             'run:        kcmd action run IssueCredit --arg order=<Order> ' +
+             '--arg amount=<Decimal>');
+         expect(out).not.toContain('--arg currency=');
+         expect(out).not.toContain('--arg memo=');
+       });
+
   test('shows an action the profile withdrew as declared but not runnable',
        async () => {
          // The listing answers "what can this model do HERE". Printing a run
