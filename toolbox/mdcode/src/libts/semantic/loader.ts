@@ -236,6 +236,9 @@ const executorSchema =
 const parameterSchema = z.object({
   name: z.string(),
   type: z.string(),
+  description: z.string().optional(),
+  required: z.boolean().optional(),
+  default: z.unknown().optional(),
 });
 
 // One thing an action changes. Two authored shapes: a bare name, which is the
@@ -458,6 +461,9 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
   const parameter = z.object({
                        name: z.string(),
                        type: z.string(),
+                       description: z.string().optional(),
+                       required: z.boolean().optional(),
+                       default: z.unknown().optional(),
                      }).strict();
 
   const action = z.object({
@@ -1180,6 +1186,9 @@ function convertParameter(
     p: ParameterDoc, actionName: string, entityNames: Set<string>,
     warnings: string[]): ActionParameter {
   const param: ActionParameter = { name: p.name, type: p.type };
+  if (p.description !== undefined) param.description = p.description;
+  if (p.required !== undefined) param.required = p.required;
+  if (p.default !== undefined) param.default = p.default;
   if (entityNames.has(p.type)) {
     param.isEntityRef = true;
   } else if ((DATA_TYPES as readonly string[]).includes(p.type)) {

@@ -149,13 +149,19 @@ export interface RunActionOptions {
 export async function runAction(opts: RunActionOptions):
     Promise<ActionOutcome> {
   const {model} = opts.runtime;
-  const args = opts.args;
   const action = (model.actions ?? []).find(a => a.name === opts.actionName);
   if (!action) {
     return {
       status: 'error',
       message: `Model '${model.name}' declares no action '${opts.actionName}'.`,
     };
+  }
+  const args: Record<string, unknown> = {...opts.args};
+  for (const param of action.parameters) {
+    if ((args[param.name] === undefined || args[param.name] === null) &&
+        param.default !== undefined) {
+      args[param.name] = param.default;
+    }
   }
   // Decided BEFORE touching the store, so an action this runtime will not run
   // fails without having opened a transaction at all.
@@ -627,6 +633,33 @@ async function askJudges(
 }
 
 
+function isParameterRequired(param: ActionParameter): boolean {
+  if (param.required !== undefined) return param.required;
+  return param.default === undefined;
+}
+
+
+function storeTypeCode(dataType: string): string {
+  switch (dataType) {
+    case 'Integer':
+      return 'INT64';
+    case 'Float':
+      return 'FLOAT64';
+    case 'Decimal':
+      return 'NUMERIC';
+    case 'Boolean':
+      return 'BOOL';
+    case 'Date':
+      return 'DATE';
+    case 'DateTime':
+    case 'DateTimeTz':
+      return 'TIMESTAMP';
+    default:
+      return 'STRING';
+  }
+}
+
+
 // Why the arguments cannot fill this call, or null if they can. Runs the same
 // checks `resolveArguments` and `bindArguments` run, early enough that nothing
 // has been opened or asked. `binds` is false when a handler supplies the
@@ -637,14 +670,17 @@ function argumentsNotUsable(
     null {
   for (const param of action.parameters) {
     const raw = args[param.name];
+    const required = isParameterRequired(param);
     if (param.isEntityRef) {
       if (raw === undefined || raw === null || `${raw}`.trim() === '') {
+        if (!required && (raw === undefined || raw === null)) continue;
         return `Action '${action.name}' requires '${param.name}', a ` +
             `reference to a ${param.type}, but none was given.`;
       }
       continue;
     }
     if (!binds) continue;
+    if (!required && (raw === undefined || raw === null)) continue;
     const bound = bindScalar(param, raw);
     if ('error' in bound) return bound.error;
   }
@@ -734,9 +770,23 @@ function bindArguments(
   const params: Record<string, unknown> = {};
   const types: Record<string, {code: string}> = {};
   for (const param of action.parameters) {
+    const required = isParameterRequired(param);
+    const raw = args[param.name];
+    if (!required && (raw === undefined || raw === null)) {
+      if (param.isEntityRef) {
+        const entity = (model.entities ?? []).find(e => e.name === param.type);
+        const keyField = entity?.fields.find(f => f.name === (entity.keys ?? [])[0]);
+        params[param.name] = null;
+        types[param.name] = {code: storeTypeCode(keyField?.type ?? 'String')};
+      } else {
+        params[param.name] = null;
+        types[param.name] = {code: storeTypeCode(param.type)};
+      }
+      continue;
+    }
     const bound = param.isEntityRef ?
         bindReference(model, param, refs[param.name]) :
-        bindScalar(param, args[param.name]);
+        bindScalar(param, raw);
     if ('error' in bound) return {error: bound.error};
     params[param.name] = bound.value;
     types[param.name] = {code: bound.code};
@@ -919,7 +969,9 @@ async function resolveArguments(
   for (const param of action.parameters) {
     if (!param.isEntityRef) continue;
     const raw = args[param.name];
+    const required = isParameterRequired(param);
     if (raw === undefined || raw === null || `${raw}`.trim() === '') {
+      if (!required && (raw === undefined || raw === null)) continue;
       return {
         error: `Action '${action.name}' requires '${param.name}', a reference ` +
             `to a ${param.type}, but none was given.`,

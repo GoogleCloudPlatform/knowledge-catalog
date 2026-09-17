@@ -625,3 +625,70 @@ describe('actions referencing entities the push does not publish', () => {
         .toBe(true);
   });
 });
+
+
+describe('parameter description, required, and default', () => {
+  test('loader parses description, required, and default and round-trips through KC', () => {
+    const {models} = withActions([{
+      name: 'TransferFunds',
+      executor: MCP,
+      parameters: [
+        {name: 'source', type: 'customer', description: 'The account money leaves.'},
+        {name: 'target', type: 'customer', description: 'The account money enters.'},
+        {name: 'currency', type: 'String', default: 'USD'},
+        {name: 'memo', type: 'String', description: 'Optional note.', required: false},
+      ],
+    }]);
+    const params = models[0].actions![0].parameters;
+    expect(params[0]).toEqual({
+      name: 'source',
+      type: 'customer',
+      description: 'The account money leaves.',
+      isEntityRef: true,
+    });
+    expect(params[2]).toEqual({
+      name: 'currency',
+      type: 'String',
+      default: 'USD',
+      isEntityRef: false,
+    });
+    expect(params[3]).toEqual({
+      name: 'memo',
+      type: 'String',
+      description: 'Optional note.',
+      required: false,
+      isEntityRef: false,
+    });
+
+    const cat = generateCatalogResources(models[0], OPTS);
+    const pulled = modelsFromCatalogResources(cat.entries, cat.entryLinks);
+    expect(pulled.models[0].actions![0].parameters).toEqual(params);
+  });
+
+  test('validator requires descriptions when multiple parameters share a type', () => {
+    const missingDesc = withActions([{
+      name: 'TransferFunds',
+      executor: MCP,
+      parameters: [
+        {name: 'source', type: 'customer'},
+        {name: 'target', type: 'customer'},
+      ],
+    }]);
+    const errs = validatePushRequirements(
+        [{document: 'test.yaml', model: missingDesc.models[0]}],
+        {targetOptional: true});
+    expect(errs.some(e => e.includes('multiple parameters of type \'customer\''))).toBe(true);
+
+    const withDesc = withActions([{
+      name: 'TransferFunds',
+      executor: MCP,
+      parameters: [
+        {name: 'source', type: 'customer', description: 'Origin account.'},
+        {name: 'target', type: 'customer', description: 'Destination account.'},
+      ],
+    }]);
+    expect(validatePushRequirements(
+        [{document: 'test.yaml', model: withDesc.models[0]}],
+        {targetOptional: true})).toEqual([]);
+  });
+});

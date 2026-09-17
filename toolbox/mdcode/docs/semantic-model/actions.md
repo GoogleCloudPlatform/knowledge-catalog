@@ -102,13 +102,16 @@ semantic_model:
             server: //agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/payments
             tool: transfer_funds
         parameters:
-          - { name: source, type: Account }   # an entity: an object reference
-          - { name: target, type: Account }
+          - name: source
+            type: Account                     # an entity: an object reference
+            description: The account the money leaves.
+          - name: target
+            type: Account
+            description: The account the money goes to.
           - { name: amount, type: Float }     # a scalar: an ordinary value
         ai_context:
           instructions: >-
-            Resolve both accounts before calling. Name the account the money
-            leaves as `source`.
+            Resolve both accounts before calling.
     ai_context:                             # model level: true of every caller
       instructions: >-
         Never move money between two accounts held by the same customer
@@ -143,6 +146,17 @@ so a consumer generating a tool schema knows to accept an identifier and
 resolve it against `Account`'s key rather than pass a bare number through. A
 parameter typed by a datatype, like `amount` above, is an ordinary value and
 refers to nothing.
+
+Each parameter may also carry:
+
+- **`description`** — what the parameter means for this call. Required when two
+  parameters on the same action share a type (such as `source` and `target`
+  above, both `Account`), because the type alone cannot tell an agent which
+  argument is which.
+- **`default`** — a fallback value substituted when the caller omits the
+  argument. Giving a parameter a default makes it optional.
+- **`required: false`** — marks a parameter optional with no fallback; an
+  omitted call binds `NULL` in SQL.
 
 ### Where the executor comes from
 
@@ -179,19 +193,27 @@ system to perform. Written into the model, it replaces the `mcp` executor
             statements:
               - UPDATE account SET balance = balance - @amount WHERE account_id = @source
               - UPDATE account SET balance = balance + @amount WHERE account_id = @target
+              - INSERT INTO transfer (transfer_id, amount, debited_account_id) VALUES (GENERATE_UUID(), @amount, @source)
         parameters:
-          - { name: source, type: Account }
-          - { name: target, type: Account }
+          - name: source
+            type: Account
+            description: The account the money leaves.
+          - name: target
+            type: Account
+            description: The account the money goes to.
           - { name: amount, type: Float }
         affects:
           - { concept: Account, operation: modify, fields: [balance] }
+          - { concept: Transfer, operation: create }
+          - { concept: TransferDebits, operation: create }
 ```
 
 `statements` is a list because one business action is often more than one write.
-The transfer above debits one account and credits another, and a transfer that
-did only the first would lose money. kcmd opens one transaction, runs the
-statements in the order you wrote them, and commits at the end, so two writes
-that only make sense together never apply by halves.
+The transfer above debits one account, credits another, and records the
+transfer row itself, and a transfer that did only the first would lose money.
+kcmd opens one transaction, runs the statements in the order you wrote them,
+and commits at the end, so writes that only make sense together never apply by
+halves.
 
 Carrying the write buys you two things:
 
@@ -246,6 +268,7 @@ semantic_model:
             statements:
               - UPDATE account SET balance = balance - @amount WHERE account_id = @source
               - UPDATE account SET balance = balance + @amount WHERE account_id = @target
+              - INSERT INTO transfer (transfer_id, amount, debited_account_id) VALUES (GENERATE_UUID(), @amount, @source)
 ```
 
 This profile overrides the model's `mcp` executor for the one store that
@@ -719,12 +742,15 @@ it writes anything, so whatever this reports would have stopped your deploy:
 kcmd push --validate-only
 ```
 
-Once your document parses, four checks run over every action, and a failure in
+Once your document parses, five checks run over every action, and a failure in
 any of them stops the push:
 
 - **Every parameter's type resolves** — to an entity the model declares, or to
   a scalar datatype. A type that is neither leaves a caller guessing what to
   pass.
+- **Parameters sharing a type each carry a `description`.** Two `Account`
+  parameters without descriptions produce identical tool argument documentation,
+  leaving an agent guessing which is `source` and which is `target`.
 - **The executor has the fields its kind requires.** `server` and `tool` for
   `mcp`, `endpoint` and `method` for `rest`, `service` and `method` for `grpc`,
   at least one statement for `sql`. Leave one blank and whatever picks the
@@ -736,13 +762,16 @@ any of them stops the push:
   The list exists to answer *which actions change `Account`*. A typo is
   invisible on the page and would drop the action out of that answer.
 
-A model that breaks all four reports all four, one line each, and deploys
+A model that breaks all five reports all five, one line each, and deploys
 nothing:
 
 ```
 Error: action 'TransferFunds' in model 'payments' (payments) has parameter
 'target' whose type 'BankAccount' is neither a known entity nor a scalar
 datatype.
+Error: action 'TransferFunds' in model 'payments' (payments) has multiple
+parameters of type 'Account', so parameter 'source' must have a 'description'
+to distinguish it.
 Error: action 'TransferFunds' in model 'payments' (payments) has an mcp
 executor whose 'tool' is missing or blank.
 Error: action 'TransferFunds' in model 'payments' (payments) is guarded by
@@ -823,14 +852,14 @@ aspects:
     mcpServer: //agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/payments
     mcpTool: transfer_funds
     parameters:
-      - {name: source, type: Account, isEntityRef: true}
-      - {name: target, type: Account, isEntityRef: true}
+      - {name: source, type: Account, isEntityRef: true, description: The account the money leaves.}
+      - {name: target, type: Account, isEntityRef: true, description: The account the money goes to.}
       - {name: amount, type: Float, isEntityRef: false}
     affects:
       - {concept: Account, operation: modify, fields: [balance]}
       - {concept: Transfer, operation: create}
       - {concept: TransferDebits, operation: create}
-    instructions: Resolve both accounts before calling. Name the account the money leaves as `source`.
+    instructions: Resolve both accounts before calling.
 ```
 
 `affects` is published exactly as you wrote it. The entry doesn't record
@@ -1246,22 +1275,23 @@ Model 'payments' (payments_eg), profile 'operational':
   action  transfer_funds  (TransferFunds)  [NOT RUNNABLE]
       Move money from one account to another.
 
-      Resolve both accounts before calling. Name the account the money leaves
-      as `source`.
+      Resolve both accounts before calling.
 
-      This call is gated by AmountIsPositive.
+      This call is gated by AmountIsPositive:
+      - AmountIsPositive: A transfer must move at least one unit. Ask the caller
+        for the amount again before retrying.
 
       Calling this will not work: Action 'TransferFunds' is guarded by
       'AmountIsPositive', and this runtime does not evaluate constraints yet.
       Running it would apply a write the model says must be checked first, so
       it is refused rather than run unchecked. Report that rather than
       retrying.
-      source: string -- Which Account this applies to. Give its key, or text
-          that identifies exactly one; the call fails when nothing matches or
-          more than one does.
-      target: string -- Which Account this applies to. Give its key, or text
-          that identifies exactly one; the call fails when nothing matches or
-          more than one does.
+      source: string -- The account the money leaves. Give its key, or text
+          that identifies exactly one Account; the call fails when nothing
+          matches or more than one does.
+      target: string -- The account the money goes to. Give its key, or text
+          that identifies exactly one Account; the call fails when nothing
+          matches or more than one does.
       amount: number -- The amount, as a number.
 
   lookup  find_account  (Account)
@@ -1331,11 +1361,14 @@ line of output per key:
         instructions: Resolve…     ───▶      Resolve both accounts before
                                                calling.
       guards: [AmountIsPositive]   ───▶      This call is gated by
-                                               AmountIsPositive.
+                                               AmountIsPositive:
+                                             - AmountIsPositive: A transfer must
+                                               move at least one unit…
       parameters:
         - name: source
-          type: Account            ───▶      source: string -- Which Account
-                                               this applies to. Give its key…
+          type: Account
+          description: The account ───▶      source: string -- The account the
+            the money leaves.                  money leaves. Give its key…
         - name: amount
           type: Float              ───▶      amount: number -- The amount, as
                                                a number.

@@ -399,6 +399,9 @@ export type ConceptOperation = typeof CONCEPT_OPERATIONS[number];
 export interface ActionParameter {
   name: string;
   type: string;           // entity name (object reference) or a scalar DataType
+  description?: string;
+  required?: boolean;
+  default?: unknown;
   isEntityRef?: boolean;  // derived: true when `type` names a known entity
 }
 

@@ -175,6 +175,49 @@ describe('action tools', () => {
     expect(names.some(n => n.includes('approv'))).toBe(false);
     expect(Object.keys(tools[0])).not.toContain('approvals');
   });
+
+  test('authored parameter descriptions and optional/default flags reach the tool', () => {
+    const custom = withExecutor(model, {
+      parameters: [
+        {
+          name: 'source',
+          type: 'customer',
+          description: 'The account money leaves.',
+          isEntityRef: true,
+        },
+        {
+          name: 'currency',
+          type: 'String',
+          description: 'ISO currency code.',
+          default: 'USD',
+          isEntityRef: false,
+        },
+        {
+          name: 'memo',
+          type: 'String',
+          required: false,
+          isEntityRef: false,
+        },
+      ],
+    });
+    const [tool] = actionTools({runtime: rt(custom)});
+    const byName = Object.fromEntries(tool.parameters.map(p => [p.name, p]));
+
+    expect(byName['source'].description).toStartWith('The account money leaves.');
+    expect(byName['source'].description).toContain('identifies exactly one customer');
+    expect(byName['source'].required).toBe(true);
+
+    expect(byName['currency'].description).toBe('ISO currency code.');
+    expect(byName['currency'].required).toBe(false);
+    expect(byName['currency'].default).toBe('USD');
+
+    expect(byName['memo'].required).toBe(false);
+  });
+
+  test('the tool description includes the gating constraint rule text', () => {
+    expect(tools[0].description).toContain(
+        'RequestedQuantityIsPositive: A request must be for at least one unit.');
+  });
 });
 
 

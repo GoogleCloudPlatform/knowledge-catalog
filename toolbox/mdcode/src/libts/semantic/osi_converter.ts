@@ -282,8 +282,9 @@ function metricDoc(metric: Metric, warnings: string[]): Record<string, any> {
 }
 
 // Inverts loader.convertAction. The executor collapses back to the open
-// format's single-key object; parameters emit as {name, type}. `isEntityRef` is
-// derived by the loader on reload, so it is intentionally not emitted.
+// format's single-key object; parameters emit as {name, type, description,
+// required, default}. `isEntityRef` is derived by the loader on reload, so it
+// is intentionally not emitted.
 function actionDoc(action: Action, warnings: string[]): Record<string, any> {
   dropExtensions(action.customExtensions, `action '${action.name}'`, warnings);
   return compact({
@@ -291,7 +292,13 @@ function actionDoc(action: Action, warnings: string[]): Record<string, any> {
     description: action.description,
     executor: action.executor ? executorDoc(action.executor) : undefined,
     parameters: nonEmpty(
-        (action.parameters ?? []).map(p => ({name: p.name, type: p.type}))),
+        (action.parameters ?? []).map(p => compact({
+          name: p.name,
+          type: p.type,
+          description: p.description,
+          required: p.required,
+          default: p.default,
+        }))),
     guards: nonEmpty(action.guards),
     affects: nonEmpty((action.affects ?? []).map(affectedConceptDoc)),
     ai_context: aiContextDoc(action.aiContext),

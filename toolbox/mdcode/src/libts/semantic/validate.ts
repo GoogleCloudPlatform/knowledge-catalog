@@ -224,10 +224,20 @@ function validateActions(
   for (const action of actions) {
     const where =
         `action '${action.name}' in model '${model.name}' (${document})`;
+    const typeCounts = new Map<string, number>();
+    for (const param of action.parameters) {
+      typeCounts.set(param.type, (typeCounts.get(param.type) ?? 0) + 1);
+    }
     for (const param of action.parameters) {
       if (param.isEntityRef === undefined) {
         errors.push(`${where} has parameter '${param.name}' whose type '${
             param.type}' is neither a known entity nor a scalar datatype.`);
+      }
+      if ((typeCounts.get(param.type) ?? 0) > 1 && !param.description?.trim()) {
+        errors.push(
+            `${where} has multiple parameters of type '${param.type}', so ` +
+            `parameter '${param.name}' must have a 'description' to ` +
+            `distinguish it.`);
       }
     }
     // No executor is not an error: it is an action no binding performs here,

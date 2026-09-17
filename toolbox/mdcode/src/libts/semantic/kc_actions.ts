@@ -175,7 +175,14 @@ function actionAspectData(action: Action): Record<string, any> {
   return compact({
     ...(action.executor ? executorData(action.executor) : {}),
     parameters: action.parameters.map(
-        p => compact({name: p.name, type: p.type, isEntityRef: p.isEntityRef})),
+        p => compact({
+          name: p.name,
+          type: p.type,
+          isEntityRef: p.isEntityRef,
+          description: p.description,
+          required: p.required,
+          default: p.default !== undefined ? String(p.default) : undefined,
+        })),
     guards: action.guards?.length ? action.guards : undefined,
     affects: action.affects?.length ? action.affects.map(affectedConceptData) :
                                       undefined,
@@ -345,6 +352,15 @@ function readParameter(
   const type = typeof p?.type === 'string' ? p.type : '';
   if (!name) return undefined;
   const param: ActionParameter = {name, type};
+  if (typeof p?.description === 'string' && p.description !== '') {
+    param.description = p.description;
+  }
+  if (typeof p?.required === 'boolean') {
+    param.required = p.required;
+  }
+  if (p?.default !== undefined && p.default !== '') {
+    param.default = parseDefaultFromAspect(p.default, type);
+  }
   if (entityNames.has(type)) {
     param.isEntityRef = true;
   } else if ((DATA_TYPES as readonly string[]).includes(type)) {
@@ -360,6 +376,19 @@ function readParameter(
         `resolved type`);
   }
   return param;
+}
+
+function parseDefaultFromAspect(raw: unknown, type: string): unknown {
+  if (typeof raw !== 'string') return raw;
+  if (type === 'Boolean') {
+    if (raw === 'true') return true;
+    if (raw === 'false') return false;
+  }
+  if (type === 'Integer' || type === 'Float' || type === 'Decimal') {
+    const n = Number(raw);
+    if (!Number.isNaN(n)) return n;
+  }
+  return raw;
 }
 
 // One affected concept from its aspect record, the inverse of

@@ -284,6 +284,36 @@ const ACTION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
                     'refers to an object rather than carrying a value.',
               },
             },
+            {
+              index: 4,
+              name: 'description',
+              type: 'string',
+              annotations: {
+                displayName: 'Description',
+                description:
+                    'Human- and model-readable description of the parameter.',
+              },
+            },
+            {
+              index: 5,
+              name: 'required',
+              type: 'bool',
+              annotations: {
+                displayName: 'Required',
+                description:
+                    'Whether the parameter must be supplied when invoking the action.',
+              },
+            },
+            {
+              index: 6,
+              name: 'default',
+              type: 'string',
+              annotations: {
+                displayName: 'Default Value',
+                description:
+                    'Default value substituted when omitted, serialized as text.',
+              },
+            },
           ],
         },
         annotations: {

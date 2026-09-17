@@ -35,7 +35,7 @@
  */
 
 import {boundTable, spannerTable} from '../binding';
-import {Action, Entity, fieldBinding, SemanticModel} from '../ir';
+import {Action, ActionParameter, Constraint, Entity, fieldBinding, SemanticModel} from '../ir';
 
 import {dialectFor} from './dialect';
 import {Judge} from './judge';
@@ -53,8 +53,14 @@ export interface ToolParameter {
   type: ToolParameterType;
   /** What to pass, in the words the model's own types justify. */
   description: string;
-  /** Action parameters are all required; entity filters are all optional. */
+  /**
+   * Whether the caller must supply this argument. An action parameter is
+   * required unless declared `required: false` or given a `default`; entity
+   * filters are all optional.
+   */
   required: boolean;
+  /** The default value substituted when the caller omits the argument, if any. */
+  default?: unknown;
 }
 
 
@@ -213,9 +219,21 @@ function toolDescription(
   if (instructions) parts.push(instructions);
   // Said even when the call cannot be made, because the reason it cannot is
   // that these rules exist and are not yet checked.
-  const gates = gatingRules(action, model);
+  const gates = gatingConstraints(action, model);
   if (gates.length) {
-    parts.push(`This call is gated by ${joinNames(gates)}.`);
+    const names = joinNames(gates.map(c => c.name));
+    const rules = gates
+        .map(c => {
+          const rule =
+              c.description?.trim() || c.judgment?.trim() || c.expression?.trim();
+          return rule ? `- ${c.name}: ${rule}` : undefined;
+        })
+        .filter((s): s is string => s !== undefined);
+    if (rules.length) {
+      parts.push(`This call is gated by ${names}:\n${rules.join('\n')}`);
+    } else {
+      parts.push(`This call is gated by ${names}.`);
+    }
   }
   if (blocked) {
     parts.push(
@@ -235,38 +253,44 @@ function toolDescription(
 // the call goes ahead -- telling a caller it is "gated" by a rule that gates
 // nothing is the one kind of claim this file must not make. Saying less is the
 // honest half of saying it accurately.
-function gatingRules(action: Action, model: SemanticModel): string[] {
-  const gating = new Set((model.constraints ?? [])
-                             .filter(c => c.onViolation !== 'warn')
-                             .map(c => c.name));
-  return (action.guards ?? []).filter(name => gating.has(name));
+function gatingConstraints(action: Action, model: SemanticModel): Constraint[] {
+  const byName = new Map(
+      (model.constraints ?? [])
+          .filter(c => c.onViolation !== 'warn')
+          .map(c => [c.name, c]));
+  return (action.guards ?? [])
+      .map(name => byName.get(name))
+      .filter((c): c is Constraint => c !== undefined);
 }
 
 
 // An entity-typed parameter takes a reference the runtime resolves, so the
 // description says so rather than demanding a key the caller may not have. A
 // scalar parameter takes its own type.
-function toolParameter(param: {
-  name: string,
-  type: string,
-  isEntityRef?: boolean,
-}): ToolParameter {
-  if (param.isEntityRef) {
-    return {
-      name: param.name,
-      type: 'string',
-      description: `Which ${param.type} this applies to. Give its key, or ` +
-          `text that identifies exactly one; the call fails when nothing ` +
-          `matches or more than one does.`,
-      required: true,
-    };
-  }
-  return {
-    name: param.name,
-    type: jsonType(param.type),
-    description: `The ${param.name}, as ${article(param.type)}.`,
-    required: true,
-  };
+function toolParameter(param: ActionParameter): ToolParameter {
+  const said = param.description?.trim();
+  const required = param.required ?? (param.default === undefined);
+  const out: ToolParameter = param.isEntityRef ?
+      {
+        name: param.name,
+        type: 'string',
+        description: said ?
+            `${said} Give its key, or text that identifies exactly one ${
+                param.type}; the call fails when nothing matches or more ` +
+                `than one does.` :
+            `Which ${param.type} this applies to. Give its key, or text ` +
+                `that identifies exactly one; the call fails when nothing ` +
+                `matches or more than one does.`,
+        required,
+      } :
+      {
+        name: param.name,
+        type: jsonType(param.type),
+        description: said || `The ${param.name}, as ${article(param.type)}.`,
+        required,
+      };
+  if (param.default !== undefined) out.default = param.default;
+  return out;
 }
 
 

@@ -1611,3 +1611,62 @@ describe('an entity key that awaits transpilation', () => {
     }
   });
 });
+
+
+describe('optional and defaulted parameters', () => {
+  test('substitutes a parameter default when omitted', async () => {
+    const fake = new FakeSpanner();
+    const outcome = await run(fake, {
+      actionName: 'CreateAccount',
+      args: {name: 'Alice'},
+      handler: undefined,
+      model: model({
+        actions: [{
+          name: 'CreateAccount',
+          executor: {
+            kind: 'sql',
+            sql: {
+              statements: [
+                'INSERT INTO Account (account_id, name, status) VALUES (GENERATE_UUID(), @name, @status)',
+              ],
+            },
+          },
+          parameters: [
+            {name: 'name', type: 'String', isEntityRef: false},
+            {name: 'status', type: 'String', default: 'open', isEntityRef: false},
+          ],
+        }],
+      }),
+    });
+    expect(outcome.status).toBe('committed');
+    expect(fake.statements[0].params).toEqual({name: 'Alice', status: 'open'});
+  });
+
+  test('binds null when a required: false parameter is omitted', async () => {
+    const fake = new FakeSpanner();
+    const outcome = await run(fake, {
+      actionName: 'CreateAccount',
+      args: {name: 'Alice'},
+      handler: undefined,
+      model: model({
+        actions: [{
+          name: 'CreateAccount',
+          executor: {
+            kind: 'sql',
+            sql: {
+              statements: [
+                'INSERT INTO Account (account_id, name, memo) VALUES (GENERATE_UUID(), @name, @memo)',
+              ],
+            },
+          },
+          parameters: [
+            {name: 'name', type: 'String', isEntityRef: false},
+            {name: 'memo', type: 'String', required: false, isEntityRef: false},
+          ],
+        }],
+      }),
+    });
+    expect(outcome.status).toBe('committed');
+    expect(fake.statements[0].params).toEqual({name: 'Alice', memo: null});
+  });
+});
