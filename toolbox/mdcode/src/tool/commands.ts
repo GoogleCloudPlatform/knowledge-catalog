@@ -10,6 +10,7 @@ import * as context from '../libts/gcp/context';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
+import {convertToolboxToOsi} from '../libts/semantic/converters/toolbox/convert';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
@@ -1146,6 +1147,126 @@ export async function owl(
 // Selects the singular or plural form based on `n` (English count agreement).
 function plural(n: number, one: string, many: string): string {
   return n === 1 ? one : many;
+}
+
+
+export interface ToolboxImportOptions {
+  // Emit the compact flow YAML layout instead of the default block layout. See
+  // OwlImportOptions.compact.
+  compact?: boolean;
+  // Write the generated OSI document to this path instead of the
+  // semantic-model layout dir. See OwlImportOptions.out.
+  out?: string;
+}
+
+// Handles `kcmd toolbox <action> <path>`. The only action is `import`: read an
+// MCP Toolbox configuration and reconstruct the semantic model its tools imply.
+//
+// The reconstruction is the point and so is its incompleteness. A Toolbox
+// configuration is a list of callable things; the entities, fields and edges
+// come out of the SQL inside them, and what SQL never states -- a primary key,
+// the concept a table stands for -- comes out as a warning rather than as a
+// guess. Read the warnings: on this importer they are the output, not noise.
+// Returns a process exit code.
+export async function toolbox(
+    action: string, file: string,
+    options: ToolboxImportOptions): Promise<number> {
+  if (action !== 'import') {
+    console.error(
+        `Error: unknown toolbox action '${action}'; the only action is ` +
+        `'import' (usage: kcmd toolbox import <tools.yaml>).`);
+    return 1;
+  }
+
+  if (!fs.existsSync(file)) {
+    console.error(`Error: file not found: ${file}`);
+    return 1;
+  }
+
+  // A Toolbox deployment is often several files served as one configuration
+  // (`--tools-files`), and a tool in one may name a source in another, so a
+  // directory is read whole and converted together.
+  const stat = fs.statSync(file);
+  const paths = stat.isDirectory() ? fs.readdirSync(file)
+                                         .filter(f => /\.ya?ml$/i.test(f))
+                                         .sort()
+                                         .map(f => path.join(file, f)) :
+                                     [file];
+  if (!paths.length) {
+    console.error(`Error: no .yaml files in '${file}'.`);
+    return 1;
+  }
+
+  // `tools.yaml` is the conventional Toolbox filename and `<name>.tools.yaml`
+  // the conventional way to keep several, so the `.tools` is part of the
+  // extension in practice and no part of what the model is called. A file
+  // using the bare convention says nothing about itself, so its directory has
+  // to: `flower-shop/tools.yaml` is the flower-shop model.
+  const base = path.basename(file).replace(/(\.tools)?\.ya?ml$/i, '');
+  const modelName = stat.isDirectory() ?
+      path.basename(path.resolve(file)) :
+      base.toLowerCase() === 'tools' ?
+      path.basename(path.dirname(path.resolve(file))) :
+      base;
+  if (!modelName) {
+    console.error(`Error: could not derive a model name from '${file}'.`);
+    return 1;
+  }
+
+  // convertToolboxToOsi throws only on YAML that will not parse; main.ts's
+  // try/catch reports it.
+  const result = convertToolboxToOsi(
+      paths.map(p => fs.readFileSync(p, 'utf8')), modelName,
+      {compactFlow: options.compact});
+  for (const w of result.warnings) {
+    console.warn(`Warning: ${w}`);
+  }
+
+  const {entities, relationships, actions, toolsRead, toolsSkipped} =
+      result.stats;
+
+  // A configuration whose tools name no table yields a model with no datasets,
+  // which is not a loadable OSI model. Fail before the summary rather than
+  // write an artifact that only errors on a later push.
+  if (entities === 0) {
+    console.error(
+        `Error: no tables found in the statements in '${file}'; there is ` +
+        `nothing to import. A configuration of API-wrapping tools (no ` +
+        `\`statement\`) has no SQL to read an entity out of.`);
+    return 1;
+  }
+
+  console.log(
+      `read ${toolsRead} ${plural(toolsRead, 'tool', 'tools')}` +
+      (toolsSkipped ? `, skipped ${toolsSkipped} (see the warnings above)` :
+                      '') +
+      `; converted ${entities} ${plural(entities, 'entity', 'entities')}, ` +
+      `${relationships} ` +
+      `${plural(relationships, 'relationship', 'relationships')}, ` +
+      `${actions} ${plural(actions, 'action', 'actions')}`);
+
+  let writtenPath: string;
+  if (options.out) {
+    fs.mkdirSync(path.dirname(path.resolve(options.out)), {recursive: true});
+    fs.writeFileSync(options.out, result.yaml);
+    writtenPath = options.out;
+  } else {
+    const ctx = context.ApiContext.default();
+    const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+    if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {
+      console.error(
+          `Error: this catalog is not a semantic-model scope, so there is no ` +
+          `model layout to write into. Run \`kcmd init --semantic-model ...\` ` +
+          `first, or pass --out <path> to write the OSI document directly.`);
+      return 1;
+    }
+    const layout = snapshot.layout as SemanticModelLayout;
+    layout.writeModelDocument(modelName, result.yaml);
+    writtenPath = layout.modelPath(modelName);
+  }
+
+  console.log(`wrote ${writtenPath}`);
+  return 0;
 }
 
 

@@ -1,0 +1,93 @@
+# The MCP Toolbox quickstart configuration, verbatim except for the password.
+#
+# Source: googleapis/genai-toolbox,
+# docs/en/documentation/getting-started/quickstart/shared/configure_toolbox.md
+#
+# Kept unedited on purpose: it is the configuration every Toolbox user writes
+# first, so what the importer makes of it is the honest answer to "can I import
+# a database toolbox config". It is also the harder of the two fixtures in one
+# respect -- a `postgres` source names a host and a port, not a Google resource,
+# so the model it produces binds to no store kcmd can run against.
+kind: source
+name: my-pg-source
+type: postgres
+host: 127.0.0.1
+port: 5432
+database: toolbox_db
+user: toolbox_user
+password: my-password
+---
+kind: tool
+name: search-hotels-by-name
+type: postgres-sql
+source: my-pg-source
+description: Search for hotels based on name.
+parameters:
+  - name: name
+    type: string
+    description: The name of the hotel.
+statement: SELECT * FROM hotels WHERE name ILIKE '%' || $1 || '%';
+---
+kind: tool
+name: search-hotels-by-location
+type: postgres-sql
+source: my-pg-source
+description: Search for hotels based on location.
+parameters:
+  - name: location
+    type: string
+    description: The location of the hotel.
+statement: SELECT * FROM hotels WHERE location ILIKE '%' || $1 || '%';
+---
+kind: tool
+name: book-hotel
+type: postgres-sql
+source: my-pg-source
+description: >-
+  Book a hotel by its ID. If the hotel is successfully booked, returns a NULL, raises an error if not.
+parameters:
+  - name: hotel_id
+    type: string
+    description: The ID of the hotel to book.
+statement: UPDATE hotels SET booked = B'1' WHERE id = $1;
+---
+kind: tool
+name: update-hotel
+type: postgres-sql
+source: my-pg-source
+description: >-
+  Update a hotel's check-in and check-out dates by its ID. Returns a message
+  indicating  whether the hotel was successfully updated or not.
+parameters:
+  - name: hotel_id
+    type: string
+    description: The ID of the hotel to update.
+  - name: checkin_date
+    type: string
+    description: The new check-in date of the hotel.
+  - name: checkout_date
+    type: string
+    description: The new check-out date of the hotel.
+statement: >-
+  UPDATE hotels SET checkin_date = CAST($2 as date), checkout_date = CAST($3
+  as date) WHERE id = $1;
+---
+kind: tool
+name: cancel-hotel
+type: postgres-sql
+source: my-pg-source
+description: Cancel a hotel by its ID.
+parameters:
+  - name: hotel_id
+    type: string
+    description: The ID of the hotel to cancel.
+statement: UPDATE hotels SET booked = B'0' WHERE id = $1;
+---
+kind: toolset
+name: my-toolset
+tools:
+  - search-hotels-by-name
+  - search-hotels-by-location
+  - book-hotel
+  - update-hotel
+  - cancel-hotel

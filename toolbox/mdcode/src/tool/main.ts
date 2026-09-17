@@ -133,6 +133,28 @@ cli.command(
 
 
 cli.command(
+       'toolbox <action> <path>',
+       'MCP Toolbox tools (action: import a tools.yaml, or a directory of them, into an OSI model)')
+    .option(
+        '--out <path>',
+        'Write the generated OSI document to this path instead of the semantic-model layout dir')
+    .option(
+        '--compact',
+        'Emit compact flow YAML (primary_key: [id], inline field/relationship maps) instead of the default block layout')
+    .action(async (action, file, options) => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.toolbox(action, file, options);
+      } catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+
+      process.exit(exitCode);
+    });
+
+
+cli.command(
        'action <command> [name]',
        'Semantic model actions (command: `list` what the model declares, or `run` one against its store)')
     .option(
