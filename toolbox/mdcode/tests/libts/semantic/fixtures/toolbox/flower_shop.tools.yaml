@@ -1,0 +1,112 @@
+# The MCP Toolbox AlloyDB quickstart configuration, verbatim except that the
+# connection placeholders carry this repository's example names.
+#
+# Source: googleapis/genai-toolbox,
+# docs/en/integrations/alloydb/samples/mcp_quickstart.md
+#
+# This is the richer of the two fixtures and shows every part of the import at
+# once: a SELECT that joins three tables (so the entities come with edges), an
+# INSERT and a DELETE (so two actions arrive with their blast radius read out of
+# the statement), a tool that wraps an API rather than a statement (so one tool
+# is skipped), and an `alloydb-postgres` source (so the entities bind to a store
+# kcmd can actually run against).
+kind: source
+name: alloydb-pg-source
+type: alloydb-postgres
+project: my-project
+region: us-central1
+cluster: my-cluster
+instance: my-instance
+database: my-database
+user: my-user
+password: my-password
+---
+kind: tool
+name: access-cart-information
+type: postgres-sql
+source: alloydb-pg-source
+description: >-
+  List items in customer cart.
+  Use this tool to list items in a customer cart. This tool requires the cart ID.
+parameters:
+  - name: cart_id
+    type: integer
+    description: The id of the cart.
+statement: |
+  SELECT
+    p.name AS product_name,
+    ci.quantity,
+    ci.price AS item_price,
+    (ci.quantity * ci.price) AS total_item_price,
+    c.created_at AS cart_created_at,
+    ci.product_id AS product_id
+  FROM
+    cart_items ci JOIN cart c ON ci.cart_id = c.cart_id
+    JOIN products p ON ci.product_id = p.product_id
+  WHERE
+    c.cart_id = $1;
+---
+kind: tool
+name: add-to-cart
+type: postgres-sql
+source: alloydb-pg-source
+description: >-
+  Add items to customer cart using the product ID and product prices from the product list.
+  Use this tool to add items to a customer cart.
+  This tool requires the cart ID, product ID, quantity, and price.
+parameters:
+  - name: cart_id
+    type: integer
+    description: The id of the cart.
+  - name: product_id
+    type: integer
+    description: The id of the product.
+  - name: quantity
+    type: integer
+    description: The quantity of items to add.
+  - name: price
+    type: float
+    description: The price of items to add.
+statement: |
+  INSERT INTO
+    cart_items (cart_id, product_id, quantity, price)
+  VALUES($1,$2,$3,$4);
+---
+kind: tool
+name: delete-from-cart
+type: postgres-sql
+source: alloydb-pg-source
+description: >-
+  Remove products from customer cart.
+  Use this tool to remove products from a customer cart.
+  This tool requires the cart ID and product ID.
+parameters:
+  - name: cart_id
+    type: integer
+    description: The id of the cart.
+  - name: product_id
+    type: integer
+    description: The id of the product.
+statement: |
+  DELETE FROM
+    cart_items
+  WHERE
+    cart_id = $1 AND product_id = $2;
+---
+kind: tool
+name: ask-questions-about-products
+type: alloydb-ai-nl
+source: alloydb-pg-source
+nlConfig: flower_shop
+description: >-
+  Ask questions related to products or brands.
+  Use this tool to ask questions about products or brands.
+  Always SELECT the IDs of objects when generating queries.
+---
+kind: toolset
+name: flower_shop
+tools:
+  - access-cart-information
+  - ask-questions-about-products
+  - add-to-cart
+  - delete-from-cart

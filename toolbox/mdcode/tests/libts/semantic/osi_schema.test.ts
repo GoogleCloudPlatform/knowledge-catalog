@@ -30,8 +30,12 @@ function yamlFixtures(dir: string): string[] {
     // `expression`, and a profile carries a `deployment_target` sugar
     // -- so it is not a standalone OSI document. The loader, merge, and
     // profile-golden tests validate it instead.
+    // The toolbox/ subtree holds MCP Toolbox configurations -- converter INPUT
+    // in a foreign format, which happens to be YAML the way the OWL inputs
+    // happen to be Turtle. What the converter produces from them is checked by
+    // toolbox_converter.test.ts against the loader.
     if (ent.isDirectory()) {
-      if (ent.name === 'profiles') continue;
+      if (ent.name === 'profiles' || ent.name === 'toolbox') continue;
       out.push(...yamlFixtures(p));
     } else if (ent.name.endsWith('.yaml') || ent.name.endsWith('.yml')) {
       out.push(p);
