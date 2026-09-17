@@ -313,6 +313,9 @@ describe('kcmd action list', () => {
              '          - {name: order, type: Order}\n' +
                  '          - {name: amount, type: Decimal}\n' +
                  '          - {name: currency, type: String, default: USD}\n' +
+                 '          - {name: blank, type: String, default: ""}\n' +
+                 '          - {name: cleared, type: Boolean, default: null}\n' +
+                 '          - {name: literalNull, type: String, default: "null"}\n' +
                  '          - {name: memo, type: String, required: false}');
          writeWorkspace(optionalModel);
          const code = await action('list', undefined);
@@ -320,7 +323,9 @@ describe('kcmd action list', () => {
          const out = logs.join('\n');
          expect(out).toContain(
              'parameters: order (Order, reference), amount (Decimal), ' +
-             'currency (String, default: USD), memo (String, optional)');
+             'currency (String, default: "USD"), blank (String, default: ""), ' +
+             'cleared (Boolean, default: null), literalNull (String, default: "null"), ' +
+             'memo (String, optional)');
          expect(out).toContain(
              'run:        kcmd action run IssueCredit --arg order=<Order> ' +
              '--arg amount=<Decimal>');

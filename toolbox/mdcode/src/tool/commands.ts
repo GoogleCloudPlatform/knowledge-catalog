@@ -1518,7 +1518,7 @@ function describeParameter(p: ActionParameter): string {
   const tags: string[] = [p.type];
   if (p.isEntityRef) tags.push('reference');
   if (p.default !== undefined) {
-    tags.push(`default: ${p.default}`);
+    tags.push(`default: ${JSON.stringify(p.default)}`);
   } else if (!isParameterRequired(p)) {
     tags.push('optional');
   }

@@ -13,8 +13,8 @@ import {BigQueryClient} from '../gcp/bigquery';
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {Action, ActionParameter, Constraint, Executor, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {LoadedModel} from './loader';
+import {bindScalar} from './parameters';
 import {resolveInheritance} from './resolve_inheritance';
-import {bindScalar} from './runtime/run_action';
 import {referencedParameters} from './sql_identifiers';
 
 // Checks every model against the push requirements and returns the collected
