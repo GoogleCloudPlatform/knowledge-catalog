@@ -584,7 +584,7 @@ const credit: Action = {
     sql: {
       statements: [
         'INSERT INTO Entry (entry_id, account_id, amount) ' +
-            'VALUES (@newEntryKey, @account, @amount)',
+            'VALUES (GENERATE_UUID(), @account, @amount)',
         'UPDATE Account SET balance = balance - @amount ' +
             'WHERE account_id = @account',
       ],
@@ -642,7 +642,7 @@ describe('an action whose write is declared in the model', () => {
          expect(fake.sql.filter(s => s.startsWith('INSERT'))).toHaveLength(1);
          expect(fake.sql.filter(s => s.startsWith('UPDATE'))).toHaveLength(1);
          expect(fake.sql.indexOf('INSERT INTO Entry (entry_id, account_id, ' +
-                                 'amount) VALUES (@newEntryKey, @account, ' +
+                                 'amount) VALUES (GENERATE_UUID(), @account, ' +
                                  '@amount)'))
              .toBeLessThan(fake.sql.findIndex(s => s.startsWith('UPDATE')));
        });
@@ -666,19 +666,7 @@ describe('an action whose write is declared in the model', () => {
       'account',
       'amount',
     ]);
-    expect(update.params?.newEntryKey).toBeUndefined();
   });
-
-  test('generates the key of a created row rather than taking the caller\'s',
-       async () => {
-         // An agent that picks its own primary key can overwrite a row that
-         // already has that key.
-         const fake = resolvingFake();
-         await runCredit(fake);
-         const insert = fake.statements.find(s => s.sql.startsWith('INSERT'))!;
-         expect(typeof insert.params?.newEntryKey).toBe('string');
-         expect(insert.params?.newEntryKey as string).not.toBe('');
-       });
 
   test('resolves an entity-typed argument to its key before binding it',
        async () => {
@@ -754,24 +742,10 @@ describe('a guarded action is refused, not run unchecked', () => {
   test('an action that declares no affects runs, constraints or not',
        async () => {
          // `affects` describes the blast radius; it is not a switch that turns
-         // checking on, and its absence is not a reason to refuse. The DML is
-         // the UPDATE alone: dropping `affects` drops the `create` that
-         // generates `@newEntryKey`, so an INSERT binding it would fail for an
-         // unrelated reason.
+         // checking on, and its absence is not a reason to refuse. The same
+         // DML runs either way, down to the row it inserts.
          const outcome = await runWith({
-           actions: [{
-             ...credit,
-             affects: undefined,
-             executor: {
-               kind: 'sql',
-               sql: {
-                 statements: [
-                   'UPDATE Account SET balance = balance - @amount ' +
-                       'WHERE account_id = @account',
-                 ],
-               },
-             },
-           }],
+           actions: [{...credit, affects: undefined}],
            constraints: [balance],
          });
          if (outcome.status !== 'committed') throw new Error(outcome.message);
@@ -1221,11 +1195,17 @@ describe('an action whose write comes from a handler', () => {
 });
 
 
-describe('the key generated for a created row', () => {
-  // Every model here keys Entry by something a UUID is not.
-  function entryKeyed(type: 'Integer'|'String', statements: string[]) {
+// A row the statement inserts needs a primary key, and the statement decides
+// where that key comes from. The runtime writes none of its own, so the type
+// the entity declares for its key never decides whether the action runs.
+describe('the key of a row the action creates', () => {
+  function creditWith(
+      statements: string[], parameters = credit.parameters,
+      keyType?: 'Integer'|'String') {
     return creditModel({
-      actions: [{...credit, executor: {kind: 'sql', sql: {statements}}}],
+      actions: [
+        {...credit, parameters, executor: {kind: 'sql', sql: {statements}}},
+      ],
       entities: [
         ...model().entities,
         {
@@ -1233,7 +1213,7 @@ describe('the key generated for a created row', () => {
           dataSource: 'demo.payments.Entry',
           keys: ['entryId'],
           fields: [
-            {name: 'entryId', expression: 'entry_id', type},
+            {name: 'entryId', expression: 'entry_id', type: keyType},
             {name: 'amount', expression: 'amount'},
           ],
         },
@@ -1241,54 +1221,51 @@ describe('the key generated for a created row', () => {
     });
   }
 
-  test('is refused by name when the entity is not keyed by a String',
-       async () => {
-         // The store would reject the INSERT too, but as "statement rejected"
-         // -- naming neither the entity, nor the key, nor the reason.
-         const fake = resolvingFake();
-         const outcome = await runCredit(fake, {
-           model: entryKeyed(
-               'Integer',
-               [
-                 'INSERT INTO Entry (entry_id, amount) ' +
-                     'VALUES (@newEntryKey, @amount)',
-               ]),
-         });
-         if (outcome.status !== 'error') throw new Error('expected an error');
-         expect(outcome.message).toContain("Entry's key 'entryId' has type Integer");
-         expect(fake.sql.some(s => s.startsWith('INSERT'))).toBe(false);
-       });
-
-  test('does not refuse an entity whose statement supplies its own key',
-       async () => {
-         // An INT64 key is nobody's problem as long as the DML never asks the
-         // runtime for one. Refusing over a value the action does not bind
-         // would be a false alarm on a model that works.
-         const fake = resolvingFake();
-         const outcome = await runCredit(fake, {
-           model: entryKeyed(
-               'Integer',
-               [
-                 'INSERT INTO Entry (entry_id, amount) ' +
-                     'SELECT MAX(entry_id) + 1, @amount FROM Entry',
-               ]),
-         });
-         if (outcome.status !== 'committed') throw new Error(outcome.message);
-       });
-
-  test('fills a String key, which is what a UUID is', async () => {
+  test('is whatever SQL the statement writes, and binds nothing', async () => {
     const fake = resolvingFake();
     const outcome = await runCredit(fake, {
-      model: entryKeyed(
-          'String',
-          [
-            'INSERT INTO Entry (entry_id, amount) ' +
-                'VALUES (@newEntryKey, @amount)',
-          ]),
+      model: creditWith([
+        'INSERT INTO Entry (entry_id, amount) ' +
+            'VALUES (GENERATE_UUID(), @amount)',
+      ]),
     });
     if (outcome.status !== 'committed') throw new Error(outcome.message);
-    const insert = fake.statements.find(s => s.sql.startsWith('INSERT'));
-    expect(insert?.paramTypes?.newEntryKey).toEqual({code: 'STRING'});
+    const insert = fake.statements.find(s => s.sql.startsWith('INSERT'))!;
+    expect(insert.sql).toContain('GENERATE_UUID()');
+    expect(Object.keys(insert.params ?? {})).toEqual(['amount']);
+  });
+
+  test('can be an integer the store computes', async () => {
+    // Entry declares an Integer key here, and the INSERT reads the next one.
+    // A UUID would not fit that column, and nothing offers one.
+    const fake = resolvingFake();
+    const outcome = await runCredit(fake, {
+      model: creditWith(
+          [
+            'INSERT INTO Entry (entry_id, amount) ' +
+                'SELECT MAX(entry_id) + 1, @amount FROM Entry',
+          ],
+          credit.parameters, 'Integer'),
+    });
+    if (outcome.status !== 'committed') throw new Error(outcome.message);
+  });
+
+  test('can come from the caller, bound like any other value', async () => {
+    // Nothing reserves a parameter name for a key, so an action that wants
+    // the caller to choose one declares a parameter and binds it.
+    const fake = resolvingFake();
+    const outcome = await runCredit(fake, {
+      model: creditWith(
+          ['INSERT INTO Entry (entry_id, amount) VALUES (@entry, @amount)'],
+          [
+            ...credit.parameters,
+            {name: 'entry', type: 'String', isEntityRef: false},
+          ]),
+      args: {account: 'A1', amount: 100, entry: 'E7'},
+    });
+    if (outcome.status !== 'committed') throw new Error(outcome.message);
+    const insert = fake.statements.find(s => s.sql.startsWith('INSERT'))!;
+    expect(insert.params?.entry).toBe('E7');
   });
 });
 

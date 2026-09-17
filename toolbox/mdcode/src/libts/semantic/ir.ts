@@ -419,24 +419,33 @@ export type Executor =
  * DML statements.
  *
  * The other three executor kinds name a system that performs the write, so what
- * the write does is opaque to the model. This one contains it, which buys three
+ * the write does is opaque to the model. This one contains it, which buys two
  * things the opaque kinds cannot offer.
  *
  *   - The blast radius is checkable. `affects` can be read against the
  *     statements rather than taken on trust.
  *   - A guard becomes a real gate. An MCP, REST or gRPC call commits inside a
- *     system the runtime does not control, so a check around it is advisory; a
- *     statement run in the runtime's own transaction can be rolled back.
- *   - The statements run where the constraints are probed, so the gate observes
- *     the uncommitted result of the write it is gating.
+ *     system the runtime does not control, so a write it performed could not be
+ *     rolled back if the rest of the action failed; a statement run in the
+ *     runtime's own transaction can be. Guards settle before that transaction
+ *     opens (see run_action.ts), so a refusal leaves the store untouched and no
+ *     check ever observes the write it gates.
  *
  * The narrowness is the safety argument, and validate.ts enforces it. A
- * statement is a single INSERT, UPDATE or DELETE. Every value it uses arrives as
- * a bound query parameter naming a declared action parameter, so nothing is
- * interpolated into the text and an argument cannot become SQL. There is no
- * control flow, no statement composed at call time, and no way for a caller to
- * supply a statement of its own: an action whose body arrives with the call
- * declares nothing, and a gate cannot check what was never declared.
+ * statement is a single INSERT, UPDATE or DELETE. Every `@name` it binds names
+ * a parameter the action declares, so an argument reaches the store as a bound
+ * value and never as SQL. There is no control flow, no statement composed at
+ * call time, and no way for a caller to supply a statement of its own: an
+ * action whose body arrives with the call declares nothing, and a gate cannot
+ * check what was never declared.
+ *
+ * A row the statement inserts needs a primary key, and the statement is what
+ * decides where it comes from: a UUID function the store offers, a value the
+ * caller passes as an ordinary parameter, or the key column left out where it
+ * has a default. The runtime generates nothing on its behalf. A key that comes
+ * in as a parameter is one the caller chooses, and the check in validate.ts
+ * reads only a statement's first word, so an upsert passes and overwrites the
+ * row that key names.
  */
 export interface SqlExecutor {
   // The statements, run in order inside the action's transaction. Each is a
@@ -448,20 +457,6 @@ export interface SqlExecutor {
 // so there is no SELECT here and no DDL: a statement that reads is a query and
 // belongs in a metric, and a statement that reshapes the schema is not an action.
 export const SQL_EXECUTOR_VERBS = ['INSERT', 'UPDATE', 'DELETE'] as const;
-
-/**
- * The bound parameter carrying the key of a row the action creates.
- *
- * An action that inserts a row needs a key for it, and the key cannot come from
- * the caller: an agent that picks its own primary keys can overwrite an existing
- * row by choosing a key that is already taken. So a runtime generates one per
- * `affects` entry whose operation is `create`, binds it under this name, and
- * records it as touched so the constraint probes cover the new row. A statement
- * refers to it the same way it refers to any other parameter.
- */
-export function generatedKeyParam(concept: string): string {
-  return `new${concept}Key`;
-}
 
 /**
  * An MCP executor: references a tool already registered in Agent Registry, by

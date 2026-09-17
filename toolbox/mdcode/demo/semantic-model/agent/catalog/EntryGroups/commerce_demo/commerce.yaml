@@ -114,9 +114,10 @@ semantic_model:
           - {name: order, type: Order}
           - {name: amount, type: Decimal}
           - {name: memo, type: String}
-        # What this call reaches. `operation: create` on LineItem is also what
-        # tells the runtime to generate the new row's key, which the profile's
-        # INSERT names as @newLineItemKey.
+        # What this call reaches, for a reader of the catalog who does not have
+        # the SQL under each profile. Nothing here reaches a statement -- the
+        # new row's key comes from the INSERT itself. A profile that cannot bind
+        # one of these concepts drops the action from its push instead.
         affects:
           - {concept: LineItem, operation: create, fields: [type, amount, memo]}
           - {concept: Order, operation: modify, fields: [total]}

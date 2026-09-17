@@ -67,8 +67,8 @@ semantic_model:
             method: CloseBooks
       # SQL executor: the write itself rather than a pointer to whoever performs
       # it. Two statements exercise the ordered list and two of the three verbs,
-      # and the inserted row's key is generated rather than taken from the
-      # caller, so the statement names it as @newordersKey.
+      # and the inserted row's key is written by the statement rather than bound
+      # as a parameter.
       - name: ReplaceOrder
         description: Supersede an order with a new one
         executor:
@@ -76,7 +76,7 @@ semantic_model:
             statements:
               - >-
                 INSERT INTO orders (o_orderkey, o_custkey)
-                VALUES (@newordersKey, @buyer)
+                VALUES (GENERATE_UUID(), @buyer)
               - DELETE FROM orders WHERE o_orderkey = @supersedes
         parameters:
           - {name: buyer, type: customer}

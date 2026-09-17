@@ -488,9 +488,10 @@ reads the document ([§6](#6-the-extension-mechanism)).
   kind whose text the model can read, it is the only one with rules about that
   text: each statement MUST be a single `INSERT`, `UPDATE` or `DELETE`, MUST NOT
   contain a `;` other than a trailing one, and MUST reference only `@parameter`
-  names the action declares, plus `@new<Concept>Key` for each `affects` entry
-  whose `operation` is `create`. Those rules are what let every value be bound
-  rather than interpolated, so an argument cannot reach the store as SQL.
+  names the action declares. Those rules are what let every value be bound
+  rather than interpolated, so an argument cannot reach the store as SQL. Where
+  the key of an inserted row comes from is the statement's own business, and
+  `affects` has no bearing on it.
 
 - **`constraints` (extended profile only).** Model-level named invariants over
   the ontology, accepted only under `0.2.0.dev0/google`. Each states exactly one
@@ -511,9 +512,9 @@ reads the document ([§6](#6-the-extension-mechanism)).
   branch, each with its own name, `on_violation` and `severity`, which `guards`
   on the action lists together. That keeps each branch independently searchable,
   revisable and owned, and it keeps the branches an expression *can* decide out
-  of prose that no query can read. [Actions → A policy whose rules end
-  differently](actions.md#a-policy-whose-rules-end-differently) works a
-  five-rule credit policy through end to end.
+  of prose that no query can read. [Actions → A credit policy, worked
+  through](actions.md#a-credit-policy-worked-through) works a five-rule credit
+  policy through end to end.
 
   A constraint takes effect only where something references it. Declaring one
   adds a rule to the catalog and refuses nothing, so publishing a rule cannot

@@ -450,3 +450,10 @@ forms mean the same thing and expand to the same wire representation.
 follows from the store a profile binds to; the engine lowers each `expression` to
 that store's query language when it runs. A profile chooses the data, and the
 execution engine chooses the dialect.
+
+**An action's statements reach the store as written.** Lowering covers a
+field's `expression` and stops there. kcmd passes a `sql` executor's statements
+through unchanged, so they name physical tables and columns and use the dialect
+of the store the profile binds. `CancelOrder` above writes `UPDATE Orders SET
+Status = 'CANCELLED'` rather than the model's `Order` and `key`, and a profile
+that binds a different store restates those statements for it.

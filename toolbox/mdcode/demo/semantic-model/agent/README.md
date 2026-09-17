@@ -212,7 +212,7 @@ whole database in front of it, while `The memo argument of this call` names
 something it is already holding. That is a reason to suspect such a wording
 rather than a rule about it — the same field name settles a judgment correctly
 in
-[the actions guide](../../../docs/semantic-model/actions.md#a-guard-settled-in-words).
+[the actions guide](../../../docs/semantic-model/actions.md#when-the-rule-is-a-sentence).
 
 What generalises is the failure mode: a judged guard can pass a call it should
 have refused, and nothing says so. The judge is told that a rule it has not been
@@ -1175,7 +1175,7 @@ psql "host=$PGHOST user=postgres dbname=semantic_agent_demo" -c \
      FROM order_line WHERE order_id = 12347 ORDER BY type"
 ```
 
-What that should show is a credit line of `-20.00` with a generated key and
+What that should show is a credit line of `-20.00` with a UUID key and
 `purchase_order.order_total` down to `180.00` — the outcome of
 [step 7](#7-the-other-two-outcomes), reached by different SQL against different
 tables, from the same request through the same agent. The note at the end of
@@ -1256,9 +1256,9 @@ $ psql "host=$PGHOST user=$(gcloud config get-value account) dbname=semantic_age
 (5 rows)
 ```
 
-The UUID is the key the runtime generated, because the action's `affects` says
-this call creates a `LineItem`. `order_total` reads `145.85`, recomputed from
-those five lines rather than adjusted by the credit amount.
+The key is a UUID. The INSERT writes it with `gen_random_uuid()`, so the new
+row's key never passes through the call. `order_total` reads `145.85`,
+recomputed from those five lines rather than adjusted by the credit amount.
 
 > **What on this page is copied from a real run, and what is not.** Every `kcmd`
 > listing here is, including the `diff` above, the push refusal, and the
@@ -1274,7 +1274,12 @@ those five lines rather than adjusted by the credit amount.
 > model-in-the-loop leg of this section has been run only under `spanner`. What
 > that leg adds over `action run` is the model choosing the action and its
 > arguments, and `kcmd agent tools` shows it is offered the same two lines of
-> difference either way.
+> difference either way. One edit postdates every run on this page. Under both
+> profiles the INSERT keyed the new row from a runtime-generated UUID when these
+> outputs were captured, and it now generates one inside the statement instead,
+> with `GENERATE_UUID()` under `spanner` and `gen_random_uuid()` under
+> `alloydb`. Any key shown above is still a UUID, but neither statement as it
+> stands has been sent to its store.
 
 ## What in here is about ecommerce
 

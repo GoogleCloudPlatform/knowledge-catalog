@@ -360,16 +360,18 @@ describe('a binding this runtime cannot fill is refused before the store', () =>
     expect(tool.unavailable).toContain('2 parts');
   });
 
-  test('a generated key the statement binds, for an integer-keyed entity', () => {
-    // `orders` is keyed by o_orderkey, an Integer, and the runtime generates a
-    // UUID. The statement asks for one, so this can never be filled.
+  test('an integer-keyed entity the action creates is still offered', () => {
+    // `orders` is keyed by o_orderkey, an Integer. The runtime writes no key
+    // of its own, so the type of a column it never fills is not a reason to
+    // withhold the tool.
     const creates = withExecutor(model, {
       ...RUNNABLE,
       affects: [{concept: 'orders', operation: 'create'}],
       executor: {
         kind: 'sql',
         sql: {
-          statements: ['INSERT INTO orders (o_orderkey) VALUES (@newordersKey)'],
+          statements:
+              ['INSERT INTO orders (o_orderkey) VALUES (@quantity)'],
         },
       },
     });
@@ -385,33 +387,12 @@ describe('a binding this runtime cannot fill is refused before the store', () =>
               e),
     };
     const [tool] = actionTools({runtime: rt(typed)});
-    expect(tool.runnable).toBe(false);
-    expect(tool.unavailable).toContain('UUID');
+    expect(tool.runnable).toBe(true);
   });
 
-  test('a generated key no statement binds is not held against the action',
-       () => {
-         // The same integer-keyed entity, but the DML supplies its own key.
-         // Refusing over a value the action never reads would withhold a tool
-         // that works.
-         const creates = withExecutor(model, {
-           ...RUNNABLE,
-           affects: [{concept: 'orders', operation: 'create'}],
-           executor: {
-             kind: 'sql',
-             sql: {
-               statements:
-                   ['INSERT INTO orders (o_orderkey) VALUES (@quantity)'],
-             },
-           },
-         });
-         const [tool] = actionTools({runtime: rt(creates)});
-         expect(tool.runnable).toBe(true);
-       });
-
-  test('a handler is not held to either, because it writes its own DML', () => {
+  test('a handler is not held to it, because it writes its own DML', () => {
     // A handler is given `refs` whole and may spell a composite key across as
-    // many parameters as it likes. Neither question is the handler's to answer.
+    // many parameters as it likes. The question is not the handler's to answer.
     const composite = {
       ...model,
       entities: model.entities.map(
