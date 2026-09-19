@@ -211,8 +211,6 @@ both bodies, or neither, is skipped with a warning rather than pulled into a
 model that would then fail its own push. That entry type is custom too, and a
 model that declares no constraint never needs it.
 
-¹⁰ What you author is the `expression.dialects[]` list; the graph builds from the canonical (BigQuery/ANSI) variant. `importedExpression` / `importedDialect` are not authored keys — the loader *derives* them from a non-canonical dialect entry (e.g. the MAQL or Snowflake form a metric was imported from) and uses that verbatim as the fallback when no canonical variant exists. See [Model spec §2.5](model_spec.md#25-expressions).
-
 ## To BigQuery
 
 Push preserves both the queryable structure and the descriptive metadata attached
