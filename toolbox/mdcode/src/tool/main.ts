@@ -207,6 +207,14 @@ try {
   process.exit(1);
 }
 
+// cac answers `--help` and `--version` by printing and then calling
+// unsetMatchedCommand(), so a request that was served arrives at the block
+// below looking exactly like a command that was never found. Take it as
+// handled: it has already printed, and asking for help is not an error.
+if (cli.options.help || cli.options.version) {
+  process.exit(0);
+}
+
 if (!cli.matchedCommand) {
   if (cli.args.length > 0) {
     console.error(`Error: Unknown command '${cli.args[0]}'`);
