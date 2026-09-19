@@ -20,7 +20,8 @@ lives in a field called the **executor**, which names an MCP tool, a REST
 endpoint, a gRPC method, or DML. Keeping it separate lets a binding profile
 supply it, so you write an action across two files. Your model names the
 operation and its parameters; a binding profile names the tables, the columns,
-and the executor. kcmd combines the two into one bound model.
+and the executor. Whatever runs the action combines the two into one bound
+model.
 
 ```mermaid
 graph LR
@@ -43,6 +44,12 @@ The rest of this guide follows one action — moving money between two bank
 accounts — from a name in your model through to an agent that can call it. A
 second example, a customer-service credit, comes in once the rules get harder to
 write.
+
+The commands here are `kcmd`, which reads a model, pushes it, and runs an action
+against the store a profile binds. It is how you exercise what you wrote and see
+each step of a call, and it is deliberately a small tool: what the model states
+holds for any runtime that reads it, and the library `kcmd` is built on is the
+same one a service would embed.
 
 ## When to use an action
 
@@ -161,20 +168,33 @@ Each parameter may also carry:
 
 ### Where the executor comes from
 
-Everything else your action declares is logical: what it takes, what gates
-it, what it changes. The executor isn't, because *how* the change gets
-carried out depends on where your rows live. kcmd therefore treats it as a
-physical binding, like an entity's `source`, so a [binding
-profile](profiles.md) can supply one or replace the one your model declares.
-An action a profile says nothing about keeps the executor the model gave it.
+Everything else your action declares is logical: what it takes, what gates it,
+what it changes. None of that changes when you deploy the same model somewhere
+else. The executor does, which is why it sits on the physical side with an
+entity's `source`, and why a [binding profile](profiles.md) can supply one or
+replace the one your model declares — for any of the four kinds. An action a
+profile says nothing about keeps the executor the model gave it.
 
-Sometimes nobody has wired the write up yet, or another team owns it and you
-need your model only to record that it exists. Leave the executor out of both
-files for that case. Your action is then **declared but not performable**: it
-still states what it does, what gates it, and what it changes, which is the
-whole of what a reader needs. A catalog-only push — `--no-profile`, or a model
-with no deployment target — publishes it like any other action, and `kcmd
-profiles` lists it under `cannot run:` for each binding that supplies no
+It changes for two different reasons. An `mcp`, `rest` or `grpc` executor is an
+address: the operation lives at a different server, endpoint or service in
+staging than it does in production, and where your rows sit never enters it. A
+`sql` executor is the statement, written in the bound store's table and column
+names and in its dialect, so until you know which store answers there's nothing
+to write down. Only that last case turns on where the data lives.
+
+### Actions declared but not performable
+
+An action with no executor anywhere — none in the model, none in any profile —
+is **declared but not performable**. It still says what it does, what it takes,
+what gates it and what it changes; the only thing missing is who carries the
+write out. Write one when nobody has wired the write up yet, or when another
+team owns it and your model needs only to record that it exists.
+
+Nothing declares this state: it follows from the executor being absent, so the
+same action is performable under a profile that supplies one and not
+performable under a profile that doesn't. A catalog-only push — `--no-profile`,
+or a model with no deployment target — publishes it like any other action, and
+`kcmd profiles` lists it under `cannot run:` for each binding that supplies no
 executor for it.
 
 ## Carrying the write as DML
@@ -291,23 +311,18 @@ start refusing calls that succeeded yesterday.
   ─────────────────       ─────────────────      ──────────────     ───────────
   constraints:            actions:               before the call,   reject
     - name: X       ──▶     - name: Y      ──▶   with the      ──▶  escalate
-      expression: …           guards: [X]        arguments bound    warn
-      or judgment: …
+      judgment: …             guards: [X]        arguments bound    warn
 
-  a rule in the           the only thing that    a query settles    on_violation
-  catalog, inert          gives it effect        an expression;     names one of
-                                                 a language model   the three
-                                                 a judgment
+  a rule in the           the only thing that    a language model   on_violation
+  catalog, inert          gives it effect        reads the call     names one of
+                                                 and settles it     the three
 ```
 
 *Figure 2: a constraint moves from declared, to referenced by an action, to
 checked before a call, to a breach routed by `on_violation`.*
 
-A constraint states its rule in one of two bodies: an `expression`, when a query
-over your ontology decides the question, or a `judgment`, when no query can.
-Which one you wrote shows up on the published constraint as a derived
-`evaluation` field reading `deterministic` or `judged`, so a consumer can select
-on it.
+A constraint has one body, `judgment`: the rule written as a sentence, settled
+by a language model reading the attempted call.
 
 ### Naming a constraint as a guard
 
@@ -316,20 +331,24 @@ then name it on the action — one line on the `TransferFunds` from section 1:
 
 ```yaml
     constraints:
-      - name: AmountIsPositive
-        expression: amount > 0
+      - name: TransferWithinAvailableBalance
+        judgment: >-
+          The amount argument of this call must not exceed Account.balance on
+          the source account. That balance is on record rather than stated in
+          the arguments, so read it before answering.
+        on_violation: reject
         description: >-
-          A transfer must move at least one unit. Ask the caller for the
-          amount again before retrying.
+          A transfer cannot move more than the source account holds. Lower the
+          amount, or choose another account.
     actions:
       - name: TransferFunds
-        guards: [AmountIsPositive]
+        guards: [TransferWithinAvailableBalance]
 ```
 
 `guards` holds the names of constraints your model declares, and listing one
-there is what makes it apply to that action. Both kinds of body go in the same
-list. Put the reference on the action rather than on the constraint, because the
-same rule may gate `TransferFunds` and leave `CloseAccount` alone.
+there is what makes it apply to that action. Put the reference on the action
+rather than on the constraint, because the same rule may gate `TransferFunds`
+and leave `CloseAccount` alone.
 
 Whatever dispatches the call is what checks its guards, and it checks every one
 of them before the call, with the arguments bound and before any transaction
@@ -351,53 +370,16 @@ guards without you writing down how they combine. It is also how `forbid`
 overrides `permit` in Cedar and how a deny wins in Open Policy Agent, so a
 policy written this way lowers into either.
 
-kcmd reports a mismatch from either side. A guard that names no constraint fails
-the push. A constraint over parameters that no action names loads with a
-warning, because nothing will ever evaluate it. That scan reads expressions
-only. A judgment is prose, and a word in it matching a parameter name is not a
-read of that parameter.
+A guard that names no constraint fails the push, so a typo can't leave you
+believing a write is checked when nothing checks it. The reverse isn't an
+error: a constraint no action names is declared, published and inert, which is
+a reasonable thing to publish for a reader or for an action you haven't written
+yet.
 
-### Rules a query settles
+### What a judgment costs
 
-Write the rule as an `expression` when a query over your ontology decides it. A
-condition over stored data names the entities and fields it reads:
-
-```yaml
-    constraints:
-      - name: BalanceStaysPositive
-        expression: Account.balance >= Account.minimumBalance
-        description: >-
-          An account cannot be taken below its minimum balance.
-```
-
-A condition over the action's parameters describes one call instead, the way
-`AmountIsPositive` above reads `amount` and nothing else. A rule like that is
-settled completely before the call, since the arguments are the whole of what it
-reads. A rule over stored data is a condition on the state that a write
-produces, so checking it before the call reports only that the call isn't
-starting from a broken state. It says nothing about the state the call leaves
-behind, and that gap is the difference between what a data rule says and what a
-guard can enforce.
-
-An expression can also go to your store rather than to whatever dispatches the
-call, and that works for some rules and not others. A condition on a single row
-lowers to a store-level `CHECK`. One that aggregates across a child table, such
-as an order total matching the sum of its line items, lowers to neither Spanner
-nor BigQuery.
-
-**Status: no component evaluates an expression against live data.** kcmd parses
-one, validates it, publishes it with the `guards` that name it, and reads it
-back. At run time [`kcmd action run`](#7-run-it) refuses an action whose
-`guards` name an expression rather than apply a write your model says must be
-checked first.
-
-### Rules no query settles
-
-Your business enforces some rules that can't be written as a boolean. A credit
-memo may or may not explain the failure it claims to refund. A discount may or
-may not be justified by the reason given. In both cases a query can read the
-text and can't settle the question. Write such a rule in `judgment` instead of
-`expression`:
+A judgment is a whole constraint body. Here is one, with the two fields that
+say what a breach does and how grave it is:
 
 ```yaml
     constraints:
@@ -413,35 +395,50 @@ text and can't settle the question. Write such a rule in `judgment` instead of
         severity: low
 ```
 
-A constraint declares one body or the other, never both and never neither. A
-judgment must state `on_violation`, and any of the three words will do. Omit it
-and the push fails, because an unmarked constraint would reject, and that's too
-strong a consequence to inherit by silence.
+Settling that rule is a model call, and one goes out for every guard on every
+attempted write. The verdict can also move: a ceiling of 25 dollars, stated as a
+judgment, can answer two identical calls differently, where `amount <= 25` could
+not.
 
-No judge settles a rule about the state a write *leaves behind*. A guard runs
-before the transaction opens, so "an order's total equals the sum of its lines"
-has nothing to look at yet. Put that rule inside the transaction or in your
-schema.
+So write a judgment for a rule that has to read stored data or weigh what a
+caller wrote, where nothing shorter would settle it. A threshold over the call's
+own arguments is the case to keep out: `amount <= 25` reads nothing but the
+arguments, and a sentence buys you a model call and a verdict that can move.
+Leave it in whatever dispatches the call — the model has no home for it today,
+which is in [what is not modeled yet](#what-is-not-modeled-yet).
 
-An action whose guards are *all* judged loads with a warning today. Every gate
-then costs a model call, none can lower to a store-level check, and each may
-decide two identical calls differently.
+Every constraint must state `on_violation`, and any of the three words will do.
+Omit it and the push fails, because an unmarked constraint would reject, and
+that's too strong a consequence to inherit by silence.
 
-The warning doesn't mean you've written something wrong. Some operations really
-are governed only by rules no expression settles, so an all-judged action can
-be exactly right. The warning puts that cost in your source rather than leaving
-you to find it in a published model. Whether a warning is the right response is
-still open, so treat it as current behavior rather than a rule to design
-around.
+### What a guard can see
 
-**Status: a judgment is the one body kcmd settles.** At run time,
-[`kcmd action run --judge`](#when-the-rule-is-a-sentence) puts each judged
-guard to a language model and routes the verdict by `on_violation`.
+A guard is checked before the call, with the arguments bound and before any
+transaction opens. So it sees two things: the arguments it was handed, and the
+data the call starts from. A rule about the arguments — whether the memo the
+caller wrote names a real service failure, say — is settled completely, because
+the arguments are the whole of what it reads. A rule about stored data is
+settled against the state the call starts from, which is a weaker claim than it
+looks: that the call isn't starting from a broken state.
+
+Nothing settles a rule about the state a write *leaves behind*. "An order's
+total equals the sum of its lines" has nothing to look at when the guard runs.
+Put that rule inside the transaction, or in your schema, where the store
+enforces it.
+
+A judgment that reads stored data also needs a judge that has been given the
+store to read. Whoever dispatches the call decides that, and
+[when the judge needs a fact](#when-the-judge-needs-a-fact) does it from the
+command line.
+
+**Status: `judgment` is the only body a constraint has.** Whatever checks a
+guard puts the sentence to a language model and routes the verdict by
+`on_violation`.
 
 ### Writing a judgment
 
 A language model reads your sentence at review time with the proposed write in
-front of it. kcmd calls that reader the judge. Five habits make that reading
+front of it. That reader is the judge. Five habits make that reading
 consistent:
 
 1. **State what must be true of the data.** Write the condition — *the memo
@@ -449,10 +446,10 @@ consistent:
    the memo is specific*. Your sentence describes a clean write, and everything
    about handling a breach lives elsewhere.
 2. **Name fields model-qualified.** Write `LineItem.memo` rather than "the
-   memo". kcmd resolves every `Entity.field` token in the text against your
-   model and fails the push when the entity declares no such field, so a rename
-   can't leave your sentence pointing at nothing. The qualified name also tells
-   the judge which value to read.
+   memo". A push resolves every `Entity.field` token in the text against your
+   model and fails when the entity declares no such field, so a rename can't
+   leave your sentence pointing at nothing. The qualified name also tells the
+   judge which value to read.
 3. **Say what doesn't count.** A rule with no negative example gets graded
    against whatever the model guesses you had in mind. The sentence "A memo
    that states only that the customer requested a credit does not satisfy this
@@ -475,14 +472,15 @@ a sentence about stored data can turn out to be a rule it has no evidence for.
 The instructions tell it to refuse in that case and say what's missing, but that
 instruction binds a model rather than the runtime, so the rule can come back
 held instead — a guard that never fires and never says why. Phrase the condition
-around the arguments the call carries, and try every judged guard against a case
-it ought to refuse.
+around the arguments the call carries, and try every guard against a case it
+ought to refuse.
 
 A rule that does need a stored row — comparing a credit against the order total,
-say — is settled when you run with `--judge-reads-store`. Word it to say the
-value is on record and has to be read, because the judge decides for itself
-whether to look. The same rule refuses every call when it goes to a judge that
-can't read. See [when the judge needs a fact](#when-the-judge-needs-a-fact).
+say — is settled only by a judge that has been given the store to read. Word the
+rule to say the value is on record and has to be read, because the judge decides
+for itself whether to look. Put to a judge with no store, the same rule refuses
+every call. [When the judge needs a fact](#when-the-judge-needs-a-fact) runs one
+of these from the command line.
 
 ## A credit policy, worked through
 
@@ -491,52 +489,46 @@ support agent is about to issue a customer-service credit, and five separate
 rules bear on whether they may:
 
 ```
-  the business rule                        written as   a breach
-  ──────────────────────────────────────   ──────────   ────────
-  1  no credit above the order's total     expression   escalate
-  2  over 25 dollars needs a supervisor    expression   escalate
-  3  the total equals the line items       expression   reject
-  4  the memo names a service failure      judgment     warn
-  5  not one credit split to evade review  judgment     reject
+  the business rule                        a breach   settled
+  ──────────────────────────────────────   ────────   ────────────────────────
+  1  no credit above the order's total     escalate   judgment, reading a row
+  3  the memo names a service failure      warn       judgment
+  4  not one credit split to evade review  reject     judgment
+  ──────────────────────────────────────   ────────   ────────────────────────
+  2  over 25 dollars needs a supervisor    —          your dispatch, not here
+  5  the total equals the line items       —          your schema, not here
 ```
 
-*Table 1: the five rules of the credit policy, how each one is written, and what
-a breach of it does.*
+*Table 1: the three rules of the credit policy that a guard can carry, what a
+breach of each one does, and the two rules that belong somewhere else.*
 
-Writing that policy down needs an `Order` with a `total`, a `LineItem` with an
-`amount` and a `memo`, and an `IssueCredit` action taking the order, the amount
-and the memo. Each rule becomes one constraint, and each states its own outcome
-in `on_violation`:
+Rules 2 and 5 are in the table to be ruled out. Rule 5 is about the state a
+write leaves behind, and a guard runs before the transaction opens, so no
+constraint you write here reaches it; put it in your schema. Rule 2 compares one
+argument against a literal: written as a judgment it would buy a model call to
+perform a subtraction, and a verdict that can move at the boundary. Leave it in
+whatever dispatches the call. The 25-dollar ceiling still governs the desk, and
+rule 4 is written against it, but nothing in the model states it.
+
+Writing the other three down needs an `Order` with a `total`, a `LineItem` with
+an `amount` and a `memo`, and an `IssueCredit` action taking the order, the
+amount and the memo. Each rule becomes one constraint, and each states its own
+outcome in `on_violation`:
 
 ```yaml
     constraints:
-      # Rules a query can compute.
       - name: CreditWithinOrderTotal              # rule 1
-        expression: amount <= Order.total
+        judgment: >-
+          The amount argument of this call must not exceed the total of the
+          Order it is applied to. That total is on record rather than stated in
+          the arguments, so read it before answering. Read both as dollars.
         description: >-
           A credit cannot exceed the total of the order it credits. Lower the
           amount, or split it across the orders it actually covers.
         on_violation: escalate
         severity: high
 
-      - name: CreditUnderSelfServiceLimit         # rule 2
-        expression: amount <= 25
-        description: >-
-          A credit over 25 dollars is above the self-service limit. A
-          supervisor decides it.
-        on_violation: escalate
-        severity: medium
-
-      - name: OrderTotalMatchesLineItems          # rule 3
-        expression: Order.total == SUM(LineItem.amount)
-        description: >-
-          An order's total must equal the sum of its line items, with credits
-          subtracted.
-        on_violation: reject
-        severity: critical
-
-      # Rules no query can compute.
-      - name: CreditMemoNamesAServiceFailure      # rule 4
+      - name: CreditMemoNamesAServiceFailure      # rule 3
         judgment: >-
           LineItem.memo must name a specific, verifiable service failure on the
           order: a late delivery, a damaged item, a shipping charge applied in
@@ -547,7 +539,7 @@ in `on_violation`:
         on_violation: warn
         severity: low
 
-      - name: CreditIsNotSplitToAvoidReview       # rule 5
+      - name: CreditIsNotSplitToAvoidReview       # rule 4
         judgment: >-
           A credit must not appear to be one larger credit divided into parts
           that each stay under the 25-dollar self-service limit. Read the
@@ -572,8 +564,6 @@ in `on_violation`:
           - { name: memo,   type: String }
         guards:
           - CreditWithinOrderTotal
-          - CreditUnderSelfServiceLimit
-          - OrderTotalMatchesLineItems
           - CreditMemoNamesAServiceFailure
           - CreditIsNotSplitToAvoidReview
 ```
@@ -581,66 +571,63 @@ in `on_violation`:
 Each `on_violation` key carries one branch of what your policy describes in
 prose, in a form a search can read.
 
-**Rule 3 declares `reject`, because it's the one rule here nobody in the
-business may approve.** An order whose total disagrees with its line items is a
-broken order rather than an unusual one. As a guard the rule reaches less far
-than it reads. `IssueCredit` refuses to run against an order whose books already
-disagree, and lets through a credit that would break the agreement itself.
+**Rules 3 and 4 are the reason a constraint is written in words.** Neither
+reduces to arithmetic over `Order` and `LineItem` at all, so there's nowhere
+else to put them but a policy document nothing links to.
 
-**Rules 4 and 5 are the reason `judgment` exists.** Neither reduces to
-arithmetic over `Order` and `LineItem`, so before a judged body there was
-nowhere to put them but a policy document nothing links to. Not everything in
-the policy has to move, though. The threshold in rule 2 is arithmetic, so it
-stays an expression a query settles and no model call is spent on.
+**Rule 1 is arithmetic, and is still written in words.** It compares the amount
+argument against a number that lives in the database, so no form of it avoids
+naming a store, and it goes to the judge like the other two. That's the price of
+one body: a comparison a subtraction would have settled the same way every time
+is settled by a model instead, which costs a call and can decide two similar
+credits differently. Word an arithmetic rule tightly, and say what unit the
+numbers are in, because the judge only has the words you gave it. Rule 2 is the
+same comparison against a literal rather than a row, and that difference is the
+whole reason it stays out of the model.
 
-**Rule 5 is a judgment that declares `reject`.** Splitting a credit to evade
-review is a rule the business means as unappealable, and no expression detects
-it, so the alternative to writing it this way is leaving it out of your model.
-The pairing carries a real cost, because a language model can decide two
-identical credits differently and `reject` leaves nobody to appeal to. kcmd
-publishes it instead of forbidding it, and makes it findable. Its `evaluation`
-field reads `judged`, so an auditor asking which unappealable rules your model
-settles gets an answer from one query.
+**Rule 4 is a judgment that declares `reject`.** Splitting a credit to evade
+review is a rule the business means as unappealable, and the pairing carries a
+real cost, because a model can decide two identical credits differently and
+`reject` leaves nobody to appeal to. The model publishes such a rule instead of
+forbidding it, and makes it findable: an auditor asking which unappealable rules
+your model settles gets an answer from one query over the constraints.
 
 ### Two calls through the policy
 
 Here are two calls against order 12345, which totals $165.85. One is a
-30-dollar credit for a shipping charge billed in error. The other is three
-9-dollar credits raised within the hour, each memo reading some version of
-"customer asked":
+200-dollar credit for a shipping charge billed in error, which is more than the
+order was ever worth. The other is three 9-dollar credits raised within the
+hour, each memo reading some version of "customer asked":
 
 ```
-                                  amount=30.00,          amount=9.00 x3,
+                                  amount=200.00,         amount=9.00 x3,
                                   "shipping charge       "customer asked"
                                    applied in error"
   ──────────────────────────────  ─────────────────────  ─────────────────────
-  1  within the order's total     holds                  holds
-  2  under the 25-dollar limit    violated ─▶ escalate   holds
-  3  total matches line items     holds                  holds
-  4  memo names a failure         holds                  violated ─▶ warn
-  5  not split to evade review    holds                  violated ─▶ reject
+  1  within the order's total     violated ─▶ escalate   holds
+  3  memo names a failure         holds                  violated ─▶ warn
+  4  not split to evade review    holds                  violated ─▶ reject
   ──────────────────────────────  ─────────────────────  ─────────────────────
   strictest outcome wins          held for a supervisor  refused, with the
                                                          memo warning reported
 ```
 
-*Table 2: how each of the two calls fares against the five rules, and the
+*Table 2: how each of the two calls fares against the three rules, and the
 outcome that wins.*
 
-The supervisor who gets the first call reviews a credit against an order
-rather than a SQL diff. The second call is the case the judged rules were added
-for. Every gate a query can compute lets it through, because each 9-dollar
-credit sits under the order's total and under the 25-dollar ceiling on its own,
-and only reading the three together as one 27-dollar credit puts them over it.
+The supervisor who gets the first call reviews a credit against an order rather
+than a SQL diff. The second call is the case rule 4 was written for. Every
+per-call gate lets it through, because each 9-dollar credit sits under the
+order's total on its own, and under the desk's 25-dollar ceiling too, and only
+reading the three together as one 27-dollar credit puts them over it.
 
-Three of `IssueCredit`'s five guards are expressions, so it stays clear of the
-all-judged warning. The bottom row of table 2 applies the strictest-outcome
-rule from section 2 — an `escalate` with nothing stricter beside it holds the
-first call, and rule 5's `reject` decides the second.
+The bottom row of table 2 applies the strictest-outcome rule from section 2 —
+an `escalate` with nothing stricter beside it holds the first call, and rule 4's
+`reject` decides the second.
 
 **Status: a run doesn't compute the strictest outcome.** `--judge` puts the
-judged guards to the judge in the order your model declares them and stops at
-the first one that fails without being advisory. What comes back is that guard's
+guards to the judge in the order your model declares them and stops at the
+first one that fails without being advisory. What comes back is that guard's
 outcome rather than the strictest of them, and a `warn` collected on the way
 there doesn't travel with the refusal. And [`kcmd action run`](#7-run-it) won't
 perform `IssueCredit` as declared here, so the two calls above are what the
@@ -776,14 +763,15 @@ parameters of type 'Account', so parameters 'source' and 'target' must have a
 Error: action 'TransferFunds' in model 'payments' (payments) has an mcp
 executor whose 'tool' is missing or blank.
 Error: action 'TransferFunds' in model 'payments' (payments) is guarded by
-'AmountIsPostive', but model 'payments' declares no constraint of that name.
+'TransferWithinAvailableBalence', but model 'payments' declares no constraint
+of that name.
 Error: action 'TransferFunds' in model 'payments' (payments) affects 'Acount',
 which is neither an entity nor a relationship this model declares.
 ```
 
-`AmountIsPostive` there misspells the `AmountIsPositive` the model declares, and
-`Acount` misspells `Account` — the two typos a reader of the document would
-skim straight past.
+`TransferWithinAvailableBalence` there misspells the
+`TransferWithinAvailableBalance` the model declares, and `Acount` misspells
+`Account` — the two typos a reader of the document would skim straight past.
 
 kcmd checks the rest of an `affects` entry just as strictly. Fields beside a
 `delete` are a hard error, and so is a field the concept doesn't declare. An
@@ -907,6 +895,15 @@ how you run one there, with arguments you choose, and see what comes back.
 Pasting the statements into a SQL console would tell you the DML is valid; a
 run is what exercises everything wrapped around it.
 
+Everything below happens at a command line, and that is a way of watching the
+model work rather than the place it is meant to work. `kcmd action run`
+performs the steps any runtime dispatching these calls has to perform — resolve
+the arguments to rows, check the guards, open one transaction — and narrates
+each of them. The behaviour is a property of the model you published, not of
+this tool: where a flag here hires a judge or lets it read, a service
+dispatching the same action decides the same thing in its own configuration,
+and reaches the same verdicts from the same sentences.
+
 `kcmd action list` prints the actions your model declares, each with its
 parameters, executor, guards and blast radius, plus the command line that
 calls it where the profile binds an executor:
@@ -921,7 +918,7 @@ Model 'payments' (payments_eg), profile 'operational':
   TransferFunds: Move money from one account to another.
     parameters: source (Account, reference), target (Account, reference), amount (Float)
     executor:   sql
-    guards:     AmountIsPositive
+    guards:     TransferWithinAvailableBalance
     affects:    Account (modify), Transfer (create), TransferDebits (create)
     run:        kcmd action run TransferFunds --arg source=<Account> --arg target=<Account> --arg amount=<Float>
 ```
@@ -985,70 +982,87 @@ Only a constraint the action names in `guards` has a say in a call, which is
 constraint your model declares and your action doesn't name has no bearing on
 the write, and kcmd never goes looking for one.
 
-Nothing in kcmd evaluates an expression against live data today, so `kcmd action
-run` refuses a call that a non-advisory expression guards rather than running
-the write unchecked, which would leave anyone reading the model believing it was
-checked. The refusal names the rule:
+A guard is a sentence, and settling a sentence needs something that reads one.
+A run given nothing to read with refuses a call that a non-advisory guard covers
+rather than running the write unchecked, which would leave anyone reading the
+model believing it was checked. The refusal names the rule:
 
 ```
-Error: Action 'TransferFunds' is guarded by 'AmountIsPositive', and this runtime
-does not evaluate constraints yet. Running it would apply a write the model says
-must be checked first, so it is refused rather than run unchecked.
+Error: Action 'TransferFunds' is guarded by 'TransferWithinAvailableBalance',
+which is settled by reading the call, and this runtime was given no judge to
+ask. Running it would apply a write the model says must be checked first, so it
+is refused rather than run unchecked.
 ```
 
 An advisory rule is one declaring `on_violation: warn`. It reports a violation
 instead of rejecting one, so gating on it would permanently block every run of a
-model that states advisory rules. An advisory expression stands down instead:
-the run carries on, and a warning line records that nothing checked the rule.
+model that states advisory rules. An advisory guard stands down instead: the run
+carries on, and a warning line records that nothing checked the rule.
 
 A refusal is settled before a session opens, so a refused action leaves no
-transaction behind. An expression that refuses also stops the call before any
-judge is asked.
+transaction behind. A guard whose `judgment` has no words in it is refused the
+same way, before any judge is asked, because there is nothing to ask about.
 
 ### When the rule is a sentence
 
 A guard stated as a `judgment` needs something that can read a sentence, and
-`--judge` supplies one: Gemini on Vertex AI, reached with the project and the
-credentials kcmd already holds.
+whatever checks the guard has to be given one. At a command line that is
+`--judge`: Gemini on Vertex AI, reached with the project and the credentials
+kcmd already holds.
 
 ```bash
 kcmd action run IssueCredit --arg order=12347 --arg amount=5 \
-    --arg memo="customer asked for a credit" --judge
+    --arg memo="customer asked for a credit" --judge --judge-reads-store
 ```
+
+One of the demo's rules is about a number on record rather than a number in the
+call — the order's total — so the judge has to be able to read the store, which
+`--judge-reads-store` is how this command arranges. Given no store the rule
+cannot be settled, and it stops the call before any of the others is reached.
 
 That call runs against the commerce model under `demo/semantic-model/agent` —
 the [credit policy worked through earlier](#a-credit-policy-worked-through),
-rebuilt around the half of it kcmd can settle today. A profile binds
-`IssueCredit` to a `sql` executor, and all four rules the action names in
-`guards` are judgments.
+rebuilt around what kcmd can settle today. A profile binds `IssueCredit` to a
+`sql` executor, and the action names four rules in `guards`. One of the four is
+the 25-dollar ceiling, written there as a judgment rather than left to the desk;
+the demo keeps it to show what settling arithmetic with a model call costs.
 
-Leave the flag off and a judged guard stops the call, because you supplied
-nothing to settle it:
+Leave `--judge` off and the guards stop the call, because you supplied nothing
+to settle them:
 
 ```
-Error: Action 'IssueCredit' is guarded by 'CreditMemoNamesAServiceFailure',
-which is settled by judgment rather than by an expression, and this runtime was
-given no judge to ask. Running it would apply a write the model says must be
-checked first, so it is refused rather than run unchecked.
+Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotal',
+'CreditUnderReviewThreshold' and 'CreditIsNotSplitToAvoidReview', which are
+settled by reading the call, and this runtime was given no judge to ask.
+Running it would apply a write the model says must be checked first, so it is
+refused rather than run unchecked.
 ```
 
-Add the flag and that rule's own sentence goes to the model with the attempted
-call. The verdict comes back with a reason, and `on_violation` decides what
-follows. The demo declares `warn` on this rule; the three outputs below come
-from setting the field to each of its values in turn, so one rule shows all
-three branches. With `reject`, the call stops:
+Three names, though the action guards on four. The fourth declares `warn`, and
+an advisory rule reports rather than refuses, so having nobody to ask is not a
+reason to stop.
+
+Add the flag and each rule's own sentence goes to the model with the attempted
+call. A verdict comes back with a reason, and `on_violation` decides what
+follows. The demo declares `warn` on the memo rule; the three outputs below come
+from setting that one field to each of its values in turn, so a single rule
+shows all three branches. With `reject`, the call stops:
 
 ```
 Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
   rules stated in words go to gemini-2.5-flash (us-central1)
+  it may read commerce's tables to settle them
+  the judge reads: SELECT total FROM Orders WHERE order_id = 12347
 Error: Action 'IssueCredit' is guarded by 'CreditMemoNamesAServiceFailure'
-("LineItem.memo must name a specific, verifiable service failure on the order: a
-late delivery, a damaged item, a shipping charge applied in error. A memo that
-states only that the customer requested a credit does not satisfy this rule."),
-and gemini-2.5-flash (us-central1) judged that it does not hold for this call:
-Your memo 'customer asked for a credit' does not name a specific, verifiable
-service failure as required by the rule. Say what went wrong with the order in
-the credit memo. No transaction was opened, so nothing was written.
+("The memo argument of this call must name a specific thing that went wrong on
+the order: a late delivery, a damaged item, a shipping charge applied in error.
+A memo saying only that the customer asked, or that the credit is goodwill, or
+giving no reason at all, names no failure and does not satisfy this rule."), and
+gemini-2.5-flash (us-central1) judged that it does not hold for this call: The
+memo "customer asked for a credit" does not name a specific thing that went
+wrong with the order, such as a late delivery, a damaged item, or a shipping
+charge applied in error. Say in the credit memo what actually went wrong with
+the order. No transaction was opened, so nothing was written.
 ```
 
 Four things are in that message and kcmd wrote none of them: the constraint's
@@ -1059,8 +1073,10 @@ failure gets the write:
 ```
 Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
   rules stated in words go to gemini-2.5-flash (us-central1)
+  it may read commerce's tables to settle them
+  the judge reads: SELECT total FROM Orders WHERE order_id = 12347
   order: '12347' -> Order 12347
-Committed at 2026-09-14T06:06:38.679692Z.
+Committed at 2026-09-19T15:01:29.694435Z.
 ```
 
 A rule declaring `escalate` stops the call and adds one sentence: "The model
@@ -1070,27 +1086,31 @@ rule declaring `warn` lets the write through and reports the verdict:
 ```
 Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
   rules stated in words go to gemini-2.5-flash (us-central1)
+  it may read commerce's tables to settle them
+  the judge reads: SELECT total FROM Orders WHERE order_id = 12347
   order: '12347' -> Order 12347
-Warning: 'CreditMemoNamesAServiceFailure' ("LineItem.memo must name a specific,
-verifiable service failure on the order: ...") is advisory, and
-gemini-2.5-flash (us-central1) judged that it does not hold for this call: Your
-memo "customer asked for a credit" does not name a specific, verifiable service
-failure, which is required by the rule.
-Committed at 2026-09-14T06:02:40.218987Z.
+Warning: 'CreditMemoNamesAServiceFailure' ("The memo argument of this call must
+name a specific thing that went wrong on the order: ...") is advisory, and
+gemini-2.5-flash (us-central1) judged that it does not hold for this call: The
+memo "customer asked for a credit" does not name a specific service failure. It
+states that the customer asked for a credit, which is explicitly disallowed by
+the rule.
+Committed at 2026-09-19T15:02:02.059897Z.
 ```
 
 **The rule is settled before the transaction opens.** A model call takes
-seconds, and holding write locks across one costs more than it buys, so kcmd
-asks the judge first and opens the transaction only if the answer allows it. No
+seconds, and holding write locks across one costs more than it buys, so the
+judge is asked first and the transaction opens only if the answer allows it. No
 judge sees the state the write produces, and every judge reads committed state,
 so two calls racing each other can each be allowed against a total that neither
 will leave behind. A rule about the state a write leaves, or one that has to
-hold under concurrency, belongs in an `expression`.
+hold under concurrency, belongs in your schema, where the store enforces it
+inside the transaction.
 
 **The judge gets the attempted call.** It receives the rule's text, the action's
 name and description, and the arguments as the caller stated them —
 `order=12347` rather than the `Order` row that value resolves to. That's the
-whole of what it has, unless your run also passes `--judge-reads-store`.
+whole of what it has, unless it was also given the store to read.
 
 **A rule that never reached a judge is reported as unchecked.** You supplied no
 judge, or the model call failed. Either way `on_violation` routes that like any
@@ -1103,7 +1123,8 @@ tell you every rule passed when one was never put to anybody.
 Some rules can't be settled from the call alone. *The credit must not exceed the
 total of the order it is applied to* compares an argument against a number in
 your database, and the caller is under no obligation to state it correctly.
-`--judge-reads-store` sends the judge to read it.
+Settling it takes a judge that has been given the store to read, which at a
+command line is `--judge-reads-store`.
 
 Two things have to be in place. `--judge-reads-store` says what a judge may do
 without hiring one, so pass `--judge` alongside it. And your profile has to bind
@@ -1116,7 +1137,7 @@ from the sentence you give it. This is the rule the demo under
 `demo/semantic-model/agent` states at the head of `IssueCredit`:
 
 ```yaml
-- name: CreditWithinOrderTotalWithJudge
+- name: CreditWithinOrderTotal
   judgment: >-
     The credit amount requested must not exceed the total of the order
     it is applied to. The `order` argument of this call identifies that
@@ -1153,13 +1174,13 @@ a memo asserting the order is worth $900:
 
 ```
   the judge reads: SELECT total FROM Orders WHERE order_id = 12345
-Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotalWithJudge'
-("The credit amount requested must not exceed the total of the order it is
-applied to. ..."), and gemini-2.5-flash (us-central1) judged that it does not
-hold for this call: The credit amount of 200.00 exceeds the order total of
-162.85. The model marks this rule 'escalate', so an approver may allow it;
-nothing here can. A credit cannot exceed the total of the order it credits.
-Lower the credit amount, or split it across the orders it actually covers. No
+Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotal' ("The
+credit amount requested must not exceed the total of the order it is applied
+to. ..."), and gemini-2.5-flash (us-central1) judged that it does not hold for
+this call: The credit amount of 200.00 exceeds the order total of 162.85. The
+model marks this rule 'escalate', so an approver may allow it; nothing here
+can. A credit cannot exceed the total of the order it credits. Lower the
+credit amount, or split it across the orders it actually covers. No
 transaction was opened, so nothing was written.
 ```
 
@@ -1183,8 +1204,9 @@ write can land that way on an AlloyDB store.
 **Keep the rule settleable from a few rows.** A judge gets a small budget of
 reads for one guard, each capped in rows and in the size of a value, and it is
 told when a cap applied. A rule needing a scan, a join across the history, or a
-total of its own belongs in an `expression`. A judge that still can't tell is
-instructed to answer that the rule doesn't hold.
+total of its own is past what a guard settles; compute it in the store and let
+the guard read the answer. A judge that still can't tell is instructed to answer
+that the rule doesn't hold.
 
 **Reading costs model calls.** A guard with a store attached costs an extra call
 even when it reads nothing, because asking and answering can't be the same
@@ -1247,7 +1269,8 @@ what it can read, what it can change and what gates the change are all derived
 from the model.
 
 The **derivation** is the step that turns a bound model into the set an agent is
-handed, and `kcmd` and the library behind it both run it. It produces a **write
+handed. The library runs it, and `kcmd` calls the library, so a service that
+embeds the library hands its agents the same set. It produces a **write
 tool** for every action, a **lookup tool** for every entity, and one
 **instruction** from your model's `ai_context`.
 
@@ -1278,15 +1301,18 @@ Model 'payments' (payments_eg), profile 'operational':
 
       Resolve both accounts before calling.
 
-      This call is gated by AmountIsPositive:
-      - AmountIsPositive: amount > 0. A transfer must move at least one unit.
-        Ask the caller for the amount again before retrying.
+      This call is gated by TransferWithinAvailableBalance:
+      - TransferWithinAvailableBalance: The amount argument of this call must
+        not exceed Account.balance on the source account. That balance is on
+        record rather than stated in the arguments, so read it before
+        answering. A transfer cannot move more than the source account holds.
+        Lower the amount, or choose another account.
 
       Calling this will not work: Action 'TransferFunds' is guarded by
-      'AmountIsPositive', and this runtime does not evaluate constraints yet.
-      Running it would apply a write the model says must be checked first, so
-      it is refused rather than run unchecked. Report that rather than
-      retrying.
+      'TransferWithinAvailableBalance', which is settled by reading the call,
+      and this runtime was given no judge to ask. Running it would apply a
+      write the model says must be checked first, so it is refused rather than
+      run unchecked. Report that rather than retrying.
       source: string -- The account the money leaves. Give its key, or text
           that identifies exactly one Account; the call fails when nothing
           matches or more than one does.
@@ -1334,7 +1360,7 @@ Model 'payments' (payments_eg), profile 'operational':
 ```
 
 `transfer_funds` is listed and marked `[NOT RUNNABLE]`. `TransferFunds` names a
-guard stated as an expression, nothing in kcmd evaluates one, and so the
+guard, this derivation holds no judge to settle it, and so the
 [refusal from section 7](#when-a-rule-stops-the-call) arrives here instead
 — before any agent exists, rather than inside a transaction.
 
@@ -1361,10 +1387,10 @@ line of output per key:
       ai_context:
         instructions: Resolve…     ───▶      Resolve both accounts before
                                                calling.
-      guards: [AmountIsPositive]   ───▶      This call is gated by
-                                               AmountIsPositive:
-                                             - AmountIsPositive: amount > 0. A
-                                               transfer must move at least…
+      guards:                      ───▶      This call is gated by
+        - TransferWithinAvailable…             TransferWithinAvailableBalance:
+                                             - TransferWithinAvailableBalance:
+                                               The amount argument of this…
       parameters:
         - name: source
           type: Account
@@ -1451,8 +1477,8 @@ A **write tool** is withheld for one of four reasons:
   profile withdrew it with `executor: null`.
 - The executor is `mcp`, `rest` or `grpc`, and the caller supplied no handler
   to perform the write.
-- It names a guard this runtime cannot settle — an expression, or a judgment
-  with no judge to ask.
+- It names a guard this runtime cannot settle — a judgment with no judge to
+  ask, or one with no words in it.
 - A parameter refers to an entity whose key has several parts, which the
   runtime can't bind to a statement as one value.
 
@@ -1584,9 +1610,9 @@ and profile and it runs a different business; the README lists the files that
 change for that, and `agent.ts` isn't among them.
 
 The README also states what that costs and what it can't do. The model guards on
-four judgments and the judge it hires can query the store, so the demo loads
-with the all-judged warning. It pays two model calls per guard, plus one for
-each round of reading — nine calls in the run the README captures. Two of its
+four judgments and the judge it hires can query the store, so every guard on
+every call is a model call. It pays two of them per guard, plus one for each
+round of reading — nine calls in the run the README captures. Two of its
 rules fall short of what they say:
 
 - **An order's total matching its line items is declared and not enforced.**
@@ -1602,11 +1628,13 @@ rules fall short of what they say:
 
 This is a prototype. Three things you might reasonably expect are absent.
 
-- **Only a rule stated in words gets checked.** `kcmd action run --judge`
-  settles a guard whose constraint carries a `judgment`. No component evaluates
-  an expression against live data, and an action guarding on one is refused
-  rather than run. That refusal is easy to spot, and it still leaves the rule
-  unchecked. Whoever wrote a statement owns the correctness of what it does.
+- **A deterministic check over the call's own arguments has no home.** A
+  constraint is settled by a model reading it, so `amount <= 25` written as a
+  guard costs a model call and can come back differently twice — see
+  [what a judgment costs](#what-a-judgment-costs). The place for a check like
+  that is likely the action itself; until there is one, keep it in whatever
+  dispatches the call, and whoever wrote the statement owns the correctness of
+  what it does.
 - **kcmd calls no executor but its own.** A `sql` action runs; an `mcp`, `rest`
   or `grpc` one is published for whoever dispatches it, which is why those three
   name coordinates instead of a statement.

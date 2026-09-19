@@ -60,10 +60,10 @@
 // quoted back in the reason the verdict gives.
 //
 // None of this fixes timing. A judge reads before the transaction opens, so two
-// concurrent calls can each read the same total and each pass. A rule a query
-// can settle belongs in an `expression`, evaluated where the write happens;
-// settling one here buys the ability to state it in words and pays for it in
-// that race.
+// concurrent calls can each read the same total and each pass. A rule that has
+// to hold under concurrency belongs where the write happens: compute it in the
+// store and let the guard read the answer. Settling one here buys the ability
+// to state it in words and pays for it in that race.
 
 import {boundTable} from '../binding';
 import {Entity} from '../ir';
@@ -109,8 +109,10 @@ export interface JudgeStoreOptions {
  * caller who could have been told at setup time is the one who can fix it.
  */
 export function modelJudgeStore(
-    runtime: SemanticRuntime,
-    options: JudgeStoreOptions = {}): JudgeStore|{error: string} {
+    runtime: SemanticRuntime, options: JudgeStoreOptions = {}): JudgeStore|{
+  error: string
+}
+{
   const client = runtimeClient(runtime);
   if ('error' in client) return {error: client.error};
 
@@ -119,7 +121,8 @@ export function modelJudgeStore(
   if (!readable.length) {
     return {
       error: `No entity of '${runtime.model.name}' is bound to a table under ` +
-          `profile '${runtime.profile}', so a judge would have nothing to read.`,
+          `profile '${
+                 runtime.profile}', so a judge would have nothing to read.`,
     };
   }
 
@@ -152,8 +155,8 @@ export function modelJudgeStore(
           return {...empty, problem: res.message ?? `${res.status}`};
         }
         rows = res.result?.rows ?? [];
-        columns = (res.result?.metadata?.rowType?.fields ?? [])
-                      .map(field => field?.name ?? '');
+        columns = (res.result?.metadata?.rowType?.fields ??
+                   []).map(field => field?.name ?? '');
       } catch (err) {
         return {
           ...empty,
@@ -176,7 +179,9 @@ export function modelJudgeStore(
 }
 
 
-/** An entity a judge can be told about: one table, and the columns behind it. */
+/**
+ * An entity a judge can be told about: one table, and the columns behind it.
+ */
 export interface ReadableEntity {
   entity: Entity;
   table: string;
@@ -214,8 +219,7 @@ export function readableEntities(
 // The schema, written for a model to read. Physical names lead, because those
 // are what a statement has to contain; the model's own name for each one
 // follows, because the rule the judge is applying is written in those.
-function schemaText(
-    readable: ReadableEntity[], dialect: SqlDialect): string {
+function schemaText(readable: ReadableEntity[], dialect: SqlDialect): string {
   const lines = [
     `Write ${dialect.name}. These tables are the whole of what you may read.`,
   ];
@@ -256,7 +260,10 @@ function clip(value: string|null, limit: number): string|null {
  * Exported for the tests, which are the only reason to look at this in
  * isolation: what it refuses is the part worth pinning down.
  */
-export function readOnly(sql: string): {sql: string}|{problem: string} {
+export function readOnly(sql: string): {sql: string}|{
+  problem: string
+}
+{
   const blanked = blankOpaque(sql);
   const semicolon = blanked.indexOf(';');
   if (semicolon !== -1 && blanked.slice(semicolon + 1).trim()) {
@@ -293,9 +300,10 @@ export function readOnly(sql: string): {sql: string}|{problem: string} {
 // Written here rather than borrowed because the two dialects quote differently
 // and this has to be right for both: PostgreSQL nests block comments and has
 // dollar quoting, GoogleSQL has backticked identifiers and a `#` line comment,
-// and both double a quote to escape it. Where the two disagree the more suspicious reading wins, since
-// the consequence of reading a run as quoted is a refusal and the consequence
-// of reading a quoted run as code is nothing -- the statement is still wrapped.
+// and both double a quote to escape it. Where the two disagree the more
+// suspicious reading wins, since the consequence of reading a run as quoted is
+// a refusal and the consequence of reading a quoted run as code is nothing --
+// the statement is still wrapped.
 function blankOpaque(sql: string): string {
   const out = sql.split('');
   const blank = (from: number, to: number) => {

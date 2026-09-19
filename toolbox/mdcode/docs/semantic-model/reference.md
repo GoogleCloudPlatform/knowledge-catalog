@@ -73,11 +73,11 @@ kcmd action run <name> --arg <name>=<value> ...
 `list` prints every action the models in the scope declare, with the store a run
 would reach and the command line that runs each one. `run` executes one against
 the Spanner or AlloyDB database the selected profile's deployment target names;
-only a `sql` executor runs. A guard whose constraint states its rule as a `judgment` is
+only a `sql` executor runs. A guard states its rule as a `judgment`, and is
 settled by `--judge` before the transaction opens, and by a judge that can query
-the model's tables when `--judge-reads-store` is passed as well. One stated as an
-`expression` is settled by nothing, so an action naming it is refused rather than
-run unchecked. See [Run it](actions.md#7-run-it).
+the model's tables when `--judge-reads-store` is passed as well. Without a judge
+the action is refused rather than run unchecked. See
+[Run it](actions.md#7-run-it).
 
 | Flag | Effect |
 |------|--------|
@@ -358,13 +358,12 @@ consumes its `affects`.)
 
 A **constraint** entry carries its rule in a `semantic-constraint`
 aspect, together with the whole of any `ai_context` declared on it. The rule
-sits in whichever of the two bodies states it — `expression` for a condition a
-query can compute, `judgment` for one stated in words because no expression
-decides it. The aspect adds a third field, `evaluation`, that no author writes:
-it restates which body was used, as `deterministic` or `judged`, so a consumer
-picking rules to lower into SQL and a consumer picking rules to hand to a
-language-model judge each select on one field. A pull recomputes it from the
-body that came back rather than reading it, so the two cannot drift apart. The
+sits in the one body a constraint has, `judgment`: the condition written as a
+sentence, settled by a language model reading the attempted call. The aspect
+type also declares `expression` and `evaluation`, which nothing writes and
+nothing reads. They are kept so that an aspect type already provisioned in your
+project still matches what `kcmd init` would create, and an entry left holding
+an old `expression` reads back as a named skip rather than as a rule. The
 constraint's `description` is the entry's own summary, because that sentence is
 what a caller refused by the rule reads. Its type is provisioned alongside the action pair and
 for the same reason. All three parts of `ai_context` survive, unlike an element
@@ -376,11 +375,16 @@ The aspect also carries the constraint's two routing words: `onViolation` (what
 the engine does to the write — `reject`, `escalate` or `warn`) and `severity`
 (how grave the breach is — `critical`, `high`, `medium` or `low`). They ride the
 aspect rather than the entry source because they are machine-readable and not
-prose. A constraint that declares neither is published without both fields and
-reads back without them, so the defaults stay the model's to define. Each is
-read on its own, so an unrecognized word in one is dropped on pull with a
-warning without costing the reader the other: an unreadable `onViolation` falls
-back to `reject`, and an unreadable `severity` leaves the rule unranked.
+prose. `onViolation` is required of every constraint, and `severity` is not: one
+that declares no severity is published without the field and reads back without
+it, so the ranking stays the model's to define. Each is read on its own, so an
+unrecognized word in one is dropped on pull with a warning without costing the
+reader the other. An unreadable `severity` leaves the rule unranked, which
+nothing reads yet. An unreadable `onViolation` is dropped too, but there is no
+fallback to drop to now that the word is required: the pull warns that the
+constraint will not push, and loading the pulled model names the constraint and
+says the word is missing. That is the outcome to want when the catalog no
+longer says how a breach routes.
 
 Push to Knowledge Catalog is lossy — the catalog holds metadata, not a full copy
 of your model. For exactly what is stored, what is gated behind
@@ -475,66 +479,38 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   deploy **only** through the Knowledge Catalog leg — a
   graph-only `--no-kc` push validates them but has nowhere to put them, and
   warns that they will not be deployed. *(static)*
-* **Every constraint states exactly one rule.** A constraint declares an
-  `expression` or a `judgment`, never both and never neither. Declaring both
-  answers the "can this be computed?" question two ways at once, which answers
-  it neither way; declaring neither states no rule at all. Either error names
-  the constraint. *(static)*
-* **Every expression constraint is checkable.** The `expression` must be
-  non-empty. Every `<Entity>.<field>` token in it that names a **known** entity
-  must name a field that entity declares, wherever in the expression it appears;
-  this catches a typo that would otherwise surface only when something tries to
-  check the rule. A qualifier that is not a known entity — a
-  relationship-qualified name like `OrderedAs.quantity`, a metric reference, or
-  compound logic — is left alone rather than guessed at, so a valid constraint
-  is never falsely rejected. So is a token whose **tail** names something the
-  model declares that is not a field of the head: `Customer.Order` and
-  `LineItem.BelongsTo` are traversals, and `Order.total_revenue` names a metric,
-  none of which the check can settle. So is an entity that declares no fields,
-  since fields are optional and a logical model may declare none; an empty list
-  is no evidence that a field is missing. So is a token carrying a third dotted
-  segment, which is a path rather than a field. A quoted literal is data, so it
-  is not scanned. What is left is the case the check exists for: a tail the
-  model declares under no kind at all, next to an entity it does declare.
-  *(static)*
-* **Every judged constraint says what a violation does.** The `judgment` must
-  be non-empty, and `on_violation` is required on it rather than defaulting. Any
-  of the three words is allowed, `reject` included; leaving the key out is the
-  error, because an unmarked constraint rejects and that is too strong a
-  consequence to inherit by silence. Every `Entity.field` token in the prose is
-  resolved against the model by the same scan an expression gets, so a field
-  name that has been renamed out from under the sentence is caught. Quoted text
-  is scanned here, unlike in an expression, where quotes delimit a string
-  literal. In prose they more often set off a field name for emphasis, and
-  skipping those would hide the renames this check exists to catch.
-  *(static)*
-* Like an action, a constraint of either kind reaches Knowledge Catalog only,
-  and a `--no-kc` push warns that it will not be deployed. Two rules are
-  enforced at parse time: `on_violation` and `severity` are each a closed
-  vocabulary — `reject` / `escalate` / `warn` and `critical` / `high` /
-  `medium` / `low` — so an unrecognized word is a hard load error rather than a
-  value that publishes and means nothing. *(static)*
-* **An action keeps at least one deterministic gate.** When every constraint an
-  action names in `guards` is judged, the model loads with a warning: the action
-  has nothing gating it that a query can decide, so each of its guards costs a
-  model call that may decide two identical calls differently, and none of them
-  can lower to a store-level check. One expression guard among them silences it.
-  *(warning, at load)*
-* **A constraint over an action's parameters is guarded.** A constraint whose
-  expression reads a bare name that is a parameter of some action describes that
-  call rather than the stored data, so it can be checked only before the call
-  runs — which happens only when the action lists it in `guards`. A model in
-  which no action at all lists it loads with a warning, because the constraint
-  is text that nothing will ever evaluate. One action naming it is enough to
-  settle it: another action that takes a parameter of the same name and does not
-  guard the constraint is a modeling choice, since the same rule may gate one
-  action and leave another alone. It warns rather than fails because the scan
-  matches identifiers, and an expression may use a bare name that merely
-  coincides with a parameter name. Neither a qualified name
-  (`OrderedAs.quantity`) nor a quoted literal (`status = 'quantity'`) counts as
-  a parameter read. The scan reads expressions only: a judgment is prose, in
-  which a word matching a parameter name is not a read of that parameter.
-  *(warning, at load)*
+* **Every constraint states its rule as a judgment.** A constraint has one
+  body, `judgment`, and it must be non-empty; one declaring no judgment states
+  no rule at all, and the error names it. `expression` is a reserved key: a
+  model stating one is answered with a sentence telling the author to restate
+  the rule in words, rather than with an unrecognized-key error that explains
+  nothing. What a judgment costs is in
+  [Actions](actions.md#what-a-judgment-costs). *(static)*
+* **Every constraint says what a violation does.** `on_violation` is required
+  rather than defaulting. Any of the three words is allowed, `reject` included;
+  leaving the key out is the error, because an unmarked constraint rejects and
+  that is too strong a consequence to inherit by silence. Every `Entity.field`
+  token in the judgment is resolved against the model, so a field name that has
+  been renamed out from under the sentence is caught. Quoted text is scanned
+  too: in prose, quotes usually set off a field name for emphasis, and skipping
+  those would hide the renames this check exists to catch. A qualifier that is
+  not a known entity — a relationship-qualified name like `OrderedAs.quantity`,
+  or a metric reference — is left alone rather than guessed at, so a valid
+  sentence is never falsely rejected. So is a token whose **tail** names
+  something the model declares that is not a field of the head: `Customer.Order`
+  and `LineItem.BelongsTo` are traversals, and `Order.total_revenue` names a
+  metric, none of which the check can settle. So is an entity that declares no
+  fields, since fields are optional and a logical model may declare none; an
+  empty list is no evidence that a field is missing. So is a token carrying a
+  third dotted segment, which is a path rather than a field. What is left is the
+  case the check exists for: a tail the model declares under no kind at all,
+  next to an entity it does declare. *(static)*
+* Like an action, a constraint reaches Knowledge Catalog only, and a `--no-kc`
+  push warns that it will not be deployed. Two rules are enforced at parse time:
+  `on_violation` and `severity` are each a closed vocabulary — `reject` /
+  `escalate` / `warn` and `critical` / `high` / `medium` / `low` — so an
+  unrecognized word is a hard load error rather than a value that publishes and
+  means nothing. *(static)*
 * **Every entity's source table is reachable.** For a **BigQuery-targeting**
   model, each `source` is probed with a dry-run query, so BigQuery resolves it
   exactly as the deploy will — a three-part `project.dataset.table`, a four-part

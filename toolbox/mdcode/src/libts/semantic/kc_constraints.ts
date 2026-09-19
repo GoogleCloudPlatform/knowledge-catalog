@@ -12,21 +12,19 @@
 // constraint from the model deletes its entry, so the catalog never advertises
 // a rule the model stopped requiring.
 //
-// The six authored fields land in two places. `expression`, `judgment`,
-// `on_violation`, `severity` and `ai_context` go on the aspect, the last whole
-// -- aiContextField in kc_custom_types.ts says why. `description` goes on the
+// The five authored fields land in two places. `judgment`, `on_violation`,
+// `severity` and `ai_context` go on the aspect, the last whole --
+// aiContextField in kc_custom_types.ts says why. `description` goes on the
 // entry source, where a pull of an action already reads it, and because a
 // violation quotes that sentence back to the caller as the error, which makes
 // it the entry's summary.
 //
-// A constraint states its rule in one of those first two fields and never in
-// both: `expression` for a rule a query can compute, `judgment` for one only a
-// reader can settle. The aspect adds a seventh field, `evaluation`, which no
-// author writes -- it restates which body the constraint used, as the word
-// `deterministic` or `judged`, so a consumer picking rules to lower into SQL
-// and a consumer picking rules to hand a language-model judge each select on
-// one field instead of testing which body is populated. A pull reads the
-// bodies and recomputes the word, so the two can never disagree in the IR.
+// The aspect type still DECLARES `expression` and `evaluation`, the two fields
+// of the removed deterministic body, and nothing here writes either. They stay
+// declared so an aspect type already created in a project keeps matching the
+// one `kcmd init` would create, and so a catalog that still holds an
+// expression-only constraint from an older push reads back as a skip with a
+// reason rather than as a silent empty rule. See readConstraint.
 //
 // Both routing words are on the aspect because they are machine-readable, and
 // they are two fields because they answer different questions: what the engine
@@ -48,7 +46,7 @@
 
 import {Entry} from '../gcp/dataplex';
 
-import {Constraint, CONSTRAINT_SEVERITIES, constraintEvaluation, ConstraintSeverity, SemanticModel, VIOLATION_EFFECTS, ViolationEffect} from './ir';
+import {Constraint, CONSTRAINT_SEVERITIES, ConstraintSeverity, SemanticModel, VIOLATION_EFFECTS, ViolationEffect} from './ir';
 import {aiContextAspectValue, aiContextFromAspect, CONSTRAINT_TYPE_ID, customAspectKey, customAspectTypeName, customEntryTypeName} from './kc_custom_types';
 
 // Full resource name of the constraint entry type for a destination.
@@ -144,19 +142,15 @@ export function constraintEntries(
   return entries;
 }
 
-// The aspect payload for one constraint: the invariant in whichever body states
-// it, the word for which body that was, what a violation of it does, how grave
-// it is, and the whole of any `ai_context` declared on it.
+// The aspect payload for one constraint: the invariant, what a violation of it
+// does, how grave it is, and the whole of any `ai_context` declared on it.
 //
-// `evaluation` is the one field here that is computed rather than read off the
-// model. It is safe to compute because it is a restatement: it says nothing the
-// two bodies do not already say, and the reader recomputes it instead of
-// trusting it.
+// Every field here is read off the model. Nothing is computed, and in
+// particular the aspect type's `evaluation` field is left unwritten: it existed
+// to say which of two bodies a constraint used, and there is one body.
 function constraintAspectData(constraint: Constraint): Record<string, any> {
   return compact({
-    expression: constraint.expression,
     judgment: constraint.judgment,
-    evaluation: constraintEvaluation(constraint),
     aiContext: aiContextAspectValue(constraint.aiContext),
     onViolation: constraint.onViolation,
     severity: constraint.severity,
@@ -187,55 +181,50 @@ export function constraintAspectTypes(entryTypeBase: string): string[] {
 /**
  * Recovers one constraint from its entry, the inverse of constraintEntries.
  *
- * Returns undefined, with a warning, for an entry that states neither body, and
- * for one that states both: an invariant that states nothing, or states its
- * rule twice, would be pulled into a model that then fails its own push-side
- * validation, so one bad entry degrades itself rather than the pull.
+ * Returns undefined, with a warning, for an entry that states no judgment: an
+ * invariant that states no rule would be pulled into a model that then fails
+ * its own push-side validation, so one bad entry degrades itself rather than
+ * the pull. An entry left over from a push that wrote the removed `expression`
+ * body lands there too, and the warning says so by name -- that catalog holds a
+ * rule this model can no longer state, and the author has to restate it.
  *
- * `evaluation` is not read. It is derived on the way out, so recomputing it
- * from the body that came back is the only reading that cannot go stale.
+ * `evaluation` is not read. There is one body, so the word it carried says
+ * nothing the entry does not.
  */
 export function readConstraint(entry: Entry, warnings: string[]): Constraint|
     undefined {
   const name = entry.entrySource?.displayName || idOf(entry.name);
   const data = constraintAspectDataOf(entry);
-  const expression = aspectText(data.expression);
   const judgment = aspectText(data.judgment);
-  if (!expression && !judgment) {
+  if (!judgment) {
+    const stale = aspectText(data.expression) ?
+        `, though it states an expression -- the deterministic body was ` +
+            `removed, and the rule has to be restated in words` :
+        '';
     warnings.push(
         `constraint '${name}': the ${CONSTRAINT_TYPE_ID} aspect has no ` +
-        `expression and no judgment; the constraint is skipped, and pushing ` +
-        `this model back will delete the entry`);
-    return undefined;
-  }
-  if (expression && judgment) {
-    warnings.push(
-        `constraint '${name}': the ${CONSTRAINT_TYPE_ID} aspect states both ` +
-        `an expression and a judgment, and a constraint states its rule in ` +
-        `one or the other; the constraint is skipped, and pushing this model ` +
+        `judgment${stale}; the constraint is skipped, and pushing this model ` +
         `back will delete the entry`);
     return undefined;
   }
 
-  const constraint: Constraint = {name};
-  if (expression) constraint.expression = expression;
-  if (judgment) constraint.judgment = judgment;
+  const constraint: Constraint = {name, judgment};
   const description = entry.entrySource?.description;
   if (description !== undefined && description !== '')
     constraint.description = description;
   const onViolation = readEnum(
       name, 'onViolation', data.onViolation, VIOLATION_EFFECTS, warnings);
   if (onViolation) constraint.onViolation = onViolation as ViolationEffect;
-  // A judgment must say what a violation does, so a pulled one that states no
+  // A constraint must say what a violation does, so a pulled one that states no
   // routing word is a model that will not push. Saying so here names the
   // constraint while the pull is in front of the author; the alternative is a
   // push error about a key they never wrote.
-  if (judgment && constraint.onViolation === undefined) {
+  if (constraint.onViolation === undefined) {
     warnings.push(
         `constraint '${name}': the ${CONSTRAINT_TYPE_ID} aspect states a ` +
         `judgment but no onViolation, so the pulled constraint will not push ` +
-        `until one is added; a judged constraint must say whether a breach ` +
-        `rejects, escalates or warns`);
+        `until one is added; a constraint must say whether a breach rejects, ` +
+        `escalates or warns`);
   }
   const severity = readEnum(
       name, 'severity', data.severity, CONSTRAINT_SEVERITIES, warnings);
@@ -249,13 +238,12 @@ export function readConstraint(entry: Entry, warnings: string[]): Constraint|
 //
 // A value outside the ones the IR defines is dropped with a warning rather than
 // kept, because an unrecognized word would fail the pulled model's own
-// push-side validation. What dropping costs differs by field and both are safe:
-// an unreadable `onViolation` falls back to `reject`, which refuses more than
-// the catalog asked for and never less, and an unreadable `severity` leaves a
-// rule unranked, which nothing reads yet. On a judged constraint the first of
-// those is not a fallback but a load error, because a judge may not refuse: the
-// pulled model names the constraint and says the routing word is missing, which
-// is the outcome to want when the catalog no longer says how a breach routes.
+// push-side validation. What dropping costs differs by field. An unreadable
+// `severity` leaves a rule unranked, which nothing reads yet. An unreadable
+// `onViolation` has nothing to fall back to, because a constraint must state
+// its routing word: the pulled model names the constraint and says the word is
+// missing, which is the outcome to want when the catalog no longer says how a
+// breach routes.
 function readEnum(
     name: string, field: string, value: unknown, allowed: readonly string[],
     warnings: string[]): string|undefined {
@@ -263,7 +251,7 @@ function readEnum(
   // Only a string can be one of these words, and the check says so rather than
   // coercing: `String(["escalate"])` is `escalate`, so a coercing reader would
   // invent a routing word the catalog never stated. A blank or whitespace-only
-  // value is unset rather than wrong, the same reading a blank expression gets.
+  // value is unset rather than wrong, the same reading a blank judgment gets.
   if (typeof value === 'string') {
     const text = value.trim();
     if (text === '') return undefined;
@@ -280,7 +268,8 @@ function readEnum(
 // quotes, so the word reads plainly, and anything else as JSON, so the reader
 // can see it was never a word at all.
 function showAspectValue(value: unknown): string {
-  return typeof value === 'string' ? `'${value.trim()}'` : JSON.stringify(value);
+  return typeof value === 'string' ? `'${value.trim()}'` :
+                                     JSON.stringify(value);
 }
 
 

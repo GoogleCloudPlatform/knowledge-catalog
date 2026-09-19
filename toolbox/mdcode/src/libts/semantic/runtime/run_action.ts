@@ -23,15 +23,17 @@
 // which this module cannot call and could not roll back if it did; for those
 // the caller supplies a handler that produces the statements.
 //
-// Constraints, and which of them this settles. A rule stated as a `judgment`
-// is settled by asking a judge, before the transaction opens -- see
-// `askJudges`. A rule stated as an `expression` is still text nothing computes
-// here, so an action that NAMES one in `guards` is REFUSED rather than run
-// unchecked, and so is an action guarded by a judgment on a run that was given
-// no judge to ask. See `unsafeToRunUnchecked`. Refusing is the point. A model
-// that declares a rule and a runtime that quietly ignores it is worse than no
-// runtime at all, because the model states the call is checked and nothing
-// says otherwise.
+// Constraints, and how this settles them. A constraint states its rule as a
+// `judgment`, and every one of them is settled the same way: by asking a judge,
+// before the transaction opens -- see `askJudges`. A judgment is the one body a
+// constraint has, so there is no case here where the runtime has to decide
+// which checker a guard belongs to.
+//
+// An action guarded on a run that was given no judge to ask is REFUSED rather
+// than run unchecked. See `unsafeToRunUnchecked`. Refusing is the point. A
+// model that declares a rule and a runtime that quietly ignores it is worse
+// than no runtime at all, because the model states the call is checked and
+// nothing says otherwise.
 //
 // A constraint no action names gates nothing here, because it gates nothing
 // anywhere: a rule takes effect where something references it, and `guards` is
@@ -43,21 +45,8 @@
 import * as spanner from '../../gcp/spanner';
 
 import {boundTable} from '../binding';
-import {
-  Action,
-  ActionParameter,
-  Constraint,
-  constraintEvaluation,
-  Entity,
-  fieldBinding,
-  SemanticModel,
-} from '../ir';
-import {
-  bindScalar,
-  isParameterRequired,
-  sentence,
-  storeCodeFor,
-} from '../parameters';
+import {Action, ActionParameter, Constraint, Entity, fieldBinding, SemanticModel,} from '../ir';
+import {bindScalar, isParameterRequired, sentence, storeCodeFor,} from '../parameters';
 import {referencedParameters} from '../sql_identifiers';
 
 import {dialectFor, SqlDialect} from './dialect';
@@ -146,8 +135,8 @@ export interface RunActionOptions {
   // Omit it for a `sql` executor, whose writes are in the model.
   handler?: ActionHandler;
   // Settles the guards this model states in words. Omitting it does not mean
-  // "run those unjudged": an action guarded by a judgment is refused, the same
-  // way one guarded by an expression is.
+  // "run those unjudged": an action with a guard to settle is refused, because
+  // a judgment is the only body a constraint has and only a judge settles one.
   judge?: Judge;
 }
 
@@ -197,7 +186,7 @@ export async function runAction(opts: RunActionOptions):
   // than it buys, so the order is: ask, refuse with nothing touched, then open
   // the transaction. The price is that a judge reads the attempted call and
   // never the state the write produced, which means a rule about the RESULT of
-  // a write has to be an expression.
+  // a write is out of reach here and belongs in the schema.
   const warnings: string[] = [];
   if (opts.judge) {
     const judged = judgedGuards(model, action);
@@ -505,67 +494,58 @@ function unsafeToRunUnchecked(
                                .filter(c => c.onViolation === 'warn')
                                .map(c => c.name));
   const guards = (action.guards ?? []).filter(g => !advisory.has(g));
-  // A judgment with no words in it is nothing to put to a judge. `kcmd`
-  // validates the model first, so this arrives only through the library entry
-  // point, where asking anyway would refuse every call and cite a rule it
-  // cannot quote.
-  const blank = (model.constraints ?? [])
-                    .filter(
-                        c => guards.includes(c.name) &&
-                            c.judgment !== undefined && !c.judgment.trim())
+  // A judgment with no words in it -- or no judgment at all -- is nothing to
+  // put to a judge. `kcmd` validates the model first, so this arrives only
+  // through the library entry point, where asking anyway would refuse every
+  // call and cite a rule it cannot quote.
+  const blank =
+      (model.constraints ?? [])
+          .filter(c => guards.includes(c.name) && !(c.judgment ?? '').trim())
                     .map(c => c.name);
   if (blank.length) {
-    const says = blank.length === 1 ?
-        'states a judgment with no words in it' :
-        'state judgments with no words in them';
+    const says = blank.length === 1 ? 'states no rule to put to a judge' :
+                                      'state no rule to put to a judge';
     return `Action '${action.name}' is guarded by ${quoteList(blank)}, ` +
         `which ${says}. There is nothing to put to a judge, so the action ` +
         `is refused rather than run unchecked.`;
   }
-  const judged = new Set(judgedConstraints(model).map(c => c.name));
-  // An expression is text nothing computes here, and a name the model does not
-  // declare is nothing at all. Both refuse whether or not a judge was handed
-  // in, so both are answered first: a caller told to supply a judge, who
-  // supplied one and was refused again, has been sent the wrong way.
-  const uncomputable = guards.filter(g => !judged.has(g));
-  if (uncomputable.length) {
-    return `Action '${action.name}' is guarded by ${
-               quoteList(uncomputable)}, and this runtime does not evaluate ` +
-        `constraints yet. Running it would apply a write the model says must ` +
-        `be checked first, so it is refused rather than run unchecked.`;
+  // A guard naming a rule the model does not declare is nothing at all, and it
+  // refuses whether or not a judge was handed in, so it is answered first: a
+  // caller told to supply a judge, who supplied one and was refused again, has
+  // been sent the wrong way.
+  const declared = new Set((model.constraints ?? []).map(c => c.name));
+  const undeclared = guards.filter(g => !declared.has(g));
+  if (undeclared.length) {
+    return `Action '${action.name}' is guarded by ${quoteList(undeclared)}, ` +
+        `which ${undeclared.length === 1 ? 'is' : 'are'} not declared by ` +
+        `model '${
+               model.name}'. Running it would apply a write the model says ` +
+        `must be checked first, so it is refused rather than run unchecked.`;
   }
   // What is left is settled by asking, and nothing was supplied to ask.
   // Refusing it HERE is what keeps this function and `runAction` in agreement:
   // a tool advertised as runnable and then refused mid-call spends the
   // caller's turn and teaches it nothing.
-  const unasked = guards.filter(g => judged.has(g));
-  if (unasked.length && !judge) {
-    return `Action '${action.name}' is guarded by ${quoteList(unasked)}, ` +
-        `which ${unasked.length === 1 ? 'is' : 'are'} settled by judgment ` +
-        `rather than by an expression, and this runtime was given no judge ` +
-        `to ask. Running it would apply a write the model says must be ` +
-        `checked first, so it is refused rather than run unchecked.`;
+  if (guards.length && !judge) {
+    return `Action '${action.name}' is guarded by ${quoteList(guards)}, ` +
+        `which ${guards.length === 1 ? 'is' : 'are'} settled by reading the ` +
+        `call, and this runtime was given no judge to ask. Running it would ` +
+        `apply a write the model says must be checked first, so it is ` +
+        `refused rather than run unchecked.`;
   }
   return null;
 }
 
 
-// The rules this model settles by judgment.
-function judgedConstraints(model: SemanticModel): readonly Constraint[] {
-  return (model.constraints ?? [])
-      .filter(c => constraintEvaluation(c) === 'judged');
-}
-
-
-// The judged rules `action` names in its `guards` that a judge can actually
-// be asked about. Advisory ones are included, because a rule that never stops
-// the call still has something to report. One whose judgment states no words
-// is left out: it is nothing to ask, and `unsettledGuards` reports it.
+// The rules `action` names in its `guards` that a judge can actually be asked
+// about. Advisory ones are included, because a rule that never stops the call
+// still has something to report. One whose judgment states no words is left
+// out: it is nothing to ask, and `unsettledGuards` reports it.
 function judgedGuards(
     model: SemanticModel, action: Action): readonly Constraint[] {
   const guards = new Set(action.guards ?? []);
-  return judgedConstraints(model).filter(
-      c => guards.has(c.name) && (c.judgment ?? '').trim());
+  return (model.constraints ?? [])
+      .filter(c => guards.has(c.name) && (c.judgment ?? '').trim());
 }
 
 
@@ -677,12 +657,11 @@ function argumentsNotUsable(
 }
 
 
-// How a rule is named in a report: what it is called, and the rule it states,
-// whichever of the two bodies states it. Quoting it saves the reader a trip to
-// the model to find out what the name refers to.
+// How a rule is named in a report: what it is called, and the rule it states.
+// Quoting it saves the reader a trip to the model to find out what the name
+// refers to.
 function citation(constraint: Constraint): string {
-  const rule =
-      (constraint.judgment ?? constraint.expression ?? '').trim();
+  const rule = (constraint.judgment ?? '').trim();
   return rule ? `'${constraint.name}' ("${rule}")` : `'${constraint.name}'`;
 }
 
@@ -697,11 +676,12 @@ function unsettledGuards(model: SemanticModel, action: Action, judge?: Judge):
   const out: Array<{constraint: Constraint; why: string}> = [];
   for (const constraint of model.constraints ?? []) {
     if (!named.has(constraint.name)) continue;
-    if (constraintEvaluation(constraint) === 'judged') {
       if (!(constraint.judgment ?? '').trim()) {
-        // Refused outright when the guard is anything stricter. An advisory
-        // one is never refused, so it lands here instead of reaching a judge
-        // as an empty rule.
+      // No rule to put to a judge. Refused outright when the guard is anything
+      // stricter; an advisory one is never refused, so it lands here instead
+      // of reaching a judge as an empty rule. `kcmd` validates the model
+      // first, so a constraint with no body at all arrives only through the
+      // library entry point and reads the same way.
         out.push({
           constraint,
           why: 'its judgment states no words to put to a judge.',
@@ -712,18 +692,6 @@ function unsettledGuards(model: SemanticModel, action: Action, judge?: Judge):
       // whatever came back.
       if (judge) continue;
       out.push({constraint, why: 'this run was given no judge to ask.'});
-    } else if ((constraint.expression ?? '').trim()) {
-      out.push({
-        constraint,
-        why: 'its rule is an expression, and this runtime does not evaluate ' +
-            'one.',
-      });
-    } else {
-      // Neither body. `kcmd` validates the model first, so this arrives only
-      // through the library entry point, and calling it an expression there
-      // sends the author looking for a rule the constraint never states.
-      out.push({constraint, why: 'it states no rule to check.'});
-    }
   }
   return out;
 }

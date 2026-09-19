@@ -426,27 +426,22 @@ function declaredConcepts(model: SemanticModel): Map<string, DeclaredConcept> {
 
 // Static, target-independent checks for a model's constraints.
 //
-// First, every constraint must declare exactly one body. `expression` says the
-// rule can be computed and `judgment` says it cannot, so a constraint with both
-// answers neither, and one with neither states no rule at all.
+// A constraint states its rule as a `judgment`, and every constraint must state
+// one: a constraint with no body states no rule at all. (A document that states
+// the removed `expression` body never gets this far -- rejectExpressionBody in
+// loader.ts fails the parse and says where the rule goes instead.)
 //
-// An `expression` then gets two checks:
-//   - the expression must be non-empty;
-//   - every `<Entity>.<field>` token naming a KNOWN entity must name a field
-//     that entity declares. This catches a typo that would otherwise surface
-//     only inside an agent's rejected action.
-// A `judgment` gets the same field-reference check over the qualified tokens in
-// its prose, plus the one routing rule in judgedConstraintErrors.
+// A judgment gets two checks, in judgedConstraintErrors: it must say what a
+// violation does, and every `<Entity>.<field>` token naming a KNOWN entity must
+// name a field that entity declares. The second catches a typo that would
+// otherwise surface only inside an agent's rejected action -- a rule is as easy
+// to misspell in a sentence as anywhere else, and a judge handed `Order.totl`
+// is being asked about a column that does not exist.
 //
-// Both bodies are scanned the same way, because a rule is as easy to misspell
-// in `amount <= Order.totl` as in a sentence, and an expression that names a
-// field no entity has can never be computed.
-//
-// Everything else is left alone. The expression is a logical invariant, and
-// whatever evaluates it resolves it against the ontology. So a leading
-// qualifier that is not a known entity is not guessed at here: a
-// relationship-qualified name like `OrderedAs.quantity`, a metric reference,
-// compound logic. A valid constraint must never be falsely rejected.
+// Everything else is left alone. So a leading qualifier that is not a known
+// entity is not guessed at here: a relationship-qualified name like
+// `OrderedAs.quantity`, a metric reference, an ordinary English word that
+// happens to contain a dot. A valid constraint must never be falsely rejected.
 //
 // Keeping that promise takes care, because the model reaching this function is
 // not the document the author wrote. Its field lists have moved twice:
@@ -475,53 +470,30 @@ function validateConstraints(
   for (const c of constraints) {
     const where =
         `constraint '${c.name}' in model '${model.name}' (${document})`;
-    const hasExpression = c.expression !== undefined;
-    const hasJudgment = c.judgment !== undefined;
-    if (hasExpression && hasJudgment) {
+    if (c.judgment === undefined) {
       errors.push(
-          `${where} declares both an expression and a judgment. A constraint ` +
-          `states one rule in one body: use 'expression' when the rule can be ` +
-          `computed, 'judgment' when it cannot.`);
+          `${where} declares no judgment. A constraint states its rule in ` +
+          `words, under 'judgment', and says what a violation does, under ` +
+          `'on_violation'.`);
       continue;
     }
-    if (!hasExpression && !hasJudgment) {
-      errors.push(
-          `${where} declares neither an expression nor a judgment. Give it ` +
-          `one: 'expression' when the rule can be computed, 'judgment' when ` +
-          `it cannot.`);
-      continue;
-    }
-
-    if (hasJudgment) {
       errors.push(
         ...judgedConstraintErrors(c, where, fieldsByEntity, nonFieldNames));
-      continue;
-    }
-
-    if (!c.expression!.trim()) {
-      errors.push(`${where} has an empty expression.`);
-      continue;
-    }
-    // A quoted literal is data rather than a reference, so it is blanked
-    // before the scan: `status = 'Order.total'` compares against a string.
-    errors.push(...unknownFieldRefs(
-        c.expression!.replace(/'[^']*'|"[^"]*"/g, ' '), where, fieldsByEntity,
-        nonFieldNames));
   }
   return errors;
 }
 
-// What a judged constraint must satisfy, beyond stating a body at all.
+// What a constraint must satisfy, beyond stating a body at all.
 //
 // It must say what a violation does. Any of the three words is allowed,
 // `reject` included, but silence is not: an unmarked constraint rejects, and
 // inheriting the harshest consequence by omission is the one outcome an author
-// of a judged rule is least likely to have meant. Nothing here reads the prose
-// to check the word against it -- the prose is prose, and a check that asked a
-// model whether a sentence means refusal would be no guardrail at all.
+// is least likely to have meant. Nothing here reads the prose to check the word
+// against it -- the prose is prose, and a check that asked a model whether a
+// sentence means refusal would be no guardrail at all.
 //
 // The other check resolves the `Entity.field` tokens the prose mentions, which
-// is the whole of the static checking a judged rule can get.
+// is the whole of the static checking a rule settled by reading can get.
 function judgedConstraintErrors(
     c: Constraint, where: string,
     fieldsByEntity: Map<string, Set<string>>|undefined,
@@ -536,7 +508,7 @@ function judgedConstraintErrors(
   }
   if (c.onViolation === undefined) {
     errors.push(
-        `${where} is judged, so it must state on_violation: 'reject' to ` +
+        `${where} must state on_violation: 'reject' to ` +
         `refuse the write, 'escalate' to hold it for a person, or 'warn' to ` +
         `let it through and report it. An unmarked constraint rejects, which ` +
         `is too strong a thing to inherit by leaving the key out.`);

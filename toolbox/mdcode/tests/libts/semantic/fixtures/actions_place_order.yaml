@@ -7,17 +7,16 @@
 # scalar ones. The model also names a BigQuery deployment target, so a push
 # exercises the leg that deploys neither an action nor a constraint.
 #
-# The five constraints cover every validation path. NonNegativeOrderTotal names
-# a KNOWN entity, so its field is checked; every qualified token in an
-# expression is, wherever it appears. PositiveQuantity names `OrderedAs`, which
-# is no entity, so it is left to the evaluator rather than falsely rejected.
-# RequestedQuantityIsPositive reads the action's `quantity` parameter, so
-# PlaceOrder names it in `guards`. LargeOrderIsJustified states a `judgment`
-# rather than an expression, so the goldens carry the derived `evaluation:
-# judged` and the required `on_violation` beside it. OrderWithinStandingLimit
-# and LargeOrderIsJustified are the two that state routing words, so the goldens
-# show `on_violation` and `severity` making the round trip while the other three
-# show their absence.
+# Every constraint states its rule as a judgment, which is the one body a
+# constraint has, and every one of them states `on_violation`, which is
+# required. The five cover every validation path. NonNegativeOrderTotal names a
+# KNOWN entity, so its field is checked; every qualified token in a judgment is,
+# wherever it appears. PositiveQuantity names `OrderedAs`, which is no entity,
+# so it is left alone rather than falsely rejected.
+# OrderWithinCustomerCredit is settled against a figure the store holds, so
+# PlaceOrder names it in `guards`. OrderWithinStandingLimit and
+# LargeOrderIsJustified are the two that state a `severity`, so the goldens show
+# it making the round trip while the other three show its absence.
 #
 # PlaceOrder's `affects` covers every authored shape at once: an entry on an
 # entity narrowed to the fields it writes, an entry on a relationship, and the
@@ -27,11 +26,13 @@
 # OSI golden shows the normalization: the first two keep their record, the
 # third stays a bare name.
 #
-# PositiveQuantity and RequestedQuantityIsPositive are one business rule in its
-# two bindings. The invariant holds over stored order lines, whatever wrote
-# them. The guard holds over the argument a caller passed, and can be checked
-# only before the call runs, which is why a guard has to be named by the action
-# and an invariant does not.
+# PositiveQuantity and OrderWithinCustomerCredit are both worded over data the
+# store holds, and only the second is named by the action. That is the whole
+# difference between them: a guard is checked before the call with the
+# arguments bound, and an invariant nothing names is published and inert. No
+# constraint here states a rule over the call's arguments alone -- a
+# deterministic check of that kind needs no store, no dialect and no judge, and
+# does not belong in a judgment.
 #
 # The constraints also cover both annotation shapes, which land in different
 # places.
@@ -103,7 +104,7 @@ semantic_model:
         parameters:
           - {name: customer, type: customer}
           - {name: quantity, type: Integer}
-        guards: [RequestedQuantityIsPositive]
+        guards: [OrderWithinCustomerCredit]
         affects:
           - concept: orders
             operation: create
@@ -115,7 +116,9 @@ semantic_model:
           instructions: "Resolve the buyer to a customer before calling."
     constraints:
       - name: NonNegativeOrderTotal
-        expression: orders.o_totalprice >= 0
+        judgment: >-
+          The resulting orders.o_totalprice must not be negative.
+        on_violation: reject
         description: >-
           An order's total cannot be negative. Reduce the quantity or check the
           unit price before retrying.
@@ -125,20 +128,28 @@ semantic_model:
           synonyms: [NoNegativeTotals, NonNegativeTotal]
           examples: ["Why was my order rejected?"]
       - name: PositiveQuantity
-        expression: OrderedAs.quantity > 0
+        judgment: >-
+          Every OrderedAs.quantity on the order must be at least one.
+        on_violation: reject
         description: An order line must be for at least one unit.
       - name: OrderWithinStandingLimit
-        expression: orders.o_totalprice <= 100000
+        judgment: >-
+          orders.o_totalprice must not exceed 100000, which is the standing
+          limit a sales manager signs off above. Read it as an amount of money.
         description: >-
           An order this large is above the standing limit and needs a sales
           manager to sign off. Ask for approval, or split the order.
         on_violation: escalate
         severity: high
-      - name: RequestedQuantityIsPositive
-        expression: quantity > 0
+      - name: OrderWithinCustomerCredit
+        judgment: >-
+          The resulting orders.o_totalprice must not exceed the credit this
+          customer has on record. That figure is not stated in the arguments,
+          so read it before answering.
+        on_violation: reject
         description: >-
-          A request must be for at least one unit. Ask the caller for the
-          quantity again before retrying.
+          An order cannot exceed the credit on record for this customer. Lower
+          the quantity, or ask for a credit review.
       - name: LargeOrderIsJustified
         judgment: >-
           An order whose orders.o_totalprice is far above what this customer

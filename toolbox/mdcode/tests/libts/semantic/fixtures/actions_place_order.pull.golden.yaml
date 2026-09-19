@@ -49,7 +49,7 @@ semantic_model:
           - name: quantity
             type: Integer
         guards:
-          - RequestedQuantityIsPositive
+          - OrderWithinCustomerCredit
         affects:
           - concept: orders
             operation: create
@@ -63,9 +63,10 @@ semantic_model:
           instructions: Resolve the buyer to a customer before calling.
     constraints:
       - name: NonNegativeOrderTotal
-        expression: orders.o_totalprice >= 0
+        judgment: The resulting orders.o_totalprice must not be negative.
         description: An order's total cannot be negative. Reduce the quantity or check
           the unit price before retrying.
+        on_violation: reject
         ai_context:
           instructions: Quote the shortfall in the customer's own currency when refusing.
           synonyms:
@@ -74,18 +75,23 @@ semantic_model:
           examples:
             - Why was my order rejected?
       - name: PositiveQuantity
-        expression: OrderedAs.quantity > 0
+        judgment: Every OrderedAs.quantity on the order must be at least one.
         description: An order line must be for at least one unit.
+        on_violation: reject
       - name: OrderWithinStandingLimit
-        expression: orders.o_totalprice <= 100000
+        judgment: orders.o_totalprice must not exceed 100000, which is the standing
+          limit a sales manager signs off above. Read it as an amount of money.
         description: An order this large is above the standing limit and needs a sales
           manager to sign off. Ask for approval, or split the order.
         on_violation: escalate
         severity: high
-      - name: RequestedQuantityIsPositive
-        expression: quantity > 0
-        description: A request must be for at least one unit. Ask the caller for the
-          quantity again before retrying.
+      - name: OrderWithinCustomerCredit
+        judgment: The resulting orders.o_totalprice must not exceed the credit this
+          customer has on record. That figure is not stated in the arguments, so
+          read it before answering.
+        description: An order cannot exceed the credit on record for this customer.
+          Lower the quantity, or ask for a credit review.
+        on_violation: reject
       - name: LargeOrderIsJustified
         judgment: An order whose orders.o_totalprice is far above what this customer
           usually places must be explained by something in the request itself,

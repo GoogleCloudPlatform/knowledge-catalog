@@ -23,15 +23,14 @@
  * knob it can turn.
  *
  * What the runtime can settle shows through here, because it decides which
- * tools are worth handing out. A guard stated as a `judgment` is settled by
- * asking a judge, so passing one in is what makes the actions it gates
- * callable. A guard stated as an `expression` is text nothing computes here,
- * so runAction refuses any action naming one rather than running it unchecked,
- * judge or no judge. A tool for such an action would fail every time it was
- * called, which is a bad thing to hand a caller that cannot see why. So a tool
- * carries `runnable`, and an adapter binds the ones that are; the rest are
- * still returned, named and explained, because an action the model declares
- * should not vanish from a listing of what the model declares.
+ * tools are worth handing out. Every guard is settled by asking a judge, so
+ * passing one in is what makes a guarded action callable at all; without one
+ * runAction refuses rather than running the write unchecked. A tool for an
+ * action that would be refused every time it was called is a bad thing to hand
+ * a caller that cannot see why. So a tool carries `runnable`, and an adapter
+ * binds the ones that are; the rest are still returned, named and explained,
+ * because an action the model declares should not vanish from a listing of
+ * what the model declares.
  */
 
 import {boundTable, spannerTable} from '../binding';
@@ -59,7 +58,9 @@ export interface ToolParameter {
    * filters are all optional.
    */
   required: boolean;
-  /** The default value substituted when the caller omits the argument, if any. */
+  /**
+   * The default value substituted when the caller omits the argument, if any.
+   */
   default?: unknown;
 }
 
@@ -218,15 +219,16 @@ function toolDescription(
   const instructions = action.aiContext?.instructions?.trim();
   if (instructions) parts.push(instructions);
   // Said even when the call cannot be made, because the reason it cannot is
-  // that these rules exist and are not yet checked.
+  // that these rules exist and this run has no way to settle them.
   const gates = gatingConstraints(action, model);
   if (gates.length) {
     const names = joinNames(gates.map(c => c.name));
     const rules = gates
         .map(c => {
-          const body = (c.judgment ?? c.expression ?? '').trim();
+                        const body = (c.judgment ?? '').trim();
           const desc = (c.description ?? '').trim();
-          const text = body && desc ? `${sentence(body)} ${sentence(desc)}` :
+                        const text = body && desc ?
+                            `${sentence(body)} ${sentence(desc)}` :
                                       (body || desc);
           return text ? `- ${c.name}: ${text}` : undefined;
         })
@@ -246,9 +248,10 @@ function toolDescription(
 }
 
 
-// Which rules a caller will meet. `guards` names the ones checked before the
-// write; a constraint over stored state is checked after it and is not named
-// here, because a caller cannot do anything differently about one.
+// Which rules a caller will meet. `guards` names them, and it names all of
+// them: every constraint is settled before the write, from the attempted call
+// alone, so there is no second set checked afterwards that a caller would have
+// no way to anticipate.
 //
 // An ADVISORY guard is not named either. A constraint whose `onViolation` is
 // `warn` reports and lets the write through, so the runtime stands down and

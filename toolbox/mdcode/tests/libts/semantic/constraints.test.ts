@@ -53,10 +53,11 @@ function withConstraints(constraints: any[], over: any = {}) {
 
 
 describe('loader parses constraints', () => {
-  test('reads name, expression, and description', () => {
+  test('reads name, judgment, and description', () => {
     const {models, warnings} = withConstraints([{
       name: 'NonNegativeBalance',
-      expression: 'customer.balance >= 0',
+      judgment: 'The customer.balance must not go below zero.',
+      on_violation: 'reject',
       description: 'A balance cannot go negative.',
     }]);
     // Scoped to constraints: the fixture's field expression emits an unrelated
@@ -64,7 +65,8 @@ describe('loader parses constraints', () => {
     expect(warnings.filter(w => w.includes('constraint'))).toEqual([]);
     expect(models[0].constraints).toEqual([{
       name: 'NonNegativeBalance',
-      expression: 'customer.balance >= 0',
+      judgment: 'The customer.balance must not go below zero.',
+      onViolation: 'reject',
       description: 'A balance cannot go negative.',
     }]);
   });
@@ -82,26 +84,18 @@ describe('loader parses constraints', () => {
   });
 
   test('description is optional', () => {
-    const {models} =
-        withConstraints([{name: 'C', expression: 'customer.balance >= 0'}]);
+    const {models} = withConstraints([
+      {name: 'C', judgment: 'The customer.balance must not go below zero.'}
+    ]);
     expect(models[0].constraints).toEqual([
-      {name: 'C', expression: 'customer.balance >= 0'}
+      {name: 'C', judgment: 'The customer.balance must not go below zero.'}
     ]);
   });
 
-  test('the expression is kept verbatim, not parsed', () => {
-    // A compound expression the loader has no business interpreting: it belongs
-    // to the evaluator, so it must survive character for character.
-    const expr =
-        'customer.balance >= 0 AND (total_revenue > 100 OR NOT flagged)';
-    const {models} = withConstraints([{name: 'C', expression: expr}]);
-    expect(models[0].constraints![0].expression).toBe(expr);
-  });
-
   test('a constraint with no body parses and is caught by validation', () => {
-    // Neither body is a schema-legal document, because the schema cannot say
-    // "one of these two". The push gate is where it fails; see the
-    // validatePushRequirements suite below.
+    // A body is required in fact and optional on the schema, so that the
+    // failure names the constraint rather than the key. The push gate is where
+    // it fails; see the validatePushRequirements suite below.
     const {models} = withConstraints([{name: 'C'}]);
     expect(models[0].constraints).toEqual([{name: 'C'}]);
   });
@@ -117,7 +111,33 @@ describe('loader parses constraints', () => {
       judgment: 'The credit memo must name a specific service failure.',
       onViolation: 'escalate',
     }]);
-    expect(models[0].constraints![0].expression).toBeUndefined();
+  });
+
+  test('a constraint stated as an expression is refused, and steered', () => {
+    // The deterministic body was removed, and a judgment is the one body a
+    // constraint has. An older model that still states an expression fails the
+    // load rather than loading with its rule silently dropped, and the message
+    // says where the rule goes instead.
+    expect(() => withConstraints([
+             {name: 'C', expression: 'customer.balance >= 0'},
+           ]))
+        .toThrow(/constraint 'C' states an expression/);
+    expect(() => withConstraints([
+             {name: 'C', expression: 'customer.balance >= 0'},
+           ]))
+        .toThrow(/Restate the rule under 'judgment'/);
+  });
+
+  test('an expression is refused even beside a judgment', () => {
+    // Not a merge and not a fallback: two bodies would be two rules, and the
+    // one nothing evaluates would read as enforced.
+    expect(() => withConstraints([{
+             name: 'C',
+             judgment: 'The customer.balance must not go below zero.',
+             on_violation: 'reject',
+             expression: 'customer.balance >= 0',
+           }]))
+        .toThrow(/constraint 'C' states an expression/);
   });
 
   test('the judgment is kept verbatim, not reflowed', () => {
@@ -133,15 +153,16 @@ describe('loader parses constraints', () => {
     // A duplicate name is a hard load error in every other scope, and for the
     // same reason: an action naming a constraint would not say which it meant.
     expect(() => withConstraints([
-             {name: 'C', expression: 'customer.balance >= 0'},
-             {name: 'C', expression: 'customer.balance < 100'},
-           ])).toThrow(/duplicate constraint name 'C'/);
+             {name: 'C', judgment: 'The balance must not go below zero.'},
+             {name: 'C', judgment: 'The balance must stay under 100.'},
+           ]))
+        .toThrow(/duplicate constraint name 'C'/);
   });
 
   test('ai_context rides the constraint onto the IR', () => {
     const {models} = withConstraints([{
       name: 'C',
-      expression: 'customer.balance >= 0',
+      judgment: 'The customer.balance must not go below zero.',
       ai_context: {instructions: 'Explain the shortfall in currency terms.'},
     }]);
     expect(models[0].constraints![0].aiContext)
@@ -153,7 +174,7 @@ describe('loader parses constraints', () => {
     // has no `custom_extensions` surface at all -- the native keys replace it.
     expect(() => withConstraints([{
              name: 'C',
-             expression: 'customer.balance >= 0',
+             judgment: 'The customer.balance must not go below zero.',
              custom_extensions: [{vendor_name: 'ACME', data: '{}'}],
            }])).toThrow(/custom_extensions/);
   });
@@ -186,56 +207,35 @@ describe('validatePushRequirements gates constraints', () => {
   }
 
   test('a well-formed constraint passes', () => {
-    const errs = validatePushRequirements(
-        [loaded([{name: 'C', expression: 'customer.balance >= 0'}])]);
+    const errs = validatePushRequirements([loaded([{
+      name: 'C',
+      judgment: 'The customer.balance must not go below zero.',
+      onViolation: 'reject',
+    }])]);
     expect(errs).toEqual([]);
   });
 
-  test('an empty expression is a hard error', () => {
-    const errs =
-        validatePushRequirements([loaded([{name: 'C', expression: '   '}])]);
-    expect(errs.some(e => e.includes("constraint 'C'") &&
-                      e.includes('empty expression')))
-        .toBe(true);
-  });
-
-  test('an unknown field on a KNOWN entity is a hard error', () => {
-    const errs = validatePushRequirements(
-        [loaded([{name: 'C', expression: 'customer.blance >= 0'}])]);
-    expect(errs.some(e => e.includes('customer.blance'))).toBe(true);
-  });
-
-  test('a leading qualifier that is not an entity is left to the evaluator',
-       () => {
+  test('a leading qualifier that is not an entity is left to the judge', () => {
          // `OrderedAs` names a relationship rather than an entity. Guessing
          // here would falsely reject a valid constraint, so validation stays
          // out of it.
-         const errs = validatePushRequirements(
-             [loaded([{name: 'C', expression: 'OrderedAs.quantity > 0'}])]);
-         expect(errs).toEqual([]);
-       });
-
-  test('an expression that does not open with a field ref passes', () => {
-    const errs = validatePushRequirements(
-        [loaded([{name: 'C', expression: 'COUNT(*) > 0'}])]);
+    const errs = validatePushRequirements([loaded([{
+      name: 'C',
+      judgment: 'Every OrderedAs.quantity must be at least one.',
+      onViolation: 'reject',
+    }])]);
     expect(errs).toEqual([]);
-  });
-
-  test('a bad reference anywhere in an expression is a hard error', () => {
-    // The scan does not stop at the leading qualifier. A guard reads its
-    // action's parameters first, so the field it misspells is usually not the
-    // token the expression opens with.
-    const errs = validatePushRequirements(
-        [loaded([{name: 'C', expression: 'amount <= customer.blance'}])]);
-    expect(errs).toHaveLength(1);
-    expect(errs[0]).toContain('customer.blance');
   });
 
   test('an entity that declares no fields is not scanned', () => {
     // Fields are optional, and a logical model bound to nothing but Knowledge
     // Catalog routinely declares none. Reading an empty set as "this entity
     // has no such field" would refuse every constraint such a model can write.
-    const m = loaded([{name: 'C', expression: 'orders.total >= 0'}]);
+    const m = loaded([{
+      name: 'C',
+      judgment: 'The orders.total must not go below zero.',
+      onViolation: 'reject',
+    }]);
     m.model.entities = [
       {name: 'orders', dataSource: 'p.d.o', keys: ['id']} as any,
     ];
@@ -245,7 +245,11 @@ describe('validatePushRequirements gates constraints', () => {
   test('an extends naming an undeclared entity does not throw', () => {
     // declaredFields resolves inheritance, and that throws on an unknown
     // parent. A validation gate reports; it does not stack-trace.
-    const m = loaded([{name: 'C', expression: 'customer.balance >= 0'}]);
+    const m = loaded([{
+      name: 'C',
+      judgment: 'The customer.balance must not go below zero.',
+      onViolation: 'reject',
+    }]);
     (m.model.entities[0] as any).extends = ['MissingParent'];
     expect(() => validatePushRequirements([m])).not.toThrow();
   });
@@ -254,7 +258,11 @@ describe('validatePushRequirements gates constraints', () => {
     // The action check resolves inheritance by a second path. Standing one
     // caller down and not the other leaves the stack trace exactly where a
     // model is most likely to reach it.
-    const m = loaded([{name: 'C', expression: 'customer.balance >= 0'}]);
+    const m = loaded([{
+      name: 'C',
+      judgment: 'The customer.balance must not go below zero.',
+      onViolation: 'reject',
+    }]);
     (m.model.entities[0] as any).extends = ['MissingParent'];
     m.model.actions = [{
       name: 'Touch',
@@ -269,8 +277,11 @@ describe('validatePushRequirements gates constraints', () => {
   test('a dotted path is not read as a field of its first segment', () => {
     // `customer.orders.total` is a path. Reading `orders` as a field of
     // `customer` rejects it for a field the author never claimed existed.
-    const errs = validatePushRequirements(
-        [loaded([{name: 'C', expression: 'customer.orders.total > 0'}])]);
+    const errs = validatePushRequirements([loaded([{
+      name: 'C',
+      judgment: 'The customer.orders.total must stay positive.',
+      onViolation: 'reject',
+    }])]);
     expect(errs).toEqual([]);
   });
 
@@ -293,13 +304,21 @@ describe('validatePushRequirements gates constraints', () => {
   test('a tail naming a metric is not read as a field', () => {
     // Metrics are model-level, so the qualifier is the entity the metric hangs
     // off rather than an entity that declares it as a field.
-    const m = loaded([{name: 'C', expression: '0 <= customer.total_owed'}]);
+    const m = loaded([{
+      name: 'C',
+      judgment: 'Weigh the credit against customer.total_owed.',
+      onViolation: 'warn',
+    }]);
     m.model.metrics = [{name: 'total_owed', entity: 'customer'}];
     expect(validatePushRequirements([m])).toEqual([]);
   });
 
   test('a tail naming another entity is not read as a field', () => {
-    const m = loaded([{name: 'C', expression: 'customer.account > 0'}]);
+    const m = loaded([{
+      name: 'C',
+      judgment: 'The write must respect customer.account.',
+      onViolation: 'warn',
+    }]);
     m.model.entities.push(
         {name: 'account', dataSource: 'p.d.a', keys: ['id'], fields: []} as
         any);
@@ -308,7 +327,11 @@ describe('validatePushRequirements gates constraints', () => {
 
   test('a tail the model declares nowhere is still a misspelling', () => {
     // The carve-outs above must not swallow the case the scan exists for.
-    const m = loaded([{name: 'C', expression: 'customer.blance > 0'}]);
+    const m = loaded([{
+      name: 'C',
+      judgment: 'The customer.blance must stay positive.',
+      onViolation: 'warn',
+    }]);
     m.model.relationships = [{
       name: 'OwnedBy',
       source: {entity: 'customer', columns: ['id']},
@@ -316,14 +339,19 @@ describe('validatePushRequirements gates constraints', () => {
     }];
     m.model.metrics = [{name: 'total_owed', entity: 'customer'}];
     const errs = validatePushRequirements([m]);
-    expect(errs.some(e => e.includes("declares no field 'blance'"))).toBe(true);
+    expect(errs.some(e => e.includes('declares no field \'blance\'')))
+        .toBe(true);
   });
 
   test('an extends naming an undeclared entity is reported', () => {
     // Standing the field scan down cannot mean saying nothing: nothing else on
     // a Knowledge-Catalog-only push resolves inheritance, so silence here
     // publishes the broken model.
-    const m = loaded([{name: 'C', expression: 'customer.balance >= 0'}]);
+    const m = loaded([{
+      name: 'C',
+      judgment: 'The customer.balance must not go below zero.',
+      onViolation: 'reject',
+    }]);
     (m.model.entities[0] as any).extends = ['MissingParent'];
     const errs = validatePushRequirements([m]);
     expect(errs.some(e => e.includes('MissingParent'))).toBe(true);
@@ -338,19 +366,13 @@ describe('validatePushRequirements gates constraints', () => {
     expect(errs.some(e => e.includes('on_violation'))).toBe(true);
   });
 
-  test('a quoted literal in an expression is not a field reference', () => {
-    const errs = validatePushRequirements([loaded(
-        [{name: 'C', expression: "customer.balance = 'customer.blance'"}])]);
-    expect(errs).toEqual([]);
-  });
-
   // The field check reads a field list, and by the time this gate runs the
   // model's field lists are no longer what the author wrote. Both directions
   // of that gap rejected a valid constraint.
 
   // `extends` is flattened by the graph legs, which run AFTER this gate, so a
   // subtype's own `fields` omit everything it inherits.
-  function withInheritance(expression: string): LoadedModel {
+  function withInheritance(judgment: string): LoadedModel {
     const model: SemanticModel = {
       name: 'm',
       entities: [
@@ -370,21 +392,21 @@ describe('validatePushRequirements gates constraints', () => {
       ],
       relationships: [],
       metrics: [],
-      constraints: [{name: 'C', expression}],
+      constraints: [{name: 'C', judgment, onViolation: 'reject'}],
       customExtensions: [googleExt],
     };
     return {document: 'doc', model};
   }
 
   test('a constraint over an INHERITED field passes', () => {
-    const errs =
-        validatePushRequirements([withInheritance('savings.balance >= 0')]);
+    const errs = validatePushRequirements(
+        [withInheritance('The savings.balance must not go below zero.')]);
     expect(errs).toEqual([]);
   });
 
   test('a typo is still caught on an entity that inherits', () => {
-    const errs =
-        validatePushRequirements([withInheritance('savings.blance >= 0')]);
+    const errs = validatePushRequirements(
+        [withInheritance('The savings.blance must not go below zero.')]);
     expect(errs).toHaveLength(1);
     expect(errs[0]).toContain(`declares no field 'blance'`);
   });
@@ -395,37 +417,32 @@ describe('validatePushRequirements gates constraints', () => {
     // A constraint reaches no graph in any case, so failing the push here would
     // refuse a deploy for no reason.
     const errs = validatePushRequirements(
-        [loaded([{name: 'C', expression: 'customer.unbound >= 0'}])],
+        [loaded([{
+          name: 'C',
+          judgment: 'The customer.unbound must not go below zero.',
+          onViolation: 'reject',
+        }])],
         {fieldsPruned: true});
     expect(errs).toEqual([]);
   });
 
-  test('an empty expression is rejected even on a pruned model', () => {
-    // Standing down applies to the field check alone; the expression itself is
+  test('an empty judgment is rejected even on a pruned model', () => {
+    // Standing down applies to the field check alone; the judgment itself is
     // still the constraint's whole content.
     const errs = validatePushRequirements(
-        [loaded([{name: 'C', expression: '   '}])], {fieldsPruned: true});
+        [loaded([{name: 'C', judgment: '   ', onViolation: 'reject'}])],
+        {fieldsPruned: true});
     expect(errs).toHaveLength(1);
-    expect(errs[0]).toContain('empty expression');
+    expect(errs[0]).toContain('empty judgment');
   });
 
-  // A constraint states its rule in one body or the other. The schema cannot
-  // express that, so both halves of the exclusivity land here.
+  // A constraint has one body, and it is required in fact while optional on
+  // the schema, so that the failure names the constraint.
 
-  test('declaring both bodies is a hard error', () => {
-    const errs = validatePushRequirements([loaded([{
-      name: 'C',
-      expression: 'customer.balance >= 0',
-      judgment: 'The balance must be defensible.',
-    }])]);
-    expect(errs).toHaveLength(1);
-    expect(errs[0]).toContain('declares both an expression and a judgment');
-  });
-
-  test('declaring neither body is a hard error', () => {
+  test('declaring no body at all is a hard error', () => {
     const errs = validatePushRequirements([loaded([{name: 'C'}])]);
     expect(errs).toHaveLength(1);
-    expect(errs[0]).toContain('declares neither an expression nor a judgment');
+    expect(errs[0]).toContain('declares no judgment');
   });
 
   test('an empty judgment is a hard error', () => {
@@ -443,13 +460,13 @@ describe('validatePushRequirements gates constraints', () => {
     expect(errs).toEqual([]);
   });
 
-  test('a judged constraint must state on_violation', () => {
+  test('a constraint must state on_violation', () => {
     // Silence means `reject`, which is too strong a thing for an author to
     // inherit by leaving the key out of a rule a model settles.
     const errs = validatePushRequirements(
         [loaded([{name: 'C', judgment: 'The memo must be specific.'}])]);
     expect(errs).toHaveLength(1);
-    expect(errs[0]).toContain('is judged, so it must state on_violation');
+    expect(errs[0]).toContain('must state on_violation');
   });
 
   test('all three words are accepted on a judgment', () => {
@@ -553,7 +570,7 @@ describe('validatePushRequirements gates constraints', () => {
     const errs = validatePushRequirements(
         [loaded([{name: 'C', judgment: 'Be specific.'}])], {fieldsPruned: true});
     expect(errs).toHaveLength(1);
-    expect(errs[0]).toContain('is judged, so it must state on_violation');
+    expect(errs[0]).toContain('must state on_violation');
   });
 });
 
@@ -596,7 +613,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
           'sales.constraints.NonNegativeOrderTotal',
           'sales.constraints.PositiveQuantity',
           'sales.constraints.OrderWithinStandingLimit',
-          'sales.constraints.RequestedQuantityIsPositive',
+          'sales.constraints.OrderWithinCustomerCredit',
           'sales.constraints.LargeOrderIsJustified',
         ]);
         for (const e of constraints)
@@ -623,15 +640,16 @@ describe('Knowledge Catalog publish/pull round trip', () => {
       });
 
   test(
-      'the aspect carries the expression and the entry source the description',
+      'the aspect carries the judgment and the entry source the description',
       () => {
         // PositiveQuantity is the fixture's constraint with no `ai_context`,
-        // so its aspect is the expression alone.
+        // so its aspect is the rule and what a breach costs, and nothing else.
         const positive = constraintEntriesOf(model).find(
             e => e.entrySource!.displayName === 'PositiveQuantity')!;
         expect(positive.aspects![CONSTRAINT_ASPECT].data).toEqual({
-          expression: 'OrderedAs.quantity > 0',
-          evaluation: 'deterministic',
+          judgment:
+              'Every OrderedAs.quantity on the order must be at least one.',
+          onViolation: 'reject',
         });
         // The description is the message a violation quotes back, so it is the
         // entry's human-readable summary rather than an aspect field.
@@ -646,8 +664,8 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     const [nonNegative] = constraintEntriesOf(model);
     expect(nonNegative.entrySource!.displayName).toBe('NonNegativeOrderTotal');
     expect(nonNegative.aspects![CONSTRAINT_ASPECT].data).toEqual({
-      expression: 'orders.o_totalprice >= 0',
-      evaluation: 'deterministic',
+      judgment: 'The resulting orders.o_totalprice must not be negative.',
+      onViolation: 'reject',
       aiContext: {
         instructions:
             'Quote the shortfall in the customer\'s own currency when refusing.',
@@ -731,16 +749,19 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     expect(byName.get('OrderWithinStandingLimit')!.onViolation)
         .toBe('escalate');
     expect(byName.get('OrderWithinStandingLimit')!.severity).toBe('high');
-    // A constraint that states neither publishes without both fields and reads
-    // back without them, so the defaults stay the IR's to define.
-    expect(byName.get('PositiveQuantity')!.onViolation).toBeUndefined();
+    // `severity` is the optional one of the pair: a constraint that states
+    // none publishes without the field and reads back without it, so the
+    // default stays the IR's to define. `on_violation` is required, so every
+    // constraint carries one.
+    expect(byName.get('PositiveQuantity')!.onViolation).toBe('reject');
     expect(byName.get('PositiveQuantity')!.severity).toBeUndefined();
   });
 
   test('an unrecognized onViolation is dropped with a warning', () => {
     // A hand-edited aspect can say anything. Keeping the word would fail the
-    // pulled model's own push-side validation; dropping it falls back to
-    // `reject`, which refuses more than the catalog asked for and never less.
+    // pulled model's own push-side validation, so it is dropped -- and since
+    // `onViolation` is required, the pulled constraint then states no routing
+    // word at all rather than falling back to one.
     const {entries} = generateCatalogResources(model, OPTS);
     const held = entries.find(
         e => e.entrySource?.displayName === 'OrderWithinStandingLimit')!;
@@ -754,8 +775,8 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     // reader the other.
     expect(held2.severity).toBe('high');
     expect(warnings.some(
-               w => w.includes("constraint 'OrderWithinStandingLimit'") &&
-                   w.includes("onViolation 'maybe'")))
+               w => w.includes('constraint \'OrderWithinStandingLimit\'') &&
+                   w.includes('onViolation \'maybe\'')))
         .toBe(true);
   });
 
@@ -774,15 +795,16 @@ describe('Knowledge Catalog publish/pull round trip', () => {
         c => c.name === 'OrderWithinStandingLimit')!;
     expect(held2.onViolation).toBeUndefined();
     expect(warnings.some(
-               w => w.includes("constraint 'OrderWithinStandingLimit'") &&
+               w => w.includes('constraint \'OrderWithinStandingLimit\'') &&
                    w.includes('onViolation ["escalate"]')))
         .toBe(true);
   });
 
   test('a whitespace-only routing word reads as unset, not as wrong', () => {
     // Blank is the aspect saying nothing, which is what an absent field says.
-    // Warning about it would quote an empty word back at a reader who has no
-    // typo to fix.
+    // Quoting an empty word back would give a reader a typo to hunt that is
+    // not there -- what they are owed is that the word is missing, which is
+    // the same thing an absent field is told.
     const {entries} = generateCatalogResources(model, OPTS);
     const held = entries.find(
         e => e.entrySource?.displayName === 'OrderWithinStandingLimit')!;
@@ -792,7 +814,9 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     const held2 = models[0].constraints!.find(
         c => c.name === 'OrderWithinStandingLimit')!;
     expect(held2.onViolation).toBeUndefined();
-    expect(warnings.some(w => w.includes('onViolation'))).toBe(false);
+    expect(warnings.some(w => w.includes('onViolation \'   \''))).toBe(false);
+    expect(warnings.some(w => w.includes('judgment but no onViolation')))
+        .toBe(true);
   });
 
   test('an unrecognized severity is dropped with a warning', () => {
@@ -810,55 +834,59 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     expect(held2.severity).toBeUndefined();
     expect(held2.onViolation).toBe('escalate');
     expect(warnings.some(
-               w => w.includes("constraint 'OrderWithinStandingLimit'") &&
-                   w.includes("severity 'urgent'")))
+               w => w.includes('constraint \'OrderWithinStandingLimit\'') &&
+                   w.includes('severity \'urgent\'')))
         .toBe(true);
   });
 
-  test('an entry whose expression is blank is skipped and warned', () => {
-    // A hand-edited aspect can carry a blank expression. Such a constraint
-    // states no invariant, so it degrades itself rather than the pull.
+  test('an entry whose judgment is blank is skipped and warned', () => {
+    // A hand-edited aspect can carry a blank judgment. Such a constraint
+    // states no rule, so it degrades itself rather than the pull.
     const {entries} = generateCatalogResources(model, OPTS);
     const broken =
         entries.find(e => e.entrySource?.displayName === 'PositiveQuantity')!;
-    broken.aspects![CONSTRAINT_ASPECT].data!.expression = '  ';
+    broken.aspects![CONSTRAINT_ASPECT].data!.judgment = '  ';
     const {models, warnings} = modelsFromCatalogResources(entries);
     expect(models[0].constraints!.map(c => c.name)).toEqual([
       'NonNegativeOrderTotal',
       'OrderWithinStandingLimit',
-      'RequestedQuantityIsPositive',
+      'OrderWithinCustomerCredit',
       'LargeOrderIsJustified',
     ]);
     expect(warnings.some(
                w => w.includes('constraint \'PositiveQuantity\'') &&
-                   w.includes('no expression and no judgment')))
+                   w.includes('has no judgment')))
         .toBe(true);
     // The actions, published under their own type, are unaffected.
     expect(models[0].actions).toHaveLength(1);
   });
 
-  test('an entry stating both bodies is skipped and warned', () => {
-    // The same reading as neither: a constraint that answers both ways states
-    // no single rule, and pulling it would produce a model that fails its own
-    // push-side validation.
+  test('an entry still holding an expression is skipped, and says so', () => {
+    // A catalog provisioned before the deterministic body was removed can
+    // still hold one, and nothing reads it. Skipping silently would drop a
+    // rule the catalog still shows a reader, so the warning names the stale
+    // body and says the rule has to be restated.
     const {entries} = generateCatalogResources(model, OPTS);
     const broken =
         entries.find(e => e.entrySource?.displayName === 'PositiveQuantity')!;
-    broken.aspects![CONSTRAINT_ASPECT].data!.judgment = 'Also be reasonable.';
+    delete broken.aspects![CONSTRAINT_ASPECT].data!.judgment;
+    broken.aspects![CONSTRAINT_ASPECT].data!.expression =
+        'OrderedAs.quantity > 0';
     const {models, warnings} = modelsFromCatalogResources(entries);
     expect(models[0].constraints!.map(c => c.name))
         .not.toContain('PositiveQuantity');
     expect(warnings.some(
                w => w.includes('constraint \'PositiveQuantity\'') &&
-                   w.includes('both an expression and a judgment')))
+                   w.includes('it states an expression') &&
+                   w.includes('restated in words')))
         .toBe(true);
   });
 });
 
 
-// A judged constraint is the second body: the rule stated in words, for rules
-// no expression decides. It travels the same pipeline as an expression, so what
-// follows checks the places the two diverge.
+// A judgment is the whole of a constraint's body: the rule stated in words,
+// settled by a judge reading the attempted call. What follows checks it over
+// the whole pipeline on a model built by hand rather than loaded.
 describe('judged constraints', () => {
   const judged: SemanticModel = {
     name: 'sales',
@@ -882,7 +910,8 @@ describe('judged constraints', () => {
       },
       {
         name: 'NonNegativeAmount',
-        expression: 'credit.amount >= 0',
+        judgment: 'The credit.amount must not be negative.',
+        onViolation: 'reject',
       },
     ],
   };
@@ -904,7 +933,6 @@ describe('judged constraints', () => {
         expect(entry.aspects![CONSTRAINT_ASPECT].data).toEqual({
           judgment: 'The credit.memo must name a specific service failure ' +
               'rather than restating the amount.',
-          evaluation: 'judged',
           onViolation: 'escalate',
           severity: 'high',
         });
@@ -912,15 +940,15 @@ describe('judged constraints', () => {
             .toBe('Say which service failure the credit is for.');
       });
 
-  test('evaluation is derived, so each body publishes its own word', () => {
-    expect(aspectOf(judged, 'MemoNamesAFailure').evaluation).toBe('judged');
-    expect(aspectOf(judged, 'NonNegativeAmount').evaluation)
-        .toBe('deterministic');
+  test('nothing publishes an evaluation word', () => {
+    // There is one kind of body, so there is nothing for a second field to
+    // tell a reader apart. The aspect type still declares the key -- see
+    // kc_custom_types -- and no push writes it.
+    expect(aspectOf(judged, 'MemoNamesAFailure').evaluation).toBeUndefined();
+    expect(aspectOf(judged, 'NonNegativeAmount').evaluation).toBeUndefined();
   });
 
-  test('a pull recovers the judgment and recomputes evaluation', () => {
-    // `evaluation` is never read back: recomputing it from the body that
-    // returned is the only reading that cannot go stale against it.
+  test('a pull recovers the judgment', () => {
     const {entries, entryLinks} = generateCatalogResources(judged, OPTS);
     const {models, warnings} = modelsFromCatalogResources(entries, entryLinks);
     expect(models[0].constraints).toEqual(judged.constraints);
@@ -938,7 +966,7 @@ describe('judged constraints', () => {
   test('the judgment survives serialize -> reload', () => {
     const {yaml} = serializeModel(judged);
     expect(yaml).toContain('judgment:');
-    // Derived, so it has no place in an authored document.
+    // Never authored, and now never published either.
     expect(yaml).not.toContain('evaluation:');
     expect(loadModels(yaml).models[0].constraints).toEqual(judged.constraints);
   });

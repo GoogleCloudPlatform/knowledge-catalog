@@ -153,7 +153,7 @@
               }
             ],
             "guards": [
-              "RequestedQuantityIsPositive"
+              "OrderWithinCustomerCredit"
             ],
             "affects": [
               {
@@ -189,8 +189,7 @@
         "sqlgen-testing.global.semantic-constraint": {
           "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-constraint",
           "data": {
-            "expression": "orders.o_totalprice >= 0",
-            "evaluation": "deterministic",
+            "judgment": "The resulting orders.o_totalprice must not be negative.",
             "aiContext": {
               "instructions": "Quote the shortfall in the customer's own currency when refusing.",
               "synonyms": [
@@ -200,7 +199,8 @@
               "examples": [
                 "Why was my order rejected?"
               ]
-            }
+            },
+            "onViolation": "reject"
           }
         }
       }
@@ -217,8 +217,8 @@
         "sqlgen-testing.global.semantic-constraint": {
           "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-constraint",
           "data": {
-            "expression": "OrderedAs.quantity > 0",
-            "evaluation": "deterministic"
+            "judgment": "Every OrderedAs.quantity on the order must be at least one.",
+            "onViolation": "reject"
           }
         }
       }
@@ -235,8 +235,7 @@
         "sqlgen-testing.global.semantic-constraint": {
           "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-constraint",
           "data": {
-            "expression": "orders.o_totalprice <= 100000",
-            "evaluation": "deterministic",
+            "judgment": "orders.o_totalprice must not exceed 100000, which is the standing limit a sales manager signs off above. Read it as an amount of money.",
             "onViolation": "escalate",
             "severity": "high"
           }
@@ -244,19 +243,19 @@
       }
     },
     {
-      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.constraints.RequestedQuantityIsPositive",
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.constraints.OrderWithinCustomerCredit",
       "entryType": "projects/sqlgen-testing/locations/global/entryTypes/semantic-constraint",
       "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
       "entrySource": {
-        "displayName": "RequestedQuantityIsPositive",
-        "description": "A request must be for at least one unit. Ask the caller for the quantity again before retrying."
+        "displayName": "OrderWithinCustomerCredit",
+        "description": "An order cannot exceed the credit on record for this customer. Lower the quantity, or ask for a credit review."
       },
       "aspects": {
         "sqlgen-testing.global.semantic-constraint": {
           "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-constraint",
           "data": {
-            "expression": "quantity > 0",
-            "evaluation": "deterministic"
+            "judgment": "The resulting orders.o_totalprice must not exceed the credit this customer has on record. That figure is not stated in the arguments, so read it before answering.",
+            "onViolation": "reject"
           }
         }
       }
@@ -274,7 +273,6 @@
           "aspectType": "projects/sqlgen-testing/locations/global/aspectTypes/semantic-constraint",
           "data": {
             "judgment": "An order whose orders.o_totalprice is far above what this customer usually places must be explained by something in the request itself, such as a stated event or a contract reference. A round number alone is not an explanation.",
-            "evaluation": "judged",
             "onViolation": "escalate",
             "severity": "medium"
           }

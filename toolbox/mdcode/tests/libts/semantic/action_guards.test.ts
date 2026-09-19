@@ -1,13 +1,11 @@
 // Behavior specification for the link between an action and the constraints
 // that gate it: the action's `guards` list.
 //
-// A constraint that quantifies over data alone holds for every write and is
-// enforced without being named anywhere. A constraint that reads an action's
-// parameters describes the call instead, so the only moment it can be checked
-// is before that call runs -- which happens only when the action names it. That
-// asymmetry is what these tests pin down: naming resolves (or fails to resolve)
-// at push time, and an unnamed parameter-reading constraint is reported at load
-// time as text nothing will evaluate.
+// `guards` is the only thing that gives a constraint effect. A constraint the
+// model declares and no action names is published, browsable and inert -- it
+// gates nothing, because nothing references it. So what these tests pin down is
+// the naming: it resolves, or fails to resolve, at push time, and it survives
+// every round trip the model makes.
 
 import {describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
@@ -102,7 +100,7 @@ describe('loader parses an action\'s guards', () => {
   test('carries the constraint names onto the action', () => {
     const {models} = withGuards(
         ['PositiveQuantity'],
-        [{name: 'PositiveQuantity', expression: 'quantity > 0'}]);
+        [{name: 'PositiveQuantity', judgment: 'The quantity must be positive.'}]);
     expect(models[0].actions![0].guards).toEqual(['PositiveQuantity']);
   });
 
@@ -115,7 +113,8 @@ describe('loader parses an action\'s guards', () => {
     // Checking one constraint twice reads as two rules, so it is rejected the
     // way every other duplicate name is.
     expect(
-        () => withGuards(['C', 'C'], [{name: 'C', expression: 'quantity > 0'}]))
+        () => withGuards(
+            ['C', 'C'], [{name: 'C', judgment: 'The quantity must be positive.'}]))
         .toThrow(/duplicate guard 'C'/);
   });
 
@@ -176,8 +175,12 @@ describe('validatePushRequirements resolves every guard', () => {
         parameters: [{name: 'quantity', type: 'Integer', isEntityRef: false}],
         guards,
       }],
-      constraints: constraintNames.map(
-          name => ({name, expression: 'customer.balance >= 0'})),
+      constraints: constraintNames.map(name => ({
+                                         name,
+                                         judgment:
+                                             'The customer.balance must not go below zero.',
+                                         onViolation: 'reject' as const,
+                                       })),
       customExtensions: [googleExt],
     };
     return {document: 'doc', model};
@@ -212,90 +215,6 @@ describe('validatePushRequirements resolves every guard', () => {
 });
 
 
-describe(
-    'an unguarded parameter-reading constraint is reported at load', () => {
-      test('warns when a constraint reads a parameter no action guards', () => {
-        const {warnings} = withGuards(
-            undefined,
-            [{name: 'PositiveQuantity', expression: 'quantity > 0'}]);
-        const w = warnings.find(x => x.includes('PositiveQuantity'));
-        expect(w).toBeDefined();
-        expect(w).toContain(`reads 'quantity'`);
-        expect(w).toContain(`parameter of action 'PlaceOrder'`);
-        expect(w).toContain('guards');
-      });
-
-      test('stays silent once the action names it', () => {
-        const {warnings} = withGuards(
-            ['PositiveQuantity'],
-            [{name: 'PositiveQuantity', expression: 'quantity > 0'}]);
-        expect(warnings.some(w => w.includes('PositiveQuantity'))).toBe(false);
-      });
-
-      test('a qualified name is not a parameter read', () => {
-        // `OrderedAs.quantity` is a field of something in the ontology that
-        // happens to share the parameter's name. Warning here would train an
-        // author to ignore the warning, so the scan consumes a qualified name
-        // whole.
-        const {warnings} = withGuards(
-            undefined,
-            [{name: 'PositiveQuantity', expression: 'OrderedAs.quantity > 0'}]);
-        expect(warnings.some(w => w.includes('PositiveQuantity'))).toBe(false);
-      });
-
-      test(
-          'a constraint over data alone needs no guard and draws no warning',
-          () => {
-            const {warnings} = withGuards(
-                undefined,
-                [{name: 'NonNegative', expression: 'customer.balance >= 0'}]);
-            expect(warnings.some(w => w.includes('NonNegative'))).toBe(false);
-          });
-
-      test('the parameter must belong to the action being reported', () => {
-        // `quantity` is not a parameter of an action that takes only a
-        // customer, so that action is not the one told to guard the constraint.
-        const {warnings} = withGuards(
-            undefined, [{name: 'PositiveQuantity', expression: 'quantity > 0'}],
-            [{name: 'customer', type: 'customer'}]);
-        expect(warnings.some(w => w.includes('PositiveQuantity'))).toBe(false);
-      });
-
-      test('a string literal is not a parameter read', () => {
-        // `'quantity'` here is a value the expression compares against, not a
-        // reference to the parameter that shares its spelling.
-        const {warnings} = withGuards(undefined, [{
-                                        name: 'OpenOnly',
-                                        expression:
-                                            "customer.balance > 0 AND customer.status = 'quantity'",
-                                      }]);
-        expect(warnings.some(w => w.includes('OpenOnly'))).toBe(false);
-      });
-
-      test('one action guarding it settles it for every action', () => {
-        // `CancelOrder` also takes a `quantity`, and deliberately does not
-        // guard the constraint -- the same rule may gate one action and leave
-        // another alone. The constraint still runs, as PlaceOrder's guard, so
-        // reporting it as text nothing evaluates would be false.
-        const {warnings} = withTwoActions(
-            ['PositiveQuantity'],
-            [{name: 'PositiveQuantity', expression: 'quantity > 0'}]);
-        expect(warnings.some(w => w.includes('PositiveQuantity'))).toBe(false);
-      });
-
-      test('no action guarding it reports every action that could', () => {
-        const {warnings} = withTwoActions(
-            undefined, [{name: 'PositiveQuantity', expression: 'quantity > 0'}]);
-        const reported =
-            warnings.filter(w => w.includes(`constraint 'PositiveQuantity'`));
-        expect(reported).toHaveLength(2);
-        expect(reported.some(w => w.includes(`action 'PlaceOrder'`))).toBe(true);
-        expect(reported.some(w => w.includes(`action 'CancelOrder'`)))
-            .toBe(true);
-      });
-    });
-
-
 describe('guards survive every round trip', () => {
   const model = (() => {
     const text = fs.readFileSync(
@@ -307,23 +226,23 @@ describe('guards survive every round trip', () => {
       'the fixture action is guarded by a constraint the model declares',
       () => {
         expect(model.actions![0].guards).toEqual([
-          'RequestedQuantityIsPositive'
+          'OrderWithinCustomerCredit'
         ]);
         expect(model.constraints!.map(c => c.name))
-            .toContain('RequestedQuantityIsPositive');
+            .toContain('OrderWithinCustomerCredit');
       });
 
   test('OSI serialize -> reload', () => {
     const {yaml} = serializeModel(model);
     expect(loadModels(yaml).models[0].actions![0].guards).toEqual([
-      'RequestedQuantityIsPositive'
+      'OrderWithinCustomerCredit'
     ]);
   });
 
   test('Knowledge Catalog publish -> pull', () => {
     const {entries} = generateCatalogResources(model, OPTS);
     const pulled = modelsFromCatalogResources(entries).models[0];
-    expect(pulled.actions![0].guards).toEqual(['RequestedQuantityIsPositive']);
+    expect(pulled.actions![0].guards).toEqual(['OrderWithinCustomerCredit']);
   });
 
   test('an action with no guards publishes no guards field', () => {
@@ -344,14 +263,14 @@ describe('guards survive every round trip', () => {
     const {entries} = generateCatalogResources(model, OPTS);
     const entry = entries.find(e => e.entrySource?.displayName === 'PlaceOrder')!;
     const data = Object.values(entry.aspects!)[0].data! as any;
-    data.guards = ['RequestedQuantityIsPositive', 'RequestedQuantityIsPositive'];
+    data.guards = ['OrderWithinCustomerCredit', 'OrderWithinCustomerCredit'];
     const {models, warnings} = modelsFromCatalogResources(entries);
     expect(models[0].actions![0].guards).toEqual([
-      'RequestedQuantityIsPositive'
+      'OrderWithinCustomerCredit'
     ]);
     expect(warnings.some(
                w => w.includes('repeats guard') &&
-                   w.includes('RequestedQuantityIsPositive')))
+                   w.includes('OrderWithinCustomerCredit')))
         .toBe(true);
   });
 
@@ -363,27 +282,27 @@ describe('guards survive every round trip', () => {
         entries.filter(e => !e.entryType?.includes('semantic-constraint'));
     const {models, warnings} = modelsFromCatalogResources(withoutConstraints);
     expect(models[0].actions![0].guards).toEqual([
-      'RequestedQuantityIsPositive'
+      'OrderWithinCustomerCredit'
     ]);
     const w = warnings.find(x => x.includes('no constraint of that name'));
     expect(w).toBeDefined();
     expect(w).toContain(`action 'PlaceOrder'`);
-    expect(w).toContain(`'RequestedQuantityIsPositive'`);
+    expect(w).toContain(`'OrderWithinCustomerCredit'`);
   });
 });
 
 
-// A judged constraint states its rule as prose a language model settles. It
-// links to an action the way an expression does, and the two places the loader
-// treats it differently are both about what a warning can conclude.
-describe('judged constraints as guards', () => {
+// Every constraint states its rule as prose a judge settles, so a guard names
+// one of those and nothing else. What is left to check is that the link holds
+// and that the loader concludes nothing further from the prose.
+describe('a judgment as a guard', () => {
   const judged = (name: string) => ({
     name,
     judgment: 'The request must be defensible.',
     on_violation: 'escalate',
   });
 
-  test('a judged constraint can guard an action', () => {
+  test('a constraint can guard an action', () => {
     const {models, warnings} =
         withGuards(['Defensible'], [judged('Defensible')]);
     expect(models[0].actions![0].guards).toEqual(['Defensible']);
@@ -391,43 +310,27 @@ describe('judged constraints as guards', () => {
         .toBe(false);
   });
 
-  test('an action guarded only by judged constraints is warned about', () => {
-    // Nothing deterministic gates the write: no guard can lower to a store
-    // check, and none can refuse on its own.
-    const {warnings} = withGuards(['Defensible'], [judged('Defensible')]);
-    const w = warnings.find(x => x.includes('no deterministic gate'));
-    expect(w).toBeDefined();
-    expect(w).toContain(`action 'PlaceOrder'`);
+  test('two actions can guard on the same constraint', () => {
+    // A rule is declared once and referenced wherever it applies; nothing
+    // about naming it on one action spends it.
+    const {models, warnings} =
+        withTwoActions(['Defensible'], [judged('Defensible')]);
+    expect(models[0].actions![0].guards).toEqual(['Defensible']);
+    expect(warnings.some(w => w.includes('Defensible'))).toBe(false);
   });
 
-  test('one deterministic guard among them is enough to stay quiet', () => {
-    const {warnings} = withGuards(['Defensible', 'PositiveQuantity'], [
-      judged('Defensible'),
-      {name: 'PositiveQuantity', expression: 'quantity > 0'}
-    ]);
-    expect(warnings.some(w => w.includes('no deterministic gate'))).toBe(false);
-  });
-
-  test('an action naming no guards is not warned about', () => {
-    // The message is about the guards an action chose. An action that chose
-    // none raises a different question, which this does not answer.
-    const {warnings} = withGuards(undefined, [judged('Defensible')]);
-    expect(warnings.some(w => w.includes('no deterministic gate'))).toBe(false);
-  });
-
-  test(
-      'a judged constraint naming a parameter is not reported as unguarded',
-      () => {
-        // The unguarded-parameter scan looks for a bare identifier matching a
-        // parameter name. A judgment is prose, so `quantity` in it is as
-        // likely to be an ordinary noun as a reference, and concluding
-        // anything from the match would report rules that are well guarded.
-        const {warnings} =
-            withGuards(undefined, [{
+  test('a constraint no action names loads without complaint', () => {
+    // Declared and inert is a legitimate state: a model may publish a rule for
+    // a reader, or for an action nobody has written yet. The loader has no
+    // basis for reading prose and deciding which action ought to have named
+    // it, and a guess here would train an author to ignore the warning.
+    const {models, warnings} = withGuards(undefined, [{
                          name: 'Defensible',
-                         judgment: 'The requested quantity must be defensible.',
+                                 judgment:
+                                     'The requested quantity must be defensible.',
                          on_violation: 'warn',
                        }]);
+    expect(models[0].constraints!.map(c => c.name)).toEqual(['Defensible']);
         expect(warnings.some(w => w.includes(`'Defensible'`))).toBe(false);
       });
 });

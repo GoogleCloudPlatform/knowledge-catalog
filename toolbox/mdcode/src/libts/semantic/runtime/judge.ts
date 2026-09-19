@@ -1,9 +1,9 @@
 // Asking something other than the store whether a rule holds.
 //
-// A `judgment` states a rule in words, for the rules no expression decides:
-// *the credit memo must name a specific service failure* is a real requirement
-// with a real owner, and no arithmetic settles it. What answers one is a
-// language model reading the attempted call against the rule's own text.
+// A `judgment` states a rule in words, and it is the one body a constraint
+// has: *the credit memo must name a specific service failure* is a real
+// requirement with a real owner, and no arithmetic settles it. What answers one
+// is a language model reading the attempted call against the rule's own text.
 //
 // This file is the seam and nothing else. It names what a judge is asked and
 // what it must answer, so the runtime can ask one and report the answer with
@@ -69,8 +69,9 @@ export interface JudgeQueryResult {
  * A judge reads OUTSIDE the transaction the write will run in, because a guard
  * is settled before that transaction opens. So what a read here reports is
  * true when it is read and not guaranteed still true when the write commits.
- * That is the standing limit on settling an arithmetic rule this way, and the
- * reason a rule a query can decide is better declared as an `expression`.
+ * That is the standing limit on settling an arithmetic rule this way. A rule
+ * that has to hold under concurrency wants the store enforcing it inside the
+ * transaction -- compute it there and let the guard read the answer.
  */
 export interface JudgeStore {
   /**

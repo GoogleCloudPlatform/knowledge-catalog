@@ -102,22 +102,24 @@ element with the model element it binds. The grain and the join columns name
 field's column is resolved per profile from its `expression`.
 
 **Why an action's executor is a binding.** An action declares what a call does:
-its parameters, the constraints that gate it, and the concepts it changes. *How*
-the change is carried out depends on the store. Where the rows sit in a
-relational database, the write is DML; where they do not, it is a call to
-whoever owns them — an MCP tool, a REST endpoint, a service method. Even between
-two relational stores the statement differs, because each binds its own table
-and column names and each speaks its own dialect. So the `executor` sits with
-`source` and `expression` on the physical side: the same action, the same blast
-radius, performed by whatever mechanism the bound store actually has.
+its parameters, the constraints that gate it, and the concepts it changes. None
+of that changes when the same model is deployed somewhere else. The executor
+does, for either of two reasons. An `mcp`, `rest` or `grpc` executor is an
+address, and the system it names answers at a different server, endpoint or
+method in one environment than in another — nothing about where the data sits
+comes into it. A `sql` executor is the statement itself, and each store binds
+its own table and column names and speaks its own dialect, so the same write is
+a different statement under each binding. Either way the `executor` sits with
+`source` and `expression` on the physical side: the same action and the same blast
+radius, performed by whatever the binding points at.
 
 **An executor inherits; a column does not.** A model may declare one default
-executor, and a profile overrides it only for the stores that perform the write
-differently — an action the profile does not mention keeps the default. This is
-the opposite of a field's column, which a profile must restate or leave unbound.
-The asymmetry is deliberate: a column inherited into a renamed schema binds to
-the wrong data and returns it silently, while an executor names a whole
-mechanism, so a wrong one fails at the first call rather than answering. To
+executor, and a profile overrides it only for the bindings that perform the
+write differently — an action the profile does not mention keeps the default.
+This is the opposite of a field's column, which a profile must restate or leave
+unbound. The asymmetry is deliberate: a column inherited into a renamed schema
+binds to the wrong data and returns it silently, while an executor names a
+whole mechanism, so a wrong one fails at the first call rather than answering. To
 withdraw an inherited executor — a read-only binding that performs no writes at
 all — a profile writes `executor: null`, which leaves the action declared and
 unavailable there.

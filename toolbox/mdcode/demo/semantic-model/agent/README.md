@@ -24,16 +24,16 @@ actions, `gcloud` for the store, ADK for the agent.
 The business is a small ecommerce operation: customers, their orders, and the
 lines that make up an order. There is one thing you can do to it: credit a
 customer against an order. Policy says when that is allowed, and the model
-states it as seven constraints — three as arithmetic a query settles, four as
-sentences a language model settles. The action names the four sentences in
-`guards`, which is what puts them between the agent and the write.
+states it as four constraints, each a sentence a language model settles. The
+action names all four in `guards`, which is what puts them between the agent and
+the write.
 
 One of those four is about a number the caller never states: a credit may not
 exceed the total of the order it credits, and the total is on record. Settling it
-takes a judge that can query the tables the model binds, which is what
-`--judge-reads-store` supplies. The judge writes the statement, the runtime
-checks it is a read and prints it, and the rule is settled against a row rather
-than against a claim.
+takes a judge that has been given those tables to query — `--judge-reads-store`
+at a command line, a `store` on the judge this agent hires. The judge writes the
+statement, the runtime checks it is a read and prints it, and the rule is
+settled against a row rather than against a claim.
 
 [Step 6](#6-run-it) runs the request a support desk gets every day. A customer
 was charged for shipping that was supposed to be free, and someone inside the
@@ -105,41 +105,31 @@ The files sit in a `kcmd` workspace (`catalog.yaml` scopes it and names
 `spanner` as the default profile), so the CLI and the agent read the same files
 rather than copies that can drift.
 
-### Write the policy down twice
+### Write the policy down in words
 
-A constraint carries one of two bodies. An `expression` is arithmetic a query
-settles; a `judgment` is a sentence a language model settles. `commerce.yaml`
-states the credit policy both ways, and the difference is not stylistic — it is
-about what each kind can see.
+A constraint carries one body, `judgment`: the rule as a sentence, settled by a
+language model reading the attempted call. `commerce.yaml` states the credit
+policy that way throughout, including the parts of it that are arithmetic.
 
 ```yaml
       - name: CreditUnderReviewThreshold
-        expression: amount <= 25
-        on_violation: escalate
-
-      - name: CreditUnderReviewThresholdWithJudge
         judgment: >-
           The credit amount requested must not exceed 25 dollars, which is the
           self-service ceiling for this desk. Read the amount as dollars.
         on_violation: escalate
 ```
 
-Those two say the same thing. Only one of them runs today, because this runtime
-has a judge and does not yet have an expression evaluator — so the action guards
-on the judged one, and the expression sits there declared and referenced by
-nothing. When the evaluator lands, the judged twin is the one to delete:
-arithmetic a query settles costs no model call and cannot answer two identical
-calls differently.
+Don't copy that one. It compares an argument against a literal, so settling it
+costs a model call that can answer two identical calls differently, and
+[a threshold like it belongs in whatever dispatches the call](../../../docs/semantic-model/actions.md#what-a-judgment-costs).
+It stays here for the contrast with the rule below, which has to read the store,
+and because the transcripts further down were captured against it.
 
-The second pair compares the requested amount against `Order.total`, which is a
+The next rule compares the requested amount against `Order.total`, which is a
 number on record rather than a number the caller states:
 
 ```yaml
       - name: CreditWithinOrderTotal
-        expression: amount <= Order.total
-        on_violation: escalate
-
-      - name: CreditWithinOrderTotalWithJudge
         judgment: >-
           The credit amount requested must not exceed the total of the order
           it is applied to. The `order` argument of this call identifies that
@@ -157,19 +147,16 @@ total "is on record rather than stated in the arguments, so read it before
 answering", because the judge decides for itself whether to look, and an
 unsettled rule counts as not holding.
 
-The arithmetic twin stays, and it stays for good rather than only until the
-evaluator lands. A query
-settles the comparison for nothing, returns the same answer twice, and can
-eventually run inside the transaction the write runs in, which is where two
-concurrent credits stop being able to pass separately and exceed the total
-jointly.
+Reading committed state is not the same as holding a lock. The judge answers
+before the transaction opens, so two concurrent credits can each be told the
+order has room and jointly exceed the total. That is a rule for the schema or
+the transaction, not for a guard.
 
-`OrderTotalMatchesLineItems` is the one expression with no twin, and the reason
-is timing rather than evidence. It holds that an order's total equals the sum of
-its lines, which is a statement about the state a write leaves behind. Guards
-settle before the transaction opens, so nothing evaluated there can settle it —
-not a judge that can read, and not an expression either. It belongs inside the
-transaction or in the schema.
+One rule the policy names is absent from the model for the same kind of reason:
+an order's total equalling the sum of its lines is a statement about the state a
+write leaves behind. Guards settle before the transaction opens, so nothing
+evaluated there can settle it. It belongs inside the transaction or in the
+schema, and `commerce.yaml` says so where the rule would have gone.
 
 Two more rules exist *only* because a judge exists, and unlike the pair above
 they are about what the caller said rather than about what is stored:
@@ -192,9 +179,9 @@ they are about what the caller said rather than about what is stored:
         on_violation: reject
 ```
 
-No expression states either one. "Names a specific service failure" is not a
+No arithmetic states either one. "Names a specific service failure" is not a
 comparison, and neither is "is not a piece of a larger amount". Between the four
-judged rules the demo covers all three consequences `on_violation` can carry:
+rules the demo covers all three consequences `on_violation` can carry:
 `escalate` holds the write for a person, `warn` lets it through and reports, and
 `reject` refuses outright.
 
@@ -334,7 +321,7 @@ Model 'commerce' (commerce_demo), profile 'spanner':
   IssueCredit: Credit a customer against one order -- a late delivery, a coupon, a shipping charge applied in error. The credit is added as a negative line and the order total is recomputed from the lines.
     parameters: order (Order, reference), amount (Decimal), memo (String)
     executor:   sql
-    guards:     CreditWithinOrderTotalWithJudge, CreditUnderReviewThresholdWithJudge, CreditMemoNamesAServiceFailure, CreditIsNotSplitToAvoidReview
+    guards:     CreditWithinOrderTotal, CreditUnderReviewThreshold, CreditMemoNamesAServiceFailure, CreditIsNotSplitToAvoidReview
     affects:    LineItem (create), Order (modify)
     run:        kcmd action run IssueCredit --judge --judge-reads-store --arg order=<Order> --arg amount=<Decimal> --arg memo=<String>
 ```
@@ -346,33 +333,14 @@ whether settling it takes a look at the store, so the line offers the reading
 judge wherever a read is possible, and a judge with nothing to look up looks
 nothing up.
 
-Three warnings print above this. Two of them name an expression that reads an
-argument of `IssueCredit` and report that nothing references it:
+No warnings print above the listing. Every constraint the model declares is
+named in `guards`, and every one of them is a rule this runtime can settle, so
+there is nothing for the loader to report.
 
-```
-Warning: [commerce] model 'commerce': constraint 'CreditWithinOrderTotal' reads 'amount',
-a parameter of action 'IssueCredit', but 'IssueCredit' does not list 'CreditWithinOrderTotal'
-in guards. A constraint over an action's parameters is checked only as a guard of that action.
-```
-
-That is accurate and deliberate: nothing evaluates an expression yet, so naming
-one in `guards` would make the action unrunnable rather than checked. Only
-constraints that read an action's parameters get this warning, which is why
-`OrderTotalMatchesLineItems` is silent — it reads no argument at all.
-
-The third is about what *is* referenced:
-
-```
-Warning: [commerce] model 'commerce': every constraint action 'IssueCredit' names in guards
-is judged, so the action has no deterministic gate. Every gate costs a model call, and none
-can lower to a store-level check.
-```
-
-That is the honest price of this configuration, and the demo pays it on purpose.
-Gating entirely on judgment costs at least one model call per guard, and a guard
-that reads the store costs more than one; the arithmetic is at the end of this
-section. Once an expression evaluator exists, two of these four rules stop
-costing anything.
+What the listing doesn't say is what the configuration costs. Each of those four
+guards is a model call, at least — a guard that reads the store costs more than
+one — and every call of `IssueCredit` pays for all four. The arithmetic is at
+the end of this section.
 
 The action runs from the command line before any agent exists. `--judge` hires
 the judge, and `--judge-reads-store` is what lets it look at the tables the model
@@ -390,8 +358,8 @@ Committed at 2026-09-14T19:12:04.996343Z.
 
 Four judgments were put to Gemini and all four held, so the write went through.
 One of them went and looked. Nothing in the call says what order 12346 totals, so
-the judge settling `CreditWithinOrderTotalWithJudge` wrote a statement, ran it,
-and compared $3.00 against the $18.00 that came back. Nobody wrote that SQL: the
+the judge settling `CreditWithinOrderTotal` wrote a statement, ran it, and
+compared $3.00 against the $18.00 that came back. Nobody wrote that SQL: the
 rule names the order's total in words, and the judge was told which tables hold
 this model's data.
 
@@ -416,10 +384,10 @@ Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/sem
   rules stated in words go to gemini-2.5-flash (us-central1)
   it may read commerce's tables to settle them
   the judge reads: SELECT total FROM Orders WHERE order_id = 12346
-Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotalWithJudge' ("The credit
-amount requested must not exceed the total of the order it is applied to. The `order`
-argument of this call identifies that order, and the order's total is on record rather
-than stated in the arguments, so read it before answering. Read both as dollars."), and
+Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotal' ("The credit amount
+requested must not exceed the total of the order it is applied to. The `order` argument
+of this call identifies that order, and the order's total is on record rather than
+stated in the arguments, so read it before answering. Read both as dollars."), and
 gemini-2.5-flash (us-central1) judged that it does not hold for this call: The credit
 amount of 20.00 exceeds the order total of 15.00. The model marks this rule 'escalate',
 so an approver may allow it; nothing here can. A credit cannot exceed the total of the
@@ -438,13 +406,14 @@ not guess, and it does not quietly let the rule hold:
 ```console
 $ ../../../dist/kcmd action run IssueCredit --judge --arg order=12346 --arg amount=3.00 --arg memo="Coupon applied late"
 Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
-Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotalWithJudge' ("The credit
-amount requested must not exceed the total of the order it is applied to. ..."), and
-gemini-2.5-flash (us-central1) judged that it does not hold for this call: I need to know
-the total of order 12346 to compare it to the requested credit amount of $3.00. The model
-marks this rule 'escalate', so an approver may allow it; nothing here can. A credit cannot
-exceed the total of the order it credits. Lower the credit amount, or split it across the
-orders it actually covers. No transaction was opened, so nothing was written.
+Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotal' ("The credit amount
+requested must not exceed the total of the order it is applied to. ..."), and
+gemini-2.5-flash (us-central1) judged that it does not hold for this call: I need to
+know the total of order 12346 to compare it to the requested credit amount of $3.00. The
+model marks this rule 'escalate', so an approver may allow it; nothing here can. A
+credit cannot exceed the total of the order it credits. Lower the credit amount, or
+split it across the orders it actually covers. No transaction was opened, so nothing was
+written.
 ```
 
 $3.00 would have passed. The rule went unsettled rather than violated, and an
@@ -459,11 +428,10 @@ with:
 ```console
 $ ../../../dist/kcmd action run IssueCredit --arg order=12346 --arg amount=3.00 --arg memo="Coupon applied late"
 Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
-Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotalWithJudge',
-'CreditUnderReviewThresholdWithJudge' and 'CreditIsNotSplitToAvoidReview', which are
-settled by judgment rather than by an expression, and this runtime was given no judge to
-ask. Running it would apply a write the model says must be checked first, so it is refused
-rather than run unchecked.
+Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotal',
+'CreditUnderReviewThreshold' and 'CreditIsNotSplitToAvoidReview', which are settled by
+reading the call, and this runtime was given no judge to ask. Running it would apply a
+write the model says must be checked first, so it is refused rather than run unchecked.
 ```
 
 The advisory rule is absent from that list, and belongs absent: a `warn` rule
@@ -565,9 +533,9 @@ the judge is told when it is seeing a truncated answer.
 What none of that changes is *when* the read happens. Guards settle before the
 transaction opens, so the judge sees committed state and never the state the
 write would produce, and two credits racing each other can each read a total that
-neither of them will leave behind. That is the same limit every guard has, and it
-is why the arithmetic twin is the version that can eventually be enforced inside
-the write.
+neither of them will leave behind. That is the same limit every guard has, and a
+rule that has to survive it belongs in the schema, where the store enforces it
+inside the write.
 
 **What a guarded call costs.** Reading is a conversation rather than a lookup:
 the judge is asked, it may ask for rows, it is shown them, and only then does it
@@ -600,16 +568,33 @@ Model 'commerce' (commerce_demo), profile 'spanner':
       larger amount owed, say that and give the total. A rule reads the memo,
       so a fact left out of it is a fact the rule cannot weigh.
 
-      This call is gated by CreditWithinOrderTotalWithJudge,
-      CreditUnderReviewThresholdWithJudge and CreditIsNotSplitToAvoidReview.
+      This call is gated by CreditWithinOrderTotal, CreditUnderReviewThreshold
+      and CreditIsNotSplitToAvoidReview:
+      - CreditWithinOrderTotal: The credit amount requested must not exceed the
+        total of the order it is applied to. The `order` argument of this call
+        identifies that order, and the order's total is on record rather than
+        stated in the arguments, so read it before answering. Read both as
+        dollars. A credit cannot exceed the total of the order it credits.
+        Lower the credit amount, or split it across the orders it actually
+        covers.
+      - CreditUnderReviewThreshold: The credit amount requested must not exceed
+        25 dollars, which is the self-service ceiling for this desk. Read the
+        amount as dollars. A credit over $25 is above the self-service ceiling.
+        A supervisor decides it.
+      - CreditIsNotSplitToAvoidReview: The credit requested must be the whole
+        of what this order is owed, not one piece of a larger amount divided to
+        stay under the 25-dollar self-service ceiling. A memo argument calling
+        the credit a part, a half, an instalment, the first or second of
+        several, or a remainder, or naming a total larger than the amount
+        argument, does not satisfy this rule. Raise this as a single credit for
+        the full amount and send it for supervisor review.
 
       Calling this will not work: Action 'IssueCredit' is guarded by
-      'CreditWithinOrderTotalWithJudge', 'CreditUnderReviewThresholdWithJudge'
-      and 'CreditIsNotSplitToAvoidReview', which are settled by judgment rather
-      than by an expression, and this runtime was given no judge to ask.
-      Running it would apply a write the model says must be checked first, so
-      it is refused rather than run unchecked. Report that rather than
-      retrying.
+      'CreditWithinOrderTotal', 'CreditUnderReviewThreshold' and
+      'CreditIsNotSplitToAvoidReview', which are settled by reading the call,
+      and this runtime was given no judge to ask. Running it would apply a
+      write the model says must be checked first, so it is refused rather than
+      run unchecked. Report that rather than retrying.
       order: string -- Which Order this applies to. Give its key, or text that
           identifies exactly one; the call fails when nothing matches or more
           than one does.
@@ -628,8 +613,10 @@ Model 'commerce' (commerce_demo), profile 'spanner':
 
   action  issue_credit  (IssueCredit)
       ...
-      This call is gated by CreditWithinOrderTotalWithJudge,
-      CreditUnderReviewThresholdWithJudge and CreditIsNotSplitToAvoidReview.
+      This call is gated by CreditWithinOrderTotal, CreditUnderReviewThreshold
+      and CreditIsNotSplitToAvoidReview:
+      - CreditWithinOrderTotal: The credit amount requested must not exceed the
+        total of the order it is applied to. ...
       order: string -- Which Order this applies to. Give its key, or text that
           identifies exactly one; the call fails when nothing matches or more
           than one does.
@@ -858,7 +845,7 @@ $ bun agent.ts "Find the order for Morgan Ellis (morgan.ellis@example.com) that 
   <- {"entity":"LineItem","fields":["lineItemId","orderId","type","amount","memo"],"rows":[["li-12345-1","12345","item","89.99","Cast iron skillet"],["li-12345-2","12345","item","34.5","Enamel saucepan"],["li-12345-3","12345","fee","30","Shipping"],["li-12345-4","12345","tax","11.36","Sales tax"]],"truncated":false}
   -> issue_credit({"memo":"Credit for shipping charge applied in error.","amount":30,"order":"12345"})
   (judge reads) SELECT total FROM Orders WHERE order_id = 12345
-  <- {"applied":false,"reason":"Action 'IssueCredit' is guarded by 'CreditUnderReviewThresholdWithJudge' (\"The credit amount requested must not exceed 25 dollars, which is the self-service ceiling for this desk. Read the amount as dollars.\"), and gemini-2.5-flash (us-central1) judged that it does not hold for this call: The credit amount of 30 dollars exceeds the self-service ceiling of 25 dollars. The model marks this rule 'escalate', so an approver may allow it; nothing here can. A credit over $25 is above the self-service ceiling. A supervisor decides it. No transaction was opened, so nothing was written.","whatToDo":"Correct what the reason describes, or report it. Nothing was written."}
+  <- {"applied":false,"reason":"Action 'IssueCredit' is guarded by 'CreditUnderReviewThreshold' (\"The credit amount requested must not exceed 25 dollars, which is the self-service ceiling for this desk. Read the amount as dollars.\"), and gemini-2.5-flash (us-central1) judged that it does not hold for this call: The credit amount of 30 dollars exceeds the self-service ceiling of 25 dollars. The model marks this rule 'escalate', so an approver may allow it; nothing here can. A credit over $25 is above the self-service ceiling. A supervisor decides it. No transaction was opened, so nothing was written.","whatToDo":"Correct what the reason describes, or report it. Nothing was written."}
 The credit for $30 could not be issued. The reason given is that the credit amount exceeds the self-service ceiling of $25 for this desk. A supervisor needs to approve credits over $25. Nothing was written.
 ```
 
@@ -993,10 +980,9 @@ What would hold regardless is a rule about the credits already on the order
 rather than about the sentence attached to this one. The judge can now reach
 those rows, so such a rule is writable here — reword it to count what
 `LineItem` already holds for this order, the way
-`CreditWithinOrderTotalWithJudge` counts the total. This demo does not, because
-the version that belongs in the transaction is the expression, and the point
-being made is the difference between evidence a caller supplies and evidence a
-rule goes and gets.
+`CreditWithinOrderTotal` counts the total. This demo does not, because
+the point being made is the difference between evidence a caller supplies and
+evidence a rule goes and gets.
 
 ## 8. Run the same agent against AlloyDB
 
@@ -1227,8 +1213,8 @@ Running 'IssueCredit' on projects/my-project/locations/us-central1/clusters/my-c
   rules stated in words go to gemini-2.5-flash (us-central1)
   it may read commerce's tables to settle them
   the judge reads: SELECT order_total FROM purchase_order WHERE order_id = 12346
-Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotalWithJudge' ("The credit
-amount requested must not exceed the total of the order it is applied to. ..."), and
+Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotal' ("The credit amount
+requested must not exceed the total of the order it is applied to. ..."), and
 gemini-2.5-flash (us-central1) judged that it does not hold for this call: The credit
 amount of $20.00 exceeds the order total of $18.00. ...
 ```
@@ -1313,23 +1299,19 @@ directions, and the useful question is always which.
 
 ## What is not wired up yet
 
-**Nothing evaluates an expression.** This is the big one, and it is why
-`commerce.yaml` guards on four judgments rather than on the arithmetic beside
-them. All three expressions are catalogued and not enforced, and the loader's
-first two warnings say so at load time for the two that read an argument.
-`CreditUnderReviewThreshold` and `CreditWithinOrderTotal` each have a working
-twin, and those twins are marked temporary. When arithmetic can be settled by a
-query, settling it by a model call pays for nondeterminism, and in the case of
-the order total it also pays for a database round trip the query would have made
-anyway.
+**Arithmetic is settled by a model.** A constraint's rule is words, so the
+25-dollar ceiling and the comparison against the order total are both
+subtractions that cost a model call here and can answer two identical calls
+differently. See
+[what a judgment costs](../../../docs/semantic-model/actions.md#what-a-judgment-costs).
 
 **A judge reads committed state rather than the state the write would produce.**
 Guards settle before the transaction opens, so that a model call does not hold
 write locks, and the read inherits that timing. Two credits racing each other can
 each read a total that neither of them will leave behind, and both can pass. A
-rule of this shape is only as good as the gap between the read and the commit,
-which is the strongest argument for the arithmetic twin: an expression can
-eventually be evaluated inside the write, and a judgment cannot.
+rule of this shape is only as good as the gap between the read and the commit.
+A rule that has to hold under concurrency wants to be enforced inside the write,
+which is your schema's job rather than a guard's.
 
 **Stored text reaches the judge.** A rule worded to read a memo column would be
 reading text a customer or an agent wrote, inside the prompt that decides whether
@@ -1338,24 +1320,24 @@ to treat a value it read back as an instruction, results are capped and clipped,
 and every statement is printed. None of that is a guarantee. Word a rule to read
 numbers and keys where you can.
 
-**A rule about the result of a write has nowhere to run.**
-`OrderTotalMatchesLineItems` is that rule: it constrains the state the write
-leaves behind, and guards are settled before the write. Neither the expression
-evaluator nor a store-reading judge fixes that, because the problem is when the
-check runs rather than what it can see. Such a rule wants to be checked inside
-the transaction or declared in the schema, and this runtime offers neither
-binding point.
+**A rule about the result of a write has nowhere to run.** That an order's total
+equals the sum of its lines is such a rule: it constrains the state the write
+leaves behind, and guards are settled before the write. A store-reading judge
+does not fix it, because the problem is when the check runs rather than what it
+can see. Such a rule wants to be checked inside the transaction or declared in
+the schema, and this runtime offers neither binding point — which is why
+`commerce.yaml` leaves the rule out and says where it belongs.
 
 **Every gate costs model calls, and reading costs more of them.** Four guards
-means four conversations with Gemini before a write, run one after another, and
-the loader's third warning names the cost. A judge that cannot read spends one
-call per guard; a judge that can spends two, plus one for every round of reading,
-because it has to be shown its rows before it can say whether it wants more. The
-committed run in [step 3](#3-check-what-the-model-declares) cost nine. The
-runtime stops at the first refusal, so a call that is going to be rejected does
-not pay for the rest, and a call that succeeds pays for every guard. An
-expression evaluator would take two of these four to zero, and in a store-level
-form could push them into the same statement as the write.
+means four conversations with Gemini before a write, run one after another. A
+judge that cannot read spends one call per guard; a judge that can spends two,
+plus one for every round of reading, because it has to be shown its rows before
+it can say whether it wants more. The committed run in
+[step 3](#3-check-what-the-model-declares) cost nine. The runtime stops at the
+first refusal, so a call that is going to be rejected does not pay for the rest,
+and a call that succeeds pays for every guard. Two of these four rules are
+arithmetic, and a computed body would take them to zero — that is what the one
+body costs, on every call.
 
 **`escalate` still has nobody to escalate to.** The rung is now visible rather
 than missing: the runtime recognises `escalate`, holds the write, and says in the

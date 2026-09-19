@@ -12,7 +12,7 @@
 import * as yaml from 'yaml';
 import * as z from 'zod';
 
-import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, CONSTRAINT_SEVERITIES, Constraint, CustomExtension, DATA_TYPES, Entity, Executor, Field, Metric, Relationship, SemanticModel, VIOLATION_EFFECTS,} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, Entity, Executor, Field, Metric, Relationship, SemanticModel, VIOLATION_EFFECTS,} from './ir';
 import {referencedEntityNames} from './sql_expr_utils';
 
 export interface LoadOptions {
@@ -279,21 +279,22 @@ const actionSchema = z.object({
   custom_extensions: z.array(customExtensionSchema).optional(),
 });
 
-// A constraint: a named invariant over the ontology, in one of two bodies.
+// A constraint: a named invariant over the ontology, stated in words.
 //
-// `expression` is a logical expression in the model's own language
-// (`Customer.accountBalance >= 0`) rather than a physical binding, so it stays
-// a plain string. Whatever evaluates the constraint resolves it against the
-// ontology; the loader leaves it alone.
+// `judgment` is the rule as a sentence. It is a plain string -- validate
+// resolves the `Entity.field` tokens it mentions, and nothing else reads into
+// it. Optional here and required in fact, which `validate` enforces so the
+// author gets one message naming the constraint rather than a schema union
+// error naming a position in the document.
 //
-// `judgment` is the rule in words, for a rule no expression decides. It is a
-// plain string for the same reason, and validate resolves the `Entity.field`
-// tokens it mentions.
-//
-// Both are optional here and exactly one is required, which `validate` enforces
-// so the author gets one message naming the constraint rather than a schema
-// union error naming a position in the document.
-const constraintSchema = z.object({
+// `expression` is RESERVED, not supported. It named the removed second body, a
+// boolean in the model's own language, and it is still accepted by the schema
+// for one reason: a model written against the older shape should be told to
+// restate the rule as a judgment, not handed an unrecognized-key error that
+// says only that the word is unknown. `rejectExpressionBody` refuses it. See
+// Constraint in ir.ts.
+const constraintSchema =
+    z.object({
   name: z.string(),
   expression: z.string().optional(),
   judgment: z.string().optional(),
@@ -306,7 +307,23 @@ const constraintSchema = z.object({
   ai_context: aiContextSchema.optional(),
   // No `custom_extensions`: it is a vanilla-Ossie surface, and `constraints` is
   // an extended-profile-only key, so the two never co-occur. See Constraint.
-});
+}).superRefine(rejectExpressionBody);
+
+// Refuses the removed `expression` body, naming the constraint and saying where
+// the rule goes instead. A hard error rather than a dropped key: a rule the
+// author stated and the loader silently ignored is a guard that stops guarding.
+function rejectExpressionBody(
+    c: {name?: string, expression?: string}, ctx: z.RefinementCtx): void {
+  if (c.expression === undefined) return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    path: ['expression'],
+    message: `constraint '${c.name}' states an expression. A constraint ` +
+        `states its rule as a judgment, in words, and nothing evaluates an ` +
+        `expression. Restate the rule under 'judgment' and give it an ` +
+        `'on_violation'.`,
+  });
+}
 
 const modelBase = z.object({
   name: z.string(),
@@ -477,26 +494,28 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
                     ...ce,
                   }).strict();
 
-  // Both bodies are optional here because the schema cannot say "one of these
-  // two, never both". validateConstraints enforces the exclusivity, which also
-  // lets it name the constraint and say which way it went wrong.
+  // `judgment` is optional here and required in fact, so validateConstraints
+  // can name the constraint rather than a position in the document.
+  // `expression` is the reserved name of the removed body; see
+  // rejectExpressionBody, which is what turns it into a useful error.
   const constraint = z.object({
                         name: z.string(),
                         expression: z.string().optional(),
                         judgment: z.string().optional(),
                         description: z.string().optional(),
-                        // What a violation does; absent means `reject`, and
-                        // a judgment must state it. See VIOLATION_EFFECTS.
+                        // What a violation does; required. See
+                        // VIOLATION_EFFECTS.
                         on_violation: z.enum(VIOLATION_EFFECTS).optional(),
                         // How grave it is; no default. See
                         // CONSTRAINT_SEVERITIES.
                         severity: z.enum(CONSTRAINT_SEVERITIES).optional(),
                         ai_context: aiContextSchema.optional(),
                         ...ce,
-                      }).strict();
+                      })
+                         .strict()
+                         .superRefine(rejectExpressionBody);
 
-  const model =
-      z.object({
+  const model = z.object({
          name: z.string(),
          description: z.string().optional(),
          ai_context: aiContextSchema.optional(),
@@ -504,11 +523,11 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          relationships: z.array(relationship).optional(),
          metrics: z.array(metric).optional(),
          ...ce,
-         // Native extension keys: extended profile only. `actions` and
-         // `constraints` are among them because vanilla Ossie has neither
-         // construct and no `custom_extensions` encoding for either, so under
-         // OSSIE_VERSION such a key is rejected as unknown rather than
-         // silently dropped.
+                   // Native extension keys: extended profile only. `actions`
+                   // and `constraints` are among them because vanilla Ossie has
+                   // neither construct and no `custom_extensions` encoding for
+                   // either, so under OSSIE_VERSION such a key is rejected as
+                   // unknown rather than silently dropped.
          ...(extended ? {
            deployment_target: z.string().optional(),
            actions: z.array(action).optional(),
@@ -785,8 +804,6 @@ function convertModel(
   const constraints = (m.constraints ?? []).map(convertConstraint);
   rejectDuplicateNames(
       constraints.map(c => c.name), 'constraint name', `model '${m.name}'`);
-  warnUnguardedParameterConstraints(actions, constraints, m.name, warnings);
-  warnAllGuardsJudged(actions, constraints, m.name, warnings);
 
   const description = composeDescription(m.description);
 
@@ -962,16 +979,12 @@ function convertMetric(
   return metric;
 }
 
-// Converts a constraint document to the IR. Whichever body it declares is kept
-// verbatim: an expression is a logical invariant resolved against the ontology
-// by whatever evaluates it, and a judgment is the text a judge is handed.
-// Description and AI context round-trip like everywhere else.
-//
-// Both bodies are copied when a document sets both, so `validate` can name the
-// conflict against the real constraint rather than against a repaired one.
+// Converts a constraint document to the IR. The judgment is kept verbatim --
+// it is the text a judge is handed. Description and AI context round-trip like
+// everywhere else. A document that states `expression` never reaches here;
+// rejectExpressionBody fails the parse.
 function convertConstraint(c: ConstraintDoc): Constraint {
   const constraint: Constraint = {name: c.name};
-  if (c.expression !== undefined) constraint.expression = c.expression;
   if (c.judgment !== undefined) constraint.judgment = c.judgment;
   if (c.on_violation) constraint.onViolation = c.on_violation;
   if (c.severity) constraint.severity = c.severity;
@@ -1091,91 +1104,6 @@ function warnMixedAffectsPrecision(
         `operation and without one. The bare entry already covers every ` +
         `operation on '${concept}'; drop it, or give it an operation too.`);
   }
-}
-
-// An action every one of whose guards is judged has no deterministic gate at
-// all. Every gate costs a model call, none can lower to a store-level `CHECK`,
-// and each may decide two identical calls differently, so nothing protects the
-// write when the judge is unavailable or wrong.
-//
-// This is a warning and not an error, because it may be exactly what the author
-// meant: some operations really are governed only by rules no expression
-// decides. It exists so that state is visible in the source rather than
-// discovered from a published model.
-function warnAllGuardsJudged(
-    actions: Action[], constraints: Constraint[], modelName: string,
-    warnings: string[]): void {
-  if (!actions.length || !constraints.length) return;
-  const judged = new Set(
-      constraints.filter(c => c.judgment !== undefined).map(c => c.name));
-  if (!judged.size) return;
-  for (const a of actions) {
-    const guards = a.guards ?? [];
-    if (!guards.length || !guards.every(g => judged.has(g))) continue;
-    warnings.push(
-        `model '${modelName}': every constraint action '${a.name}' names in ` +
-        `guards is judged, so the action has no deterministic gate. Every ` +
-        `gate costs a model call, and none can lower to a store-level check.`);
-  }
-}
-
-// A constraint that reads an action's parameter describes that call, so the
-// only moment it can be checked is before the call runs -- which happens only
-// when the action names it in `guards`. Such a constraint left unnamed by EVERY
-// action is text nothing will ever evaluate, so say so at load time.
-//
-// Being guarded anywhere is enough. An action that shares the parameter name and
-// does not name the constraint is a deliberate modeling choice, since the same
-// rule may gate one action and leave another alone; warning about it would
-// report a constraint that does run and would teach an author to ignore this
-// message.
-//
-// This warns rather than fails because the scan matches identifiers, and an
-// expression may use a bare name that merely coincides with a parameter name.
-//
-// One message per pair, naming the first parameter that matched.
-function warnUnguardedParameterConstraints(
-    actions: Action[], constraints: Constraint[], modelName: string,
-    warnings: string[]): void {
-  if (!actions.length || !constraints.length) return;
-  for (const c of constraints) {
-    if (actions.some(a => a.guards?.includes(c.name))) continue;
-    // Judged constraints are skipped. The scan looks for a bare identifier that
-    // matches a parameter name, and a judgment is ordinary prose, so words like
-    // `amount` or `order` appear in it as English rather than as references.
-    // Running the scan there would warn on most judged rules ever written.
-    if (c.expression === undefined) continue;
-    const identifiers = bareIdentifiers(c.expression);
-    if (!identifiers.size) continue;
-    for (const a of actions) {
-      const read = a.parameters.find(p => identifiers.has(p.name));
-      if (!read) continue;
-      warnings.push(
-          `model '${modelName}': constraint '${c.name}' reads '${
-              read.name}', ` +
-          `a parameter of action '${a.name}', but '${a.name}' does not list ` +
-          `'${c.name}' in guards. A constraint over an action's parameters is ` +
-          `checked only as a guard of that action.`);
-    }
-  }
-}
-
-// The names an expression uses on their own. A qualified `Entity.field` is
-// consumed whole so its field half is never mistaken for a bare name, which is
-// what makes `Part.availableStock >= quantity` yield `quantity` alone. Action
-// parameters are referenced by bare name, so this is the set that can name one.
-//
-// A quoted literal is data rather than a reference, so it is blanked before the
-// scan: `status = 'quantity'` must not look like a read of a parameter named
-// `quantity`.
-function bareIdentifiers(expression: string): Set<string> {
-  const found = new Set<string>();
-  const code = expression.replace(/'[^']*'|"[^"]*"/g, ' ');
-  const token = /[A-Za-z_]\w*\s*\.\s*[A-Za-z_]\w*|([A-Za-z_]\w*)/g;
-  for (let m = token.exec(code); m; m = token.exec(code)) {
-    if (m[1]) found.add(m[1]);
-  }
-  return found;
 }
 
 // Resolves a parameter's authored `type` against the ontology: a known entity

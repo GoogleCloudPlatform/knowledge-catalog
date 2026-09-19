@@ -70,10 +70,12 @@ semantic_model:
           - {name: order, type: Order}
     constraints:
       - name: TotalStaysPositive
-        expression: Order.total >= 0
+        judgment: The resulting Order.total must not be negative.
+        on_violation: reject
         description: An order total never goes negative.
       - name: CreditIsPositive
-        expression: amount > 0
+        judgment: The amount argument of this call must be positive.
+        on_violation: reject
         description: A credit must be for a positive amount.
 `;
 
@@ -276,7 +278,8 @@ afterEach(() => {
 
 
 describe('kcmd action list', () => {
-  test('prints each action with what it takes, what it touches, and the ' +
+  test(
+      'prints each action with what it takes, what it touches, and the ' +
            'command line that runs it',
        async () => {
          writeWorkspace();
@@ -284,29 +287,36 @@ describe('kcmd action list', () => {
          expect(code).toBe(0);
          const out = logs.join('\n');
 
-         expect(out).toContain("Model 'commerce' (commerce_eg), profile 'default'");
+        expect(out).toContain(
+            'Model \'commerce\' (commerce_eg), profile \'default\'');
          expect(out).toContain('IssueCredit: Credit an order');
 
          // An entity-typed parameter is marked as a reference: the caller
          // passes something to look up, not a value.
-         expect(out).toContain('parameters: order (Order, reference), amount (Decimal)');
+        expect(out).toContain(
+            'parameters: order (Order, reference), amount (Decimal)');
          expect(out).toContain('executor:   sql');
          expect(out).toContain('guards:     CreditIsPositive');
          expect(out).toContain('affects:    Entry (create)');
 
          // The point of the listing: the reader can copy this and run it.
+        // IssueCredit names a guard, and a guard is settled by asking, so the
+        // line carries the flags that supply a judge -- see the judge-flag
+        // test below for why both of them.
          expect(out).toContain(
-             'run:        kcmd action run IssueCredit --arg order=<Order> ' +
-             '--arg amount=<Decimal>');
+            'run:        kcmd action run IssueCredit --judge ' +
+            '--judge-reads-store --arg order=<Order> --arg amount=<Decimal>');
 
          // An action with no description, guards or blast radius shows only
          // what it declares.
          expect(out).toContain('NotifyCustomer');
          expect(out).toContain('executor:   mcp');
-         expect(out).toContain('run:        kcmd action run NotifyCustomer --arg order=<Order>');
+        expect(out).toContain(
+            'run:        kcmd action run NotifyCustomer --arg order=<Order>');
        });
 
-  test('shows defaults and optionality in parameters and omits them from the run line',
+  test(
+      'shows defaults and optionality in parameters and omits them from the run line',
        async () => {
          const optionalModel = MODEL.replace(
              '          - {name: order, type: Order}\n          - {name: amount, type: Decimal}',
@@ -327,13 +337,14 @@ describe('kcmd action list', () => {
              'cleared (Boolean, default: null), literalNull (String, default: "null"), ' +
              'memo (String, optional)');
          expect(out).toContain(
-             'run:        kcmd action run IssueCredit --arg order=<Order> ' +
-             '--arg amount=<Decimal>');
+            'run:        kcmd action run IssueCredit --judge ' +
+            '--judge-reads-store --arg order=<Order> --arg amount=<Decimal>');
          expect(out).not.toContain('--arg currency=');
          expect(out).not.toContain('--arg memo=');
        });
 
-  test('shows an action the profile withdrew as declared but not runnable',
+  test(
+      'shows an action the profile withdrew as declared but not runnable',
        async () => {
          // The listing answers "what can this model do HERE". Printing a run
          // line for a write this binding cannot perform would send the reader
@@ -348,7 +359,8 @@ describe('kcmd action list', () => {
          expect(out).not.toContain('kcmd action run IssueCredit');
        });
 
-  test('the run line names both judge flags when a guard is judged',
+  test(
+      'the run line names both judge flags when a guard is judged',
        async () => {
          // Copying the line is the whole point of printing it. A judged guard
          // refuses without a judge, so a line omitting the flag would send the
@@ -357,12 +369,7 @@ describe('kcmd action list', () => {
          // without `--judge-reads-store`, and a constraint's wording does not
          // say which judgments those are, so the line offers the read wherever
          // the profile binds a table to read.
-         writeWorkspace(MODEL.replace(
-             '      - name: CreditIsPositive\n' +
-                 '        expression: amount > 0\n',
-             '      - name: CreditIsPositive\n' +
-                 '        judgment: The credit must be for a positive amount.\n' +
-                 '        on_violation: reject\n'));
+        writeWorkspace();
          const code = await action('list', undefined);
          expect(code).toBe(0);
          const out = logs.join('\n');
@@ -385,16 +392,17 @@ describe('kcmd action list', () => {
     writeWorkspace();
     const code = await action('list', undefined, {profile: 'analytical'});
     expect(code).toBe(0);
-    expect(logs.join('\n')).toContain("profile 'analytical'");
+    expect(logs.join('\n')).toContain('profile \'analytical\'');
   });
 
-  test('names the profiles that exist when given one that does not',
+  test(
+      'names the profiles that exist when given one that does not',
        async () => {
          writeWorkspace();
          const code = await action('list', undefined, {profile: 'nope'});
          expect(code).toBe(1);
          const out = logs.join('\n');
-         expect(out).toContain("unknown binding profile 'nope'");
+        expect(out).toContain('unknown binding profile \'nope\'');
          expect(out).toContain('analytical');
        });
 
@@ -402,7 +410,7 @@ describe('kcmd action list', () => {
     writeWorkspace();
     const code = await action('explain', 'IssueCredit');
     expect(code).toBe(1);
-    expect(logs.join('\n')).toContain("expected 'list' or 'run'");
+    expect(logs.join('\n')).toContain('expected \'list\' or \'run\'');
   });
 });
 
@@ -415,13 +423,14 @@ describe('kcmd action run: what it will not send to a store', () => {
     expect(logs.join('\n')).toContain('needs an action name');
   });
 
-  test('names the declared actions when asked for one that is not there',
+  test(
+      'names the declared actions when asked for one that is not there',
        async () => {
          writeWorkspace();
          const code = await action('run', 'IssueRefund');
          expect(code).toBe(1);
          const out = logs.join('\n');
-         expect(out).toContain("declares an action 'IssueRefund'");
+        expect(out).toContain('declares an action \'IssueRefund\'');
          expect(out).toContain('declared: IssueCredit, NotifyCustomer.');
        });
 
@@ -430,7 +439,8 @@ describe('kcmd action run: what it will not send to a store', () => {
     const code = await action(
         'run', 'IssueCredit', {arg: ['order=12345', 'amount']});
     expect(code).toBe(1);
-    expect(logs.join('\n')).toContain("--arg expects <name>=<value>, but got 'amount'");
+    expect(logs.join('\n'))
+        .toContain('--arg expects <name>=<value>, but got \'amount\'');
   });
 
   test('rejects the same parameter given twice', async () => {
@@ -441,36 +451,39 @@ describe('kcmd action run: what it will not send to a store', () => {
     expect(logs.join('\n')).toContain('--arg amount was given twice.');
   });
 
-  test('takes a single --arg, which cac hands over as a bare string',
+  test(
+      'takes a single --arg, which cac hands over as a bare string',
        async () => {
          writeWorkspace();
          // Reaches the runtime rather than the argument parser: the refusal
          // below is about the guard, which is proof the parse succeeded.
          const code = await action('run', 'IssueCredit', {arg: 'amount=30'});
          expect(code).toBe(1);
-         expect(logs.join('\n')).toContain('does not evaluate constraints yet');
+        expect(logs.join('\n'))
+            .toContain('this runtime was given no judge to ask');
        });
 
-  test('refuses an action whose executor runs outside the transaction',
+  test(
+      'refuses an action whose executor runs outside the transaction',
        async () => {
          writeWorkspace();
          const code = await action('run', 'NotifyCustomer', {arg: 'order=1'});
          expect(code).toBe(1);
-         expect(logs.join('\n')).toContain('which runs outside this transaction');
+        expect(logs.join('\n'))
+            .toContain('which runs outside this transaction');
        });
 
-  test('refuses a guarded action while nothing evaluates the guard',
-       async () => {
+  test('refuses a guarded action when no judge was supplied', async () => {
          writeWorkspace();
-         const code = await action(
-             'run', 'IssueCredit', {arg: ['order=12345', 'amount=30']});
+    const code =
+        await action('run', 'IssueCredit', {arg: ['order=12345', 'amount=30']});
          expect(code).toBe(1);
          const out = logs.join('\n');
-         expect(out).toContain("is guarded by 'CreditIsPositive'");
+    expect(out).toContain('is guarded by \'CreditIsPositive\'');
          // It got as far as choosing a database, so the refusal is the
          // runtime's and not a wiring failure earlier on.
          expect(out).toContain(
-             "Running 'IssueCredit' on projects/acme-ops/instances/prod/databases/commerce");
+        'Running \'IssueCredit\' on projects/acme-ops/instances/prod/databases/commerce');
        });
 });
 
@@ -508,7 +521,8 @@ describe('kcmd action run: where the write would go', () => {
     expect(out).not.toContain('Running');
   });
 
-  test('refuses a binding whose sources sit in a different database than ' +
+  test(
+      'refuses a binding whose sources sit in a different database than ' +
            'its deployment target',
        async () => {
          writeWorkspace();
@@ -518,15 +532,14 @@ describe('kcmd action run: where the write would go', () => {
          expect(code).toBe(1);
          const out = logs.join('\n');
          expect(out).toContain(
-             "binds 'Order' to //spanner.googleapis.com/projects/acme-ops/" +
+            'binds \'Order\' to //spanner.googleapis.com/projects/acme-ops/' +
              'instances/prod/databases/commerce/tables/Orders');
          expect(out).toContain(
              'deployment target is projects/acme-ops/instances/prod/databases/archive');
          expect(out).toContain('address a table by name alone');
        });
 
-  test('refuses a binding that leaves its entities in another system',
-       async () => {
+  test('refuses a binding that leaves its entities in another system', async () => {
          // The same hazard as a wrong database and a likelier one: the
          // statements name a table, so they would run against whatever
          // Spanner table shares the name while the data the model describes
@@ -537,7 +550,7 @@ describe('kcmd action run: where the write would go', () => {
              {profile: 'crossbound', arg: ['order=12345', 'amount=30']});
          expect(code).toBe(1);
          const out = logs.join('\n');
-         expect(out).toContain("binds 'Order' to acme-analytics.sales.orders");
+    expect(out).toContain('binds \'Order\' to acme-analytics.sales.orders');
          expect(out).toContain(
              'deployment target is projects/acme-ops/instances/prod/databases/commerce');
          expect(out).toContain('address a table by name alone');
@@ -557,7 +570,8 @@ describe('kcmd action run: which model has to be valid', () => {
         WAREHOUSE);
   }
 
-  test('a broken document elsewhere in the scope does not block the run',
+  test(
+      'a broken document elsewhere in the scope does not block the run',
        async () => {
          withWarehouse();
          const code = await action(
@@ -569,12 +583,13 @@ describe('kcmd action run: which model has to be valid', () => {
          // reported where it is. What must not happen is it becoming the
          // reason this call failed.
          const errors = logs.filter(l => l.startsWith('Error:')).join('\n');
-         expect(errors).toContain("is guarded by 'CreditIsPositive'");
+        expect(errors).toContain('is guarded by \'CreditIsPositive\'');
          expect(errors).not.toContain('Pallet');
          expect(errors).not.toContain('warehouse');
        });
 
-  test('the broken document is still refused when it is the one being run',
+  test(
+      'the broken document is still refused when it is the one being run',
        async () => {
          withWarehouse();
          const code = await action('run', 'Restock', {arg: ['bin=B1']});
@@ -589,15 +604,16 @@ describe('kcmd action run: which model has to be valid', () => {
 // hands back names an object literal already has. Both look like a nuisance
 // and both change which model runs, or whether the run happens at all.
 describe('kcmd action: what the command line can actually contain', () => {
-  test('a bare --profile falls back to the default rather than looking up ' +
-           "a profile called 'true'",
+  test(
+      'a bare --profile falls back to the default rather than looking up ' +
+          'a profile called \'true\'',
        async () => {
          // cac yields `true` for `--profile` with no value. Reading it as a
          // name would fail the command with a profile the user never typed.
          writeWorkspace();
          const code = await action('list', undefined, {profile: true});
          expect(code).toBe(0);
-         expect(logs.join('\n')).toContain("profile 'default'");
+        expect(logs.join('\n')).toContain('profile \'default\'');
        });
 
   test('--no-profile does not become a profile name either', async () => {
@@ -605,13 +621,13 @@ describe('kcmd action: what the command line can actually contain', () => {
     writeWorkspace();
     const code = await action('list', undefined, {profile: false});
     expect(code).toBe(0);
-    expect(logs.join('\n')).toContain("profile 'default'");
+    expect(logs.join('\n')).toContain('profile \'default\'');
   });
 
   test('a named profile still selects that profile', async () => {
     writeWorkspace();
     await action('list', undefined, {profile: 'analytical'});
-    expect(logs.join('\n')).toContain("profile 'analytical'");
+    expect(logs.join('\n')).toContain('profile \'analytical\'');
   });
 
   test('an argument named after an Object member is an ordinary argument',

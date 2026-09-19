@@ -495,50 +495,50 @@ reads the document ([§6](#6-the-extension-mechanism)).
 
 - **`constraints` (extended profile only).** Model-level named invariants over
   the ontology, accepted only under `0.2.0.dev0/google`. Each states exactly one
-  condition, in exactly one of two bodies.
+  condition, in one body.
 
-  **`expression`** is a boolean written in the same expression language as a
-  metric — `Account.balance >= 0`. **`judgment`** is the rule in words, for a
-  condition no expression decides: whether a discount is justified by the reason
-  given, whether a refund note explains the exception it claims. Field names in
-  a judgment are written model-qualified (`Order.discount_reason` rather than
-  "the reason"), so the reference is checked against the model and lives in the
-  sentence that uses it. A constraint declaring both bodies, or neither, is a
-  load error.
+  **`judgment`** is the rule in words, settled by a language model reading the
+  attempted call: whether a discount is justified by the reason given, whether a
+  refund note explains the exception it claims, whether a credit stays under a
+  ceiling. Field names in a judgment are written model-qualified
+  (`Order.discount_reason` rather than "the reason"), so the reference is
+  checked against the model and lives in the sentence that uses it. A constraint
+  declaring no judgment is a load error.
 
-  A judgment states one condition, the same as an expression does. A written
-  policy that branches — a large refund is held for a director, a disguised one
-  is refused, a vague reason is only reported — becomes one constraint per
+  `judgment` is the only body a constraint has, which puts a model call on every
+  guarded write and means a threshold a subtraction would settle identically can
+  come back differently twice. [Actions → What a judgment
+  costs](actions.md#what-a-judgment-costs) says where that leaves a rule.
+  `expression` is a reserved key: a document stating one is refused with a
+  sentence telling the author to restate the rule in words.
+
+  A policy that branches — a large refund is held for a director, a disguised
+  one is refused, a vague reason is only reported — becomes one constraint per
   branch, each with its own name, `on_violation` and `severity`, which `guards`
   on the action lists together. That keeps each branch independently searchable,
-  revisable and owned, and it keeps the branches an expression *can* decide out
-  of prose that no query can read. [Actions → A credit policy, worked
-  through](actions.md#a-credit-policy-worked-through) works a five-rule credit
-  policy through end to end.
+  revisable and owned. [Actions → A credit policy, worked
+  through](actions.md#a-credit-policy-worked-through) works a credit policy
+  through end to end.
 
   A constraint takes effect only where something references it. Declaring one
   adds a rule to the catalog and refuses nothing, so publishing a rule cannot
   change what an already-working call does. `guards` on an action is the only
-  reference the model defines, and rules of both kinds belong in it: one over an
-  action's parameters has no other moment to run, and one over stored data
-  checks that the call does not start from a broken state. A parameter-reading
-  constraint that no action names draws a load warning, since it can never run.
-  An action whose every guard is judged draws one too: it has no gate a query
-  can decide.
-  Status: authored, validated and published; one of the two bodies is settled
-  at run time. `kcmd action run --judge` puts a guard carrying a `judgment` to
-  a language model before the transaction opens, and routes the verdict by
-  `on_violation`. No component evaluates an `expression` against live data, so
-  an action guarding on one is refused rather than run past the rule. Rules in
+  reference the model defines, and it is where every kind of rule belongs: one
+  over an action's parameters has no other moment to run, and one over stored
+  data checks that the call does not start from a broken state.
+  Status: authored, validated, published, and settled at run time. Whatever
+  dispatches a call puts each guard to a language model before the transaction
+  opens and routes the verdict by `on_violation`; given no judge, the action is
+  refused rather than run past its rules. `kcmd action run --judge` does this
+  from a command line. Rules in
   [Reference → Validation](reference.md#validation).
 
-  A constraint MAY say two things about a violation, under two separate keys.
+  A constraint says two things about a violation, under two separate keys.
   **`on_violation`** is what a violation does to the write that tripped it:
   `reject` refuses it outright and nobody may approve it, `escalate` holds it
-  for a human decision, `warn` lets it proceed and reports it. On an
-  `expression` it defaults to `reject`, the safe reading of an author who did
-  not say. **`severity`** is how grave a violation is — `critical`, `high`,
-  `medium` or `low` — for ranking and reporting. It carries no default, and
+  for a human decision, `warn` lets it proceed and reports it. It is required.
+  **`severity`** is how grave a violation is — `critical`, `high`, `medium` or
+  `low` — for ranking and reporting. It is optional, carries no default, and
   nothing ranks or routes on it yet.
 
   When an action's `guards` names several constraints and a write violates more
@@ -548,14 +548,14 @@ reads the document ([§6](#6-the-extension-mechanism)).
   the model states it, which is why an action can name any number of guards
   without saying how to add them up.
 
-  A `judgment` MUST state `on_violation`, and it MAY be any of the three words.
+  A constraint MUST state `on_violation`, and it MAY be any of the three words.
   Omitting the key is the only error: an unmarked constraint rejects, and that
-  is too strong a consequence for an author of a judged rule to inherit by
-  silence. Pairing `judgment` with `reject` is the riskiest thing the format can
-  express, because a language model can decide two identical proposals
-  differently and `reject` leaves no appeal. It is published rather than
-  refused, and made findable: the derived `evaluation` field carries `judged`
-  beside the word, so unappealable rules settled by a model are one query.
+  is too strong a consequence for an author to inherit by silence. Pairing a
+  judgment with `reject` is the riskiest thing the format can express, because a
+  language model can decide two identical proposals differently and `reject`
+  leaves no appeal. It is published rather than refused, and made findable: a
+  constraint is an entry of its own, so the unappealable rules a model states
+  are one query over them.
 
   They are two keys because they answer different questions, and neither one
   implies the other. A `low` rule can still be an absolute refusal, and a

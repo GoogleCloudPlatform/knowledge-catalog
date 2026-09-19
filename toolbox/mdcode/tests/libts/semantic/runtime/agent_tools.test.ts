@@ -13,12 +13,12 @@ import {describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import {actionTools, callableTools, describeOutcome, entityTools, modelTools} from '../../../../src/libts/semantic/runtime/agent_tools';
+import * as spanner from '../../../../src/libts/gcp/spanner';
 import {Action, Constraint, Entity, SemanticModel} from '../../../../src/libts/semantic/ir';
 import {loadModels} from '../../../../src/libts/semantic/loader';
+import {actionTools, callableTools, describeOutcome, entityTools, modelTools} from '../../../../src/libts/semantic/runtime/agent_tools';
 import {Judge} from '../../../../src/libts/semantic/runtime/judge';
 import {SemanticRuntime} from '../../../../src/libts/semantic/runtime/runtime';
-import * as spanner from '../../../../src/libts/gcp/spanner';
 
 const FIXTURES = path.join(__dirname, '..', 'fixtures');
 
@@ -215,8 +215,13 @@ describe('action tools', () => {
   });
 
   test('the tool description includes the gating constraint rule text', () => {
-    expect(tools[0].description).toContain(
-        'RequestedQuantityIsPositive: quantity > 0. A request must be for at least one unit.');
+    expect(tools[0].description)
+        .toContain(
+            'OrderWithinCustomerCredit: The resulting ' +
+            'orders.o_totalprice must not exceed the credit this customer ' +
+            'has on record. That figure is not stated in the arguments, so ' +
+            'read it before answering. An order cannot exceed the credit on ' +
+            'record for this customer.');
   });
 });
 
@@ -238,10 +243,10 @@ describe('a tool this runtime would refuse', () => {
 
   test('a guarded action is not runnable while nothing checks the guard', () => {
     const guarded = withExecutor(
-        model, {...RUNNABLE, guards: ['RequestedQuantityIsPositive']});
+        model, {...RUNNABLE, guards: ['OrderWithinCustomerCredit']});
     const [tool] = actionTools({runtime: rt(guarded)});
     expect(tool.runnable).toBe(false);
-    expect(tool.unavailable).toContain('RequestedQuantityIsPositive');
+    expect(tool.unavailable).toContain('OrderWithinCustomerCredit');
     expect(tool.unavailable).toContain('refused rather than run unchecked');
   });
 
@@ -297,7 +302,7 @@ describe('what counts as runnable is the runtime\'s answer, not a copy', () => {
     // have, has no way to find that out.
     const advisory: Constraint = {
       name: 'AmountIsLarge',
-      expression: 'quantity > 1000',
+      judgment: 'A quantity over 1000 should be called out.',
       onViolation: 'warn',
     };
     const [tool] =
@@ -309,9 +314,12 @@ describe('what counts as runnable is the runtime\'s answer, not a copy', () => {
   test('a guard naming nothing the model declares still withholds it', () => {
     // The runtime refuses this: a name it cannot resolve is not something to
     // guess about. A tool that called it anyway would fail every time.
-    const other: Constraint = {name: 'SomethingElse', expression: 'x > 0'};
-    const [tool] =
-        actionTools({runtime: rt(guardedBy(other, 'NoSuchRule'))});
+    const other: Constraint = {
+      name: 'SomethingElse',
+      judgment: 'Something else must hold.',
+      onViolation: 'reject',
+    };
+    const [tool] = actionTools({runtime: rt(guardedBy(other, 'NoSuchRule'))});
     expect(tool.runnable).toBe(false);
     expect(tool.unavailable).toContain('NoSuchRule');
   });
@@ -360,20 +368,23 @@ describe('what counts as runnable is the runtime\'s answer, not a copy', () => {
     expect(tool.actionName).toBe('PlaceOrder');
   });
 
-  test('a judge does not make an expression computable', () => {
-    // Supplying a judge must not widen what is offered past what it settles.
-    // A caller sent to fetch a judge, who fetched one and was refused again,
-    // has been sent the wrong way.
-    const computable: Constraint = {
+  test(
+      'a judge does not make a rule out of a constraint that states none',
+      () => {
+        // Supplying a judge must not widen what is offered past what it
+        // settles, and there is nothing to put to a judge here. A caller sent
+        // to fetch a judge, who fetched one and was refused again, has been
+        // sent the wrong way.
+        const bodyless: Constraint = {
       name: 'QuantityIsPositive',
-      expression: 'quantity > 0',
       onViolation: 'reject',
     };
-    const [tool] = actionTools(
-        {runtime: rt(guardedBy(computable, 'QuantityIsPositive')),
-         judge: neverAsked});
+        const [tool] = actionTools({
+          runtime: rt(guardedBy(bodyless, 'QuantityIsPositive')),
+          judge: neverAsked,
+        });
     expect(tool.runnable).toBe(false);
-    expect(tool.unavailable).toContain('does not evaluate constraints');
+        expect(tool.unavailable).toContain('states no rule to put to a judge');
   });
 });
 
@@ -383,13 +394,14 @@ describe('what counts as runnable is the runtime\'s answer, not a copy', () => {
 // never sees a dead tool and one that spends a turn -- and a transaction --
 // finding out. These are the answers that were previously reached only where
 // the runtime binds, which is inside the transaction.
-describe('a binding this runtime cannot fill is refused before the store', () => {
+describe(
+    'a binding this runtime cannot fill is refused before the store', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
 
   test('an object reference to a composite-keyed entity', () => {
-    // `customer` is the type of PlaceOrder's entity-typed parameter. Give it a
-    // two-part key and no single statement parameter can carry the reference,
-    // so binding refuses -- whatever row the caller named.
+        // `customer` is the type of PlaceOrder's entity-typed parameter. Give
+        // it a two-part key and no single statement parameter can carry the
+        // reference, so binding refuses -- whatever row the caller named.
     const composite = {
       ...model,
       entities: model.entities.map(
@@ -397,16 +409,17 @@ describe('a binding this runtime cannot fill is refused before the store', () =>
               {...e, keys: ['c_custkey', 'c_nationkey']} :
               e),
     };
-    const [tool] = actionTools(
-        {runtime: rt(withExecutor(composite, RUNNABLE))});
+        const [tool] =
+            actionTools({runtime: rt(withExecutor(composite, RUNNABLE))});
     expect(tool.runnable).toBe(false);
     expect(tool.unavailable).toContain('2 parts');
   });
 
-  test('an integer-keyed entity the action creates is still offered', () => {
-    // `orders` is keyed by o_orderkey, an Integer. The runtime writes no key
-    // of its own, so the type of a column it never fills is not a reason to
-    // withhold the tool.
+      test(
+          'an integer-keyed entity the action creates is still offered', () => {
+            // `orders` is keyed by o_orderkey, an Integer. The runtime writes
+            // no key of its own, so the type of a column it never fills is not
+            // a reason to withhold the tool.
     const creates = withExecutor(model, {
       ...RUNNABLE,
       affects: [{concept: 'orders', operation: 'create'}],
@@ -421,11 +434,12 @@ describe('a binding this runtime cannot fill is refused before the store', () =>
     const typed = {
       ...creates,
       entities: creates.entities.map(
-          e => e.name === 'orders' ?
-              {
+                  e => e.name === 'orders' ? {
                 ...e,
                 fields: e.fields.map(
-                    f => f.name === 'o_orderkey' ? {...f, type: 'Integer' as const} : f),
+                        f => f.name === 'o_orderkey' ?
+                            {...f, type: 'Integer' as const} :
+                            f),
               } :
               e),
     };
@@ -434,8 +448,9 @@ describe('a binding this runtime cannot fill is refused before the store', () =>
   });
 
   test('a handler is not held to it, because it writes its own DML', () => {
-    // A handler is given `refs` whole and may spell a composite key across as
-    // many parameters as it likes. The question is not the handler's to answer.
+        // A handler is given `refs` whole and may spell a composite key across
+        // as many parameters as it likes. The question is not the handler's to
+        // answer.
     const composite = {
       ...model,
       entities: model.entities.map(
@@ -461,7 +476,7 @@ describe('what a tool says it is gated by', () => {
   test('an advisory guard is not announced as a gate', () => {
     const advisory: Constraint = {
       name: 'AmountIsLarge',
-      expression: 'quantity > 1000',
+      judgment: 'A quantity over 1000 should be called out.',
       onViolation: 'warn',
     };
     const base = withExecutor(model, {...RUNNABLE, guards: ['AmountIsLarge']});
@@ -474,7 +489,7 @@ describe('what a tool says it is gated by', () => {
   test('a guard that does stop the call is', () => {
     const blocking: Constraint = {
       name: 'QuantityIsSane',
-      expression: 'quantity > 0',
+      judgment: 'The quantity argument must be positive.',
       description: 'Ask finance first.',
       onViolation: 'reject',
     };
@@ -482,8 +497,10 @@ describe('what a tool says it is gated by', () => {
     const [tool] = actionTools(
         {runtime: rt({...base, constraints: [blocking]})});
     expect(tool.description).toContain('gated by QuantityIsSane');
-    expect(tool.description).toContain(
-        '- QuantityIsSane: quantity > 0. Ask finance first.');
+    expect(tool.description)
+        .toContain(
+            '- QuantityIsSane: The quantity argument must be positive. ' +
+            'Ask finance first.');
   });
 
   test('authored parameter descriptions normalize terminators and keep temporal format guidance', () => {
@@ -640,7 +657,7 @@ semantic_model:
 `).models[0];
   const [lineItem] = entityTools({runtime: rt(model)});
 
-  test("the field's own description leads", () => {
+  test('the field\'s own description leads', () => {
     const type = lineItem.parameters.find(p => p.name === 'type')!;
     expect(type.description.startsWith('item, tax, fee, or credit.'))
         .toBe(true);
@@ -827,7 +844,7 @@ describe('sorting the tools an adapter can actually offer', () => {
       ...withExecutor(model, {...RUNNABLE, guards: ['UnderReview']}),
       constraints: [{
         name: 'UnderReview',
-        expression: 'quantity < 25',
+                     judgment: 'The quantity must be under 25.',
         onViolation: 'escalate',
       }] as Constraint[],
     };
@@ -903,11 +920,12 @@ describe('what a caller is told about an outcome', () => {
     const result = describeOutcome({
       status: 'committed',
       refs: {},
-      warnings: ["'CreditIsJustified' was not checked: no judge to ask."],
+      warnings: ['\'CreditIsJustified\' was not checked: no judge to ask.'],
     });
     expect(result.applied).toBe(true);
-    expect(result.warnings).toEqual(
-        ["'CreditIsJustified' was not checked: no judge to ask."]);
+    expect(result.warnings).toEqual([
+      '\'CreditIsJustified\' was not checked: no judge to ask.'
+    ]);
   });
 
   test('a commit with nothing to report carries no warnings key', () => {
@@ -916,8 +934,8 @@ describe('what a caller is told about an outcome', () => {
   });
 
   test('a refusal is a failure the caller can read and act on', () => {
-    const result =
-        describeOutcome({status: 'error', message: "No Order matches 'xyz'."});
+    const result = describeOutcome(
+        {status: 'error', message: 'No Order matches \'xyz\'.'});
     expect(result.applied).toBe(false);
     expect(result.reason).toContain('No Order matches');
     expect(result.whatToDo).toContain('Nothing was written');

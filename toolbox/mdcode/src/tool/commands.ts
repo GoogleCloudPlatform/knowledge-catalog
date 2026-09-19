@@ -3,41 +3,36 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as yaml from 'yaml';
 
 import * as kcmd from '../libts';
 import {BigQueryClient} from '../libts/gcp/bigquery';
 import * as context from '../libts/gcp/context';
 import * as dataplex from '../libts/gcp/dataplex';
+import {GeminiJudge} from '../libts/gcp/gemini';
 import {SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets} from '../libts/semantic/deployment_target';
-import {ActionTool, EntityTool, modelTools} from '../libts/semantic/runtime/agent_tools';
-import {Action, ActionParameter, constraintEvaluation} from '../libts/semantic/ir';
+import {Action, ActionParameter} from '../libts/semantic/ir';
 import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
-import {GeminiJudge} from '../libts/gcp/gemini';
+import {AvailabilityReport, DEFAULT_PROFILE, mergeProfileOntoDoc, pruneUnavailable,} from '../libts/semantic/resolve_profiles';
+import {ActionTool, EntityTool, modelTools} from '../libts/semantic/runtime/agent_tools';
+import {dialectFor} from '../libts/semantic/runtime/dialect';
 import {JudgeStore} from '../libts/semantic/runtime/judge';
 import {modelJudgeStore, readableEntities} from '../libts/semantic/runtime/judge_store';
 import {isParameterRequired, runAction} from '../libts/semantic/runtime/run_action';
+import {createSemanticRuntimes, runtimeClient, SemanticRuntime} from '../libts/semantic/runtime/runtime';
+import {dataClientFor, Store} from '../libts/semantic/runtime/store';
 import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryDataSources, validatePushRequirements, validateRunnable} from '../libts/semantic/validate';
-import {createSemanticRuntimes, runtimeClient, SemanticRuntime} from '../libts/semantic/runtime/runtime';
-import {dialectFor} from '../libts/semantic/runtime/dialect';
-import {dataClientFor, Store} from '../libts/semantic/runtime/store';
-import {
-  AvailabilityReport,
-  DEFAULT_PROFILE,
-  mergeProfileOntoDoc,
-  pruneUnavailable,
-} from '../libts/semantic/resolve_profiles';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
-import * as yaml from 'yaml';
 
 
 export interface InitOptions {
@@ -399,17 +394,18 @@ export async function push(options: PushOptions): Promise<number> {
 
     // Load + validate a profile's merged documents into deployable models,
     // sharing one IR across both legs. `prune` drops each unbound field (and
-    // whatever depends on it) so a deployed graph presents only what its binding
-    // answers; a catalog-only push leaves it off to publish the whole logical
-    // model. Returns the models and the target partition the graph legs need, or
-    // null after reporting an error.
-    const prepareModels =
-        async(docs: Array<{name: string; text: string}>, profileName: string,
-              {prune}: {prune: boolean}):
-            Promise<{models: LoadedModel[]; bqModels: LoadedModel[];
-                     spannerModels: LoadedModel[]}|null> => {
-          const loaded = loadSemanticModels(
-              docs, {defaultProject, bindingOptional: !prune});
+    // whatever depends on it) so a deployed graph presents only what its
+    // binding answers; a catalog-only push leaves it off to publish the whole
+    // logical model. Returns the models and the target partition the graph legs
+    // need, or null after reporting an error.
+    const prepareModels = async(
+        docs: Array<{name: string; text: string}>, profileName: string,
+        {prune}: {prune: boolean}): Promise<{
+      models: LoadedModel[]; bqModels: LoadedModel[];
+      spannerModels: LoadedModel[]
+    }|null> => {
+      const loaded =
+          loadSemanticModels(docs, {defaultProject, bindingOptional: !prune});
           if (loaded.error) {
             console.error('Error:', loaded.error);
             return null;
@@ -1529,10 +1525,10 @@ function describeParameter(p: ActionParameter): string {
 // The command line that runs an action, with a placeholder per required
 // parameter.
 //
-// A guard settled by judgment needs `--judge`, and the line says so, because a
-// suggested command that is certain to be refused is worse than no suggestion:
-// the reader tries it, reads a refusal, and has to work out that the fix is a
-// flag this listing knew about all along.
+// A guarded action needs `--judge`, and the line says so, because a suggested
+// command that is certain to be refused is worse than no suggestion: the reader
+// tries it, reads a refusal, and has to work out that the fix is a flag this
+// listing knew about all along.
 //
 // `--judge-reads-store` rides along wherever the model has tables to read, for
 // that same reason one step further on. A judgment comparing the call against
@@ -1546,8 +1542,7 @@ function runLine(a: Action, runtime: SemanticRuntime): string {
                    .map(p => ` --arg ${p.name}=<${p.type}>`)
                    .join('');
   const guards = new Set(a.guards ?? []);
-  const judged = (model.constraints ?? []).some(
-      c => guards.has(c.name) && constraintEvaluation(c) === 'judged');
+  const judged = (model.constraints ?? []).some(c => guards.has(c.name));
   const canRead = judged && !!runtime.store &&
       readableEntities(runtime, dialectFor(runtime.store)).length > 0;
   return `kcmd action run ${a.name}${judged ? ' --judge' : ''}${
