@@ -11,8 +11,9 @@ Which backend a push deploys to — BigQuery or Spanner — is set by the model'
 deployment target, or by the binding profile you select; it is not a
 command-line flag. What reaches Knowledge Catalog depends on the push as well: a
 catalog-only or purely logical push records the whole model, while a push that
-also deploys a graph records only the part the graph binds. Both are detailed
-under [To Knowledge Catalog](#to-knowledge-catalog).
+also deploys a graph records only the part the graph binds — and whichever way
+you push, only one binding is recorded, even when the model defines several. All
+three are detailed under [To Knowledge Catalog](#to-knowledge-catalog).
 
 ## The round-trip matrix
 
@@ -44,6 +45,7 @@ agree on every structural row and differ only where a Spanner target has no
 | Model-level `description` / `instructions`                     | on the model entry              | ✓⁸                                             | — dropped⁸                                                           | — dropped⁸                                                           |
 | Model-level `ai_context.synonyms` / `examples`                 | — not stored                    | —                                              | — dropped                                                            | — dropped                                                            |
 | Deployment target                                              | recorded on the model entry     | ✓                                              | names the graph                                                      | names the graph                                                      |
+| Binding profile (alternate physical binding)                   | — only the selected one¹⁴       | —¹⁴                                            | one graph per profile (`--all-profiles`)                             | one graph per profile (`--all-profiles`)                             |
 | Vendor-dialect `expression` variant (non-canonical `dialects[]` entry)¹¹ | — not stored          | —                                              | fallback — builds the DDL only when no canonical `expression` exists | fallback — builds the DDL only when no canonical `expression` exists |
 | `custom_extensions` (beyond the deployment target)             | — not stored                    | —⁹                                             | — not in graph                                                       | — not in graph                                                       |
 
@@ -114,6 +116,11 @@ agree on every structural row and differ only where a Spanner target has no
     Every other push target deploys nothing for it and warns once. Publishing is
     all that happens to a constraint; no component checks one against live
     data.
+14. **Binding profiles.** A model may define several physical realizations, one
+    per binding profile, and `--all-profiles` deploys a graph for each of them in
+    a single run. Knowledge Catalog records one: the profile named by `--profile`,
+    otherwise the default binding. Nothing in the catalog marks which profile that
+    was, or that the others exist. See [Binding profiles](profiles.md).
 
 ## To Knowledge Catalog
 
@@ -134,6 +141,23 @@ authored model.
 A logical model still produces complete entries. Each entity's `source` is
 recorded empty (`resources: []`) because there is no table behind it, and a
 relationship that carries no join columns is skipped with a warning.
+
+**One binding, not all of them.** A model may define several physical
+realizations — an analytical binding onto BigQuery and an operational one onto
+Spanner, say — and `kcmd push --all-profiles` deploys a graph for each. The
+catalog leg does not fan out with it: it runs once, against the profile named by
+`--profile`, otherwise the default binding. So a bare `kcmd push` and a
+`kcmd push --all-profiles` write the same entries and differ only in how many
+graphs they deploy.
+
+Nor do successive pushes accumulate. Entry ids are derived from logical names
+alone — model, entity, metric — with no profile component, so pushing a second
+profile reconciles the catalog to *that* binding rather than adding to what the
+first one wrote: shared elements have their `source` swapped to the new profile's
+tables, and an entity or metric the new binding does not answer is deleted, not
+left behind. The catalog therefore describes one physical realization at a time,
+and never says that the others exist. A `pull` returns whichever was written
+last. Keep the profile files — the catalog is not their store.
 
 By default the catalog does **not** store the SQL expressions: the published
 system-type templates do not yet carry a per-field `semantics` block or a
