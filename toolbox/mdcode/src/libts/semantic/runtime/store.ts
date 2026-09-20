@@ -342,9 +342,9 @@ export async function closeStore(store: Store): Promise<void> {
  *
  * Here rather than in whichever caller needed it first, because more than one
  * now answers "where would this land" -- the listing a person reads, the
- * `--store` line a script reads, and the section a generated skill writes into
- * a file that outlives the run. Two of those disagreeing is a reader sent to
- * the wrong database.
+ * `--print-store` line a script reads, and the section a generated skill writes
+ * into a file that outlives the run. Two of those disagreeing is a reader sent
+ * to the wrong database.
  */
 export function storeLine(store: Store): string {
   switch (store.kind) {

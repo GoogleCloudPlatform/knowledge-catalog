@@ -143,6 +143,60 @@ describe('kcmd profiles', () => {
     expect(code).toBe(0);
     expect(logs.join('\n')).not.toContain('(default)');
   });
+
+  test('`--profile` reports only the profile it names', async () => {
+    writeWorkspace('analytical');
+    const code = await profiles({profile: 'operational'});
+    expect(code).toBe(0);
+    const out = logs.join('\n');
+    expect(out).toContain("profile 'operational'");
+    expect(out).not.toContain("profile 'analytical'");
+  });
+
+  // An empty report would read as "this profile withholds nothing", which is
+  // the opposite of what a misspelled name means.
+  test('`--profile` naming an undeclared profile is an error', async () => {
+    writeWorkspace('analytical');
+    const code = await profiles({profile: 'operatonal'});
+    expect(code).toBe(1);
+    const out = logs.join('\n');
+    expect(out).toContain("no profile 'operatonal'");
+    expect(out).toContain("'analytical', 'operational'");
+  });
+
+  // A bare `--profile` reaches cac as `true` and `--no-profile` as `false`.
+  // Neither names a profile, so neither may narrow the report -- filtering on
+  // one would report zero profiles for a flag the caller left blank.
+  for (const profile of [true, false]) {
+    test(`\`--profile ${profile}\` narrows nothing`, async () => {
+      writeWorkspace('analytical');
+      const code = await profiles({profile});
+      expect(code).toBe(0);
+      const out = logs.join('\n');
+      expect(out).toContain("profile 'analytical'");
+      expect(out).toContain("profile 'operational'");
+    });
+  }
+});
+
+
+// `--print-store` is a read of the binding, never a choice of one: it prints
+// where the selected profile deploys to and nothing else, so a setup script can
+// address the same database the actions write to instead of naming it twice.
+describe('kcmd profiles --print-store', () => {
+  test('prints the selected profile\'s store on one line', async () => {
+    writeWorkspace('operational');
+    const code = await profiles({printStore: true});
+    expect(code).toBe(0);
+    expect(logs).toEqual(['acme-ops/prod/commerce']);
+  });
+
+  test('`--profile` is what picks which store is printed', async () => {
+    writeWorkspace('operational');
+    const code = await profiles({printStore: true, profile: 'analytical'});
+    expect(code).toBe(0);
+    expect(logs).toEqual(['bigquery:acme-analytics/sales']);
+  });
 });
 
 

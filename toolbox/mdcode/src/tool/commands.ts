@@ -711,12 +711,73 @@ export async function push(options: PushOptions): Promise<number> {
 }
 
 
+export interface ProfilesOptions {
+  // `string|boolean` for the same reason push's is: cac yields `true` for a
+  // bare `--profile` and `false` for `--no-profile`.
+  profile?: string|boolean;
+  // `--print-store`: print the store this profile deploys to and nothing else.
+  printStore?: boolean;
+}
+
+
+// Prints the store one profile deploys to, on a line with nothing else on it.
+//
+//   kcmd profiles --print-store [--profile <name>]
+//
+// A script that creates, seeds or drops the database an action writes to has
+// to address the database the action writes to, and the profile's deployment
+// target is what decides that; naming it a second time in the script is a
+// second place to name it differently. So the script asks. The answer is a
+// read of the binding, never a choice of one -- `--profile` is the only thing
+// that picks, here as everywhere else.
+//
+// Returns a process exit code (0 on success).
+async function printStore(options: ProfilesOptions): Promise<number> {
+  const ctx = context.ApiContext.default();
+  const named =
+      typeof options.profile === 'string' ? options.profile : undefined;
+
+  const opened = await createSemanticRuntimes({profile: named, ctx});
+  if ('error' in opened) {
+    console.error(`Error: ${opened.error}`);
+    return 1;
+  }
+
+  // One line, because the caller is `STORE=$(kcmd profiles --print-store)` and
+  // a second line makes that variable address the wrong database. A scope
+  // holding several models has no single answer, so it says so instead.
+  if (opened.length > 1) {
+    console.error(
+        `Error: this scope holds ${opened.length} models, which may name ` +
+        `different databases, so --print-store has no single answer. Narrow ` +
+        `the scope to one model.`);
+    return 1;
+  }
+  for (const {store, storeError} of opened) {
+    if (!store) {
+      console.error(`Error: ${storeError}`);
+      return 1;
+    }
+    console.log(storeLine(store));
+  }
+  return 0;
+}
+
+
 // Lists a semantic model's binding profiles and, per profile, its resolved
 // deployment target and sources plus what it cannot answer (the availability
 // report). Read-only: it merges and prunes each profile the way push does, but
 // deploys nothing and runs no live probe, so a user can see coverage before
 // choosing a profile. Returns a process exit code (0 on success).
-export async function profiles(): Promise<number> {
+export async function profiles(options: ProfilesOptions = {}): Promise<number> {
+  if (options.printStore) return await printStore(options);
+
+  // `--profile` narrows the report to one profile; anything that is not a name
+  // (a bare `--profile`, `--no-profile`) narrows nothing, the same read every
+  // other command does.
+  const only =
+      typeof options.profile === 'string' ? options.profile : undefined;
+
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
   if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {
@@ -734,13 +795,26 @@ export async function profiles(): Promise<number> {
     return 0;
   }
 
+  // Set when `--profile` names something no model declares, so a typo exits
+  // non-zero rather than reporting an empty scope as a clean one.
+  let missing = false;
+
   for (const doc of docs) {
     console.log(`Model '${doc.name}' (${source.entryGroup}):`);
-    const available = layout.profileDocuments(doc.name);
-    if (!available.length) {
+    const declared = layout.profileDocuments(doc.name);
+    if (!declared.length) {
       console.log(
           `  no binding profiles; the model document is its own inline ` +
           `'default' binding.`);
+      continue;
+    }
+    const available = only ? declared.filter(p => p.name === only) : declared;
+    // Naming a profile the model does not declare is a typo, not an empty
+    // report: saying nothing would read as "this profile withholds nothing".
+    if (only && !available.length) {
+      console.error(`  no profile '${only}'; this model declares ${
+          declared.map(p => `'${p.name}'`).join(', ')}.`);
+      missing = true;
       continue;
     }
     for (const {name, text} of available) {
@@ -806,7 +880,7 @@ export async function profiles(): Promise<number> {
       }
     }
   }
-  return 0;
+  return missing ? 1 : 0;
 }
 
 
@@ -1181,8 +1255,6 @@ export interface ActionOptions {
   // `string|boolean` for the same reason push's is: cac yields `true` for a
   // bare `--profile` and `false` for `--no-profile`.
   profile?: string|boolean;
-  // `--store`: print where a run would land and nothing else.
-  store?: boolean;
 }
 
 
@@ -1253,32 +1325,6 @@ const RUN_INDENT = '    ';
 // is waiting on instead.
 function listActions(
     runtimes: SemanticRuntime[], options: ActionOptions): number {
-  // `--store` answers one question -- where would a run land -- on one line
-  // with nothing else on it, so a script can read it. Creating, seeding and
-  // dropping the database an action writes to has to address the database the
-  // action writes to, and the profile's deployment target is what decides
-  // that; a second place to say it is a second place to say it differently.
-  if (options.store) {
-    // One line, because the caller is `STORE=$(kcmd action-list --store)` and
-    // a second line makes that variable address the wrong database. A scope
-    // holding several models has no single answer, so it says so instead.
-    if (runtimes.length > 1) {
-      console.error(
-          `Error: this scope holds ${runtimes.length} models, which may ` +
-          `name different databases, so --store has no single answer. Narrow ` +
-          `the scope to one model.`);
-      return 1;
-    }
-    for (const {store, storeError} of runtimes) {
-      if (!store) {
-        console.error(`Error: ${storeError}`);
-        return 1;
-      }
-      console.log(storeLine(store));
-    }
-    return 0;
-  }
-
   for (const runtime of runtimes) {
     const {model, store, storeError, profile, entryGroup} = runtime;
     console.log(`Model '${model.name}' (${entryGroup}), profile '${profile}':`);

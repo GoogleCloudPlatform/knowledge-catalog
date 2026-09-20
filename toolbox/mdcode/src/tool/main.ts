@@ -97,10 +97,16 @@ cli.command('push', 'Push catalog entries')
 cli.command(
        'profiles',
        'List a semantic model\'s binding profiles and what each can answer')
-    .action(async () => {
+    .option(
+        '--profile [name]',
+        'Report only this binding profile; defaults to every profile the model declares')
+    .option(
+        '--print-store',
+        'Print only the store the profile deploys to, on one line and nothing else, for a script to read: project/instance/database for Spanner, and the backend named ahead of the path for any other store')
+    .action(async (options) => {
       let exitCode = 1;
       try {
-        exitCode = await commands.profiles();
+        exitCode = await commands.profiles(options);
       } catch (err: any) {
         console.error('Error:', err.message || err);
         exitCode = 1;
@@ -138,9 +144,6 @@ cli.command(
     .option(
         '--profile [name]',
         'Read the model under this binding profile; its deployment target names the database the action runs against; defaults to default_profile, else the inline bindings')
-    .option(
-        '--store',
-        'Print only where a run would land: project/instance/database for Spanner, and the backend named ahead of the path for any other store')
     .action(async (name, options) => {
       let exitCode = 1;
       try {

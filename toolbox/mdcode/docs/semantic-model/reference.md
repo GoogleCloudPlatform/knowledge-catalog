@@ -63,6 +63,31 @@ scope you authored under. See [Pull](README.md#pull) for behavior.
 | `--dry-run` | Reconstruct from the catalog and report what would be written, but write no files. |
 | `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. |
 
+### profiles
+
+```bash
+kcmd profiles
+```
+
+Reports each binding profile the model declares: its deployment target, the
+source each entity binds to, and what the profile cannot answer or cannot run.
+Read-only — it merges and prunes each profile the way `push` does, but deploys
+nothing and runs no live probe, so you can compare coverage before choosing one.
+
+| Flag | Effect |
+|------|--------|
+| `--profile [name]` | Report only this profile. Naming one the model does not declare is an error, not an empty report. Defaults to every profile. |
+| `--print-store` | Print only the store the profile deploys to, on one line and nothing else, for a script to read rather than parse out of the report: `project/instance/database` for a Spanner store, and the backend named ahead of the path for any other (`alloydb:project/region/cluster/instance/database`, `bigquery:project/dataset`). Errors when the scope holds more than one model, since those may name different databases. |
+
+This is a read of the binding, never a choice of one. Nothing on any `kcmd`
+command line names a store directly; `--profile` selects a binding and the
+binding's deployment target decides where writes land. A script that creates,
+seeds or drops that database asks for the name rather than repeating it:
+
+```bash
+IFS=/ read -r PROJECT INSTANCE DATABASE <<<"$(kcmd profiles --print-store)"
+```
+
 ### action-list
 
 ```bash
@@ -76,7 +101,9 @@ model. See [Run it](actions.md#7-run-it).
 | Flag | Effect |
 |------|--------|
 | `--profile [name]` | Read the model under this binding profile. Its deployment target names the database the action runs against, so this is how you change stores. Defaults to `default_profile`, else the model's inline bindings. |
-| `--store` | Print only where a run would land, on one line and nothing else, for a script to read rather than parse back out of the listing: `project/instance/database` for a Spanner store, `bigquery:project/dataset` for a BigQuery one. Errors when the scope holds more than one model, since those may name different databases. |
+
+To read back the store a profile deploys to, ask the binding rather than the
+listing: [`profiles --print-store`](#profiles).
 
 ### action-run
 

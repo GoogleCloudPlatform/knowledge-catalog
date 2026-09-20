@@ -256,13 +256,13 @@ caller's. Only the internal one is built here.
 ## 2. Create the store
 
 Four `gcloud` commands create the store, and none of them names a database. Ask
-the model where it lives instead — `kcmd action-list --store` prints the
+the binding where it lives instead — `kcmd profiles --print-store` prints the
 deployment target as `project/instance/database` and nothing else, so a shell
 can read it:
 
 ```bash
 cd demo/semantic-model/agent
-IFS=/ read -r PROJECT INSTANCE DATABASE <<<"$(../../../dist/kcmd action-list --store)"
+IFS=/ read -r PROJECT INSTANCE DATABASE <<<"$(../../../dist/kcmd profiles --print-store)"
 ```
 
 Naming it a second time here is how you end up seeding one database while the
