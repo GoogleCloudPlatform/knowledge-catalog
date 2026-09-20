@@ -146,5 +146,9 @@ describe('kcmd skills-generate: two models, one name', () => {
     const code = await skillsGenerate({out: 'skills'});
     expect(code).toBe(1);
     expect(logs.join('\n')).toContain('both name');
+    // And neither is on disk. The collision is a fault in the scope, not in
+    // one model: whichever happened to be generated first would otherwise be
+    // left behind as the answer to a question the command refused to answer.
+    expect(fs.existsSync(path.join('skills', 'sales-orders'))).toBe(false);
   });
 });

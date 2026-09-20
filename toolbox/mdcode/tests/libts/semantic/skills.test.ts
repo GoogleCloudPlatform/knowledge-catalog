@@ -566,6 +566,32 @@ describe('text that would otherwise break the output', () => {
         .toBe(header.split('|').length);
   });
 
+  test('a pipe in an action name does not split a table row', () => {
+    // `action.name` is `z.string()`, and a pipe in one splits the row even
+    // inside backticks -- in the router table an agent reads to pick a page.
+    const piped =
+        withAction(model, {...RUNNABLE, name: 'Place|Order'} as never);
+    const skill = generate(rt(piped)).files['SKILL.md'];
+    const header = skill.split('\n').find(l => l.startsWith('| Action |'))!;
+    const row = skill.split('\n').find(l => l.startsWith('| `Place'))!;
+    expect(row.replace(/\\\|/g, '').split('|').length)
+        .toBe(header.split('|').length);
+  });
+
+  test('a pipe in an affected concept does not split a table row', () => {
+    // Same for the blast-radius table on the reference page: concept and field
+    // names are as unconstrained as the action's own.
+    const piped = withAction(model, {
+      ...RUNNABLE,
+      affects: [{concept: 'a|b', operation: 'create', fields: ['x|y']}],
+    });
+    const page = generate(rt(piped)).files['references/place-order.md'];
+    const header = page.split('\n').find(l => l.startsWith('| Concept |'))!;
+    const row = page.split('\n').find(l => l.startsWith('| `a'))!;
+    expect(row.replace(/\\\|/g, '').split('|').length)
+        .toBe(header.split('|').length);
+  });
+
   test('an action name cannot write outside the skill directory', () => {
     // An action name is a free string -- `actionSchema.name` is `z.string()`
     // and nothing checks its characters -- and it used to reach the filesystem
@@ -649,6 +675,34 @@ describe('a description that does not fit', () => {
     // The count is of what the model declares, not of what is listed, so a
     // partial list reads as one.
     expect(description).toContain('Declares 60 actions:');
+  });
+
+  test('dropping a name never lengthens the sentence', () => {
+    // `and 1 more` is ten characters, and the name it stands in for may be
+    // fewer: dropping the last of two short names makes the sentence longer
+    // than the list it came from. Taking that step and then cutting to the
+    // limit cuts the longer of the two, so the description loses characters of
+    // the first name the limit never asked for and ends part-way through
+    // `and 1 more` -- an abridgement marker reading as the tail of a name.
+    //
+    // The sizes are what make that visible rather than arbitrary. The first
+    // name has to very nearly fill the budget, so the two forms already differ
+    // where the cut lands; the second has to be short enough to trigger the
+    // step and long enough to push the list over.
+    const twoNames: SemanticModel = {
+      ...model,
+      actions: [
+        {...model.actions![0], ...RUNNABLE, name: 'A'.repeat(925)} as Action,
+        {...model.actions![0], ...RUNNABLE, name: 'BBBBBBB'} as Action,
+      ],
+    };
+    const description = frontmatter(generate(rt(twoNames)).files['SKILL.md'])
+                            .description as string;
+    expect(description.length).toBeLessThanOrEqual(1024);
+    expect(description).not.toContain('and 1');
+    expect(description).toContain(
+        'Use when a request asks to change this data rather than only read ' +
+        'it.');
   });
 
   test('a list that fits is not abridged', () => {

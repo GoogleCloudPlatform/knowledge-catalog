@@ -261,7 +261,7 @@ function skillDocument(
       // description would put its instructions -- or the literal "Calling this
       // will not work" -- into the column a client scans to pick a page.
       const summary = firstLine(actionFor(tool, model)?.description ?? '');
-      out.push(`| \`${tool.actionName}\` | ${
+      out.push(`| \`${cell(tool.actionName)}\` | ${
           cell(summary || `Runs ${tool.actionName}.`)} | \`${
           paths.get(tool.actionName)}\` |`);
     }
@@ -311,11 +311,17 @@ function actsSentence(actions: ActionTool[], budget: number): string {
   let sentence = `${head}${names.join(', ')}.`;
   for (let shown = names.length - 1; shown >= 1; shown--) {
     if (sentence.length <= budget) return sentence;
-    sentence = `${head}${names.slice(0, shown).join(', ')}, and ${
+    const dropped = `${head}${names.slice(0, shown).join(', ')}, and ${
         names.length - shown} more.`;
+    // Dropping a name does not always shorten the sentence: `and 1 more` is
+    // ten characters and the name it stands in for may be fewer, so with short
+    // names the abridged form runs longer than the full list. Keep whichever
+    // is shorter, or a step taken for room ends up costing it -- and the cut
+    // below would then be made in the longer of the two.
+    if (dropped.length < sentence.length) sentence = dropped;
   }
-  // A single name is already over budget. There is no list left to shorten, so
-  // cut it and let the sentence after this one carry the routing signal.
+  // Nothing left to drop and it still does not fit, so cut it and let the
+  // sentence after this one carry the routing signal.
   return sentence.length <= budget ? sentence : truncate(sentence, budget);
 }
 
@@ -624,8 +630,8 @@ function referenceDocument(
                   '' :
                   `\`${cell(JSON.stringify(p.default))}\``} |` :
           '';
-      out.push(`| \`${p.name}\` | ${p.type} | ${p.required ? 'yes' : 'no'} |${
-          def} ${cell(p.description)} |`);
+      out.push(`| \`${cell(p.name)}\` | ${cell(p.type)} | ${
+          p.required ? 'yes' : 'no'} |${def} ${cell(p.description)} |`);
     }
   } else {
     out.push('This action takes no arguments.');
@@ -708,11 +714,14 @@ function affectsSection(action: Action): string[] {
 }
 
 function affectsRow(a: AffectedConcept): string {
-  const op = a.operation ? `\`${a.operation}\`` : 'unspecified';
+  // Concept and field names are unconstrained strings, and a pipe in one
+  // splits the row even inside backticks -- every column after it shifts by
+  // one, on a page the skill tells an agent to read before calling.
+  const op = a.operation ? `\`${cell(a.operation)}\`` : 'unspecified';
   const fields = a.fields?.length ?
-      a.fields.map(f => `\`${f}\``).join(', ') :
+      a.fields.map(f => `\`${cell(f)}\``).join(', ') :
       (a.operation === 'delete' ? 'the whole record' : 'unspecified');
-  return `| \`${a.concept}\` | ${op} | ${fields} |`;
+  return `| \`${cell(a.concept)}\` | ${op} | ${fields} |`;
 }
 
 

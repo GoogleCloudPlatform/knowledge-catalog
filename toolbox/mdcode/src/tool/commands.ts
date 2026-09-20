@@ -28,7 +28,7 @@ import {modelJudgeStore} from '../libts/semantic/runtime/judge_store';
 import {isParameterRequired, runAction, runLine} from '../libts/semantic/runtime/run_action';
 import {createSemanticRuntimes, runtimeClient, SemanticRuntime} from '../libts/semantic/runtime/runtime';
 import {dataClientFor, storeLine} from '../libts/semantic/runtime/store';
-import {generateSkill} from '../libts/semantic/skills';
+import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryDataSources, validatePushRequirements, validateRunnable} from '../libts/semantic/validate';
 import {Sources} from '../libts/source';
@@ -1446,12 +1446,21 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
   }
 
   const root = options.out ?? 'skills';
-  let failed = false;
+
+  // Everything knowable before a byte is written is settled first, and one
+  // fault stops the whole scope. Interleaving the checks with the writes means
+  // a collision found on the second model is reported after the first has
+  // already been written -- the command refuses the scope and leaves half of
+  // it on disk, under a name it has just said it cannot assign. `generateSkill`
+  // is pure, so ordering the work this way costs only the order.
+  const planned:
+      Array<{model: string; dir: string; generated: SkillPackage;}> = [];
   // A skill name is a lossy form of a model name, so two models in one scope
   // can arrive at one directory. Writing both would leave the second on disk
   // and the first gone, with two "Wrote ..." lines and an exit code of 0
   // saying otherwise.
-  const written = new Map<string, string>();
+  const claimed = new Map<string, string>();
+  let failed = false;
   for (const runtime of opened) {
     const generated = generateSkill({runtime, name: options.name});
     if ('error' in generated) {
@@ -1459,7 +1468,7 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
       failed = true;
       continue;
     }
-    const clash = written.get(generated.name);
+    const clash = claimed.get(generated.name);
     if (clash !== undefined) {
       console.error(
           `Error: models '${clash}' and '${runtime.model.name}' both name ` +
@@ -1468,7 +1477,7 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
       failed = true;
       continue;
     }
-    written.set(generated.name, runtime.model.name);
+    claimed.set(generated.name, runtime.model.name);
 
     // The directory name IS the skill name -- a client that finds them
     // different skips the skill -- so it is taken from what was generated
@@ -1480,10 +1489,15 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
       failed = true;
       continue;
     }
-    // Warned before anything is written, so a reader who does not want this
-    // skill still has the chance not to have it.
+    planned.push({model: runtime.model.name, dir, generated});
+  }
+  if (failed) return 1;
+
+  for (const {model, dir, generated} of planned) {
+    // Warned before this skill is written, so a reader who does not want it
+    // still has the chance not to have it.
     for (const warning of generated.warnings) {
-      console.warn(`Warning: [${runtime.model.name}] ${warning}`);
+      console.warn(`Warning: [${model}] ${warning}`);
     }
     try {
       const keep = new Set(generated.files.map(f => f.path));
@@ -1498,11 +1512,11 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
         console.log(`Removed ${path.join(dir, stale)}`);
       }
     } catch (e) {
-      // One unwritable path must not take the rest of the scope with it, and
-      // must not be reported as a bare errno with no model attached.
-      console.error(
-          `Error: [${runtime.model.name}] could not write under ${dir}: ${
-              e instanceof Error ? e.message : String(e)}`);
+      // A path that will not take a write is the one thing this cannot check
+      // in advance. One of them must not take the rest of the scope with it,
+      // and must not be reported as a bare errno with no model attached.
+      console.error(`Error: [${model}] could not write under ${dir}: ${
+          e instanceof Error ? e.message : String(e)}`);
       failed = true;
     }
   }
