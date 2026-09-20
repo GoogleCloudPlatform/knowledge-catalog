@@ -264,7 +264,8 @@ model with `kcmd skills-generate`, installs it into a coding agent, and gives
 that agent a support request in English. The agent finds the right record and
 performs a write, and the rules that gate the write are settled by the runtime
 rather than by the agent. The skill is a folder of Markdown, so any harness that
-reads the Agent Skill layout takes it as-is.
+reads the Agent Skill layout takes it as-is — the guide runs the same generated
+bytes through Claude Code and Gemini CLI.
 
 It needs a Spanner instance rather than BigQuery, and Vertex AI, because the
 model states its rules in words and a judge settles them.
