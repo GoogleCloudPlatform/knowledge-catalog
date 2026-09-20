@@ -115,7 +115,9 @@ semantic_model:
           - name: target
             type: Account
             description: The account the money goes to.
-          - { name: amount, type: Float }     # a scalar: an ordinary value
+          - name: amount
+            type: Float                       # a scalar: an ordinary value
+            description: How much money to move.
         ai_context:
           instructions: >-
             Resolve both accounts before calling.
@@ -141,9 +143,11 @@ kinds, and give any one executor a single kind only:
   of named as a pointer to whoever performs it, and the only kind kcmd runs.
   See [carrying the write as DML](#carrying-the-write-as-dml).
 
-Both `description` and `ai_context.instructions` travel through to the catalog.
-Write those instructions for the agent that's going to call the action, the way
-the example does.
+Both `description` and `ai_context.instructions` travel through to the catalog,
+and a parameter's `description` is what tells a caller which argument is which.
+Two parameters of the same type must each carry one, or the push fails. Write
+the instructions for the agent that's going to call the action, the way the
+example does.
 
 ### Parameters typed by an entity
 
@@ -192,7 +196,8 @@ team owns it and your model needs only to record that it exists.
 
 Nothing declares this state: it follows from the executor being absent, so the
 same action is performable under a profile that supplies one and not
-performable under a profile that doesn't. A catalog-only push — `--no-profile`,
+performable under a profile that supplies none or withdraws the model's with
+`executor: null`. A catalog-only push — `--no-profile`,
 or a model with no deployment target — publishes it like any other action, and
 `kcmd profiles` lists it under `cannot run:` for each binding that supplies no
 executor for it.
@@ -203,11 +208,28 @@ The first three kinds name a system that performs the write, which leaves the
 write itself opaque to your model: an `mcp` tool name says where the operation
 lives and nothing about what it touches. A `sql` executor carries the write
 instead, so what your action does becomes readable — and checkable — from the
-model, and kcmd can [run it](#7-run-it) rather than handing the write to another
-system to perform. Written into the model, it replaces the `mcp` executor
-`TransferFunds` declared above:
+bound model, and kcmd can [run it](#7-run-it) rather than handing the write to
+another system to perform.
+
+Statements are written in one database's own table and column names, in its own
+dialect, so a `sql` executor goes in that database's [binding
+profile](profiles.md) — beside the bindings for those same tables and columns —
+rather than in the model it binds. Here it replaces the `mcp` executor the model
+declared for `TransferFunds`:
 
 ```yaml
+# payments.profiles/operational.yaml — this store owns the rows, so it writes them
+semantic_model:
+  - name: payments
+    deployment_target: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/propertyGraphs/payments
+    entities:
+      - name: Account
+        source: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/tables/account
+        fields:
+          - { name: accountId, expression: account_id }
+          - { name: balance,   expression: balance }
+          # ... and the model's remaining entities and fields, bound the same way
+    actions:
       - name: TransferFunds
         executor:
           sql:
@@ -215,19 +237,14 @@ system to perform. Written into the model, it replaces the `mcp` executor
               - UPDATE account SET balance = balance - @amount WHERE account_id = @source
               - UPDATE account SET balance = balance + @amount WHERE account_id = @target
               - INSERT INTO transfer (transfer_id, amount, debited_account_id) VALUES (GENERATE_UUID(), @amount, @source)
-        parameters:
-          - name: source
-            type: Account
-            description: The account the money leaves.
-          - name: target
-            type: Account
-            description: The account the money goes to.
-          - { name: amount, type: Float }
-        affects:
-          - { concept: Account, operation: modify, fields: [balance] }
-          - { concept: Transfer, operation: create }
-          - { concept: TransferDebits, operation: create }
 ```
+
+Selecting a profile replaces the model's bindings with that profile's, so the
+one you put a `sql` executor in has to carry the columns its statements name as
+well — leave them out and the fields come back unbound and the action cannot
+run. Of the action itself, only the executor is restated: what the call takes,
+what gates it and what it changes stay in the model, exactly as
+[declared](#1-declare-the-action).
 
 `statements` is a list because one business action is often more than one write.
 The transfer above debits one account, credits another, and records the
@@ -271,31 +288,19 @@ instead of "no such table", because `ORDER` is a reserved word.
 
 ### Which file a `sql` executor belongs in
 
-Because its statements name one database's own tables and columns, a `sql`
-executor usually belongs in that database's profile rather than in the
-model — unless your model will only ever have one store. An `mcp`, `rest` or
-`grpc` executor names an operation in another system, and that name usually
-doesn't change with the store, so it stays in the model the way `TransferFunds`
-declares its `mcp` tool above.
+The placement is enforced: select a profile whose model declares a `sql`
+executor and the command refuses, naming the action:
 
-```yaml
-# commerce.profiles/operational.yaml — this store owns the rows, so it writes them
-semantic_model:
-  - name: payments
-    actions:
-      - name: TransferFunds
-        executor:
-          sql:
-            statements:
-              - UPDATE account SET balance = balance - @amount WHERE account_id = @source
-              - UPDATE account SET balance = balance + @amount WHERE account_id = @target
-              - INSERT INTO transfer (transfer_id, amount, debited_account_id) VALUES (GENERATE_UUID(), @amount, @source)
+```
+Error: [payments] profile 'operational': action 'TransferFunds' in model
+'payments' declares a 'sql' executor. A statement names one database's own
+tables and columns, so it belongs in the profile that binds them, not in the
+model. Move the executor into each profile that performs this write as DML.
 ```
 
-This profile overrides the model's `mcp` executor for the one store that
-performs the write as DML. Write `executor: null` instead to withdraw an
-inherited executor, which leaves you a read-only binding that performs no
-writes.
+A single-file model is the exception: that one document is both the model and
+its binding, so its statements already sit beside the columns they name. Add a
+profile beside it later and they move into the profile.
 
 ## 2. Gate it with a constraint
 

@@ -478,8 +478,11 @@ reads the document ([§6](#6-the-extension-mechanism)).
   OPTIONAL on the action, and a [binding profile](profiles.md) MAY supply or
   replace it, exactly as it supplies an entity's `source`. An action a profile
   does not mention keeps the model's executor; `executor: null` in a profile
-  withdraws it. An action left with no executor is declared and not performable
-  under that binding, which the availability pass reports; it is not an error.
+  withdraws it. An action in a model a profile names MUST NOT declare a `sql`
+  executor; merging such a model is a **hard error**. The other three kinds MAY
+  be declared in the model and replaced per profile. An action left with no
+  executor is declared and not performable under that binding, which the
+  availability pass reports; it is not an error.
 
   An executor, where one is written, MUST declare exactly one kind. Three of
   them — `mcp`, `rest` and `grpc` — name a system that performs the write; the

@@ -239,15 +239,15 @@ describe('an executor is a binding a profile supplies', () => {
   });
 
   test('a profile replaces the model default, and may change the kind', () => {
-    // The point of binding the executor rather than declaring it: a store that
-    // holds the rows performs the write as DML, and a store that does not calls
-    // whoever does. Same action, same blast radius, different mechanism.
+    // The point of binding the executor rather than declaring it: the model
+    // names whoever owns the write, and the store that holds the rows performs
+    // it as DML instead. Same action, same blast radius, different mechanism.
     const {doc, error} = mergeProfile(
-        logicalWithAction(SQL_EXEC),
-        profileWithAction({name: 'IssueCredit', executor: MCP_EXEC}),
+        logicalWithAction(MCP_EXEC),
+        profileWithAction({name: 'IssueCredit', executor: SQL_EXEC}),
         'analytical');
     expect(error).toBeUndefined();
-    expect(actionOf(doc, 'IssueCredit').executor).toEqual(MCP_EXEC);
+    expect(actionOf(doc, 'IssueCredit').executor).toEqual(SQL_EXEC);
   });
 
   test('an action the profile does not mention keeps the model default', () => {
@@ -255,16 +255,16 @@ describe('an executor is a binding a profile supplies', () => {
     // inherited into a renamed schema binds to the wrong data quietly; an
     // executor names a whole mechanism, so a wrong one fails at the first call.
     const {doc, error} =
-        mergeProfile(logicalWithAction(SQL_EXEC), analyticalDoc(), 'analytical');
+        mergeProfile(logicalWithAction(MCP_EXEC), analyticalDoc(), 'analytical');
     expect(error).toBeUndefined();
-    expect(actionOf(doc, 'IssueCredit').executor).toEqual(SQL_EXEC);
+    expect(actionOf(doc, 'IssueCredit').executor).toEqual(MCP_EXEC);
   });
 
   test('`executor: null` withdraws an inherited executor', () => {
     // A read-only environment has to be able to say "by no means at all",
     // because silence already means "keep the default".
     const {doc, error} = mergeProfile(
-        logicalWithAction(SQL_EXEC),
+        logicalWithAction(MCP_EXEC),
         profileWithAction({name: 'IssueCredit', executor: null}),
         'readonly');
     expect(error).toBeUndefined();
@@ -282,11 +282,47 @@ describe('an executor is a binding a profile supplies', () => {
          expect(error).toMatch(/action 'Nonesuch' is not in the logical model/);
        });
 
+  test('a model with profiles may not declare a `sql` executor', () => {
+    // A statement is written in one store's table and column names and its
+    // dialect, so there is no model-level spelling of it. Left in the model it
+    // would also outlive the columns it reads: the merge has just cleared this
+    // model's inline field bindings for the profile to re-supply.
+    const {error} = mergeProfile(
+        logicalWithAction(SQL_EXEC),
+        profileWithAction({name: 'IssueCredit', executor: MCP_EXEC}),
+        'analytical');
+    expect(error).toMatch(/action 'IssueCredit'/);
+    expect(error).toMatch(/declares a 'sql' executor/);
+  });
+
+  test('a model the profile does not name keeps its inline `sql` executor',
+       () => {
+         // The ban follows the same scope as the inline-binding strip: a model
+         // the profile never touches keeps its own columns, so its statements
+         // still match them.
+         const logical = logicalWithAction(MCP_EXEC);
+         const untouched = structuredClone(modelOf(logical));
+         untouched.name = 'ops';
+         untouched.actions = [{
+           name: 'CloseOrder',
+           parameters: [{name: 'order', type: 'Order'}],
+           executor: SQL_EXEC,
+         }];
+         logical.semantic_model.push(untouched);
+
+         const {doc, error} = mergeProfile(
+             logical, profileWithAction({name: 'IssueCredit'}), 'analytical');
+         expect(error).toBeUndefined();
+         const ops = (doc as any).semantic_model.find(
+             (m: any) => m.name === 'ops');
+         expect(ops.actions[0].executor).toEqual(SQL_EXEC);
+       });
+
   test('a profile setting a logical facet on an action is rejected', () => {
     // What gates the action and what it changes are the model's to state. A
     // profile that could move a guard could turn a check off per environment.
     const {error} = mergeProfile(
-        logicalWithAction(SQL_EXEC),
+        logicalWithAction(MCP_EXEC),
         profileWithAction({name: 'IssueCredit', guards: ['SomeRule']}),
         'analytical');
     expect(error).toMatch(/action 'IssueCredit' sets 'guards'/);

@@ -79,6 +79,26 @@ semantic_model:
         description: A credit must be for a positive amount.
 `;
 
+// The same model as a purely logical one. A model that has binding profiles
+// may not declare a `sql` executor -- a statement is written in one store's
+// table and column names -- so IssueCredit names the service that owns the
+// write, and each profile below that performs it as DML replaces that. MODEL
+// itself is the combined single-file form, where the one document is also the
+// binding, so its inline statements stay legal.
+const LOGICAL = MODEL.replace(
+    `        executor:
+          sql:
+            statements:
+              - >-
+                INSERT INTO LedgerEntry (EntryId, OrderId, Amount)
+                VALUES (GENERATE_UUID(), @order, @amount)
+`,
+    `        executor:
+          mcp:
+            server: //agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/commerce
+            tool: issue_credit
+`);
+
 // The same model with nothing to run.
 const NO_ACTIONS = `version: "0.2.0.dev0/google"
 semantic_model:
@@ -108,6 +128,14 @@ semantic_model:
         fields:
           - { name: key, expression: entry_id }
           - { name: amount, expression: amount }
+    actions:
+      - name: IssueCredit
+        executor:
+          sql:
+            statements:
+              - >-
+                INSERT INTO ledger (entry_id, order_id, amount)
+                VALUES (GENERATE_UUID(), @order, @amount)
 `;
 
 // A read-only binding of the same store. An executor is a physical facet, so
@@ -150,6 +178,14 @@ semantic_model:
         fields:
           - { name: key, expression: EntryId }
           - { name: amount, expression: Amount }
+    actions:
+      - name: IssueCredit
+        executor:
+          sql:
+            statements:
+              - >-
+                INSERT INTO LedgerEntry (EntryId, OrderId, Amount)
+                VALUES (GENERATE_UUID(), @order, @amount)
 `;
 
 
@@ -172,6 +208,14 @@ semantic_model:
         fields:
           - { name: key, expression: entry_id }
           - { name: amount, expression: amount }
+    actions:
+      - name: IssueCredit
+        executor:
+          sql:
+            statements:
+              - >-
+                INSERT INTO LedgerEntry (EntryId, OrderId, Amount)
+                VALUES (GENERATE_UUID(), @order, @amount)
 `;
 
 
@@ -349,7 +393,7 @@ describe('kcmd action list', () => {
          // The listing answers "what can this model do HERE". Printing a run
          // line for a write this binding cannot perform would send the reader
          // to a refusal, so it prints the fix instead.
-         writeWorkspace();
+         writeWorkspace(LOGICAL);
          const code = await action('list', undefined, {profile: 'readonly'});
          expect(code).toBe(0);
          const out = logs.join('\n');
@@ -389,7 +433,7 @@ describe('kcmd action list', () => {
   });
 
   test('reads the model under a named profile', async () => {
-    writeWorkspace();
+    writeWorkspace(LOGICAL);
     const code = await action('list', undefined, {profile: 'analytical'});
     expect(code).toBe(0);
     expect(logs.join('\n')).toContain('profile \'analytical\'');
@@ -492,7 +536,7 @@ describe('kcmd action run: an action this binding cannot perform', () => {
   test('refuses an action whose executor the profile withdrew', async () => {
     // Nothing is wrong with the action. The binding is what says no, so the
     // message has to send the reader to the profile rather than to the model.
-    writeWorkspace();
+    writeWorkspace(LOGICAL);
     const code = await action(
         'run', 'IssueCredit',
         {profile: 'readonly', arg: ['order=1', 'amount=5']});
@@ -506,7 +550,7 @@ describe('kcmd action run: an action this binding cannot perform', () => {
 
 describe('kcmd action run: where the write would go', () => {
   test('refuses a profile that deploys to BigQuery', async () => {
-    writeWorkspace();
+    writeWorkspace(LOGICAL);
     const code = await action(
         'run', 'IssueCredit',
         {profile: 'analytical', arg: ['order=12345', 'amount=30']});
@@ -525,7 +569,7 @@ describe('kcmd action run: where the write would go', () => {
       'refuses a binding whose sources sit in a different database than ' +
            'its deployment target',
        async () => {
-         writeWorkspace();
+         writeWorkspace(LOGICAL);
          const code = await action(
              'run', 'IssueCredit',
              {profile: 'mismatched', arg: ['order=12345', 'amount=30']});
@@ -544,7 +588,7 @@ describe('kcmd action run: where the write would go', () => {
          // statements name a table, so they would run against whatever
          // Spanner table shares the name while the data the model describes
          // sat in BigQuery, untouched and unmentioned.
-         writeWorkspace();
+         writeWorkspace(LOGICAL);
          const code = await action(
              'run', 'IssueCredit',
              {profile: 'crossbound', arg: ['order=12345', 'amount=30']});
@@ -625,8 +669,9 @@ describe('kcmd action: what the command line can actually contain', () => {
   });
 
   test('a named profile still selects that profile', async () => {
-    writeWorkspace();
-    await action('list', undefined, {profile: 'analytical'});
+    writeWorkspace(LOGICAL);
+    const code = await action('list', undefined, {profile: 'analytical'});
+    expect(code).toBe(0);
     expect(logs.join('\n')).toContain('profile \'analytical\'');
   });
 

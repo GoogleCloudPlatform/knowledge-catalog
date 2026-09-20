@@ -113,6 +113,13 @@ a different statement under each binding. Either way the `executor` sits with
 `source` and `expression` on the physical side: the same action and the same blast
 radius, performed by whatever the binding points at.
 
+The two kinds sit differently in the files, though. An address may be declared
+in the model as a default and replaced per profile. A statement has no
+model-level spelling at all: **select a named profile whose model declares a
+`sql` executor and the command refuses**, naming the action. The single-file
+form, where one document is both the model and its binding, is the exception —
+its statements already sit beside the columns they name.
+
 **An executor inherits; a column does not.** A model may declare one default
 executor, and a profile overrides it only for the bindings that perform the
 write differently — an action the profile does not mention keeps the default.
@@ -364,7 +371,9 @@ picks its own backend. The two bindings answer different parts of the same model
 - An action the profile does not mention **keeps** the model's executor, if it
   declared one. Omission inherits here rather than unbinding, so a model can
   state one default and a profile override only where the write differs;
-  `executor: null` withdraws it explicitly.
+  `executor: null` withdraws it explicitly. Only an `mcp`, `rest` or `grpc`
+  executor may be that default; a `sql` one is rejected in a model the profile
+  names, and belongs in the profile itself.
 - Profiles are **binding-only**: a profile sets physical facets and may leave a
   field unbound. It cannot add or remove entities, fields, or metrics, change
   the grain or graph shape, or change what anything means.

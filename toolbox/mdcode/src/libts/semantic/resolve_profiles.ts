@@ -105,6 +105,18 @@ export function mergeProfile(
   }
   stripInlineFieldExpressions(merged, profileModelNames);
 
+  const sqlInLogical = findLogicalSqlExecutor(merged, profileModelNames);
+  if (sqlInLogical) {
+    return {
+      doc: merged, warnings,
+      error: `profile '${profileName}': action '${sqlInLogical.action}' in ` +
+          `model '${sqlInLogical.model}' declares a 'sql' executor. A ` +
+          `statement names one database's own tables and columns, so it ` +
+          `belongs in the profile that binds them, not in the model. Move ` +
+          `the executor into each profile that performs this write as DML.`,
+    };
+  }
+
   for (const pm of profile.semantic_model) {
     if (!pm || typeof pm !== 'object') continue;
     const lm = logicalByName.get(pm.name);
@@ -277,6 +289,31 @@ function indexByName(list: unknown): Map<string, any> {
     }
   }
   return m;
+}
+
+// A `sql` executor carries the write itself, in the bound store's table and
+// column names and its dialect, so it is physical in the way a field's
+// `expression` is, and a model a profile names must leave it to the profile.
+// Inheriting one would be incoherent, not merely untidy:
+// stripInlineFieldExpressions has just cleared this model's inline column
+// bindings so the profile alone decides them, while the inherited statements
+// would still be written against the columns that were cleared.
+//
+// Scoped to the models the profile targets, for the same reason that pass is:
+// a model the profile does not name keeps its inline bindings, and its inline
+// statements are written against those.
+function findLogicalSqlExecutor(doc: any, modelNames: Set<string>):
+    {model: string; action: string}|undefined {
+  for (const m of doc.semantic_model ?? []) {
+    if (!m || typeof m !== 'object' || !modelNames.has(m.name)) continue;
+    for (const a of m.actions ?? []) {
+      if (a && typeof a === 'object' && a.executor &&
+          typeof a.executor === 'object' && a.executor.sql !== undefined) {
+        return {model: m.name, action: String(a.name)};
+      }
+    }
+  }
+  return undefined;
 }
 
 // A profile is authoritative for a model's physical bindings, so a field is
