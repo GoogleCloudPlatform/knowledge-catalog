@@ -1223,6 +1223,58 @@ describe('a guard settled by judgment', () => {
     expect(whyRefusedWithoutRunning(guarded, action, undefined, holds()))
         .toBeNull();
   });
+
+  test('skipGuards clears the refusal for want of a judge', async () => {
+    // What the caller is saying is that nobody will be asked. A guarded action
+    // is otherwise unrunnable without a judge, and that refusal is total, so
+    // an author with no judge configured could not exercise their own write at
+    // all without deleting the guard -- which loses the guard and tests a
+    // different model.
+    const judged = guarding([justified]);
+    expect(whyRefusedWithoutRunning(judged, judged.actions![0]))
+        .toContain('no judge to ask');
+    expect(whyRefusedWithoutRunning(
+               judged, judged.actions![0], undefined, undefined, true))
+        .toBeNull();
+  });
+
+  test('skipGuards reports no rule as unchecked', async () => {
+    // Without it, an advisory rule nobody could ask about is warned about --
+    // the test above this one. With it, the caller has already been told, by
+    // itself: it named every one of these rules when it asked for them to go
+    // unchecked. Saying it again here, rule by rule with each judgment quoted
+    // back, buries what happened to the write under a list the caller wrote.
+    const fake = fakeStore();
+    const outcome = await act({
+      model: guarding([advisory]),
+      actionName: 'Credit',
+      args: {account: 'A1', amount: 100},
+      client: fake.client,
+      skipGuards: true,
+    });
+    if (outcome.status !== 'committed') throw new Error(outcome.message);
+    expect(fake.committed).toBe(true);
+    expect(outcome.warnings ?? []).toEqual([]);
+  });
+
+  test('skipGuards does not clear a guard that names nothing', async () => {
+    // Not checking the guards is not the same as not reading them. A guard
+    // naming a rule the model never declares is the model being wrong about
+    // itself -- a push refuses it on the same grounds -- and it refuses with a
+    // judge in hand, so standing the judge down was never what was wrong. The
+    // write it would apply is one the author believes is gated by something
+    // that does not exist, and the repair is a spelling, not a flag.
+    const undeclared = creditModel({
+      actions: [{...credit, guards: ['NoSuchRule']}],
+      constraints: [],
+    });
+    const action = undeclared.actions![0];
+    expect(whyRefusedWithoutRunning(undeclared, action, undefined, holds()))
+        .toContain('not declared');
+    expect(whyRefusedWithoutRunning(
+               undeclared, action, undefined, undefined, true))
+        .toContain('not declared');
+  });
 });
 
 
@@ -1448,7 +1500,7 @@ describe('a constraint that only warns', () => {
   test(
       'but a guard naming nothing the model declares still refuses',
       async () => {
-        // Validation makes that a hard error and `kcmd action run` now runs
+        // Validation makes that a hard error and `kcmd action-run` now runs
         // validation -- but a library caller reaching runAction directly gets
         // no such pass, and a guard this cannot account for is not something
         // to wave through on the grounds that it was not found.

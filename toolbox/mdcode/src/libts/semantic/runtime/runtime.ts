@@ -8,7 +8,7 @@
 // find a store for.
 //
 // Both halves were the CLI's private business until an agent needed them. An
-// agent runs the same actions `kcmd action run` runs, against the same store,
+// agent runs the same actions `kcmd action-run` runs, against the same store,
 // so it has to reach them the same way -- and a second loader that merges
 // profiles slightly differently is a demo that passes while the product fails.
 // The CLI calls this too, so there is one answer to "what does this scope say"

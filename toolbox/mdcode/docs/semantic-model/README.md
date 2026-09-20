@@ -136,7 +136,7 @@ concepts the call changes — an executor in another system is an opaque handle,
 so its blast radius is declared or it is unknown. Knowledge Catalog is the only
 system an action is published to, and the only place it is governed; an action
 that carries its own DML is also the one kind `kcmd` runs itself, with
-`kcmd action run`. See
+`kcmd action-run`. See
 [Modeling write operations](actions.md).
 
 A model can also state **constraints**: named invariants over the ontology that

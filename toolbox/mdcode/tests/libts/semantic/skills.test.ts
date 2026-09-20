@@ -160,7 +160,7 @@ describe('SKILL.md frontmatter', () => {
       'the description says what the model is and when to reach for it', () => {
         const description = fm['description'] as string;
         expect(description).toContain(model.description!);
-        // The name `kcmd action run` takes, which is the name every command
+        // The name `kcmd action-run` takes, which is the name every command
         // line in the package uses.
         expect(description).toContain('PlaceOrder');
         expect(description.length).toBeLessThanOrEqual(1024);
@@ -212,11 +212,11 @@ describe('SKILL.md is a router', () => {
 
   test('the router names the action the way the command line does', () => {
     // The index and the one executable instruction have to agree. Naming the
-    // row `place_order` while the command reads `kcmd action run PlaceOrder`
+    // row `place_order` while the command reads `kcmd action-run PlaceOrder`
     // sends an agent that routed off the table to an action the CLI rejects.
     const row = skill.split('\n').find(l => l.includes('references/'))!;
     const named = row.split('|')[1].trim().replace(/`/g, '');
-    expect(skill).toContain(`kcmd action run ${named}`);
+    expect(skill).toContain(`kcmd action-run ${named}`);
   });
 
   test('the per-argument detail is in the reference, not the router', () => {
@@ -266,7 +266,7 @@ describe('SKILL.md is a router', () => {
     const noArgs =
         generate(rt(withAction(model, {...RUNNABLE, parameters: []})));
     const lines = noArgs.files['SKILL.md'].split('\n');
-    const start = lines.findIndex(l => l.startsWith('kcmd action run'));
+    const start = lines.findIndex(l => l.startsWith('kcmd action-run'));
     expect(start).toBeGreaterThan(-1);
     const end = lines.indexOf('```', start);
     expect(end).toBeGreaterThan(start);
@@ -296,18 +296,19 @@ describe('an action reference', () => {
     expect(reference).toContain('`place_order`');
   });
 
-  test('a projected argument reads as the field, a declared one as itself',
-       () => {
-         // `customer` projects from `customer.c_custkey` and `quantity` states
-         // its own type, and the table does not say which is which -- by the
-         // time an agent reads this, both are one scalar to pass. What the
-         // projection buys is the wording: the field's datatype and the
-         // field's description, rather than an author restating them here and
-         // drifting from the column.
-         expect(reference).toContain(
-             '| `customer` | integer | yes | The customer\'s account number. |');
-         expect(reference).toContain('| `quantity` | integer | yes |');
-       });
+  test(
+      'a projected argument reads as the field, a declared one as itself',
+      () => {
+        // `customer` projects from `customer.c_custkey` and `quantity` states
+        // its own type, and the table does not say which is which -- by the
+        // time an agent reads this, both are one scalar to pass. What the
+        // projection buys is the wording: the field's datatype and the
+        // field's description, rather than an author restating them here and
+        // drifting from the column.
+        expect(reference).toContain(
+            '| `customer` | integer | yes | The customer\'s account number. |');
+        expect(reference).toContain('| `quantity` | integer | yes |');
+      });
 
   test('carries the action\'s own guidance for a caller', () => {
     expect(reference).toContain(
@@ -378,9 +379,12 @@ describe('when the runtime would refuse the call', () => {
     // The guard is settled in words, which is the runtime's job and not the
     // reading agent's: an agent that judged its own call would be the
     // constrained thing certifying itself. So the skill is written for a
-    // runtime that has a judge, and the command line it prints says `--judge`.
+    // runtime that has a judge, and carries no flag about one: the command
+    // line it prints is kcmd's, which settles no guard, and the skill says so
+    // rather than letting a commit read as a rule that held.
     const out = generate(rt(withAction(model, {executor: RUNNABLE.executor})));
-    expect(out.files['SKILL.md']).toContain('--judge');
+    expect(out.files['SKILL.md']).not.toContain('--judge');
+    expect(out.files['SKILL.md']).toContain('settles no guard');
     expect(out.warnings.join(' ')).not.toContain('runnable');
   });
 
@@ -410,7 +414,7 @@ describe('when the runtime would refuse the call', () => {
       () => {
         const skill = generate(rt(model)).files['SKILL.md'];
         expect(skill).toContain('No action in this model can be run');
-        expect(skill).not.toContain('kcmd action run');
+        expect(skill).not.toContain('kcmd action-run');
       });
 
   test('a profile that binds no store says where the skill stands', () => {
@@ -627,7 +631,7 @@ describe('text that would otherwise break the output', () => {
     const dashed =
         withAction(model, {...RUNNABLE, name: 'Place --Order'} as never);
     const skill = generate(rt(dashed)).files['SKILL.md'];
-    expect(skill).toContain(`kcmd action run 'Place --Order'`);
+    expect(skill).toContain(`kcmd action-run 'Place --Order'`);
     expect(skill).not.toContain('\n  --Order');
   });
 
@@ -637,7 +641,7 @@ describe('text that would otherwise break the output', () => {
     const spaced =
         withAction(model, {...RUNNABLE, name: 'Place Order'} as never);
     const skill = generate(rt(spaced)).files['SKILL.md'];
-    expect(skill).toContain(`kcmd action run 'Place Order'`);
+    expect(skill).toContain(`kcmd action-run 'Place Order'`);
   });
 });
 
@@ -683,9 +687,10 @@ describe('a description that does not fit', () => {
         frontmatter(generate(rt(manyActions(60))).files['SKILL.md'])
             .description as string;
     expect(description.length).toBeLessThanOrEqual(1024);
-    expect(description).toContain(
-        'Use when a request asks to change this data rather than only read ' +
-        'it.');
+    expect(description)
+        .toContain(
+            'Use when a request asks to change this data rather than only read ' +
+            'it.');
     expect(description).toContain(' more.');
     // The count is of what the model declares, not of what is listed, so a
     // partial list reads as one.
@@ -711,22 +716,25 @@ describe('a description that does not fit', () => {
         {...model.actions![0], ...RUNNABLE, name: 'BBBBBBB'} as Action,
       ],
     };
-    const description = frontmatter(generate(rt(twoNames)).files['SKILL.md'])
-                            .description as string;
+    const description =
+        frontmatter(generate(rt(twoNames)).files['SKILL.md']).description as
+        string;
     expect(description.length).toBeLessThanOrEqual(1024);
     expect(description).not.toContain('and 1');
-    expect(description).toContain(
-        'Use when a request asks to change this data rather than only read ' +
-        'it.');
+    expect(description)
+        .toContain(
+            'Use when a request asks to change this data rather than only read ' +
+            'it.');
   });
 
   test('a list that fits is not abridged', () => {
     const description =
         frontmatter(generate(rt(manyActions(3))).files['SKILL.md'])
             .description as string;
-    expect(description).toContain(
-        'Declares 3 actions: LongishActionName0, LongishActionName1, ' +
-        'LongishActionName2.');
+    expect(description)
+        .toContain(
+            'Declares 3 actions: LongishActionName0, LongishActionName1, ' +
+            'LongishActionName2.');
     expect(description).not.toContain(' more.');
   });
 });

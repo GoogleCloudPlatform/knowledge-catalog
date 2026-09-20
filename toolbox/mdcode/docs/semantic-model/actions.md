@@ -473,9 +473,8 @@ Put that rule inside the transaction, or in your schema, where the store
 enforces it.
 
 A judgment that reads stored data also needs a judge that has been given the
-store to read. Whoever dispatches the call decides that, and
-[when the judge needs a fact](#when-the-judge-needs-a-fact) does it from the
-command line.
+store to read. Whoever dispatches the call decides that — see
+[when the judge needs a fact](#when-the-judge-needs-a-fact).
 
 **Status: `judgment` is the only body a constraint has.** Whatever checks a
 guard puts the sentence to a language model and routes the verdict by
@@ -522,11 +521,12 @@ around the arguments the call carries, and try every guard against a case it
 ought to refuse.
 
 A rule that does need a stored row — comparing a credit against the order total,
-say — is settled only by a judge that has been given the store to read. Word the
-rule to say the value is on record and has to be read, because the judge decides
-for itself whether to look. Put to a judge with no store, the same rule refuses
-every call. [When the judge needs a fact](#when-the-judge-needs-a-fact) runs one
-of these from the command line.
+say — is settled only by a judge that can read your tables, which is something
+an agent embedding the runtime gives it rather than something `kcmd` does. Word
+the rule to say the value is on record and has to be read, because the judge
+decides for itself whether to look. The same rule refuses every call when it
+goes to a judge that can't read. See
+[when the judge needs a fact](#when-the-judge-needs-a-fact).
 
 ## A credit policy, worked through
 
@@ -671,13 +671,13 @@ The bottom row of table 2 applies the strictest-outcome rule from section 2 —
 an `escalate` with nothing stricter beside it holds the first call, and rule 4's
 `reject` decides the second.
 
-**Status: a run doesn't compute the strictest outcome.** `--judge` puts the
+**Status: a run doesn't compute the strictest outcome.** The runtime puts the
 guards to the judge in the order your model declares them and stops at the
 first one that fails without being advisory. What comes back is that guard's
 outcome rather than the strictest of them, and a `warn` collected on the way
-there doesn't travel with the refusal. And [`kcmd action run`](#7-run-it) won't
-perform `IssueCredit` as declared here, so the two calls above are what the
-published policy says should happen rather than what kcmd does with this action
+there doesn't travel with the refusal. And [`kcmd action-run`](#7-run-it)
+settles no guard at all, so the two calls above are what the published policy
+says should happen rather than what that command does with this action
 today.
 
 ## 3. Say what it changes
@@ -832,7 +832,7 @@ resolves your model. Resolving drops entities and relationships the profile
 can't bind, so holding `affects` to the ontology there would fail your deploy
 over a concept the profile removed rather than one you mistyped. An undeclared
 concept and an undeclared field fall back to the warning the loader already
-gave. A catalog-only push and `kcmd action run` read the author's model
+gave. A catalog-only push and `kcmd action-run` read the author's model
 whole, so both treat the same two as hard errors. Fields beside a `delete` read
 only the entry, so that one fails everywhere.
 
@@ -952,20 +952,21 @@ Pasting the statements into a SQL console would tell you the DML is valid; a
 run is what exercises everything wrapped around it.
 
 Everything below happens at a command line, and that is a way of watching the
-model work rather than the place it is meant to work. `kcmd action run`
-performs the steps any runtime dispatching these calls has to perform — bind the
-arguments, check the guards, open one transaction — and narrates each of them.
-The behaviour is a property of the model you published rather than of
-this tool: where a flag here hires a judge or lets it read, a service
-dispatching the same action decides the same thing in its own configuration,
-and reaches the same verdicts from the same sentences.
+model work rather than the place it is meant to work. `kcmd action-run` performs
+most of what any runtime dispatching these calls has to perform — bind the
+arguments, open one transaction, apply the statements — and narrates each step.
+What it leaves out is the guards: it settles none of them, names the ones it
+passed over, and writes. Who settles a rule, and what that judge may read while
+it does, are decided by whoever dispatches the call in earnest — and from the
+same sentences, so a service running this action reaches verdicts this command
+never asks for.
 
-`kcmd action list` prints the actions your model declares, each with its
-parameters, executor, guards and blast radius, plus the command line that
-calls it -- flags and all, so a guarded action's line arrives ready to run:
+`kcmd action-list` prints the actions your model declares, each with its
+parameters, executor, guards and blast radius, plus the command line that calls
+it, filled in with the parameters that line has to carry:
 
 ```bash
-kcmd action list
+kcmd action-list
 ```
 
 ```
@@ -976,7 +977,7 @@ Model 'payments' (payments_eg), profile 'operational':
     executor:   sql
     guards:     TransferWithinAvailableBalance
     affects:    Account (modify), Transfer (create), TransferDebits (create)
-    run:        kcmd action run TransferFunds --judge --judge-reads-store --arg source=<Integer> --arg target=<Integer> --arg amount=<Float>
+    run:        kcmd action-run TransferFunds --arg source=<Integer> --arg target=<Integer> --arg amount=<Float>
 ```
 
 Where a run would be refused before it opened a transaction, that line says so
@@ -1002,18 +1003,19 @@ asks, rather than working it out again here — so the two cannot disagree about
 what will happen. An action executed over MCP is marked the same way, since
 this command holds no handler for one and could not roll it back.
 
-`kcmd action run` performs one of those actions, against the database your
+`kcmd action-run` performs one of those actions, against the database your
 model's deployment target names under the selected profile.
 
 ### What a run does
 
-`kcmd action run` binds every argument as a typed query parameter, then applies
-the action's statements in one transaction. `TransferFunds` is guarded, so the
-line carries `--judge` too -- [when the rule is a
-sentence](#when-the-rule-is-a-sentence) covers what that hires:
+`kcmd action-run` binds every argument as a typed query parameter, then applies
+the action's statements in one transaction. `TransferFunds` is guarded, and this
+command settles no guard -- it names the ones it passed over and writes anyway.
+[When the rule is a sentence](#when-the-rule-is-a-sentence) covers who does
+settle them:
 
 ```
-  kcmd action run TransferFunds --judge --arg source=7 --arg target=8 --arg amount=250
+  kcmd action-run TransferFunds --arg source=7 --arg target=8 --arg amount=250
      │
      │ bind      @source = 7      as Integer, from Account.accountId
      │           @target = 8      as Integer, from Account.accountId
@@ -1076,10 +1078,15 @@ that performs the write as DML, or declare the action with a 'sql' executor.
 
 ### When a rule stops the call
 
+This is what a runtime does with a guard, and `kcmd action-run` is not that
+runtime: it settles none of them, so none of the outcomes below come out of the
+command line above. They come out of whatever dispatches the call in earnest,
+including the [demo agent](../../demo/semantic-model/agent/README.md).
+
 Only a constraint the action names in `guards` has a say in a call, which is
 [section 2](#2-gate-it-with-a-constraint)'s rule reaching the runtime. A
 constraint your model declares and your action doesn't name has no bearing on
-the write, and kcmd never goes looking for one.
+the write, and nothing goes looking for one.
 
 A guard is a sentence, and settling a sentence needs something that reads one.
 A run given nothing to read with refuses a call that a non-advisory guard covers
@@ -1105,47 +1112,44 @@ same way, before any judge is asked, because there is nothing to ask about.
 ### When the rule is a sentence
 
 A guard stated as a `judgment` needs something that can read a sentence, and
-whatever checks the guard has to be given one. At a command line that is
-`--judge`: Gemini on Vertex AI, reached with the project and the credentials
-kcmd already holds.
+whatever dispatches the call has to be holding one. In the runtime shipped here
+that is Gemini on Vertex AI, hired by the application that embeds the runtime
+and handed to it once, at construction:
 
-```bash
-kcmd action run IssueCredit --arg order=12347 --arg amount=5 \
-    --arg memo="customer asked for a credit" --judge --judge-reads-store
+```ts
+const judge = new GeminiJudge(ctx, {model: 'gemini-2.5-flash'});
 ```
 
-One of the demo's rules is about a number on record rather than a number in the
-call — the order's total — so the judge has to be able to read the store, which
-`--judge-reads-store` is how this command arranges. Given no store the rule
-cannot be settled, and it stops the call before any of the others is reached.
+**No kcmd command line hires one.** `kcmd action-run` performs the write and
+names the guards it did not check; it is for finding out whether your statements
+do what you meant, not for finding out whether your rules hold. The two demands
+pull apart: a judge costs a model call per guard and credentials to reach one,
+and an author checking a `WHERE` clause should not have to stand either up. The
+[demo agent](../../demo/semantic-model/agent/README.md) is where the guards are
+actually settled, against the same model, live.
 
-That call runs against the commerce model under `demo/semantic-model/agent` —
-the [credit policy worked through earlier](#a-credit-policy-worked-through),
-rebuilt around what kcmd can settle today. A profile binds `IssueCredit` to a
-`sql` executor, and the action names four rules in `guards`. One of the four is
-the 25-dollar ceiling, written there as a judgment rather than left to the desk;
-the demo keeps it to show what settling arithmetic with a model call costs.
+The rules below run against the commerce model under `demo/semantic-model/agent`
+— the [credit policy worked through earlier](#a-credit-policy-worked-through),
+rebuilt around what a runtime can settle today. A profile binds `IssueCredit` to
+a `sql` executor, and the action names four rules in `guards`. One of the four
+is the 25-dollar ceiling, written there as a judgment rather than left to the
+desk; the demo keeps it to show what settling arithmetic with a model call
+costs.
 
-Leave `--judge` off and the guards stop the call, because you supplied nothing
-to settle them:
+Each rule's own sentence goes to the model with the attempted call. A verdict
+comes back with a reason, and `on_violation` decides what follows. The demo
+declares `warn` on the memo rule; the three outputs below come from setting that
+one field to each of its values in turn, so a single rule shows all three
+branches.
 
-```
-Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotal',
-'CreditUnderReviewThreshold' and 'CreditIsNotSplitToAvoidReview', which are
-settled by reading the call, and this runtime was given no judge to ask.
-Running it would apply a write the model says must be checked first, so it is
-refused rather than run unchecked.
-```
+> These three were recorded through `kcmd action-run`, back when it took a judge
+> and could give that judge the store to read — which is why each of them shows
+> the judge reading `Orders`. Neither is a command-line flag any more, for the
+> reason above, and the live equivalent is the demo agent's transcript. They are
+> kept because what they show — one rule, all three values of `on_violation`,
+> one run each — is not shown anywhere else.
 
-Three names, though the action guards on four. The fourth declares `warn`, and
-an advisory rule reports rather than refuses, so having nobody to ask is not a
-reason to stop.
-
-Add the flag and each rule's own sentence goes to the model with the attempted
-call. A verdict comes back with a reason, and `on_violation` decides what
-follows. The demo declares `warn` on the memo rule; the three outputs below come
-from setting that one field to each of its values in turn, so a single rule
-shows all three branches. With `reject`, the call stops:
+With `reject`, the call stops:
 
 ```
 Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
@@ -1211,25 +1215,32 @@ name and description, and the arguments as the caller stated them —
 `order=12347`, the value itself, and not the `Order` row it identifies. That's
 the whole of what it has, unless it was also given the store to read.
 
-**A rule that never reached a judge is reported as unchecked.** You supplied no
-judge, or the model call failed. Either way `on_violation` routes that like any
-other breach: an advisory guard lets the write through and warns, and a guard
-declaring `reject` or `escalate` stops the call. Committing in silence would
-tell you every rule passed when one was never put to anybody.
+**A rule that never reached a judge is reported as unchecked.** The runtime
+holds no judge, or the model call failed. Either way `on_violation` routes that
+like any other breach: an advisory guard lets the write through and warns, and a
+guard declaring `reject` or `escalate` stops the call. Committing in silence
+would tell you every rule passed when one was never put to anybody.
 
 ### When the judge needs a fact
 
 Some rules can't be settled from the call alone. *The credit must not exceed the
 total of the order it is applied to* compares an argument against a number in
-your database, and the caller is under no obligation to state it correctly.
-Settling it takes a judge that has been given the store to read, which at a
-command line is `--judge-reads-store`.
+your database, and the caller is under no obligation to state it correctly. A
+judge that can read your tables goes and gets the number.
 
-Two things have to be in place. `--judge-reads-store` says what a judge may do
-without hiring one, so pass `--judge` alongside it. And your profile has to bind
-the entities the rule talks about to tables, because that binding is the whole
-of what the judge is told about your database; with nothing bound, the run stops
-before it starts.
+`kcmd action-run` hires no judge at all, so it certainly does not hire that one.
+Letting a model compose and send queries against your data is a property of the
+runtime an application embeds, decided by whoever builds the application; a
+command line for curating a model is the wrong place to turn it on. The runtime
+supplies it —
+`modelJudgeStore()` in `src/libts/semantic/runtime/judge_store.ts` — and the
+agent under `demo/semantic-model/agent` is what calls it. Everything below
+describes that judge; the transcripts are in
+[the demo's README](../../demo/semantic-model/agent/README.md).
+
+One thing has to be in place either way: your profile has to bind the entities
+the rule talks about to tables, because that binding is the whole of what the
+judge is told about your database. With nothing bound there is nothing to read.
 
 Then write the rule so the judge goes and looks — it decides that for itself,
 from the sentence you give it. This is the rule the demo under
@@ -1248,44 +1259,15 @@ from the sentence you give it. This is the rule the demo under
     credit amount, or split it across the orders it actually covers.
 ```
 
-A run carrying the flag says the judge may read, and prints every statement the
-judge sends:
-
-```bash
-kcmd action run IssueCredit --judge --judge-reads-store \
-    --arg order=12345 --arg amount=3.00 \
-    --arg memo="Shipping charge applied in error"
-```
-
-```
-Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
-  rules stated in words go to gemini-2.5-flash (us-central1)
-  it may read commerce's tables to settle them
-  the judge reads: SELECT total FROM Orders WHERE order_id = 12345
-  order: '12345' -> Order 12345
-Committed at 2026-09-15T03:39:42.804901Z.
-```
-
-The judge composed that statement itself, from the rule's sentence and the
-tables your profile binds. kcmd prints every one, because a read made on your
-behalf is yours to check. Here's the same order again, with a credit of $200 and
-a memo asserting the order is worth $900:
-
-```
-  the judge reads: SELECT total FROM Orders WHERE order_id = 12345
-Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotal' ("The
-credit amount requested must not exceed the total of the order it is applied
-to. ..."), and gemini-2.5-flash (us-central1) judged that it does not hold for
-this call: The credit amount of 200.00 exceeds the order total of 162.85. The
-model marks this rule 'escalate', so an approver may allow it; nothing here
-can. A credit cannot exceed the total of the order it credits. Lower the
-credit amount, or split it across the orders it actually covers. No
-transaction was opened, so nothing was written.
-```
-
-The judge read the row, compared the argument against $162.85, and paid no
-attention to the $900 in the memo. Drop the flag and the same call is refused
-for a different reason: the judge says it can't get the total.
+The judge composes its statement itself, from the rule's sentence and the tables
+your profile binds — nobody writes that SQL. The runtime hands every statement
+back to the caller as it is sent, because a read made on your behalf is yours to
+check; the demo agent prints each one on a `(judge reads)` line. Its transcript
+shows one: `SELECT total FROM Orders WHERE order_id = 12345`, which nothing in
+the agent's request or the action's arguments asked for. The rule named the
+order's total in words, and the judge went and got it. Put the same call to a
+judge that cannot read and it is refused for a different reason: the judge says
+it can't get the total.
 
 **The judge sees what your model declares.** The entities, tables and columns in
 its instructions come from your binding profile, so a column your model doesn't
@@ -1374,13 +1356,13 @@ nothing totals anything on its behalf.
 
 ### The set an agent is handed
 
-`kcmd agent tools` prints every tool the derivation produces, with the
+`kcmd agent-tools` prints every tool the derivation produces, with the
 instruction they arrive with. It reads your model under the profile you name and
 needs the store that profile binds, because what an agent can call depends on
 it. The command opens no connection and runs nothing:
 
 ```bash
-kcmd agent tools
+kcmd agent-tools
 ```
 
 For the model built up on this page, that set is:
@@ -1389,7 +1371,7 @@ For the model built up on this page, that set is:
 Model 'payments' (payments_eg), profile 'operational':
   store: my-project/my-instance/semantic_agent_demo
 
-  action  transfer_funds  (TransferFunds)  [NOT RUNNABLE]
+  action  transfer_funds  (TransferFunds)
       Move money from one account to another.
 
       Resolve both accounts before calling.
@@ -1400,12 +1382,6 @@ Model 'payments' (payments_eg), profile 'operational':
         record rather than stated in the arguments, so read it before
         answering. A transfer cannot move more than the source account holds.
         Lower the amount, or choose another account.
-
-      Calling this will not work: Action 'TransferFunds' is guarded by
-      'TransferWithinAvailableBalance', which is settled by reading the call,
-      and this runtime was given no judge to ask. Running it would apply a
-      write the model says must be checked first, so it is refused rather than
-      run unchecked. Report that rather than retrying.
       source: integer -- The account the money leaves.
       target: integer -- The account the money goes to.
       amount: number -- How much money to move.
@@ -1448,14 +1424,20 @@ Model 'payments' (payments_eg), profile 'operational':
       you changed.
 ```
 
-`transfer_funds` is listed and marked `[NOT RUNNABLE]`. `TransferFunds` names a
-guard, this derivation holds no judge to settle it, and so the
-[refusal from section 7](#when-a-rule-stops-the-call) arrives here instead
-— before any agent exists, rather than inside a transaction.
+`transfer_funds` is offered, guard and all. The rule it is gated by is in the
+tool's own description, wording and all, so the agent argues its call against
+the rule before making it rather than learning it from a refusal.
 
-A tool marked `[NOT RUNNABLE]` is **withheld**, and the listing keeps it,
-printed named and described, with what it's waiting on underneath, because an
-action your model declares shouldn't vanish from the set your model offers.
+A guard is not a reason to withhold a tool here. Who settles a rule belongs to
+whoever dispatches the call, and this listing cannot know what that will be, so
+marking the action unrunnable would describe a caller rather than your model.
+What does get marked `[NOT RUNNABLE]` is what supplying a judge would not
+repair: no executor under this binding, an executor this runtime holds no
+handler for, a guard naming a rule your model never declares, or a guard naming
+one that states no rule to put to a judge. Such a tool is **withheld**, and the
+listing keeps it, printed named
+and described, with what it's waiting on underneath, because an action your
+model declares shouldn't vanish from the set your model offers.
 
 Nothing in the listing was written for a particular agent. It reads the same
 whether your caller is ADK, LangChain, or a person deciding whether the model
@@ -1518,9 +1500,10 @@ line of output per key:
 agent listing.*
 
 Two things come from neither file. The derivation appends a paragraph to the
-instruction, its own text about using the tools, identical for every model. The
-runtime adds `[NOT RUNNABLE]` and the paragraph under it, which say whether this
-call could succeed.
+instruction, its own text about using the tools, identical for every model. And
+where a call could not succeed, the runtime adds `[NOT RUNNABLE]` and the
+paragraph under it saying what stands in the way — absent above, because this
+call can.
 
 The instruction at the foot of the listing has two parts, because two different
 people own them.
@@ -1543,8 +1526,10 @@ not. Put it in the model.
 ### What a write tool and a lookup tool do
 
 A **write tool** runs the action. Calling `transfer_funds` does the same bind
-and transact as [`kcmd action run TransferFunds`](#7-run-it) — the same typed
-parameters, the same single transaction, the same three outcomes.
+and transact as [`kcmd action-run TransferFunds`](#7-run-it) — the same typed
+parameters, the same single transaction, the same three outcomes. The guards are
+where the two part: the tool puts each one to whatever judge the runtime behind
+it holds, and the command line settles none.
 
 A **lookup tool** reads one entity: exact match on any bound field, combined
 with AND, capped at 50 rows. It can't join, compare ranges, aggregate or order.
@@ -1574,27 +1559,24 @@ How an entity is keyed is not among them. Every parameter is a scalar, so an
 action taking the three key fields of a three-part key is as callable as one
 taking a single id.
 
-An action guarded by a judgment is withheld when the derivation holds no judge,
-because the listing reports what the runtime would do with what it's holding.
-Supply a judge and the same action is callable, with the same description and
-the same parameters:
+A guard is not one of the reasons a tool is withheld. Who settles a rule belongs
+to the application that embeds the runtime, and this command cannot know what
+that will be, so marking a guarded action unrunnable here would describe a
+caller rather than the model. What the listing does print, in the tool's own
+description, is which rules the agent's calls will be held to:
 
 ```console
-$ kcmd agent tools
-...
-  action  issue_credit  (IssueCredit)  [NOT RUNNABLE]
-
-$ kcmd agent tools --judge
-Rules stated in words go to gemini-2.5-flash (us-central1).
+$ kcmd agent-tools
 ...
   action  issue_credit  (IssueCredit)
+      ...
+      This call is gated by CreditWithinOrderTotal, CreditUnderReviewThreshold
+      and CreditIsNotSplitToAvoidReview:
 ```
 
-`--judge` takes an optional model name, the same way [`kcmd action run
---judge`](#when-the-rule-is-a-sentence) does. Naming a model doesn't call one:
-a judge settles a rule when an action runs, and printing what an agent is
-offered runs no action, so this listing costs you nothing however many guarded
-actions it names.
+No model is called. A judge settles a rule when an action runs, and printing
+what an agent is offered runs no action, so this listing costs you nothing
+however many guarded actions it names.
 
 A **lookup** is withheld for reasons of its own:
 
@@ -1610,7 +1592,7 @@ withheld that would have worked is never tried.
 
 ### Calling it from code
 
-`kcmd agent tools` prints these tools; `modelTools` returns them. Both take a
+`kcmd agent-tools` prints these tools; `modelTools` returns them. Both take a
 **semantic runtime**: one model paired with the store your profile binds it to.
 `createSemanticRuntimes` assembles them the way `kcmd action` does, so your
 agent reads the model the CLI reads, under the same profile, with the same merge
@@ -1736,7 +1718,7 @@ This is a prototype. Four things you might reasonably expect are absent.
 - **kcmd calls no executor but its own.** A `sql` action runs; an `mcp`, `rest`
   or `grpc` one is published for whoever dispatches it, which is why those three
   name coordinates instead of a statement.
-- **The store is Spanner or AlloyDB.** `kcmd action run` binds and
+- **The store is Spanner or AlloyDB.** `kcmd action-run` binds and
   transacts against the database your profile's deployment target names, which
   may be either of those. A model bound to BigQuery publishes its actions and
   runs none of them.

@@ -375,7 +375,7 @@ describe('what counts as runnable is the runtime\'s answer, not a copy', () => {
     // `neverAsked` throws, so this passing is the assertion: a judge settles a
     // rule when an action runs, and listing what an agent is offered runs
     // none. A derivation that spent a model call per guarded action would make
-    // `kcmd agent tools` cost money to read.
+    // `kcmd agent-tools` cost money to read.
     const [tool] = actionTools({
       runtime: rt(guardedBy(judged, 'CreditIsJustified')),
       judge: neverAsked

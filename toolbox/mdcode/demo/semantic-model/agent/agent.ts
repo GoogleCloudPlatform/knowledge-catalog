@@ -82,8 +82,8 @@ const judge = new GeminiJudge(ApiContext.default(), {
 });
 
 // 3. Derive what the model offers, and keep what this binding can serve.
-//    `kcmd agent tools --judge` prints all of it before an agent exists. The
-//    judge goes to the derivation rather than to each call: it is what decides
+//    `kcmd agent-tools` prints all of it before an agent exists. The judge
+//    goes to the derivation rather than to each call: it is what decides
 //    whether a guarded action is offerable at all, and a tool offered on the
 //    strength of a judge and then called without one would be refused
 //    mid-call.

@@ -123,8 +123,7 @@ export function generateSkill(opts: GenerateSkillOptions): SkillPackage|{
   const nameError = whyNameIsInvalid(name);
   if (nameError) return {error: nameError};
 
-  const {actions, instruction} =
-      modelTools({runtime, judge: ASSUMED_JUDGE});
+  const {actions, instruction} = modelTools({runtime, judge: ASSUMED_JUDGE});
   const warnings: string[] = [];
   if (!actions.length) {
     warnings.push(
@@ -305,8 +304,8 @@ const USE_WHEN =
 // ends part-way through a name that does not exist. The count stays exact, so
 // a partial list reads as one.
 function actsSentence(actions: ActionTool[], budget: number): string {
-  const head = `Declares ${actions.length} action${
-      actions.length === 1 ? '' : 's'}: `;
+  const head =
+      `Declares ${actions.length} action${actions.length === 1 ? '' : 's'}: `;
   const names = actions.map(t => t.actionName);
   let sentence = `${head}${names.join(', ')}.`;
   for (let shown = names.length - 1; shown >= 1; shown--) {
@@ -479,13 +478,11 @@ function runningSection(
   const example = actions.find(t => t.runnable)!;
   const action = actionFor(example, runtime.model);
   // `runLine` is the runtime's own answer, and it is asked rather than
-  // reproduced. Whether a judge is needed, whether that judge has to read the
-  // store, and which arguments are required are three rules this module got
-  // wrong when it derived them itself: a guard was counted before it resolved
-  // to a declared constraint, `--judge-reads-store` was never offered, and
-  // every parameter was listed as if required. A line that is certain to be
-  // refused is worse than no line, so there is one copy of the rule.
-  const flags = action ? runFlags(action, runtime) : null;
+  // reproduced. Which arguments a call requires is a rule this module got
+  // wrong when it derived it itself, listing every parameter as if required.
+  // A line that is certain to be refused is worse than no line, so there is
+  // one copy of the rule.
+  const flags = action ? runFlags(action) : null;
   if (flags) {
     // The head is rebuilt so a name that needs shell quoting gets it --
     // nothing constrains what is in an action name, and this is a block meant
@@ -496,7 +493,7 @@ function runningSection(
     // with no flags at all would otherwise end on a continuation with nothing
     // after it.
     const parts = [
-      `kcmd action run ${shellArg(example.actionName)}`,
+      `kcmd action-run ${shellArg(example.actionName)}`,
       `--profile ${shellArg(runtime.profile)}`,
       ...flags,
     ];
@@ -505,15 +502,16 @@ function runningSection(
     out.push('```');
     out.push('');
   }
-  if (flags?.includes('--judge')) {
+  // Said wherever the action states a rule, because the command writes either
+  // way. An agent that tried the line, saw it commit, and took that for the
+  // rules holding would have drawn the one conclusion this command cannot
+  // support.
+  if (action?.guards?.length) {
     out.push(
-        '`--judge` is what settles the rules stated in words. Without it a ' +
-        'guarded action is refused rather than run unchecked.' +
-        (flags.includes('--judge-reads-store') ?
-             ' `--judge-reads-store` lets that judge read the model\'s own ' +
-                 'tables, which a rule about something on record rather than ' +
-                 'in the arguments cannot be settled without.' :
-             ''));
+        'That command line settles no guard. It names the rules this action ' +
+        'states and runs the write regardless, so it answers whether the ' +
+        'call binds and the write lands, and nothing about whether the rules ' +
+        'hold. The runtime your framework calls is what settles them.');
     out.push('');
   }
   return out;
@@ -600,7 +598,7 @@ function referenceDocument(
   const out: string[] = [];
   out.push(`# ${action.name}`);
   out.push('');
-  // Both names, once, here. `action.name` is what `kcmd action run` takes and
+  // Both names, once, here. `action.name` is what `kcmd action-run` takes and
   // what every command line in this package uses; `tool.name` is what the same
   // action is called when a framework hands it over as a tool. An agent meets
   // one or the other depending on how it was wired, and a page that showed

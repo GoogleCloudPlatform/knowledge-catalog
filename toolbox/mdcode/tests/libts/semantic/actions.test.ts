@@ -1118,7 +1118,7 @@ describe('parameter description, required, and default', () => {
 describe('a published statement and a run read the verb the same way', () => {
   // These are the forms `run_action.test.ts` already drives through a `sql`
   // executor. Before the readers were shared, every one of them ran in the
-  // library and was refused by `kcmd push` and `kcmd action run`, which both
+  // library and was refused by `kcmd push` and `kcmd action-run`, which both
   // call `sqlExecutorErrors` first -- so the tests below and those ones
   // disagreed about the same model.
   const target =
