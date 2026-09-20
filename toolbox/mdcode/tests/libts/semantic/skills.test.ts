@@ -666,10 +666,21 @@ describe('a description that does not fit', () => {
 describe('golden skill: the fixture generates these exact files', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
 
-  // The fixture performs PlaceOrder over MCP, which `kcmd` does not wrap. `sql`
-  // is what an agent usually meets, so two variants swap it in. The third keeps
-  // the authored executor, which is what makes it worth having: a different
-  // executor kind, the same reference page.
+  // Two things vary across the three cases and nothing else does: the
+  // executor the action carries, and whether the profile bound a store. Each
+  // golden is named for its pair, so the axis reads off the filename.
+  //
+  //   sql_bound     sql executor, store bound      -- runs
+  //   sql_unbound   sql executor, no store         -- nothing to run against
+  //   mcp           mcp executor, store bound      -- store is fine, the write
+  //                                                   cannot be rolled back
+  //
+  // The fourth pair is not here on purpose: an unbound profile refuses every
+  // action whatever its executor, so mcp_unbound would re-check sql_unbound.
+  //
+  // The fixture performs PlaceOrder over MCP, which `kcmd` does not wrap, so
+  // the two `sql` cases swap the executor in. Guards are untouched throughout
+  // -- `guardedSql` changes the executor and nothing else.
   const guardedSql = withAction(model, {
     executor: {
       kind: 'sql',
@@ -681,17 +692,23 @@ describe('golden skill: the fixture generates these exact files', () => {
     {
       // The case an agent actually meets: bound to a store, so the guarded
       // action is runnable and the section carries a command line.
-      golden: 'actions_place_order.skill.golden.md',
+      golden: 'actions_place_order.sql_bound.skill.golden.md',
       runtime: rt(guardedSql),
     },
     {
-      // A profile that binds no store. Calling an action needs one, so nothing
-      // here runs.
-      golden: 'actions_place_order.no_store.skill.golden.md',
+      // The same action under a profile that binds no store. Calling one
+      // needs a store, so nothing here runs -- and the snippet that reads the
+      // store directly goes too, which is the one thing a binding changes
+      // outside "Running an action".
+      golden: 'actions_place_order.sql_unbound.skill.golden.md',
       runtime: rt(guardedSql, {store: undefined}),
     },
     {
-      // The authored MCP executor.
+      // The authored MCP executor, still bound to a store. Reads work and the
+      // `gcloud` snippet stays; only the write is refused, because it would
+      // commit outside the transaction. The one case whose executor kind is
+      // not `sql`, so it is what checks that the reference page does not move
+      // when the executor does.
       golden: 'actions_place_order.mcp.skill.golden.md',
       runtime: rt(model),
     },
