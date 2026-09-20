@@ -335,6 +335,30 @@ export async function closeStore(store: Store): Promise<void> {
 }
 
 
+/**
+ * How a store is written down for a reader: the resource it addresses, with
+ * the backend named ahead of it for everything but Spanner, which is the one
+ * an unprefixed line has always meant.
+ *
+ * Here rather than in whichever caller needed it first, because more than one
+ * now answers "where would this land" -- the listing a person reads, the
+ * `--store` line a script reads, and the section a generated skill writes into
+ * a file that outlives the run. Two of those disagreeing is a reader sent to
+ * the wrong database.
+ */
+export function storeLine(store: Store): string {
+  switch (store.kind) {
+    case 'spanner':
+      return `${store.project}/${store.instance}/${store.database}`;
+    case 'alloydb':
+      return `alloydb:${store.project}/${store.location}/${store.cluster}/` +
+          `${store.instance}/${store.database}`;
+    case 'bigquery':
+      return `bigquery:${store.project}/${store.dataset}`;
+  }
+}
+
+
 export function dataClientFor(store: Store): DataClient|{error: string} {
   if (store.kind === 'spanner' || store.kind === 'alloydb') return store.client;
   return {

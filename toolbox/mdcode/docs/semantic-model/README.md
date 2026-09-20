@@ -47,6 +47,7 @@ example that carries one model through the whole lifecycle, see the
 | [Modeling class hierarchies](inheritance.md) | model subtypes with `extends` so a supertype query gathers them |
 | [Codelab: one semantic ontology, one data journey](codelab.md) | see the whole lifecycle: author, govern, hydrate, query |
 | [Modeling write operations](actions.md) | declare an action an agent can call, publish it, run it, and derive an agent's tools from the model |
+| [Generating an Agent Skill](skills.md) | write a model out as a skill folder an AI agent loads by itself |
 | [Reference](reference.md) | look up a flag, what push creates, validation, or permissions |
 | [Model specification](model_spec.md) | the normative format: every YAML construct, what's OSI and what's a kcmd extension |
 | [What push and pull preserve](fidelity.md) | understand why something changed or wasn't recovered |

@@ -28,7 +28,8 @@ import {JudgeStore} from '../libts/semantic/runtime/judge';
 import {modelJudgeStore, readableEntities} from '../libts/semantic/runtime/judge_store';
 import {isParameterRequired, runAction} from '../libts/semantic/runtime/run_action';
 import {createSemanticRuntimes, runtimeClient, SemanticRuntime} from '../libts/semantic/runtime/runtime';
-import {dataClientFor, Store} from '../libts/semantic/runtime/store';
+import {dataClientFor, storeLine} from '../libts/semantic/runtime/store';
+import {generateSkill} from '../libts/semantic/skills';
 import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryDataSources, validatePushRequirements, validateRunnable} from '../libts/semantic/validate';
 import {Sources} from '../libts/source';
@@ -1398,21 +1399,95 @@ export async function agent(
 }
 
 
-// How a store is written down for a reader: the resource it addresses, with
-// the backend named ahead of it for everything but Spanner, which is the one an
-// unprefixed line has always meant. Shared by `--store`, which a script reads,
-// and the listing header a person reads, so the two never disagree about where
-// a run would land.
-function storeLine(store: Store): string {
-  switch (store.kind) {
-    case 'spanner':
-      return `${store.project}/${store.instance}/${store.database}`;
-    case 'alloydb':
-      return `alloydb:${store.project}/${store.location}/${store.cluster}/` +
-          `${store.instance}/${store.database}`;
-    case 'bigquery':
-      return `bigquery:${store.project}/${store.dataset}`;
+export interface SkillsGenerateOptions {
+  profile?: string|boolean;
+  judge?: string|boolean;
+  /**
+   * Directory the skill directories are written under. Defaults to `skills`.
+   */
+  out?: string;
+  /** Overrides the skill's name, and so the directory it is written to. */
+  name?: string;
+  /** Rewrite a skill that is already there. */
+  force?: boolean;
+}
+
+
+// Writing a model out as an Agent Skill.
+//
+// `kcmd agent tools` prints what an agent is offered and forgets it. This
+// writes the same derivation to disk in the form an agent loads by itself: a
+// directory per model, a `SKILL.md` a client reads, and the per-action detail
+// in files beside it. Same derivation, so a skill cannot describe a tool that
+// differs from the one that runs.
+//
+// One skill per model in the scope, because a skill is named and a name
+// addresses one thing. `--name` therefore only applies to a scope with one
+// model; with more, each takes its own model's name.
+//
+// A skill already on disk is not overwritten without `--force`. What is
+// generated is a starting point somebody is expected to read and may have
+// edited, and a regeneration that silently replaced those edits would be a
+// command that loses work every time the model changes.
+//
+// Returns a process exit code (0 on success).
+export async function skillsGenerate(options: SkillsGenerateOptions = {}):
+    Promise<number> {
+  const ctx = context.ApiContext.default();
+  const named =
+      typeof options.profile === 'string' ? options.profile : undefined;
+  const opened = await createSemanticRuntimes({profile: named, ctx});
+  if ('error' in opened) {
+    console.error(`Error: ${opened.error}`);
+    return 1;
   }
+  if (options.name && opened.length > 1) {
+    console.error(`Error: --name applies to one skill, and this scope has ${
+        opened.length} models. Drop it and each takes its model's name.`);
+    return 1;
+  }
+
+  // Built the way `kcmd agent tools --judge` builds it. Whether a guarded
+  // action is described as runnable depends on whether the agent reading the
+  // skill will hold a judge, and that is not something the model can say. No
+  // model is called here: generating a skill runs no action.
+  const judge = options.judge ?
+      new GeminiJudge(
+          ctx,
+          typeof options.judge === 'string' ? {model: options.judge} : {}) :
+      undefined;
+
+  const root = options.out ?? 'skills';
+  let failed = false;
+  for (const runtime of opened) {
+    const generated = generateSkill({runtime, name: options.name, judge});
+    if ('error' in generated) {
+      console.error(`Error: [${runtime.model.name}] ${generated.error}`);
+      failed = true;
+      continue;
+    }
+    // The directory name IS the skill name -- a client that finds them
+    // different skips the skill -- so it is taken from what was generated
+    // rather than from anything the caller typed.
+    const dir = path.join(root, generated.name);
+    const existing = path.join(dir, 'SKILL.md');
+    if (fs.existsSync(existing) && !options.force) {
+      console.error(
+          `Error: ${existing} already exists. Pass --force to rewrite it.`);
+      failed = true;
+      continue;
+    }
+    for (const file of generated.files) {
+      const target = path.join(dir, file.path);
+      fs.mkdirSync(path.dirname(target), {recursive: true});
+      fs.writeFileSync(target, file.text);
+      console.log(`Wrote ${target}`);
+    }
+    for (const warning of generated.warnings) {
+      console.warn(`Warning: [${generated.name}] ${warning}`);
+    }
+  }
+  return failed ? 1 : 0;
 }
 
 

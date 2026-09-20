@@ -188,6 +188,35 @@ cli.command(
     });
 
 
+cli.command(
+       'skills-generate',
+       'Write each model in the scope out as an Agent Skill: a SKILL.md an agent loads, with one reference file per action')
+    .option(
+        '--out <dir>',
+        'Directory to write the skill directories under; each skill takes a directory of its own, named after the skill. Defaults to `skills`')
+    .option(
+        '--name <name>',
+        'Name the skill, and so its directory; lowercase letters, digits and single hyphens. Defaults to the model\'s own name. Applies only to a scope with one model')
+    .option(
+        '--profile [name]',
+        'Read the model under this binding profile, which is what the skill\'s one deployment-specific section describes; defaults to default_profile, else the inline bindings')
+    .option(
+        '--judge [model]',
+        'Write the skill for an agent that holds a judge, naming a Gemini model or taking the default; without it, an action guarded by a rule stated in words is described as not runnable. No model is called either way')
+    .option('--force', 'Rewrite a skill that is already there')
+    .action(async (options) => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.skillsGenerate(options);
+      } catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+
+      process.exit(exitCode);
+    });
+
+
 cli.command('mcp', 'Run the Model Context Protocol (MCP) server')
     .option('--path <path>', 'Path to the catalog snapshot root directory')
     .action(async (options) => {
