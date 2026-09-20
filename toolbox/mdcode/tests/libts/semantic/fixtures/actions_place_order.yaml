@@ -2,9 +2,10 @@
 #
 # A minimal star (orders -> customer) plus a model-level ACTION, the write-side
 # counterpart to a metric, and the CONSTRAINTS that gate it. PlaceOrder carries
-# an MCP executor (a tool in Agent Registry) and ontology-typed parameters: an
-# entity-typed one (`customer`, an object reference to the customer entity) and
-# scalar ones. The model also names a BigQuery deployment target, so a push
+# an MCP executor (a tool in Agent Registry) and two parameters, one of each
+# authoring form: `customer` is projected from customer.c_custkey, so its type
+# and its wording come from that field, and `quantity` stands alone with a type
+# of its own. The model also names a BigQuery deployment target, so a push
 # exercises the leg that deploys neither an action nor a constraint.
 #
 # Every constraint states its rule as a judgment, which is the one body a
@@ -72,6 +73,8 @@ semantic_model:
         primary_key: [c_custkey]
         fields:
           - name: c_custkey
+            datatype: Integer
+            description: The customer's account number.
             expression:
               dialects:
                 - dialect: ANSI_SQL
@@ -102,7 +105,7 @@ semantic_model:
             server: //agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/commerce
             tool: place_order
         parameters:
-          - {name: customer, type: customer}
+          - {name: customer, concept: customer, field: c_custkey}
           - {name: quantity, type: Integer}
         guards: [OrderWithinCustomerCredit]
         affects:

@@ -22,6 +22,7 @@ semantic_model:
         primary_key: [c_custkey]
         fields:
           - name: c_custkey
+            datatype: Integer
             expression:
               dialects:
                 - dialect: ANSI_SQL
@@ -31,12 +32,14 @@ semantic_model:
         primary_key: [o_orderkey]
         fields:
           - name: o_orderkey
+            datatype: Integer
             expression:
               dialects:
                 - dialect: ANSI_SQL
                   expression: o_orderkey
     actions:
-      # MCP executor, an entity-typed parameter, a scalar, and instructions.
+      # MCP executor, a projected parameter, a standalone scalar, and
+      # instructions.
       - name: PlaceOrder
         description: Create an order for a customer
         executor:
@@ -44,11 +47,12 @@ semantic_model:
             server: //agentregistry.googleapis.com/x/mcpServers/commerce
             tool: place_order
         parameters:
-          - {name: buyer, type: customer}
+          - {name: buyer, concept: customer, field: c_custkey}
           - {name: quantity, type: Integer}
         ai_context:
           instructions: "Resolve the buyer to a customer before calling."
-      # REST executor, no instructions, a Decimal alongside an entity reference.
+      # REST executor, no instructions, a standalone Decimal alongside a
+      # projected parameter.
       - name: RefundOrder
         description: Refund a placed order
         executor:
@@ -56,7 +60,7 @@ semantic_model:
             endpoint: https://commerce.example.com/v1/refunds
             method: POST
         parameters:
-          - {name: order, type: orders}
+          - {name: order, concept: orders, field: o_orderkey}
           - {name: amount, type: Decimal}
       # gRPC executor with no parameters and no description: everything optional
       # is absent.
@@ -79,7 +83,7 @@ semantic_model:
                 VALUES (GENERATE_UUID(), @buyer)
               - DELETE FROM orders WHERE o_orderkey = @supersedes
         parameters:
-          - {name: buyer, type: customer}
+          - {name: buyer, concept: customer, field: c_custkey}
           - {name: supersedes, type: Integer}
         affects:
           - {concept: orders, operation: create}

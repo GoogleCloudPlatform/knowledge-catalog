@@ -42,7 +42,7 @@
 
 import * as yaml from 'yaml';
 
-import {Action, AffectedConcept, AiContext, Constraint, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, Constraint, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
 
 // The version stamped on every serialized document. Pull emits kcmd's extended
 // profile: it uses native extension keys (`entities`, `deployment_target`)
@@ -196,10 +196,8 @@ function modelDoc(model: SemanticModel, warnings: string[], logical: boolean):
     relationships: nonEmpty(
         (model.relationships ?? []).map(r => relationshipDoc(r, warnings))),
     metrics: nonEmpty((model.metrics ?? []).map(m => metricDoc(m, warnings))),
-    actions:
-        nonEmpty((model.actions ?? []).map(a => actionDoc(a, warnings))),
-    constraints: nonEmpty(
-        (model.constraints ?? []).map(c => constraintDoc(c))),
+    actions: nonEmpty((model.actions ?? []).map(a => actionDoc(a, warnings))),
+    constraints: nonEmpty((model.constraints ?? []).map(c => constraintDoc(c))),
   });
 }
 
@@ -282,26 +280,47 @@ function metricDoc(metric: Metric, warnings: string[]): Record<string, any> {
 }
 
 // Inverts loader.convertAction. The executor collapses back to the open
-// format's single-key object; parameters emit as {name, type, description,
-// required, default}. `isEntityRef` is derived by the loader on reload, so it
-// is intentionally not emitted.
+// format's single-key object; parameters emit as their authoring form.
 function actionDoc(action: Action, warnings: string[]): Record<string, any> {
   dropExtensions(action.customExtensions, `action '${action.name}'`, warnings);
   return compact({
     name: action.name,
     description: action.description,
     executor: action.executor ? executorDoc(action.executor) : undefined,
-    parameters: nonEmpty(
-        (action.parameters ?? []).map(p => compact({
-          name: p.name,
-          type: p.type,
-          description: p.description,
-          required: p.required,
-          default: p.default,
-        }))),
+    parameters: nonEmpty((action.parameters ?? []).map(parameterDoc)),
     guards: nonEmpty(action.guards),
     affects: nonEmpty((action.affects ?? []).map(affectedConceptDoc)),
     ai_context: aiContextDoc(action.aiContext),
+  });
+}
+
+// One action parameter, back in the form an author writes.
+//
+// A parameter projected from a field emits the projection and NOT the type.
+// The type is the field's, copied in at load; writing it back out would make
+// the document state a type alongside `concept`/`field`, which is the one
+// thing the loader refuses outright -- so emitting it would produce a document
+// this tool cannot read. The reload resolves it again from the same field and
+// arrives at the same answer.
+//
+// Wording is emitted whether the author wrote it or inherited it, because
+// nothing here can tell those apart and the two reload identically: an
+// authored value that matches the field's is the field's. So this is verbose
+// where the author was terse, and exact either way.
+//
+// `name` is likewise always written, even where the author let it default to
+// the field's name. Same trade, same reason.
+function parameterDoc(p: ActionParameter): Record<string, any> {
+  return compact({
+    name: p.name,
+    type: p.concept ? undefined : p.type,
+    concept: p.concept,
+    field: p.field,
+    label: p.label,
+    description: p.description,
+    ai_context: aiContextDoc(p.aiContext),
+    required: p.required,
+    default: p.default,
   });
 }
 
@@ -315,8 +334,8 @@ function actionDoc(action: Action, warnings: string[]): Record<string, any> {
 // authored `{concept: Order}` with no operation comes back as `Order`. The two
 // mean the same thing, so the emit is a fixed point after one pass, which is
 // what the round-trip tests assert.
-function affectedConceptDoc(affected: AffectedConcept):
-    string|Record<string, any> {
+function affectedConceptDoc(affected: AffectedConcept): string|
+    Record<string, any> {
   if (!affected.operation && !affected.fields?.length) return affected.concept;
   return compact({
     concept: affected.concept,

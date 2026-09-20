@@ -11,10 +11,10 @@
 import {BigQueryClient} from '../gcp/bigquery';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
-import {Action, ActionParameter, Constraint, Executor, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
+import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {LoadedModel} from './loader';
 import {bindScalar} from './parameters';
-import {resolveInheritance} from './resolve_inheritance';
+import {DeclaredConcept, declaredConceptFields, resolveInheritance} from './resolve_inheritance';
 import {referencedParameters} from './sql_identifiers';
 
 // Checks every model against the push requirements and returns the collected
@@ -164,8 +164,7 @@ export function validatePushRequirements(
     errors.push(...validateActions(model, document, !!opts.fieldsPruned, true));
 
     // Constraints are logical invariants, target-independent like actions.
-    errors.push(
-        ...validateConstraints(model, document, !!opts.fieldsPruned));
+    errors.push(...validateConstraints(model, document, !!opts.fieldsPruned));
   }
   return errors;
 }
@@ -195,9 +194,13 @@ export function validateRunnable(models: LoadedModel[]): string[] {
 
 // Static, target-independent checks for a model's actions. Returns one message
 // per violation. What can be statically wrong once the model has parsed:
-//   - a parameter's type resolves to neither a known entity nor a scalar
-//     datatype (the loader left isEntityRef unset and only warned) -- an
-//     unresolvable type is a malformed action, promoted to a hard error here;
+//   - a parameter projects from a concept the model does not declare, or a
+//     field that concept does not have (the loader kept it and only warned) --
+//     each reported as itself, because "fix the concept" and "fix the field"
+//     are two different repairs;
+//   - a parameter resolved to no scalar type at all, or to something that is
+//     not one -- the commonest case being an entity name written as the
+//     parameter's `type`, which is the old object-reference spelling;
 //   - an executor is missing a coordinate a runtime needs to dispatch it (an
 //     empty server/tool, endpoint/method, or service/method) -- the schema
 //     accepts empty strings, so this is caught here rather than at parse;
@@ -216,54 +219,85 @@ function validateActions(
   const errors: string[] = [];
   const actions = model.actions ?? [];
   if (!actions.length) return errors;
-  const constraintNames =
-      new Set((model.constraints ?? []).map(c => c.name));
-  // Built only when an `affects` entry will actually read it, and through
-  // `ifResolvable` because declaredConcepts resolves inheritance.
-  const concepts = !fieldsPruned && actions.some(a => a.affects?.length) ?
+  const constraintNames = new Set((model.constraints ?? []).map(c => c.name));
+  // Built when an `affects` entry or a projected parameter will actually read
+  // it, and through `ifResolvable` because declaredConcepts resolves
+  // inheritance.
+  //
+  // `fieldsPruned` stands the whole lookup down, which is what a profile push
+  // needs: pruning removes unbound fields and unavailable entities, so the
+  // concept a parameter projects from may be gone from the model in hand even
+  // though the author's document names one that exists. A parameter needs only
+  // the logical definition and the loader already copied it down, so nothing
+  // about the push depends on resolving the reference a second time here.
+  const needsConcepts =
+      actions.some(a => a.affects?.length || a.parameters.some(p => p.concept));
+  const concepts = !fieldsPruned && needsConcepts ?
       ifResolvable(() => declaredConcepts(model)) :
       undefined;
   for (const action of actions) {
     const where =
         `action '${action.name}' in model '${model.name}' (${document})`;
-    const byType = new Map<string, ActionParameter[]>();
+    // Two parameters are confusable when a caller cannot tell from their types
+    // which is which. Projecting the SAME field of the same concept is the
+    // stronger case of that -- two Account.accountId parameters are not merely
+    // both strings, they denote the same kind of thing -- so it keys on the
+    // projection where there is one and on the bare type otherwise.
+    const byIdentity = new Map<string, ActionParameter[]>();
     for (const param of action.parameters) {
-      if (param.isEntityRef === undefined) {
-        errors.push(`${where} has parameter '${param.name}' whose type '${
-            param.type}' is neither a known entity nor a scalar datatype.`);
-      }
+      errors.push(...parameterTypeErrors(param, where, concepts));
       if (param.required === true && param.default !== undefined) {
         errors.push(
             `${where} has parameter '${param.name}' with both ` +
             `'required: true' and a 'default'; a parameter with a default is ` +
             `optional.`);
       }
+      // Every parameter is a scalar now, so every default is checkable --
+      // including one on a parameter whose definition came from a field.
       if (param.default !== undefined && param.default !== null &&
-          param.isEntityRef === false) {
+          param.type !== undefined) {
         const bound = bindScalar(param, param.default);
         if ('error' in bound) {
-          errors.push(
-              `${where} has parameter '${param.name}' whose default '${
-                  param.default}' is invalid: ${bound.error}`);
+          errors.push(`${where} has parameter '${param.name}' whose default '${
+              param.default}' is invalid: ${bound.error}`);
         }
       }
-      const list = byType.get(param.type) ?? [];
+      const identity = param.concept !== undefined ?
+          `${param.concept}.${param.field}` :
+          (param.type ?? '');
+      const list = byIdentity.get(identity) ?? [];
       list.push(param);
-      byType.set(param.type, list);
+      byIdentity.set(identity, list);
     }
     if (checkDescriptions) {
-      for (const [type, params] of byType) {
+      for (const [identity, params] of byIdentity) {
         if (params.length <= 1) continue;
-        const missing = params.filter(p => !p.description?.trim());
-        if (missing.length > 0) {
-          const names = missing.map(p => `'${p.name}'`);
+        // A description has to be the parameter's OWN to separate it from its
+        // twin. Two parameters projected from one field come out of the loader
+        // carrying that field's wording verbatim, so both are described and
+        // neither is distinguished -- an identical description is worth no
+        // more here than a missing one.
+        const shares = new Map<string, number>();
+        for (const p of params) {
+          const said = p.description?.trim() ?? '';
+          shares.set(said, (shares.get(said) ?? 0) + 1);
+        }
+        const indistinct = params.filter(
+            p => shares.get(p.description?.trim() ?? '')! > 1 ||
+                !p.description?.trim());
+        if (indistinct.length > 0) {
+          const names = indistinct.map(p => `'${p.name}'`);
+          const shared = params[0].concept !== undefined ?
+              `multiple parameters projected from '${identity}'` :
+              `multiple parameters of type '${identity}'`;
           errors.push(
-              `${where} has multiple parameters of type '${type}', so ${
+              `${where} has ${shared}, so ${
                   names.length === 1 ?
                       `parameter ${names[0]}` :
                       `parameters ${names.slice(0, -1).join(', ')} and ${
-                          names[names.length - 1]}`} must have a ` +
-              `'description' to distinguish ${
+                          names[names.length - 1]}`} must each have a ` +
+              `'description' of ${
+                  names.length === 1 ? 'its' : 'their'} own to distinguish ${
                   names.length === 1 ? 'it' : 'them'}.`);
         }
       }
@@ -273,8 +307,8 @@ function validateActions(
     const executor = action.executor;
     if (executor !== undefined) {
       for (const missing of missingExecutorFields(executor)) {
-        errors.push(`${where} has an ${
-            executor.kind} executor whose '${missing}' is missing or blank.`);
+        errors.push(`${where} has an ${executor.kind} executor whose '${
+            missing}' is missing or blank.`);
       }
     }
     // An unresolved guard leaves the author believing the write is checked when
@@ -324,8 +358,9 @@ function sqlExecutorErrors(action: Action, where: string): string[] {
     }
     const verb = text.split(/\s/, 1)[0].toUpperCase();
     if (!(SQL_EXECUTOR_VERBS as readonly string[]).includes(verb)) {
-      errors.push(`${at} starts with '${verb}', but a statement must be one of ${
-          SQL_EXECUTOR_VERBS.join(', ')}.`);
+      errors.push(
+          `${at} starts with '${verb}', but a statement must be one of ${
+              SQL_EXECUTOR_VERBS.join(', ')}.`);
     }
     if (text.slice(0, -1).includes(';')) {
       errors.push(
@@ -391,36 +426,64 @@ function affectedConceptErrors(
   return errors;
 }
 
-// What an `affects` entry's `concept` may name, and the fields it has.
-// Entities are indexed first, so a name that is both resolves to the entity.
-// `kind` is local: it never leaves this check, and exists only to say
-// `entity 'X'` or `relationship 'X'` in a message and to pick which fields
-// count.
+// What a `concept` may name, and the fields it has. Shared with the loader --
+// which resolves a projected parameter against exactly this -- so the two can
+// never disagree about whether `Order` exists or what it declares.
+const declaredConcepts = declaredConceptFields;
+
+
+// Why a parameter has no usable scalar type, or nothing when it has one.
 //
-// Inheritance is resolved through declaredFields for the same reason the
-// constraint check does it: a subtype's own `fields` omit what it inherits.
-interface DeclaredConcept {
-  kind: 'entity'|'relationship';
-  fields: Set<string>;
-}
-function declaredConcepts(model: SemanticModel): Map<string, DeclaredConcept> {
-  const concepts = new Map<string, DeclaredConcept>();
-  for (const [name, fields] of declaredFields(model)) {
-    concepts.set(name, {kind: 'entity', fields});
+// Each shape of the mistake gets its own message, because each has its own
+// repair. Telling an author who misspelled a field that the concept is
+// unknown, or telling one who wrote `type: Account` that `Account` is not a
+// datatype, sends them to the wrong line.
+//
+// The projection is checked only when the ontology is in hand: `concepts` is
+// absent for a profile's pruned view, where a concept the author named may
+// legitimately be gone (see affectedConceptErrors). The type check below
+// survives that, because the loader resolved the type before any pruning ran.
+function parameterTypeErrors(
+    param: ActionParameter, where: string,
+    concepts: Map<string, DeclaredConcept>|undefined): string[] {
+  const errors: string[] = [];
+  if (param.concept !== undefined && concepts) {
+    const concept = concepts.get(param.concept);
+    if (!concept) {
+      errors.push(
+          `${where} has parameter '${param.name}' projected from '${
+              param.concept}', which is neither an entity nor a ` +
+          `relationship this model declares.`);
+    } else if (!concept.fields.has(param.field ?? '')) {
+      errors.push(`${where} has parameter '${
+          param.name}' projected from field '${param.field}', which ${
+          concept.kind} '${param.concept}' does not declare.`);
+    }
   }
-  for (const r of model.relationships ?? []) {
-    if (concepts.has(r.name)) continue;
-    // Only a many-to-many edge has fields of its own (they live on the junction
-    // table it is backed by), and those are exactly what a `modify` on an edge
-    // names -- an enrollment's grade. A plain foreign-key edge carries none, so
-    // naming fields on one is an error: the properties an author means in that
-    // case belong to an endpoint entity.
-    concepts.set(r.name, {
-      kind: 'relationship',
-      fields: new Set((r.association?.fields ?? []).map(f => f.name)),
-    });
+  if (param.type === undefined) {
+    // A projection that failed above already says why there is no type; a
+    // second line repeating it would only add noise.
+    if (!errors.length) {
+      errors.push(
+          `${where} has parameter '${param.name}' with no type. A parameter ` +
+          `states a scalar 'type' (${DATA_TYPES.join('/')}), or projects one ` +
+          `from a field with 'concept' and 'field'.`);
+    }
+    return errors;
   }
-  return concepts;
+  if ((DATA_TYPES as readonly string[]).includes(param.type)) return errors;
+  const named = concepts?.get(param.type);
+  errors.push(
+      named ? `${where} has parameter '${param.name}' typed '${
+                  param.type}', which is ${
+                  named.kind === 'entity' ? 'an entity' : 'a relationship'} ` +
+              `rather than a scalar datatype. A parameter carries a value, ` +
+              `so take one from ${param.type} by projecting it: ` +
+              `{concept: ${param.type}, field: <field>}.` :
+              `${where} has parameter '${param.name}' typed '${
+                  param.type}', which is not a scalar datatype (${
+                  DATA_TYPES.join('/')}).`);
+  return errors;
 }
 
 
@@ -514,8 +577,8 @@ function judgedConstraintErrors(
         `is too strong a thing to inherit by leaving the key out.`);
   }
   if (!empty) {
-    errors.push(...unknownFieldRefs(
-        c.judgment!, where, fieldsByEntity, nonFieldNames));
+    errors.push(
+        ...unknownFieldRefs(c.judgment!, where, fieldsByEntity, nonFieldNames));
   }
   return errors;
 }

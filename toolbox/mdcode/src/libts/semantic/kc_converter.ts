@@ -155,10 +155,9 @@ export function modelsFromCatalogResources(
     const model: SemanticModel = {name, entities, relationships, metrics};
     const description = anchor.entrySource?.description;
     if (description !== undefined) model.description = description;
-    const actions =
-        childrenOf(anchor.name, actionEntries)
-            .map(e => readAction(e, entityNames, warnings))
-            .filter((a): a is Action => a !== undefined);
+    const actions = childrenOf(anchor.name, actionEntries)
+                        .map(e => readAction(e, warnings))
+                        .filter((a): a is Action => a !== undefined);
     if (actions.length) model.actions = actions;
     const constraints = childrenOf(anchor.name, constraintEntries)
                             .map(e => readConstraint(e, warnings))

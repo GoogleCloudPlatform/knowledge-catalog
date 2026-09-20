@@ -319,12 +319,17 @@ $ ../../../dist/kcmd action list
 Model 'commerce' (commerce_demo), profile 'spanner':
   store: my-project/my-instance/semantic_agent_demo
   IssueCredit: Credit a customer against one order -- a late delivery, a coupon, a shipping charge applied in error. The credit is added as a negative line and the order total is recomputed from the lines.
-    parameters: order (Order, reference), amount (Decimal), memo (String)
+    parameters: order (Integer from Order.orderId), amount (Decimal), memo (String)
     executor:   sql
     guards:     CreditWithinOrderTotal, CreditUnderReviewThreshold, CreditMemoNamesAServiceFailure, CreditIsNotSplitToAvoidReview
     affects:    LineItem (create), Order (modify)
-    run:        kcmd action run IssueCredit --judge --judge-reads-store --arg order=<Order> --arg amount=<Decimal> --arg memo=<String>
+    run:        kcmd action run IssueCredit --judge --judge-reads-store --arg order=<Integer> --arg amount=<Decimal> --arg memo=<String>
 ```
+
+`order (Integer from Order.orderId)` is a parameter projected from a field:
+the model states the order's number once, on the entity, and the action takes
+its type and its wording from there. What the caller passes is an ordinary
+Integer.
 
 The `run:` line names both judge flags because the guards are judged and the
 model has tables under this profile to read, and a suggested command certain to
@@ -352,7 +357,6 @@ Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/sem
   rules stated in words go to gemini-2.5-flash (us-central1)
   it may read commerce's tables to settle them
   the judge reads: SELECT total FROM Orders WHERE order_id = 12346
-  order: '12346' -> Order 12346
 Committed at 2026-09-14T19:12:04.996343Z.
 ```
 
@@ -371,8 +375,7 @@ because the rule is advisory. A judged rule is settled afresh for every call, so
 a case close to the line a rule draws has no one fixed answer. That is a reason
 to keep the cases a rule must catch well clear of its line.
 
-`order=12346` was text; the runtime resolved it to a row and says which one. The
-total moved from $18.00 to $15.00 with nobody doing arithmetic, because the
+The total moved from $18.00 to $15.00 with nobody doing arithmetic, because the
 second statement recomputes it from the lines. Both statements ran in one
 read-write transaction.
 
@@ -595,9 +598,8 @@ Model 'commerce' (commerce_demo), profile 'spanner':
       and this runtime was given no judge to ask. Running it would apply a
       write the model says must be checked first, so it is refused rather than
       run unchecked. Report that rather than retrying.
-      order: string -- Which Order this applies to. Give its key, or text that
-          identifies exactly one; the call fails when nothing matches or more
-          than one does.
+      order: integer -- The order's number, which is how both the customer and
+          the desk refer to it.
       amount: number -- The amount, as a decimal number.
       memo: string -- The memo, as text.
 ```
@@ -617,9 +619,8 @@ Model 'commerce' (commerce_demo), profile 'spanner':
       and CreditIsNotSplitToAvoidReview:
       - CreditWithinOrderTotal: The credit amount requested must not exceed the
         total of the order it is applied to. ...
-      order: string -- Which Order this applies to. Give its key, or text that
-          identifies exactly one; the call fails when nothing matches or more
-          than one does.
+      order: integer -- The order's number, which is how both the customer and
+          the desk refer to it.
       amount: number -- The amount, as a decimal number.
       memo: string -- The memo, as text.
 ```
@@ -650,7 +651,8 @@ The rest of the listing is the same either way:
       Returns orderId, customerId, placedOn, total, status. Every argument is
       an exact match and every one is optional; giving none returns the first
       rows. This tool cannot join, compare ranges, or total anything.
-      orderId: integer
+      orderId: integer -- The order's number, which is how both the customer
+          and the desk refer to it.
       customerId: integer
       placedOn: string -- The day the order was placed.
       total: number -- What the customer owes on this order, in dollars.
@@ -898,7 +900,7 @@ $ bun agent.ts "Dana Reyes says the stand mixer on order 12347 turned up with a 
   -> issue_credit({"amount":20,"order":"12347","memo":"Credit for stand mixer with dented casing."})
   (judge reads) SELECT total FROM Orders WHERE order_id = 12347
   (judge reads) SELECT total FROM Orders WHERE order_id = 12347
-  <- {"applied":true,"actedOn":{"order":["12347"]},"committedAt":"2026-09-14T19:11:16.355995Z"}
+  <- {"applied":true,"committedAt":"2026-09-14T19:11:16.355995Z"}
 I have credited 20 dollars to order 12347 for the dented stand mixer.
 ```
 
@@ -919,7 +921,7 @@ write lands anyway and says so:
 $ bun agent.ts "Dana Reyes is asking for a 5 dollar credit on order 12347. She didn't say anything was wrong with it, she just asked for one as a gesture. Please put it through."
   -> issue_credit({"amount":5,"memo":"Customer requested a $5 credit as a gesture.","order":"12347"})
   (judge reads) SELECT total FROM Orders WHERE order_id = 12347
-  <- {"applied":true,"actedOn":{"order":["12347"]},"committedAt":"2026-09-14T19:11:33.409154Z","warnings":["'CreditMemoNamesAServiceFailure' (\"The memo argument of this call must name a specific thing that went wrong on the order: ...\") is advisory, and gemini-2.5-flash (us-central1) judged that it does not hold for this call: The memo \"Customer requested a $5 credit as a gesture.\" does not name a specific thing that went wrong with the order. It states the customer asked for it, which is not a service failure."]}
+  <- {"applied":true,"committedAt":"2026-09-14T19:11:33.409154Z","warnings":["'CreditMemoNamesAServiceFailure' (\"The memo argument of this call must name a specific thing that went wrong on the order: ...\") is advisory, and gemini-2.5-flash (us-central1) judged that it does not hold for this call: The memo \"Customer requested a $5 credit as a gesture.\" does not name a specific thing that went wrong with the order. It states the customer asked for it, which is not a service failure."]}
 I issued a $5 credit to Dana Reyes for order 12347. The credit was applied, but I want to let you know that the system flagged a warning: the memo "Customer requested a $5 credit as a gesture" doesn't describe a specific service failure, which is usually required. However, the system decided to proceed with the credit despite this warning.
 ```
 
@@ -1172,9 +1174,8 @@ which have not.
 
 `kcmd action run` takes the action the agent would have called and calls it
 directly, with the arguments spelled out instead of chosen. It is the whole of
-the run below the agent — the connection, the entity reference, both statements
-and the commit — so it is worth doing once on a new store before handing the
-store to a model:
+the run below the agent — the connection, both statements and the commit — so
+it is worth doing once on a new store before handing the store to a model:
 
 ```console
 $ ../../../dist/kcmd action run IssueCredit --profile alloydb --judge --judge-reads-store \
@@ -1183,7 +1184,6 @@ Running 'IssueCredit' on projects/my-project/locations/us-central1/clusters/my-c
   rules stated in words go to gemini-2.5-flash (us-central1)
   it may read commerce's tables to settle them
   the judge reads: SELECT order_total FROM purchase_order WHERE order_id = 12345
-  order: '12345' -> Order 12345
 Committed at 2026-09-14T19:17:08.588Z.
 ```
 
@@ -1223,10 +1223,11 @@ Guards are settled from the attempted call, and from whatever the judge read,
 before any transaction opens. Which database is underneath makes no difference
 to any of these outcomes.
 
-`order: '12345' -> Order 12345` is the reference being resolved: the argument
-arrives as text and the runtime reads the key back out of `purchase_order`
-before either statement runs, so an order that does not exist is refused here
-rather than silently updating nothing. Afterwards:
+An order that does not exist is refused rather than silently doing nothing.
+The second statement recomputes the total of the order the call names, and a
+statement that matches no row did not do what the action says it does, so the
+runtime rolls the transaction back and says which statement missed. Nothing
+looks the order up first; the write itself is what finds out. Afterwards:
 
 ```console
 $ psql "host=$PGHOST user=$(gcloud config get-value account) dbname=semantic_agent_demo" -c \

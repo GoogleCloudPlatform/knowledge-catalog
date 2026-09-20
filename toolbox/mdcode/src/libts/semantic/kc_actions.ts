@@ -113,17 +113,22 @@ export function actionEntries(
   for (const action of actions) {
     const id = actionEntryId(modelId, action.name);
     if (!ctx.claim(id, `action '${action.name}'`)) continue;
-    // A parameter typed by an entity this push does not publish leaves the
-    // catalog naming an entity it has no entry for, and a later pull cannot
-    // tell that the type was an entity rather than a misspelled scalar.
+    // A derived parameter -- one projected from a field -- leaves the catalog
+    // naming a concept it has no entry for when that concept is not part of
+    // this push. The parameter itself still publishes intact, type and wording
+    // and all, because the loader already resolved them; what a later pull
+    // cannot do is find the field the projection came from, so re-authoring
+    // that model would have to state the type by hand.
     for (const p of action.parameters ?? []) {
-      if (p.isEntityRef && !ctx.publishedEntities.has(p.type)) {
-        warnings.push(
-            `model '${model.name}': action '${action.name}' parameter ` +
-            `'${p.name}' refers to entity '${p.type}', which this push does ` +
-            `not publish (abstract or unavailable), so a pull will not ` +
-            `recover it as an entity reference.`);
-      }
+      if (!p.concept) continue;
+      if (ctx.publishedEntities.has(p.concept)) continue;
+      if (relationshipNames.has(p.concept)) continue;
+      warnings.push(
+          `model '${model.name}': action '${action.name}' parameter ` +
+          `'${p.name}' is projected from '${p.concept}.${p.field}', and ` +
+          `this push does not publish '${p.concept}' (abstract or ` +
+          `unavailable), so a pull will recover the parameter but not the ` +
+          `field it came from.`);
     }
     // The same hazard for the concepts the action declares it changes. The
     // entry is still published -- the action does change that concept, and
@@ -178,7 +183,8 @@ function actionAspectData(action: Action): Record<string, any> {
         p => compact({
           name: p.name,
           type: p.type,
-          isEntityRef: p.isEntityRef,
+          concept: p.concept,
+          field: p.field,
           description: p.description,
           required: p.required,
           default: p.default !== undefined ? JSON.stringify(p.default) :
@@ -257,19 +263,17 @@ export function actionAspectTypes(entryTypeBase: string): string[] {
 /**
  * Recovers one action from its entry, the inverse of actionEntries.
  *
- * `isEntityRef` is re-derived against the entity names this pull actually
- * recovered (as the loader does) rather than trusted from the stored aspect,
- * so it stays consistent with the model actually pulled. An affected concept
- * needs no
- * such treatment: it stores only what the author wrote.
+ * A parameter recovers exactly what was stored, projection and all. Nothing is
+ * re-derived here: a derived parameter's type was resolved once, at load, and
+ * the aspect carries the answer, so a pull that recovered the concept and one
+ * that did not produce the same parameter rather than two different ones.
  *
  * An entry with NO executor recovers as an action with none: that is a legal
  * published state, not damage. An entry whose executor names a kind but lacks
  * the coordinates that kind needs is malformed, and returns undefined with a
  * warning, so one bad entry degrades itself rather than the pull.
  */
-export function readAction(
-    entry: Entry, entityNames: string[], warnings: string[]): Action|undefined {
+export function readAction(entry: Entry, warnings: string[]): Action|undefined {
   const name = entry.entrySource?.displayName || idOf(entry.name);
   const data = actionAspectDataOf(entry);
   // No kind at all is an action no binding performed, which round-trips as it
@@ -283,11 +287,9 @@ export function readAction(
         `executor; the action is skipped`);
     return undefined;
   }
-  const entitySet = new Set(entityNames);
-  const parameters =
-      asArray(data.parameters)
-          .map((p: any) => readParameter(p, entitySet, name, warnings))
-          .filter((p): p is ActionParameter => p !== undefined);
+  const parameters = asArray(data.parameters)
+                         .map((p: any) => readParameter(p, name, warnings))
+                         .filter((p): p is ActionParameter => p !== undefined);
 
   const action: Action = {name, parameters};
   if (executor) action.executor = executor;
@@ -343,16 +345,27 @@ export function readAction(
   return action;
 }
 
-// One action parameter from its aspect record, re-deriving isEntityRef against
-// the model's entities (a scalar datatype otherwise). A record missing a name is
-// dropped.
+// One action parameter from its aspect record. A record missing a name is
+// dropped. `concept` and `field` come back together or not at all: half a
+// projection is not something a re-push could state, so a record carrying only
+// one of them recovers as the plain scalar it already is, and says so.
 function readParameter(
-    p: any, entityNames: Set<string>, actionName: string,
-    warnings: string[]): ActionParameter|undefined {
+    p: any, actionName: string, warnings: string[]): ActionParameter|undefined {
   const name = typeof p?.name === 'string' ? p.name : '';
   const type = typeof p?.type === 'string' ? p.type : '';
   if (!name) return undefined;
   const param: ActionParameter = {name, type};
+  const concept = typeof p?.concept === 'string' ? p.concept : '';
+  const field = typeof p?.field === 'string' ? p.field : '';
+  if (concept && field) {
+    param.concept = concept;
+    param.field = field;
+  } else if (concept || field) {
+    warnings.push(
+        `action '${actionName}': parameter '${name}' stores only ` +
+        `'${concept ? 'concept' : 'field'}' of a field projection; ` +
+        `recovered as a plain ${type || 'untyped'} parameter.`);
+  }
   if (typeof p?.description === 'string' && p.description !== '') {
     param.description = p.description;
   }
@@ -362,19 +375,14 @@ function readParameter(
   if (p?.default !== undefined && p.default !== '') {
     param.default = parseDefaultFromAspect(p.default);
   }
-  if (entityNames.has(type)) {
-    param.isEntityRef = true;
-  } else if ((DATA_TYPES as readonly string[]).includes(type)) {
-    param.isEntityRef = false;
-  } else {
-    // The type resolves to neither an entity in the pulled model nor a scalar
-    // datatype -- e.g. an entity-typed parameter whose entity was not part of
-    // this pull. Leave isEntityRef unset (push-side validate flags it) and warn
-    // so the gap is visible rather than silently dropped.
+  if (!(DATA_TYPES as readonly string[]).includes(type)) {
+    // Every parameter is a scalar now, so a type that is not one is damage
+    // rather than a reference this pull failed to resolve. Kept as stored --
+    // dropping it would hide what the catalog actually holds -- and reported,
+    // because a re-push will refuse it.
     warnings.push(
-        `action '${actionName}': parameter '${name}' type '${type}' is ` +
-        `neither a known entity nor a scalar datatype; pulled without a ` +
-        `resolved type`);
+        `action '${actionName}': parameter '${name}' type '${type}' is not a ` +
+        `scalar datatype; pulled as stored`);
   }
   return param;
 }
@@ -401,9 +409,8 @@ function parseDefaultFromAspect(raw: unknown): unknown {
 // schema-join entry links, so a many-to-many edge is never among them, and
 // every entry naming one would look unresolvable on a model that is perfectly
 // well-formed. Nothing here needs the answer, so nothing asks.
-function readAffectedConcept(
-    raw: any, actionName: string,
-    warnings: string[]): AffectedConcept|undefined {
+function readAffectedConcept(raw: any, actionName: string, warnings: string[]):
+    AffectedConcept|undefined {
   const concept = typeof raw?.concept === 'string' ? raw.concept : '';
   if (!concept) return undefined;
   const affected: AffectedConcept = {concept};

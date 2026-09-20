@@ -3,19 +3,20 @@
 // A semantic model has always described what things MEAN. Actions describe what
 // can be DONE. This module is where the two meet an actual database:
 //
-//   1. RESOLVE. An action's parameters are typed by the ontology, so an
-//      entity-typed argument is an object reference, not a value. The caller
-//      (often an agent) supplies something human -- an account id, a person's
-//      name -- and the runtime turns it into the row that argument denotes,
-//      failing loudly on "no such thing" and on "more than one such thing".
-//   2. BIND. Every argument becomes a query parameter of the store type its
-//      declared ontology type implies. Nothing is interpolated into SQL.
-//   3. APPLY. A read-write transaction is opened, the action's writes are run
+//   1. BIND. Every parameter is a scalar, and every argument becomes a query
+//      parameter of the store type its resolved ontology type implies. Nothing
+//      is interpolated into SQL.
+//   2. APPLY. A read-write transaction is opened, the action's writes are run
 //      inside it, and it is committed. Any failure before the commit rolls
 //      back, so no partial write survives. A failure OF the commit is the one
 //      case nothing here can resolve -- the store may have applied it and lost
 //      the response -- and it is reported as the unknown it is rather than as
 //      a rollback.
+//
+// A statement that matched NO ROW is a failure, not a quiet success. An UPDATE
+// or a DELETE whose predicate found nothing did not do what the action says it
+// does, and reporting "committed" for it would tell a caller a row was changed
+// that was never there. See the row-count check in `runAction`.
 //
 // Where the write comes from. An action with a `sql` executor carries its own
 // DML, and the runtime runs those statements itself. An action with an `mcp`,
@@ -43,29 +44,14 @@
 // property that reference rule exists to guarantee.
 
 import * as spanner from '../../gcp/spanner';
-
-import {boundTable} from '../binding';
-import {Action, ActionParameter, Constraint, Entity, fieldBinding, SemanticModel,} from '../ir';
+import {Action, Constraint, SemanticModel,} from '../ir';
 import {bindScalar, isParameterRequired, sentence, storeCodeFor,} from '../parameters';
 import {referencedParameters} from '../sql_identifiers';
 
-import {dialectFor, SqlDialect} from './dialect';
 import {Judge, JudgeVerdict} from './judge';
 import {runtimeClient, SemanticRuntime} from './runtime';
 
 export {bindScalar, isParameterRequired, sentence, storeCodeFor} from '../parameters';
-
-
-// An entity-typed argument, resolved to the row it denotes.
-export interface EntityRef {
-  entity: string;
-  // Key values in the entity's declared key order, as strings (both
-  // operational backends hand every scalar over as text, and the runtime keeps
-  // them that way so a caller need not know the physical types).
-  keys: string[];
-  // How the caller referred to it, kept for error messages.
-  input: string;
-}
 
 
 // The writes an action performs: either built from its `sql` executor or
@@ -84,16 +70,13 @@ export type QueryFn = (stmt: spanner.Statement) =>
     Promise<Array<Array<string|null>>>;
 
 
-// What the handler is given: the action, its arguments with entity-typed ones
-// already resolved, and a reader scoped to the open transaction (so a handler
-// can look at the pre-state before deciding what to write). An optional
-// entity-typed parameter omitted by the caller has no entry in `refs`
-// (`refs[param.name]` is `undefined`).
+// What the handler is given: the action, its arguments, and a reader scoped to
+// the open transaction (so a handler can look at the pre-state before deciding
+// what to write).
 export interface ActionContext {
   model: SemanticModel;
   action: Action;
   args: Record<string, unknown>;
-  refs: Record<string, EntityRef|undefined>;
   query: QueryFn;
 }
 
@@ -104,7 +87,6 @@ export type ActionHandler = (ctx: ActionContext) => Promise<ActionPlan>;
 export type ActionOutcome = {
   status: 'committed';
   commitTimestamp?: string;
-  refs: Record<string, EntityRef>;
   // What a rule reported without stopping the write. A guard whose
   // `onViolation` is `warn` puts its verdict here, and so does one whose judge
   // could not be reached: the call committed, and the caller is told what went
@@ -113,8 +95,9 @@ export type ActionOutcome = {
   warnings?: string[];
 }|{
   status: 'error';
-  // A failure that stopped the write: an argument that resolved to nothing, an
-  // action this runtime will not run unchecked, a store-level error. The
+  // A failure that stopped the write: an argument of the wrong type or none at
+  // all, a write that matched no row, an action this runtime will not run
+  // unchecked, a store-level error. The
   // transaction is rolled back, so no partial write survives -- except in the
   // one case `indeterminate` marks.
   message: string;
@@ -142,9 +125,9 @@ export interface RunActionOptions {
 
 
 // Runs one action end to end. Never throws for an expected failure -- an
-// unresolvable argument, a refused action, a rejected statement all come back
-// as an outcome, because the caller is usually an agent that needs to read the
-// reason and try again.
+// argument of the wrong type, a refused action, a rejected statement all come
+// back as an outcome, because the caller is usually an agent that needs to read
+// the reason and try again.
 export async function runAction(opts: RunActionOptions):
     Promise<ActionOutcome> {
   const {model} = opts.runtime;
@@ -237,12 +220,13 @@ export async function runAction(opts: RunActionOptions):
           res = await client.executeSql(sessionName, transactionId, stmt);
         } catch (err) {
           throw new StoreError(`${
-              err instanceof Error ? err.message :
-                                     String(err)} (while running: ${stmt.sql})`);
+              err instanceof Error ?
+                  err.message :
+                  String(err)} (while running: ${stmt.sql})`);
         }
         if (res.status < 200 || res.status >= 300) {
-          throw new StoreError(
-              `${res.message ?? 'request failed'} (while running: ${stmt.sql})`);
+          throw new StoreError(`${
+              res.message ?? 'request failed'} (while running: ${stmt.sql})`);
         }
         return res.result ?? {};
       };
@@ -263,26 +247,14 @@ export async function runAction(opts: RunActionOptions):
           return outcome;
         };
 
-        // The action's own statements were written for this store by
-        // whoever wrote the profile. The reference-resolving SELECTs below are
-        // written here, so they are the ones that need to know which dialect
-        // is listening.
-        const resolved = await resolveArguments(
-            model, action, args, query, dialectFor(opts.runtime.store));
-        if ('error' in resolved) {
-          return await rollback({status: 'error', message: resolved.error});
-        }
-        const refs = resolved.refs;
-
         // The bindings exist to fill the model's OWN statements, so they are
-        // built only when the model is what supplies them. A handler is given
-        // `refs` whole and may write a composite key, which this pass refuses
-        // because a single statement parameter cannot carry one.
+        // built only when the model is what supplies them. A handler writes its
+        // own DML and is handed the arguments whole.
         let plan: ActionPlan|{error: string};
         if (opts.handler) {
-          plan = await opts.handler({model, action, args, refs, query});
+          plan = await opts.handler({model, action, args, query});
         } else {
-          const bound = bindArguments(model, action, args, refs);
+          const bound = bindArguments(action, args);
           if ('error' in bound) {
             return await rollback({status: 'error', message: bound.error});
           }
@@ -292,7 +264,14 @@ export async function runAction(opts: RunActionOptions):
           return await rollback({status: 'error', message: plan.error});
         }
         for (const stmt of plan.statements) {
-          await run(stmt);
+          const result = await run(stmt);
+          const missed = noRowMatched(stmt, result);
+          if (missed) {
+            return await rollback({
+              status: 'error',
+              message: `Action '${action.name}' was rolled back: ${missed}`,
+            });
+          }
         }
 
         // Deliberately NOT rolled back. Once commit has been called the
@@ -343,7 +322,8 @@ export async function runAction(opts: RunActionOptions):
           return await rollback({
             status: 'error',
             message: `Action '${action.name}' was not committed on ${
-                client.database}: ${reason}. The store refused the commit ` +
+                         client.database}: ${
+                         reason}. The store refused the commit ` +
                 `outright, so nothing was written and the action can be run ` +
                 `again.`,
           });
@@ -351,7 +331,6 @@ export async function runAction(opts: RunActionOptions):
         return {
           status: 'committed',
           commitTimestamp: committed.result?.commitTimestamp,
-          refs,
           ...(warnings.length ? {warnings} : {}),
         } as ActionOutcome;
       } catch (err) {
@@ -367,9 +346,8 @@ export async function runAction(opts: RunActionOptions):
     if (!opened) {
       return {
         status: 'error',
-        message:
-            `Action '${action.name}' could not start on ${client.database}: ${
-                reason}`,
+        message: `Action '${action.name}' could not start on ${
+            client.database}: ${reason}`,
       };
     }
     // A statement the store rejected and a bug in a handler both arrive here,
@@ -392,6 +370,39 @@ export async function runAction(opts: RunActionOptions):
 // A store-level failure, distinguished from a programming error so the message
 // surfaced to the caller stays about the store.
 class StoreError extends Error {}
+
+
+// Why a statement that ran without error still did nothing, or null when it
+// did something.
+//
+// An UPDATE or a DELETE says which rows it acts on, and a predicate that
+// matched none of them did not perform the action -- it performed nothing, and
+// the store reports that as success. Nothing else in this module would notice:
+// the commit lands, the caller is told the write happened, and the row it
+// believes it changed is whatever it was before. The commonest cause is the
+// commonest mistake, a key that names no row.
+//
+// An INSERT is exempt, and not as an oversight. It creates rows rather than
+// finding them, so "no row matched" is not a thing it can report -- a zero
+// count from one means the statement inserted nothing on purpose (an
+// `INSERT ... SELECT` over an empty set, an `ON CONFLICT DO NOTHING`), which is
+// the author's statement doing what the author wrote.
+//
+// A store that reports no count at all is left alone rather than guessed
+// about. Refusing a write because the row count was missing would fail actions
+// that worked, over a fact nobody stated.
+function noRowMatched(
+    stmt: spanner.Statement,
+    result: {stats?: {rowCountExact?: string}}): string|null {
+  const verb = stmt.sql.trimStart().slice(0, 6).toUpperCase();
+  if (verb !== 'UPDATE' && verb !== 'DELETE') return null;
+  const exact = result.stats?.rowCountExact;
+  if (exact === undefined || exact === null) return null;
+  if (Number(exact) !== 0) return null;
+  return `${verb === 'UPDATE' ? 'an UPDATE' : 'a DELETE'} matched no rows, ` +
+      `so the action did not do what it says it does. Nothing was written. ` +
+      `The statement was: ${stmt.sql.replace(/\s+/g, ' ').trim()}`;
+}
 
 
 // Commit statuses that mean the transaction applied NOTHING, as against
@@ -431,41 +442,17 @@ export function whyRefusedWithoutRunning(
   }
   if (!handler && executor.kind !== 'sql') {
     return `Action '${action.name}' is executed by ${
-        executor.kind.toUpperCase()}, which runs outside this transaction ` +
+               executor.kind
+                   .toUpperCase()}, which runs outside this transaction ` +
         `and could not be rolled back if the commit failed. Supply a handler ` +
         `that performs the write as DML, or declare the action with a 'sql' ` +
         `executor.`;
   }
-  const unchecked = unsafeToRunUnchecked(model, action, judge);
-  if (unchecked) return unchecked;
-  // The refusals left are about filling the model's OWN statements, so they
-  // apply only when the model is what supplies them. A handler writes its own
-  // DML, is handed `refs` whole, and may well spell a composite key across
-  // several parameters -- none of what follows is owed by it.
-  if (handler) return null;
-  return unbindableByThisRuntime(model, action);
-}
-
-
-// Why this runtime could not fill the model's own statements for `action`, or
-// null if it could. The answer is in the model and needs no row, so it is owed
-// HERE. Binding asks it again where the values are, which is where it has to be
-// enforced; asking only there would charge a caller a transaction to be told
-// something the model said all along.
-function unbindableByThisRuntime(
-    model: SemanticModel, action: Action): string|null {
-  for (const param of action.parameters) {
-    if (!param.isEntityRef) continue;
-    const entity = (model.entities ?? []).find(e => e.name === param.type);
-    const parts = (entity?.keys ?? []).length;
-    if (parts > 1) {
-      return `Parameter '${param.name}' of action '${action.name}' refers ` +
-          `to a ${param.type}, whose key has ${parts} parts; the runtime ` +
-          `binds an object reference as a single value, so a composite key ` +
-          `cannot be passed to a statement.`;
-    }
-  }
-  return null;
+  // Nothing about a parameter can refuse an action here any more. Every
+  // parameter is a scalar and binds as one, so a key with three parts is three
+  // ordinary parameters and there is no shape of key this runtime cannot pass
+  // to a statement.
+  return unsafeToRunUnchecked(model, action, judge);
 }
 
 
@@ -622,34 +609,20 @@ async function askJudges(
 }
 
 
-function entityKeyType(model: SemanticModel, entityName: string): string {
-  const entity = (model.entities ?? []).find(e => e.name === entityName);
-  const keyField = entity?.fields.find(f => f.name === (entity.keys ?? [])[0]);
-  return keyField?.type ?? 'String';
-}
-
-
 // Why the arguments cannot fill this call, or null if they can. Runs the same
-// checks `resolveArguments` and `bindArguments` run, early enough that nothing
-// has been opened or asked. `binds` is false when a handler supplies the
-// writes: it is handed the arguments whole and decides for itself what it
-// needs, so only the object references are its business here.
+// checks `bindArguments` runs, early enough that nothing has been opened or
+// asked. `binds` is false when a handler supplies the writes: it is handed the
+// arguments whole and decides for itself what it needs, so there is nothing
+// owed to it here.
 function argumentsNotUsable(
     action: Action, args: Record<string, unknown>, binds: boolean): string|
     null {
+  if (!binds) return null;
   for (const param of action.parameters) {
     const raw = args[param.name];
-    const required = isParameterRequired(param);
-    if (param.isEntityRef) {
-      if (raw === undefined || raw === null || `${raw}`.trim() === '') {
-        if (!required && (raw === undefined || raw === null)) continue;
-        return `Action '${action.name}' requires '${param.name}', a ` +
-            `reference to a ${param.type}, but none was given.`;
-      }
+    if (!isParameterRequired(param) && (raw === undefined || raw === null)) {
       continue;
     }
-    if (!binds) continue;
-    if (!required && (raw === undefined || raw === null)) continue;
     const bound = bindScalar(param, raw);
     if ('error' in bound) return bound.error;
   }
@@ -710,29 +683,25 @@ interface Bindings {
 }
 
 
-// Turns each declared parameter into a bound value: an entity-typed one into
-// the key of the row it resolved to, a scalar into a value of the store's
-// matching type. Nothing is interpolated into SQL, so no argument can reach the
-// store as anything but data.
-function bindArguments(
-    model: SemanticModel, action: Action, args: Record<string, unknown>,
-    refs: Record<string, EntityRef>): Bindings|{error: string} {
+// Turns each declared parameter into a bound value of the store type its
+// resolved ontology type implies. Nothing is interpolated into SQL, so no
+// argument can reach the store as anything but data.
+function bindArguments(action: Action, args: Record<string, unknown>): Bindings|
+{
+  error: string
+}
+{
   const params: Record<string, unknown> = {};
   const types: Record<string, {code: string}> = {};
   for (const param of action.parameters) {
     const required = isParameterRequired(param);
     const raw = args[param.name];
     if (!required && (raw === undefined || raw === null)) {
-      const targetType = param.isEntityRef ?
-          entityKeyType(model, param.type) :
-          param.type;
       params[param.name] = null;
-      types[param.name] = {code: storeCodeFor(targetType)};
+      types[param.name] = {code: storeCodeFor(param.type ?? 'String')};
       continue;
     }
-    const bound = param.isEntityRef ?
-        bindReference(model, param, refs[param.name]) :
-        bindScalar(param, raw);
+    const bound = bindScalar(param, raw);
     if ('error' in bound) return {error: bound.error};
     params[param.name] = bound.value;
     types[param.name] = {code: bound.code};
@@ -741,34 +710,15 @@ function bindArguments(
 }
 
 
-// An object reference as its key value, typed by the ontology. Resolution
-// returns every key as a string, because that is what the store's REST surface
-// gives back; binding it into a statement needs the type the KEY FIELD declares,
-// or an integer-keyed row would be handed to the store as text.
-function bindReference(
-    model: SemanticModel, param: ActionParameter, ref: EntityRef|undefined):
-    {value: unknown; code: string}|{error: string} {
-  if (!ref) return {error: `Parameter '${param.name}' was not resolved.`};
-  if (ref.keys.length !== 1) {
-    return {
-      error: `Parameter '${param.name}' refers to a ${param.type}, whose key ` +
-          `has ${ref.keys.length} parts; the runtime binds an object ` +
-          `reference as a single value, so a composite key cannot be passed ` +
-          `to a statement.`,
-    };
-  }
-  return bindScalar(
-      {name: param.name, type: entityKeyType(model, param.type)}, ref.keys[0]);
-}
-
-
 // Builds the plan from the action's own DML. Every `@name` in a statement names
 // a parameter the action declares; validate.ts refuses a model where one does
 // not, so an unbound reference cannot reach here. A key for a row the statement
 // inserts is the statement's own business -- a UUID function, or a value the
 // caller passed like any other.
-function planFromExecutor(
-    action: Action, bound: Bindings): ActionPlan|{error: string} {
+function planFromExecutor(action: Action, bound: Bindings): ActionPlan|{
+  error: string
+}
+{
   const executor = action.executor;
   if (executor?.kind !== 'sql') {
     return {error: `Action '${action.name}' has no 'sql' executor.`};
@@ -799,195 +749,4 @@ function planFromExecutor(
     statements.push({sql, params, paramTypes});
   }
   return {statements};
-}
-
-
-// Turns each entity-typed argument into the row it denotes. Scalar arguments
-// pass through untouched; this is only about object references.
-async function resolveArguments(
-    model: SemanticModel, action: Action, args: Record<string, unknown>,
-    query: QueryFn, dialect: SqlDialect):
-    Promise<{refs: Record<string, EntityRef>}|{error: string}> {
-  const refs: Record<string, EntityRef> = {};
-  for (const param of action.parameters) {
-    if (!param.isEntityRef) continue;
-    const raw = args[param.name];
-    const required = isParameterRequired(param);
-    if (raw === undefined || raw === null || `${raw}`.trim() === '') {
-      if (!required && (raw === undefined || raw === null)) continue;
-      return {
-        error: `Action '${action.name}' requires '${param.name}', a reference ` +
-            `to a ${param.type}, but none was given.`,
-      };
-    }
-    const entity = (model.entities ?? []).find(e => e.name === param.type);
-    if (!entity) {
-      return {
-        error: `Parameter '${param.name}' is typed '${param.type}', which the ` +
-            `model does not declare as an entity.`,
-      };
-    }
-    const resolved = await resolveEntityRef(entity, `${raw}`, query, dialect);
-    if ('error' in resolved) return {error: resolved.error};
-    refs[param.name] = resolved.ref;
-  }
-  return {refs};
-}
-
-
-// Resolves one object reference. `input` is matched against the entity's key
-// and, when it has one, its identifying text field -- so an agent can say
-// "Account 1" or "Alice" and the runtime finds the same row either way.
-//
-// Both failure modes are reported precisely, because both are things the caller
-// can act on: nothing matched (the reference is wrong) or several matched (the
-// reference is ambiguous, and the candidates are listed).
-async function resolveEntityRef(
-    entity: Entity, input: string, query: QueryFn, dialect: SqlDialect):
-    Promise<{ref: EntityRef}|{error: string}> {
-  const warnings: string[] = [];
-  const table = boundTable(
-      entity.dataSource, warnings, `entity '${entity.name}'`, dialect.quote);
-  if (warnings.length) {
-    return {error: `Cannot resolve a ${entity.name}: ${warnings.join('; ')}.`};
-  }
-
-  const keyColumns: string[] = [];
-  const keyTypes: string[] = [];
-  for (const key of entity.keys) {
-    const field = entity.fields.find(f => f.name === key);
-    const expr = (field ? fieldBinding(field) ?? '' : '').trim();
-    if (!expr || !/^[A-Za-z_]\w*$/.test(expr)) {
-      return {
-        error: `Cannot resolve a ${entity.name}: its key field '${
-            key}' is not bound to a plain column.`,
-      };
-    }
-    keyColumns.push(dialect.quote(expr));
-    keyTypes.push(field?.type ?? 'String');
-  }
-  if (!keyColumns.length) {
-    return {error: `Cannot resolve a ${entity.name}: it declares no key.`};
-  }
-
-  // Each column is compared as ITSELF, against the input parsed to the type
-  // that column's field declares. Casting them all to STRING would let one
-  // predicate shape serve every key type, but no index can answer it -- and
-  // this SELECT runs inside the action's read-write transaction, so a scan
-  // would hold read locks over the whole table for the length of the write.
-  // Input that is not a value of a key's type cannot name that key, so its
-  // predicate is dropped rather than made to match by casting.
-  //
-  // Only a SINGLE-column key is matched this way. One input value cannot name
-  // a composite key, and `k1 = @ref OR k2 = @ref` would accept a row matching
-  // one PART of the key as though it were the row meant -- worse, it can match
-  // several rows that agree on that part and differ in the rest. A
-  // composite-keyed entity is reachable here only through its identifying
-  // text column.
-  const predicates: string[] = [];
-  const params: Record<string, unknown> = {};
-  const paramTypes: Record<string, {code: string}> = {};
-  if (keyColumns.length === 1) {
-    const bound = bindScalar({name: 'ref', type: keyTypes[0]}, input);
-    if (!('error' in bound)) {
-      predicates.push(`${keyColumns[0]} = @ref0`);
-      params['ref0'] = bound.value;
-      paramTypes['ref0'] = {code: bound.code};
-    }
-  }
-  // An identifying column is a String field by construction, so the input is
-  // already a value of its type.
-  const label = identifyingColumn(entity, dialect);
-  if (label) {
-    predicates.push(`${label} = @ref`);
-    params['ref'] = input;
-    paramTypes['ref'] = {code: 'STRING'};
-  }
-  if (!predicates.length) {
-    if (keyColumns.length > 1) {
-      return {
-        error: `Cannot resolve a ${entity.name} from a single value: its key ` +
-            `has ${keyColumns.length} columns, and it declares no ` +
-            `identifying text field to match instead.`,
-      };
-    }
-    // The input is not a value of the key's type and there is no text field to
-    // match it against, so no row in the table can be the one meant.
-    return {error: `No ${entity.name} matches '${input}'.`};
-  }
-
-  // A key read here is carried in an EntityRef and re-bound as a parameter
-  // later, so it has to come back written the way `bindScalar` reads it.
-  //
-  // A Date is the one key type where that is not what arrives: PostgreSQL hands
-  // a `date` back as a timestamp value, which renders as a full ISO instant
-  // rather than the plain day `bindScalar` requires. Casting it to text asks
-  // the database for the day, which both backends spell the same way.
-  //
-  // Nothing else is cast, and a timestamp key least of all. Both backends
-  // already return one in RFC 3339, which is the form required; casting would
-  // REPLACE that with the SQL rendering -- `2026-09-07 00:00:00+00`, a
-  // two-digit offset -- which is not a form `bindScalar` accepts. A cast that
-  // was added for dates would have broken timestamps.
-  //
-  // Either way this is the SELECT list, not the WHERE clause: the predicates
-  // above stay uncast so an index can answer them (see the note there). Casting
-  // an output costs no index; casting a predicate would.
-  const selected = keyColumns.map(
-      (column, i) => keyTypes[i] === 'Date' ? dialect.castToText(column) :
-                                              column);
-
-  // LIMIT 2 is enough to tell "one match" from "more than one", and avoids
-  // dragging back a large candidate set just to reject it.
-  const rows = await query({
-    sql: `SELECT ${selected.join(', ')} FROM ${table} WHERE ${
-        predicates.join(' OR ')} LIMIT 2`,
-    params,
-    paramTypes,
-  });
-
-  if (!rows.length) {
-    return {error: `No ${entity.name} matches '${input}'.`};
-  }
-  if (rows.length > 1) {
-    return {
-      error: `'${input}' matches more than one ${entity.name} (${
-          rows.map(r => r.join('/')).join(', ')}); use a key to disambiguate.`,
-    };
-  }
-  // A key column cannot be NULL -- it is what identifies the row -- so a null
-  // here is the store disagreeing with the model about which columns the key
-  // is. Reported rather than carried: the value would go on to fill a
-  // statement parameter, and an empty string standing in for it would name a
-  // different row, or no row, without saying so.
-  const keys = rows[0];
-  if (keys.some(value => value === null)) {
-    return {
-      error: `Cannot resolve a ${entity.name}: the row matching '${
-          input}' has no value in a key column, so it cannot be referred to.`,
-    };
-  }
-  return {ref: {entity: entity.name, keys: keys as string[], input}};
-}
-
-
-// The entity's identifying text field, if it has an obvious one: a String field
-// that is not part of the key and whose name reads as a name. Deliberately
-// conservative -- guessing wrong would make an agent's reference resolve to the
-// wrong row, which is worse than making it supply a key.
-function identifyingColumn(entity: Entity, dialect: SqlDialect): string|
-    null {
-  const keys = new Set(entity.keys);
-  for (const field of entity.fields) {
-    if (keys.has(field.name)) continue;
-    if (field.type !== 'String') continue;
-    if (!/^(name|full_name|fullname|title|label|display_name)$/i.test(
-            field.name)) {
-      continue;
-    }
-    const expr = (fieldBinding(field) ?? '').trim();
-    if (!expr || !/^[A-Za-z_]\w*$/.test(expr)) continue;
-    return dialect.quote(expr);
-  }
-  return null;
 }
