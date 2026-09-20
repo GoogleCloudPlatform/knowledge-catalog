@@ -28,6 +28,7 @@ import * as yaml from 'yaml';
 import * as spanner from '../../../src/libts/gcp/spanner';
 import {Action, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
+import {Judge} from '../../../src/libts/semantic/runtime/judge';
 import {SemanticRuntime} from '../../../src/libts/semantic/runtime/runtime';
 import {generateSkill, skillNameFor, whyNameIsInvalid} from '../../../src/libts/semantic/skills';
 
@@ -555,5 +556,115 @@ describe('text that would otherwise break the output', () => {
         withAction(model, {...RUNNABLE, name: 'Place Order'} as never);
     const skill = generate(rt(spaced)).files['SKILL.md'];
     expect(skill).toContain(`kcmd action run 'Place Order'`);
+  });
+});
+
+
+// -- Golden corpus: the whole generated skill, reviewable as files. --
+//
+// Every test above asserts one claim and says why it holds. None of them shows
+// the document. So a change to the layout -- where a section sits, how a row is
+// worded, what the command block contains -- reaches a reviewer as a diff of
+// string concatenation in `skills.ts`, which is not something you can read the
+// output off. Every defect the first review round found was of that kind. These
+// goldens put the generated files themselves in the diff.
+//
+// The corpus is one fixture under four bindings. One fixture because
+// `actions_place_order.yaml` is the only one in the tree carrying actions and
+// constraints; four bindings because the binding is the axis this emitter has to
+// be invariant to. Each writes its own `SKILL.md`, and all four are checked
+// against ONE reference-page golden -- that shared file IS the claim that an
+// action's page is a fact about the model. Break it and one assertion fails,
+// naming the binding that moved it.
+//
+//   Regenerate after an intentional change:
+//     UPDATE_GOLDENS=1 npx bun test ./tests/libts/semantic/skills.test.ts
+describe('golden skill: the fixture generates these exact files', () => {
+  const model = loadFixtureModel('actions_place_order.yaml');
+
+  // Never called. `modelTools` asks only whether the agent reading the skill
+  // will hold a judge, which is the question `kcmd agent tools --judge` asks;
+  // settling a rule happens when an action runs, and generating a skill runs
+  // none.
+  const JUDGE: Judge = {
+    name: 'test-judge',
+    decide: () => {
+      throw new Error('generating a skill must not call a judge');
+    },
+  };
+
+  // The fixture performs PlaceOrder over MCP, which `kcmd` does not wrap. `sql`
+  // is what an agent usually meets, so three variants swap it in. The fourth
+  // keeps the authored executor, which is what makes it worth having: a
+  // different executor kind, the same reference page.
+  const guardedSql = withAction(model, {
+    executor: {
+      kind: 'sql',
+      sql: {statements: ['UPDATE orders SET o_totalprice = 0 WHERE 1 = 0']},
+    },
+  });
+
+  const CASES = [
+    {
+      // The case an agent actually meets: bound to a store and read by an
+      // agent holding a judge, so the guard is settleable and the section
+      // carries a command line.
+      golden: 'actions_place_order.skill.golden.md',
+      runtime: rt(guardedSql),
+      judge: JUDGE,
+    },
+    {
+      // The same deployment, an agent holding no judge. PlaceOrder guards on
+      // OrderWithinCustomerCredit, so it is refused rather than run unchecked
+      // and the section names the rule it is waiting on.
+      golden: 'actions_place_order.no_judge.skill.golden.md',
+      runtime: rt(guardedSql),
+      judge: undefined,
+    },
+    {
+      // A profile that binds no store. Calling an action needs one, so nothing
+      // here runs whatever the agent holds.
+      golden: 'actions_place_order.no_store.skill.golden.md',
+      runtime: rt(guardedSql, {store: undefined}),
+      judge: JUDGE,
+    },
+    {
+      // The authored MCP executor.
+      golden: 'actions_place_order.mcp.skill.golden.md',
+      runtime: rt(model),
+      judge: JUDGE,
+    },
+  ];
+
+  const REFERENCE = 'actions_place_order.skill_reference.golden.md';
+
+  // `write` is false for every case but the first, so `UPDATE_GOLDENS` cannot
+  // paper over a reference page that moved: the first case re-blesses it and
+  // the rest compare against what it wrote.
+  function check(name: string, actual: string, write: boolean): void {
+    const golden = path.join(FIXTURES, name);
+    if (process.env.UPDATE_GOLDENS && write) {
+      fs.writeFileSync(golden, actual);
+      return;
+    }
+    if (!fs.existsSync(golden)) {
+      throw new Error(
+          `missing golden ${name} \u2014 run UPDATE_GOLDENS=1 to create it`);
+    }
+    expect(actual).toBe(fs.readFileSync(golden, 'utf8'));
+  }
+
+  CASES.forEach(({golden, runtime, judge}, index) => {
+    test(golden, () => {
+      const out = generateSkill({runtime, judge});
+      if ('error' in out) throw new Error(out.error);
+      const files = Object.fromEntries(out.files.map(f => [f.path, f.text]));
+      expect(Object.keys(files).sort()).toEqual([
+        'SKILL.md',
+        'references/place-order.md',
+      ]);
+      check(golden, files['SKILL.md'], true);
+      check(REFERENCE, files['references/place-order.md'], index === 0);
+    });
   });
 });
