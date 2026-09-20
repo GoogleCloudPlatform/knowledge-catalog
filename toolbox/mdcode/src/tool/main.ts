@@ -246,7 +246,20 @@ try {
 // in place, and since every action is async, `cli.parse()` has returned while
 // the action is still pending at its first await. Exiting on the flag alone
 // would kill `kcmd push --version` mid-write and report success.
-if (!cli.matchedCommand && (cli.options.help || cli.options.version)) {
+//
+// It is not enough on its own, though. cac serves `--help` for a command it
+// never found, so a typo'd verb with `--help` on it arrives here cleared in
+// exactly the same way and would exit 0 -- a script that misspells a
+// subcommand would read success. What separates the two is the verb the caller
+// actually typed, which cac does not keep once it has cleared the match, so
+// read it off `process.argv` rather than off `cli.args`: a command that took
+// positional arguments has had its own name removed from those, and the
+// leading token is the only place the verb is still intact.
+const typed = process.argv[2];
+const verbIsKnown = typed === undefined || typed.startsWith('-') ||
+    cli.commands.some(c => c.name === typed);
+if (!cli.matchedCommand && (cli.options.help || cli.options.version) &&
+    verbIsKnown) {
   process.exit(0);
 }
 
@@ -255,6 +268,8 @@ if (!cli.matchedCommand) {
     console.error(`Error: Unknown command '${cli.args[0]}'`);
   }
 
-  cli.outputHelp();
+  // cac has already printed usage if it was `--help` that got us here, and a
+  // second copy of it under the error reads as two separate answers.
+  if (!cli.options.help) cli.outputHelp();
   process.exit(1);
 }

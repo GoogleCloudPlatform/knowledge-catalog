@@ -73,16 +73,43 @@ describe('kcmd: --help and --version', () => {
   // while the action is still pending -- so exiting on the flag alone would
   // kill the command here and report success.
   for (const flag of ['--version', '-v']) {
+    // Spawns `bun src/tool/main.ts`, which loads the whole CLI before it can
+    // fail on the missing manifest. That is well past bun's 5s default.
     test(`\`push ${flag}\` still runs the command`, () => {
       const {code, out} = run('push', flag);
       expect(code).not.toBe(0);
       expect(out).toContain('catalog.yaml');
-    });
+    }, 30000);
   }
 
   test('an unknown command is still an error', () => {
     const {code, out} = run('bogusverb');
     expect(code).toBe(1);
     expect(out).toContain(`Unknown command 'bogusverb'`);
+  });
+
+  // cac serves `--help` for a command it never matched and clears the match to
+  // say so, which is the same state a command that answered its own `--help`
+  // leaves behind. Taking that as handled would report a misspelled verb as a
+  // success, so the verb the caller typed is what decides.
+  for (const flag of ['--help', '--version']) {
+    test(`an unknown command with ${flag} is still an error`, () => {
+      const {code, out} = run('bogusverb', flag);
+      expect(code).toBe(1);
+      expect(out).toContain(`Unknown command 'bogusverb'`);
+    });
+  }
+
+  test('an unknown command with --help prints one usage block', () => {
+    // cac has already printed usage by the time the error is reported.
+    expect(usageBlocks(run('bogusverb', '--help').out)).toBe(1);
+  });
+
+  test('`--help` past a command that takes arguments still succeeds', () => {
+    // `action <command> [name]` has its own name taken out of `cli.args`, so
+    // the leading token is the only place the verb survives to be checked.
+    const {code, out} = run('action', 'list', '--help');
+    expect(code).toBe(0);
+    expect(out).toContain('kcmd action');
   });
 });
