@@ -431,11 +431,14 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   BigQuery-only: Spanner Graph has no `MEASURE`, so a Spanner target drops its
   metrics by design and imposes no such requirement. Defined in
   [model spec §4.1](model_spec.md#41-narrowings-stricter-than-ossie). *(static)*
-* **Every action is well-formed.** Each action parameter's `type` must resolve to
-  a known entity (an object reference) or a scalar datatype, and each executor
-  must carry its coordinates (an `mcp` server + tool, a `rest` endpoint + method,
-  a `grpc` service + method, or at least one non-blank `sql` statement) with no
-  blank field. A coordinate omitted altogether is rejected earlier, when the
+* **Every action is well-formed.** Each action parameter must settle on one
+  scalar datatype: projected from a field it names with `concept` and `field`,
+  or stated as its own `type`. Naming an entity as a `type`, or restating a
+  projected parameter's type, is rejected. Two parameters a caller could confuse
+  — projecting the same field, or sharing a declared type — must each carry
+  their own `description`. Each executor must carry its coordinates (an `mcp`
+  server + tool, a `rest` endpoint + method, a `grpc` service + method, or at
+  least one non-blank `sql` statement) with no blank field. A coordinate omitted altogether is rejected earlier, when the
   model is parsed. An action with *no* executor is not an error at all: the
   executor is a physical binding, so an action no binding performs here is still
   a declaration worth publishing. Each name in the
