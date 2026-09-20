@@ -37,18 +37,18 @@ version: "0.2.0.dev0/google"
 
 semantic_model:
   - name: commerce
-    deployment_target: //alloydb.googleapis.com/projects/my-project/locations/us-central1/clusters/my-cluster/instances/my-instance/databases/semantic_agent_demo
+    deployment_target: //alloydb.googleapis.com/projects/my-project/locations/us-central1/clusters/my-cluster/instances/my-instance/databases/semantic_skill_demo
 
     entities:
       - name: Customer
-        source: //alloydb.googleapis.com/projects/my-project/locations/us-central1/clusters/my-cluster/instances/my-instance/databases/semantic_agent_demo/tables/customer
+        source: //alloydb.googleapis.com/projects/my-project/locations/us-central1/clusters/my-cluster/instances/my-instance/databases/semantic_skill_demo/tables/customer
         fields:
           - {name: customerId, expression: customer_id}
           - {name: name, expression: name}
           - {name: email, expression: email}
 
       - name: Order
-        source: //alloydb.googleapis.com/projects/my-project/locations/us-central1/clusters/my-cluster/instances/my-instance/databases/semantic_agent_demo/tables/purchase_order
+        source: //alloydb.googleapis.com/projects/my-project/locations/us-central1/clusters/my-cluster/instances/my-instance/databases/semantic_skill_demo/tables/purchase_order
         fields:
           - {name: orderId, expression: order_id}
           - {name: customerId, expression: customer_id}
@@ -57,7 +57,7 @@ semantic_model:
           - {name: status, expression: status}
 
       - name: LineItem
-        source: //alloydb.googleapis.com/projects/my-project/locations/us-central1/clusters/my-cluster/instances/my-instance/databases/semantic_agent_demo/tables/order_line
+        source: //alloydb.googleapis.com/projects/my-project/locations/us-central1/clusters/my-cluster/instances/my-instance/databases/semantic_skill_demo/tables/order_line
         fields:
           - {name: lineItemId, expression: line_item_id}
           - {name: orderId, expression: order_id}

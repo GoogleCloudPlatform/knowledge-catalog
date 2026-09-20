@@ -970,7 +970,7 @@ kcmd action list
 
 ```
 Model 'payments' (payments_eg), profile 'operational':
-  store: my-project/my-instance/semantic_agent_demo
+  store: my-project/my-instance/semantic_skill_demo
   TransferFunds: Move money from one account to another.
     parameters: source (Integer from Account.accountId), target (Integer from Account.accountId), amount (Float)
     executor:   sql
@@ -1119,7 +1119,7 @@ call — the order's total — so the judge has to be able to read the store, wh
 `--judge-reads-store` is how this command arranges. Given no store the rule
 cannot be settled, and it stops the call before any of the others is reached.
 
-That call runs against the commerce model under `demo/semantic-model/agent` —
+That call runs against the commerce model under `demo/semantic-model/skill` —
 the [credit policy worked through earlier](#a-credit-policy-worked-through),
 rebuilt around what kcmd can settle today. A profile binds `IssueCredit` to a
 `sql` executor, and the action names four rules in `guards`. One of the four is
@@ -1148,7 +1148,7 @@ from setting that one field to each of its values in turn, so a single rule
 shows all three branches. With `reject`, the call stops:
 
 ```
-Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
+Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_skill_demo...
   rules stated in words go to gemini-2.5-flash (us-central1)
   it may read commerce's tables to settle them
   the judge reads: SELECT total FROM Orders WHERE order_id = 12347
@@ -1170,7 +1170,7 @@ which is the line telling the caller what to do instead. A memo that names a
 failure gets the write:
 
 ```
-Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
+Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_skill_demo...
   rules stated in words go to gemini-2.5-flash (us-central1)
   it may read commerce's tables to settle them
   the judge reads: SELECT total FROM Orders WHERE order_id = 12347
@@ -1183,7 +1183,7 @@ marks this rule 'escalate', so an approver may allow it; nothing here can." A
 rule declaring `warn` lets the write through and reports the verdict:
 
 ```
-Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
+Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_skill_demo...
   rules stated in words go to gemini-2.5-flash (us-central1)
   it may read commerce's tables to settle them
   the judge reads: SELECT total FROM Orders WHERE order_id = 12347
@@ -1233,7 +1233,7 @@ before it starts.
 
 Then write the rule so the judge goes and looks — it decides that for itself,
 from the sentence you give it. This is the rule the demo under
-`demo/semantic-model/agent` states at the head of `IssueCredit`:
+`demo/semantic-model/skill` states at the head of `IssueCredit`:
 
 ```yaml
 - name: CreditWithinOrderTotal
@@ -1258,7 +1258,7 @@ kcmd action run IssueCredit --judge --judge-reads-store \
 ```
 
 ```
-Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_agent_demo...
+Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_skill_demo...
   rules stated in words go to gemini-2.5-flash (us-central1)
   it may read commerce's tables to settle them
   the judge reads: SELECT total FROM Orders WHERE order_id = 12345
@@ -1387,7 +1387,7 @@ For the model built up on this page, that set is:
 
 ```
 Model 'payments' (payments_eg), profile 'operational':
-  store: my-project/my-instance/semantic_agent_demo
+  store: my-project/my-instance/semantic_skill_demo
 
   action  transfer_funds  (TransferFunds)  [NOT RUNNABLE]
       Move money from one account to another.
@@ -1684,27 +1684,31 @@ happens to hold.
 
 ### The commerce demo, worked through
 
-`demo/semantic-model/agent/` is an agent built this way, running against a live
-operational store: a commerce model, a binding profile, and an `agent.ts` of 72
-code lines that names no table, no column, no business term and no dollar
-threshold. Thirteen of those lines are the adapter onto the agent framework. Its
-README walks the same steps and reaches all three of `on_violation`'s outcomes
-against that store: a $30 credit held because the model's $25 self-service
-ceiling is `escalate`, a credit written with a warning because the memo names no
-service failure, and a credit refused outright because the memo admits it's one
-piece of a larger amount.
+`demo/semantic-model/skill/` runs this against a live operational store, with no
+agent code at all: a commerce model, a binding profile, and an
+[Agent Skill](https://agentskills.io) generated from the pair by `kcmd
+skills-generate`. The skill is a folder of Markdown — a router naming the
+action, and a reference page carrying its arguments, its four rules verbatim and
+what it changes. Installed into a coding agent and handed a support request in
+English, that agent finds the order and attempts the write. Its README walks the
+steps and reaches all three of `on_violation`'s outcomes against that store: a
+$30 credit held because the model's $25 self-service ceiling is `escalate`, a
+credit written with a warning because the memo names no service failure, and a
+credit refused outright because the memo admits it's one piece of a larger
+amount.
 
-None of those three outcomes was decided in `agent.ts`. The ceiling, the memo
-rule and the split-credit rule came out of the model, and the runtime settled
-each one on the way through the call. Point the same file at a different model
-and profile and it runs a different business; the README lists the files that
-change for that, and `agent.ts` isn't among them.
+None of those three outcomes was decided by the agent reading the skill. The
+ceiling, the memo rule and the split-credit rule came out of the model, and the
+runtime settled each one on the way through the call — so an agent that ignores
+what the skill says about them still cannot get past them. Regenerate against a
+different model and profile and the skill describes a different business;
+nothing is hand-written, so there is nothing to keep in step.
 
 The README also states what that costs and what it can't do. The model guards on
 four judgments and the judge it hires can query the store, so every guard on
-every call is a model call. It pays two of them per guard, plus one for each
-round of reading — nine calls in the run the README captures. Two of its
-rules fall short of what they say:
+every call is a model call, plus a read for the guard that needs one. That is
+most of the latency in the runs it captures. Two of its rules fall short of what
+they say:
 
 - **An order's total matching its line items is declared and not enforced.**
   It's a statement about the state the write leaves behind, and guards settle

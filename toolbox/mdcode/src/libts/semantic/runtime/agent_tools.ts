@@ -14,8 +14,7 @@
  * The description is framework-neutral on purpose. Nothing here imports an
  * agent framework, so binding these to Google ADK, to LangChain, or to an MCP
  * server is a short adapter the caller writes, and adding a second framework
- * costs nothing in this file. The ADK adapter in
- * demo/semantic-model/agent/agent.ts is a dozen lines.
+ * costs nothing in this file.
  *
  * What this module does NOT do is decide anything. A tool built here is a way
  * to ask. Every refusal is decided by runAction, and an agent that calls a
@@ -219,15 +218,15 @@ function toolDescription(
   if (gates.length) {
     const names = joinNames(gates.map(c => c.name));
     const rules = gates
-        .map(c => {
+                      .map(c => {
                         const body = (c.judgment ?? '').trim();
-          const desc = (c.description ?? '').trim();
+                        const desc = (c.description ?? '').trim();
                         const text = body && desc ?
                             `${sentence(body)} ${sentence(desc)}` :
-                                      (body || desc);
-          return text ? `- ${c.name}: ${text}` : undefined;
-        })
-        .filter((s): s is string => s !== undefined);
+                            (body || desc);
+                        return text ? `- ${c.name}: ${text}` : undefined;
+                      })
+                      .filter((s): s is string => s !== undefined);
     if (rules.length) {
       parts.push(`This call is gated by ${names}:\n${rules.join('\n')}`);
     } else {

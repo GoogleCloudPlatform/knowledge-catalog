@@ -257,15 +257,16 @@ bun pull.ts --bundle /tmp/acme_pulled
 bun cleanup.ts
 ```
 
-## Agent
+## Skill
 
-This demo derives an agent's tools from a semantic model and runs them against a
-live operational store: one lookup tool per entity, one write tool per action,
-with names, types and calling guidance all read out of the model. A natural
-language request goes in and a row changes.
+This demo generates an [Agent Skill](https://agentskills.io) from a semantic
+model with `kcmd skills-generate`, installs it into a coding agent, and gives
+that agent a support request in English. The agent finds the right record and
+performs a write, and the rules that gate the write are settled by the runtime
+rather than by the agent. The skill is a folder of Markdown, so any harness that
+reads the Agent Skill layout takes it as-is.
 
-It needs a Spanner instance rather than BigQuery, and it installs its own
-dependency (`@google/adk`) under `semantic-model/agent/` so the library's
-dependency list stays free of agent frameworks.
+It needs a Spanner instance rather than BigQuery, and Vertex AI, because the
+model states its rules in words and a judge settles them.
 
-See [semantic-model/agent/README.md](semantic-model/agent/README.md).
+See [semantic-model/skill/README.md](semantic-model/skill/README.md).

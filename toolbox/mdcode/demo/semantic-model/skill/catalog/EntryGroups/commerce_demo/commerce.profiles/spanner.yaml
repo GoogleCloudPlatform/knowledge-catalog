@@ -17,18 +17,18 @@ version: "0.2.0.dev0/google"
 
 semantic_model:
   - name: commerce
-    deployment_target: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_agent_demo/propertyGraphs/commerce
+    deployment_target: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_skill_demo/propertyGraphs/commerce
 
     entities:
       - name: Customer
-        source: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_agent_demo/tables/Customer
+        source: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_skill_demo/tables/Customer
         fields:
           - {name: customerId, expression: customer_id}
           - {name: name, expression: name}
           - {name: email, expression: email}
 
       - name: Order
-        source: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_agent_demo/tables/Orders
+        source: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_skill_demo/tables/Orders
         fields:
           - {name: orderId, expression: order_id}
           - {name: customerId, expression: customer_id}
@@ -37,7 +37,7 @@ semantic_model:
           - {name: status, expression: status}
 
       - name: LineItem
-        source: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_agent_demo/tables/LineItem
+        source: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_skill_demo/tables/LineItem
         fields:
           - {name: lineItemId, expression: line_item_id}
           - {name: orderId, expression: order_id}
