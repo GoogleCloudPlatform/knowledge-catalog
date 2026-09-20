@@ -19,7 +19,8 @@ const MAIN = path.join(process.cwd(), 'src', 'tool', 'main.ts');
 let cwd: string;
 
 beforeAll(() => {
-  if (!fs.existsSync(MAIN)) throw new Error(`cannot find CLI entrypoint ${MAIN}`);
+  if (!fs.existsSync(MAIN))
+    throw new Error(`cannot find CLI entrypoint ${MAIN}`);
   cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-cli-'));
 });
 
@@ -106,12 +107,12 @@ describe('kcmd: --help and --version', () => {
   });
 
   test('`--help` past a command that takes arguments still succeeds', () => {
-    // `action <command> [name]` has its own name taken out of `cli.args` --
-    // which arrives holding `list`, a word that names no command -- so
-    // `process.argv` is the only place the verb survives to be checked.
-    const {code, out} = run('action', 'list', '--help');
+    // `action-list [name]` has its own name taken out of `cli.args`, which
+    // therefore arrives empty here, so `process.argv` is the only place the
+    // verb survives to be checked.
+    const {code, out} = run('action-list', '--help');
     expect(code).toBe(0);
-    expect(out).toContain('kcmd action');
+    expect(out).toContain('kcmd action-list');
   });
 
   test('`--help` before an unknown verb is still an error', () => {
@@ -124,7 +125,7 @@ describe('kcmd: --help and --version', () => {
   });
 
   test('`--help` before a known verb still succeeds', () => {
-    const {code, out} = run('--help', 'action');
+    const {code, out} = run('--help', 'action-list');
     expect(code).toBe(0);
     expect(out).not.toContain('Unknown command');
   });

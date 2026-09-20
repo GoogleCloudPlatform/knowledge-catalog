@@ -170,7 +170,7 @@ export function validatePushRequirements(
 }
 
 // The subset of the push checks that bear on RUNNING an action rather than on
-// deploying a model. `kcmd action run` skips the deployment checks on purpose
+// deploying a model. `kcmd action-run` skips the deployment checks on purpose
 // -- it deploys nothing -- but it must not skip these, because the runtime acts
 // on exactly what they verify.
 //

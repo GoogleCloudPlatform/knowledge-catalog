@@ -133,30 +133,18 @@ cli.command(
 
 
 cli.command(
-       'action <command> [name]',
-       'Semantic model actions (command: `list` what the model declares, or `run` one against its store)')
-    .option(
-        '--arg <name=value...>',
-        'Bind one action parameter; repeat the flag for each one (`run` only)')
+       'action-list [name]',
+       'List what a semantic model declares as runnable: parameters, executor, guards, blast radius, and the command that runs each one')
     .option(
         '--profile [name]',
         'Read the model under this binding profile; its deployment target names the database the action runs against; defaults to default_profile, else the inline bindings')
     .option(
         '--store',
-        'Print only where a run would land: project/instance/database for Spanner, and the backend named ahead of the path for any other store (`list` only)')
-    .option(
-        '--judge [model]',
-        'Settle guards the model states in words by asking Gemini on Vertex AI, naming a model or taking the default; without it, an action guarded by such a rule is refused rather than run unchecked (`run` only)')
-    .option(
-        '--judge-location <region>',
-        'Ask the judge in this Vertex AI region, which is where the argument values are sent; defaults to us-central1 (`run` only)')
-    .option(
-        '--judge-reads-store',
-        'Let the judge read the model\'s own tables while it decides, so a rule stated in words can compare the call against what is recorded; costs one model call more per guard and needs --judge (`run` only)')
-    .action(async (command, name, options) => {
+        'Print only where a run would land: project/instance/database for Spanner, and the backend named ahead of the path for any other store')
+    .action(async (name, options) => {
       let exitCode = 1;
       try {
-        exitCode = await commands.action(command, name, options);
+        exitCode = await commands.actionList(name, options);
       } catch (err: any) {
         console.error('Error:', err.message || err);
         exitCode = 1;
@@ -167,18 +155,37 @@ cli.command(
 
 
 cli.command(
-       'agent <command>',
-       'Agent bindings for a semantic model (command: `tools`, what an agent is offered)')
+       'action-run <name>',
+       'Run one of a semantic model\'s actions against the store its deployment target names; the guards it declares are NOT checked')
+    .option(
+        '--arg <name=value...>',
+        'Bind one action parameter; repeat the flag for each one')
+    .option(
+        '--profile [name]',
+        'Read the model under this binding profile; its deployment target names the database the action runs against; defaults to default_profile, else the inline bindings')
+    .action(async (name, options) => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.actionRun(name, options);
+      } catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+
+      process.exit(exitCode);
+    });
+
+
+cli.command(
+       'agent-tools',
+       'List what an agent holding this semantic model is offered')
     .option(
         '--profile [name]',
         'Read the model under this binding profile; defaults to default_profile, else the inline bindings')
-    .option(
-        '--judge [model]',
-        'List what an agent holding a judge is offered, naming a Gemini model or taking the default; without it, an action guarded by a rule stated in words is marked NOT RUNNABLE. No model is called either way')
-    .action(async (command, options) => {
+    .action(async (options) => {
       let exitCode = 1;
       try {
-        exitCode = await commands.agent(command, options);
+        exitCode = await commands.agentTools(options);
       } catch (err: any) {
         console.error('Error:', err.message || err);
         exitCode = 1;

@@ -53,15 +53,13 @@ Everything above is true of this model wherever it is deployed. This section is 
 `kcmd` is a command line for inspecting and debugging a model, not the runtime an agent should call in production. Use it to try a call and to see what a refusal says. An agent that runs continuously should be handed these actions as tools by its own framework, which reaches the same runtime.
 
 ```bash
-kcmd action run PlaceOrder \
+kcmd action-run PlaceOrder \
   --profile default \
-  --judge \
-  --judge-reads-store \
   --arg customer=<Integer> \
   --arg quantity=<Integer>
 ```
 
-`--judge` is what settles the rules stated in words. Without it a guarded action is refused rather than run unchecked. `--judge-reads-store` lets that judge read the model's own tables, which a rule about something on record rather than in the arguments cannot be settled without.
+That command line settles no guard. It names the rules this action states and runs the write regardless, so it answers whether the call binds and the write lands, and nothing about whether the rules hold. The runtime your framework calls is what settles them.
 
 ## What happens when you call one
 

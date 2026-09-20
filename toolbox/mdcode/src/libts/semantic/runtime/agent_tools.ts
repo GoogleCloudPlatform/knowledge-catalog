@@ -146,6 +146,16 @@ export interface ActionToolOptions {
    * refused mid-call.
    */
   judge?: Judge;
+  /**
+   * Derive the tools as a caller that will not check the guards at all: the
+   * write happens and every rule the model states goes unenforced. For trying
+   * a model out where no judge is configured, which is otherwise a model whose
+   * every guarded action is unofferable.
+   *
+   * Passed to the call as well as to the derivation, for the reason `judge` is:
+   * a tool derived one way and called the other is advertised wrongly.
+   */
+  skipGuards?: boolean;
 }
 
 
@@ -177,8 +187,8 @@ function toolFor(action: Action, opts: ActionToolOptions): ActionTool {
   // model, then the runtime having no store, which is the same sentence on
   // every tool and says nothing about this one.
   const model = opts.runtime.model;
-  const blocked =
-      whyRefusedWithoutRunning(model, action, handler, opts.judge) ??
+  const blocked = whyRefusedWithoutRunning(
+                      model, action, handler, opts.judge, opts.skipGuards) ??
       noStore(opts.runtime) ?? undefined;
   const tool: ActionTool = {
     name: snakeCase(action.name),
@@ -193,6 +203,7 @@ function toolFor(action: Action, opts: ActionToolOptions): ActionTool {
         args,
         handler,
         judge: opts.judge,
+        skipGuards: opts.skipGuards,
       });
       return describeOutcome(outcome);
     },

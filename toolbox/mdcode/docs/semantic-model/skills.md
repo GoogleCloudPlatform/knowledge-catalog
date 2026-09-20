@@ -33,7 +33,7 @@ at startup as a model with one.
 ## Generate one
 
 Run it in a semantic-model scope, the same directory `kcmd push` and
-`kcmd action run` work in:
+`kcmd action-run` work in:
 
 ```bash
 kcmd skills-generate --out skills
@@ -122,7 +122,7 @@ it, which lives in the model rather than in whoever wrote the agent:
 ```
 
 The row names the action the way it was authored, because that's the string
-`kcmd action run` takes and the string a refusal quotes back. The snake_case tool
+`kcmd action-run` takes and the string a refusal quotes back. The snake_case tool
 name a framework would register it under is on the reference page, stated once.
 
 Then **Finding a record**, which exists because a skill of writes has a hole in
@@ -275,17 +275,19 @@ one. A rule stated in words is settled by asking a judge, and the runtime asks
 it before the transaction opens — not the agent making the call. An agent that
 judged its own call would be the constrained thing certifying itself, which is
 no guard at all. So a guarded action only ever runs against a runtime that has a
-judge, and that's the runtime every generated skill is written for: the command
-line says `--judge`, and the paragraph under it says what the flag settles.
+judge, and that's the runtime every generated skill is written for. The command
+line in the skill is `kcmd`'s, and `kcmd` isn't that runtime: it settles no
+guard, and the paragraph under the line says so, so an agent that tries the call
+and watches it commit doesn't read that as the rules having held.
 Whether you had a judge configured when you ran `skills-generate` is a fact
 about that invocation, not about the deployment the document describes, so
 there's no flag here to write the other kind of skill.
 
 That section names the profile, the store, the executor kinds in play, and any
-action that can't run here. It also carries a `kcmd action run` command line,
-built by the same code that prints one under `kcmd action list` — so it arrives
-with the flags this action's rules need and a typed placeholder per required
-argument, and it's marked, in the skill itself, as the debugging path. `kcmd` is
+action that can't run here. It also carries a `kcmd action-run` command line,
+built by the same code that prints one under `kcmd action-list` — so it arrives
+with a typed placeholder per required argument and nothing else, and it's
+marked, in the skill itself, as the debugging path. `kcmd` is
 a command line for inspecting a model, not the runtime an agent should call in
 production; an agent that runs continuously should be handed these actions as
 tools by its own framework, which reaches the same runtime.
@@ -309,7 +311,7 @@ tools by its own framework, which reaches the same runtime.
 ## See also
 
 * [Modeling write operations](actions.md) — declaring the actions a skill
-  describes, and `kcmd agent tools`, which prints the same derivation instead of
+  describes, and `kcmd agent-tools`, which prints the same derivation instead of
   writing it out
 * [Binding profiles](profiles.md) — the profile the deployment-specific section
   reads

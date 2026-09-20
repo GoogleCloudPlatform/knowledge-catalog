@@ -114,9 +114,9 @@ agree on every structural row and differ only where a Spanner target has no
 13. **Constraints.** A constraint reaches Knowledge Catalog only, as one
     `semantic-constraint` entry under the model entry, and `pull` reads it back.
     Every other push target deploys nothing for it and warns once. Publishing is
-    all that push does with a constraint; what settles one is a run, where
-    `kcmd action run --judge` puts the guards an action names to a judge before
-    the write.
+    all that push does with a constraint; what settles one is a run, and the
+    runtime an application embeds is what puts each guard to a judge before the
+    write. `kcmd action-run` is not that runtime and checks no guard.
 14. **Binding profiles.** A model may define several physical realizations, one
     per binding profile. `--all-profiles` deploys a graph for every profile that
     declares a deployment target, each to the backend its own target names; a

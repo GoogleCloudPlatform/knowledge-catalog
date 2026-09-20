@@ -1,8 +1,10 @@
 // The database a judge may read while it settles a guard.
 //
 // `modelJudgeStore` builds the `JudgeStore` that judge.ts declares and
-// gcp/gemini.ts consumes. A run creates one when it is given
-// `--judge-reads-store`, and it holds two things:
+// gcp/gemini.ts consumes. It is a library facility rather than a `kcmd` one:
+// letting a model compose and send queries against a caller's data is a
+// decision for whoever embeds the runtime, so an application asks for it and
+// the curation CLI does not offer it. It holds two things:
 //
 //   1. SCHEMA. A block of text naming the tables and columns the judge may
 //      use, which the caller puts in the model's instructions. It is composed
@@ -182,7 +184,7 @@ export function modelJudgeStore(
 /**
  * An entity a judge can be told about: one table, and the columns behind it.
  */
-export interface ReadableEntity {
+interface ReadableEntity {
   entity: Entity;
   table: string;
   fields: BoundField[];
@@ -195,11 +197,11 @@ export interface ReadableEntity {
  *
  * The same test the lookup tools apply, for the same reason: an abstract
  * entity has no table, a field bound to an expression is not a column, and a
- * data source that is not a table reference cannot be read from. Exported so
- * that `action list` can tell whether offering a reading judge would work
- * before it prints a command line suggesting one.
+ * data source that is not a table reference cannot be read from. An entity
+ * this leaves out is one the judge is never told about, so a rule that turns
+ * on it is one the judge reports it cannot settle.
  */
-export function readableEntities(
+function readableEntities(
     runtime: SemanticRuntime, dialect: SqlDialect): ReadableEntity[] {
   const readable: ReadableEntity[] = [];
   for (const entity of runtime.model.entities ?? []) {
