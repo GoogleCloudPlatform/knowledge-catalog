@@ -269,3 +269,66 @@ describe('validateBigQueryDataSources', () => {
         expect(calls).toBe(1);
       });
 });
+
+describe('action parameters', () => {
+  // Both of these turn on WHETHER THE CONCEPT TABLE WAS BUILT. It is built
+  // lazily -- walking inheritance is not free, and most models declare no
+  // action that needs it -- so what asks for it decides which message an
+  // author gets, and asking for it too rarely is invisible until you read the
+  // message the author actually sees.
+  const order = (): Entity => ({
+    name: 'Order',
+    dataSource: 'p.d.orders',
+    keys: ['id'],
+    fields: [{name: 'id', type: 'Integer', expression: 'id'}],
+  });
+
+  test('an entity named as a `type` is told to project a field instead', () => {
+    // The migration case, and the one model that gets nothing else wrong: no
+    // `affects`, nothing projected, just an entity where a datatype belongs.
+    // Nothing else in the action asks for the concept table, so the lookup has
+    // to be triggered by the bad `type` itself -- otherwise the author is told
+    // only "not a scalar datatype" and is left to work out that the fix is a
+    // projection.
+    const m = model(
+        {
+          entities: [order()],
+          actions: [{
+            name: 'Close',
+            parameters: [{name: 'target', type: 'Order'}],
+          }],
+        },
+        [googleExt([BQ_TARGET])]);
+    const errs = validatePushRequirements([loaded(m)]);
+    expect(errs.some(e => e.includes('which is an entity'))).toBe(true);
+    expect(errs.some(e => e.includes('{concept: Order, field: <field>}')))
+        .toBe(true);
+  });
+
+  test('a dangling `extends` does not get blamed on the projected field', () => {
+    // Resolving inheritance throws here, so the concept table is unavailable
+    // and the parameter arrives with no type -- for a reason that has nothing
+    // to do with the field it projects from. Blaming the field would send the
+    // author to one that is correctly typed and away from the `extends` that
+    // is the actual fault, which IS reported, on its own line.
+    const savings: Entity = {
+      name: 'Savings',
+      dataSource: 'p.d.savings',
+      keys: ['id'],
+      fields: [],
+      extends: ['Order', 'NoSuchEntity'],
+    };
+    const m = model(
+        {
+          entities: [order(), savings],
+          actions: [{
+            name: 'Close',
+            parameters: [{name: 'acct', concept: 'Savings', field: 'id'}],
+          }],
+        },
+        [googleExt([BQ_TARGET])]);
+    const errs = validatePushRequirements([loaded(m)]);
+    expect(errs.some(e => e.includes('NoSuchEntity'))).toBe(true);
+    expect(errs.some(e => e.includes('declares no datatype'))).toBe(false);
+  });
+});

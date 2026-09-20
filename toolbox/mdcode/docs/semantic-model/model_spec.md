@@ -455,8 +455,13 @@ reads the document ([§6](#6-the-extension-mechanism)).
 
 - **`actions` (extended profile only).** Model-level write operations, the
   write-side counterpart to a metric. An action names an operation, points at the
-  executor that performs it, and types each parameter against the ontology, so an
-  entity-typed parameter is an object reference. Its optional `guards` lists, by
+  executor that performs it, and types each parameter against the ontology. Every
+  parameter carries one scalar value and MUST settle on one scalar datatype: it
+  either projects a field, naming the `concept` and `field` whose datatype,
+  description, label and AI context it takes, or declares a scalar `type` of its
+  own. Naming an entity or a relationship as a `type` is a **hard load error**,
+  and so is restating `type` beside `concept`/`field` — the field is the one
+  place the datatype is stated. Its optional `guards` lists, by
   name, the constraints that gate it; each name MUST resolve to a constraint the
   same model declares, and a repeated name is a **hard load error**. Its
   optional `affects` lists what the call changes. Each entry is either a bare

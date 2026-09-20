@@ -38,7 +38,7 @@ semantic_model:
         source: ${SPANNER}/databases/commerce/tables/Orders
         primary_key: [key]
         fields:
-          - { name: key, expression: OrderId }
+          - { name: key, expression: OrderId, datatype: String }
           - { name: total, expression: Total }
       - name: Entry
         source: ${SPANNER}/databases/commerce/tables/LedgerEntry
@@ -56,7 +56,7 @@ semantic_model:
                 INSERT INTO LedgerEntry (EntryId, OrderId, Amount)
                 VALUES (GENERATE_UUID(), @order, @amount)
         parameters:
-          - {name: order, type: Order}
+          - {name: order, concept: Order, field: key}
           - {name: amount, type: Decimal}
         guards: [CreditIsPositive]
         affects:
@@ -67,7 +67,7 @@ semantic_model:
             server: //agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/commerce
             tool: notify
         parameters:
-          - {name: order, type: Order}
+          - {name: order, concept: Order, field: key}
     constraints:
       - name: TotalStaysPositive
         judgment: The resulting Order.total must not be negative.
@@ -231,7 +231,7 @@ semantic_model:
         source: ${SPANNER}/databases/commerce/tables/Bins
         primary_key: [key]
         fields:
-          - { name: key, expression: BinId }
+          - { name: key, expression: BinId, datatype: String }
     actions:
       - name: Restock
         executor:
@@ -239,7 +239,7 @@ semantic_model:
             statements:
               - UPDATE Bins SET Held = Held + 1 WHERE BinId = @bin
         parameters:
-          - {name: bin, type: Bin}
+          - {name: bin, concept: Bin, field: key}
         affects:
           - {concept: Pallet, operation: modify}
 `;
@@ -274,7 +274,7 @@ semantic_model:
                 UPDATE Customers SET LastSeen = CURRENT_TIMESTAMP()
                 WHERE CustomerId = @who
         parameters:
-          - {name: who, type: Customer}
+          - {name: who, concept: Customer, field: name}
         affects:
           - {concept: Customer, operation: modify, fields: [key]}
 `;
@@ -333,97 +333,132 @@ describe('kcmd action list', () => {
 
         expect(out).toContain(
             'Model \'commerce\' (commerce_eg), profile \'default\'');
-         expect(out).toContain('IssueCredit: Credit an order');
+        expect(out).toContain('IssueCredit: Credit an order');
 
-         // An entity-typed parameter is marked as a reference: the caller
-         // passes something to look up, not a value.
+        // A projected parameter prints the type it takes and the field it
+        // took it from, so a reader sees both what to pass and where the
+        // type came from.
         expect(out).toContain(
-            'parameters: order (Order, reference), amount (Decimal)');
-         expect(out).toContain('executor:   sql');
-         expect(out).toContain('guards:     CreditIsPositive');
-         expect(out).toContain('affects:    Entry (create)');
+            'parameters: order (String from Order.key), amount (Decimal)');
+        expect(out).toContain('executor:   sql');
+        expect(out).toContain('guards:     CreditIsPositive');
+        expect(out).toContain('affects:    Entry (create)');
 
-         // The point of the listing: the reader can copy this and run it.
+        // The point of the listing: the reader can copy this and run it.
         // IssueCredit names a guard, and a guard is settled by asking, so the
         // line carries the flags that supply a judge -- see the judge-flag
         // test below for why both of them.
-         expect(out).toContain(
-            'run:        kcmd action run IssueCredit --judge ' +
-            '--judge-reads-store --arg order=<Order> --arg amount=<Decimal>');
-
-         // An action with no description, guards or blast radius shows only
-         // what it declares.
-         expect(out).toContain('NotifyCustomer');
-         expect(out).toContain('executor:   mcp');
         expect(out).toContain(
-            'run:        kcmd action run NotifyCustomer --arg order=<Order>');
-       });
+            'run:        kcmd action run IssueCredit --judge ' +
+            '--judge-reads-store --arg order=<String> --arg amount=<Decimal>');
+
+        // An action with no description, guards or blast radius shows only
+        // what it declares. It is executed by MCP, which this command holds no
+        // handler for, so there is no command line to print -- what it is
+        // waiting on goes there instead.
+        expect(out).toContain('NotifyCustomer');
+        expect(out).toContain('executor:   mcp');
+        expect(out).toContain('NOT RUNNABLE:');
+        expect(out).toContain('is executed by MCP, which runs');
+        expect(out).not.toContain('kcmd action run NotifyCustomer');
+      });
 
   test(
       'shows defaults and optionality in parameters and omits them from the run line',
-       async () => {
-         const optionalModel = MODEL.replace(
-             '          - {name: order, type: Order}\n          - {name: amount, type: Decimal}',
-             '          - {name: order, type: Order}\n' +
-                 '          - {name: amount, type: Decimal}\n' +
-                 '          - {name: currency, type: String, default: USD}\n' +
-                 '          - {name: blank, type: String, default: ""}\n' +
-                 '          - {name: cleared, type: Boolean, default: null}\n' +
-                 '          - {name: literalNull, type: String, default: "null"}\n' +
-                 '          - {name: memo, type: String, required: false}');
-         writeWorkspace(optionalModel);
-         const code = await action('list', undefined);
-         expect(code).toBe(0);
-         const out = logs.join('\n');
-         expect(out).toContain(
-             'parameters: order (Order, reference), amount (Decimal), ' +
-             'currency (String, default: "USD"), blank (String, default: ""), ' +
-             'cleared (Boolean, default: null), literalNull (String, default: "null"), ' +
-             'memo (String, optional)');
-         expect(out).toContain(
+      async () => {
+        const optionalModel = MODEL.replace(
+            '          - {name: order, concept: Order, field: key}\n' +
+                '          - {name: amount, type: Decimal}',
+            '          - {name: order, concept: Order, field: key}\n' +
+                '          - {name: amount, type: Decimal}\n' +
+                '          - {name: currency, type: String, default: USD}\n' +
+                '          - {name: blank, type: String, default: ""}\n' +
+                '          - {name: cleared, type: Boolean, default: null}\n' +
+                '          - {name: literalNull, type: String, default: "null"}\n' +
+                '          - {name: memo, type: String, required: false}');
+        writeWorkspace(optionalModel);
+        const code = await action('list', undefined);
+        expect(code).toBe(0);
+        const out = logs.join('\n');
+        expect(out).toContain(
+            'parameters: order (String from Order.key), amount (Decimal), ' +
+            'currency (String, default: "USD"), blank (String, default: ""), ' +
+            'cleared (Boolean, default: null), literalNull (String, default: "null"), ' +
+            'memo (String, optional)');
+        expect(out).toContain(
             'run:        kcmd action run IssueCredit --judge ' +
-            '--judge-reads-store --arg order=<Order> --arg amount=<Decimal>');
-         expect(out).not.toContain('--arg currency=');
-         expect(out).not.toContain('--arg memo=');
-       });
+            '--judge-reads-store --arg order=<String> --arg amount=<Decimal>');
+        expect(out).not.toContain('--arg currency=');
+        expect(out).not.toContain('--arg memo=');
+      });
 
   test(
       'shows an action the profile withdrew as declared but not runnable',
-       async () => {
-         // The listing answers "what can this model do HERE". Printing a run
-         // line for a write this binding cannot perform would send the reader
-         // to a refusal, so it prints the fix instead.
-         writeWorkspace(LOGICAL);
-         const code = await action('list', undefined, {profile: 'readonly'});
-         expect(code).toBe(0);
-         const out = logs.join('\n');
-         expect(out).toContain('IssueCredit');
-         expect(out).toContain('executor:   (none under this profile');
-         expect(out).toContain('bind an executor in a profile to run this');
-         expect(out).not.toContain('kcmd action run IssueCredit');
-       });
+      async () => {
+        // The listing answers "what can this model do HERE". Printing a run
+        // line for a write this binding cannot perform would send the reader
+        // to a refusal, so it prints the fix instead.
+        writeWorkspace(LOGICAL);
+        const code = await action('list', undefined, {profile: 'readonly'});
+        expect(code).toBe(0);
+        const out = logs.join('\n');
+        expect(out).toContain('IssueCredit');
+        expect(out).toContain('executor:   (none under this profile');
+        // The runtime's own sentence, not a second one written here that would
+        // drift from what a run actually reports.
+        expect(out).toContain(
+            'NOT RUNNABLE: Action \'IssueCredit\' has no executor under this ' +
+            'binding');
+        expect(out).toContain('supplies one, and a profile that writes');
+        expect(out).not.toContain('kcmd action run IssueCredit');
+      });
+
+  test(
+      'a guard naming a rule the model does not declare is not runnable',
+      async () => {
+        // The case that made asking the runtime worth doing. An executor is
+        // present, so the old check -- "does this have an executor" -- saw
+        // nothing wrong and printed a run line; every run of it is refused
+        // before the transaction opens, because the model says the write is
+        // gated by a rule that is not in the model. Nothing about the
+        // executor says so, which is exactly why the listing cannot work it
+        // out from the executor.
+        writeWorkspace(MODEL.replace(
+            'guards: [CreditIsPositive]', 'guards: [NoSuchRule]'));
+        const code = await action('list', undefined);
+        expect(code).toBe(0);
+        const out = logs.join('\n');
+        expect(out).toContain('executor:   sql');
+        expect(out).toContain('NOT RUNNABLE:');
+        expect(out).toContain('\'NoSuchRule\'');
+        expect(out).toContain('declared by model \'commerce\'');
+        expect(out).not.toContain('kcmd action run IssueCredit');
+      });
 
   test(
       'the run line names both judge flags when a guard is judged',
-       async () => {
-         // Copying the line is the whole point of printing it. A judged guard
-         // refuses without a judge, so a line omitting the flag would send the
-         // reader to a refusal it could have predicted. The same holds one step
-         // on: a judgment comparing the call against a stored row is refused
-         // without `--judge-reads-store`, and a constraint's wording does not
-         // say which judgments those are, so the line offers the read wherever
-         // the profile binds a table to read.
+      async () => {
+        // Copying the line is the whole point of printing it. A judged guard
+        // refuses without a judge, so a line omitting the flag would send the
+        // reader to a refusal it could have predicted. The same holds one step
+        // on: a judgment comparing the call against a stored row is refused
+        // without `--judge-reads-store`, and a constraint's wording does not
+        // say which judgments those are, so the line offers the read wherever
+        // the profile binds a table to read.
         writeWorkspace();
-         const code = await action('list', undefined);
-         expect(code).toBe(0);
-         const out = logs.join('\n');
-         expect(out).toContain(
-             'run:        kcmd action run IssueCredit --judge ' +
-             '--judge-reads-store --arg order=<Order>');
-         // The other action names no guard at all, so it gains nothing.
-         expect(out).toContain(
-             'run:        kcmd action run NotifyCustomer --arg order=<Order>');
-       });
+        const code = await action('list', undefined);
+        expect(code).toBe(0);
+        const out = logs.join('\n');
+        expect(out).toContain(
+            'run:        kcmd action run IssueCredit --judge ' +
+            '--judge-reads-store --arg order=<String>');
+        // And nowhere else. The other action names no guard, so it must gain
+        // neither flag; it prints no run line at all here -- MCP is not
+        // runnable from this command -- so counting is what is left to check
+        // that the flags are attached to the guard rather than to the listing.
+        expect(out.match(/--judge(?!-)/g)?.length).toBe(1);
+        expect(out.match(/--judge-reads-store/g)?.length).toBe(1);
+      });
 
   test('says so when a model declares no actions', async () => {
     writeWorkspace(NO_ACTIONS);
@@ -480,8 +515,8 @@ describe('kcmd action run: what it will not send to a store', () => {
 
   test('rejects an --arg that does not name a parameter', async () => {
     writeWorkspace();
-    const code = await action(
-        'run', 'IssueCredit', {arg: ['order=12345', 'amount']});
+    const code =
+        await action('run', 'IssueCredit', {arg: ['order=12345', 'amount']});
     expect(code).toBe(1);
     expect(logs.join('\n'))
         .toContain('--arg expects <name>=<value>, but got \'amount\'');
@@ -675,19 +710,19 @@ describe('kcmd action: what the command line can actually contain', () => {
     expect(logs.join('\n')).toContain('profile \'analytical\'');
   });
 
-  test('an argument named after an Object member is an ordinary argument',
-       async () => {
-         // On a plain object `'toString' in args` is true before anything is
-         // parsed, so this would report a duplicate the caller never gave.
-         writeWorkspace();
-         await action(
-             'run', 'IssueCredit',
-             {arg: ['toString=x', 'order=1', 'amount=5']});
-         const out = logs.join('\n');
-         expect(out).not.toContain('given twice');
-         // It gets as far as the refusal, which is where this model stops.
-         expect(out).toContain('CreditIsPositive');
-       });
+  test(
+      'an argument named after an Object member is an ordinary argument',
+      async () => {
+        // On a plain object `'toString' in args` is true before anything is
+        // parsed, so this would report a duplicate the caller never gave.
+        writeWorkspace();
+        await action(
+            'run', 'IssueCredit', {arg: ['toString=x', 'order=1', 'amount=5']});
+        const out = logs.join('\n');
+        expect(out).not.toContain('given twice');
+        // It gets as far as the refusal, which is where this model stops.
+        expect(out).toContain('CreditIsPositive');
+      });
 
   test('a genuinely repeated argument is still reported', async () => {
     writeWorkspace();
@@ -715,13 +750,15 @@ describe('kcmd action run: --arg has to be a pair', () => {
 
 
 describe('kcmd action run: a subtype inherits its fields', () => {
-  test('resolves a reference by an inherited identifying column', async () => {
+  test('projects a parameter from an inherited field', async () => {
     // Both push legs resolve inheritance and this path did not, so a subtype
     // arrived at the runtime with only the fields it declares itself.
-    // Customer's identifying field is Party's `name`; without it the lookup
-    // drops silently to key-only and reports a row missing that is there.
+    // Customer declares `key` and inherits `name` from Party; a parameter
+    // projecting `name` therefore resolves to nothing unless this path
+    // resolved inheritance too -- and a String bound with no type is a String
+    // the store has to coerce.
     writeWorkspace(INHERITS);
-    const asked: string[] = [];
+    const asked: any[] = [];
     const ok = (result: unknown) =>
         Promise.resolve({status: 200, result} as any);
     spyOn(SpannerDataClient.prototype, 'createSession')
@@ -732,16 +769,20 @@ describe('kcmd action run: a subtype inherits its fields', () => {
         .mockImplementation(() => ok({id: 'txn-1'}));
     spyOn(SpannerDataClient.prototype, 'rollback')
         .mockImplementation(() => ok({}));
+    spyOn(SpannerDataClient.prototype, 'commit')
+        .mockImplementation(
+            () => ok({commitTimestamp: '2026-09-20T00:00:00Z'}));
     spyOn(SpannerDataClient.prototype, 'executeSql')
         .mockImplementation((_s: any, _t: any, stmt: any) => {
-          asked.push(stmt.sql);
+          asked.push(stmt);
           return ok({rows: []});
         });
 
-    // No row comes back, so the run fails -- but it fails having asked the
-    // right question, which is what is under test.
-    expect(await action('run', 'Touch', {arg: 'who=Alice'})).toBe(1);
-    expect(asked[0]).toContain('FullName = @ref');
+    expect(await action('run', 'Touch', {arg: 'who=Alice'})).toBe(0);
+    expect(asked).toHaveLength(1);
+    expect(asked[0].sql).toContain('CustomerId = @who');
+    expect(asked[0].params.who).toBe('Alice');
+    expect(asked[0].paramTypes.who).toEqual({code: 'STRING'});
   });
 });
 

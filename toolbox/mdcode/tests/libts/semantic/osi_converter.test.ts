@@ -379,3 +379,65 @@ describe('golden OSI document: each corpus fixture serializes to its exact YAML'
              });
            }
          });
+
+
+describe('a projection is only emitted when it will supply a type', () => {
+  test('a field carrying no datatype falls back and warns', () => {
+    // The field resolves by NAME, so the pair looked emittable and the
+    // parameter's resolved `type` was suppressed in favour of it. On reload
+    // the projection resolves to no type at all, and the document this wrote
+    // fails to load -- against a model that was fine.
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [{
+        name: 'Order',
+        dataSource: 'p.d.o',
+        keys: ['key'],
+        fields: [{name: 'key', expression: 'key'}],
+      }],
+      relationships: [],
+      metrics: [],
+      actions: [{
+        name: 'Close',
+        executor: {kind: 'mcp', mcp: {server: '//x/mcpServers/s', tool: 't'}},
+        parameters: [{name: 'order', concept: 'Order', field: 'key'}],
+      }],
+    };
+    const warnings: string[] = [];
+    const doc = modelDocument(model, warnings) as any;
+    const param = doc.semantic_model[0].actions[0].parameters[0];
+    expect(param.concept).toBeUndefined();
+    expect(warnings.some(
+               w => w.includes('parameter \'order\'') &&
+                   w.includes('no resolved datatype')))
+        .toBe(true);
+  });
+
+  test('a field carrying a datatype still emits as a projection', () => {
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [{
+        name: 'Order',
+        dataSource: 'p.d.o',
+        keys: ['key'],
+        fields: [{name: 'key', type: 'String', expression: 'key'}],
+      }],
+      relationships: [],
+      metrics: [],
+      actions: [{
+        name: 'Close',
+        executor: {kind: 'mcp', mcp: {server: '//x/mcpServers/s', tool: 't'}},
+        parameters: [
+          {name: 'order', concept: 'Order', field: 'key', type: 'String'}
+        ],
+      }],
+    };
+    const warnings: string[] = [];
+    const doc = modelDocument(model, warnings) as any;
+    const param = doc.semantic_model[0].actions[0].parameters[0];
+    expect(param.concept).toBe('Order');
+    expect(param.field).toBe('key');
+    expect(param.datatype).toBeUndefined();
+    expect(warnings.some(w => w.includes('parameter \'order\''))).toBe(false);
+  });
+});

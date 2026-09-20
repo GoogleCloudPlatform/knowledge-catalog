@@ -8,7 +8,7 @@ Create an order for a customer
 
 | Name | Type | Required | What to pass |
 | --- | --- | --- | --- |
-| `customer` | string | yes | Which customer this applies to. Give its key, or text that identifies exactly one; the call fails when nothing matches or more than one does. |
+| `customer` | integer | yes | The customer's account number. |
 | `quantity` | integer | yes | The quantity, as a whole number. |
 
 ## How to call it

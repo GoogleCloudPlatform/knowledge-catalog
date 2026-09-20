@@ -22,7 +22,8 @@ semantic_model:
           - c_custkey
         fields:
           - name: c_custkey
-            datatype: Opaque
+            datatype: Integer
+            description: The customer's account number.
           - name: c_name
             datatype: Opaque
     relationships:
@@ -45,7 +46,9 @@ semantic_model:
             tool: place_order
         parameters:
           - name: customer
-            type: customer
+            concept: customer
+            field: c_custkey
+            description: The customer's account number.
           - name: quantity
             type: Integer
         guards:

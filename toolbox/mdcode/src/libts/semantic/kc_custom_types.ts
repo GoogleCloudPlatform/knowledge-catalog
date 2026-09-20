@@ -165,9 +165,11 @@ export const ACTION_TYPE_ID = 'semantic-action';
 // The executor is FLATTENED rather than nested one record per kind: an aspect
 // holds exactly one executor, and a flat record shows the reader which one at a
 // glance instead of three sibling records of which two are empty. `parameters`
-// mirrors the model's own parameter list, including the derived `isEntityRef`
-// so a consumer that has not loaded the model can still tell an object
-// reference from a scalar.
+// mirrors the model's own parameter list. Every parameter carries a scalar
+// `type`, and one projected from a field also names the `concept` and `field`
+// it came from -- so a consumer that has not loaded the model can bind a value
+// from the type alone, and follow the projection to the definition when it
+// wants to know what the value MEANS.
 const ACTION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
   displayName: 'Semantic Action',
   description:
@@ -269,8 +271,8 @@ const ACTION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
               constraints: {required: true},
               annotations: {
                 displayName: 'Type',
-                description:
-                    'The authored type: an entity name, or a scalar datatype.',
+                description: 'The scalar datatype of the value. Stated by ' +
+                    'the parameter, or taken from the field it projects.',
               },
             },
             {
@@ -278,10 +280,13 @@ const ACTION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
               name: 'isEntityRef',
               type: 'bool',
               annotations: {
-                displayName: 'Is Entity Reference',
+                displayName: 'Is Entity Reference (reserved)',
                 description:
-                    'True when `type` names an entity, so the parameter ' +
-                    'refers to an object rather than carrying a value.',
+                    'Reserved and never written. It marked a parameter whose ' +
+                    '`type` named an entity, so the parameter referred to an ' +
+                    'object rather than carrying a value. Those parameters ' +
+                    'were removed; every parameter now carries a scalar, and ' +
+                    'one taken from a field names it in `concept`/`field`.',
               },
             },
             {
@@ -312,6 +317,28 @@ const ACTION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
                 displayName: 'Default Value',
                 description:
                     'Default value substituted when omitted, serialized as text.',
+              },
+            },
+            {
+              index: 7,
+              name: 'concept',
+              type: 'string',
+              annotations: {
+                displayName: 'Concept',
+                description:
+                    'The entity or relationship this parameter projects a ' +
+                    'field of. Absent on a parameter that stands alone.',
+              },
+            },
+            {
+              index: 8,
+              name: 'field',
+              type: 'string',
+              annotations: {
+                displayName: 'Field',
+                description:
+                    'The field within `concept` whose type and wording this ' +
+                    'parameter takes. Present exactly when `concept` is.',
               },
             },
           ],
@@ -667,14 +694,14 @@ async function provisionOne(
   // Creating a type needs permissions that publishing entries does not. A
   // caller who lacks them can still init, push and pull every model that uses
   // none of these types, so the refusal is reported rather than fatal.
-  const denial = (what: string, status: number, message?: string):
-      ProvisionResult|undefined => status === 403 ?
-      {
+  const denial =
+      (what: string, status: number, message?: string): ProvisionResult|
+      undefined => status === 403 ? {
         denied: `no permission to create ${what} in project '${
-            home.project}' (${message || status}); ` +
+                    home.project}' (${message || status}); ` +
             `models that need it cannot be pushed until it exists`
       } :
-      undefined;
+                                    undefined;
 
   const warnings: string[] = [];
   const aspectLabel = `aspect type '${type.id}'`;
@@ -686,21 +713,35 @@ async function provisionOne(
         ['description', 'display_name', 'metadata_template']);
     const refused = denial(aspectLabel, upd.status, upd.message);
     if (refused) return refused;
-    // Patching an existing type forward is best effort. An older kcmd run
-    // against a project a newer one provisioned asks Dataplex to remove
-    // template fields, which it rejects, and the type already there is the one
-    // every published entry depends on. Leaving it alone and saying so beats
-    // aborting an init that has already created the entry group, and a push
-    // that needs a field the older template lacks reports that itself.
+    // Patching an existing type forward is best effort. Dataplex refuses a
+    // template change it judges backwards-incompatible -- removing a field, or
+    // renumbering one -- and the type already there is the one every published
+    // entry depends on. Leaving it alone and saying so beats aborting an init
+    // that has already created the entry group.
+    //
+    // What the warning has to carry is the way OUT, because there is no way
+    // forward: `kcmd` creates and patches aspect types and does not delete
+    // them, so a project holding a template this build cannot patch stays that
+    // way until someone removes it by hand. Naming the resource and the
+    // command is the whole of the fix; a reader who has only "left it
+    // unchanged" has to work out which of several types in which project, and
+    // then that `gcloud dataplex aspect-types` is where it lives.
     const reason = upd.status !== 200 ?
         `${upd.message || upd.status}` :
         await cat.awaitOperation(upd.result, `updating ${aspectLabel}`);
     if (reason) {
+      const resource = customAspectTypeName(type.id, dest);
       warnings.push(
-          `left the existing ${aspectLabel} in project '${home.project}' ` +
-          `unchanged (${reason}); a push will fail wherever the two ` +
-          `templates disagree, whether it states a field this one does not ` +
-          `carry or omits one this one still requires`);
+          `left the existing ${aspectLabel} unchanged (${reason}). It is ` +
+          `${resource}, and Dataplex will not patch it into the template ` +
+          `this build states -- a template field that was removed or ` +
+          `renumbered is a backwards-incompatible change and is refused. A ` +
+          `push will fail wherever the two disagree. To move it forward, ` +
+          `delete it and re-run this command: gcloud dataplex aspect-types ` +
+          `delete ${type.id} --project=${home.project} ` +
+          `--location=${home.location}. Deleting takes the aspects of every ` +
+          `entry already published with this type, so re-push those models ` +
+          `afterwards.`);
     }
   } else if (aspect.status !== 200) {
     const refused = denial(aspectLabel, aspect.status, aspect.message);

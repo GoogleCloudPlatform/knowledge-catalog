@@ -77,7 +77,11 @@ semantic_model:
           company.
         primary_key: [orderId]
         fields:
-          - {name: orderId, datatype: Integer}
+          - name: orderId
+            datatype: Integer
+            description: >-
+              The order's number, which is how both the customer and the desk
+              refer to it.
           - {name: customerId, datatype: Integer}
           - name: placedOn
             datatype: Date
@@ -119,8 +123,12 @@ semantic_model:
           Credit a customer against one order -- a late delivery, a coupon, a
           shipping charge applied in error. The credit is added as a negative
           line and the order total is recomputed from the lines.
+        # `order` takes its type and its wording from Order.orderId, so the
+        # number this call is about is defined once, in the entity, rather
+        # than again here. `amount` and `memo` stand alone: they are about
+        # this call, not about a field of anything.
         parameters:
-          - {name: order, type: Order}
+          - {name: order, concept: Order, field: orderId}
           - {name: amount, type: Decimal}
           - {name: memo, type: String}
         # What this call reaches, for a reader of the catalog who does not have

@@ -60,21 +60,49 @@ function isCalendarDay(text: string): boolean {
  * no index can answer it. Sharing this also means one answer to what counts as
  * an Integer or a Date, rather than one for writes and another for reads.
  */
-export function bindScalar(param: ActionParameter, raw: unknown):
-    {value: unknown; code: string}|{error: string} {
+export function bindScalar(
+    param: ActionParameter, raw: unknown): {value: unknown; code: string}|{
+  error: string
+}
+{
+  // A parameter whose type resolved to nothing. The loader warns and validate
+  // refuses to push such a model, so this is reached only through the library
+  // entry point -- and there is no type to parse the value against, so there
+  // is nothing to bind.
+  const type = param.type;
+  if (type === undefined) {
+    return {
+      error: `Action parameter '${param.name}' has no type: it states no ` +
+          `scalar 'type' and projects no field that supplies one, so a value ` +
+          `cannot be bound to it.`,
+    };
+  }
+  // Everything below stringifies the value before matching it against the
+  // type, which is what lets a JSON `"12347"` bind as an Integer. An object or
+  // an array has a string form too -- `[object Object]` -- and it would sail
+  // through as a String and be written to the store verbatim. A parameter
+  // carries ONE scalar, so a composite is refused here rather than flattened.
+  if (raw !== undefined && raw !== null && typeof raw === 'object') {
+    return {
+      error: `Action parameter '${param.name}' (${type}) was given ${
+                 Array.isArray(raw) ? 'a list' :
+                                      'an object'}, but a parameter ` +
+          `carries a single scalar value.`,
+    };
+  }
   // An empty String IS a value: `--arg memo=` is the caller saying the memo is
   // blank, which is a different statement from not passing one. For every
   // other type there is no value empty text could be, so it stays an error.
   if (raw === undefined || raw === null ||
-      (`${raw}`.trim() === '' && param.type !== 'String')) {
+      (`${raw}`.trim() === '' && type !== 'String')) {
     return {
-      error: `Action parameter '${param.name}' (${param.type}) was not given ` +
+      error: `Action parameter '${param.name}' (${type}) was not given ` +
           `a value.`,
     };
   }
   const text = `${raw}`.trim();
-  const code = storeCodeFor(param.type);
-  switch (param.type) {
+  const code = storeCodeFor(type);
+  switch (type) {
     case 'Integer':
       if (!/^[-+]?\d+$/.test(text)) {
         return {error: `'${param.name}' is an Integer, but '${text}' is not.`};
@@ -115,8 +143,8 @@ export function bindScalar(param: ActionParameter, raw: unknown):
     case 'DateTimeTz':
       if (!RFC3339_TIMESTAMP.test(text) || !isCalendarDay(text.slice(0, 10))) {
         return {
-          error: `'${param.name}' is a ${param.type}, but '${
-              text}' is not a timestamp. Timestamps are written like ` +
+          error: `'${param.name}' is a ${type}, but '${
+                     text}' is not a timestamp. Timestamps are written like ` +
               `2026-03-04T10:00:00Z, with the zone.`,
         };
       }

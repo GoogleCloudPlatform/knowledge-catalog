@@ -26,11 +26,7 @@
 import * as yaml from 'yaml';
 
 import {Action, fieldBinding, Metric, Relationship, SemanticModel} from './ir';
-import {
-  blankStringLiterals,
-  escapeRegExp,
-  referencedEntityNames,
-} from './sql_expr_utils';
+import {blankStringLiterals, escapeRegExp, referencedEntityNames,} from './sql_expr_utils';
 
 // The implicit profile: the inline bindings already in the model document (the
 // combined single-file form). It is never merged -- it IS the document as
@@ -216,7 +212,8 @@ function mergeEntity(le: any, pe: any, profileName: string): string|undefined {
 
   if (pe.fields === undefined) return undefined;
   if (!Array.isArray(pe.fields)) {
-    return `profile '${profileName}': entity '${pe.name}' 'fields' must be a list`;
+    return `profile '${profileName}': entity '${
+        pe.name}' 'fields' must be a list`;
   }
   const lByName = indexByName(le.fields ?? []);
   for (const pf of pe.fields) {
@@ -232,9 +229,8 @@ function mergeEntity(le: any, pe: any, profileName: string): string|undefined {
   return undefined;
 }
 
-function mergeField(
-    lf: any, pf: any, entityName: string,
-    profileName: string): string|undefined {
+function mergeField(lf: any, pf: any, entityName: string, profileName: string):
+    string|undefined {
   for (const k of Object.keys(pf)) {
     if (!PROFILE_FIELD_KEYS.has(k)) {
       return declError(profileName, `field '${entityName}.${pf.name}'`, k);
@@ -267,8 +263,9 @@ function isBareColumnRef(expr: unknown): boolean {
   const parts: string[] = [];
   if (typeof expr === 'string') {
     parts.push(expr);
-  } else if (expr && typeof expr === 'object' &&
-             Array.isArray((expr as any).dialects)) {
+  } else if (
+      expr && typeof expr === 'object' &&
+      Array.isArray((expr as any).dialects)) {
     for (const d of (expr as any).dialects) {
       if (d && typeof d.expression === 'string') parts.push(d.expression);
     }
@@ -324,8 +321,7 @@ function findLogicalSqlExecutor(doc: any, modelNames: Set<string>):
 // logical model's meaning -- names, types, relationships, metric formulas -- is
 // untouched. A field is unbound exactly when it carries no expression; there is
 // no separate flag.
-function stripInlineFieldExpressions(
-    doc: any, modelNames: Set<string>): void {
+function stripInlineFieldExpressions(doc: any, modelNames: Set<string>): void {
   for (const m of doc.semantic_model ?? []) {
     if (!m || typeof m !== 'object' || !modelNames.has(m.name)) continue;
     const entities = m.entities ?? m.datasets ?? [];
@@ -487,22 +483,16 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
           {name: a.name, reason: 'no executor is bound under this profile'});
       continue;
     }
-    // A parameter's `type` names an entity only when it is an object
-    // reference; a scalar type cannot collide with an entity name, so one test
-    // covers both.
-    const deadParam =
-        (a.parameters ?? []).find(p => unavailableEntities.has(p.type));
-    if (deadParam !== undefined) {
-      report.droppedActions.push({
-        name: a.name,
-        reason: `parameter ${deadParam.name} refers to ${
-            deadParam.type}, which is unavailable`,
-      });
-      continue;
-    }
+    // Parameters are not tested. Every one is a scalar, and a parameter
+    // projected from a field took a copy of that field's type and wording when
+    // the model loaded -- it needs nothing at run time from the concept it was
+    // projected from. So a profile that leaves that concept unavailable leaves
+    // the parameter intact, and dropping the action over it would withhold a
+    // write the binding is perfectly able to perform.
     const deadAffected = (a.affects ?? [])
-                             .find(f => unavailableEntities.has(f.concept) ||
-                                       droppedRels.has(f.concept));
+                             .find(
+                                 f => unavailableEntities.has(f.concept) ||
+                                     droppedRels.has(f.concept));
     if (deadAffected !== undefined) {
       report.droppedActions.push({
         name: a.name,
@@ -519,16 +509,15 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
 
 // The first unbound "Entity.field" a metric expression references (qualified),
 // or null. Text inside string literals is ignored.
-function firstUnboundReferenced(
-    expr: string, unbound: Set<string>): string|null {
+function firstUnboundReferenced(expr: string, unbound: Set<string>): string|
+    null {
   const scannable = blankStringLiterals(expr);
   for (const key of unbound) {
     const dot = key.indexOf('.');
     const entity = key.slice(0, dot);
     const field = key.slice(dot + 1);
-    const re = new RegExp(
-        `(?<![\\w\`])\`?${escapeRegExp(entity)}\`?\\.\`?${
-            escapeRegExp(field)}\`?(?![\\w])`);
+    const re = new RegExp(`(?<![\\w\`])\`?${escapeRegExp(entity)}\`?\\.\`?${
+        escapeRegExp(field)}\`?(?![\\w])`);
     if (re.test(scannable)) return key;
   }
   return null;
@@ -569,7 +558,10 @@ function connectingRelationshipKept(
  */
 export function mergeProfileOntoDoc(
     logicalText: string, profileText: string,
-    profileName: string): {text: string; warnings: string[]}|{error: string} {
+    profileName: string): {text: string; warnings: string[]}|{
+  error: string
+}
+{
   let logicalDoc: unknown;
   let profileDoc: unknown;
   try {

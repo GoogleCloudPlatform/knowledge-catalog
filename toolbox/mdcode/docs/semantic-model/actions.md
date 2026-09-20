@@ -110,13 +110,15 @@ semantic_model:
             tool: transfer_funds
         parameters:
           - name: source
-            type: Account                     # an entity: an object reference
+            concept: Account                  # takes Account.accountId's type
+            field: accountId
             description: The account the money leaves.
           - name: target
-            type: Account
+            concept: Account
+            field: accountId
             description: The account the money goes to.
           - name: amount
-            type: Float                       # a scalar: an ordinary value
+            type: Float                       # no field carries this one
             description: How much money to move.
         ai_context:
           instructions: >-
@@ -145,30 +147,69 @@ kinds, and give any one executor a single kind only:
 
 Both `description` and `ai_context.instructions` travel through to the catalog,
 and a parameter's `description` is what tells a caller which argument is which.
-Two parameters of the same type must each carry one, or the push fails. Write
-the instructions for the agent that's going to call the action, the way the
-example does.
+Two parameters a caller could confuse must each carry one, or the push fails.
+Write the instructions for the agent that's going to call the action, the way
+the example does.
 
-### Parameters typed by an entity
+### Projecting a parameter from a field
 
-A parameter's type can name an entity from your model instead of a datatype.
-Writing `{name: source, type: Account}` says the argument refers to an account,
-so a consumer generating a tool schema knows to accept an identifier and
-resolve it against `Account`'s key rather than pass a bare number through. A
-parameter typed by a datatype, like `amount` above, is an ordinary value and
-refers to nothing.
+Every parameter carries one scalar value — the same kind of value a column
+holds. What differs is where its definition comes from, and there are two ways
+to give it one: **project** it from a field of your ontology, or **declare** it
+on the spot.
+
+**A projected parameter** names a `concept` and a `field`, and takes that
+field's datatype, description, label and AI context straight out of the model.
+`source` above is an `Integer` because `Account.accountId` is one, so a caller
+passes an account id and the write binds it as an integer. Change the field
+later and every parameter projected from it follows, because there's no second
+copy to keep in step. A `concept` is read the way `affects` reads one, so it can
+name a relationship as well as an entity — but what you project from in practice
+is an entity, because a relationship only has fields of its own when a junction
+table backs it, and this format has no syntax for one yet.
+
+Most projected parameters need no name of their own. Leave `name` out and the
+parameter answers to the field's, so this one is called `accountId`:
+
+```yaml
+          - { concept: Account, field: accountId }
+```
+
+Name it yourself when one action takes the same field twice, the way
+`TransferFunds` takes both a `source` and a `target`.
+
+This shape holds however an entity is keyed. An `Account` identified by three
+columns takes three projected parameters, one per key field, each typed from
+the field it names — the same declaration a single-column key writes, three
+times.
+
+**A declared parameter** carries a value no field holds: the `amount` above, a
+free-text memo, a reason code your store never keeps. Give it a `type` and a
+description of your own. `type` takes a scalar datatype only, and naming an
+entity there is an error telling you to project the field you meant.
+
+A projected parameter can't restate its field's `type`. If the type is wrong,
+fix the field. If a statement needs a different one, cast it in the DML, where
+the conversion is visible to whoever reads the write instead of buried in
+metadata.
 
 Each parameter may also carry:
 
-- **`description`** — what the parameter means for this call. Required when two
-  parameters on the same action share a type (such as `source` and `target`
-  above, both `Account`), because the type alone cannot tell an agent which
-  argument is which.
+- **`description`** — what the parameter means for this call. A projected
+  parameter inherits the field's, and overriding it is how `source` and
+  `target` above say different things while projecting one field. Required when
+  two parameters on the same action project the same field or share a declared
+  type, because neither can tell an agent which argument is which on its own.
+- **`label`** and **`ai_context`** — inherited the same way, overridden the
+  same way.
 - **`default`** — a fallback value substituted when the caller omits the
   argument. Giving a parameter a default makes it optional; setting
   `required: true` alongside `default` is rejected.
 - **`required: false`** — marks a parameter optional with no fallback; an
   omitted call binds `NULL` in SQL.
+
+`default` and `required` are always yours to set, projected or not. A field
+says what a value *is*; the parameter says how this one call uses it.
 
 ### Where the executor comes from
 
@@ -564,7 +605,7 @@ outcome in `on_violation`:
             server: //agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/commerce
             tool: issue_credit
         parameters:
-          - { name: order,  type: Order }
+          - { name: order,  concept: Order, field: orderId }
           - { name: amount, type: Decimal }
           - { name: memo,   type: String }
         guards:
@@ -738,12 +779,15 @@ kcmd push --validate-only
 Once your document parses, five checks run over every action, and a failure in
 any of them stops the push:
 
-- **Every parameter's type resolves** — to an entity the model declares, or to
-  a scalar datatype. A type that is neither leaves a caller guessing what to
-  pass.
-- **Parameters sharing a type each carry a `description`.** Two `Account`
-  parameters without descriptions produce identical tool argument documentation,
-  leaving an agent guessing which is `source` and which is `target`.
+- **Every parameter has a type the model can settle** — projected from a field,
+  or a scalar datatype you named. A `concept` the model doesn't declare, a
+  `field` that concept doesn't have, a `type` sitting on a projected parameter,
+  and a `type` naming an entity are four different mistakes and report as four
+  different errors.
+- **Parameters a caller could confuse each carry a `description`.** Two
+  parameters projecting `Account.accountId`, or two sharing a declared type,
+  otherwise produce identical tool argument documentation, leaving an agent
+  guessing which is `source` and which is `target`.
 - **The executor has the fields its kind requires.** `server` and `tool` for
   `mcp`, `endpoint` and `method` for `rest`, `service` and `method` for `grpc`,
   at least one statement for `sql`. Leave one blank and whatever picks the
@@ -760,11 +804,11 @@ nothing:
 
 ```
 Error: action 'TransferFunds' in model 'payments' (payments) has parameter
-'amount' whose type 'Currency' is neither a known entity nor a scalar
-datatype.
+'amount' typed 'Currency', which is not a scalar datatype
+(String/Integer/Decimal/Float/Boolean/Date/Time/DateTime/DateTimeTz/Opaque).
 Error: action 'TransferFunds' in model 'payments' (payments) has multiple
-parameters of type 'Account', so parameters 'source' and 'target' must have a
-'description' to distinguish them.
+parameters projected from 'Account.accountId', so parameters 'source' and
+'target' must each have a 'description' of their own to distinguish them.
 Error: action 'TransferFunds' in model 'payments' (payments) has an mcp
 executor whose 'tool' is missing or blank.
 Error: action 'TransferFunds' in model 'payments' (payments) is guarded by
@@ -846,15 +890,22 @@ aspects:
     mcpServer: //agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/payments
     mcpTool: transfer_funds
     parameters:
-      - {name: source, type: Account, isEntityRef: true, description: The account the money leaves.}
-      - {name: target, type: Account, isEntityRef: true, description: The account the money goes to.}
-      - {name: amount, type: Float, isEntityRef: false}
+      - {name: source, type: Integer, concept: Account, field: accountId, description: The account the money leaves.}
+      - {name: target, type: Integer, concept: Account, field: accountId, description: The account the money goes to.}
+      - {name: amount, type: Float}
     affects:
       - {concept: Account, operation: modify, fields: [balance]}
       - {concept: Transfer, operation: create}
       - {concept: TransferDebits, operation: create}
     instructions: Resolve both accounts before calling.
 ```
+
+A projected parameter publishes both halves: the `concept` and `field` it came
+from, and the `type` that projection settled on. The reference is what you
+wrote and what a pull reads back, so the link into your ontology survives the
+round trip. The resolved type is there for a consumer reading the catalog
+without your model in hand, which would otherwise have no way to know what to
+pass.
 
 `affects` is published exactly as you wrote it. The entry doesn't record
 whether `TransferDebits` is an entity or an edge. A consumer that needs that
@@ -902,16 +953,16 @@ run is what exercises everything wrapped around it.
 
 Everything below happens at a command line, and that is a way of watching the
 model work rather than the place it is meant to work. `kcmd action run`
-performs the steps any runtime dispatching these calls has to perform — resolve
-the arguments to rows, check the guards, open one transaction — and narrates
-each of them. The behaviour is a property of the model you published, not of
+performs the steps any runtime dispatching these calls has to perform — bind the
+arguments, check the guards, open one transaction — and narrates each of them.
+The behaviour is a property of the model you published rather than of
 this tool: where a flag here hires a judge or lets it read, a service
 dispatching the same action decides the same thing in its own configuration,
 and reaches the same verdicts from the same sentences.
 
 `kcmd action list` prints the actions your model declares, each with its
 parameters, executor, guards and blast radius, plus the command line that
-calls it where the profile binds an executor:
+calls it -- flags and all, so a guarded action's line arrives ready to run:
 
 ```bash
 kcmd action list
@@ -921,35 +972,57 @@ kcmd action list
 Model 'payments' (payments_eg), profile 'operational':
   store: my-project/my-instance/semantic_agent_demo
   TransferFunds: Move money from one account to another.
-    parameters: source (Account, reference), target (Account, reference), amount (Float)
+    parameters: source (Integer from Account.accountId), target (Integer from Account.accountId), amount (Float)
     executor:   sql
     guards:     TransferWithinAvailableBalance
     affects:    Account (modify), Transfer (create), TransferDebits (create)
-    run:        kcmd action run TransferFunds --arg source=<Account> --arg target=<Account> --arg amount=<Float>
+    run:        kcmd action run TransferFunds --judge --judge-reads-store --arg source=<Integer> --arg target=<Integer> --arg amount=<Float>
 ```
+
+Where a run would be refused before it opened a transaction, that line says so
+instead, in the runtime's own words. Misspell the guard — write
+`TransferIsWithinLimit` where the model declares
+`TransferWithinAvailableBalance` — and the same listing reads:
+
+```
+  TransferFunds: Move money from one account to another.
+    parameters: source (Integer from Account.accountId), target (Integer from Account.accountId), amount (Float)
+    executor:   sql
+    guards:     TransferIsWithinLimit
+    affects:    Account (modify), Transfer (create), TransferDebits (create)
+    NOT RUNNABLE: Action 'TransferFunds' is guarded by 'TransferIsWithinLimit',
+    which is not declared by model 'payments'. Running it would apply a write
+    the model says must be checked first, so it is refused rather than run
+    unchecked.
+```
+
+The executor is perfectly good, and nothing about it says the action cannot
+run. The listing knows because it asks the runtime the same question a run
+asks, rather than working it out again here — so the two cannot disagree about
+what will happen. An action executed over MCP is marked the same way, since
+this command holds no handler for one and could not roll it back.
 
 `kcmd action run` performs one of those actions, against the database your
 model's deployment target names under the selected profile.
 
 ### What a run does
 
-`kcmd action run` resolves each entity-typed argument to a row, binds every
-argument as a typed query parameter, then applies the action's statements in one
-transaction:
+`kcmd action run` binds every argument as a typed query parameter, then applies
+the action's statements in one transaction. `TransferFunds` is guarded, so the
+line carries `--judge` too -- [when the rule is a
+sentence](#when-the-rule-is-a-sentence) covers what that hires:
 
 ```
-  kcmd action run TransferFunds --arg source="Alice Checking" --arg amount=250
+  kcmd action run TransferFunds --judge --arg source=7 --arg target=8 --arg amount=250
      │
-     │ resolve   SELECT account_id FROM account
-     │           WHERE name = @ref LIMIT 2
-     │           a single row, or the call fails            ──▶  7
-     │
-     │ bind      @source = 7      as Integer, the key's declared type
-     │           @amount = 250    as Decimal, so 9 is less than 10
+     │ bind      @source = 7      as Integer, from Account.accountId
+     │           @target = 8      as Integer, from Account.accountId
+     │           @amount = 250    as Float, so 9 is less than 10
      │
      │ apply     BEGIN
      │             UPDATE account SET balance = balance - @amount
      │               WHERE account_id = @source
+     │             every UPDATE and DELETE has to match a row
      │           COMMIT
      ▼
    committed      ·      nothing written      ·      unknown, do not retry
@@ -959,11 +1032,32 @@ transaction:
 ways it can end.*
 
 Nothing is interpolated into a statement. Every argument goes in as a query
-parameter, and the argument's declared ontology type decides the store type that
-parameter takes. Any failure before the commit rolls back, so no partial write
-survives, and a refused commit wrote nothing either. The commonest refusal is
-Spanner's `ABORTED` under lock contention, and the answer is to run the action
-again.
+parameter, and the argument's ontology type — the field's, where the parameter
+projects one — decides the store type that parameter takes. Any failure before
+the commit rolls back, so no partial write survives, and a refused commit wrote
+nothing either. The commonest refusal is Spanner's `ABORTED` under lock
+contention, and the answer is to run the action again.
+
+An `UPDATE` or `DELETE` that matches no rows is one of those failures. A caller
+who passes an account id that isn't in the table gets a statement that changes
+nothing, and reporting that as a successful write would tell them money moved
+when none did — so the run is refused and the transaction rolls back naming the
+statement that matched nothing.
+
+`INSERT` is the one exemption, because it creates rows rather than finding them,
+so writing none is something an author can mean. Everything else your store
+reports a zero count for is refused, including a statement kcmd can't read a
+verb from at all — a procedure call wrapping the write, say. That direction is
+deliberate: a statement wrongly refused is a failed run you go and look at,
+while one wrongly allowed is a caller told its write landed when it didn't.
+
+The rule applies per statement, and it has no opt-out, so there's one shape of
+action you can't write today: a multi-statement action whose earlier statement
+is legitimately conditional. An action that clears a cart and then writes an
+order fails outright when the cart was already empty, because the `DELETE`
+matched nothing. Write that case as two actions, or move the condition into the
+statement that must write — a `DELETE` whose predicate you already know matches.
+There's no way to mark one statement as allowed to write nothing.
 
 The unknown outcome is a timeout or a 5xx, where your store may have applied the
 write and lost the response. kcmd can't settle which, so it reports the run as
@@ -1114,8 +1208,8 @@ inside the transaction.
 
 **The judge gets the attempted call.** It receives the rule's text, the action's
 name and description, and the arguments as the caller stated them —
-`order=12347` rather than the `Order` row that value resolves to. That's the
-whole of what it has, unless it was also given the store to read.
+`order=12347`, the value itself, and not the `Order` row it identifies. That's
+the whole of what it has, unless it was also given the store to read.
 
 **A rule that never reached a judge is reported as unchecked.** You supplied no
 judge, or the model call failed. Either way `on_violation` routes that like any
@@ -1223,49 +1317,43 @@ before the transaction opens.
 ### Which rows a call touches
 
 Two things decide which rows a call touches, and they run at different moments:
-kcmd resolves each entity-typed argument to one row before the write, and the
-statement's own `WHERE` clause picks the rows the write lands on.
+you pass a value, and the statement's own `WHERE` clause picks the rows that
+value lands on.
 
 ```
-              resolving an argument     targeting the write
+              the value you pass        the rows the write lands on
               ───────────────────────   ──────────────────────────────────
-  what        --arg source=             the statement's own WHERE clause
-                "Alice Checking"
+  what        --arg source=7            the statement's own WHERE clause
   who runs    kcmd, before the write    the store, in the transaction
-  how many    a single row, or          however many rows it matches;
-              the call fails            kcmd does not constrain it
-  gives       @source = 7               the rows the write lands on
+  how many    one value, bound as       however many rows it matches;
+              Account.accountId's type  kcmd does not constrain it
+  checked     that the value fits       that an UPDATE or DELETE matched
+              that type                 at least one row
 ```
 
 *Table 3: what each step takes, who runs it, and how many rows it may reach.*
 
-**Resolving an argument.** An entity-typed parameter takes an object reference
-rather than a value, so `--arg source="Alice Checking"` has to become one
-specific row before anything can run. For each such parameter, kcmd runs one
-lookup against that entity's table, comparing the input against the column your
-entity's `primary_key` binds. An entity with a `String` field named like a
-name — `name`, `title`, `display_name` and similar — is reachable by that name
-as well, which is how `"Alice Checking"` finds an `Account`. A name is also the
-only way to reach an entity keyed on several columns. Each comparison happens as
-the column's own type, and kcmd drops a predicate the input can't be a value of
-rather than casting it.
+**Passing a value.** An argument names a value rather than a row. `--arg
+source=7` doesn't mean *the account whose id is 7*; it means the number 7,
+bound to `@source` wherever the statement puts it, as the type
+`Account.accountId` declares.
 
-One row has to come back, and one only. No match gives you `No Account matches
-'Alice Checking'.` A name isn't required to be unique, so two accounts can carry
-`Alice Checking`:
+So a caller holding a name rather than an id has to turn one into the other
+first, with a query of its own, before the call. That's deliberate: finding the
+right row can be a search with several plausible answers, and the place to
+settle which one is in front of whoever is asking — not inside a write
+transaction, which would have to pick one silently and commit to it.
 
-```
-Error: 'Alice Checking' matches more than one Account (7, 12); use a key to
-disambiguate.
-```
-
-kcmd lists them instead of guessing, so you can run the call again with a key.
-
-**Targeting the write.** Resolution produces a *value*, and your statement uses
-it. The statement's own `WHERE` clause decides how many rows it lands on, and
-nothing would stop one that hits every dormant account. That is what
-[section 3](#3-say-what-it-changes) means by `affects` declaring the blast
+**Targeting the write.** Your statement's `WHERE` clause decides how many rows
+it lands on, and nothing would stop one that hits every dormant account. That is
+what [section 3](#3-say-what-it-changes) means by `affects` declaring the blast
 radius rather than limiting it.
+
+The runtime checks one thing here: that an `UPDATE` or a `DELETE` matched
+something. Zero rows fails the run and rolls the transaction back, which catches
+an argument naming a row that isn't there. It can't catch an argument put in the
+wrong place — `WHERE region = @source` will match some row, and that row is the
+one your write lands on.
 
 ## 8. Hand it to an agent
 
@@ -1318,13 +1406,9 @@ Model 'payments' (payments_eg), profile 'operational':
       and this runtime was given no judge to ask. Running it would apply a
       write the model says must be checked first, so it is refused rather than
       run unchecked. Report that rather than retrying.
-      source: string -- The account the money leaves. Give its key, or text
-          that identifies exactly one Account; the call fails when nothing
-          matches or more than one does.
-      target: string -- The account the money goes to. Give its key, or text
-          that identifies exactly one Account; the call fails when nothing
-          matches or more than one does.
-      amount: number -- The amount, as a number.
+      source: integer -- The account the money leaves.
+      target: integer -- The account the money goes to.
+      amount: number -- How much money to move.
 
   lookup  find_account  (Account)
       A customer's money at this bank.
@@ -1398,12 +1482,14 @@ line of output per key:
                                                The amount argument of this…
       parameters:
         - name: source
-          type: Account
-          description: The account ───▶      source: string -- The account the
-            the money leaves.                  money leaves. Give its key…
+          concept: Account
+          field: accountId         ───▶      source: integer -- The account the
+          description: The account             money leaves.
+            the money leaves.
         - name: amount
-          type: Float              ───▶      amount: number -- The amount, as
-                                               a number.
+          type: Float              ───▶      amount: number -- How much money
+          description: How much                to move.
+            money to move.
 
   entities:
     - name: Account                ───▶  lookup  find_account
@@ -1456,10 +1542,9 @@ not. Put it in the model.
 
 ### What a write tool and a lookup tool do
 
-A **write tool** runs the action. Calling `transfer_funds` does the same
-resolve, bind and transact as [`kcmd action run TransferFunds`](#7-run-it) —
-the same argument resolution, the same single transaction, the same three
-outcomes.
+A **write tool** runs the action. Calling `transfer_funds` does the same bind
+and transact as [`kcmd action run TransferFunds`](#7-run-it) — the same typed
+parameters, the same single transaction, the same three outcomes.
 
 A **lookup tool** reads one entity: exact match on any bound field, combined
 with AND, capped at 50 rows. It can't join, compare ranges, aggregate or order.
@@ -1476,7 +1561,7 @@ what makes the collision visible at all.
 
 ### What a withheld tool is waiting on
 
-A **write tool** is withheld for one of four reasons:
+A **write tool** is withheld for one of three reasons:
 
 - This binding supplies no executor, because the model declared none or a
   profile withdrew it with `executor: null`.
@@ -1484,8 +1569,10 @@ A **write tool** is withheld for one of four reasons:
   to perform the write.
 - It names a guard this runtime cannot settle — a judgment with no judge to
   ask, or one with no words in it.
-- A parameter refers to an entity whose key has several parts, which the
-  runtime can't bind to a statement as one value.
+
+How an entity is keyed is not among them. Every parameter is a scalar, so an
+action taking the three key fields of a three-part key is as callable as one
+taking a single id.
 
 An action guarded by a judgment is withheld when the derivation holds no judge,
 because the listing reports what the runtime would do with what it's holding.
@@ -1559,10 +1646,9 @@ module imports an agent framework.
 or the statements ran and the commit gave no answer either way. That last one
 comes back as `unknown` alongside an explicit instruction not to retry, because
 a caller reading it as "nothing happened" applies the write twice. A write that
-landed carries `committedAt` and `actedOn`, the rows each argument resolved to;
-one that didn't carries `reason` and `whatToDo`. Only a write that landed
-carries `warnings`, so dropping them tells your agent a write met every rule the
-model states when it didn't.
+landed carries `committedAt`; one that didn't carries `reason` and `whatToDo`.
+Only a write that landed carries `warnings`, so dropping them tells your agent a
+write met every rule the model states when it didn't.
 
 `modelTools` also takes `judge`, and an action guarded by a judgment is callable
 only when you pass one. `GeminiJudge` implements the seam over Vertex AI, and so
@@ -1631,8 +1717,15 @@ rules fall short of what they say:
 
 ## What is not modeled yet
 
-This is a prototype. Three things you might reasonably expect are absent.
+This is a prototype. Four things you might reasonably expect are absent.
 
+- **Nothing checks a parameter against the column it's compared with.**
+  Projecting `source` from `Account.accountId` says what the value is; it says
+  nothing about where a statement puts it. `WHERE region = @source` is accepted
+  and runs, because the parameter is logical, the column is physical, and no
+  rule joins the two. Statements are sent to the store as written — see
+  [statements use your database names](#statements-use-your-database-names) —
+  so whoever writes one owns which column each argument lands in.
 - **A deterministic check over the call's own arguments has no home.** A
   constraint is settled by a model reading it, so `amount <= 25` written as a
   guard costs a model call and can come back differently twice — see
@@ -1643,7 +1736,7 @@ This is a prototype. Three things you might reasonably expect are absent.
 - **kcmd calls no executor but its own.** A `sql` action runs; an `mcp`, `rest`
   or `grpc` one is published for whoever dispatches it, which is why those three
   name coordinates instead of a statement.
-- **The store is Spanner or AlloyDB.** `kcmd action run` resolves, binds and
+- **The store is Spanner or AlloyDB.** `kcmd action run` binds and
   transacts against the database your profile's deployment target names, which
   may be either of those. A model bound to BigQuery publishes its actions and
   runs none of them.

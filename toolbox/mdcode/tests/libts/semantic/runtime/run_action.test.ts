@@ -12,7 +12,7 @@
 import {describe, expect, test} from 'bun:test';
 
 import * as spanner from '../../../../src/libts/gcp/spanner';
-import {Action, Constraint, Field, SemanticModel} from '../../../../src/libts/semantic/ir';
+import {Action, Constraint, SemanticModel} from '../../../../src/libts/semantic/ir';
 import {Judge, JudgeRequest, JudgeVerdict} from '../../../../src/libts/semantic/runtime/judge';
 import {ActionPlan, runAction, RunActionOptions, whyRefusedWithoutRunning} from '../../../../src/libts/semantic/runtime/run_action';
 import {SemanticRuntime} from '../../../../src/libts/semantic/runtime/runtime';
@@ -22,11 +22,13 @@ import {SemanticRuntime} from '../../../../src/libts/semantic/runtime/runtime';
 // What these tests vary is those two independently -- this model against that
 // fake store -- so they go on naming them separately and are paired here.
 // Whether the pairing itself is right is `store.test.ts`'s question.
-type ActArgs = Omit<RunActionOptions, 'runtime'>&
-    {model: SemanticModel; client: spanner.SpannerDataClient};
+type ActArgs = Omit<RunActionOptions, 'runtime'>&{
+  model: SemanticModel;
+  client: spanner.SpannerDataClient
+};
 
-function rt(model: SemanticModel, client: spanner.SpannerDataClient):
-    SemanticRuntime {
+function rt(
+    model: SemanticModel, client: spanner.SpannerDataClient): SemanticRuntime {
   return {
     model,
     document: 'test',
@@ -81,6 +83,12 @@ class FakeSpanner {
   // the request itself throws, the way a dropped socket or a DNS failure
   // reaches the runtime. A refusal and a silence are different news.
   throwOn: string[] = [];
+  // The row count the store reports for a statement, or undefined for a store
+  // that reports none. Spanner sends `rowCountExact` on a DML response, and
+  // the runtime reads it to catch an UPDATE or a DELETE that found no row.
+  // Leaving it unset is a store saying nothing, which is not the same news as
+  // a store saying zero.
+  rowCount?: string;
 
   constructor(private readonly answers: Answer[] = []) {}
 
@@ -111,7 +119,10 @@ class FakeSpanner {
       return {status: 400, message: 'statement rejected'};
     }
     const answer = this.answers.find(a => stmt.sql.includes(a.match));
-    return {status: 200, result: {rows: answer?.rows ?? []}};
+    const stats = this.rowCount === undefined ?
+        {} :
+        {stats: {rowCountExact: this.rowCount}};
+    return {status: 200, result: {rows: answer?.rows ?? [], ...stats}};
   }
 
   async commit() {
@@ -149,9 +160,9 @@ const transfer: Action = {
     mcp: {server: '//example/servers/payments', tool: 'transfer'},
   },
   parameters: [
-    {name: 'source', type: 'Account', isEntityRef: true},
-    {name: 'target', type: 'Account', isEntityRef: true},
-    {name: 'amount', type: 'Float', isEntityRef: false},
+    {name: 'source', type: 'String', concept: 'Account', field: 'accountId'},
+    {name: 'target', type: 'String', concept: 'Account', field: 'accountId'},
+    {name: 'amount', type: 'Float'},
   ],
 };
 
@@ -181,41 +192,21 @@ function model(overrides: Partial<SemanticModel> = {}): SemanticModel {
 }
 
 
-const debitAndCredit = async (): Promise<ActionPlan> => ({
+const debitAndCredit = async(): Promise<ActionPlan> => ({
   statements: [{
     sql: 'UPDATE Account SET balance = balance - 100 WHERE account_id = 1',
   }],
 });
 
-// Answers that resolve 'A1' and 'A2' to account 1.
-function resolvingFake(extra: Answer[] = []) {
-  return new FakeSpanner([
-    {
-      match: 'FROM Account WHERE account_id = @ref0',
-      rows: [['1']],
-    },
-    ...extra,
-  ]);
-}
-
-// The payments model with Account's key field declared as `type`. Only the
-// declared type of a key decides whether the SELECT that reads it back is cast,
-// so that is the one thing these vary.
-function keyedBy(type: Field['type']): SemanticModel {
-  const base = model();
-  return {
-    ...base,
-    entities: [{
-      ...base.entities![0],
-      fields: base.entities![0].fields.map(
-          f => f.name === 'accountId' ? {...f, type} : f),
-    }],
-  };
+// A store with nothing to say unless a test gives it something. No statement
+// reads a row before the write any more, so what these tests care about is what
+// was written rather than what was found first.
+function fakeStore(extra: Answer[] = []) {
+  return new FakeSpanner(extra);
 }
 
 
-function run(
-    fake: FakeSpanner, over: Partial<ActArgs> = {}) {
+function run(fake: FakeSpanner, over: Partial<ActArgs> = {}) {
   return act({
     model: model(),
     actionName: 'Transfer',
@@ -227,178 +218,308 @@ function run(
 }
 
 
-describe('resolving an entity-typed argument', () => {
-  test('matches on the key', async () => {
-    const fake = resolvingFake();
-    const outcome = await run(fake);
-    if (outcome.status !== 'committed') throw new Error(outcome.message);
-    expect(outcome.refs.source).toEqual({
-      entity: 'Account',
-      keys: ['1'],
-      input: 'A1',
-    });
-  });
-
-  test('also matches on an identifying name column', async () => {
-    // An agent saying "Alice" should reach the same row as one saying "7".
-    const fake = resolvingFake();
-    await run(fake);
-    const lookup = fake.statements[0];
-    expect(lookup.sql).toContain('account_id = @ref0');
-    expect(lookup.sql).toContain('name = @ref');
-  });
-
+describe('binding a projected argument', () => {
   test(
-      'compares each column as itself, so an index can answer the lookup',
-       async () => {
-         // This SELECT runs inside the action's read-write transaction. Casting
-         // the columns to STRING would make one predicate shape fit every key
-         // type, at the price of a scan holding read locks over the whole table
-         // for the length of the write.
-         const fake = resolvingFake();
-         await run(fake);
-         const where = fake.statements[0].sql.split(' WHERE ')[1];
-         expect(where).toBeDefined();
-         expect(where).not.toContain('CAST');
-       });
-
-  test(
-      'reads a date key back as text, which the predicate is not', async () => {
-        // The other half of the same decision. A key value read here is carried
-        // in an EntityRef and re-bound as a parameter later, so it has to come
-        // back in the form the runtime parses from -- which on PostgreSQL a
-        // DATE does not: it arrives as a full ISO instant rather than a plain
-        // day. Casting the OUTPUT costs no index, so this side is cast and the
-        // WHERE above is not.
-    const fake = new FakeSpanner([{match: 'FROM Account', rows: [['1']]}]);
-    await run(fake, {model: keyedBy('Date')});
-    const select = fake.statements[0].sql.split(' FROM ')[0];
-    expect(select).toContain('CAST(account_id AS STRING)');
-  });
-
-  test(
-      'leaves a timestamp key alone, which the cast would corrupt',
+      'binds the value the caller passed, asking the store nothing',
       async () => {
-        // Only a date needs it. Both backends already hand a timestamp back in
-        // RFC 3339, which is the form the runtime re-binds from; the SQL
-        // rendering a cast would produce instead -- '2026-09-07 00:00:00+00', a
-        // two-digit offset -- is not. Casting every key type would fix the date
-        // and break this.
-    const fake = new FakeSpanner([{match: 'FROM Account', rows: [['1']]}]);
-    await run(fake, {model: keyedBy('DateTime')});
-    const select = fake.statements[0].sql.split(' FROM ')[0];
-    expect(select).not.toContain('CAST');
-    expect(select).toContain('account_id');
-  });
+        // A projected parameter says which field the value belongs to. It
+        // does not make the runtime go looking for a row: the value is bound
+        // as it stands, and the statement's own WHERE clause finds the rows.
+        const fake = fakeStore();
+        const outcome = await run(fake);
+        if (outcome.status !== 'committed') throw new Error(outcome.message);
+        expect(fake.sql.filter(s => s.startsWith('SELECT'))).toEqual([]);
+      });
 
-  test('leaves an untyped key alone', async () => {
-    const fake = resolvingFake();
-    await run(fake);
-    const select = fake.statements[0].sql.split(' FROM ')[0];
-    expect(select).not.toContain('CAST');
-  });
-
-  test('drops a key predicate the input cannot possibly match', async () => {
-    // 'A1' is not an Integer, so no INT64 key equals it. Comparing anyway
-    // would mean casting the column, which is the scan this avoids.
-    const fake = new FakeSpanner([{match: 'FROM Account', rows: [['1']]}]);
-    await run(fake, {
-      model: model({
-        entities: [{
-          name: 'Account',
-          dataSource: 'demo.payments.Account',
-          keys: ['accountId'],
-          fields: [
-            {name: 'accountId', expression: 'account_id', type: 'Integer'},
-            {name: 'name', expression: 'name', type: 'String'},
-          ],
-        }],
+  // Transfer with its write in the model and `source` projected from an
+  // Integer key, so the runtime binds every argument itself. A handler would
+  // take the arguments whole and decide for itself what to do with them, which
+  // is a different question from the one these three ask.
+  function transferring(args: Record<string, unknown>) {
+    const fake = fakeStore();
+    return {
+      fake,
+      outcome: act({
+        model: model({
+          entities: [{
+            name: 'Account',
+            dataSource: 'demo.payments.Account',
+            keys: ['accountId'],
+            fields: [
+              {name: 'accountId', expression: 'account_id', type: 'Integer'},
+              {name: 'balance', expression: 'balance'},
+            ],
+          }],
+          actions: [{
+            ...transfer,
+            executor: {
+              kind: 'sql',
+              sql: {
+                statements: [
+                  'UPDATE Account SET balance = balance - @amount ' +
+                      'WHERE account_id = @source',
+                ],
+              },
+            },
+            parameters: [
+              {
+                name: 'source',
+                type: 'Integer',
+                concept: 'Account',
+                field: 'accountId',
+              },
+              {name: 'amount', type: 'Float'},
+              {name: 'memo', type: 'String', required: false},
+            ],
+          }],
+        }),
+        actionName: 'Transfer',
+        args,
+        client: fake.client,
       }),
-    });
-    // The key column is still SELECTed -- it is what a match returns -- but
-    // nothing compares it.
-    expect(fake.statements[0].sql).toContain('WHERE name = @ref LIMIT');
-    expect(fake.statements[0].sql).not.toContain('account_id =');
+    };
+  }
+
+  test('binds it as the type the projection settled', async () => {
+    // `source` is an Integer because `Account.accountId` is one, and the store
+    // is told INT64 rather than being left to infer it from the text.
+    const {fake, outcome} = transferring({source: 7, amount: 100});
+    const result = await outcome;
+    if (result.status !== 'committed') throw new Error(result.message);
+    const write = fake.statements.find(s => s.sql.startsWith('UPDATE'))!;
+    expect(write.paramTypes!['source']).toEqual({code: 'INT64'});
+    expect(write.params!['source']).toBe('7');
   });
 
-  test('does not query at all when nothing could match the input', async () => {
-    // An Integer key, no identifying text field, and a reference that is not a
-    // number: there is no row this could denote, and no predicate left to ask.
-    const fake = new FakeSpanner([]);
-    const outcome = await run(fake, {
-      model: model({
-        entities: [{
-          name: 'Account',
-          dataSource: 'demo.payments.Account',
-          keys: ['accountId'],
-          fields: [
-            {name: 'accountId', expression: 'account_id', type: 'Integer'},
-          ],
-        }],
-      }),
-    });
-    if (outcome.status !== 'error') throw new Error('expected an error');
-    expect(outcome.message).toBe('No Account matches \'A1\'.');
-    expect(fake.statements).toHaveLength(0);
+  test(
+      'refuses a value that is not of that type, naming the parameter',
+      async () => {
+        const {fake, outcome} = transferring({source: 'Alice', amount: 100});
+        const result = await outcome;
+        if (result.status !== 'error') throw new Error('expected an error');
+        expect(result.message)
+            .toContain('\'source\' is an Integer, but \'Alice\' is not');
+        expect(fake.committed).toBe(false);
+      });
+
+  test(
+      'refuses a missing required argument before opening a session',
+      async () => {
+        const {fake, outcome} = transferring({amount: 100});
+        const result = await outcome;
+        if (result.status !== 'error') throw new Error('expected an error');
+        expect(result.message)
+            .toContain('\'source\' (Integer) was not given a value');
+        expect(fake.sessionsOpened).toBe(0);
+      });
+
+  test('refuses a composite value rather than stringifying it', async () => {
+    // Binding stringifies before matching the type, which is what lets a JSON
+    // `"7"` arrive as an Integer. An object has a string form too, and a
+    // String parameter would have taken `[object Object]` and written it.
+    const {fake, outcome} =
+        transferring({source: 7, amount: 100, memo: {note: 'hi'}});
+    const result = await outcome;
+    if (result.status !== 'error') throw new Error('expected an error');
+    expect(result.message).toContain('\'memo\' (String) was given an object');
+    expect(fake.committed).toBe(false);
   });
 
-  test('rejects a reference that matches nothing', async () => {
-    const fake = new FakeSpanner([]);
-    const outcome = await run(fake);
+  test('refuses a list for the same reason', async () => {
+    const {fake, outcome} =
+        transferring({source: 7, amount: 100, memo: ['a', 'b']});
+    const result = await outcome;
+    if (result.status !== 'error') throw new Error('expected an error');
+    expect(result.message).toContain('\'memo\' (String) was given a list');
+    expect(fake.committed).toBe(false);
+  });
+});
+
+
+// The resolve step used to prove a row existed before the write. Deleting it
+// left that question to the store, which answers it more cheaply: an UPDATE or
+// a DELETE that changed nothing was pointed at no row.
+describe('a write that matched no rows', () => {
+  // The fake reports a row count only when a test gives it one; every other
+  // test here leaves it unset, which is a store saying nothing rather than a
+  // store saying zero.
+  function counting(rowCount: string) {
+    const fake = fakeStore();
+    fake.rowCount = rowCount;
+    return fake;
+  }
+
+  test('fails the run and rolls the transaction back', async () => {
+    const fake = counting('0');
+    const outcome = await runCredit(fake);
     if (outcome.status !== 'error') throw new Error('expected an error');
-    expect(outcome.message).toBe('No Account matches \'A1\'.');
+    expect(outcome.message).toContain('an UPDATE matched no rows');
+    expect(outcome.message).toContain('Nothing was written');
     expect(fake.rolledBack).toBe(true);
+    expect(fake.committed).toBe(false);
   });
 
-  test('rejects an ambiguous reference and lists the candidates', async () => {
-    const fake =
-        new FakeSpanner([{match: 'FROM Account WHERE', rows: [['1'], ['2']]}]);
-    const outcome = await run(fake);
+  test('quotes the statement, so the caller can see which one', async () => {
+    const outcome = await runCredit(counting('0'));
     if (outcome.status !== 'error') throw new Error('expected an error');
-    expect(outcome.message).toContain('matches more than one Account (1, 2)');
+    expect(outcome.message).toContain('UPDATE Account SET balance');
   });
 
-  test('rejects a missing required reference', async () => {
-    // The message alone does not pin this. `resolveArguments` says the same
-    // sentence from inside the transaction, so the assertion below holds with
-    // the pre-flight deleted. What the pre-flight buys is saying it before a
-    // session is opened.
-    const fake = resolvingFake();
-    const outcome = await run(fake, {args: {target: 'A2', amount: 100}});
-    if (outcome.status !== 'error') throw new Error('expected an error');
-    expect(outcome.message)
-        .toContain('requires \'source\', a reference to a Account');
-    expect(fake.sessionsOpened).toBe(0);
+  test('a row count of one is the write doing what it says', async () => {
+    const fake = counting('1');
+    const outcome = await runCredit(fake);
+    expect(outcome.status).toBe('committed');
+    expect(fake.committed).toBe(true);
   });
 
-  test('leaves scalar arguments alone', async () => {
-    const outcome = await run(resolvingFake());
-    if (outcome.status !== 'committed') throw new Error(outcome.message);
-    expect(Object.keys(outcome.refs)).toEqual(['source', 'target']);
+  test('a store that reports no count at all is left alone', async () => {
+    // Refusing a write because the count was missing would fail actions that
+    // worked, over a fact nobody stated.
+    const fake = fakeStore();
+    const outcome = await runCredit(fake);
+    expect(outcome.status).toBe('committed');
+  });
+
+  // Finding the verb by reading the first six characters got all of these
+  // wrong, and got them wrong in the direction that SAYS the write was fine:
+  // the check saw no UPDATE, waved the statement through, and a write that
+  // touched nothing committed as applied.
+  describe('finds the verb whatever the statement leads with', () => {
+    function creditVia(statement: string) {
+      const fake = counting('0');
+      return {
+        fake,
+        outcome: act({
+          model: creditModel({
+            actions: [{
+              ...credit,
+              executor: {kind: 'sql', sql: {statements: [statement]}},
+            }],
+          }),
+          actionName: 'Credit',
+          args: {account: 'A1', amount: 100},
+          client: fake.client,
+        }),
+      };
+    }
+
+    test('a leading line comment', async () => {
+      const {fake, outcome} = creditVia(
+          '-- take the money back off the account\n' +
+          'UPDATE Account SET balance = balance - @amount ' +
+          'WHERE account_id = @account');
+      const result = await outcome;
+      if (result.status !== 'error') throw new Error('expected an error');
+      expect(result.message).toContain('an UPDATE matched no rows');
+      expect(fake.committed).toBe(false);
+    });
+
+    test('a leading block comment', async () => {
+      const {fake, outcome} = creditVia(
+          '/* settled 2026-01 */ DELETE FROM Account ' +
+          'WHERE account_id = @account');
+      const result = await outcome;
+      if (result.status !== 'error') throw new Error('expected an error');
+      expect(result.message).toContain('a DELETE matched no rows');
+      expect(fake.committed).toBe(false);
+    });
+
+    test('a CTE ahead of the verb', async () => {
+      const {fake, outcome} = creditVia(
+          'WITH stale AS (SELECT account_id FROM Account) ' +
+          'UPDATE Account SET balance = balance - @amount ' +
+          'WHERE account_id = @account');
+      const result = await outcome;
+      if (result.status !== 'error') throw new Error('expected an error');
+      expect(result.message).toContain('an UPDATE matched no rows');
+      expect(fake.committed).toBe(false);
+    });
+
+    test('a string literal naming another verb does not count', async () => {
+      // The refusal has to come from the statement's own verb, not from the
+      // word DELETE sitting inside a quoted value.
+      const {fake, outcome} = creditVia(
+          'INSERT INTO Entry (entry_id, account_id, amount) ' +
+          'VALUES (GENERATE_UUID(), @account, \'DELETE\')');
+      const result = await outcome;
+      expect(result.status).toBe('committed');
+      expect(fake.committed).toBe(true);
+    });
+
+    // The check refuses everything the store reports a zero count for EXCEPT a
+    // recognized INSERT, rather than refusing only a recognized UPDATE or
+    // DELETE. The difference is only visible on a statement the scanner cannot
+    // read, and that is the whole point: under the old direction every one of
+    // those committed silently.
+    describe('only a recognized INSERT may write nothing', () => {
+      test('a plain INSERT still may', async () => {
+        const {fake, outcome} = creditVia(
+            'INSERT INTO Entry (entry_id, account_id) ' +
+            'VALUES (GENERATE_UUID(), @account)');
+        const result = await outcome;
+        expect(result.status).toBe('committed');
+        expect(fake.committed).toBe(true);
+      });
+
+      test('a MERGE that changed nothing is refused', async () => {
+        // A MERGE reporting zero neither matched a row nor inserted one, so
+        // the INSERT exemption does not reach it.
+        const {fake, outcome} = creditVia(
+            'MERGE INTO Account t USING (SELECT @account AS id) s ' +
+            'ON t.account_id = s.id WHEN MATCHED THEN UPDATE SET ' +
+            'balance = balance - @amount');
+        const result = await outcome;
+        if (result.status !== 'error') throw new Error('expected an error');
+        expect(result.message)
+            .toContain('a MERGE neither matched a row nor inserted one');
+        expect(fake.committed).toBe(false);
+        expect(fake.rolledBack).toBe(true);
+      });
+
+      test(
+          'a statement with no readable verb is refused, not waved through',
+          async () => {
+            // A procedure call wrapping the write is the realistic case: the
+            // scanner finds no DML keyword at the top level, and the old
+            // direction read that as "nothing to check" and committed.
+            const {fake, outcome} =
+                creditVia('CALL settle_account(@account, @amount)');
+            const result = await outcome;
+            if (result.status !== 'error') {
+              throw new Error('expected an error');
+            }
+            expect(result.message)
+                .toContain('could not read a DML verb from the statement');
+            expect(result.message).toContain('Only an INSERT may write none');
+            expect(fake.committed).toBe(false);
+            expect(fake.rolledBack).toBe(true);
+          });
+    });
   });
 });
 
 
 describe('failures that stop the write', () => {
   test('an unknown action is refused before any store call', async () => {
-    const fake = resolvingFake();
+    const fake = fakeStore();
     const outcome = await run(fake, {actionName: 'Refund'});
     if (outcome.status !== 'error') throw new Error('expected an error');
     expect(outcome.message).toContain('declares no action \'Refund\'');
     expect(fake.statements).toHaveLength(0);
   });
 
-  test('a transaction that will not begin is reported, not retried',
-       async () => {
-         const fake = resolvingFake();
-         fake.beginFails = true;
-         const outcome = await run(fake);
-         if (outcome.status !== 'error') throw new Error('expected an error');
-         expect(outcome.message).toContain('Could not begin a transaction');
-       });
+  test(
+      'a transaction that will not begin is reported, not retried',
+      async () => {
+        const fake = fakeStore();
+        fake.beginFails = true;
+        const outcome = await run(fake);
+        if (outcome.status !== 'error') throw new Error('expected an error');
+        expect(outcome.message).toContain('Could not begin a transaction');
+      });
 
   test('a rejected statement rolls the transaction back', async () => {
-    const fake = resolvingFake();
+    const fake = fakeStore();
     fake.failOn = ['UPDATE Account'];
     const outcome = await run(fake);
     if (outcome.status !== 'error') throw new Error('expected an error');
@@ -408,26 +529,27 @@ describe('failures that stop the write', () => {
     expect(fake.committed).toBe(false);
   });
 
-  test('a store that stops answering is the store failing, not this code',
-       async () => {
-         // A statement the store REFUSES comes back as a status; a dropped
-         // socket, a DNS failure or a TLS error throws instead. Both are the
-         // store, and reporting the second as a fault inside the runtime
-         // sends the reader to look for a bug where there is only a network
-         // worth retrying.
-         const fake = resolvingFake();
-         fake.throwOn = ['UPDATE Account'];
-         const outcome = await run(fake);
-         if (outcome.status !== 'error') throw new Error('expected an error');
-         expect(outcome.message).toContain('fetch failed');
-         expect(outcome.message).toContain('failed and was rolled back');
-         expect(outcome.message).not.toContain('inside the runtime');
-         expect(fake.rolledBack).toBe(true);
-         expect(fake.committed).toBe(false);
-       });
+  test(
+      'a store that stops answering is the store failing, not this code',
+      async () => {
+        // A statement the store REFUSES comes back as a status; a dropped
+        // socket, a DNS failure or a TLS error throws instead. Both are the
+        // store, and reporting the second as a fault inside the runtime
+        // sends the reader to look for a bug where there is only a network
+        // worth retrying.
+        const fake = fakeStore();
+        fake.throwOn = ['UPDATE Account'];
+        const outcome = await run(fake);
+        if (outcome.status !== 'error') throw new Error('expected an error');
+        expect(outcome.message).toContain('fetch failed');
+        expect(outcome.message).toContain('failed and was rolled back');
+        expect(outcome.message).not.toContain('inside the runtime');
+        expect(fake.rolledBack).toBe(true);
+        expect(fake.committed).toBe(false);
+      });
 
   test('a handler that throws rolls the transaction back', async () => {
-    const fake = resolvingFake();
+    const fake = fakeStore();
     const outcome = await run(fake, {
       handler: async () => {
         throw new Error('handler blew up');
@@ -442,7 +564,7 @@ describe('failures that stop the write', () => {
     // A statement the store refused and a TypeError out of the caller's own
     // code both land in the same catch. Reporting the second as a rejected
     // write sends the reader to the data to look for a problem in the code.
-    const fake = resolvingFake();
+    const fake = fakeStore();
     const outcome = await run(fake, {
       handler: async () => {
         throw new TypeError('x.map is not a function');
@@ -454,7 +576,7 @@ describe('failures that stop the write', () => {
   });
 
   test('a commit that fails is reported as a commit failure', async () => {
-    const fake = resolvingFake();
+    const fake = fakeStore();
     fake.commitFails = true;
     const outcome = await run(fake);
     if (outcome.status !== 'error') throw new Error('expected an error');
@@ -464,58 +586,60 @@ describe('failures that stop the write', () => {
 
   test(
       'a commit that fails is reported as an UNKNOWN outcome, not a rollback',
-       async () => {
-         // The one failure this runtime cannot call: Spanner returns a deadline
-         // or a 5xx on commit for a commit that landed as readily as for one
-         // that did not, and nothing can undo it from here. Saying "rolled
-         // back" would be a guess, and a caller acting on it would apply the
-         // write twice.
-         const fake = resolvingFake();
-         fake.commitFails = true;
-         const outcome = await run(fake);
-         if (outcome.status !== 'error') throw new Error('expected an error');
-         expect(outcome.indeterminate).toBe(true);
+      async () => {
+        // The one failure this runtime cannot call: Spanner returns a deadline
+        // or a 5xx on commit for a commit that landed as readily as for one
+        // that did not, and nothing can undo it from here. Saying "rolled
+        // back" would be a guess, and a caller acting on it would apply the
+        // write twice.
+        const fake = fakeStore();
+        fake.commitFails = true;
+        const outcome = await run(fake);
+        if (outcome.status !== 'error') throw new Error('expected an error');
+        expect(outcome.indeterminate).toBe(true);
         expect(outcome.message)
             .toContain('Whether the write landed is unknown');
-         expect(fake.rolledBack).toBe(false);
-       });
+        expect(fake.rolledBack).toBe(false);
+      });
 
   test(
       'a rollback that fails does not replace the reason the action stopped',
-       async () => {
-         // The reason is what the caller acts on. An abandoned transaction is
-         // aborted by the server on its own.
-         const fake = new FakeSpanner([]);
-         fake.rollback = async () => {
-           throw new Error('rollback unreachable');
-         };
-         const outcome = await run(fake);
-         if (outcome.status !== 'error') throw new Error('expected an error');
-        expect(outcome.message).toBe('No Account matches \'A1\'.');
-       });
+      async () => {
+        // The reason is what the caller acts on. An abandoned transaction is
+        // aborted by the server on its own.
+        const fake = fakeStore();
+        fake.rowCount = '0';
+        fake.rollback = async () => {
+          throw new Error('rollback unreachable');
+        };
+        const outcome = await runCredit(fake);
+        if (outcome.status !== 'error') throw new Error('expected an error');
+        expect(outcome.message).toContain('an UPDATE matched no rows');
+        expect(outcome.message).not.toContain('rollback unreachable');
+      });
 
   test(
       'a rollback that fails after a thrown statement keeps the store error',
-       async () => {
-         const fake = resolvingFake();
-         fake.failOn = ['UPDATE Account'];
-         fake.rollback = async () => {
-           throw new Error('rollback unreachable');
-         };
-         const outcome = await run(fake);
-         if (outcome.status !== 'error') throw new Error('expected an error');
-         expect(outcome.message).toContain('statement rejected');
-       });
+      async () => {
+        const fake = fakeStore();
+        fake.failOn = ['UPDATE Account'];
+        fake.rollback = async () => {
+          throw new Error('rollback unreachable');
+        };
+        const outcome = await run(fake);
+        if (outcome.status !== 'error') throw new Error('expected an error');
+        expect(outcome.message).toContain('statement rejected');
+      });
 
   test('the session is closed even when the action fails', async () => {
-    const fake = resolvingFake();
+    const fake = fakeStore();
     fake.failOn = ['UPDATE Account'];
     await run(fake);
     expect(fake.sessionsOpen).toBe(0);
   });
 
   test('the session is closed on the happy path too', async () => {
-    const fake = resolvingFake();
+    const fake = fakeStore();
     await run(fake);
     expect(fake.sessionsOpen).toBe(0);
     expect(fake.sessionsOpened).toBe(1);
@@ -527,7 +651,7 @@ describe('an executor the runtime cannot roll back', () => {
   test('is refused when the caller supplies no handler', async () => {
     // An MCP tool commits inside a system this transaction does not control,
     // so a rollback here would leave the two out of step.
-    const fake = resolvingFake();
+    const fake = fakeStore();
     const outcome = await run(fake, {handler: undefined});
     if (outcome.status !== 'error') throw new Error('expected an error');
     expect(outcome.message).toContain('could not be rolled back');
@@ -544,14 +668,14 @@ describe('an action with no executor under this binding', () => {
   const unbound: Action = {
     name: 'Transfer',
     parameters: [
-      {name: 'source', type: 'Account', isEntityRef: true},
-      {name: 'target', type: 'Account', isEntityRef: true},
-      {name: 'amount', type: 'Float', isEntityRef: false},
+      {name: 'source', type: 'String', concept: 'Account', field: 'accountId'},
+      {name: 'target', type: 'String', concept: 'Account', field: 'accountId'},
+      {name: 'amount', type: 'Float'},
     ],
   };
 
   test('is refused without touching the store', async () => {
-    const fake = resolvingFake();
+    const fake = fakeStore();
     const outcome = await run(
         fake, {model: model({actions: [unbound]}), handler: undefined});
     if (outcome.status !== 'error') throw new Error('expected an error');
@@ -562,7 +686,7 @@ describe('an action with no executor under this binding', () => {
   test('points at the profile rather than at the action', async () => {
     // The action itself is fine. Saying "declare a sql executor" would send
     // the author to change a logical declaration that was never the problem.
-    const fake = resolvingFake();
+    const fake = fakeStore();
     const outcome = await run(
         fake, {model: model({actions: [unbound]}), handler: undefined});
     if (outcome.status !== 'error') throw new Error('expected an error');
@@ -573,7 +697,7 @@ describe('an action with no executor under this binding', () => {
   test('is refused even when a handler is supplied', async () => {
     // A handler substitutes for a remote executor's write. It does not
     // substitute for the binding deciding this action runs here at all.
-    const fake = resolvingFake();
+    const fake = fakeStore();
     const outcome = await run(fake, {model: model({actions: [unbound]})});
     if (outcome.status !== 'error') throw new Error('expected an error');
     expect(outcome.message).toContain('no executor under this binding');
@@ -600,8 +724,8 @@ const credit: Action = {
     },
   },
   parameters: [
-    {name: 'account', type: 'Account', isEntityRef: true},
-    {name: 'amount', type: 'Float', isEntityRef: false},
+    {name: 'account', type: 'String', concept: 'Account', field: 'accountId'},
+    {name: 'amount', type: 'Float'},
   ],
   affects: [
     {concept: 'Entry', operation: 'create', fields: ['amount']},
@@ -630,8 +754,7 @@ function creditModel(overrides: Partial<SemanticModel> = {}): SemanticModel {
   };
 }
 
-function runCredit(
-    fake: FakeSpanner, over: Partial<ActArgs> = {}) {
+function runCredit(fake: FakeSpanner, over: Partial<ActArgs> = {}) {
   return act({
     model: creditModel(),
     actionName: 'Credit',
@@ -643,32 +766,35 @@ function runCredit(
 
 
 describe('an action whose write is declared in the model', () => {
-  test('runs the executor statements in order, with no handler involved',
-       async () => {
-         const fake = resolvingFake();
-         const outcome = await runCredit(fake);
-         if (outcome.status !== 'committed') throw new Error(outcome.message);
-         expect(fake.sql.filter(s => s.startsWith('INSERT'))).toHaveLength(1);
-         expect(fake.sql.filter(s => s.startsWith('UPDATE'))).toHaveLength(1);
-         expect(fake.sql.indexOf('INSERT INTO Entry (entry_id, account_id, ' +
-                                 'amount) VALUES (GENERATE_UUID(), @account, ' +
-                                 '@amount)'))
-             .toBeLessThan(fake.sql.findIndex(s => s.startsWith('UPDATE')));
-       });
+  test(
+      'runs the executor statements in order, with no handler involved',
+      async () => {
+        const fake = fakeStore();
+        const outcome = await runCredit(fake);
+        if (outcome.status !== 'committed') throw new Error(outcome.message);
+        expect(fake.sql.filter(s => s.startsWith('INSERT'))).toHaveLength(1);
+        expect(fake.sql.filter(s => s.startsWith('UPDATE'))).toHaveLength(1);
+        expect(fake.sql.indexOf(
+                   'INSERT INTO Entry (entry_id, account_id, ' +
+                   'amount) VALUES (GENERATE_UUID(), @account, ' +
+                   '@amount)'))
+            .toBeLessThan(fake.sql.findIndex(s => s.startsWith('UPDATE')));
+      });
 
-  test('binds every caller value as a parameter, interpolating nothing',
-       async () => {
-         const fake = resolvingFake();
-         await runCredit(fake);
-         const insert = fake.statements.find(s => s.sql.startsWith('INSERT'))!;
-         expect(insert.sql).not.toContain('100');
-         expect(insert.params?.amount).toBe(100);
-         expect(insert.paramTypes?.amount).toEqual({code: 'FLOAT64'});
-       });
+  test(
+      'binds every caller value as a parameter, interpolating nothing',
+      async () => {
+        const fake = fakeStore();
+        await runCredit(fake);
+        const insert = fake.statements.find(s => s.sql.startsWith('INSERT'))!;
+        expect(insert.sql).not.toContain('100');
+        expect(insert.params?.amount).toBe(100);
+        expect(insert.paramTypes?.amount).toEqual({code: 'FLOAT64'});
+      });
 
   test('binds only the parameters a given statement mentions', async () => {
     // The UPDATE names both; a statement naming one would carry one.
-    const fake = resolvingFake();
+    const fake = fakeStore();
     await runCredit(fake);
     const update = fake.statements.find(s => s.sql.startsWith('UPDATE'))!;
     expect(Object.keys(update.params ?? {}).sort()).toEqual([
@@ -677,16 +803,17 @@ describe('an action whose write is declared in the model', () => {
     ]);
   });
 
-  test('resolves an entity-typed argument to its key before binding it',
-       async () => {
-         const fake = resolvingFake();
-         await runCredit(fake);
-         const update = fake.statements.find(s => s.sql.startsWith('UPDATE'))!;
-         expect(update.params?.account).toBe('1');
-       });
+  test(
+      'binds a projected argument exactly as the caller passed it',
+      async () => {
+        const fake = fakeStore();
+        await runCredit(fake);
+        const update = fake.statements.find(s => s.sql.startsWith('UPDATE'))!;
+        expect(update.params?.account).toBe('A1');
+      });
 
   test('commits once every statement has run', async () => {
-    const fake = resolvingFake();
+    const fake = fakeStore();
     await runCredit(fake);
     expect(fake.committed).toBe(true);
     expect(fake.rolledBack).toBe(false);
@@ -706,13 +833,12 @@ describe('a guarded action is refused, not run unchecked', () => {
     description: 'An account cannot go negative.',
   };
 
-  const runWith = (over: Partial<SemanticModel>, fake = resolvingFake()) =>
-      act({
-        model: creditModel(over),
-        actionName: 'Credit',
-        args: {account: 'A1', amount: 100},
-        client: fake.client,
-      });
+  const runWith = (over: Partial<SemanticModel>, fake = fakeStore()) => act({
+    model: creditModel(over),
+    actionName: 'Credit',
+    args: {account: 'A1', amount: 100},
+    client: fake.client,
+  });
 
   test('an action that names a guard is refused', async () => {
     const outcome = await runWith({
@@ -727,7 +853,7 @@ describe('a guarded action is refused, not run unchecked', () => {
   test('a refused action never opens a transaction', async () => {
     // The point of deciding before the store is touched: there is nothing to
     // roll back, and no session to leak.
-    const fake = resolvingFake();
+    const fake = fakeStore();
     await runWith(
         {
           actions: [{...credit, guards: ['NonNegativeBalance']}],
@@ -835,18 +961,17 @@ describe('a guard settled by judgment', () => {
   });
 
   const runWith =
-      (constraints: Constraint[], judge?: Judge, fake = resolvingFake()) =>
-          act({
-            model: guarding(constraints),
-            actionName: 'Credit',
-            args: {account: 'A1', amount: 100},
-            client: fake.client,
-            judge,
-          });
+      (constraints: Constraint[], judge?: Judge, fake = fakeStore()) => act({
+        model: guarding(constraints),
+        actionName: 'Credit',
+        args: {account: 'A1', amount: 100},
+        client: fake.client,
+        judge,
+      });
 
   test('a verdict that holds lets the write through', async () => {
     const judge = holds();
-    const fake = resolvingFake();
+    const fake = fakeStore();
     const outcome = await runWith([justified], judge, fake);
     if (outcome.status !== 'committed') throw new Error(outcome.message);
     // Asked, rather than assumed to hold. A judge that was never called and a
@@ -881,18 +1006,18 @@ describe('a guard settled by judgment', () => {
 
   test(
       'a verdict that does not hold refuses before anything opens',
-       async () => {
-         // Why a judgment settles here at all: a refused call costs the store
-         // no session, no transaction, and no write locks held across a call
-         // that takes seconds.
-         const fake = resolvingFake();
-         const outcome = await runWith([justified], doesNot(), fake);
-         if (outcome.status !== 'error') throw new Error('expected an error');
-         expect(fake.sessionsOpened).toBe(0);
-         expect(fake.statements).toHaveLength(0);
-         expect(fake.committed).toBe(false);
-         expect(fake.rolledBack).toBe(false);
-       });
+      async () => {
+        // Why a judgment settles here at all: a refused call costs the store
+        // no session, no transaction, and no write locks held across a call
+        // that takes seconds.
+        const fake = fakeStore();
+        const outcome = await runWith([justified], doesNot(), fake);
+        if (outcome.status !== 'error') throw new Error('expected an error');
+        expect(fake.sessionsOpened).toBe(0);
+        expect(fake.statements).toHaveLength(0);
+        expect(fake.committed).toBe(false);
+        expect(fake.rolledBack).toBe(false);
+      });
 
   test(
       'the refusal carries the author words and the judge reason', async () => {
@@ -920,92 +1045,92 @@ describe('a guard settled by judgment', () => {
 
   test(
       'an advisory verdict that does not hold still commits, and is reported',
-       async () => {
-         const fake = resolvingFake();
-         const outcome = await runWith([advisory], doesNot(), fake);
-         if (outcome.status !== 'committed') throw new Error(outcome.message);
-         expect(fake.committed).toBe(true);
-         // A caller that never sees this has been told the write was clean
-         // when the model said it was not.
-         expect(outcome.warnings).toHaveLength(1);
-         expect(outcome.warnings?.[0]).toContain('CreditIsJustified');
-         expect(outcome.warnings?.[0])
-             .toContain('The memo names no service failure.');
-       });
+      async () => {
+        const fake = fakeStore();
+        const outcome = await runWith([advisory], doesNot(), fake);
+        if (outcome.status !== 'committed') throw new Error(outcome.message);
+        expect(fake.committed).toBe(true);
+        // A caller that never sees this has been told the write was clean
+        // when the model said it was not.
+        expect(outcome.warnings).toHaveLength(1);
+        expect(outcome.warnings?.[0]).toContain('CreditIsJustified');
+        expect(outcome.warnings?.[0])
+            .toContain('The memo names no service failure.');
+      });
 
   test(
       'a judge that cannot be reached stops a rule that stops things',
-       async () => {
-         // Nothing here knows whether the rule holds, and a rule whose word is
-         // `reject` routes that the way it routes a breach.
-         const fake = resolvingFake();
-         const outcome = await runWith([justified], unreachable(), fake);
-         if (outcome.status !== 'error') throw new Error('expected an error');
-         expect(outcome.message).toContain('Vertex AI returned 503');
-         expect(fake.sessionsOpened).toBe(0);
-         expect(fake.committed).toBe(false);
-       });
+      async () => {
+        // Nothing here knows whether the rule holds, and a rule whose word is
+        // `reject` routes that the way it routes a breach.
+        const fake = fakeStore();
+        const outcome = await runWith([justified], unreachable(), fake);
+        if (outcome.status !== 'error') throw new Error('expected an error');
+        expect(outcome.message).toContain('Vertex AI returned 503');
+        expect(fake.sessionsOpened).toBe(0);
+        expect(fake.committed).toBe(false);
+      });
 
   test(
       'a judge that cannot be reached does not stop an advisory rule',
-       async () => {
-         const fake = resolvingFake();
-         const outcome = await runWith([advisory], unreachable(), fake);
-         if (outcome.status !== 'committed') throw new Error(outcome.message);
-         expect(fake.committed).toBe(true);
-         // Reported rather than dropped: the model asked for a check it did
-         // not get, which is the part a caller can act on.
-         expect(outcome.warnings?.[0]).toContain('was not checked');
-         expect(outcome.warnings?.[0]).toContain('Vertex AI returned 503');
-       });
+      async () => {
+        const fake = fakeStore();
+        const outcome = await runWith([advisory], unreachable(), fake);
+        if (outcome.status !== 'committed') throw new Error(outcome.message);
+        expect(fake.committed).toBe(true);
+        // Reported rather than dropped: the model asked for a check it did
+        // not get, which is the part a caller can act on.
+        expect(outcome.warnings?.[0]).toContain('was not checked');
+        expect(outcome.warnings?.[0]).toContain('Vertex AI returned 503');
+      });
 
   test(
       'with no judge the action is refused, and the refusal says why',
-       async () => {
-         const fake = resolvingFake();
-         const outcome = await runWith([justified], undefined, fake);
-         if (outcome.status !== 'error') throw new Error('expected an error');
-         expect(outcome.message).toContain('no judge to ask');
-         expect(fake.sessionsOpened).toBe(0);
-       });
+      async () => {
+        const fake = fakeStore();
+        const outcome = await runWith([justified], undefined, fake);
+        if (outcome.status !== 'error') throw new Error('expected an error');
+        expect(outcome.message).toContain('no judge to ask');
+        expect(fake.sessionsOpened).toBe(0);
+      });
 
   test(
       'a call missing an argument is answered before a judge is asked',
-       async () => {
-         // A judge handed an incomplete call answers about the rule, so the
-         // caller would be told the rule was broken rather than that an
-         // argument was never supplied -- and a model call would be spent
-         // saying it.
-         const judge = holds();
-         const fake = resolvingFake();
-         const outcome = await act({
-           model: guarding([justified]),
-           actionName: 'Credit',
-           args: {account: 'A1'},
-           client: fake.client,
-           judge,
-         });
-         if (outcome.status !== 'error') throw new Error('expected an error');
-         expect(judge.asked).toHaveLength(0);
-         expect(fake.sessionsOpened).toBe(0);
-         expect(outcome.message).toContain('amount');
-         expect(outcome.message).toContain('was not given a value');
-       });
+      async () => {
+        // A judge handed an incomplete call answers about the rule, so the
+        // caller would be told the rule was broken rather than that an
+        // argument was never supplied -- and a model call would be spent
+        // saying it.
+        const judge = holds();
+        const fake = fakeStore();
+        const outcome = await act({
+          model: guarding([justified]),
+          actionName: 'Credit',
+          args: {account: 'A1'},
+          client: fake.client,
+          judge,
+        });
+        if (outcome.status !== 'error') throw new Error('expected an error');
+        expect(judge.asked).toHaveLength(0);
+        expect(fake.sessionsOpened).toBe(0);
+        expect(outcome.message).toContain('amount');
+        expect(outcome.message).toContain('was not given a value');
+      });
 
   test('a guard stating no rule at all is reported as unchecked', async () => {
     // A constraint may reach the runtime with no body at all through the
     // library entry point, which does not validate the model. An advisory one
     // never stops the call, so a caller shown no line for it reads the commit
-         // as having met every rule the model states.
-         const bodyless: Constraint = {name: 'NoRule', onViolation: 'warn'};
-         const fake = resolvingFake();
-         const outcome = await runWith([bodyless], holds(), fake);
-         if (outcome.status !== 'committed') throw new Error(outcome.message);
-         expect(fake.committed).toBe(true);
-         expect(outcome.warnings?.[0]).toContain('NoRule');
+    // as having met every rule the model states.
+    const bodyless: Constraint = {name: 'NoRule', onViolation: 'warn'};
+    const fake = fakeStore();
+    const outcome = await runWith([bodyless], holds(), fake);
+    if (outcome.status !== 'committed') throw new Error(outcome.message);
+    expect(fake.committed).toBe(true);
+    expect(outcome.warnings?.[0]).toContain('NoRule');
     expect(outcome.warnings?.[0])
         .toContain('states no words to put to a judge');
-       });
+  });
 
   test(
       'a judgment with no words refuses rather than asking about nothing',
@@ -1061,18 +1186,18 @@ describe('a guard settled by judgment', () => {
 
   test(
       'an advisory guard nobody could ask about is reported, not dropped',
-       async () => {
-         // A warn rule does not stop the call, so the call runs with no judge.
-         // Committing in silence would tell the caller every rule passed, when
-         // one of them was never put to anybody.
-         const fake = resolvingFake();
-         const outcome = await runWith([advisory], undefined, fake);
-         if (outcome.status !== 'committed') throw new Error(outcome.message);
-         expect(fake.committed).toBe(true);
-         expect(outcome.warnings?.[0]).toContain('CreditIsJustified');
-         expect(outcome.warnings?.[0]).toContain('was not checked');
-         expect(outcome.warnings?.[0]).toContain('no judge');
-       });
+      async () => {
+        // A warn rule does not stop the call, so the call runs with no judge.
+        // Committing in silence would tell the caller every rule passed, when
+        // one of them was never put to anybody.
+        const fake = fakeStore();
+        const outcome = await runWith([advisory], undefined, fake);
+        if (outcome.status !== 'committed') throw new Error(outcome.message);
+        expect(fake.committed).toBe(true);
+        expect(outcome.warnings?.[0]).toContain('CreditIsJustified');
+        expect(outcome.warnings?.[0]).toContain('was not checked');
+        expect(outcome.warnings?.[0]).toContain('no judge');
+      });
 
   test(
       'a guard stating no rule is refused whatever judge is given',
@@ -1105,85 +1230,85 @@ describe('the pre-flight over an incomplete call', () => {
   test('leaves a scalar alone when a handler supplies the write', async () => {
     // A handler is handed the arguments whole and decides for itself which of
     // them it needs, so binding every declared scalar on its behalf would
-    // refuse a call it can perform. Only the entity references are the
-    // runtime's business here, because the runtime resolves those itself.
-    const fake = resolvingFake();
+    // refuse a call it can perform.
+    const fake = fakeStore();
     const outcome = await run(fake, {args: {source: 'A1', target: 'A2'}});
     if (outcome.status !== 'committed') throw new Error(outcome.message);
     expect(fake.committed).toBe(true);
   });
 
-  test('still refuses a missing entity reference under a handler',
-       async () => {
-         // The runtime resolves references itself, whoever performs the write.
-         const fake = resolvingFake();
-         const outcome = await run(fake, {args: {source: 'A1', amount: 100}});
-         if (outcome.status !== 'error') throw new Error('expected an error');
-         expect(outcome.message).toContain('target');
-         expect(fake.sessionsOpened).toBe(0);
-       });
+  test(
+      'refuses a missing argument the model\'s own statements bind',
+      async () => {
+        // No handler here, so the write is the model's and every `@name` in
+        // it has to have a value.
+        const fake = fakeStore();
+        const outcome = await runCredit(fake, {args: {amount: 100}});
+        if (outcome.status !== 'error') throw new Error('expected an error');
+        expect(outcome.message).toContain('\'account\'');
+        expect(fake.sessionsOpened).toBe(0);
+      });
 });
 
 
-describe('an action whose write comes from a handler', () => {
-  test('is not held to a binding pass its plan never uses', async () => {
-    // The bindings exist to fill the model's OWN statements. A handler is
-    // handed the resolved refs whole, so a two-part key it can write perfectly
-    // well must not be refused on the way in.
-    //
-    // The entity carries an identifying column because that is the only way a
-    // composite-keyed row can be named by one value at all -- see the
-    // resolution tests below.
-    const fake = new FakeSpanner([{match: 'FROM Account', rows: [['eu', '1']]}]);
-    const outcome = await run(fake, {
-      model: model({
-        entities: [{
-          name: 'Account',
-          dataSource: 'demo.payments.Account',
-          keys: ['region', 'accountId'],
-          fields: [
-            {name: 'region', expression: 'region', type: 'String'},
-            {name: 'accountId', expression: 'account_id', type: 'String'},
-            {name: 'name', expression: 'name', type: 'String'},
-          ],
-        }],
-      }),
-    });
-    if (outcome.status !== 'committed') throw new Error(outcome.message);
-    expect(outcome.refs.source.keys).toEqual(['eu', '1']);
-  });
-
-  test('a composite key is still refused when the MODEL supplies the write',
-       async () => {
-         // Here the key has to become one statement parameter, and one value
-         // cannot carry two columns.
-         const fake =
-             new FakeSpanner([{match: 'FROM Account', rows: [['eu', '1']]}]);
-         const outcome = await runCredit(fake, {
-           model: creditModel({
-             entities: [
-               {
-                 name: 'Account',
-                 dataSource: 'demo.payments.Account',
-                 keys: ['region', 'accountId'],
-                 fields: [
-                   {name: 'region', expression: 'region', type: 'String'},
-                   {name: 'accountId', expression: 'account_id', type: 'String'},
-                   {name: 'name', expression: 'name', type: 'String'},
-                 ],
-               },
-               {
-                 name: 'Entry',
-                 dataSource: 'demo.payments.Entry',
-                 keys: ['entryId'],
-                 fields: [{name: 'entryId', expression: 'entry_id'}],
-               },
-             ],
-           }),
-         });
-         if (outcome.status !== 'error') throw new Error('expected an error');
-         expect(outcome.message).toContain('a composite key cannot be passed');
-       });
+describe('an entity whose key has more than one column', () => {
+  test(
+      'is as callable as a single-column one, one parameter per column',
+      async () => {
+        // One value cannot name a two-column key, which is what the resolve
+        // step used to founder on. A projection settles it by being per
+        // field: three key columns are three parameters, each typed from the
+        // field it names.
+        const fake = fakeStore();
+        const outcome = await act({
+          model: model({
+            entities: [{
+              name: 'Account',
+              dataSource: 'demo.payments.Account',
+              keys: ['region', 'accountId'],
+              fields: [
+                {name: 'region', expression: 'region', type: 'String'},
+                {name: 'accountId', expression: 'account_id', type: 'Integer'},
+              ],
+            }],
+            actions: [{
+              ...transfer,
+              executor: {
+                kind: 'sql',
+                sql: {
+                  statements: [
+                    'UPDATE Account SET balance = balance - @amount ' +
+                        'WHERE region = @region AND account_id = @accountId',
+                  ],
+                },
+              },
+              parameters: [
+                {
+                  name: 'region',
+                  type: 'String',
+                  concept: 'Account',
+                  field: 'region'
+                },
+                {
+                  name: 'accountId',
+                  type: 'Integer',
+                  concept: 'Account',
+                  field: 'accountId'
+                },
+                {name: 'amount', type: 'Float'},
+              ],
+            }],
+          }),
+          actionName: 'Transfer',
+          args: {region: 'eu', accountId: 1, amount: 100},
+          client: fake.client,
+        });
+        if (outcome.status !== 'committed') throw new Error(outcome.message);
+        const write = fake.statements.find(s => s.sql.startsWith('UPDATE'))!;
+        expect(write.params)
+            .toEqual({region: 'eu', accountId: '1', amount: 100});
+        expect(write.paramTypes!['accountId']).toEqual({code: 'INT64'});
+      });
 });
 
 
@@ -1214,7 +1339,7 @@ describe('the key of a row the action creates', () => {
   }
 
   test('is whatever SQL the statement writes, and binds nothing', async () => {
-    const fake = resolvingFake();
+    const fake = fakeStore();
     const outcome = await runCredit(fake, {
       model: creditWith([
         'INSERT INTO Entry (entry_id, amount) ' +
@@ -1230,7 +1355,7 @@ describe('the key of a row the action creates', () => {
   test('can be an integer the store computes', async () => {
     // Entry declares an Integer key here, and the INSERT reads the next one.
     // A UUID would not fit that column, and nothing offers one.
-    const fake = resolvingFake();
+    const fake = fakeStore();
     const outcome = await runCredit(fake, {
       model: creditWith(
           [
@@ -1245,13 +1370,13 @@ describe('the key of a row the action creates', () => {
   test('can come from the caller, bound like any other value', async () => {
     // Nothing reserves a parameter name for a key, so an action that wants
     // the caller to choose one declares a parameter and binds it.
-    const fake = resolvingFake();
+    const fake = fakeStore();
     const outcome = await runCredit(fake, {
       model: creditWith(
           ['INSERT INTO Entry (entry_id, amount) VALUES (@entry, @amount)'],
           [
             ...credit.parameters,
-            {name: 'entry', type: 'String', isEntityRef: false},
+            {name: 'entry', type: 'String'},
           ]),
       args: {account: 'A1', amount: 100, entry: 'E7'},
     });
@@ -1271,7 +1396,7 @@ describe('a commit whose outcome the runtime cannot know', () => {
     // from the client, and the case where the write is likeliest to have
     // landed anyway. Reporting a rollback would invite the retry that applies
     // it twice.
-    const fake = resolvingFake();
+    const fake = fakeStore();
     fake.commitThrows = true;
     const outcome = await runCredit(fake);
     if (outcome.status !== 'error') throw new Error('expected an error');
@@ -1287,7 +1412,7 @@ describe('a failure before any transaction exists', () => {
   test('is not reported as a rollback', async () => {
     // Nothing was opened, so nothing was rolled back. Saying otherwise tells
     // the caller a transaction was undone that never began.
-    const fake = resolvingFake();
+    const fake = fakeStore();
     fake.sessionFails = true;
     const outcome = await runCredit(fake);
     if (outcome.status !== 'error') throw new Error('expected an error');
@@ -1315,7 +1440,7 @@ describe('a constraint that only warns', () => {
       }),
       actionName: 'Credit',
       args: {account: 'A1', amount: 100},
-      client: resolvingFake().client,
+      client: fakeStore().client,
     });
     if (outcome.status !== 'committed') throw new Error(outcome.message);
   });
@@ -1334,7 +1459,7 @@ describe('a constraint that only warns', () => {
           }),
           actionName: 'Credit',
           args: {account: 'A1', amount: 100},
-          client: resolvingFake().client,
+          client: fakeStore().client,
         });
         if (outcome.status !== 'error') throw new Error('expected an error');
         expect(outcome.message).toContain('\'NoSuchRule\'');
@@ -1349,7 +1474,7 @@ describe('a commit the store refuses outright', () => {
     // indeterminate -- "the write may have landed, read the data before
     // retrying" -- would turn the commonest routine failure there is into an
     // investigation, every time two writers meet.
-    const fake = resolvingFake();
+    const fake = fakeStore();
     fake.commitRefused = 409;
     const outcome = await runCredit(fake);
     if (outcome.status !== 'error') throw new Error('expected an error');
@@ -1359,18 +1484,20 @@ describe('a commit the store refuses outright', () => {
     expect(fake.committed).toBe(false);
   });
 
-  test('but a 5xx is still unknown, because that one may have landed',
-       async () => {
-         // The distinction is the whole point: a definite refusal is definite,
-         // and everything else is not.
-         const fake = resolvingFake();
-         fake.commitRefused = 503;
-         const outcome = await runCredit(fake);
-         if (outcome.status !== 'error') throw new Error('expected an error');
-         expect(outcome.indeterminate).toBe(true);
-         expect(outcome.message).toContain('Whether the write landed is unknown');
-         expect(fake.rolledBack).toBe(false);
-       });
+  test(
+      'but a 5xx is still unknown, because that one may have landed',
+      async () => {
+        // The distinction is the whole point: a definite refusal is definite,
+        // and everything else is not.
+        const fake = fakeStore();
+        fake.commitRefused = 503;
+        const outcome = await runCredit(fake);
+        if (outcome.status !== 'error') throw new Error('expected an error');
+        expect(outcome.indeterminate).toBe(true);
+        expect(outcome.message)
+            .toContain('Whether the write landed is unknown');
+        expect(fake.rolledBack).toBe(false);
+      });
 });
 
 
@@ -1391,14 +1518,14 @@ describe('a date or a timestamp argument', () => {
       },
     },
     parameters: [
-      {name: 'account', type: 'Account', isEntityRef: true},
-      {name: 'day', type: 'Date', isEntityRef: false},
-      {name: 'at', type: 'DateTimeTz', isEntityRef: false},
+      {name: 'account', type: 'String', concept: 'Account', field: 'accountId'},
+      {name: 'day', type: 'Date'},
+      {name: 'at', type: 'DateTimeTz'},
     ],
   };
 
   function scheduling(over: Record<string, unknown> = {}) {
-    const fake = resolvingFake();
+    const fake = fakeStore();
     return {
       fake,
       outcome: act({
@@ -1463,40 +1590,11 @@ describe('a date or a timestamp argument', () => {
 });
 
 
-describe('an entity whose key has more than one column', () => {
-  test('is not resolved by matching one part of the key', async () => {
-    // `region = @ref OR account_id = @ref` accepts a row matching one PART of
-    // the key as though it were the row meant, and can match several rows that
-    // agree on that part and differ in the rest. One value cannot name a
-    // two-column key, and guessing which column it names is not resolution.
-    const fake =
-        new FakeSpanner([{match: 'FROM Account', rows: [['eu', '1']]}]);
-    const outcome = await run(fake, {
-      model: model({
-        entities: [{
-          name: 'Account',
-          dataSource: 'demo.payments.Account',
-          keys: ['region', 'accountId'],
-          fields: [
-            {name: 'region', expression: 'region', type: 'String'},
-            {name: 'accountId', expression: 'account_id', type: 'String'},
-          ],
-        }],
-      }),
-    });
-    if (outcome.status !== 'error') throw new Error('expected an error');
-    expect(outcome.message).toContain('its key has 2 columns');
-    // Nothing was asked of the store: there was no question to ask.
-    expect(fake.statements).toEqual([]);
-  });
-});
-
-
 describe('an argument given as empty text', () => {
   test('is a value for a String parameter', async () => {
     // `--arg memo=` says the memo is blank, which is a different statement
     // from not passing one.
-    const fake = resolvingFake();
+    const fake = fakeStore();
     const outcome = await act({
       model: creditModel({
         actions: [{
@@ -1510,8 +1608,13 @@ describe('an argument given as empty text', () => {
             },
           },
           parameters: [
-            {name: 'account', type: 'Account', isEntityRef: true},
-            {name: 'memo', type: 'String', isEntityRef: false},
+            {
+              name: 'account',
+              type: 'String',
+              concept: 'Account',
+              field: 'accountId'
+            },
+            {name: 'memo', type: 'String'},
           ],
           affects: [{
             concept: 'Account',
@@ -1527,81 +1630,56 @@ describe('an argument given as empty text', () => {
     if (outcome.status !== 'committed') throw new Error(outcome.message);
   });
 
-  test('keeps the caller\'s spacing, because a String is not parsed',
-       async () => {
-         // The trim on the way in exists to read a number or a date off a
-         // command line. A String parameter is not being parsed -- it IS the
-         // value -- so trimming it would store text the caller did not write.
-         const fake = resolvingFake();
-         const outcome = await act({
-           model: creditModel({
-             actions: [{
-               ...credit,
-               executor: {
-                 kind: 'sql',
-                 sql: {
-                   statements: [
-                     'UPDATE Account SET memo = @memo WHERE account_id = @account',
-                   ],
-                 },
-               },
-               parameters: [
-                 {name: 'account', type: 'Account', isEntityRef: true},
-                 {name: 'memo', type: 'String', isEntityRef: false},
-               ],
-               affects: [{
-                 concept: 'Account',
-                 operation: 'modify',
-                 fields: ['balance'],
-               }],
-             }],
-           }),
-           actionName: 'Credit',
-           args: {account: 'A1', memo: '  see ticket 42  '},
-           client: fake.client,
-         });
-         if (outcome.status !== 'committed') throw new Error(outcome.message);
-         const write = fake.statements.find(s => s.sql.includes('SET memo'));
-         expect(write?.params?.['memo']).toBe('  see ticket 42  ');
-       });
+  test(
+      'keeps the caller\'s spacing, because a String is not parsed',
+      async () => {
+        // The trim on the way in exists to read a number or a date off a
+        // command line. A String parameter is not being parsed -- it IS the
+        // value -- so trimming it would store text the caller did not write.
+        const fake = fakeStore();
+        const outcome = await act({
+          model: creditModel({
+            actions: [{
+              ...credit,
+              executor: {
+                kind: 'sql',
+                sql: {
+                  statements: [
+                    'UPDATE Account SET memo = @memo WHERE account_id = @account',
+                  ],
+                },
+              },
+              parameters: [
+                {
+                  name: 'account',
+                  type: 'String',
+                  concept: 'Account',
+                  field: 'accountId'
+                },
+                {name: 'memo', type: 'String'},
+              ],
+              affects: [{
+                concept: 'Account',
+                operation: 'modify',
+                fields: ['balance'],
+              }],
+            }],
+          }),
+          actionName: 'Credit',
+          args: {account: 'A1', memo: '  see ticket 42  '},
+          client: fake.client,
+        });
+        if (outcome.status !== 'committed') throw new Error(outcome.message);
+        const write = fake.statements.find(s => s.sql.includes('SET memo'));
+        expect(write?.params?.['memo']).toBe('  see ticket 42  ');
+      });
 
   test('is still not a value for a numeric one', async () => {
     // There is no Float that empty text could be.
     const outcome =
-        await runCredit(resolvingFake(), {args: {account: 'A1', amount: ''}});
+        await runCredit(fakeStore(), {args: {account: 'A1', amount: ''}});
     if (outcome.status !== 'error') throw new Error('expected an error');
     expect(outcome.message).toContain('was not given a value');
-  });
-});
-
-
-// The write side reads a binding the same way the read side does. A key field
-// carrying only its imported vendor expression still names a real column, so
-// resolving a reference against it is a lookup rather than a refusal.
-describe('an entity key that awaits transpilation', () => {
-  test('resolves against the imported column', async () => {
-    const fake = new FakeSpanner([{match: 'FROM Account', rows: [['1']]}]);
-    const outcome = await run(fake, {
-      model: model({
-        entities: [{
-          name: 'Account',
-          dataSource: 'demo.payments.Account',
-          keys: ['accountId'],
-          fields: [
-            {
-              name: 'accountId',
-              importedExpression: 'account_id',
-              importedDialect: 'SNOWFLAKE',
-              type: 'String',
-            },
-          ],
-        }],
-      }),
-    });
-    expect(fake.statements[0].sql).toContain('account_id = @ref0');
-    if (outcome.status === 'error') {
-      throw new Error(`expected a resolved reference: ${outcome.message}`);
-    }
   });
 });
 
@@ -1625,8 +1703,8 @@ describe('optional and defaulted parameters', () => {
             },
           },
           parameters: [
-            {name: 'name', type: 'String', isEntityRef: false},
-            {name: 'status', type: 'String', default: 'open', isEntityRef: false},
+            {name: 'name', type: 'String'},
+            {name: 'status', type: 'String', default: 'open'},
           ],
         }],
       }),
@@ -1653,8 +1731,8 @@ describe('optional and defaulted parameters', () => {
             },
           },
           parameters: [
-            {name: 'name', type: 'String', isEntityRef: false},
-            {name: 'memo', type: 'String', required: false, isEntityRef: false},
+            {name: 'name', type: 'String'},
+            {name: 'memo', type: 'String', required: false},
           ],
         }],
       }),
@@ -1666,36 +1744,31 @@ describe('optional and defaulted parameters', () => {
   test(
       'explicit null clears a defaulted field rather than restoring the default',
       async () => {
-    const fake = new FakeSpanner();
-    const outcome = await run(fake, {
-      actionName: 'CreateAccount',
-      args: {name: 'Alice', status: null},
-      handler: undefined,
-      model: model({
-        actions: [{
-          name: 'CreateAccount',
-          executor: {
-            kind: 'sql',
-            sql: {
-              statements: [
-                'INSERT INTO Account (account_id, name, status) VALUES (GENERATE_UUID(), @name, @status)',
-              ],
-            },
-          },
-          parameters: [
-            {name: 'name', type: 'String', isEntityRef: false},
-                {
-                  name: 'status',
-                  type: 'String',
-                  default: 'open',
-                  isEntityRef: false
+        const fake = new FakeSpanner();
+        const outcome = await run(fake, {
+          actionName: 'CreateAccount',
+          args: {name: 'Alice', status: null},
+          handler: undefined,
+          model: model({
+            actions: [{
+              name: 'CreateAccount',
+              executor: {
+                kind: 'sql',
+                sql: {
+                  statements: [
+                    'INSERT INTO Account (account_id, name, status) VALUES (GENERATE_UUID(), @name, @status)',
+                  ],
                 },
-          ],
-        }],
-      }),
-    });
-    expect(outcome.status).toBe('committed');
+              },
+              parameters: [
+                {name: 'name', type: 'String'},
+                {name: 'status', type: 'String', default: 'open'},
+              ],
+            }],
+          }),
+        });
+        expect(outcome.status).toBe('committed');
         expect(fake.statements[0].params)
             .toEqual({name: 'Alice', status: null});
-  });
+      });
 });

@@ -172,7 +172,7 @@ describe('validatePushRequirements resolves every guard', () => {
       actions: [{
         name: 'PlaceOrder',
         executor: {kind: 'mcp', mcp: {server: 's', tool: 't'}},
-        parameters: [{name: 'quantity', type: 'Integer', isEntityRef: false}],
+        parameters: [{name: 'quantity', type: 'Integer'}],
         guards,
       }],
       constraints: constraintNames.map(name => ({

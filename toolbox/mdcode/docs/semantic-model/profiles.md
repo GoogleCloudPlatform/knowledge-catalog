@@ -239,7 +239,7 @@ semantic_model:
       - name: Order
         primary_key: [key]
         fields:
-          - { name: key }
+          - { name: key, datatype: Integer }
           - { name: customerKey }
           - { name: orderDate, dimension: {is_time: true} }
     relationships:
@@ -257,7 +257,7 @@ semantic_model:
       - name: CancelOrder
         description: Cancel an order that has not shipped
         parameters:
-          - { name: order, type: Order }
+          - { name: order, concept: Order, field: key }
         affects:
           - { concept: Order, operation: modify }
         # The default: ask the service that owns orders to cancel one. Any

@@ -180,10 +180,24 @@ expressions are still used when generating graph SQL.
 becomes a `semantic-action` entry under the model entry, carrying its executor,
 typed parameters, `guards`, and `affects` in a `semantic-action` aspect. They
 round-trip losslessly through `pull` (name, description, executor, typed
-parameters, `guards`, `affects`, and `instructions`). A parameter's
-`isEntityRef` is re-derived against the entities the pull recovered rather than
-read back from the aspect, so it stays consistent with the model the pull hands
-you. A `sql` executor round-trips its `statements` with the rest: they are the
+parameters, `guards`, `affects`, and `instructions`). A parameter projected
+from a field round-trips as the projection it was authored as: the aspect
+stores `concept` and `field` alongside the resolved scalar `type`, and a pull
+writes the projection back out without the type, so re-loading resolves it from
+the same field and arrives at the same parameter. Two things about a projection
+do not survive the trip. Its `label` and `ai_context` are dropped — the aspect
+has nowhere to put them, so a pull recovers the parameter's `description` and
+not those two. And the wording a pull does recover comes back as the
+parameter's own: the loader resolves an inherited `description` into the
+parameter when the model loads, and nothing downstream can tell that apart from
+one the author typed, so a pulled document states it where the original left it
+to the field. Re-loading gives the same parameter, but the field and the
+parameter now each hold a copy, and changing the field no longer moves it.
+A projection whose field is not in the pulled document — pruning drops an
+entity no binding reaches — comes back as a declared parameter carrying the
+resolved `type` instead, since emitting a `concept`/`field` pair that resolves
+to nothing would write a document that will not load. A `sql` executor
+round-trips its `statements` with the rest: they are the
 write, not a note about it, so a catalog that dropped them would describe an
 action nobody could re-deploy. The entry type is custom, so `kcmd init` creates
 it; a model that declares no action never needs it.

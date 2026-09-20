@@ -86,8 +86,8 @@ function analyticalDoc(): any {
 
 const modelOf = (doc: any) => doc.semantic_model[0];
 const entityOf = (doc: any, name: string) =>
-    (modelOf(doc).entities ?? modelOf(doc).datasets).find(
-        (e: any) => e.name === name);
+    (modelOf(doc).entities ?? modelOf(doc).datasets)
+        .find((e: any) => e.name === name);
 const fieldOf = (doc: any, entity: string, field: string) =>
     entityOf(doc, entity).fields.find((f: any) => f.name === field);
 
@@ -116,11 +116,12 @@ describe('mergeProfile overlays physical bindings by name', () => {
     const profile = analyticalDoc();
     // Drop availableCredit entirely from the profile (silent omission).
     entityOf(profile, 'Customer').fields =
-        entityOf(profile, 'Customer').fields.filter(
-            (f: any) => f.name !== 'availableCredit');
+        entityOf(profile, 'Customer')
+            .fields.filter((f: any) => f.name !== 'availableCredit');
     const {doc, error} = mergeProfile(logicalDoc(), profile, 'analytical');
     expect(error).toBeUndefined();
-    expect(fieldOf(doc, 'Customer', 'availableCredit').expression).toBeUndefined();
+    expect(fieldOf(doc, 'Customer', 'availableCredit').expression)
+        .toBeUndefined();
   });
 
   test('selecting a profile clears an inline logical binding it omits', () => {
@@ -132,8 +133,8 @@ describe('mergeProfile overlays physical bindings by name', () => {
     fieldOf(logical, 'Customer', 'name').expression = 'inline_name';
     const profile = analyticalDoc();
     entityOf(profile, 'Customer').fields =
-        entityOf(profile, 'Customer').fields.filter(
-            (f: any) => f.name !== 'name');
+        entityOf(profile, 'Customer')
+            .fields.filter((f: any) => f.name !== 'name');
     const {doc, error} = mergeProfile(logical, profile, 'analytical');
     expect(error).toBeUndefined();
     expect(fieldOf(doc, 'Customer', 'name').expression).toBeUndefined();
@@ -254,8 +255,8 @@ describe('an executor is a binding a profile supplies', () => {
     // Unlike a field's column, an executor is inherited on silence. A column
     // inherited into a renamed schema binds to the wrong data quietly; an
     // executor names a whole mechanism, so a wrong one fails at the first call.
-    const {doc, error} =
-        mergeProfile(logicalWithAction(MCP_EXEC), analyticalDoc(), 'analytical');
+    const {doc, error} = mergeProfile(
+        logicalWithAction(MCP_EXEC), analyticalDoc(), 'analytical');
     expect(error).toBeUndefined();
     expect(actionOf(doc, 'IssueCredit').executor).toEqual(MCP_EXEC);
   });
@@ -273,14 +274,15 @@ describe('an executor is a binding a profile supplies', () => {
     expect(actionOf(doc, 'IssueCredit').name).toBe('IssueCredit');
   });
 
-  test('a profile naming an action the model does not declare is an error',
-       () => {
-         const {error} = mergeProfile(
-             logicalWithAction(),
-             profileWithAction({name: 'Nonesuch', executor: SQL_EXEC}),
-             'analytical');
-         expect(error).toMatch(/action 'Nonesuch' is not in the logical model/);
-       });
+  test(
+      'a profile naming an action the model does not declare is an error',
+      () => {
+        const {error} = mergeProfile(
+            logicalWithAction(),
+            profileWithAction({name: 'Nonesuch', executor: SQL_EXEC}),
+            'analytical');
+        expect(error).toMatch(/action 'Nonesuch' is not in the logical model/);
+      });
 
   test('a model with profiles may not declare a `sql` executor', () => {
     // A statement is written in one store's table and column names and its
@@ -295,28 +297,29 @@ describe('an executor is a binding a profile supplies', () => {
     expect(error).toMatch(/declares a 'sql' executor/);
   });
 
-  test('a model the profile does not name keeps its inline `sql` executor',
-       () => {
-         // The ban follows the same scope as the inline-binding strip: a model
-         // the profile never touches keeps its own columns, so its statements
-         // still match them.
-         const logical = logicalWithAction(MCP_EXEC);
-         const untouched = structuredClone(modelOf(logical));
-         untouched.name = 'ops';
-         untouched.actions = [{
-           name: 'CloseOrder',
-           parameters: [{name: 'order', type: 'Order'}],
-           executor: SQL_EXEC,
-         }];
-         logical.semantic_model.push(untouched);
+  test(
+      'a model the profile does not name keeps its inline `sql` executor',
+      () => {
+        // The ban follows the same scope as the inline-binding strip: a model
+        // the profile never touches keeps its own columns, so its statements
+        // still match them.
+        const logical = logicalWithAction(MCP_EXEC);
+        const untouched = structuredClone(modelOf(logical));
+        untouched.name = 'ops';
+        untouched.actions = [{
+          name: 'CloseOrder',
+          parameters: [{name: 'order', type: 'Order'}],
+          executor: SQL_EXEC,
+        }];
+        logical.semantic_model.push(untouched);
 
-         const {doc, error} = mergeProfile(
-             logical, profileWithAction({name: 'IssueCredit'}), 'analytical');
-         expect(error).toBeUndefined();
-         const ops = (doc as any).semantic_model.find(
-             (m: any) => m.name === 'ops');
-         expect(ops.actions[0].executor).toEqual(SQL_EXEC);
-       });
+        const {doc, error} = mergeProfile(
+            logical, profileWithAction({name: 'IssueCredit'}), 'analytical');
+        expect(error).toBeUndefined();
+        const ops =
+            (doc as any).semantic_model.find((m: any) => m.name === 'ops');
+        expect(ops.actions[0].executor).toEqual(SQL_EXEC);
+      });
 
   test('a profile setting a logical facet on an action is rejected', () => {
     // What gates the action and what it changes are the model's to state. A
@@ -383,8 +386,8 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
   test('a metric that reads an unbound field is dropped and reported', () => {
     const {model, report} = pruneUnavailable(irModel(), 'operational');
     expect(metricNames(model)).toEqual(['order_count']);
-    const dropped = report.droppedMetrics.find(
-        d => d.name === 'avg_lifetime_value');
+    const dropped =
+        report.droppedMetrics.find(d => d.name === 'avg_lifetime_value');
     expect(dropped?.reason).toMatch(/Customer\.lifetimeValue/);
   });
 
@@ -417,48 +420,59 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     expect(JSON.stringify(m)).toBe(before);
   });
 
-  test('a field carrying only an imported (untranspiled) expression is bound', () => {
-    // A vendor-dialect field's column lives on `importedExpression` until
-    // transpilation fills `expression`. It is bound -- it names a column -- so
-    // pruning must not mistake it for unbound and drop it (or its metric).
-    const m = irModel();
-    const ltv = m.entities.find(e => e.name === 'Customer')!.fields.find(
-        f => f.name === 'lifetimeValue')!;
-    delete ltv.expression;
-    ltv.importedExpression = 'c_ltv';
-    ltv.importedDialect = 'SNOWFLAKE';
-    const {model, report} = pruneUnavailable(m, 'operational');
-    expect(fieldNames(model, 'Customer')).toContain('lifetimeValue');
-    expect(report.unboundFields).not.toContain('Customer.lifetimeValue');
-    expect(metricNames(model)).toContain('avg_lifetime_value');
-  });
+  test(
+      'a field carrying only an imported (untranspiled) expression is bound',
+      () => {
+        // A vendor-dialect field's column lives on `importedExpression` until
+        // transpilation fills `expression`. It is bound -- it names a column --
+        // so pruning must not mistake it for unbound and drop it (or its
+        // metric).
+        const m = irModel();
+        const ltv = m.entities.find(e => e.name === 'Customer')!.fields.find(
+            f => f.name === 'lifetimeValue')!;
+        delete ltv.expression;
+        ltv.importedExpression = 'c_ltv';
+        ltv.importedDialect = 'SNOWFLAKE';
+        const {model, report} = pruneUnavailable(m, 'operational');
+        expect(fieldNames(model, 'Customer')).toContain('lifetimeValue');
+        expect(report.unboundFields).not.toContain('Customer.lifetimeValue');
+        expect(metricNames(model)).toContain('avg_lifetime_value');
+      });
 
-  test('an unbound KEY field drops the whole entity and everything on it', () => {
-    // A graph node must be keyed, so unbinding a key field makes the entire
-    // entity unavailable; the relationship into it and the metric over it fall
-    // with it, while the other entity survives.
-    const m = irModel();
-    const key = m.entities.find(e => e.name === 'Customer')!.fields.find(
-        f => f.name === 'key')!;
-    delete key.expression;
-    const {model, report} = pruneUnavailable(m, 'operational');
-    expect(model.entities.map(e => e.name)).toEqual(['Order']);
-    expect(report.droppedEntities.map(d => d.name)).toEqual(['Customer']);
-    expect(report.droppedEntities[0].reason).toMatch(/key field key is unbound/);
-    // The relationship into Customer and the metric over it are gone; a metric
-    // confined to the surviving entity stays.
-    expect(relNames(model)).toEqual([]);
-    expect(report.droppedRelationships[0].reason).toMatch(/Customer is unavailable/);
-    expect(metricNames(model)).toEqual(['order_count']);
-    expect(report.droppedMetrics.map(d => d.name)).toContain('avg_lifetime_value');
-  });
+  test(
+      'an unbound KEY field drops the whole entity and everything on it',
+      () => {
+        // A graph node must be keyed, so unbinding a key field makes the entire
+        // entity unavailable; the relationship into it and the metric over it
+        // fall with it, while the other entity survives.
+        const m = irModel();
+        const key = m.entities.find(e => e.name === 'Customer')!.fields.find(
+            f => f.name === 'key')!;
+        delete key.expression;
+        const {model, report} = pruneUnavailable(m, 'operational');
+        expect(model.entities.map(e => e.name)).toEqual(['Order']);
+        expect(report.droppedEntities.map(d => d.name)).toEqual(['Customer']);
+        expect(report.droppedEntities[0].reason)
+            .toMatch(/key field key is unbound/);
+        // The relationship into Customer and the metric over it are gone; a
+        // metric confined to the surviving entity stays.
+        expect(relNames(model)).toEqual([]);
+        expect(report.droppedRelationships[0].reason)
+            .toMatch(/Customer is unavailable/);
+        expect(metricNames(model)).toEqual(['order_count']);
+        expect(report.droppedMetrics.map(d => d.name))
+            .toContain('avg_lifetime_value');
+      });
 
-  test('an abstract supertype survives pruning with its field names intact', () => {
-    // An abstract entity has no table and no bindings by design: its fields are
-    // column-less on purpose (they name the label its subtypes bind). Pruning
-    // must NOT treat them as "unbound" and drop the entity for its unbound key,
-    // or the shared label loses the signature the emitter reads.
-    const m: SemanticModel = {
+  test(
+      'an abstract supertype survives pruning with its field names intact',
+      () => {
+        // An abstract entity has no table and no bindings by design: its fields
+        // are column-less on purpose (they name the label its subtypes bind).
+        // Pruning must NOT treat them as "unbound" and drop the entity for its
+        // unbound key, or the shared label loses the signature the emitter
+        // reads.
+        const m: SemanticModel = {
       name: 'parties',
       entities: [
         {
@@ -495,7 +509,8 @@ describe('an action a binding cannot perform is unavailable', () => {
     m.actions = [
       {
         name: 'IssueCredit',
-        parameters: [{name: 'order', type: 'Order', isEntityRef: true}],
+        parameters:
+            [{name: 'order', type: 'String', concept: 'Order', field: 'key'}],
         affects: [{concept: 'Order', operation: 'modify'}],
         executor: {kind: 'sql', sql: {statements: ['UPDATE orders SET x = 1']}},
       },
@@ -525,24 +540,35 @@ describe('an action a binding cannot perform is unavailable', () => {
     expect(actionNames(model)).toContain('IssueCredit');
   });
 
-  test('an action whose parameter names an unavailable entity is dropped',
-       () => {
-         // There is nothing to resolve the argument against, so binding an
-         // executor would not make the call performable.
-         const m = withoutCustomer(irWithActions());
-         m.actions.push({
-           name: 'RaiseLimit',
-           parameters: [{name: 'customer', type: 'Customer', isEntityRef: true}],
-           executor: {
-             kind: 'sql',
-             sql: {statements: ['UPDATE customer SET x = 1']},
-           },
-         });
-         const {model, report} = pruneUnavailable(m, 'operational');
-         expect(actionNames(model)).not.toContain('RaiseLimit');
-         expect(report.droppedActions.find(d => d.name === 'RaiseLimit')?.reason)
-             .toMatch(/Customer/);
-       });
+  test(
+      'an action whose parameter projects from an unavailable entity survives',
+      () => {
+        // The parameter took a copy of the field's type and wording when the
+        // model loaded, and it carries a value rather than a row, so at run
+        // time it asks the unavailable entity for nothing. The executor is
+        // bound and the call is performable, so dropping it would withhold a
+        // write this binding can perform.
+        const m = withoutCustomer(irWithActions());
+        m.actions.push({
+          name: 'RaiseLimit',
+          parameters: [
+            {
+              name: 'customer',
+              type: 'String',
+              concept: 'Customer',
+              field: 'key'
+            },
+          ],
+          executor: {
+            kind: 'sql',
+            sql: {statements: ['UPDATE customer SET x = 1']},
+          },
+        });
+        const {model, report} = pruneUnavailable(m, 'operational');
+        expect(actionNames(model)).toContain('RaiseLimit');
+        expect(report.droppedActions.find(d => d.name === 'RaiseLimit'))
+            .toBeUndefined();
+      });
 
   test('an action that affects an unavailable concept is dropped', () => {
     const m = withoutCustomer(irWithActions());

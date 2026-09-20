@@ -21,7 +21,7 @@ Never invent an identifier. When you are given a name or a description instead o
 
 ## Finding a record
 
-This skill offers writes, not reads. When you are given a name or a description where an action wants a key, the key has to come from somewhere else: ask the caller, or read the store directly. An action argument typed as an entity will also accept text that identifies exactly one record, and the call fails when nothing matches or more than one does -- that is the one read this skill can do for you, and it is part of making the call rather than a step before it.
+This skill offers writes, not reads. When you are given a name or a description where an action wants a key, the key has to come from somewhere else: ask the caller, or read the store directly. A key that matches no record costs you the call rather than the data: a statement that writes no rows fails the action and rolls the whole transaction back, so nothing is half-applied and nothing is silently skipped. Guessing a key is therefore safe to be wrong about, and not safe to be right about by accident.
 
 To read the store directly:
 
@@ -45,7 +45,7 @@ kcmd action run PlaceOrder \
   --profile default \
   --judge \
   --judge-reads-store \
-  --arg customer=<customer> \
+  --arg customer=<Integer> \
   --arg quantity=<Integer>
 ```
 

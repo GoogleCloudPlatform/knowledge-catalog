@@ -13,6 +13,7 @@ import * as yaml from 'yaml';
 import * as z from 'zod';
 
 import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, Entity, Executor, Field, Metric, Relationship, SemanticModel, VIOLATION_EFFECTS,} from './ir';
+import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {referencedEntityNames} from './sql_expr_utils';
 
 export interface LoadOptions {
@@ -224,19 +225,32 @@ const executorSchema =
               message: kinds.length === 0 ?
                   `executor requires exactly one kind (${
                       EXECUTOR_KINDS.join(', ')}); none given` :
-                  `executor requires exactly one kind, but ${kinds.length} given ` +
+                  `executor requires exactly one kind, but ${
+                      kinds.length} given ` +
                       `(${kinds.join(', ')})`,
             });
           }
         });
 
-// An action parameter: a name and an ontology type (an entity name for an object
-// reference, or a scalar DataType). The type is validated against the model in
-// convertAction, not here, so the schema stays a plain string.
+// An action parameter, in either of its two authored forms (see
+// ir.ActionParameter). DERIVED states `concept` and `field` and no `type`;
+// STANDALONE states a `type` and neither. Every key here is optional because
+// which combination is legal depends on the other keys, and a zod union would
+// report a document that got it wrong as a list of failed alternatives naming a
+// position rather than the mistake. convertParameter decides instead, where the
+// model is in scope and the message can name the fix.
 const parameterSchema = z.object({
-  name: z.string(),
-  type: z.string(),
+  // Optional: a derived parameter takes the field's name unless it renames it.
+  name: z.string().optional(),
+  // A scalar DataType, and only on a standalone parameter. Resolved against
+  // the model in convertParameter, not here, so the schema stays a plain
+  // string.
+  type: z.string().optional(),
+  concept: z.string().optional(),
+  field: z.string().optional(),
   description: z.string().optional(),
+  label: z.string().optional(),
+  ai_context: aiContextSchema.optional(),
   required: z.boolean().optional(),
   default: z.unknown().optional(),
 });
@@ -295,19 +309,20 @@ const actionSchema = z.object({
 // Constraint in ir.ts.
 const constraintSchema =
     z.object({
-  name: z.string(),
-  expression: z.string().optional(),
-  judgment: z.string().optional(),
-  description: z.string().optional(),
-  // What the engine does; absent means `reject`. See VIOLATION_EFFECTS.
-  on_violation: z.enum(VIOLATION_EFFECTS).optional(),
-  // How grave it is; no default, and nothing reads it yet. See
-  // CONSTRAINT_SEVERITIES.
-  severity: z.enum(CONSTRAINT_SEVERITIES).optional(),
-  ai_context: aiContextSchema.optional(),
-  // No `custom_extensions`: it is a vanilla-Ossie surface, and `constraints` is
-  // an extended-profile-only key, so the two never co-occur. See Constraint.
-}).superRefine(rejectExpressionBody);
+       name: z.string(),
+       expression: z.string().optional(),
+       judgment: z.string().optional(),
+       description: z.string().optional(),
+       // What the engine does; absent means `reject`. See VIOLATION_EFFECTS.
+       on_violation: z.enum(VIOLATION_EFFECTS).optional(),
+       // How grave it is; no default, and nothing reads it yet. See
+       // CONSTRAINT_SEVERITIES.
+       severity: z.enum(CONSTRAINT_SEVERITIES).optional(),
+       ai_context: aiContextSchema.optional(),
+       // No `custom_extensions`: it is a vanilla-Ossie surface, and
+       // `constraints` is an extended-profile-only key, so the two never
+       // co-occur. See Constraint.
+     }).superRefine(rejectExpressionBody);
 
 // Refuses the removed `expression` body, naming the constraint and saying where
 // the rule goes instead. A hard error rather than a dropped key: a rule the
@@ -475,13 +490,12 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          ...ce,
        }).strict();
 
-  const parameter = z.object({
-                       name: z.string(),
-                       type: z.string(),
-                       description: z.string().optional(),
-                       required: z.boolean().optional(),
-                       default: z.unknown().optional(),
-                     }).strict();
+  // The same shape the superset uses, closed to unknown keys. Restating it
+  // here is what let the two disagree: a key added to one and not the other
+  // parses in the loader's own type and is rejected by the document schema,
+  // which reports it as an unrecognized key on a line the author just wrote
+  // out of the guide.
+  const parameter = parameterSchema.strict();
 
   const action = z.object({
                     name: z.string(),
@@ -791,13 +805,41 @@ function convertModel(
   rejectDuplicateNames(
       metrics.map(mt => mt.name), 'metric name', `model '${m.name}'`);
 
-  // Actions reference entities as parameter types and both entities and
-  // relationships as affected concepts, so they are converted after each is
-  // known.
+  // Actions name both entities and relationships -- as affected concepts, and
+  // as the concept a parameter projects its definition from -- so they are
+  // converted after each is known.
+  //
+  // The lookup is the one validate uses, so a name resolves the same way in
+  // both places, inheritance included. Resolving THROWS on an `extends` naming
+  // an entity the model does not declare, which this loader is not the place to
+  // report: it accepts such a model deliberately, and validate names the
+  // failure once per model. So an unresolved view stands in -- but it is a view
+  // in which NO entity has an inherited field, because the fallback drops
+  // `extends` model-wide rather than from the one entity that broke. Warning
+  // off it would tell an author that `Savings` does not declare `balance` when
+  // `Savings extends Account` and `Account` declares it, sending them to fix
+  // a parameter that is correct. So the projection warnings are withheld while
+  // the view is degraded, and validate's one accurate line stands alone.
   const relationshipNameSet = new Set(relationships.map(r => r.name));
+  let concepts: Map<string, DeclaredConcept>;
+  let inheritanceResolved = true;
+  try {
+    concepts =
+        declaredConceptFields({name: m.name, entities, relationships, metrics});
+  } catch {
+    inheritanceResolved = false;
+    concepts = declaredConceptFields({
+      name: m.name,
+      entities: entities.map(e => ({...e, extends: undefined})),
+      relationships,
+      metrics,
+    });
+  }
   const actions = (m.actions ?? [])
-                      .map(a => convertAction(
-                               a, entityNameSet, relationshipNameSet, warnings));
+                      .map(
+                          a => convertAction(
+                              a, concepts, entityNameSet, relationshipNameSet,
+                              warnings, inheritanceResolved));
   rejectDuplicateNames(
       actions.map(a => a.name), 'action name', `model '${m.name}'`);
 
@@ -1000,11 +1042,14 @@ function convertConstraint(c: ConstraintDoc): Constraint {
 // is kept verbatim and warned, so the loader stays lenient (a strict `validate`
 // gate can promote these later).
 function convertAction(
-    a: ActionDoc, entityNames: Set<string>, relationshipNames: Set<string>,
-    warnings: string[]): Action {
-  const parameters = (a.parameters ?? [])
-                         .map(p => convertParameter(
-                                  p, a.name, entityNames, warnings));
+    a: ActionDoc, concepts: Map<string, DeclaredConcept>,
+    entityNames: Set<string>, relationshipNames: Set<string>,
+    warnings: string[], inheritanceResolved = true): Action {
+  const parameters =
+      (a.parameters ?? [])
+          .map(
+              p => convertParameter(
+                  p, a.name, concepts, warnings, inheritanceResolved));
   // Parameter names address the inputs at dispatch, so a collision is as
   // ambiguous as a duplicate field or metric name -- reject it the same way.
   rejectDuplicateNames(
@@ -1106,25 +1151,127 @@ function warnMixedAffectsPrecision(
   }
 }
 
-// Resolves a parameter's authored `type` against the ontology: a known entity
-// name makes it an object reference (isEntityRef = true); a scalar DataType makes
-// it a value (isEntityRef = false). A type that is neither is kept verbatim with
-// isEntityRef left unset, and warned.
+// Maps one authored parameter onto the IR, resolving a derived one against the
+// concept it projects from. See ir.ActionParameter for the two forms.
+//
+// What is a THROW here and what is a warning follows the split the rest of this
+// file keeps. A contradiction in the parameter's own shape -- a `type` beside a
+// `concept`, half a reference, no way to work out a name -- makes the document
+// unloadable, because there is no reading of it to carry forward and the
+// author's intent is not guessable. A reference that is well formed but does
+// not resolve is kept verbatim and warned, the way an unresolvable `affects`
+// concept is, and validate.ts promotes it to the error that stops a push.
+//
+// A referenced field that is UNBOUND -- no `expression`, so no column under
+// this binding -- resolves like any other. That is deliberate. A metric or a
+// relationship reading an unbound field is unavailable because it needs a
+// column to read; a parameter needs only the logical definition, which an
+// unbound field has in full. So a derived parameter never makes its action
+// unavailable, and a logical-only model with no bindings at all publishes
+// exactly as it would with them.
 function convertParameter(
-    p: ParameterDoc, actionName: string, entityNames: Set<string>,
-    warnings: string[]): ActionParameter {
-  const param: ActionParameter = { name: p.name, type: p.type };
-  if (p.description !== undefined) param.description = p.description;
+    p: ParameterDoc, actionName: string, concepts: Map<string, DeclaredConcept>,
+    warnings: string[], inheritanceResolved = true): ActionParameter {
+  const where = `action '${actionName}'`;
+  const hasConcept = p.concept !== undefined;
+  const hasField = p.field !== undefined;
+
+  if (hasConcept !== hasField) {
+    const given = hasConcept ? 'concept' : 'field';
+    const missing = hasConcept ? 'field' : 'concept';
+    throw new Error(
+        `${where}: parameter ${p.name ? `'${p.name}' ` : ''}states '${
+            given}' without '${missing}'. A parameter projected from a field ` +
+        `states both, as two separate keys: ` +
+        `{concept: Order, field: orderId}.`);
+  }
+
+  if (hasConcept && p.type !== undefined) {
+    throw new Error(
+        `${where}: parameter ${p.name ? `'${p.name}' ` : ''}states a 'type' ` +
+        `alongside 'concept: ${p.concept}' and 'field: ${p.field}'. A ` +
+        `projected parameter takes its type from the field, so stating one ` +
+        `here is a second place for it to be wrong: if the type is wrong, ` +
+        `fix the field; if the call needs a different one, cast in the DML.`);
+  }
+
+  const name = p.name ?? p.field;
+  if (name === undefined) {
+    throw new Error(
+        `${where}: a parameter states neither a 'name' nor a 'field' to take ` +
+        `one from.`);
+  }
+
+  const param: ActionParameter = {name};
+  if (hasConcept) {
+    // Kept whether or not it resolves: it is what the author wrote, and a
+    // round-trip that dropped it would turn a projected parameter into a
+    // standalone one carrying a type nobody stated.
+    param.concept = p.concept;
+    param.field = p.field;
+  }
+
+  const concept = hasConcept ? concepts.get(p.concept!) : undefined;
+  const field = concept?.fields.get(p.field!);
+  if (hasConcept && !concept) {
+    warnings.push(
+        `${where}: parameter '${name}' projects from '${p.concept}', which ` +
+        `is neither an entity nor a relationship in this model.`);
+  } else if (hasConcept && !field && inheritanceResolved) {
+    // Gated: with inheritance unresolved every entity looks like it declares
+    // only its own fields, so this would fire on projections that are fine.
+    warnings.push(`${where}: parameter '${name}' projects field '${
+        p.field}', which ${concept!.kind} '${p.concept}' does not declare.`);
+  }
+
+  // The field's definition flows down; the parameter's own wording wins over
+  // it. The type never does -- a projected parameter states none at all.
+  if (field?.type !== undefined) param.type = field.type;
+  if (p.type !== undefined) param.type = p.type;
+  const description = p.description ?? field?.description;
+  if (description !== undefined) param.description = description;
+  const label = p.label ?? field?.label;
+  if (label !== undefined) param.label = label;
+  const ai = aiContextOrUndefined(p.ai_context) ?? field?.aiContext;
+  if (ai) param.aiContext = ai;
+  // Never inherited. A field says what a thing HAS; whether a CALL must supply
+  // a value for it is the action's own business.
   if (p.required !== undefined) param.required = p.required;
   if (p.default !== undefined) param.default = p.default;
-  if (entityNames.has(p.type)) {
-    param.isEntityRef = true;
-  } else if ((DATA_TYPES as readonly string[]).includes(p.type)) {
-    param.isEntityRef = false;
-  } else {
+
+  if (param.type === undefined) {
+    if (!hasConcept) {
+      warnings.push(
+          `${where}: parameter '${name}' states no 'type' and projects no ` +
+          `field. A parameter with no field behind it declares its own ` +
+          `scalar type (${DATA_TYPES.join('/')}).`);
+    } else if (field && inheritanceResolved) {
+      // The projection resolved and the field is simply untyped, which is a
+      // third case and not the one above: the author wrote the parameter
+      // correctly, so the fix is on the field. A reference that did NOT
+      // resolve was already warned about above and says why there is no type.
+      warnings.push(
+          `${where}: parameter '${name}' projects field '${p.concept}.${
+              p.field}', which declares no datatype, so the parameter has ` +
+          `none either. Give that field a scalar type (${
+              DATA_TYPES.join('/')}).`);
+    }
+  } else if (!(DATA_TYPES as readonly string[]).includes(param.type)) {
+    // A type naming a concept is the old entity-reference spelling, which has
+    // no meaning now: a parameter carries a value, so the way to take one FROM
+    // an entity is to name the field it comes from.
+    const named = concepts.get(param.type);
     warnings.push(
-      `action '${actionName}': parameter '${p.name}' type '${p.type}' is ` +
-      `neither a known entity nor a scalar datatype (${DATA_TYPES.join('/')})`);
+        named ?
+            `${where}: parameter '${name}' is typed '${param.type}', which ` +
+                `is ${
+                    named.kind === 'entity' ? 'an entity' :
+                                              'a relationship'} rather ` +
+                `than a scalar datatype. A parameter carries a value; to ` +
+                `take one from ${param.type}, project it with ` +
+                `{concept: ${param.type}, field: <field>}.` :
+            `${where}: parameter '${name}' type '${param.type}' is not a ` +
+                `scalar datatype (${DATA_TYPES.join('/')})`);
   }
   return param;
 }
@@ -1132,16 +1279,16 @@ function convertParameter(
 // Normalizes the open format's single-key executor object to the IR's tagged
 // union. The schema already guaranteed exactly one kind is present.
 function convertExecutor(ex: ExecutorDoc): Executor {
-  if (ex.mcp) return { kind: 'mcp', mcp: { ...ex.mcp } };
-  if (ex.rest) return { kind: 'rest', rest: { ...ex.rest } };
+  if (ex.mcp) return {kind: 'mcp', mcp: {...ex.mcp}};
+  if (ex.rest) return {kind: 'rest', rest: {...ex.rest}};
   if (ex.sql) {
     return {
       kind: 'sql',
-      sql: { statements: ex.sql.statements.map(t => t.trim()) },
+      sql: {statements: ex.sql.statements.map(t => t.trim())},
     };
   }
   // The schema's refinement guarantees one of the four kinds is set.
-  return { kind: 'grpc', grpc: { ...ex.grpc! } };
+  return {kind: 'grpc', grpc: {...ex.grpc!}};
 }
 
 // Collapses an expression's per-dialect variants into at most two forms:

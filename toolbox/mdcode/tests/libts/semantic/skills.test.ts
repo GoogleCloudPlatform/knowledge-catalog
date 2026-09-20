@@ -296,11 +296,18 @@ describe('an action reference', () => {
     expect(reference).toContain('`place_order`');
   });
 
-  test('an entity argument asks for a reference, a scalar for its type', () => {
-    expect(reference).toContain('| `customer` | string | yes |');
-    expect(reference).toContain('more than one does');
-    expect(reference).toContain('| `quantity` | integer | yes |');
-  });
+  test('a projected argument reads as the field, a declared one as itself',
+       () => {
+         // `customer` projects from `customer.c_custkey` and `quantity` states
+         // its own type, and the table does not say which is which -- by the
+         // time an agent reads this, both are one scalar to pass. What the
+         // projection buys is the wording: the field's datatype and the
+         // field's description, rather than an author restating them here and
+         // drifting from the column.
+         expect(reference).toContain(
+             '| `customer` | integer | yes | The customer\'s account number. |');
+         expect(reference).toContain('| `quantity` | integer | yes |');
+       });
 
   test('carries the action\'s own guidance for a caller', () => {
     expect(reference).toContain(
@@ -416,34 +423,42 @@ describe('when the runtime would refuse the call', () => {
 });
 
 
-describe('a model with actions and no entities', () => {
+describe('what a key matching nothing costs', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
 
   // The model-level instruction sends an agent to lookup tools, and this skill
   // has none. Saying where a key comes from instead is the answer to that, and
-  // it does not depend on anything here being entity-typed.
-  const scalarOnly: SemanticModel = {
+  // it does not depend on the model declaring any entities.
+  const noEntities: SemanticModel = {
     ...model,
     entities: [],
-    actions: [{
-      ...model.actions![0],
-      ...RUNNABLE,
-      parameters: model.actions![0].parameters.filter(p => !p.isEntityRef),
-    } as Action],
+    actions: [{...model.actions![0], ...RUNNABLE} as Action],
   };
 
   test('still says where a key has to come from', () => {
-    const out = generate(rt(scalarOnly)).files['SKILL.md'];
+    const out = generate(rt(noEntities)).files['SKILL.md'];
     expect(out).toContain('lookup tools');
     expect(out).toContain('## Finding a record');
     expect(out).toContain('the key has to come from somewhere else');
   });
 
-  test('does not offer the one read it cannot do', () => {
-    // An argument typed as an entity resolves text to a row. There are none
-    // here, so promising it would be a lie.
-    expect(generate(rt(scalarOnly)).files['SKILL.md'])
-        .not.toContain('argument typed as an entity');
+  test('a sql executor promises the refusal it performs', () => {
+    // Every argument is a scalar, so a wrong key reaches the statement rather
+    // than failing a resolve ahead of it. This runtime runs the statement, so
+    // it can say what happens next: no rows written, action failed, rolled
+    // back. An agent that does not know this hedges on a call that is safe to
+    // get wrong.
+    expect(generate(rt(noEntities)).files['SKILL.md'])
+        .toContain('costs you the call rather than the data');
+  });
+
+  test('another kind does not promise what it does not perform', () => {
+    // The fixture's own executor is MCP. Another system does the write, and
+    // nothing here knows whether that system refuses a statement matching no
+    // row -- so the section is still emitted, without the promise.
+    const out = generate(rt(model)).files['SKILL.md'];
+    expect(out).toContain('## Finding a record');
+    expect(out).not.toContain('costs you the call rather than the data');
   });
 });
 

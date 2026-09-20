@@ -42,7 +42,8 @@
 
 import * as yaml from 'yaml';
 
-import {Action, AffectedConcept, AiContext, Constraint, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, Constraint, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
+import {declaredConceptFields} from './resolve_inheritance';
 
 // The version stamped on every serialized document. Pull emits kcmd's extended
 // profile: it uses native extension keys (`entities`, `deployment_target`)
@@ -187,6 +188,7 @@ function modelDoc(model: SemanticModel, warnings: string[], logical: boolean):
   // and is dropped with a warning (see extractDeploymentTarget).
   const deploymentTarget =
       extractDeploymentTarget(model.customExtensions, model.name, warnings);
+  const emittedFields = emitted(model);
   return compact({
     name: model.name,
     description: model.description,
@@ -196,10 +198,11 @@ function modelDoc(model: SemanticModel, warnings: string[], logical: boolean):
     relationships: nonEmpty(
         (model.relationships ?? []).map(r => relationshipDoc(r, warnings))),
     metrics: nonEmpty((model.metrics ?? []).map(m => metricDoc(m, warnings))),
-    actions:
-        nonEmpty((model.actions ?? []).map(a => actionDoc(a, warnings))),
-    constraints: nonEmpty(
-        (model.constraints ?? []).map(c => constraintDoc(c))),
+    // Hoisted out of the map: `emitted` resolves inheritance, which deep-clones
+    // the model, and the answer does not vary by action.
+    actions: nonEmpty(
+        (model.actions ?? []).map(a => actionDoc(a, warnings, emittedFields))),
+    constraints: nonEmpty((model.constraints ?? []).map(c => constraintDoc(c))),
   });
 }
 
@@ -281,27 +284,108 @@ function metricDoc(metric: Metric, warnings: string[]): Record<string, any> {
   });
 }
 
+// The `Concept.field` pairs this document will still resolve on reload. A
+// projection is only worth emitting as a projection if the field it names
+// comes out in the same document -- see `parameterDoc`. It asks the loader's
+// own resolver rather than walking the model here, so the emitter cannot come
+// to a different answer than the load it is writing for. A resolver that
+// throws leaves every projection emitted as authored: the emitter is not the
+// place to discover that a model does not load.
+function emitted(model: SemanticModel): Set<string>|null {
+  let concepts;
+  try {
+    concepts = declaredConceptFields(model);
+  } catch {
+    return null;
+  }
+  const pairs = new Set<string>();
+  for (const [name, concept] of concepts) {
+    // A field carrying no datatype resolves to one on reload, so emitting a
+    // projection at it would suppress the parameter's resolved `type` and
+    // hand back an untyped parameter the loader rejects. Treating the pair as
+    // unresolvable falls the parameter back to that resolved type, which is
+    // the whole point of the fallback, and warns when there is none.
+    for (const [field, def] of concept.fields) {
+      if (def.type !== undefined) pairs.add(`${name}.${field}`);
+    }
+  }
+  return pairs;
+}
+
 // Inverts loader.convertAction. The executor collapses back to the open
-// format's single-key object; parameters emit as {name, type, description,
-// required, default}. `isEntityRef` is derived by the loader on reload, so it
-// is intentionally not emitted.
-function actionDoc(action: Action, warnings: string[]): Record<string, any> {
+// format's single-key object; parameters emit as their authoring form.
+function actionDoc(
+    action: Action, warnings: string[],
+    resolvable: Set<string>|null): Record<string, any> {
   dropExtensions(action.customExtensions, `action '${action.name}'`, warnings);
   return compact({
     name: action.name,
     description: action.description,
     executor: action.executor ? executorDoc(action.executor) : undefined,
     parameters: nonEmpty(
-        (action.parameters ?? []).map(p => compact({
-          name: p.name,
-          type: p.type,
-          description: p.description,
-          required: p.required,
-          default: p.default,
-        }))),
+        (action.parameters ??
+         []).map(p => parameterDoc(p, resolvable, action.name, warnings))),
     guards: nonEmpty(action.guards),
     affects: nonEmpty((action.affects ?? []).map(affectedConceptDoc)),
     ai_context: aiContextDoc(action.aiContext),
+  });
+}
+
+// One action parameter, back in the form an author writes.
+//
+// A parameter projected from a field emits the projection and NOT the type.
+// The type is the field's, copied in at load; writing it back out would make
+// the document state a type alongside `concept`/`field`, which is the one
+// thing the loader refuses outright -- so emitting it would produce a document
+// this tool cannot read. The reload resolves it again from the same field and
+// arrives at the same answer.
+//
+// Wording is emitted whether the author wrote it or inherited it, because
+// nothing here can tell those apart and the two reload identically: an
+// authored value that matches the field's is the field's. So this is verbose
+// where the author was terse, and exact either way.
+//
+// `name` is likewise always written, even where the author let it default to
+// the field's name. Same trade, same reason.
+// A projection emits as a projection only where the field it names comes out
+// in this same document. Pruning can take the concept away -- an entity no
+// binding reaches is dropped, and the parameter that projected from it is
+// deliberately kept, because it copied what it needed at load time. Emitting
+// `concept`/`field` anyway would write a document that no longer loads: the
+// pair resolves to nothing, and the type that would have rescued it was
+// suppressed precisely because the projection was supposed to supply it. So
+// where the field is gone, the parameter emits as the declared one it has
+// effectively become -- its resolved `type`, and none of the projection.
+function parameterDoc(
+    p: ActionParameter, resolvable: Set<string>|null, action: string,
+    warnings: string[]): Record<string, any> {
+  const projects = p.concept !== undefined &&
+      (resolvable === null || resolvable.has(`${p.concept}.${p.field}`));
+  // The fallback above rests on there BEING a resolved type to fall back to,
+  // and a parameter can reach here without one -- a pull of an aspect written
+  // before the type was recorded, or a model whose inheritance would not
+  // resolve. Both keys then drop and the parameter emits as name and wording
+  // alone, which reloads as a typeless parameter and is rejected by validate.
+  // Nothing here can invent the type, so say so at write time rather than let
+  // it surface as a load error against a document this wrote.
+  if (!projects && p.concept !== undefined && p.type === undefined) {
+    warnings.push(
+        `action '${action}': parameter '${p.name}' projected from '${
+            p.concept}.${p.field}', which this document does not carry, and ` +
+        `no resolved datatype was recorded to write in its place. The ` +
+        `parameter emits with no type and the document will not load until ` +
+        `one is supplied.`);
+  }
+  return compact({
+    name: p.name,
+    type: projects ? undefined : p.type,
+    concept: projects ? p.concept : undefined,
+    field: projects ? p.field : undefined,
+    label: p.label,
+    description: p.description,
+    ai_context: aiContextDoc(p.aiContext),
+    required: p.required,
+    default: p.default,
   });
 }
 
@@ -315,8 +399,8 @@ function actionDoc(action: Action, warnings: string[]): Record<string, any> {
 // authored `{concept: Order}` with no operation comes back as `Order`. The two
 // mean the same thing, so the emit is a fixed point after one pass, which is
 // what the round-trip tests assert.
-function affectedConceptDoc(affected: AffectedConcept):
-    string|Record<string, any> {
+function affectedConceptDoc(affected: AffectedConcept): string|
+    Record<string, any> {
   if (!affected.operation && !affected.fields?.length) return affected.concept;
   return compact({
     concept: affected.concept,

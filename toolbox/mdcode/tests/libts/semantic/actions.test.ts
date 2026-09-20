@@ -36,9 +36,15 @@ function withActions(actions: any[], over: any = {}) {
     version: '0.2.0.dev0/google',
     semantic_model: [{
       name: 'm',
-      datasets: [
-        {name: 'customer', source: 'p.d.c', primary_key: ['id'], fields: []}
-      ],
+      datasets: [{
+        name: 'customer',
+        source: 'p.d.c',
+        primary_key: ['id'],
+        fields: [
+          {name: 'id', datatype: 'Integer', description: 'The account number.'},
+          {name: 'email', datatype: 'String'},
+        ],
+      }],
       actions,
       ...over,
     }],
@@ -60,7 +66,7 @@ describe('loader parses actions', () => {
       description: 'Create an order',
       executor: MCP,
       parameters: [
-        {name: 'customer', type: 'customer'},
+        {name: 'customer', concept: 'customer', field: 'id'},
         {name: 'quantity', type: 'Integer'}
       ],
     }]);
@@ -68,11 +74,189 @@ describe('loader parses actions', () => {
     expect(action.name).toBe('PlaceOrder');
     expect(action.description).toBe('Create an order');
     expect(action.executor).toEqual({kind: 'mcp', mcp: MCP.mcp});
+    // The projected one carries BOTH halves: the reference it was authored as,
+    // and the type and wording that reference resolved to.
     expect(action.parameters).toEqual([
-      {name: 'customer', type: 'customer', isEntityRef: true},
-      {name: 'quantity', type: 'Integer', isEntityRef: false},
+      {
+        name: 'customer',
+        type: 'Integer',
+        concept: 'customer',
+        field: 'id',
+        description: 'The account number.',
+      },
+      {name: 'quantity', type: 'Integer'},
     ]);
     expect(warnings).toEqual([]);
+  });
+
+  test('a projected parameter with no name takes the field\'s', () => {
+    const {models, warnings} = withActions([{
+      name: 'A',
+      executor: MCP,
+      parameters: [{concept: 'customer', field: 'email'}],
+    }]);
+    expect(models[0].actions![0].parameters).toEqual([
+      {name: 'email', type: 'String', concept: 'customer', field: 'email'},
+    ]);
+    expect(warnings).toEqual([]);
+  });
+
+  test('an authored description overrides the field\'s', () => {
+    const {models} = withActions([{
+      name: 'A',
+      executor: MCP,
+      parameters: [{
+        name: 'who',
+        concept: 'customer',
+        field: 'id',
+        description: 'Who the order is for.',
+      }],
+    }]);
+    // The type still comes from the field: only the wording is the
+    // parameter's to restate.
+    expect(models[0].actions![0].parameters[0]).toEqual({
+      name: 'who',
+      type: 'Integer',
+      concept: 'customer',
+      field: 'id',
+      description: 'Who the order is for.',
+    });
+  });
+
+  test(
+      'a label and an ai_context are inherited or overridden the same way',
+      () => {
+        const {models} = fromDocument({
+          version: '0.2.0.dev0/google',
+          semantic_model: [{
+            name: 'm',
+            datasets: [{
+              name: 'customer',
+              source: 'p.d.c',
+              primary_key: ['id'],
+              fields: [{
+                name: 'id',
+                datatype: 'Integer',
+                label: 'Account number',
+                ai_context: {synonyms: ['acct']},
+              }],
+            }],
+            actions: [{
+              name: 'A',
+              parameters: [
+                {name: 'a', concept: 'customer', field: 'id'},
+                {
+                  name: 'b',
+                  concept: 'customer',
+                  field: 'id',
+                  label: 'Destination account',
+                  ai_context: {synonyms: ['payee']},
+                  description: 'Where it lands.',
+                },
+              ],
+            }],
+          }],
+        });
+        const [a, b] = models[0].actions![0].parameters;
+        expect(a.label).toBe('Account number');
+        expect(a.aiContext).toEqual({synonyms: ['acct']});
+        expect(b.label).toBe('Destination account');
+        expect(b.aiContext).toEqual({synonyms: ['payee']});
+      });
+
+  test('a `type` alongside `concept`/`field` is rejected at parse', () => {
+    expect(
+        () => withActions([{
+          name: 'A',
+          parameters:
+              [{name: 'x', type: 'String', concept: 'customer', field: 'id'}],
+        }]))
+        .toThrow(/states a 'type'/);
+  });
+
+  test('half a projection is rejected at parse', () => {
+    expect(
+        () => withActions(
+            [{name: 'A', parameters: [{name: 'x', concept: 'customer'}]}]))
+        .toThrow(/states 'concept' without 'field'/);
+    expect(
+        () =>
+            withActions([{name: 'A', parameters: [{name: 'x', field: 'id'}]}]))
+        .toThrow(/states 'field' without 'concept'/);
+  });
+
+  test('an unknown concept and an unknown field read differently', () => {
+    const unknownConcept = withActions([{
+      name: 'A',
+      parameters: [{name: 'x', concept: 'Nope', field: 'id'}],
+    }]);
+    expect(unknownConcept.warnings.some(
+               w => w.includes('neither an entity nor a relationship') &&
+                   w.includes('\'Nope\'')))
+        .toBe(true);
+
+    const unknownField = withActions([{
+      name: 'A',
+      parameters: [{name: 'x', concept: 'customer', field: 'nope'}],
+    }]);
+    expect(unknownField.warnings.some(
+               w => w.includes('does not declare') && w.includes('\'nope\'')))
+        .toBe(true);
+    // Different sentences, so a reader is sent to the right half of the pair.
+    expect(unknownConcept.warnings).not.toEqual(unknownField.warnings);
+  });
+
+  test('an entity name as `type` says to project a field instead', () => {
+    const {warnings} = withActions([{
+      name: 'A',
+      parameters: [{name: 'x', type: 'customer'}],
+    }]);
+    expect(warnings.some(
+               w => w.includes('which is an entity') &&
+                   w.includes('{concept: customer, field: <field>}')))
+        .toBe(true);
+  });
+
+  test('a standalone parameter with no type is warned', () => {
+    const {warnings} = withActions([{
+      name: 'A',
+      parameters: [{name: 'x'}],
+    }]);
+    expect(warnings.some(w => w.includes('states no \'type\''))).toBe(true);
+  });
+
+  test('projecting an UNBOUND field resolves like any other', () => {
+    // Deliberate: a parameter needs the logical definition, which an unbound
+    // field has in full, so a logical-only model's actions are as usable as a
+    // bound one's.
+    const {models, warnings} = fromDocument({
+      version: '0.2.0.dev0/google',
+      semantic_model: [{
+        name: 'm',
+        datasets: [{
+          name: 'customer',
+          source: 'p.d.c',
+          primary_key: ['id'],
+          fields: [
+            {name: 'id', datatype: 'Integer', expression: 'id'},
+            {name: 'notes', datatype: 'String', description: 'Free text.'},
+          ],
+        }],
+        actions: [{
+          name: 'A',
+          parameters: [{concept: 'customer', field: 'notes'}],
+        }],
+      }],
+    });
+    expect(models[0].actions![0].parameters[0]).toEqual({
+      name: 'notes',
+      type: 'String',
+      concept: 'customer',
+      field: 'notes',
+      description: 'Free text.',
+    });
+    expect(warnings.some(w => w.includes('notes') && w.includes('parameter')))
+        .toBe(false);
   });
 
   test('a model without actions leaves model.actions unset', () => {
@@ -104,7 +288,7 @@ describe('loader parses actions', () => {
       parameters: [{name: 'x', type: 'Nope'}],
     }]);
     const [p] = models[0].actions![0].parameters;
-    expect(p).toEqual({name: 'x', type: 'Nope'});  // isEntityRef unset
+    expect(p).toEqual({name: 'x', type: 'Nope'});
     expect(
         warnings.some(w => w.includes('parameter \'x\'') && w.includes('Nope')))
         .toBe(true);
@@ -131,13 +315,19 @@ describe('loader parses actions', () => {
     const {models, warnings} = withActions([{
       name: 'A',
       description: 'Declared here, performed elsewhere',
-      parameters: [{name: 'customer', type: 'customer'}],
+      parameters: [{name: 'customer', concept: 'customer', field: 'id'}],
     }]);
     const [action] = models[0].actions!;
     expect(action.executor).toBeUndefined();
     expect(action.description).toBe('Declared here, performed elsewhere');
     expect(action.parameters).toEqual([
-      {name: 'customer', type: 'customer', isEntityRef: true},
+      {
+        name: 'customer',
+        type: 'Integer',
+        concept: 'customer',
+        field: 'id',
+        description: 'The account number.',
+      },
     ]);
     expect(warnings).toEqual([]);
   });
@@ -190,7 +380,8 @@ describe('loader parses actions', () => {
     expect(() => withActions([
              {name: 'Dup', executor: MCP},
              {name: 'Dup', executor: MCP},
-           ])).toThrow(/action name.*Dup/);
+           ]))
+        .toThrow(/action name.*Dup/);
   });
 
   test('duplicate parameter names within an action are rejected', () => {
@@ -198,10 +389,11 @@ describe('loader parses actions', () => {
              name: 'A',
              executor: MCP,
              parameters: [
-               {name: 'customer', type: 'customer'},
+               {name: 'customer', concept: 'customer', field: 'id'},
                {name: 'customer', type: 'Integer'},
              ],
-           }])).toThrow(/parameter name.*customer/);
+           }]))
+        .toThrow(/parameter name.*customer/);
   });
 });
 
@@ -217,8 +409,12 @@ describe('validatePushRequirements gates actions', () => {
   function loaded(actions: any[]): LoadedModel {
     const model: SemanticModel = {
       name: 'm',
-      entities:
-          [{name: 'customer', dataSource: 'p.d.c', keys: ['id'], fields: []}],
+      entities: [{
+        name: 'customer',
+        dataSource: 'p.d.c',
+        keys: ['id'],
+        fields: [{name: 'id', type: 'Integer'}],
+      }],
       relationships: [],
       metrics: [],
       actions,
@@ -231,7 +427,9 @@ describe('validatePushRequirements gates actions', () => {
     const errs = validatePushRequirements([loaded([{
       name: 'PlaceOrder',
       executor: {kind: 'mcp', mcp: {server: 's', tool: 't'}},
-      parameters: [{name: 'customer', type: 'customer', isEntityRef: true}],
+      parameters: [
+        {name: 'customer', type: 'Integer', concept: 'customer', field: 'id'}
+      ],
     }])]);
     expect(errs).toEqual([]);
   });
@@ -243,7 +441,9 @@ describe('validatePushRequirements gates actions', () => {
     // coordinate INSIDE an executor is still a hard error, below.
     const errs = validatePushRequirements([loaded([{
       name: 'PlaceOrder',
-      parameters: [{name: 'customer', type: 'customer', isEntityRef: true}],
+      parameters: [
+        {name: 'customer', type: 'Integer', concept: 'customer', field: 'id'}
+      ],
     }])]);
     expect(errs).toEqual([]);
   });
@@ -252,7 +452,7 @@ describe('validatePushRequirements gates actions', () => {
     const errs = validatePushRequirements([loaded([{
       name: 'A',
       executor: {kind: 'mcp', mcp: {server: 's', tool: 't'}},
-      parameters: [{name: 'x', type: 'Nope'}],  // isEntityRef unset
+      parameters: [{name: 'x', type: 'Nope'}],
     }])]);
     expect(errs.some(e => e.includes('parameter \'x\'') && e.includes('Nope')))
         .toBe(true);
@@ -316,7 +516,7 @@ describe('validatePushRequirements gates actions', () => {
         kind: 'sql',
         sql: {statements: ['DELETE FROM orders WHERE id = @orderId']}
       },
-      parameters: [{name: 'id', type: 'Integer', isEntityRef: false}],
+      parameters: [{name: 'id', type: 'Integer'}],
     }])]);
     expect(errs.length).toBe(1);
     expect(errs[0]).toContain('binds \'@orderId\'');
@@ -334,31 +534,33 @@ describe('validatePushRequirements gates actions', () => {
     expect(errs).toEqual([]);
   });
 
-  test('a created row gets its key from the statement, whatever affects says',
-     () => {
-    // `affects` binds nothing. A statement that keys a new row with SQL the
-    // store evaluates passes whatever the action declares it changes, and a
-    // statement that binds a name no parameter declares fails either way.
-    const supplied = 'INSERT INTO customer (id) VALUES (GENERATE_UUID())';
-    const bound = 'INSERT INTO customer (id) VALUES (@who)';
-    for (const operation of ['create', 'modify'] as const) {
-      expect(validatePushRequirements([loaded([{
-        name: 'A',
-        executor: {kind: 'sql', sql: {statements: [supplied]}},
-        parameters: [],
-        affects: [{concept: 'customer', operation}],
-      }])])).toEqual([]);
+  test(
+      'a created row gets its key from the statement, whatever affects says',
+      () => {
+        // `affects` binds nothing. A statement that keys a new row with SQL the
+        // store evaluates passes whatever the action declares it changes, and a
+        // statement that binds a name no parameter declares fails either way.
+        const supplied = 'INSERT INTO customer (id) VALUES (GENERATE_UUID())';
+        const bound = 'INSERT INTO customer (id) VALUES (@who)';
+        for (const operation of ['create', 'modify'] as const) {
+          expect(validatePushRequirements([loaded([{
+            name: 'A',
+            executor: {kind: 'sql', sql: {statements: [supplied]}},
+            parameters: [],
+            affects: [{concept: 'customer', operation}],
+          }])]))
+              .toEqual([]);
 
-      const errs = validatePushRequirements([loaded([{
-        name: 'A',
-        executor: {kind: 'sql', sql: {statements: [bound]}},
-        parameters: [],
-        affects: [{concept: 'customer', operation}],
-      }])]);
-      expect(errs.length).toBe(1);
-      expect(errs[0]).toContain('declares no parameter of that name');
-    }
-  });
+          const errs = validatePushRequirements([loaded([{
+            name: 'A',
+            executor: {kind: 'sql', sql: {statements: [bound]}},
+            parameters: [],
+            affects: [{concept: 'customer', operation}],
+          }])]);
+          expect(errs.length).toBe(1);
+          expect(errs[0]).toContain('declares no parameter of that name');
+        }
+      });
 
   test('a sql executor of nothing but blanks is a hard error', () => {
     const errs = validatePushRequirements([loaded([{
@@ -392,7 +594,8 @@ describe('Knowledge Catalog publish/pull round trip', () => {
             'sales.actions.PlaceOrder');
     expect(entry.parentEntry).toBe(entries[0].name);
     expect(entry.entrySource?.displayName).toBe('PlaceOrder');
-    expect(entry.entrySource?.description).toBe('Create an order for a customer');
+    expect(entry.entrySource?.description)
+        .toBe('Create an order for a customer');
 
     const data = entry.aspects!['dest.global.semantic-action'].data!;
     expect(data.executorKind).toBe('mcp');
@@ -400,8 +603,14 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     // Only the live executor kind's fields are written.
     expect(data.restEndpoint).toBeUndefined();
     expect(data.parameters).toEqual([
-      {name: 'customer', type: 'customer', isEntityRef: true},
-      {name: 'quantity', type: 'Integer', isEntityRef: false},
+      {
+        name: 'customer',
+        type: 'Integer',
+        concept: 'customer',
+        field: 'c_custkey',
+        description: 'The customer\'s account number.',
+      },
+      {name: 'quantity', type: 'Integer'},
     ]);
     expect(data.instructions)
         .toBe('Resolve the buyer to a customer before calling.');
@@ -433,8 +642,14 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     expect(data.executorKind).toBeUndefined();
     // Everything else the action declares is still published.
     expect(data.parameters).toEqual([
-      {name: 'customer', type: 'customer', isEntityRef: true},
-      {name: 'quantity', type: 'Integer', isEntityRef: false},
+      {
+        name: 'customer',
+        type: 'Integer',
+        concept: 'customer',
+        field: 'c_custkey',
+        description: 'The customer\'s account number.',
+      },
+      {name: 'quantity', type: 'Integer'},
     ]);
 
     const {models, warnings} = modelsFromCatalogResources(entries, entryLinks);
@@ -451,30 +666,33 @@ describe('Knowledge Catalog publish/pull round trip', () => {
 
     const {models, warnings} = modelsFromCatalogResources(entries, entryLinks);
     expect(models[0].actions ?? []).toEqual([]);
-    expect(warnings.some(w => w.includes('no usable') && w.includes('executor')))
+    expect(
+        warnings.some(w => w.includes('no usable') && w.includes('executor')))
         .toBe(true);
   });
 
-  test('a pull missing the referenced entity drops isEntityRef and warns', () => {
-    // Pull the anchor and the action, but no entity entries: the `customer`
-    // entity is absent, so the action's entity-typed `customer` parameter can
-    // no longer be resolved.
-    const {entries} = generateCatalogResources(model, OPTS);
-    const withoutEntities =
-        entries.filter(e => !e.entryType.endsWith('/semantic-entity'));
-    const {models, warnings} = modelsFromCatalogResources(withoutEntities);
-    const params = models[0].actions![0].parameters;
-    const customer = params.find(p => p.name === 'customer')!;
-    const quantity = params.find(p => p.name === 'quantity')!;
-    // The unresolvable entity type loses isEntityRef and is warned; the scalar
-    // `quantity` still resolves.
-    expect(customer.isEntityRef).toBeUndefined();
-    expect(quantity.isEntityRef).toBe(false);
-    expect(warnings.some(
-               w => w.includes('parameter \'customer\'') &&
-                   w.includes('resolved type')))
-        .toBe(true);
-  });
+  test(
+      'a pull missing the projected concept recovers the parameter whole',
+      () => {
+        // Pull the anchor and the action, but no entity entries. Nothing is
+        // re-derived on the way back, so the parameter arrives with its type
+        // and its wording intact and still names the field it came from -- the
+        // pull is missing the field's own entry, not the parameter's
+        // definition.
+        const {entries} = generateCatalogResources(model, OPTS);
+        const withoutEntities =
+            entries.filter(e => !e.entryType.endsWith('/semantic-entity'));
+        const {models, warnings} = modelsFromCatalogResources(withoutEntities);
+        const params = models[0].actions![0].parameters;
+        expect(params.find(p => p.name === 'customer')).toEqual({
+          name: 'customer',
+          type: 'Integer',
+          concept: 'customer',
+          field: 'c_custkey',
+          description: 'The customer\'s account number.',
+        });
+        expect(warnings.some(w => w.includes('parameter'))).toBe(false);
+      });
 
   test('a model with no actions publishes no action entry', () => {
     const noActions: SemanticModel = {...model, actions: undefined};
@@ -494,8 +712,8 @@ describe('Knowledge Catalog round trip across executor kinds', () => {
   const ACTION_ENTRY_TYPE = '/entryTypes/semantic-action';
 
   function actionEntriesOf(m: SemanticModel) {
-    return generateCatalogResources(m, OPTS)
-        .entries.filter(e => e.entryType.endsWith(ACTION_ENTRY_TYPE));
+    return generateCatalogResources(m, OPTS).entries.filter(
+        e => e.entryType.endsWith(ACTION_ENTRY_TYPE));
   }
 
   test('every action becomes one entry, parented to the model anchor', () => {
@@ -544,10 +762,34 @@ describe('Knowledge Catalog round trip across executor kinds', () => {
     // A kind writes nothing belonging to another kind, so the aspect never
     // carries two executors at once.
     for (const [kind, foreign] of [
-             ['PlaceOrder', ['restEndpoint', 'restMethod', 'grpcService', 'grpcMethod', 'sqlStatements']],
-             ['RefundOrder', ['mcpServer', 'mcpTool', 'grpcService', 'grpcMethod', 'sqlStatements']],
-             ['CloseBooks', ['mcpServer', 'mcpTool', 'restEndpoint', 'restMethod', 'sqlStatements']],
-             ['ReplaceOrder', ['mcpServer', 'mcpTool', 'restEndpoint', 'restMethod', 'grpcService', 'grpcMethod']],
+             [
+               'PlaceOrder',
+               [
+                 'restEndpoint', 'restMethod', 'grpcService', 'grpcMethod',
+                 'sqlStatements'
+               ]
+             ],
+             [
+               'RefundOrder',
+               [
+                 'mcpServer', 'mcpTool', 'grpcService', 'grpcMethod',
+                 'sqlStatements'
+               ]
+             ],
+             [
+               'CloseBooks',
+               [
+                 'mcpServer', 'mcpTool', 'restEndpoint', 'restMethod',
+                 'sqlStatements'
+               ]
+             ],
+             [
+               'ReplaceOrder',
+               [
+                 'mcpServer', 'mcpTool', 'restEndpoint', 'restMethod',
+                 'grpcService', 'grpcMethod'
+               ]
+             ],
     ] as Array<[string, string[]]>) {
       for (const field of foreign) expect(dataOf(kind)[field]).toBeUndefined();
     }
@@ -589,151 +831,557 @@ describe('Knowledge Catalog round trip across executor kinds', () => {
 });
 
 
-describe('actions referencing entities the push does not publish', () => {
-  test('an abstract entity parameter is published but warned about', () => {
-    // An abstract entity is a table-less supertype, so the Knowledge Catalog
-    // leg skips it. A parameter typed by one therefore names an entity with no
-    // entry, which a later pull cannot tell from a misspelled scalar.
-    const {models} = fromDocument({
-      version: '0.2.0.dev0/google',
-      semantic_model: [{
-        name: 'm',
-        entities: [
-          {name: 'party', abstract: true, fields: []},
-          {
-            name: 'customer',
-            source: 'p.d.c',
-            primary_key: ['id'],
-            fields: [{name: 'id', expression: {dialects: [{dialect: 'ANSI_SQL', expression: 'id'}]}}],
-          },
-        ],
-        actions: [{
-          name: 'Notify',
-          executor: MCP,
-          parameters: [{name: 'who', type: 'party'}],
-        }],
-      }],
-    });
-    // The loader resolved it against the ontology, which includes abstract
-    // entities.
-    expect(models[0].actions![0].parameters[0].isEntityRef).toBe(true);
+describe('actions projecting concepts the push does not publish', () => {
+  test(
+      'a parameter projected from an abstract entity publishes, and warns',
+      () => {
+        // An abstract entity is a table-less supertype, so the Knowledge
+        // Catalog leg skips it. The parameter still publishes whole -- its type
+        // and wording were resolved at load and travel in the aspect -- but the
+        // catalog then names a concept it has no entry for, which is what the
+        // warning is about.
+        const {models} = fromDocument({
+          version: '0.2.0.dev0/google',
+          semantic_model: [{
+            name: 'm',
+            entities: [
+              {
+                name: 'party',
+                abstract: true,
+                fields: [{name: 'partyId', datatype: 'String'}],
+              },
+              {
+                name: 'customer',
+                source: 'p.d.c',
+                primary_key: ['id'],
+                fields: [{
+                  name: 'id',
+                  expression:
+                      {dialects: [{dialect: 'ANSI_SQL', expression: 'id'}]}
+                }],
+              },
+            ],
+            actions: [{
+              name: 'Notify',
+              executor: MCP,
+              parameters: [{name: 'who', concept: 'party', field: 'partyId'}],
+            }],
+          }],
+        });
+        // Resolved against the ontology, which includes abstract entities.
+        expect(models[0].actions![0].parameters[0].type).toBe('String');
 
-    const {warnings} = generateCatalogResources(models[0], OPTS);
-    expect(warnings.some(
-               w => w.includes('parameter \'who\'') &&
-                   w.includes('does not publish')))
-        .toBe(true);
-  });
+        const {warnings} = generateCatalogResources(models[0], OPTS);
+        expect(warnings.some(
+                   w => w.includes('parameter \'who\'') &&
+                       w.includes('does not publish')))
+            .toBe(true);
+      });
 });
 
 
 describe('parameter description, required, and default', () => {
-  test('loader parses description, required, and default and round-trips through KC', () => {
-    const {models} = withActions([{
-      name: 'TransferFunds',
-      executor: MCP,
-      parameters: [
-        {name: 'source', type: 'customer', description: 'The account money leaves.'},
-        {name: 'target', type: 'customer', description: 'The account money enters.'},
-        {name: 'currency', type: 'String', default: 'USD'},
-        {name: 'memo', type: 'String', description: 'Optional note.', required: false},
-      ],
-    }]);
-    const params = models[0].actions![0].parameters;
-    expect(params[0]).toEqual({
-      name: 'source',
-      type: 'customer',
-      description: 'The account money leaves.',
-      isEntityRef: true,
-    });
-    expect(params[2]).toEqual({
-      name: 'currency',
-      type: 'String',
-      default: 'USD',
-      isEntityRef: false,
-    });
-    expect(params[3]).toEqual({
-      name: 'memo',
-      type: 'String',
-      description: 'Optional note.',
-      required: false,
-      isEntityRef: false,
-    });
+  test(
+      'loader parses description, required, and default and round-trips through KC',
+      () => {
+        const {models} = withActions([{
+          name: 'TransferFunds',
+          executor: MCP,
+          parameters: [
+            {
+              name: 'source',
+              concept: 'customer',
+              field: 'id',
+              description: 'The account money leaves.'
+            },
+            {
+              name: 'target',
+              concept: 'customer',
+              field: 'id',
+              description: 'The account money enters.'
+            },
+            {name: 'currency', type: 'String', default: 'USD'},
+            {
+              name: 'memo',
+              type: 'String',
+              description: 'Optional note.',
+              required: false
+            },
+          ],
+        }]);
+        const params = models[0].actions![0].parameters;
+        expect(params[0]).toEqual({
+          name: 'source',
+          type: 'Integer',
+          concept: 'customer',
+          field: 'id',
+          description: 'The account money leaves.',
+        });
+        expect(params[2]).toEqual({
+          name: 'currency',
+          type: 'String',
+          default: 'USD',
+        });
+        expect(params[3]).toEqual({
+          name: 'memo',
+          type: 'String',
+          description: 'Optional note.',
+          required: false,
+        });
 
-    const cat = generateCatalogResources(models[0], OPTS);
-    const pulled = modelsFromCatalogResources(cat.entries, cat.entryLinks);
-    expect(pulled.models[0].actions![0].parameters).toEqual(params);
-  });
+        const cat = generateCatalogResources(models[0], OPTS);
+        const pulled = modelsFromCatalogResources(cat.entries, cat.entryLinks);
+        expect(pulled.models[0].actions![0].parameters).toEqual(params);
+      });
 
-  test('validator requires descriptions when multiple parameters share a type', () => {
+  test(
+      'validator requires descriptions when multiple parameters share a type',
+      () => {
+        const missingDesc = withActions([{
+          name: 'TransferFunds',
+          executor: MCP,
+          parameters: [
+            {name: 'source', type: 'String'},
+            {name: 'target', type: 'String'},
+          ],
+        }]);
+        const errs = validatePushRequirements(
+            [{document: 'test.yaml', model: missingDesc.models[0]}],
+            {targetOptional: true});
+        expect(errs.some(
+                   e => e.includes('multiple parameters of type \'String\'')))
+            .toBe(true);
+
+        const withDesc = withActions([{
+          name: 'TransferFunds',
+          executor: MCP,
+          parameters: [
+            {name: 'source', type: 'String', description: 'Origin account.'},
+            {
+              name: 'target',
+              type: 'String',
+              description: 'Destination account.'
+            },
+          ],
+        }]);
+        expect(validatePushRequirements(
+                   [{document: 'test.yaml', model: withDesc.models[0]}],
+                   {targetOptional: true}))
+            .toEqual([]);
+      });
+
+  test('two parameters projecting the SAME field need descriptions', () => {
+    // A stronger trigger than a shared scalar type: two parameters that project
+    // one field are the same definition twice, and the only thing that can tell
+    // a caller which is which is what each one says about itself. The field's
+    // own description reaches both, so it cannot.
     const missingDesc = withActions([{
       name: 'TransferFunds',
       executor: MCP,
       parameters: [
-        {name: 'source', type: 'customer'},
-        {name: 'target', type: 'customer'},
+        {name: 'source', concept: 'customer', field: 'id'},
+        {name: 'target', concept: 'customer', field: 'id'},
       ],
     }]);
     const errs = validatePushRequirements(
         [{document: 'test.yaml', model: missingDesc.models[0]}],
         {targetOptional: true});
-    expect(errs.some(e => e.includes('multiple parameters of type \'customer\''))).toBe(true);
+    expect(errs.some(
+               e => e.includes('multiple parameters projected from') &&
+                   e.includes('customer.id')))
+        .toBe(true);
 
     const withDesc = withActions([{
       name: 'TransferFunds',
       executor: MCP,
       parameters: [
-        {name: 'source', type: 'customer', description: 'Origin account.'},
-        {name: 'target', type: 'customer', description: 'Destination account.'},
+        {
+          name: 'source',
+          concept: 'customer',
+          field: 'id',
+          description: 'Origin account.'
+        },
+        {
+          name: 'target',
+          concept: 'customer',
+          field: 'id',
+          description: 'Destination account.'
+        },
       ],
     }]);
     expect(validatePushRequirements(
-        [{document: 'test.yaml', model: withDesc.models[0]}],
-        {targetOptional: true})).toEqual([]);
+               [{document: 'test.yaml', model: withDesc.models[0]}],
+               {targetOptional: true}))
+        .toEqual([]);
   });
 
-  test('validateRunnable does not reject duplicate parameter types lacking descriptions', () => {
+  test('a projected and a declared parameter of one type still collide', () => {
+    // What a caller sees is the datatype, so that is what the check keys on.
+    // Keying it on the projection instead would let this pair through: the
+    // schema offers two integers, one of them says nothing about itself, and
+    // there is nothing to tell a caller which number goes where.
     const missingDesc = withActions([{
-      name: 'TransferFunds',
+      name: 'PlaceOrder',
       executor: MCP,
       parameters: [
-        {name: 'source', type: 'customer'},
-        {name: 'target', type: 'customer'},
-      ],
-    }]);
-    expect(validateRunnable([{document: 'test.yaml', model: missingDesc.models[0]}])).toEqual([]);
-  });
-
-  test('KC round-trip preserves empty string, null, literal "null", and exact decimal defaults', () => {
-    const {models} = withActions([{
-      name: 'EdgeCases',
-      executor: MCP,
-      parameters: [
-        {name: 'blankStr', type: 'String', default: ''},
-        {name: 'nullVal', type: 'String', default: null},
-        {name: 'literalNull', type: 'String', default: 'null'},
-        {name: 'exactDec', type: 'Decimal', default: '0.1000000000000000055'},
-        {name: 'largeInt', type: 'Integer', default: '9007199254740993'},
-      ],
-    }]);
-    const cat = generateCatalogResources(models[0], OPTS);
-    const pulled = modelsFromCatalogResources(cat.entries, cat.entryLinks);
-    expect(pulled.models[0].actions![0].parameters).toEqual(models[0].actions![0].parameters);
-  });
-
-  test('validator rejects required: true alongside default and invalid scalar defaults', () => {
-    const contradictory = withActions([{
-      name: 'BadDefault',
-      executor: MCP,
-      parameters: [
-        {name: 'currency', type: 'String', required: true, default: 'USD'},
-        {name: 'amount', type: 'Float', default: 'banana'},
+        {name: 'customer', concept: 'customer', field: 'id'},
+        {name: 'quantity', type: 'Integer'},
       ],
     }]);
     const errs = validatePushRequirements(
-        [{document: 'test.yaml', model: contradictory.models[0]}],
+        [{document: 'test.yaml', model: missingDesc.models[0]}],
         {targetOptional: true});
-    expect(errs.some(e => e.includes('\'required: true\' and a \'default\''))).toBe(true);
-    expect(errs.some(e => e.includes('default \'banana\' is invalid'))).toBe(true);
+    expect(errs.some(
+               e => e.includes('multiple parameters of type \'Integer\'') &&
+                   e.includes('parameter \'quantity\' must have')))
+        .toBe(true);
+
+    // Describing the one that said nothing settles it; `customer` already
+    // inherited a description from the field it projects.
+    const withDesc = withActions([{
+      name: 'PlaceOrder',
+      executor: MCP,
+      parameters: [
+        {name: 'customer', concept: 'customer', field: 'id'},
+        {name: 'quantity', type: 'Integer', description: 'How many.'},
+      ],
+    }]);
+    expect(validatePushRequirements(
+               [{document: 'test.yaml', model: withDesc.models[0]}],
+               {targetOptional: true}))
+        .toEqual([]);
+  });
+
+  test(
+      'validateRunnable does not reject duplicate parameter types lacking descriptions',
+      () => {
+        const missingDesc = withActions([{
+          name: 'TransferFunds',
+          executor: MCP,
+          parameters: [
+            {name: 'source', type: 'String'},
+            {name: 'target', type: 'String'},
+          ],
+        }]);
+        expect(validateRunnable([
+          {document: 'test.yaml', model: missingDesc.models[0]}
+        ])).toEqual([]);
+      });
+
+  test(
+      'KC round-trip preserves empty string, null, literal "null", and exact decimal defaults',
+      () => {
+        const {models} = withActions([{
+          name: 'EdgeCases',
+          executor: MCP,
+          parameters: [
+            {name: 'blankStr', type: 'String', default: ''},
+            {name: 'nullVal', type: 'String', default: null},
+            {name: 'literalNull', type: 'String', default: 'null'},
+            {
+              name: 'exactDec',
+              type: 'Decimal',
+              default: '0.1000000000000000055'
+            },
+            {name: 'largeInt', type: 'Integer', default: '9007199254740993'},
+          ],
+        }]);
+        const cat = generateCatalogResources(models[0], OPTS);
+        const pulled = modelsFromCatalogResources(cat.entries, cat.entryLinks);
+        expect(pulled.models[0].actions![0].parameters)
+            .toEqual(models[0].actions![0].parameters);
+      });
+
+  test(
+      'validator rejects required: true alongside default and invalid scalar defaults',
+      () => {
+        const contradictory = withActions([{
+          name: 'BadDefault',
+          executor: MCP,
+          parameters: [
+            {name: 'currency', type: 'String', required: true, default: 'USD'},
+            {name: 'amount', type: 'Float', default: 'banana'},
+          ],
+        }]);
+        const errs = validatePushRequirements(
+            [{document: 'test.yaml', model: contradictory.models[0]}],
+            {targetOptional: true});
+        expect(
+            errs.some(e => e.includes('\'required: true\' and a \'default\'')))
+            .toBe(true);
+        expect(errs.some(e => e.includes('default \'banana\' is invalid')))
+            .toBe(true);
+      });
+});
+
+
+describe('a published statement and a run read the verb the same way', () => {
+  // These are the forms `run_action.test.ts` already drives through a `sql`
+  // executor. Before the readers were shared, every one of them ran in the
+  // library and was refused by `kcmd push` and `kcmd action run`, which both
+  // call `sqlExecutorErrors` first -- so the tests below and those ones
+  // disagreed about the same model.
+  const target =
+      '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+
+  function withStatement(sql: string): LoadedModel {
+    return {
+      document: 'doc',
+      model: {
+        name: 'm',
+        entities: [{
+          name: 'customer',
+          dataSource: 'p.d.c',
+          keys: ['id'],
+          fields: [{name: 'id', type: 'Integer'}],
+        }],
+        relationships: [],
+        metrics: [],
+        actions: [{
+          name: 'A',
+          executor: {kind: 'sql', sql: {statements: [sql]}},
+          parameters: [],
+        }],
+        customExtensions: [{
+          vendorName: 'GOOGLE',
+          data: JSON.stringify({deploymentTargets: [target]}),
+        }],
+      } as SemanticModel,
+    };
+  }
+
+  test('a leading line comment is publishable', () => {
+    expect(validatePushRequirements([
+      withStatement('-- put the money back\nUPDATE customer SET id = 1')
+    ])).toEqual([]);
+  });
+
+  test('a GoogleSQL # comment is publishable', () => {
+    // Spanner speaks GoogleSQL, where `#` opens a line comment.
+    expect(validatePushRequirements([
+      withStatement('# put the money back\nUPDATE customer SET id = 1')
+    ])).toEqual([]);
+  });
+
+  test('a leading block comment is publishable', () => {
+    expect(validatePushRequirements([
+      withStatement('/* settled */ DELETE FROM customer')
+    ])).toEqual([]);
+  });
+
+  test('a CTE ahead of the verb is publishable', () => {
+    expect(validatePushRequirements([withStatement(
+        'WITH stale AS (SELECT id FROM customer) DELETE FROM customer')]))
+        .toEqual([]);
+  });
+
+  test('sharing the scanner does not admit MERGE', () => {
+    // The scanner reads MERGE so a run can say a MERGE matched nothing.
+    // Publishing is governed by SQL_EXECUTOR_VERBS, which does not list it,
+    // so widening where the verb is found must not widen which verbs pass.
+    const errs =
+        validatePushRequirements([withStatement('MERGE INTO customer USING x')]);
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain('starts with \'MERGE\'');
+  });
+
+  test('a SELECT is still named, not reported as unreadable', () => {
+    // The scanner reads DML verbs only, so it finds nothing in a SELECT. The
+    // author wrote a query and can see that they did; answering 'no readable
+    // DML verb' would describe their own statement back to them.
+    const errs =
+        validatePushRequirements([withStatement('SELECT * FROM customer')]);
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain('starts with \'SELECT\'');
+  });
+
+  test('a statement with no verb at all reports the absence', () => {
+    const errs = validatePushRequirements([withStatement('-- nothing here')]);
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain('has no readable DML verb');
+  });
+});
+
+
+describe('a lone projection is not blamed for a duplication', () => {
+  const target =
+      '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+
+  test(
+      'one parameter projected from a field, beside a described scalar of the same type',
+      () => {
+        // The bucket collides by DATATYPE: `account` has no description of its
+        // own and `quantity` does, so only `account` is indistinct. It is the
+        // only parameter projected from `Account.accountId`, so naming that
+        // field sends the author hunting for a second projection to delete.
+        const errs = validatePushRequirements([{
+          document: 'doc',
+          model: {
+            name: 'm',
+            entities: [{
+              name: 'Account',
+              dataSource: 'p.d.a',
+              keys: ['accountId'],
+              fields: [{name: 'accountId', type: 'Integer'}],
+            }],
+            relationships: [],
+            metrics: [],
+            actions: [{
+              name: 'A',
+              executor: {kind: 'mcp', mcp: MCP.mcp},
+              parameters: [
+                {name: 'account', concept: 'Account', field: 'accountId',
+                 type: 'Integer'},
+                {name: 'quantity', type: 'Integer', description: 'How many.'},
+              ],
+            }],
+            customExtensions: [{
+              vendorName: 'GOOGLE',
+              data: JSON.stringify({deploymentTargets: [target]}),
+            }],
+          } as SemanticModel,
+        }]);
+        expect(errs.length).toBe(1);
+        expect(errs[0]).toContain('multiple parameters of type \'Integer\'');
+        expect(errs[0]).not.toContain('projected from');
+      });
+
+  test('two parameters projected from one field still name it', () => {
+    // The case the message was written for, which the narrower condition must
+    // not cost: both came from the same field, so the field is the fix.
+    const errs = validatePushRequirements([{
+      document: 'doc',
+      model: {
+        name: 'm',
+        entities: [{
+          name: 'Account',
+          dataSource: 'p.d.a',
+          keys: ['accountId'],
+          fields: [{name: 'accountId', type: 'Integer'}],
+        }],
+        relationships: [],
+        metrics: [],
+        actions: [{
+          name: 'A',
+          executor: {kind: 'mcp', mcp: MCP.mcp},
+          parameters: [
+            {name: 'from', concept: 'Account', field: 'accountId',
+             type: 'Integer'},
+            {name: 'to', concept: 'Account', field: 'accountId',
+             type: 'Integer'},
+          ],
+        }],
+        customExtensions: [{
+          vendorName: 'GOOGLE',
+          data: JSON.stringify({deploymentTargets: [target]}),
+        }],
+      } as SemanticModel,
+    }]);
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain(
+        'multiple parameters projected from \'Account.accountId\'');
+  });
+});
+
+
+describe('a projection the catalog cannot give back', () => {
+  test('the concept publishes but the field does not', () => {
+    // `pruneUnavailable` drops an unbound field and keeps the entity whose key
+    // still binds, and a projected parameter no longer prunes its action. So
+    // the entry goes out naming a field the `schema` aspect does not carry,
+    // and the old check -- "is the concept published" -- said yes and stayed
+    // quiet.
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [{
+        name: 'customer',
+        dataSource: 'p.d.c',
+        keys: ['id'],
+        fields: [{name: 'id', type: 'Integer', expression: 'id'}],
+      }],
+      relationships: [],
+      metrics: [],
+      actions: [{
+        name: 'Notify',
+        executor: {kind: 'mcp', mcp: MCP.mcp},
+        parameters: [{
+          name: 'who',
+          concept: 'customer',
+          field: 'email',
+          type: 'String',
+        }],
+      }],
+    };
+    const {warnings} = generateCatalogResources(model, OPTS);
+    expect(warnings.some(
+               w => w.includes('parameter \'who\'') &&
+                   w.includes('without its \'email\' field')))
+        .toBe(true);
+  });
+
+  test('the concept is a relationship, whose fields no entry records', () => {
+    // Pull rebuilds relationships from `schema-join` entry links alone, and a
+    // link records its two endpoints and nothing else -- so an association's
+    // own fields come back from no entry, published or not.
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [
+        {name: 'student', dataSource: 'p.d.s', keys: ['id'],
+         fields: [{name: 'id', type: 'Integer', expression: 'id'}]},
+        {name: 'course', dataSource: 'p.d.co', keys: ['id'],
+         fields: [{name: 'id', type: 'Integer', expression: 'id'}]},
+      ],
+      relationships: [{
+        name: 'enrollment',
+        source: {entity: 'student', columns: ['id']},
+        destination: {entity: 'course', columns: ['id']},
+        association: {
+          dataSource: 'p.d.e',
+          keys: ['student_id', 'course_id'],
+          sourceColumns: ['student_id'],
+          destinationColumns: ['course_id'],
+          fields: [{name: 'grade', type: 'String', expression: 'grade'}],
+        },
+      }],
+      metrics: [],
+      actions: [{
+        name: 'Regrade',
+        executor: {kind: 'mcp', mcp: MCP.mcp},
+        parameters: [{
+          name: 'grade',
+          concept: 'enrollment',
+          field: 'grade',
+          type: 'String',
+        }],
+      }],
+    };
+    const {warnings} = generateCatalogResources(model, OPTS);
+    expect(warnings.some(
+               w => w.includes('parameter \'grade\'') &&
+                   w.includes('is a relationship')))
+        .toBe(true);
+  });
+
+  test('a published concept and a published field warn about nothing', () => {
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [{
+        name: 'customer',
+        dataSource: 'p.d.c',
+        keys: ['id'],
+        fields: [{name: 'id', type: 'Integer', expression: 'id'}],
+      }],
+      relationships: [],
+      metrics: [],
+      actions: [{
+        name: 'Notify',
+        executor: {kind: 'mcp', mcp: MCP.mcp},
+        parameters: [
+          {name: 'who', concept: 'customer', field: 'id', type: 'Integer'}
+        ],
+      }],
+    };
+    const {warnings} = generateCatalogResources(model, OPTS);
+    expect(warnings.some(w => w.includes('parameter \'who\''))).toBe(false);
   });
 });

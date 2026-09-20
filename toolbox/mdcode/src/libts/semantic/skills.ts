@@ -357,14 +357,18 @@ function truncate(text: string, max: number): string {
   return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
 
-// The one read a skill can do, which is not a read the agent performs: an
-// argument typed as an entity takes text and the runtime resolves it to the
-// row, as part of making the call. Only a model that declares entities has any.
-const ENTITY_TYPED_ARGUMENT =
-    ' An action argument typed as an entity will also accept text that ' +
-    'identifies exactly one record, and the call fails when nothing matches ' +
-    'or more than one does -- that is the one read this skill can do for ' +
-    'you, and it is part of making the call rather than a step before it.';
+// What a key that matches nothing costs, which is the question an agent has
+// once it is told to go and find one. Every argument is a scalar, so there is
+// no resolve step to get it wrong in: a wrong key reaches the statement. This
+// runtime performs the writes of a `sql` executor itself and refuses one that
+// reports no rows, rolling the transaction back; the kinds that hand the write
+// to another system cannot say what that system does, so they do not say it.
+const KEY_MATCHES_NOTHING =
+    ' A key that matches no record costs you the call rather than the data: ' +
+    'a statement that writes no rows fails the action and rolls the whole ' +
+    'transaction back, so nothing is half-applied and nothing is silently ' +
+    'skipped. Guessing a key is therefore safe to be wrong about, and not ' +
+    'safe to be right about by accident.';
 
 // What this skill does not offer, said once rather than discovered per call.
 //
@@ -380,20 +384,21 @@ function readSideSection(
   // model declares nothing to call and then closes on a shell recipe into the
   // live store, which is the last and most concrete thing in the file.
   if (!actions.length) return [];
-  const entities = runtime.model.entities ?? [];
   const out: string[] = [];
   out.push('## Finding a record');
   out.push('');
-  // The last sentence is about arguments typed as an entity, which a model
-  // declaring no entities has none of. It is dropped rather than the section
-  // with it: the instruction above still sends an agent to lookup tools this
-  // skill does not have, and saying where a key comes from is the answer to
-  // that whether or not anything here is entity-typed.
+  // The last sentence is a promise about how a write fails, and only the
+  // `sql` kind is executed by this runtime and can be promised. It is dropped
+  // rather than the section with it: the instruction above still sends an
+  // agent to lookup tools this skill does not have, and saying where a key
+  // comes from is the answer to that whichever kind performs the write.
+  const performedHere =
+      distinctKinds(runtime.model.actions ?? []).includes('sql');
   out.push(
       'This skill offers writes, not reads. When you are given a name or a ' +
       'description where an action wants a key, the key has to come from ' +
       'somewhere else: ask the caller, or read the store directly.' +
-      (entities.length ? ENTITY_TYPED_ARGUMENT : ''));
+      (performedHere ? KEY_MATCHES_NOTHING : ''));
   out.push('');
   if (runtime.store?.kind === 'spanner') {
     const s = runtime.store;
@@ -630,7 +635,7 @@ function referenceDocument(
                   '' :
                   `\`${cell(JSON.stringify(p.default))}\``} |` :
           '';
-      out.push(`| \`${cell(p.name)}\` | ${cell(p.type)} | ${
+      out.push(`| \`${cell(p.name)}\` | ${cell(p.type ?? 'no type')} | ${
           p.required ? 'yes' : 'no'} |${def} ${cell(p.description)} |`);
     }
   } else {

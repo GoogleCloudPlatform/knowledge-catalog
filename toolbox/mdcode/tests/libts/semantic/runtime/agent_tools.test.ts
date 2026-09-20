@@ -29,7 +29,8 @@ const NO_CLIENT = {} as any;
 // is real enough to be there -- a runtime carrying none yields tools that
 // refuse, which is its own test below -- and its client answers only the
 // tests that make a call.
-function rt(model: SemanticModel, client: unknown = NO_CLIENT): SemanticRuntime {
+function rt(
+    model: SemanticModel, client: unknown = NO_CLIENT): SemanticRuntime {
   return {
     model,
     document: 'test',
@@ -99,8 +100,8 @@ function loadFixtureModel(name: string): SemanticModel {
 // The fixture's action is performed by MCP and gated by a constraint, so it is
 // the "cannot run here" case twice over. Several tests below need one the
 // runtime WOULD run, which means its own write and no guard.
-function withExecutor(model: SemanticModel, over: Partial<Action>):
-    SemanticModel {
+function withExecutor(
+    model: SemanticModel, over: Partial<Action>): SemanticModel {
   const [action] = model.actions!;
   return {...model, actions: [{...action, ...over}]};
 }
@@ -143,18 +144,24 @@ describe('action tools', () => {
     }
   });
 
-  test('an entity parameter asks for a reference, a scalar for its type', () => {
-    const byName = Object.fromEntries(tools[0].parameters.map(p => [p.name, p]));
+  test(
+      'every parameter asks for a scalar, whichever way it was written', () => {
+        const byName =
+            Object.fromEntries(tools[0].parameters.map(p => [p.name, p]));
 
-    // `customer` is typed by the ontology, so the caller supplies something
-    // that identifies one rather than a key it may not have.
-    expect(byName['customer'].type).toBe('string');
-    expect(byName['customer'].description).toContain('customer');
-    expect(byName['customer'].description).toContain('more than one');
+        // `customer` is projected from customer.c_custkey, so the tool asks for
+        // that field's type and describes it in that field's words. Nothing
+        // here tells a caller it is a projection: what the call needs is a
+        // value, and where the definition came from is the model's business.
+        expect(byName['customer'].type).toBe('integer');
+        expect(byName['customer'].description)
+            .toBe('The customer\'s account number.');
 
-    expect(byName['quantity'].type).toBe('integer');
-    expect(byName['quantity'].description).toContain('whole number');
-  });
+        // `quantity` stands alone, and falls back to wording built from its
+        // type.
+        expect(byName['quantity'].type).toBe('integer');
+        expect(byName['quantity'].description).toContain('whole number');
+      });
 
   test('every action parameter is required', () => {
     expect(tools[0].parameters.every(p => p.required)).toBe(true);
@@ -176,43 +183,48 @@ describe('action tools', () => {
     expect(Object.keys(tools[0])).not.toContain('approvals');
   });
 
-  test('authored parameter descriptions and optional/default flags reach the tool', () => {
-    const custom = withExecutor(model, {
-      parameters: [
-        {
-          name: 'source',
-          type: 'customer',
-          description: 'The account money leaves.',
-          isEntityRef: true,
-        },
-        {
-          name: 'currency',
-          type: 'String',
-          description: 'ISO currency code.',
-          default: 'USD',
-          isEntityRef: false,
-        },
-        {
-          name: 'memo',
-          type: 'String',
-          required: false,
-          isEntityRef: false,
-        },
-      ],
-    });
-    const [tool] = actionTools({runtime: rt(custom)});
-    const byName = Object.fromEntries(tool.parameters.map(p => [p.name, p]));
+  test(
+      'authored parameter descriptions and optional/default flags reach the tool',
+      () => {
+        const custom = withExecutor(model, {
+          parameters: [
+            {
+              name: 'source',
+              type: 'Integer',
+              concept: 'customer',
+              field: 'id',
+              description: 'The account money leaves.',
+            },
+            {
+              name: 'currency',
+              type: 'String',
+              description: 'ISO currency code.',
+              default: 'USD',
+            },
+            {
+              name: 'memo',
+              type: 'String',
+              required: false,
+            },
+          ],
+        });
+        const [tool] = actionTools({runtime: rt(custom)});
+        const byName =
+            Object.fromEntries(tool.parameters.map(p => [p.name, p]));
 
-    expect(byName['source'].description).toStartWith('The account money leaves.');
-    expect(byName['source'].description).toContain('identifies exactly one customer');
-    expect(byName['source'].required).toBe(true);
+        // A projected parameter reaches the caller as the scalar it resolved
+        // to. Nothing tells it apart from a parameter that declared Integer
+        // itself, which is the point: the caller supplies a value either way.
+        expect(byName['source'].description).toBe('The account money leaves.');
+        expect(byName['source'].type).toBe('integer');
+        expect(byName['source'].required).toBe(true);
 
-    expect(byName['currency'].description).toBe('ISO currency code.');
-    expect(byName['currency'].required).toBe(false);
-    expect(byName['currency'].default).toBe('USD');
+        expect(byName['currency'].description).toBe('ISO currency code.');
+        expect(byName['currency'].required).toBe(false);
+        expect(byName['currency'].default).toBe('USD');
 
-    expect(byName['memo'].required).toBe(false);
-  });
+        expect(byName['memo'].required).toBe(false);
+      });
 
   test('the tool description includes the gating constraint rule text', () => {
     expect(tools[0].description)
@@ -234,21 +246,21 @@ describe('a tool this runtime would refuse', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
 
   test('an action runnable here is marked so, with no excuse attached', () => {
-    const [tool] = actionTools(
-        {runtime: rt(withExecutor(model, RUNNABLE))});
+    const [tool] = actionTools({runtime: rt(withExecutor(model, RUNNABLE))});
     expect(tool.runnable).toBe(true);
     expect(tool.unavailable).toBeUndefined();
     expect(tool.description).not.toContain('will not work');
   });
 
-  test('a guarded action is not runnable while nothing checks the guard', () => {
-    const guarded = withExecutor(
-        model, {...RUNNABLE, guards: ['OrderWithinCustomerCredit']});
-    const [tool] = actionTools({runtime: rt(guarded)});
-    expect(tool.runnable).toBe(false);
-    expect(tool.unavailable).toContain('OrderWithinCustomerCredit');
-    expect(tool.unavailable).toContain('refused rather than run unchecked');
-  });
+  test(
+      'a guarded action is not runnable while nothing checks the guard', () => {
+        const guarded = withExecutor(
+            model, {...RUNNABLE, guards: ['OrderWithinCustomerCredit']});
+        const [tool] = actionTools({runtime: rt(guarded)});
+        expect(tool.runnable).toBe(false);
+        expect(tool.unavailable).toContain('OrderWithinCustomerCredit');
+        expect(tool.unavailable).toContain('refused rather than run unchecked');
+      });
 
   test('a remote executor is not runnable without a handler', () => {
     // The fixture's own action: MCP commits outside the transaction.
@@ -276,11 +288,12 @@ describe('a tool this runtime would refuse', () => {
     expect(tool.unavailable).toContain('somewhere else');
   });
 
-  test('the reason reaches the description, where a caller will read it', () => {
-    const [tool] = actionTools({runtime: rt(model)});
-    expect(tool.description).toContain('will not work');
-    expect(tool.description).toContain('Report that rather than retrying');
-  });
+  test(
+      'the reason reaches the description, where a caller will read it', () => {
+        const [tool] = actionTools({runtime: rt(model)});
+        expect(tool.description).toContain('will not work');
+        expect(tool.description).toContain('Report that rather than retrying');
+      });
 });
 
 
@@ -350,9 +363,10 @@ describe('what counts as runnable is the runtime\'s answer, not a copy', () => {
   });
 
   test('a judge makes an action guarded by a judgment offerable', () => {
-    const [tool] = actionTools(
-        {runtime: rt(guardedBy(judged, 'CreditIsJustified')),
-         judge: neverAsked});
+    const [tool] = actionTools({
+      runtime: rt(guardedBy(judged, 'CreditIsJustified')),
+      judge: neverAsked
+    });
     expect(tool.runnable).toBe(true);
     expect(tool.unavailable).toBeUndefined();
   });
@@ -362,9 +376,10 @@ describe('what counts as runnable is the runtime\'s answer, not a copy', () => {
     // rule when an action runs, and listing what an agent is offered runs
     // none. A derivation that spent a model call per guarded action would make
     // `kcmd agent tools` cost money to read.
-    const [tool] = actionTools(
-        {runtime: rt(guardedBy(judged, 'CreditIsJustified')),
-         judge: neverAsked});
+    const [tool] = actionTools({
+      runtime: rt(guardedBy(judged, 'CreditIsJustified')),
+      judge: neverAsked
+    });
     expect(tool.actionName).toBe('PlaceOrder');
   });
 
@@ -389,19 +404,14 @@ describe('what counts as runnable is the runtime\'s answer, not a copy', () => {
 });
 
 
-// A refusal the model alone decides is a refusal every call would meet. Asking
-// it once, before the tool is offered, is the difference between an agent that
-// never sees a dead tool and one that spends a turn -- and a transaction --
-// finding out. These are the answers that were previously reached only where
-// the runtime binds, which is inside the transaction.
-describe(
-    'a binding this runtime cannot fill is refused before the store', () => {
+// The shape of an entity's key used to decide whether a tool was offered at
+// all: one parameter carried a whole reference, and a key in more than one part
+// had nowhere to go. A parameter now carries a value, so that question is gone
+// and the tool is offered whatever the key looks like.
+describe('the shape of an entity key withholds no tool', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
 
-  test('an object reference to a composite-keyed entity', () => {
-        // `customer` is the type of PlaceOrder's entity-typed parameter. Give
-        // it a two-part key and no single statement parameter can carry the
-        // reference, so binding refuses -- whatever row the caller named.
+  test('a key in two parts is offered like any other', () => {
     const composite = {
       ...model,
       entities: model.entities.map(
@@ -409,60 +419,37 @@ describe(
               {...e, keys: ['c_custkey', 'c_nationkey']} :
               e),
     };
-        const [tool] =
-            actionTools({runtime: rt(withExecutor(composite, RUNNABLE))});
-    expect(tool.runnable).toBe(false);
-    expect(tool.unavailable).toContain('2 parts');
+    const [tool] =
+        actionTools({runtime: rt(withExecutor(composite, RUNNABLE))});
+    expect(tool.runnable).toBe(true);
+    expect(tool.unavailable).toBeUndefined();
   });
 
-      test(
-          'an integer-keyed entity the action creates is still offered', () => {
-            // `orders` is keyed by o_orderkey, an Integer. The runtime writes
-            // no key of its own, so the type of a column it never fills is not
-            // a reason to withhold the tool.
-    const creates = withExecutor(model, {
+  test('a caller names each part of it as an ordinary parameter', () => {
+    // Nothing spells a two-part key for the author: the action states one
+    // parameter per column, and each takes its type from the field it names.
+    const twoPart = withExecutor(model, {
       ...RUNNABLE,
-      affects: [{concept: 'orders', operation: 'create'}],
-      executor: {
-        kind: 'sql',
-        sql: {
-          statements:
-              ['INSERT INTO orders (o_orderkey) VALUES (@quantity)'],
+      parameters: [
+        {
+          name: 'custkey',
+          type: 'Integer',
+          concept: 'customer',
+          field: 'c_custkey'
         },
-      },
+        {
+          name: 'nationkey',
+          type: 'Integer',
+          concept: 'customer',
+          field: 'c_nationkey'
+        },
+      ],
     });
-    const typed = {
-      ...creates,
-      entities: creates.entities.map(
-                  e => e.name === 'orders' ? {
-                ...e,
-                fields: e.fields.map(
-                        f => f.name === 'o_orderkey' ?
-                            {...f, type: 'Integer' as const} :
-                            f),
-              } :
-              e),
-    };
-    const [tool] = actionTools({runtime: rt(typed)});
-    expect(tool.runnable).toBe(true);
-  });
-
-  test('a handler is not held to it, because it writes its own DML', () => {
-        // A handler is given `refs` whole and may spell a composite key across
-        // as many parameters as it likes. The question is not the handler's to
-        // answer.
-    const composite = {
-      ...model,
-      entities: model.entities.map(
-          e => e.name === 'customer' ?
-              {...e, keys: ['c_custkey', 'c_nationkey']} :
-              e),
-    };
-    const [tool] = actionTools({
-      runtime: rt(withExecutor(composite, {guards: []})),
-      handler: async () => ({statements: []}),
-    });
-    expect(tool.runnable).toBe(true);
+    const [tool] = actionTools({runtime: rt(twoPart)});
+    expect(tool.parameters.map(p => [p.name, p.type])).toEqual([
+      ['custkey', 'integer'],
+      ['nationkey', 'integer'],
+    ]);
   });
 });
 
@@ -480,8 +467,8 @@ describe('what a tool says it is gated by', () => {
       onViolation: 'warn',
     };
     const base = withExecutor(model, {...RUNNABLE, guards: ['AmountIsLarge']});
-    const [tool] = actionTools(
-        {runtime: rt({...base, constraints: [advisory]})});
+    const [tool] =
+        actionTools({runtime: rt({...base, constraints: [advisory]})});
     expect(tool.runnable).toBe(true);
     expect(tool.description).not.toContain('gated by');
   });
@@ -494,8 +481,8 @@ describe('what a tool says it is gated by', () => {
       onViolation: 'reject',
     };
     const base = withExecutor(model, {...RUNNABLE, guards: ['QuantityIsSane']});
-    const [tool] = actionTools(
-        {runtime: rt({...base, constraints: [blocking]})});
+    const [tool] =
+        actionTools({runtime: rt({...base, constraints: [blocking]})});
     expect(tool.description).toContain('gated by QuantityIsSane');
     expect(tool.description)
         .toContain(
@@ -503,21 +490,31 @@ describe('what a tool says it is gated by', () => {
             'Ask finance first.');
   });
 
-  test('authored parameter descriptions normalize terminators and keep temporal format guidance', () => {
-    const base = withExecutor(model, {
-      ...RUNNABLE,
-      parameters: [
-        {name: 'customer', type: 'customer', isEntityRef: true, description: 'The buyer'},
-        {name: 'settledOn', type: 'Date', isEntityRef: false, description: 'When the transfer settles.'},
-      ],
-    });
-    const [tool] = actionTools({runtime: rt(base)});
-    expect(tool.parameters[0].description).toBe(
-        'The buyer. Give its key, or text that identifies exactly one ' +
-        'customer; the call fails when nothing matches or more than one does.');
-    expect(tool.parameters[1].description).toBe(
-        'When the transfer settles. As a date, YYYY-MM-DD.');
-  });
+  test(
+      'authored parameter descriptions normalize terminators and keep temporal format guidance',
+      () => {
+        const base = withExecutor(model, {
+          ...RUNNABLE,
+          parameters: [
+            {
+              name: 'customer',
+              type: 'Integer',
+              concept: 'customer',
+              field: 'id',
+              description: 'The buyer'
+            },
+            {
+              name: 'settledOn',
+              type: 'Date',
+              description: 'When the transfer settles.'
+            },
+          ],
+        });
+        const [tool] = actionTools({runtime: rt(base)});
+        expect(tool.parameters[0].description).toBe('The buyer.');
+        expect(tool.parameters[1].description)
+            .toBe('When the transfer settles. As a date, YYYY-MM-DD.');
+      });
 });
 
 
@@ -554,14 +551,15 @@ describe('a lookup that could not return a row says so up front', () => {
     expect(tool.unavailable).toContain('binding profile');
   });
 
-  test('the reason a call reports is the reason the tool advertised',
-       async () => {
-         const entities = model.entities.map(
-             e => e.name === 'customer' ? {...e, abstract: true} : e);
-         const tool = lookupFor(entities, 'customer');
-         const rows = await tool.invoke({});
-         expect(rows.problem).toBe(tool.unavailable);
-       });
+  test(
+      'the reason a call reports is the reason the tool advertised',
+      async () => {
+        const entities = model.entities.map(
+            e => e.name === 'customer' ? {...e, abstract: true} : e);
+        const tool = lookupFor(entities, 'customer');
+        const rows = await tool.invoke({});
+        expect(rows.problem).toBe(tool.unavailable);
+      });
 });
 
 
@@ -579,27 +577,28 @@ describe('a handler does not displace an action\'s own statements', () => {
       runtime: rt(withExecutor(model, RUNNABLE), store.client),
       handler: async () => ({statements: [{sql: HANDLER_SQL}]}),
     });
-    const result = await tool.invoke({customer: 'Alice', quantity: 2});
+    const result = await tool.invoke({customer: 1, quantity: 2});
     expect(result.applied).toBe(true);
     expect(store.sql).toContain(
         'UPDATE orders SET o_totalprice = 0 WHERE 1 = 0');
     expect(store.sql).not.toContain(HANDLER_SQL);
   });
 
-  test('a remote executor still gets the handler, which is what it is for',
-       async () => {
-         // The fixture's PlaceOrder is performed by MCP, so without a handler
-         // there is nothing this runtime can run.
-         const store = new FakeStore();
-         const [tool] = actionTools({
-           runtime: rt(withExecutor(model, {guards: []}), store.client),
-           handler: async () => ({statements: [{sql: HANDLER_SQL}]}),
-         });
-         expect(tool.runnable).toBe(true);
-         const result = await tool.invoke({customer: 'Alice', quantity: 2});
-         expect(result.applied).toBe(true);
-         expect(store.sql).toContain(HANDLER_SQL);
-       });
+  test(
+      'a remote executor still gets the handler, which is what it is for',
+      async () => {
+        // The fixture's PlaceOrder is performed by MCP, so without a handler
+        // there is nothing this runtime can run.
+        const store = new FakeStore();
+        const [tool] = actionTools({
+          runtime: rt(withExecutor(model, {guards: []}), store.client),
+          handler: async () => ({statements: [{sql: HANDLER_SQL}]}),
+        });
+        expect(tool.runnable).toBe(true);
+        const result = await tool.invoke({customer: 1, quantity: 2});
+        expect(result.applied).toBe(true);
+        expect(store.sql).toContain(HANDLER_SQL);
+      });
 });
 
 
@@ -608,8 +607,10 @@ describe('entity tools', () => {
   const tools = entityTools({runtime: rt(model)});
 
   test('one lookup tool per entity', () => {
-    expect(tools.map(t => t.name)).toEqual(model.entities.map(
-        e => `find_${e.name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase()}`));
+    expect(tools.map(t => t.name))
+        .toEqual(model.entities.map(
+            e => `find_${
+                e.name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase()}`));
   });
 
   test('the filters are the fields the profile bound to columns', () => {
@@ -673,8 +674,8 @@ semantic_model:
 
   test('a field the model says nothing about gets only the behavior', () => {
     const amount = lineItem.parameters.find(p => p.name === 'amount')!;
-    expect(amount.description).toBe(
-        'Match LineItem.amount exactly. Omit to leave it unfiltered.');
+    expect(amount.description)
+        .toBe('Match LineItem.amount exactly. Omit to leave it unfiltered.');
   });
 });
 
@@ -710,16 +711,17 @@ describe('how a lookup filter reaches the store', () => {
     expect(stmt.paramTypes!['f_0']).toEqual({code: 'INT64'});
   });
 
-  test('a value the field\'s type has no room for is reported, not matched',
-       async () => {
-         const store = new FakeStore();
-         const [tool] = entityTools({runtime: rt(typedOrders(), store.client)});
-         const rows = await tool.invoke({o_orderkey: 'not-a-number'});
-         expect(rows.problem).toContain('Integer');
-         expect(rows.problem).toContain('No orders has o_orderkey');
-         // Nothing was asked of the store: there is no row it could mean.
-         expect(store.statements).toHaveLength(0);
-       });
+  test(
+      'a value the field\'s type has no room for is reported, not matched',
+      async () => {
+        const store = new FakeStore();
+        const [tool] = entityTools({runtime: rt(typedOrders(), store.client)});
+        const rows = await tool.invoke({o_orderkey: 'not-a-number'});
+        expect(rows.problem).toContain('Integer');
+        expect(rows.problem).toContain('No orders has o_orderkey');
+        // Nothing was asked of the store: there is no row it could mean.
+        expect(store.statements).toHaveLength(0);
+      });
 
   test('an empty string filters on the empty string', async () => {
     // The dangerous reading is the other one. Dropping '' as though the filter
@@ -801,7 +803,9 @@ describe('one name space for everything a model offers', () => {
     };
     const {lookups, actions} = modelTools({runtime: rt(clashing)});
     expect(actions.map(t => t.name)).toEqual(['find_customer']);
-    expect(lookups.map(t => t.name)).toEqual(['find_orders', 'lookup_customer']);
+    expect(lookups.map(t => t.name)).toEqual([
+      'find_orders', 'lookup_customer'
+    ]);
   });
 
   test('two actions that snake-case alike are still told apart', () => {
@@ -813,7 +817,9 @@ describe('one name space for everything a model offers', () => {
       ],
     };
     const {actions} = modelTools({runtime: rt(twins)});
-    expect(actions.map(t => t.name)).toEqual(['issue_credit', 'issue_credit_2']);
+    expect(actions.map(t => t.name)).toEqual([
+      'issue_credit', 'issue_credit_2'
+    ]);
   });
 
   test('nothing is renamed when nothing collides', () => {
@@ -875,17 +881,18 @@ describe('the instruction an agent is given comes from the model', () => {
         .toBe(true);
   });
 
-  test('how to use the tools is supplied whether or not the model speaks',
-       () => {
-         // The half that describes the tools is the derivation's to state: it
-         // is a contract this module defines, and a model that says nothing
-         // has not thereby withdrawn it.
-         const {instruction} = modelTools({runtime: rt(model)});
-         expect(model.aiContext?.instructions).toBeUndefined();
-         expect(instruction).toContain('Never invent an identifier');
-         expect(instruction).toContain('lookup tools');
-         expect(instruction).toContain('did not happen');
-       });
+  test(
+      'how to use the tools is supplied whether or not the model speaks',
+      () => {
+        // The half that describes the tools is the derivation's to state: it
+        // is a contract this module defines, and a model that says nothing
+        // has not thereby withdrawn it.
+        const {instruction} = modelTools({runtime: rt(model)});
+        expect(model.aiContext?.instructions).toBeUndefined();
+        expect(instruction).toContain('Never invent an identifier');
+        expect(instruction).toContain('lookup tools');
+        expect(instruction).toContain('did not happen');
+      });
 
   test('the two parts are separated, not run together', () => {
     const stated = {
@@ -899,17 +906,16 @@ describe('the instruction an agent is given comes from the model', () => {
 
 
 describe('what a caller is told about an outcome', () => {
-  test('a commit reports when, and what it acted on', () => {
-    // The rows, not the arguments: an agent that said "Alice" should report
-    // the customer it actually wrote to.
+  test('a commit reports that it landed, and when', () => {
+    // Every argument is a value the caller supplied, so a commit has nothing
+    // to tell it about rows it picked out on its own -- the write either
+    // matched what the caller named or it refused.
     const result = describeOutcome({
       status: 'committed',
       commitTimestamp: '2026-09-11T00:00:00Z',
-      refs: {buyer: {entity: 'customer', keys: ['42'], input: 'Alice'}},
     });
     expect(result.applied).toBe(true);
     expect(result.committedAt).toBe('2026-09-11T00:00:00Z');
-    expect(result.actedOn).toEqual({buyer: ['42']});
     expect(result.unknown).toBeUndefined();
   });
 
@@ -919,7 +925,6 @@ describe('what a caller is told about an outcome', () => {
     // a write that met every rule the model states.
     const result = describeOutcome({
       status: 'committed',
-      refs: {},
       warnings: ['\'CreditIsJustified\' was not checked: no judge to ask.'],
     });
     expect(result.applied).toBe(true);
@@ -929,7 +934,7 @@ describe('what a caller is told about an outcome', () => {
   });
 
   test('a commit with nothing to report carries no warnings key', () => {
-    const result = describeOutcome({status: 'committed', refs: {}});
+    const result = describeOutcome({status: 'committed'});
     expect(result.warnings).toBeUndefined();
   });
 
@@ -959,8 +964,7 @@ describe('what a caller is told about an outcome', () => {
   test('no outcome hands the caller an approval', () => {
     // Whatever comes back, the party that needs approving cannot grant it.
     for (const result
-             of [describeOutcome(
-                     {status: 'committed', refs: {}, commitTimestamp: 't'}),
+             of [describeOutcome({status: 'committed', commitTimestamp: 't'}),
                  describeOutcome({status: 'error', message: 'no'}),
     ]) {
       expect(Object.keys(result).join(' ').toLowerCase())
@@ -985,32 +989,34 @@ describe('an entity whose fields await transpilation', () => {
       if (entity.name !== name) return entity;
       return {
         ...entity,
-        fields: entity.fields.map(
-            field => ({
-              ...field,
-              expression: undefined,
-              importedExpression: field.expression,
-              importedDialect: 'SNOWFLAKE',
-            })),
+        fields: entity.fields.map(field => ({
+                                    ...field,
+                                    expression: undefined,
+                                    importedExpression: field.expression,
+                                    importedDialect: 'SNOWFLAKE',
+                                  })),
       };
     });
   }
 
-  test('is readable, because the imported expression names a real column',
-       () => {
-         const tool =
-             entityTools({runtime: rt({...model, entities: untranspiled('customer')})})
-                 .find(t => t.entityName === 'customer')!;
-         expect(tool.runnable).toBe(true);
-         expect(tool.unavailable).toBeUndefined();
-       });
+  test(
+      'is readable, because the imported expression names a real column',
+      () => {
+        const tool =
+            entityTools({
+              runtime: rt({...model, entities: untranspiled('customer')})
+            }).find(t => t.entityName === 'customer')!;
+        expect(tool.runnable).toBe(true);
+        expect(tool.unavailable).toBeUndefined();
+      });
 
   test('offers the same filters it would after transpilation', () => {
-    const before = entityTools({runtime: rt(model)})
-                       .find(t => t.entityName === 'customer')!;
-    const after =
-        entityTools({runtime: rt({...model, entities: untranspiled('customer')})})
-            .find(t => t.entityName === 'customer')!;
+    const before = entityTools({
+                     runtime: rt(model)
+                   }).find(t => t.entityName === 'customer')!;
+    const after = entityTools({
+                    runtime: rt({...model, entities: untranspiled('customer')})
+                  }).find(t => t.entityName === 'customer')!;
     expect(after.parameters.map(p => p.name))
         .toEqual(before.parameters.map(p => p.name));
   });

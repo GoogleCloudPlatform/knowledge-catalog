@@ -23,9 +23,9 @@ import {serializeModel} from '../libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
 import {AvailabilityReport, DEFAULT_PROFILE, mergeProfileOntoDoc, pruneUnavailable,} from '../libts/semantic/resolve_profiles';
 import {ActionTool, EntityTool, modelTools} from '../libts/semantic/runtime/agent_tools';
-import {JudgeStore} from '../libts/semantic/runtime/judge';
+import {Judge, JudgeStore} from '../libts/semantic/runtime/judge';
 import {modelJudgeStore} from '../libts/semantic/runtime/judge_store';
-import {isParameterRequired, runAction, runLine} from '../libts/semantic/runtime/run_action';
+import {isParameterRequired, runAction, runLine, whyRefusedWithoutRunning,} from '../libts/semantic/runtime/run_action';
 import {createSemanticRuntimes, runtimeClient, SemanticRuntime} from '../libts/semantic/runtime/runtime';
 import {dataClientFor, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
@@ -84,40 +84,41 @@ export interface PushOptions {
   // Semantic-model push only. See ../libts/semantic/transpile.
   transpile?: boolean;
   // How many binding profiles the graph leg deploys for -- the graph axis. cac
-  // folds three flags onto this one key: `--no-profile` sets it false (deploy no
-  // graph, publish only to Knowledge Catalog); `--profile <name>` sets the string
-  // (deploy that one, reading `<model>.profiles/<name>.yaml`); omitted leaves it
-  // undefined (the model's default binding: `default_profile` from catalog.yaml,
-  // else the inline bindings -- the implicit 'default' profile). A profile's
-  // deployment target selects the graph backend, so the profile -- not a flag --
-  // decides where the graph deploys. Mutually exclusive with allProfiles.
-  // Semantic-model push only.
+  // folds three flags onto this one key: `--no-profile` sets it false (deploy
+  // no graph, publish only to Knowledge Catalog); `--profile <name>` sets the
+  // string (deploy that one, reading `<model>.profiles/<name>.yaml`); omitted
+  // leaves it undefined (the model's default binding: `default_profile` from
+  // catalog.yaml, else the inline bindings -- the implicit 'default' profile).
+  // A profile's deployment target selects the graph backend, so the profile --
+  // not a flag -- decides where the graph deploys. Mutually exclusive with
+  // allProfiles. Semantic-model push only.
   profile?: string|boolean;
-  // Deploy the graph once per defined binding profile (plus the inline 'default'
-  // when the document itself declares a target), instead of a single profile:
-  // the "all" end of the profile axis. `--all-profiles`. The Knowledge Catalog
-  // leg still records one canonical view (the default binding). Mutually exclusive
-  // with profile and with --no-profile. Semantic-model push only.
+  // Deploy the graph once per defined binding profile (plus the inline
+  // 'default' when the document itself declares a target), instead of a single
+  // profile: the "all" end of the profile axis. `--all-profiles`. The Knowledge
+  // Catalog leg still records one canonical view (the default binding).
+  // Mutually exclusive with profile and with --no-profile. Semantic-model push
+  // only.
   allProfiles?: boolean;
 }
 
 
-// Guard the push flag combination before any work. A push has two axes: how many
-// binding profiles the graph deploys for (--no-profile = none, default = the
-// default one, --profile = one, --all-profiles = all) and whether the Knowledge
-// Catalog leg runs (--no-kc). The graph backend is never a command-line choice
-// (each model's deployment target names it). --no-profile deploys no graph, so it
-// cannot also ask for a profile, and --profile / --all-profiles are mutually
-// exclusive. Returns an error to report, or null when the combination is
-// coherent.
+// Guard the push flag combination before any work. A push has two axes: how
+// many binding profiles the graph deploys for (--no-profile = none, default =
+// the default one, --profile = one, --all-profiles = all) and whether the
+// Knowledge Catalog leg runs (--no-kc). The graph backend is never a
+// command-line choice (each model's deployment target names it). --no-profile
+// deploys no graph, so it cannot also ask for a profile, and --profile /
+// --all-profiles are mutually exclusive. Returns an error to report, or null
+// when the combination is coherent.
 export function checkPushSelection(sel: {
-  graphEnabled: boolean;
-  kcEnabled: boolean;
-  allProfiles: boolean;
+  graphEnabled: boolean; kcEnabled: boolean; allProfiles: boolean;
   namedProfile: boolean;
 }): {error: string}|null {
   if (!sel.graphEnabled && !sel.kcEnabled) {
-    return {error: '--no-profile and --no-kc together leave nothing to deploy.'};
+    return {
+      error: '--no-profile and --no-kc together leave nothing to deploy.'
+    };
   }
   if (!sel.graphEnabled && (sel.allProfiles || sel.namedProfile)) {
     return {
@@ -354,15 +355,15 @@ export async function push(options: PushOptions): Promise<number> {
     }
 
     // Merge one binding profile onto every model document, returning the merged
-    // docs (or null after reporting an error). The implicit 'default' profile is
-    // the inline document as authored, so nothing is merged. With `skipMissing`
-    // (the --all-profiles fan-out) a model that does not define the profile is
-    // dropped from the result rather than erroring -- the profile name came from
-    // another model in the group and is not this one's concern; without it (an
-    // explicit --profile) a missing profile is an error.
-    const mergeForProfile =
-        (profileName: string, {skipMissing = false} = {}):
-            Array<{name: string; text: string}>|null => {
+    // docs (or null after reporting an error). The implicit 'default' profile
+    // is the inline document as authored, so nothing is merged. With
+    // `skipMissing` (the --all-profiles fan-out) a model that does not define
+    // the profile is dropped from the result rather than erroring -- the
+    // profile name came from another model in the group and is not this one's
+    // concern; without it (an explicit --profile) a missing profile is an
+    // error.
+    const mergeForProfile = (profileName: string, {skipMissing = false} = {}):
+        Array<{name: string; text: string}>|null => {
           if (profileName === DEFAULT_PROFILE) return layoutDocs;
           const merged: Array<{name: string; text: string}> = [];
           for (const doc of layoutDocs) {
@@ -478,16 +479,16 @@ export async function push(options: PushOptions): Promise<number> {
       return docs;
     };
     const prepareCache = new Map<string, Prepared|null>();
-    const prepareOnce =
-        async(docs: Array<{name: string; text: string}>, profileName: string,
-              prune: boolean): Promise<Prepared|null> => {
-          const key = `${profileName}|${prune}|${
-              docs.map(d => d.name).sort().join(',')}`;
-          if (prepareCache.has(key)) return prepareCache.get(key)!;
-          const prepared = await prepareModels(docs, profileName, {prune});
-          prepareCache.set(key, prepared);
-          return prepared;
-        };
+    const prepareOnce = async(
+        docs: Array<{name: string; text: string}>, profileName: string,
+        prune: boolean): Promise<Prepared|null> => {
+      const key =
+          `${profileName}|${prune}|${docs.map(d => d.name).sort().join(',')}`;
+      if (prepareCache.has(key)) return prepareCache.get(key)!;
+      const prepared = await prepareModels(docs, profileName, {prune});
+      prepareCache.set(key, prepared);
+      return prepared;
+    };
 
     // The graph binding profiles to deploy, in a deterministic order (named
     // profiles first, sorted, then the inline 'default'). --all-profiles fans
@@ -537,7 +538,8 @@ export async function push(options: PushOptions): Promise<number> {
     // Per model, what deploys through the Knowledge Catalog leg ALONE:
     // actions and constraints both have a catalog home and no graph one, so a
     // push that omits that leg has to account for either.
-    const catalogOnly = new Map<string, {actions: number; constraints: number}>();
+    const catalogOnly =
+        new Map<string, {actions: number; constraints: number}>();
     const noteCatalogOnly = (loaded: LoadedModel[]) => {
       for (const {model} of loaded) {
         const actions = model.actions?.length ?? 0;
@@ -569,8 +571,10 @@ export async function push(options: PushOptions): Promise<number> {
           const owner = claimedTargets.get(uri);
           if (owner !== undefined) {
             console.error(
-                `Error: binding profiles '${owner}' and '${profileName}' both ` +
-                `deploy to the same graph '${uri}'; give each profile its own ` +
+                `Error: binding profiles '${owner}' and '${
+                    profileName}' both ` +
+                `deploy to the same graph '${
+                    uri}'; give each profile its own ` +
                 `deployment target (the second would overwrite the first).`);
             return 1;
           }
@@ -605,7 +609,8 @@ export async function push(options: PushOptions): Promise<number> {
               deployedProfiles.length} binding profile(s)` +
           (deployedProfiles.length ? ` (${deployedProfiles.join(', ')})` : '') +
           (skippedProfiles.length ?
-               `; skipped ${skippedProfiles.length} with no deployment target (${
+               `; skipped ${
+                   skippedProfiles.length} with no deployment target (${
                    skippedProfiles.join(', ')})` :
                '') +
           '.');
@@ -764,7 +769,8 @@ export async function profiles(): Promise<number> {
         // A malformed deployment target is a push-time error; here just show
         // none rather than abort the listing.
       }
-      console.log(`    target: ${targets.length ? targets.join(', ') : '(none)'}`);
+      console.log(
+          `    target: ${targets.length ? targets.join(', ') : '(none)'}`);
       console.log('    sources:');
       for (const e of model.entities ?? []) {
         console.log(`      ${e.name} -> ${e.dataSource || '(unbound)'}`);
@@ -1152,10 +1158,12 @@ function plural(n: number, one: string, many: string): string {
 // is a pure decision about what a flag combination means.
 export function catalogOnlyWarning(
     model: string, n: {actions: number; constraints: number}): string {
-  const declared = [
-    n.actions ? `${n.actions} action(s)` : '',
-    n.constraints ? `${n.constraints} constraint(s)` : '',
-  ].filter(part => part).join(' and ');
+  const declared =
+      [
+        n.actions ? `${n.actions} action(s)` : '',
+        n.constraints ? `${n.constraints} constraint(s)` : '',
+      ].filter(part => part)
+          .join(' and ');
   return `model '${model}' declares ${declared}, which deploy only to ` +
       `Knowledge Catalog; --no-kc excludes that leg, so they will not be ` +
       `deployed. Drop --no-kc to deploy them.`;
@@ -1199,8 +1207,8 @@ export async function action(
     command: string, name: string|undefined,
     options: ActionOptions = {}): Promise<number> {
   if (command !== 'list' && command !== 'run') {
-    console.error(
-        `Error: unknown action command '${command}'; expected 'list' or 'run'.`);
+    console.error(`Error: unknown action command '${
+        command}'; expected 'list' or 'run'.`);
     return 1;
   }
 
@@ -1222,9 +1230,37 @@ export async function action(
 }
 
 
+// A `NOT RUNNABLE:` line wraps under the label column the other lines use, so
+// a reason running to three lines still reads as one entry's answer.
+const RUN_INDENT = '    ';
+
+
+// Stands in for the judge the printed run line promises.
+//
+// `--judge` is a `run` flag; the listing does not take one and asks nothing.
+// Handing the runtime nothing here would report every judged action as
+// unrunnable and send the reader off to fix a model that is fine -- the
+// command printed under it carries `--judge`, because `runLine` puts it there,
+// and that command is what this listing is describing. So the question asked
+// is asked with a judge in hand.
+//
+// It throws rather than answering. Nothing in a listing may reach a judge, and
+// a path that somehow got this far should say so loudly instead of settling a
+// rule with a stub verdict.
+const JUDGE_THE_RUN_LINE_SUPPLIES: Judge = {
+  name: 'the judge `--judge` supplies',
+  decide() {
+    throw new Error(
+        '`kcmd action list` lists what a run would do and never asks a judge.');
+  },
+};
+
+
 // Prints what each model declares as runnable. The last line of every entry is
 // the command that runs it, filled in with the declared parameters, so reading
-// the listing is enough to make the call without going back to the YAML.
+// the listing is enough to make the call without going back to the YAML -- or,
+// when the runtime would refuse the call before opening a transaction, what it
+// is waiting on instead.
 function listActions(
     runtimes: SemanticRuntime[], options: ActionOptions): number {
   // `--store` answers one question -- where would a run land -- on one line
@@ -1255,8 +1291,7 @@ function listActions(
 
   for (const runtime of runtimes) {
     const {model, store, storeError, profile, entryGroup} = runtime;
-    console.log(
-        `Model '${model.name}' (${entryGroup}), profile '${profile}':`);
+    console.log(`Model '${model.name}' (${entryGroup}), profile '${profile}':`);
     // Where a run lands, said once at the top rather than left to be inferred
     // from a profile file the reader would have to go open.
     if (!store) {
@@ -1276,23 +1311,36 @@ function listActions(
           a.parameters.length ? a.parameters.map(describeParameter).join(', ') :
                                 '(none)'}`);
       console.log(`    executor:   ${
-          a.executor ? a.executor.kind :
-                       '(none under this profile -- declared, not runnable)'}`);
+          a.executor ? a.executor.kind : '(none under this profile)'}`);
       if (a.guards?.length) {
         console.log(`    guards:     ${a.guards.join(', ')}`);
       }
       if (a.affects?.length) {
         console.log(`    affects:    ${
             a.affects
-                .map(f => f.operation ? `${f.concept} (${f.operation})` :
-                                        f.concept)
+                .map(
+                    f => f.operation ? `${f.concept} (${f.operation})` :
+                                       f.concept)
                 .join(', ')}`);
       }
-      if (a.executor) {
-        console.log(`    run:        ${runLine(a, runtime)}`);
+      // Asked of the runtime rather than worked out here, for the reason
+      // `agent tools` asks: two copies of "can this run" drift, and neither
+      // direction of the drift is visible to the reader. This used to notice
+      // only a missing executor, so an action executed by HTTP -- which this
+      // command has no handler for and could not roll back -- printed a run
+      // line that always fails, and so did one guarded by a constraint the
+      // model never declares.
+      //
+      // The store is deliberately not part of the question. Whether one is
+      // reachable is the same sentence on every action in the model and says
+      // nothing about any of them, and the listing has already said it once,
+      // at the top, where it belongs.
+      const blocked = whyRefusedWithoutRunning(
+          model, a, undefined, JUDGE_THE_RUN_LINE_SUPPLIES);
+      if (blocked) {
+        console.log(wrapTo(`NOT RUNNABLE: ${blocked}`, RUN_INDENT));
       } else {
-        console.log(
-            `    run:        bind an executor in a profile to run this.`);
+        console.log(`    run:        ${runLine(a, runtime)}`);
       }
     }
   }
@@ -1368,8 +1416,7 @@ export async function agent(
     // ending the command: the rest of the scope still has an answer, and a
     // partial listing followed by an error is the one outcome a reader cannot
     // interpret.
-    console.log(
-        `Model '${model.name}' (${entryGroup}), profile '${profile}':`);
+    console.log(`Model '${model.name}' (${entryGroup}), profile '${profile}':`);
     // A store this path cannot execute against is the same answer as no
     // store, and has to be reported the same way: every tool would be listed
     // uncallable, and a caller reading the exit code would take a listing that
@@ -1631,12 +1678,18 @@ function wrapTo(text: string, indent: string, hanging = indent): string {
 }
 
 
-// One parameter as `name (Type)`, marking an object reference as such: that is
-// the difference between passing a value and passing something the runtime has
-// to look up first.
+// One parameter as `name (Type)`, saying where a projected one got its type:
+// `amount (Float)` is a value the caller states, and `source (Integer from
+// Account.accountId)` is the same kind of value with a definition the model
+// already holds, which is where to go to read what it means.
 function describeParameter(p: ActionParameter): string {
-  const tags: string[] = [p.type];
-  if (p.isEntityRef) tags.push('reference');
+  // A parameter with no type at all is a broken model -- the loader warns and
+  // validate refuses to push it -- but `list` still has to print it, and
+  // interpolating the missing type puts the word `undefined` on the line as
+  // though that were a datatype. Name the hole instead.
+  const type = p.type ?? 'no type';
+  const tags: string[] =
+      [p.concept ? `${type} from ${p.concept}.${p.field}` : type];
   if (p.default !== undefined) {
     tags.push(`default: ${JSON.stringify(p.default)}`);
   } else if (!isParameterRequired(p)) {
@@ -1759,12 +1812,6 @@ async function runOneAction(
     console.error(`Error: ${outcome.message}`);
     return 1;
   }
-  // What each reference turned out to be. An agent said "Alice"; this is the
-  // row it wrote to, which is the part worth reading back.
-  for (const [param, ref] of Object.entries(outcome.refs)) {
-    console.log(
-        `  ${param}: '${ref.input}' -> ${ref.entity} ${ref.keys.join('/')}`);
-  }
   // Before the commit line, so the last thing printed is what happened to the
   // write rather than a caveat about it.
   for (const w of outcome.warnings ?? []) console.warn(`Warning: ${w}`);
@@ -1777,8 +1824,10 @@ async function runOneAction(
 // `--arg <name>=<value>` pairs. Values are kept as text: the runtime parses
 // every argument from text against its declared ontology type, so the command
 // line does not have to guess whether `30` is a number, an amount, or a string.
-function parseActionArgs(raw: unknown):
-    {args: Record<string, unknown>}|{error: string} {
+function parseActionArgs(raw: unknown): {args: Record<string, unknown>}|{
+  error: string
+}
+{
   const pairs: unknown[] =
       raw === undefined ? [] : (Array.isArray(raw) ? raw : [raw]);
   // Null-prototype, because these names come off the command line: on a plain

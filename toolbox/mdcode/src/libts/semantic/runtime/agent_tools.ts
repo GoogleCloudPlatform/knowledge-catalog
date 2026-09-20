@@ -106,11 +106,6 @@ export interface ToolResult {
   applied: boolean;
   /** Present when the write committed. */
   committedAt?: string;
-  /**
-   * The rows the action's arguments resolved to, so a caller can report what
-   * it actually acted on rather than what it asked for.
-   */
-  actedOn?: Record<string, string[]>;
   /** Why the write did not happen, in the runtime's own words. */
   reason?: string;
   /**
@@ -259,50 +254,40 @@ function toolDescription(
 // nothing is the one kind of claim this file must not make. Saying less is the
 // honest half of saying it accurately.
 function gatingConstraints(action: Action, model: SemanticModel): Constraint[] {
-  const byName = new Map(
-      (model.constraints ?? [])
-          .filter(c => c.onViolation !== 'warn')
-          .map(c => [c.name, c]));
+  const byName = new Map((model.constraints ?? [])
+                             .filter(c => c.onViolation !== 'warn')
+                             .map(c => [c.name, c]));
   return (action.guards ?? [])
       .map(name => byName.get(name))
       .filter((c): c is Constraint => c !== undefined);
 }
 
 
-// An entity-typed parameter takes a reference the runtime resolves, so the
-// description says so rather than demanding a key the caller may not have. A
-// scalar parameter takes its own type.
+// Every parameter is a scalar, so every one is described the same way: its own
+// words, and its own type. A parameter projected from a field arrives here
+// already carrying the field's type and wording, resolved by the loader, so
+// there is nothing left for this to tell apart -- and nothing for it to say
+// about resolution, because the runtime resolves nothing.
 function toolParameter(param: ActionParameter): ToolParameter {
   const said = param.description?.trim();
-  const required = isParameterRequired(param);
   const guidance = scalarFormatGuidance(param.type);
-  const out: ToolParameter = param.isEntityRef ?
-      {
-        name: param.name,
-        type: 'string',
-        description: said ?
-            `${sentence(said)} Give its key, or text that identifies exactly ` +
-                `one ${param.type}; the call fails when nothing matches or ` +
-                `more than one does.` :
-            `Which ${param.type} this applies to. Give its key, or text ` +
-                `that identifies exactly one; the call fails when nothing ` +
-                `matches or more than one does.`,
-        required,
-      } :
-      {
-        name: param.name,
-        type: jsonType(param.type),
-        description: said ?
-            (guidance ? `${sentence(said)} ${guidance}` : said) :
-            `The ${param.name}, as ${article(param.type)}.`,
-        required,
-      };
+  // `sentence` whether or not the guidance follows: a description authored
+  // without a terminator is read by a model alongside every other one, and the
+  // odd one out reads as a fragment of the next line rather than its own.
+  const out: ToolParameter = {
+    name: param.name,
+    type: jsonType(param.type),
+    description: said ?
+        (guidance ? `${sentence(said)} ${guidance}` : sentence(said)) :
+        `The ${param.name}, as ${article(param.type)}.`,
+    required: isParameterRequired(param),
+  };
   if (param.default !== undefined) out.default = param.default;
   return out;
 }
 
 
-function scalarFormatGuidance(dataType: string): string|undefined {
+function scalarFormatGuidance(dataType: string|undefined): string|undefined {
   switch (dataType) {
     case 'Date':
     case 'Time':
@@ -318,7 +303,7 @@ function scalarFormatGuidance(dataType: string): string|undefined {
 // The model's scalar types over the four JSON types a tool schema can express.
 // Anything temporal or opaque travels as a string, because that is what the
 // model's own text form uses and what the store parses back.
-function jsonType(dataType: string): ToolParameterType {
+function jsonType(dataType: string|undefined): ToolParameterType {
   switch (dataType) {
     case 'Integer':
       return 'integer';
@@ -333,7 +318,7 @@ function jsonType(dataType: string): ToolParameterType {
 }
 
 
-function article(dataType: string): string {
+function article(dataType: string|undefined): string {
   switch (dataType) {
     case 'Integer':
       return 'a whole number';
@@ -365,11 +350,7 @@ function article(dataType: string): string {
 export function describeOutcome(outcome: ActionOutcome): ToolResult {
   switch (outcome.status) {
     case 'committed': {
-      const actedOn: Record<string, string[]> = {};
-      for (const [param, ref] of Object.entries(outcome.refs)) {
-        actedOn[param] = ref.keys;
-      }
-      const result: ToolResult = {applied: true, actedOn};
+      const result: ToolResult = {applied: true};
       if (outcome.commitTimestamp) result.committedAt = outcome.commitTimestamp;
       if (outcome.warnings?.length) result.warnings = outcome.warnings;
       return result;
@@ -772,7 +753,8 @@ async function runLookup(
       };
     }
     // Compared as ITSELF, against the input parsed to the type the field
-    // declares -- the same discipline resolveEntityRef follows, for the same
+    // declares -- the same discipline the write path's parameter binding
+    // follows, for the same
     // reason. `CAST(col AS STRING) = @f` would let one predicate shape serve
     // every column type, and no index can answer it: a lookup on a primary key
     // would scan the table.

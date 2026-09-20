@@ -55,14 +55,14 @@ export interface SemanticModel {
   // examples), kept separate from `description` so an emitter can route them to
   // their own aspects rather than the entry description.
   aiContext?: AiContext;
-  entities: Entity[];        // the open format's `datasets`
+  entities: Entity[];  // the open format's `datasets`
   relationships: Relationship[];
   metrics: Metric[];
-  // Model-level write operations over the ontology -- the write-side counterpart
-  // to metrics (which are the read side). Like metrics they are defined over the
-  // concepts and their relationships, not bound to a single entity. Optional and
-  // absent on models authored before actions existed, so consumers read it as
-  // `actions ?? []`. See Action.
+  // Model-level write operations over the ontology -- the write-side
+  // counterpart to metrics (which are the read side). Like metrics they are
+  // defined over the concepts and their relationships, not bound to a single
+  // entity. Optional and absent on models authored before actions existed, so
+  // consumers read it as `actions ?? []`. See Action.
   actions?: Action[];
   // Named invariants over the ontology, each stating one condition that must
   // hold for every instance, as a `judgment` in words -- the one body a
@@ -83,14 +83,15 @@ export interface SemanticModel {
  */
 export interface Entity {
   name: string;
-  // A reference to the backing physical source, fully qualified so it identifies
-  // that source unambiguously. The IR treats it as an opaque identifier: it fixes
-  // neither a syntax (separators, number of parts, quoting) nor a naming scheme
-  // -- both are whatever the source system uses. Each producer normalizes it into
-  // its own canonical form, and downstream consumers map it to their target's
-  // addressing scheme.
+  // A reference to the backing physical source, fully qualified so it
+  // identifies that source unambiguously. The IR treats it as an opaque
+  // identifier: it fixes neither a syntax (separators, number of parts,
+  // quoting) nor a naming scheme
+  // -- both are whatever the source system uses. Each producer normalizes it
+  // into its own canonical form, and downstream consumers map it to their
+  // target's addressing scheme.
   dataSource: string;
-  keys: string[];        // grain / primary key
+  keys: string[];  // grain / primary key
   // Additional uniqueness constraints beyond the primary key; each inner array
   // is one unique column set (maps to the Schema aspect's uniqueConstraints).
   uniqueKeys?: string[][];
@@ -128,11 +129,12 @@ export interface Entity {
 /**
  * Dimension metadata on a field, mirroring the open format's `dimension` block
  * (e.g. Apache Ossie's `OSIDimension`). An empty block still marks the field as
- * a dimension, which enables temporal inference from `type` (see isTimeDimension).
+ * a dimension, which enables temporal inference from `type` (see
+ * isTimeDimension).
  */
 export interface Dimension {
-  // Explicit temporal-dimension flag. When unset, the effective role is inferred
-  // from a temporal `type` (see isTimeDimension).
+  // Explicit temporal-dimension flag. When unset, the effective role is
+  // inferred from a temporal `type` (see isTimeDimension).
   isTime?: boolean;
 }
 
@@ -175,20 +177,32 @@ export interface Field {
  * a CLOSED, case-sensitive set of logical types, independent of physical
  * representation. It is optional (omit when unknown); a type outside the
  * vocabulary is expressed as `Opaque` plus a `customExtensions` block, never an
- * invented value. The loader enforces this set at parse time, so a `type` on the
- * IR is always one of these.
+ * invented value. The loader enforces this set at parse time, so a `type` on
+ * the IR is always one of these.
  */
 export const DATA_TYPES = [
-  'String', 'Integer', 'Decimal', 'Float', 'Boolean',
-  'Date', 'Time', 'DateTime', 'DateTimeTz', 'Opaque',
+  'String',
+  'Integer',
+  'Decimal',
+  'Float',
+  'Boolean',
+  'Date',
+  'Time',
+  'DateTime',
+  'DateTimeTz',
+  'Opaque',
 ] as const;
 
 export type DataType = typeof DATA_TYPES[number];
 
-// The temporal subset of DataType (Date / Time / DateTime / DateTimeTz); a field
-// of one of these types is a time dimension by default (see isTimeDimension).
+// The temporal subset of DataType (Date / Time / DateTime / DateTimeTz); a
+// field of one of these types is a time dimension by default (see
+// isTimeDimension).
 const TEMPORAL_TYPES: ReadonlySet<DataType> = new Set([
-  'Date', 'Time', 'DateTime', 'DateTimeTz',
+  'Date',
+  'Time',
+  'DateTime',
+  'DateTimeTz',
 ]);
 
 /**
@@ -206,12 +220,12 @@ export function isTimeDimension(field: Field): boolean {
 // The physical column (or SQL) a field binds to under the current binding, or
 // undefined when the field is unbound (structurally absent -- no column). A
 // field's target/canonical `expression` wins; a field awaiting transpilation
-// falls back to its imported vendor expression, which still names a real column,
-// so it is bound rather than unbound. A field with neither is unbound (no
-// column at all). This is the single source of truth for "is this field bound";
-// availability pruning and the BigQuery generator both consult it so they never
-// disagree.
-export function fieldBinding(field: Field): string | undefined {
+// falls back to its imported vendor expression, which still names a real
+// column, so it is bound rather than unbound. A field with neither is unbound
+// (no column at all). This is the single source of truth for "is this field
+// bound"; availability pruning and the BigQuery generator both consult it so
+// they never disagree.
+export function fieldBinding(field: Field): string|undefined {
   return field.expression ?? field.importedExpression;
 }
 
@@ -246,26 +260,28 @@ export interface RelationshipEnd {
 /**
  * An association (junction) table backing a many-to-many relationship.
  *
- * A many-to-many link cannot be a foreign key: an FK column holds a single value
- * and so references at most one row (a to-one direction), which cannot encode a
- * pairing where each side maps to many of the other. The pairs instead live in a
- * separate junction table, one row per (source, destination) -- e.g. an
- * `enrollment` row per (student, course).
+ * A many-to-many link cannot be a foreign key: an FK column holds a single
+ * value and so references at most one row (a to-one direction), which cannot
+ * encode a pairing where each side maps to many of the other. The pairs instead
+ * live in a separate junction table, one row per (source, destination) -- e.g.
+ * an `enrollment` row per (student, course).
  *
  * Unlike a direct foreign key -- which the open format expresses and the loader
- * produces -- a junction edge is backed by its OWN table (`dataSource`) with its
- * OWN key (`keys`) and may carry edge `fields` (properties of the association
- * itself, e.g. an enrollment's grade). Each side names the columns ON THE
- * JUNCTION TABLE that reference the corresponding endpoint entity's declared
- * `keys`. The open format has no association-table syntax yet, so this is
- * produced by hand-built IR (or a future format extension), not the loader.
+ * produces -- a junction edge is backed by its OWN table (`dataSource`) with
+ * its OWN key (`keys`) and may carry edge `fields` (properties of the
+ * association itself, e.g. an enrollment's grade). Each side names the columns
+ * ON THE JUNCTION TABLE that reference the corresponding endpoint entity's
+ * declared `keys`. The open format has no association-table syntax yet, so this
+ * is produced by hand-built IR (or a future format extension), not the loader.
  */
 export interface Association {
-  dataSource: string;            // the junction table backing the edge
-  keys: string[];                // the edge's own key on the junction table
-  sourceColumns: string[];       // junction columns referencing the source entity's key
-  destinationColumns: string[];  // junction columns referencing the destination entity's key
-  fields?: Field[];              // edge properties (junction non-key columns)
+  dataSource: string;  // the junction table backing the edge
+  keys: string[];      // the edge's own key on the junction table
+  sourceColumns:
+      string[];  // junction columns referencing the source entity's key
+  destinationColumns:
+      string[];  // junction columns referencing the destination entity's key
+  fields?: Field[];  // edge properties (junction non-key columns)
 }
 
 /**
@@ -281,20 +297,22 @@ export interface Association {
  */
 export interface Metric {
   name: string;
-  expression?: string;   // target/canonical aggregate; may reference entity-qualified fields
-  importedExpression?: string; // original vendor SQL, verbatim
-  importedDialect?: string;    // dialect of `importedExpression`
+  expression?: string;          // target/canonical aggregate; may reference
+                                // entity-qualified fields
+  importedExpression?: string;  // original vendor SQL, verbatim
+  importedDialect?: string;     // dialect of `importedExpression`
   // The single entity this metric attaches to -- the node it hangs off -- when
-  // its `expression` references exactly one. NOT part of the open format (Ossie's
-  // Metric has no such field): the loader DERIVES it by scanning the expression
-  // for known `entity.column` qualifiers (see referencedEntityNames). Omitted
-  // when the expression names no known entity (e.g. `COUNT(*)`; the loader warns)
-  // or references several -- a cross-entity metric whose join path consumers
-  // resolve from the model's relationships (the qualifiers stay inline in the
-  // expression).
+  // its `expression` references exactly one. NOT part of the open format
+  // (Ossie's Metric has no such field): the loader DERIVES it by scanning the
+  // expression for known `entity.column` qualifiers (see
+  // referencedEntityNames). Omitted when the expression names no known entity
+  // (e.g. `COUNT(*)`; the loader warns) or references several -- a cross-entity
+  // metric whose join path consumers resolve from the model's relationships
+  // (the qualifiers stay inline in the expression).
   entity?: string;
   description?: string;
-  type?: DataType;       // logical datatype of the result (the open format's `datatype`)
+  type?: DataType;  // logical datatype of the result (the open format's
+                    // `datatype`)
   aiContext?: AiContext;
   customExtensions?: CustomExtension[];
 }
@@ -306,7 +324,8 @@ export interface Metric {
  * `parameters`.
  *
  * The model contributes only what the ontology can say that a plain tool schema
- * cannot: typed parameters (an entity-typed one is an object reference) and the
+ * cannot: parameters typed from the ontology (a projected one takes its type
+ * and its wording from the field it names) and the
  * constraints that gate the call. The mechanics of running it are delegated to
  * an `executor` (e.g. an MCP tool in Agent Registry); `description` is
  * informational and does not affect runtime.
@@ -327,8 +346,9 @@ export interface Action {
   // not invalid: an action with no executor still declares what it does, what
   // gates it, and what it changes, which is the whole of what a reader needs.
   executor?: Executor;
-  // Inputs, each typed by the ontology: an entity type is an object reference,
-  // a scalar type an ordinary value. See ActionParameter.
+  // Inputs, each a scalar value. One is either projected from a field the
+  // model declares, which is where its type and its wording come from, or
+  // declared standalone with a type of its own. See ActionParameter.
   parameters: ActionParameter[];
   // The constraints that gate this action, by name. This list is what gives a
   // constraint effect over the action. A constraint no action names is a
@@ -388,21 +408,60 @@ export const CONCEPT_OPERATIONS = ['create', 'modify', 'delete'] as const;
 export type ConceptOperation = typeof CONCEPT_OPERATIONS[number];
 
 /**
- * One input to an action, typed by the ontology.
+ * One input to an action. Always a SCALAR value: a parameter carries a value,
+ * never an object the runtime has to go and find first.
  *
- * `type` is the authored type name, kept verbatim for a lossless round-trip.
- * `isEntityRef` is DERIVED by the loader: true when `type` resolves to a known
- * entity (the parameter is an object reference to that entity), false when it
- * is a scalar `DataType`. A type that resolves to neither leaves `isEntityRef`
- * undefined and the loader warns.
+ * There are two ways to author one.
+ *
+ * DERIVED. `concept` plus `field` PROJECT the parameter from a field the model
+ * already declares -- of an entity or of a relationship, the same two things
+ * `affects` may name:
+ *
+ *     - {concept: Account, field: accountId}
+ *     - {name: sourceAccountId, concept: Account, field: accountId,
+ *        description: The account money leaves.}
+ *
+ * `name` defaults to the field's name, so the one-key form above declares a
+ * parameter called `accountId`. `type` MUST NOT be authored: it is the field's,
+ * and a parameter restating it is a second place for it to be wrong. The
+ * loader copies `type`, `description`, `label` and `aiContext` down from the
+ * field; the parameter's own wording wins over the field's where it states any,
+ * and the type never does.
+ *
+ * STANDALONE. Nothing in the model corresponds -- a free-text `memo`, a reason
+ * code -- so the parameter declares its own scalar `type` and names no field:
+ *
+ *     - {name: memo, type: String, description: Why the credit was issued.}
+ *
+ * `concept` and `field` are kept on the IR ALONGSIDE what they resolved to, so
+ * the reference round-trips as the author wrote it while a consumer that does
+ * not have the model -- a catalog reader, an agent holding only the published
+ * aspect -- can still read the resolved type.
+ *
+ * `required` and `default` are always the parameter's own and are never
+ * inherited: a field describes what a thing HAS, and says nothing about whether
+ * a CALL must supply a value for it.
+ *
+ * `type` is optional only as an AUTHORED key. After a load it is populated on
+ * every parameter -- stated by a standalone one, resolved from the field by a
+ * derived one. The single exception is a parameter the loader could resolve
+ * neither way, which is kept verbatim and warned about, and which validate.ts
+ * then rejects.
  */
 export interface ActionParameter {
   name: string;
-  type: string;           // entity name (object reference) or a scalar DataType
+  // The scalar DataType. Authored by a standalone parameter, resolved from the
+  // field by a derived one; always set once the model has loaded.
+  type?: string;
+  // The entity or relationship this parameter's definition is projected from,
+  // and the field within it. Both or neither.
+  concept?: string;
+  field?: string;
   description?: string;
+  label?: string;
+  aiContext?: AiContext;
   required?: boolean;
   default?: unknown;
-  isEntityRef?: boolean;  // derived: true when `type` names a known entity
 }
 
 /**
