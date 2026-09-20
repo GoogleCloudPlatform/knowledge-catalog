@@ -13,10 +13,12 @@
 //      the response -- and it is reported as the unknown it is rather than as
 //      a rollback.
 //
-// A statement that matched NO ROW is a failure, not a quiet success. An UPDATE
-// or a DELETE whose predicate found nothing did not do what the action says it
+// A statement that wrote NO ROW is a failure, not a quiet success. An UPDATE or
+// a DELETE whose predicate found nothing did not do what the action says it
 // does, and reporting "committed" for it would tell a caller a row was changed
-// that was never there. See the row-count check in `runAction`.
+// that was never there. Only an INSERT may write nothing, so a statement whose
+// verb this runtime cannot read is refused rather than assumed harmless. See
+// the row-count check in `runAction`.
 //
 // Where the write comes from. An action with a `sql` executor carries its own
 // DML, and the runtime runs those statements itself. An action with an `mcp`,
@@ -388,6 +390,21 @@ class StoreError extends Error {}
 // `INSERT ... SELECT` over an empty set, an `ON CONFLICT DO NOTHING`), which is
 // the author's statement doing what the author wrote.
 //
+// THE EXEMPTION IS THE ONLY WAY PAST, which is the opposite of how this read
+// until it was turned around. Checking for a verb that must be refused leaves
+// every statement this runtime misreads passing silently, and passing silently
+// is what a missed write looks like -- that is exactly how reading the verb out
+// of the first six characters survived as long as it did. Checking instead for
+// the one verb that may write nothing puts the burden the other way: a
+// statement whose verb cannot be read is refused, loudly, and the author finds
+// out on the first run rather than never.
+//
+// The store has already said this was DML by reporting an exact count at all,
+// so the verb is not being consulted to decide whether the check applies. It is
+// consulted for one thing: whether this is the INSERT that is allowed to write
+// nothing. A MERGE is not, since a MERGE reporting zero neither matched a row
+// nor inserted one.
+//
 // A store that reports no count at all is left alone rather than guessed
 // about. Refusing a write because the row count was missing would fail actions
 // that worked, over a fact nobody stated.
@@ -395,28 +412,53 @@ function noRowMatched(
     stmt: spanner.Statement,
     result: {stats?: {rowCountExact?: string}}): string|null {
   const verb = leadingVerb(stmt.sql);
-  if (verb !== 'UPDATE' && verb !== 'DELETE') return null;
+  if (verb === 'INSERT') return null;
   const exact = result.stats?.rowCountExact;
   if (exact === undefined || exact === null) return null;
   if (Number(exact) !== 0) return null;
-  return `${verb === 'UPDATE' ? 'an UPDATE' : 'a DELETE'} matched no rows, ` +
-      `so the action did not do what it says it does. Nothing was written. ` +
-      `The statement was: ${stmt.sql.replace(/\s+/g, ' ').trim()}`;
+  const quoted = `The statement was: ${stmt.sql.replace(/\s+/g, ' ').trim()}`;
+  if (verb === 'UPDATE' || verb === 'DELETE') {
+    return `${verb === 'UPDATE' ? 'an UPDATE' : 'a DELETE'} matched no rows, ` +
+        `so the action did not do what it says it does. Nothing was ` +
+        `written. ${quoted}`;
+  }
+  if (verb === 'MERGE') {
+    return `a MERGE neither matched a row nor inserted one, so the action ` +
+        `did not do what it says it does. Nothing was written. ${quoted}`;
+  }
+  return `this runtime could not read a DML verb from the statement, and it ` +
+      `wrote no rows. Only an INSERT may write none, so a statement that ` +
+      `cannot be shown to be one is refused rather than reported as ` +
+      `applied. Nothing was written. ${quoted}`;
 }
 
 
-// The DML verb a statement leads with, or '' when it leads with none.
+// The DML verb a statement leads with, or '' when none can be read.
 //
-// Reading the first six characters is not enough, and the ways it is wrong all
-// SAY the statement is harmless: a statement opening with a `--` comment, or
-// with a `WITH` clause ahead of its UPDATE, reports a verb nobody checks and
-// takes the zero-row refusal out of the path silently. So this walks the text
-// instead, skipping what cannot hold the verb -- comments, quoted strings, and
-// anything nested in parentheses -- and returns the first DML keyword left
-// standing at the top level. For `WITH x AS (SELECT ...) UPDATE ...` that is
-// the UPDATE, because the CTE body is inside parentheses; for
-// `UPDATE t SET note = 'DELETE'` it is the UPDATE, because the literal is not
-// read as a keyword.
+// Reading the first six characters is not enough: a statement opening with a
+// `--` comment, or with a `WITH` clause ahead of its UPDATE, reports a verb
+// that is not the statement's. So this walks the text instead, skipping what
+// cannot hold the verb -- comments, quoted strings, and anything nested in
+// parentheses -- and returns the first DML keyword left standing at the top
+// level. For `WITH x AS (SELECT ...) UPDATE ...` that is the UPDATE, because
+// the CTE body is inside parentheses; for `UPDATE t SET note = 'DELETE'` it is
+// the UPDATE, because the literal is not read as a keyword.
+//
+// WHAT A MISREAD COSTS runs one way only, and it is worth knowing which. Since
+// noRowMatched refuses everything except a recognized INSERT, failing to read a
+// verb cannot hide a write that did nothing -- it can only refuse one that was
+// fine. The expensive direction is therefore a real INSERT this misses, and the
+// cheap direction is anything else it cannot parse. That is deliberate: a false
+// refusal is a failed run someone looks at, and a missed refusal is a caller
+// told its write landed when it did not.
+//
+// This is a scanner, not a parser, and the repo does bundle a real one
+// (`@polyglot-sql/sdk`, used by transpile.ts and sql_identifiers.ts). It is not
+// used here because it has no Spanner dialect and action DML targets Spanner
+// and AlloyDB, so it would have to parse Spanner statements as something else
+// and would reject valid ones. Given which direction a misread now falls, a
+// scanner that recognizes a leading INSERT is enough; if that stops being true,
+// the parser is the thing to reach for rather than more cases here.
 function leadingVerb(sql: string): string {
   const verbs = new Set(['INSERT', 'UPDATE', 'DELETE', 'MERGE']);
   let depth = 0;

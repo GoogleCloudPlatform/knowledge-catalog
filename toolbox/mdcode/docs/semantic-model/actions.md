@@ -1020,8 +1020,14 @@ An `UPDATE` or `DELETE` that matches no rows is one of those failures. A caller
 who passes an account id that isn't in the table gets a statement that changes
 nothing, and reporting that as a successful write would tell them money moved
 when none did — so the run is refused and the transaction rolls back naming the
-statement that matched nothing. `INSERT` is exempt, because it matches no rows
-by definition.
+statement that matched nothing.
+
+`INSERT` is the one exemption, because it creates rows rather than finding them,
+so writing none is something an author can mean. Everything else your store
+reports a zero count for is refused, including a statement kcmd can't read a
+verb from at all — a procedure call wrapping the write, say. That direction is
+deliberate: a statement wrongly refused is a failed run you go and look at,
+while one wrongly allowed is a caller told its write landed when it didn't.
 
 The unknown outcome is a timeout or a 5xx, where your store may have applied the
 write and lost the response. kcmd can't settle which, so it reports the run as

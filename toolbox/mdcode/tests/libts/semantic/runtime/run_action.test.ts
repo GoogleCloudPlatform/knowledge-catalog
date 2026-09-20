@@ -445,6 +445,56 @@ describe('a write that matched no rows', () => {
       expect(result.status).toBe('committed');
       expect(fake.committed).toBe(true);
     });
+
+    // The check refuses everything the store reports a zero count for EXCEPT a
+    // recognized INSERT, rather than refusing only a recognized UPDATE or
+    // DELETE. The difference is only visible on a statement the scanner cannot
+    // read, and that is the whole point: under the old direction every one of
+    // those committed silently.
+    describe('only a recognized INSERT may write nothing', () => {
+      test('a plain INSERT still may', async () => {
+        const {fake, outcome} = creditVia(
+            'INSERT INTO Entry (entry_id, account_id) ' +
+            'VALUES (GENERATE_UUID(), @account)');
+        const result = await outcome;
+        expect(result.status).toBe('committed');
+        expect(fake.committed).toBe(true);
+      });
+
+      test('a MERGE that changed nothing is refused', async () => {
+        // A MERGE reporting zero neither matched a row nor inserted one, so
+        // the INSERT exemption does not reach it.
+        const {fake, outcome} = creditVia(
+            'MERGE INTO Account t USING (SELECT @account AS id) s ' +
+            'ON t.account_id = s.id WHEN MATCHED THEN UPDATE SET ' +
+            'balance = balance - @amount');
+        const result = await outcome;
+        if (result.status !== 'error') throw new Error('expected an error');
+        expect(result.message)
+            .toContain('a MERGE neither matched a row nor inserted one');
+        expect(fake.committed).toBe(false);
+        expect(fake.rolledBack).toBe(true);
+      });
+
+      test(
+          'a statement with no readable verb is refused, not waved through',
+          async () => {
+            // A procedure call wrapping the write is the realistic case: the
+            // scanner finds no DML keyword at the top level, and the old
+            // direction read that as "nothing to check" and committed.
+            const {fake, outcome} =
+                creditVia('CALL settle_account(@account, @amount)');
+            const result = await outcome;
+            if (result.status !== 'error') {
+              throw new Error('expected an error');
+            }
+            expect(result.message)
+                .toContain('could not read a DML verb from the statement');
+            expect(result.message).toContain('Only an INSERT may write none');
+            expect(fake.committed).toBe(false);
+            expect(fake.rolledBack).toBe(true);
+          });
+    });
   });
 });
 
