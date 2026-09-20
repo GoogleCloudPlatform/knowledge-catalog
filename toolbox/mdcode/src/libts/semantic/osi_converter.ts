@@ -300,7 +300,14 @@ function emitted(model: SemanticModel): Set<string>|null {
   }
   const pairs = new Set<string>();
   for (const [name, concept] of concepts) {
-    for (const field of concept.fields.keys()) pairs.add(`${name}.${field}`);
+    // A field carrying no datatype resolves to one on reload, so emitting a
+    // projection at it would suppress the parameter's resolved `type` and
+    // hand back an untyped parameter the loader rejects. Treating the pair as
+    // unresolvable falls the parameter back to that resolved type, which is
+    // the whole point of the fallback, and warns when there is none.
+    for (const [field, def] of concept.fields) {
+      if (def.type !== undefined) pairs.add(`${name}.${field}`);
+    }
   }
   return pairs;
 }

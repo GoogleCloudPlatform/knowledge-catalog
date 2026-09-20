@@ -1113,3 +1113,275 @@ describe('parameter description, required, and default', () => {
             .toBe(true);
       });
 });
+
+
+describe('a published statement and a run read the verb the same way', () => {
+  // These are the forms `run_action.test.ts` already drives through a `sql`
+  // executor. Before the readers were shared, every one of them ran in the
+  // library and was refused by `kcmd push` and `kcmd action run`, which both
+  // call `sqlExecutorErrors` first -- so the tests below and those ones
+  // disagreed about the same model.
+  const target =
+      '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+
+  function withStatement(sql: string): LoadedModel {
+    return {
+      document: 'doc',
+      model: {
+        name: 'm',
+        entities: [{
+          name: 'customer',
+          dataSource: 'p.d.c',
+          keys: ['id'],
+          fields: [{name: 'id', type: 'Integer'}],
+        }],
+        relationships: [],
+        metrics: [],
+        actions: [{
+          name: 'A',
+          executor: {kind: 'sql', sql: {statements: [sql]}},
+          parameters: [],
+        }],
+        customExtensions: [{
+          vendorName: 'GOOGLE',
+          data: JSON.stringify({deploymentTargets: [target]}),
+        }],
+      } as SemanticModel,
+    };
+  }
+
+  test('a leading line comment is publishable', () => {
+    expect(validatePushRequirements([
+      withStatement('-- put the money back\nUPDATE customer SET id = 1')
+    ])).toEqual([]);
+  });
+
+  test('a GoogleSQL # comment is publishable', () => {
+    // Spanner speaks GoogleSQL, where `#` opens a line comment.
+    expect(validatePushRequirements([
+      withStatement('# put the money back\nUPDATE customer SET id = 1')
+    ])).toEqual([]);
+  });
+
+  test('a leading block comment is publishable', () => {
+    expect(validatePushRequirements([
+      withStatement('/* settled */ DELETE FROM customer')
+    ])).toEqual([]);
+  });
+
+  test('a CTE ahead of the verb is publishable', () => {
+    expect(validatePushRequirements([withStatement(
+        'WITH stale AS (SELECT id FROM customer) DELETE FROM customer')]))
+        .toEqual([]);
+  });
+
+  test('sharing the scanner does not admit MERGE', () => {
+    // The scanner reads MERGE so a run can say a MERGE matched nothing.
+    // Publishing is governed by SQL_EXECUTOR_VERBS, which does not list it,
+    // so widening where the verb is found must not widen which verbs pass.
+    const errs =
+        validatePushRequirements([withStatement('MERGE INTO customer USING x')]);
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain('starts with \'MERGE\'');
+  });
+
+  test('a SELECT is still named, not reported as unreadable', () => {
+    // The scanner reads DML verbs only, so it finds nothing in a SELECT. The
+    // author wrote a query and can see that they did; answering 'no readable
+    // DML verb' would describe their own statement back to them.
+    const errs =
+        validatePushRequirements([withStatement('SELECT * FROM customer')]);
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain('starts with \'SELECT\'');
+  });
+
+  test('a statement with no verb at all reports the absence', () => {
+    const errs = validatePushRequirements([withStatement('-- nothing here')]);
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain('has no readable DML verb');
+  });
+});
+
+
+describe('a lone projection is not blamed for a duplication', () => {
+  const target =
+      '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+
+  test(
+      'one parameter projected from a field, beside a described scalar of the same type',
+      () => {
+        // The bucket collides by DATATYPE: `account` has no description of its
+        // own and `quantity` does, so only `account` is indistinct. It is the
+        // only parameter projected from `Account.accountId`, so naming that
+        // field sends the author hunting for a second projection to delete.
+        const errs = validatePushRequirements([{
+          document: 'doc',
+          model: {
+            name: 'm',
+            entities: [{
+              name: 'Account',
+              dataSource: 'p.d.a',
+              keys: ['accountId'],
+              fields: [{name: 'accountId', type: 'Integer'}],
+            }],
+            relationships: [],
+            metrics: [],
+            actions: [{
+              name: 'A',
+              executor: {kind: 'mcp', mcp: MCP.mcp},
+              parameters: [
+                {name: 'account', concept: 'Account', field: 'accountId',
+                 type: 'Integer'},
+                {name: 'quantity', type: 'Integer', description: 'How many.'},
+              ],
+            }],
+            customExtensions: [{
+              vendorName: 'GOOGLE',
+              data: JSON.stringify({deploymentTargets: [target]}),
+            }],
+          } as SemanticModel,
+        }]);
+        expect(errs.length).toBe(1);
+        expect(errs[0]).toContain('multiple parameters of type \'Integer\'');
+        expect(errs[0]).not.toContain('projected from');
+      });
+
+  test('two parameters projected from one field still name it', () => {
+    // The case the message was written for, which the narrower condition must
+    // not cost: both came from the same field, so the field is the fix.
+    const errs = validatePushRequirements([{
+      document: 'doc',
+      model: {
+        name: 'm',
+        entities: [{
+          name: 'Account',
+          dataSource: 'p.d.a',
+          keys: ['accountId'],
+          fields: [{name: 'accountId', type: 'Integer'}],
+        }],
+        relationships: [],
+        metrics: [],
+        actions: [{
+          name: 'A',
+          executor: {kind: 'mcp', mcp: MCP.mcp},
+          parameters: [
+            {name: 'from', concept: 'Account', field: 'accountId',
+             type: 'Integer'},
+            {name: 'to', concept: 'Account', field: 'accountId',
+             type: 'Integer'},
+          ],
+        }],
+        customExtensions: [{
+          vendorName: 'GOOGLE',
+          data: JSON.stringify({deploymentTargets: [target]}),
+        }],
+      } as SemanticModel,
+    }]);
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain(
+        'multiple parameters projected from \'Account.accountId\'');
+  });
+});
+
+
+describe('a projection the catalog cannot give back', () => {
+  test('the concept publishes but the field does not', () => {
+    // `pruneUnavailable` drops an unbound field and keeps the entity whose key
+    // still binds, and a projected parameter no longer prunes its action. So
+    // the entry goes out naming a field the `schema` aspect does not carry,
+    // and the old check -- "is the concept published" -- said yes and stayed
+    // quiet.
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [{
+        name: 'customer',
+        dataSource: 'p.d.c',
+        keys: ['id'],
+        fields: [{name: 'id', type: 'Integer', expression: 'id'}],
+      }],
+      relationships: [],
+      metrics: [],
+      actions: [{
+        name: 'Notify',
+        executor: {kind: 'mcp', mcp: MCP.mcp},
+        parameters: [{
+          name: 'who',
+          concept: 'customer',
+          field: 'email',
+          type: 'String',
+        }],
+      }],
+    };
+    const {warnings} = generateCatalogResources(model, OPTS);
+    expect(warnings.some(
+               w => w.includes('parameter \'who\'') &&
+                   w.includes('without its \'email\' field')))
+        .toBe(true);
+  });
+
+  test('the concept is a relationship, whose fields no entry records', () => {
+    // Pull rebuilds relationships from `schema-join` entry links alone, and a
+    // link records its two endpoints and nothing else -- so an association's
+    // own fields come back from no entry, published or not.
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [
+        {name: 'student', dataSource: 'p.d.s', keys: ['id'],
+         fields: [{name: 'id', type: 'Integer', expression: 'id'}]},
+        {name: 'course', dataSource: 'p.d.co', keys: ['id'],
+         fields: [{name: 'id', type: 'Integer', expression: 'id'}]},
+      ],
+      relationships: [{
+        name: 'enrollment',
+        source: {entity: 'student', columns: ['id']},
+        destination: {entity: 'course', columns: ['id']},
+        association: {
+          dataSource: 'p.d.e',
+          keys: ['student_id', 'course_id'],
+          sourceColumns: ['student_id'],
+          destinationColumns: ['course_id'],
+          fields: [{name: 'grade', type: 'String', expression: 'grade'}],
+        },
+      }],
+      metrics: [],
+      actions: [{
+        name: 'Regrade',
+        executor: {kind: 'mcp', mcp: MCP.mcp},
+        parameters: [{
+          name: 'grade',
+          concept: 'enrollment',
+          field: 'grade',
+          type: 'String',
+        }],
+      }],
+    };
+    const {warnings} = generateCatalogResources(model, OPTS);
+    expect(warnings.some(
+               w => w.includes('parameter \'grade\'') &&
+                   w.includes('is a relationship')))
+        .toBe(true);
+  });
+
+  test('a published concept and a published field warn about nothing', () => {
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [{
+        name: 'customer',
+        dataSource: 'p.d.c',
+        keys: ['id'],
+        fields: [{name: 'id', type: 'Integer', expression: 'id'}],
+      }],
+      relationships: [],
+      metrics: [],
+      actions: [{
+        name: 'Notify',
+        executor: {kind: 'mcp', mcp: MCP.mcp},
+        parameters: [
+          {name: 'who', concept: 'customer', field: 'id', type: 'Integer'}
+        ],
+      }],
+    };
+    const {warnings} = generateCatalogResources(model, OPTS);
+    expect(warnings.some(w => w.includes('parameter \'who\''))).toBe(false);
+  });
+});

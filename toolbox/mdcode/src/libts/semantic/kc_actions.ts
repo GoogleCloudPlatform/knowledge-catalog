@@ -35,6 +35,7 @@ import {Entry} from '../gcp/dataplex';
 
 import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, ConceptOperation, DATA_TYPES, Executor, SemanticModel} from './ir';
 import {ACTION_TYPE_ID, customAspectKey, customAspectTypeName, customEntryTypeName} from './kc_custom_types';
+import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 
 // Full resource name of the action entry type for a destination.
 export function actionEntryTypeName(dest: {project: string}): string {
@@ -87,6 +88,40 @@ export function actionOwnedPrefix(modelId: string): string {
   return `${modelId}.actions.`;
 }
 
+// Why a pull will not recover the field a parameter projects from, or '' when
+// it will. Three ways to lose it, and naming which one is the difference
+// between an author deleting the projection and an author binding a column:
+//
+//   - the concept is not published at all (pruned, or abstract);
+//   - the concept is published but the FIELD is not -- `pruneUnavailable`
+//     drops an unbound field while keeping the entity whose key still binds,
+//     and a projected parameter no longer prunes its action, so the entry goes
+//     out naming a field the `schema` aspect does not carry;
+//   - the concept is a relationship. Pull rebuilds relationships from
+//     `schema-join` entry links alone, and a link records its two endpoints
+//     and nothing else, so an association's own fields come back from no
+//     entry. The parameter still publishes intact either way -- the loader
+//     resolved its type and wording before any of this -- so what is lost is
+//     only the projection, and only on the way back.
+function unrecoverable(
+    concept: string, field: string|undefined, relationships: Set<string>,
+    published: Map<string, DeclaredConcept>|null,
+    ctx: ActionEmitContext): string {
+  if (!ctx.publishedEntities.has(concept) && relationships.has(concept)) {
+    return `'${concept}' is a relationship, whose fields no entry records`;
+  }
+  if (!ctx.publishedEntities.has(concept)) {
+    return `this push does not publish '${concept}' (abstract or unavailable)`;
+  }
+  if (published && field !== undefined &&
+      !published.get(concept)?.fields.has(field)) {
+    return `this push publishes '${concept}' without its '${field}' field ` +
+        `(unbound under this profile)`;
+  }
+  return '';
+}
+
+
 /**
  * One entry per action, to append to the model's entries.
  *
@@ -109,6 +144,18 @@ export function actionEntries(
   const relationshipNames =
       new Set((model.relationships ?? []).map(r => r.name));
 
+  // The fields this push actually writes into a `schema` aspect, which is
+  // what a later pull reads back. Asked of the loader's own resolver so the
+  // answer accounts for `extends`; a model that will not resolve returns null
+  // and the field half of the check is skipped, since an emitter is not the
+  // place to discover that a model does not load.
+  let published: Map<string, DeclaredConcept>|null;
+  try {
+    published = declaredConceptFields(model);
+  } catch {
+    published = null;
+  }
+
   const entries: Entry[] = [];
   for (const action of actions) {
     const id = actionEntryId(modelId, action.name);
@@ -121,14 +168,14 @@ export function actionEntries(
     // that model would have to state the type by hand.
     for (const p of action.parameters ?? []) {
       if (!p.concept) continue;
-      if (ctx.publishedEntities.has(p.concept)) continue;
-      if (relationshipNames.has(p.concept)) continue;
+      const why = unrecoverable(
+          p.concept, p.field, relationshipNames, published, ctx);
+      if (!why) continue;
       warnings.push(
           `model '${model.name}': action '${action.name}' parameter ` +
-          `'${p.name}' is projected from '${p.concept}.${p.field}', and ` +
-          `this push does not publish '${p.concept}' (abstract or ` +
-          `unavailable), so a pull will recover the parameter but not the ` +
-          `field it came from.`);
+          `'${p.name}' is projected from '${p.concept}.${p.field}', ` +
+          `${why}, so a pull will recover the parameter but not the field ` +
+          `it came from.`);
     }
     // The same hazard for the concepts the action declares it changes. The
     // entry is still published -- the action does change that concept, and

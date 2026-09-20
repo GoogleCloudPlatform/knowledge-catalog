@@ -179,3 +179,79 @@ export function referencedParameters(text: string): string[] {
   for (const m of withoutStrings.matchAll(/@([A-Za-z_]\w*)/g)) names.add(m[1]);
   return [...names];
 }
+
+
+// The DML verb a statement leads with, or '' when none can be read.
+//
+// Reading the first six characters is not enough: a statement opening with a
+// `--` comment, or with a `WITH` clause ahead of its UPDATE, reports a verb
+// that is not the statement's. So this walks the text instead, skipping what
+// cannot hold the verb -- comments, quoted strings, and anything nested in
+// parentheses -- and returns the first DML keyword left standing at the top
+// level. For `WITH x AS (SELECT ...) UPDATE ...` that is the UPDATE, because
+// the CTE body is inside parentheses; for `UPDATE t SET note = 'DELETE'` it is
+// the UPDATE, because the literal is not read as a keyword.
+//
+// BOTH line-comment forms are skipped. GoogleSQL takes `#` as well as `--`, and
+// action DML runs against Spanner, so `# credit the account` ahead of an INSERT
+// would otherwise hand back whatever verb the prose happened to use.
+//
+// It lives here, rather than beside the one caller that refuses a zero-row
+// write, because validation reads the same statements to decide what a model
+// may PUBLISH. Two readers meant the library accepted an authored `sql`
+// executor -- a leading comment, a CTE -- that `kcmd push` and `kcmd action
+// run` then refused before the runtime ever saw it. The verb SET stays wider
+// than what an executor may declare: MERGE is read so a caller can be told a
+// MERGE matched nothing, and rejected at publish time by SQL_EXECUTOR_VERBS,
+// which does not list it.
+//
+// WHAT A MISREAD COSTS runs one way only, and it is worth knowing which. Since
+// noRowMatched refuses everything except a recognized INSERT, failing to read a
+// verb cannot hide a write that did nothing -- it can only refuse one that was
+// fine. The expensive direction is therefore a real INSERT this misses, and the
+// cheap direction is anything else it cannot parse. That is deliberate: a false
+// refusal is a failed run someone looks at, and a missed refusal is a caller
+// told its write landed when it did not.
+//
+// This is a scanner, not a parser, and the repo does bundle a real one
+// (`@polyglot-sql/sdk`, used by transpile.ts and sql_identifiers.ts). It is not
+// used here because it has no Spanner dialect and action DML targets Spanner
+// and AlloyDB, so it would have to parse Spanner statements as something else
+// and would reject valid ones. Given which direction a misread now falls, a
+// scanner that recognizes a leading INSERT is enough; if that stops being true,
+// the parser is the thing to reach for rather than more cases here.
+export function leadingDmlVerb(sql: string): string {
+  const verbs = new Set(['INSERT', 'UPDATE', 'DELETE', 'MERGE']);
+  let depth = 0;
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql[i];
+    if ((c === '-' && sql[i + 1] === '-') || c === '#') {
+      const end = sql.indexOf('\n', i);
+      if (end < 0) break;
+      i = end;
+    } else if (c === '/' && sql[i + 1] === '*') {
+      const end = sql.indexOf('*/', i + 2);
+      if (end < 0) break;
+      i = end + 1;
+    } else if (c === '\'' || c === '"' || c === '`') {
+      for (i++; i < sql.length; i++) {
+        if (sql[i] === '\\') {
+          i++;
+        } else if (sql[i] === c) {
+          break;
+        }
+      }
+    } else if (c === '(') {
+      depth++;
+    } else if (c === ')') {
+      if (depth > 0) depth--;
+    } else if (depth === 0 && /[A-Za-z_]/.test(c)) {
+      let j = i;
+      while (j < sql.length && /[A-Za-z0-9_]/.test(sql[j])) j++;
+      const word = sql.slice(i, j).toUpperCase();
+      if (verbs.has(word)) return word;
+      i = j - 1;
+    }
+  }
+  return '';
+}

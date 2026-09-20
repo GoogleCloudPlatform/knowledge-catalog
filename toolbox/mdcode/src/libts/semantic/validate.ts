@@ -15,7 +15,7 @@ import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, SemanticModel
 import {LoadedModel} from './loader';
 import {bindScalar} from './parameters';
 import {DeclaredConcept, declaredConceptFields, resolveInheritance} from './resolve_inheritance';
-import {referencedParameters} from './sql_identifiers';
+import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 
 // Checks every model against the push requirements and returns the collected
 // error messages (empty when all models pass), each tagged with the model's
@@ -300,10 +300,21 @@ function validateActions(
         if (indistinct.length > 0) {
           const names = indistinct.map(p => `'${p.name}'`);
           // Name the projection only when every one of them came from the one
-          // field; a mixed bucket has nothing in common but the datatype.
-          const projections = new Set(indistinct.map(
-              p => p.concept !== undefined ? `${p.concept}.${p.field}` : ''));
-          const from = projections.size === 1 ? [...projections][0] : '';
+          // field AND that field is what more than one parameter came from.
+          // A mixed bucket has nothing in common but the datatype. So does a
+          // bucket holding a single projection beside a described parameter of
+          // the same type: the projection is indistinct, but blaming
+          // "multiple parameters projected from Account.accountId" names a
+          // duplication that is not there, and sends the author looking for a
+          // second projection to delete.
+          const pairOf = (p: ActionParameter) =>
+              p.concept !== undefined ? `${p.concept}.${p.field}` : '';
+          const projections = new Set(indistinct.map(pairOf));
+          const only = projections.size === 1 ? [...projections][0] : '';
+          const from =
+              only !== '' && params.filter(p => pairOf(p) === only).length > 1 ?
+              only :
+              '';
           const shared = from !== '' ?
               `multiple parameters projected from '${from}'` :
               `multiple parameters of type '${identity}'`;
@@ -372,21 +383,29 @@ function sqlExecutorErrors(action: Action, where: string): string[] {
       errors.push(`${at} is blank.`);
       return;
     }
-    // Deliberately the naive read, and deliberately NOT `leadingVerb` from the
-    // runtime, which skips comments and CTEs to find a verb further in. The two
-    // answer different questions for different populations. This one governs
-    // what a model may PUBLISH: a statement in a catalogued action has to begin
-    // with its verb, so a reader can see what it does without parsing it, and
-    // the rule is narrow on purpose. `leadingVerb` governs what the runtime may
-    // EXECUTE, which includes plans a handler wrote and validation never saw.
-    // Pointing this at the scanner would quietly admit MERGE and CTE-led
-    // statements into published models; deleting the scanner's extra handling
-    // would blind the row-count check on every handler plan.
-    const verb = text.split(/\s/, 1)[0].toUpperCase();
+    // The same reader the runtime uses, deliberately: what a model may
+    // PUBLISH and what the runtime will EXECUTE have to agree about where a
+    // statement's verb is. A naive first-word read disagreed -- the runtime
+    // ran `-- why\nUPDATE ...` and a CTE ahead of the verb, both covered by
+    // tests, while this rejected them at push time, so the library accepted an
+    // authored executor `kcmd` refused. Sharing the scanner does not widen
+    // what may be published: it can return MERGE, which SQL_EXECUTOR_VERBS
+    // does not list, so a MERGE is still refused here.
+    const verb = leadingDmlVerb(text);
     if (!(SQL_EXECUTOR_VERBS as readonly string[]).includes(verb)) {
+      // Name what the author wrote, not merely that nothing was found. The
+      // scanner reads DML verbs only, so a SELECT executor -- the likeliest
+      // mistake here -- comes back empty, and 'has no readable DML verb' would
+      // describe a query the author can see perfectly well. When the statement
+      // does not plainly open with a word, the first token is a comment marker
+      // and names nothing, so report the absence instead.
+      const first = text.split(/\s/, 1)[0].toUpperCase();
+      const wrote = verb || (/^[A-Z_][A-Z0-9_]*$/.test(first) ? first : '');
       errors.push(
-          `${at} starts with '${verb}', but a statement must be one of ${
-              SQL_EXECUTOR_VERBS.join(', ')}.`);
+          `${at} ${
+              wrote ? `starts with '${wrote}'` :
+                      'has no readable DML verb'}, but a statement must be ` +
+          `one of ${SQL_EXECUTOR_VERBS.join(', ')}.`);
     }
     if (text.slice(0, -1).includes(';')) {
       errors.push(
