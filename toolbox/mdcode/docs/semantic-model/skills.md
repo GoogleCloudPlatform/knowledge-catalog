@@ -174,12 +174,13 @@ full. Its page doesn't mention it, though. Whether a call can run here is a fact
 about the deployment wearing a logical name, so it's collected with the rest of
 them in `SKILL.md`, where it can also say which rules the action is waiting on.
 
-## One section describes the deployment
+## The deployment stays out of the reference pages
 
 An executor is a physical binding — the same `IssueCredit` is DML against
 Spanner under one profile and something else under another. So an action's
-name, arguments, rules and blast radius are properties of the model, and only
-one section of the skill is about where it runs.
+name, arguments, rules and blast radius are properties of the model, and
+nothing under `references/` is about where it runs. What is goes in `SKILL.md`,
+almost all of it in one section.
 
 Generate the commerce demo twice, once per profile, and the difference is that
 section and nothing else:

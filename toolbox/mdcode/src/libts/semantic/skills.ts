@@ -29,11 +29,12 @@
  * generating once. An action's name, arguments, rules and blast radius are the
  * same wherever it is deployed, because an executor is a physical binding that
  * a profile supplies. So every `references/` page is a fact about the model
- * and nothing else, and everything that reads the binding -- the store, the
- * executor kinds, which actions this deployment cannot run and why, and the
- * command line to try one with -- is gathered into "Running an action" in
- * `SKILL.md`. Point this at a different profile and that section changes and
- * the reference pages do not.
+ * and nothing else, and everything that reads the binding lives in `SKILL.md`:
+ * the store, the executor kinds, which actions this deployment cannot run and
+ * why, and the command line to try one with, all gathered under "Running an
+ * action", plus the snippet under "Finding a record" that reads the store
+ * directly, which needs the store's kind and its coordinates. Point this at a
+ * different profile and those move and the reference pages do not.
  *
  * Keeping that true takes some discipline: whether an action is RUNNABLE is a
  * binding fact wearing a logical name, and putting `tool.unavailable` on the

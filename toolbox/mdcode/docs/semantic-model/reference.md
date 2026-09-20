@@ -134,10 +134,11 @@ it. So the directory is named from what was generated rather than from anything
 the caller typed, and a name the format does not allow fails before anything is
 written.
 
-Everything the binding decides -- the store, the executor kinds, which actions
-this deployment cannot run and why, and the `kcmd action run` line to try one
-with -- is gathered into one section of `SKILL.md`. A reference page is the same
-bytes under any profile, and with or without `--judge`.
+Everything the binding decides lives in `SKILL.md`: the store, the executor
+kinds, which actions this deployment cannot run and why, and the `kcmd action
+run` line to try one with, all under one heading, plus the snippet for reading
+the store directly. A reference page is the same bytes under any profile, and
+with or without `--judge`.
 
 | Flag | Effect |
 |------|--------|
