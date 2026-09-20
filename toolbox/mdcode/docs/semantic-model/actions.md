@@ -802,10 +802,11 @@ nothing:
 
 ```
 Error: action 'TransferFunds' in model 'payments' (payments) has parameter
-'amount' whose type 'Currency' is not a scalar datatype.
+'amount' typed 'Currency', which is not a scalar datatype
+(String/Integer/Decimal/Float/Boolean/Date/Time/DateTime/DateTimeTz/Opaque).
 Error: action 'TransferFunds' in model 'payments' (payments) has multiple
-parameters projecting 'Account.accountId', so parameters 'source' and 'target'
-must have a 'description' to distinguish them.
+parameters projected from 'Account.accountId', so parameters 'source' and
+'target' must each have a 'description' of their own to distinguish them.
 Error: action 'TransferFunds' in model 'payments' (payments) has an mcp
 executor whose 'tool' is missing or blank.
 Error: action 'TransferFunds' in model 'payments' (payments) is guarded by
@@ -959,7 +960,8 @@ and reaches the same verdicts from the same sentences.
 
 `kcmd action list` prints the actions your model declares, each with its
 parameters, executor, guards and blast radius, plus the command line that
-calls it where the profile binds an executor:
+calls it where the profile binds an executor -- flags and all, so a guarded
+action's line arrives ready to run:
 
 ```bash
 kcmd action list
@@ -973,7 +975,7 @@ Model 'payments' (payments_eg), profile 'operational':
     executor:   sql
     guards:     TransferWithinAvailableBalance
     affects:    Account (modify), Transfer (create), TransferDebits (create)
-    run:        kcmd action run TransferFunds --arg source=<Integer> --arg target=<Integer> --arg amount=<Float>
+    run:        kcmd action run TransferFunds --judge --judge-reads-store --arg source=<Integer> --arg target=<Integer> --arg amount=<Float>
 ```
 
 `kcmd action run` performs one of those actions, against the database your
@@ -982,13 +984,16 @@ model's deployment target names under the selected profile.
 ### What a run does
 
 `kcmd action run` binds every argument as a typed query parameter, then applies
-the action's statements in one transaction:
+the action's statements in one transaction. `TransferFunds` is guarded, so the
+line carries `--judge` too -- [when the rule is a
+sentence](#when-the-rule-is-a-sentence) covers what that hires:
 
 ```
-  kcmd action run TransferFunds --arg source=7 --arg amount=250
+  kcmd action run TransferFunds --judge --arg source=7 --arg target=8 --arg amount=250
      │
      │ bind      @source = 7      as Integer, from Account.accountId
-     │           @amount = 250    as Decimal, so 9 is less than 10
+     │           @target = 8      as Integer, from Account.accountId
+     │           @amount = 250    as Float, so 9 is less than 10
      │
      │ apply     BEGIN
      │             UPDATE account SET balance = balance - @amount
@@ -1365,7 +1370,7 @@ Model 'payments' (payments_eg), profile 'operational':
       run unchecked. Report that rather than retrying.
       source: integer -- The account the money leaves.
       target: integer -- The account the money goes to.
-      amount: number -- The amount, as a number.
+      amount: number -- How much money to move.
 
   lookup  find_account  (Account)
       A customer's money at this bank.
@@ -1444,8 +1449,9 @@ line of output per key:
           description: The account             money leaves.
             the money leaves.
         - name: amount
-          type: Float              ───▶      amount: number -- The amount, as
-                                               a number.
+          type: Float              ───▶      amount: number -- How much money
+          description: How much                to move.
+            money to move.
 
   entities:
     - name: Account                ───▶  lookup  find_account

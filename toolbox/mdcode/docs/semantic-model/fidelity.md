@@ -180,10 +180,14 @@ expressions are still used when generating graph SQL.
 becomes a `semantic-action` entry under the model entry, carrying its executor,
 typed parameters, `guards`, and `affects` in a `semantic-action` aspect. They
 round-trip losslessly through `pull` (name, description, executor, typed
-parameters, `guards`, `affects`, and `instructions`). A parameter's
-`isEntityRef` is re-derived against the entities the pull recovered rather than
-read back from the aspect, so it stays consistent with the model the pull hands
-you. A `sql` executor round-trips its `statements` with the rest: they are the
+parameters, `guards`, `affects`, and `instructions`). A parameter projected
+from a field round-trips as the projection it was authored as: the aspect
+stores `concept` and `field` alongside the resolved scalar `type`, and a pull
+writes the projection back out without the type, so re-loading resolves it from
+the same field and arrives at the same parameter. A parameter's `label` and
+`ai_context` are the exception — the aspect has nowhere to put them, so a pull
+recovers the parameter's `description` and not those two. A `sql` executor
+round-trips its `statements` with the rest: they are the
 write, not a note about it, so a catalog that dropped them would describe an
 action nobody could re-deploy. The entry type is custom, so `kcmd init` creates
 it; a model that declares no action never needs it.
