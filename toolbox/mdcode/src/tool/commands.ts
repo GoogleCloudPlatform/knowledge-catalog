@@ -1407,7 +1407,7 @@ export interface SkillsGenerateOptions {
   out?: string;
   /** Overrides the skill's name, and so the directory it is written to. */
   name?: string;
-  /** Rewrite a skill that is already there. */
+  /** Replace a skill that is already there, pruning stale pages. */
   force?: boolean;
 }
 

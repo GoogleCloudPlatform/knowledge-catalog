@@ -203,7 +203,9 @@ cli.command(
     .option(
         '--judge [model]',
         'Write the skill for an agent that holds a judge, naming a Gemini model or taking the default; without it, an action guarded by a rule stated in words is described as not runnable. No model is called either way')
-    .option('--force', 'Rewrite a skill that is already there')
+    .option(
+        '--force',
+        'Replace a skill that is already there, including deleting a reference file for an action the model no longer declares')
     .action(async (options) => {
       let exitCode = 1;
       try {

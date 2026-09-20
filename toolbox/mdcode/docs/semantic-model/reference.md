@@ -117,9 +117,41 @@ one needs a store. That model is reported as offering none and the rest of the
 scope is still listed; the command exits non-zero. See
 [Hand it to an agent](actions.md#8-hand-it-to-an-agent).
 
+### skills-generate
+
+```bash
+kcmd skills-generate
+```
+
+Writes each model in the scope out as an [Agent Skill](https://agentskills.io/)
+folder: a `SKILL.md` naming the model, routing to its actions and saying what a
+call comes back as, and one `references/<action>.md` per action carrying that
+action's arguments, rules and blast radius. Reading the model is all this does --
+it touches no store, calls no judge, and runs nothing.
+
+A skill's `name` and the directory it sits in have to match, or a client skips
+it. So the directory is named from what was generated rather than from anything
+the caller typed, and a name the format does not allow fails before anything is
+written.
+
+Everything the binding decides -- the store, the executor kinds, which actions
+this deployment cannot run and why, and the `kcmd action run` line to try one
+with -- is gathered into one section of `SKILL.md`. A reference page is the same
+bytes under any profile, and with or without `--judge`.
+
 | Flag | Effect |
 |------|--------|
-| `--profile [name]` | Read the model under this binding profile. Defaults to `default_profile`, else the model's inline bindings. |
+| `--out <dir>` | Directory the skill directories are written under. Defaults to `skills`. |
+| `--name <name>` | Name the skill, and so its directory. Defaults to the model's own name. Rejected when the scope holds more than one model, because a name names one skill. |
+| `--profile [name]` | Read the model under this binding profile. Defaults to `default_profile`, else the model's inline bindings. It is what the one deployment-specific section describes. |
+| `--judge [model]` | Generate for an agent that holds a judge: an action guarded by a rule stated in words is described as runnable and given a command line. Without it, that action is listed as not runnable, with the rules it is waiting on. Takes a Gemini model id, defaulting to `gemini-2.5-flash`. No model is called either way -- generating a skill runs no action. |
+| `--force` | Replace a skill already at that path. A reference page for an action the model no longer declares is deleted and reported; a file outside `references/` is left alone. |
+
+Before anything is written, a warning is printed when no action in a model is
+runnable under the selected profile, because a skill that can run nothing is
+rarely what was meant. Two models in one scope whose names normalize to one
+skill name are refused rather than one overwriting the other. See
+[Generating an Agent Skill](skills.md).
 
 ## What gets created in BigQuery
 
