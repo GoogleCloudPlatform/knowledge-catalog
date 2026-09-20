@@ -421,16 +421,32 @@ const DEFINITELY_NOT_COMMITTED = new Set([400, 401, 403, 404, 409, 412]);
  * judgments those are, and a judge with nothing to look up looks nothing up.
  */
 export function runLine(a: Action, runtime: SemanticRuntime): string {
+  return [`kcmd action run ${a.name}`, ...runFlags(a, runtime)].join(' ');
+}
+
+/**
+ * The flags `runLine` would pass, one per element, without the command in
+ * front of them.
+ *
+ * Separate from `runLine` because a caller that rebuilds the head -- to quote
+ * an action name for a block meant to be copied and run, say -- would
+ * otherwise have to take the rendered line apart to get at the flags, and the
+ * only thing in it to split on is ' --', which an action name is free to
+ * contain. Nothing constrains what is in a name.
+ */
+export function runFlags(a: Action, runtime: SemanticRuntime): string[] {
   const model = runtime.model;
-  const args = a.parameters.filter(isParameterRequired)
-                   .map(p => ` --arg ${p.name}=<${p.type}>`)
-                   .join('');
   const guards = new Set(a.guards ?? []);
   const judged = (model.constraints ?? []).some(c => guards.has(c.name));
   const canRead = judged && !!runtime.store &&
       readableEntities(runtime, dialectFor(runtime.store)).length > 0;
-  return `kcmd action run ${a.name}${judged ? ' --judge' : ''}${
-      canRead ? ' --judge-reads-store' : ''}${args}`;
+  const flags: string[] = [];
+  if (judged) flags.push('--judge');
+  if (canRead) flags.push('--judge-reads-store');
+  for (const p of a.parameters.filter(isParameterRequired)) {
+    flags.push(`--arg ${p.name}=<${p.type}>`);
+  }
+  return flags;
 }
 
 /**

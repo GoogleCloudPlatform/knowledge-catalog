@@ -45,7 +45,7 @@
 import {Action, AffectedConcept, Constraint, SemanticModel} from './ir';
 import {ActionTool, modelTools} from './runtime/agent_tools';
 import {Judge} from './runtime/judge';
-import {runLine} from './runtime/run_action';
+import {runFlags} from './runtime/run_action';
 import {SemanticRuntime} from './runtime/runtime';
 import {storeLine} from './runtime/store';
 
@@ -293,27 +293,49 @@ function skillDocument(
  * limit rather than allowed to run over, because a description a strict client
  * rejects is a skill that never loads at all.
  */
+const USE_WHEN =
+    'Use when a request asks to change this data rather than only read it.';
+
+// The acts a model declares, named, in at most `budget` characters.
+//
+// Enough actions overrun the budget on this sentence alone. Names come off the
+// end until it fits, rather than the whole description being cut to length,
+// because the cut lands on whatever happens to be at 1,024 characters: the
+// sentence saying this is the write side goes, and the list it leaves behind
+// ends part-way through a name that does not exist. The count stays exact, so
+// a partial list reads as one.
+function actsSentence(actions: ActionTool[], budget: number): string {
+  const head = `Declares ${actions.length} action${
+      actions.length === 1 ? '' : 's'}: `;
+  const names = actions.map(t => t.actionName);
+  let sentence = `${head}${names.join(', ')}.`;
+  for (let shown = names.length - 1; shown >= 1; shown--) {
+    if (sentence.length <= budget) return sentence;
+    sentence = `${head}${names.slice(0, shown).join(', ')}, and ${
+        names.length - shown} more.`;
+  }
+  // A single name is already over budget. There is no list left to shorten, so
+  // cut it and let the sentence after this one carry the routing signal.
+  return sentence.length <= budget ? sentence : truncate(sentence, budget);
+}
+
 function descriptionFor(model: SemanticModel, actions: ActionTool[]): string {
   // What makes this line a routing decision is the part after the author's
   // prose: which acts the model offers, and that it is the write side. So the
   // budget is spent from the front. Truncating the joined string instead would
   // let a long model description push both out and leave a description that
   // reads well and no longer says what the skill is for.
-  const tail = actions.length ?
-      [
-        `Declares ${actions.length} action${actions.length === 1 ? '' : 's'}: ${
-            actions.map(t => t.actionName).join(', ')}.`,
-        `Use when a request asks to change this data rather than only read it.`,
-      ] :
-      [`Declares no actions; it describes the data, and changes none.`];
-  const fixed = tail.join(' ');
+  const fixed = actions.length ?
+      `${actsSentence(actions, MAX_DESCRIPTION - USE_WHEN.length - 1)} ${
+          USE_WHEN}` :
+      `Declares no actions; it describes the data, and changes none.`;
   const prose = model.description?.trim() || `The ${model.name} model.`;
   const subject = sentenceEnd(collapse(prose));
   const room = MAX_DESCRIPTION - fixed.length - 1;
   if (subject.length <= room) return `${subject} ${fixed}`;
   // Nothing of the subject fits: the acts are what a client routes on, so they
-  // are what survives.
-  if (room < 8) return fixed.slice(0, MAX_DESCRIPTION);
+  // are what survives. `fixed` is built to the limit, so it needs no cut here.
+  if (room < 8) return fixed;
   return `${truncate(subject, room)} ${fixed}`;
 }
 
@@ -328,6 +350,15 @@ function truncate(text: string, max: number): string {
   const space = cut.lastIndexOf(' ');
   return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
+
+// The one read a skill can do, which is not a read the agent performs: an
+// argument typed as an entity takes text and the runtime resolves it to the
+// row, as part of making the call. Only a model that declares entities has any.
+const ENTITY_TYPED_ARGUMENT =
+    ' An action argument typed as an entity will also accept text that ' +
+    'identifies exactly one record, and the call fails when nothing matches ' +
+    'or more than one does -- that is the one read this skill can do for ' +
+    'you, and it is part of making the call rather than a step before it.';
 
 // What this skill does not offer, said once rather than discovered per call.
 //
@@ -344,18 +375,19 @@ function readSideSection(
   // live store, which is the last and most concrete thing in the file.
   if (!actions.length) return [];
   const entities = runtime.model.entities ?? [];
-  if (!entities.length) return [];
   const out: string[] = [];
   out.push('## Finding a record');
   out.push('');
+  // The last sentence is about arguments typed as an entity, which a model
+  // declaring no entities has none of. It is dropped rather than the section
+  // with it: the instruction above still sends an agent to lookup tools this
+  // skill does not have, and saying where a key comes from is the answer to
+  // that whether or not anything here is entity-typed.
   out.push(
       'This skill offers writes, not reads. When you are given a name or a ' +
       'description where an action wants a key, the key has to come from ' +
-      'somewhere else: ask the caller, or read the store directly. An action ' +
-      'argument typed as an entity will also accept text that identifies ' +
-      'exactly one record, and the call fails when nothing matches or more ' +
-      'than one does -- that is the one read this skill can do for you, and ' +
-      'it is part of making the call rather than a step before it.');
+      'somewhere else: ask the caller, or read the store directly.' +
+      (entities.length ? ENTITY_TYPED_ARGUMENT : ''));
   out.push('');
   if (runtime.store?.kind === 'spanner') {
     const s = runtime.store;
@@ -442,30 +474,31 @@ function runningSection(
   // to a declared constraint, `--judge-reads-store` was never offered, and
   // every parameter was listed as if required. A line that is certain to be
   // refused is worse than no line, so there is one copy of the rule.
-  const line = action ? runLine(action, runtime) : '';
-  if (line) {
-    // `runLine` is `kcmd action run <name>` and then its flags. The head is
-    // rebuilt so a name that needs shell quoting gets it -- nothing constrains
-    // what is in an action name, and this is a block meant to be copied and
-    // run -- and `--profile` goes first because it picks the binding the rest
-    // of the line is about. Joined rather than pushed line by line: an action
+  const flags = action ? runFlags(action, runtime) : null;
+  if (flags) {
+    // The head is rebuilt so a name that needs shell quoting gets it --
+    // nothing constrains what is in an action name, and this is a block meant
+    // to be copied and run -- and `--profile` goes first because it picks the
+    // binding the rest of the line is about. The flags come from `runFlags`
+    // already separated, so a name containing ' --' cannot put a piece of
+    // itself among them. Joined rather than pushed line by line: an action
     // with no flags at all would otherwise end on a continuation with nothing
     // after it.
     const parts = [
       `kcmd action run ${shellArg(example.actionName)}`,
       `--profile ${shellArg(runtime.profile)}`,
-      ...line.split(' --').slice(1).map(flag => `--${flag}`),
+      ...flags,
     ];
     out.push('```bash');
     out.push(parts.join(' \\\n  '));
     out.push('```');
     out.push('');
   }
-  if (line.includes('--judge')) {
+  if (flags?.includes('--judge')) {
     out.push(
         '`--judge` is what settles the rules stated in words. Without it a ' +
         'guarded action is refused rather than run unchecked.' +
-        (line.includes('--judge-reads-store') ?
+        (flags.includes('--judge-reads-store') ?
              ' `--judge-reads-store` lets that judge read the model\'s own ' +
                  'tables, which a rule about something on record rather than ' +
                  'in the arguments cannot be settled without.' :

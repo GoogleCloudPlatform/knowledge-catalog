@@ -416,6 +416,38 @@ describe('when the runtime would refuse the call', () => {
 });
 
 
+describe('a model with actions and no entities', () => {
+  const model = loadFixtureModel('actions_place_order.yaml');
+
+  // The model-level instruction sends an agent to lookup tools, and this skill
+  // has none. Saying where a key comes from instead is the answer to that, and
+  // it does not depend on anything here being entity-typed.
+  const scalarOnly: SemanticModel = {
+    ...model,
+    entities: [],
+    actions: [{
+      ...model.actions![0],
+      ...RUNNABLE,
+      parameters: model.actions![0].parameters.filter(p => !p.isEntityRef),
+    } as Action],
+  };
+
+  test('still says where a key has to come from', () => {
+    const out = generate(rt(scalarOnly)).files['SKILL.md'];
+    expect(out).toContain('lookup tools');
+    expect(out).toContain('## Finding a record');
+    expect(out).toContain('the key has to come from somewhere else');
+  });
+
+  test('does not offer the one read it cannot do', () => {
+    // An argument typed as an entity resolves text to a row. There are none
+    // here, so promising it would be a lie.
+    expect(generate(rt(scalarOnly)).files['SKILL.md'])
+        .not.toContain('argument typed as an entity');
+  });
+});
+
+
 describe('the binding is one section', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
 
@@ -547,6 +579,17 @@ describe('text that would otherwise break the output', () => {
     }
   });
 
+  test('an action name containing " --" adds no flag of its own', () => {
+    // The command block used to be rebuilt by splitting the runtime's rendered
+    // line on ' --', which splits the name along with the flags: the block
+    // came back carrying `--Order` as if it were one.
+    const dashed =
+        withAction(model, {...RUNNABLE, name: 'Place --Order'} as never);
+    const skill = generate(rt(dashed)).files['SKILL.md'];
+    expect(skill).toContain(`kcmd action run 'Place --Order'`);
+    expect(skill).not.toContain('\n  --Order');
+  });
+
   test('an action name that needs shell quoting gets it', () => {
     // The command block is meant to be copied and run. A bare name with a
     // space silently becomes a different action plus a stray positional.
@@ -577,6 +620,49 @@ describe('text that would otherwise break the output', () => {
 //
 //   Regenerate after an intentional change:
 //     UPDATE_GOLDENS=1 npx bun test ./tests/libts/semantic/skills.test.ts
+describe('a description that does not fit', () => {
+  const model = loadFixtureModel('actions_place_order.yaml');
+
+  function manyActions(count: number): SemanticModel {
+    const actions: Action[] = [];
+    for (let i = 0; i < count; i++) {
+      actions.push(
+          {...model.actions![0], ...RUNNABLE, name: `LongishActionName${i}`} as
+          Action);
+    }
+    return {...model, actions};
+  }
+
+  test('the acts are cut down, not the sentence naming the write side', () => {
+    // Sixty action names overrun 1,024 characters on the list alone. Cutting
+    // the finished description to length instead would take off the sentence a
+    // client routes on and leave the list ending part-way through a name that
+    // does not exist.
+    const description =
+        frontmatter(generate(rt(manyActions(60))).files['SKILL.md'])
+            .description as string;
+    expect(description.length).toBeLessThanOrEqual(1024);
+    expect(description).toContain(
+        'Use when a request asks to change this data rather than only read ' +
+        'it.');
+    expect(description).toContain(' more.');
+    // The count is of what the model declares, not of what is listed, so a
+    // partial list reads as one.
+    expect(description).toContain('Declares 60 actions:');
+  });
+
+  test('a list that fits is not abridged', () => {
+    const description =
+        frontmatter(generate(rt(manyActions(3))).files['SKILL.md'])
+            .description as string;
+    expect(description).toContain(
+        'Declares 3 actions: LongishActionName0, LongishActionName1, ' +
+        'LongishActionName2.');
+    expect(description).not.toContain(' more.');
+  });
+});
+
+
 describe('golden skill: the fixture generates these exact files', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
 

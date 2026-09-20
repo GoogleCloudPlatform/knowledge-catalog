@@ -1483,7 +1483,7 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
     // Warned before anything is written, so a reader who does not want this
     // skill still has the chance not to have it.
     for (const warning of generated.warnings) {
-      console.warn(`Warning: [${generated.name}] ${warning}`);
+      console.warn(`Warning: [${runtime.model.name}] ${warning}`);
     }
     try {
       const keep = new Set(generated.files.map(f => f.path));
@@ -1500,8 +1500,9 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
     } catch (e) {
       // One unwritable path must not take the rest of the scope with it, and
       // must not be reported as a bare errno with no model attached.
-      console.error(`Error: [${generated.name}] could not write under ${dir}: ${
-          e instanceof Error ? e.message : String(e)}`);
+      console.error(
+          `Error: [${runtime.model.name}] could not write under ${dir}: ${
+              e instanceof Error ? e.message : String(e)}`);
       failed = true;
     }
   }
@@ -1629,22 +1630,6 @@ function describeParameter(p: ActionParameter): string {
   }
   return `${p.name} (${tags.join(', ')})`;
 }
-
-
-// The command line that runs an action, with a placeholder per required
-// parameter.
-//
-// A guarded action needs `--judge`, and the line says so, because a suggested
-// command that is certain to be refused is worse than no suggestion: the reader
-// tries it, reads a refusal, and has to work out that the fix is a flag this
-// listing knew about all along.
-//
-// `--judge-reads-store` rides along wherever the model has tables to read, for
-// that same reason one step further on. A judgment comparing the call against
-// what is recorded is refused without it, and nothing in a constraint's wording
-// marks which judgments those are, so the only line safe to suggest is the one
-// that can settle either kind. A judge with nothing to look up looks nothing
-// up, and the offer costs one model call.
 
 
 // Runs one action against the store its model's deployment target names.
