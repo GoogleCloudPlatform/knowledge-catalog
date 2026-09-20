@@ -44,7 +44,9 @@
 
 import {Action, AffectedConcept, Constraint, SemanticModel} from './ir';
 import {ActionTool, modelTools} from './runtime/agent_tools';
+import {dialectFor} from './runtime/dialect';
 import {Judge} from './runtime/judge';
+import {readableEntities} from './runtime/judge_store';
 import {runFlags} from './runtime/run_action';
 import {SemanticRuntime} from './runtime/runtime';
 import {storeLine} from './runtime/store';
@@ -123,8 +125,7 @@ export function generateSkill(opts: GenerateSkillOptions): SkillPackage|{
   const nameError = whyNameIsInvalid(name);
   if (nameError) return {error: nameError};
 
-  const {actions, instruction} =
-      modelTools({runtime, judge: ASSUMED_JUDGE});
+  const {actions, instruction} = modelTools({runtime, judge: ASSUMED_JUDGE});
   const warnings: string[] = [];
   if (!actions.length) {
     warnings.push(
@@ -305,8 +306,8 @@ const USE_WHEN =
 // ends part-way through a name that does not exist. The count stays exact, so
 // a partial list reads as one.
 function actsSentence(actions: ActionTool[], budget: number): string {
-  const head = `Declares ${actions.length} action${
-      actions.length === 1 ? '' : 's'}: `;
+  const head =
+      `Declares ${actions.length} action${actions.length === 1 ? '' : 's'}: `;
   const names = actions.map(t => t.actionName);
   let sentence = `${head}${names.join(', ')}.`;
   for (let shown = names.length - 1; shown >= 1; shown--) {
@@ -410,7 +411,56 @@ function readSideSection(
     out.push(`  --sql='SELECT ...'`);
     out.push('```');
     out.push('');
+    out.push(...readableSchema(runtime));
   }
+  return out;
+}
+
+
+// The tables that snippet can name, listed rather than left to be discovered.
+//
+// Without this an agent given `--sql='SELECT ...'` knows there is a store and
+// nothing about its shape, so it spends its first turns querying
+// INFORMATION_SCHEMA -- which it did, twice, before reading a row. The model
+// already holds the answer: the binding profile says which table each entity
+// is and which column each field is, and `readableEntities` is the same
+// derivation a reading judge is shown, so the schema here and the schema the
+// judge writes against cannot drift apart.
+//
+// Both names appear, and which is which is spelled out rather than implied.
+// The rest of the skill is written in the model's names and a statement has to
+// contain the store's, so an agent reading this has to cross between them --
+// and `customer_id is Customer.customerId` does not say which side goes in the
+// SQL. Given exactly that, an agent wrote `o.customerId`, got a name-not-found
+// error, and fell back to INFORMATION_SCHEMA anyway. So the column is labelled
+// `column` and the sentence above says the quoted name is the one to write.
+function readableSchema(runtime: SemanticRuntime): string[] {
+  const dialect = dialectFor(runtime.store);
+  const readable = readableEntities(runtime, dialect);
+  if (!readable.length) return [];
+  const out: string[] = [];
+  out.push(
+      `Those are ${dialect.name} statements. These tables are the whole of ` +
+      'what there is to read, and the names to write in a statement are the ' +
+      'table and column names below -- not the model\'s own names, which ' +
+      'follow each column for cross-reference:');
+  out.push('');
+  out.push('```');
+  for (const {entity, table, fields} of readable) {
+    out.push(`${entity.name} -> table ${table}`);
+    for (const field of fields) {
+      // The field's own description carries what a coded column's values are
+      // -- `item, tax, fee, or credit` -- and an agent that has to guess them
+      // filters on a value the column never holds and gets an empty answer
+      // back, which reads like the record not existing.
+      const says = field.description?.trim();
+      out.push(`  column ${dialect.quote(field.column)} (${field.type}) = ${
+          entity.name}.${field.name}${
+          says ? `. ${says.replace(/\s+/g, ' ')}` : ''}`);
+    }
+  }
+  out.push('```');
+  out.push('');
   return out;
 }
 

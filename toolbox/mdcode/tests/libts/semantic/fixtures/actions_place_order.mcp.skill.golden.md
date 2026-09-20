@@ -31,6 +31,18 @@ gcloud spanner databases execute-sql d \
   --sql='SELECT ...'
 ```
 
+Those are GoogleSQL statements. These tables are the whole of what there is to read, and the names to write in a statement are the table and column names below -- not the model's own names, which follow each column for cross-reference:
+
+```
+orders -> table orders
+  column o_orderkey (String) = orders.o_orderkey
+  column o_custkey (String) = orders.o_custkey
+  column o_totalprice (String) = orders.o_totalprice
+customer -> table customer
+  column c_custkey (String) = customer.c_custkey
+  column c_name (String) = customer.c_name
+```
+
 ## Running an action
 
 Everything above is true of this model wherever it is deployed. This section is not: it describes the binding this skill was generated from, which is profile `default`.

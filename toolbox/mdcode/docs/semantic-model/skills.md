@@ -125,6 +125,37 @@ The row names the action the way it was authored, because that's the string
 `kcmd action run` takes and the string a refusal quotes back. The snake_case tool
 name a framework would register it under is on the reference page, stated once.
 
+Then **Finding a record**, which exists because a skill of writes has a hole in
+it: a request names a person and a day, and an action wants a key. The section
+says where the key can come from — the caller, or the entity-typed argument that
+accepts text identifying exactly one record — and, for a Spanner store, gives
+the `gcloud` line that reads the database, followed by the tables to write a
+`SELECT` against:
+
+```
+Customer -> table Customer
+  column customer_id (Integer) = Customer.customerId
+  column name (String) = Customer.name. The customer's display name, e.g. "Morgan Ellis".
+  column email (String) = Customer.email
+Order -> table Orders
+  column order_id (Integer) = Order.orderId
+  column placed_on (Date) = Order.placedOn. The day the order was placed.
+  column total (Decimal) = Order.total. What the customer owes on this order, in dollars.
+```
+
+Both names appear, and which is which is spelled out rather than implied. The
+rest of the skill is written in the model's names and a statement has to contain
+the store's, so an agent reading this has to cross between them — and a rendering
+that only paired them up, `customer_id is Customer.customerId`, got read
+backwards: an agent wrote `o.customerId`, got a name-not-found error, and fell
+back to `INFORMATION_SCHEMA`. So the physical one is labelled `column` and the
+sentence above the block says the quoted name is the one to write.
+
+The field descriptions come along because a coded column's own description
+carries what its values are — `item, tax, fee, or credit` — and an agent that has
+to guess them filters on a value the column never holds and gets an empty answer
+back, which reads like the record not existing.
+
 Last comes what the runtime guarantees, which is the same for every model. Every
 rule is settled before the write opens a transaction, so a refusal leaves the
 store exactly as it was; and a call comes back in one of three states rather
@@ -187,24 +218,45 @@ $ diff spanner-skills/commerce/references/issue-credit.md \
        alloydb-skills/commerce/references/issue-credit.md
 
 $ diff spanner-skills/commerce/SKILL.md alloydb-skills/commerce/SKILL.md
-28,35d27
+28,56d27
 < To read the store directly:
 <
 < ```bash
-< gcloud spanner databases execute-sql semantic_agent_demo \
+< gcloud spanner databases execute-sql semantic_skill_demo \
 <   --instance=my-instance --project=my-project \
 <   --sql='SELECT ...'
 < ```
 <
-38c30
+< Those are GoogleSQL statements. These tables are the whole of what there is to read, and the names to write in a statement are the table and column names below -- not the model's own names, which follow each column for cross-reference:
+<
+< ```
+< Customer -> table Customer
+<   column customer_id (Integer) = Customer.customerId
+<   column name (String) = Customer.name. The customer's display name, e.g. "Morgan Ellis".
+<   column email (String) = Customer.email
+< Order -> table Orders
+<   column order_id (Integer) = Order.orderId
+<   column customer_id (Integer) = Order.customerId
+<   column placed_on (Date) = Order.placedOn. The day the order was placed.
+<   column total (Decimal) = Order.total. What the customer owes on this order, in dollars.
+<   column status (String) = Order.status. OPEN or CLOSED.
+< LineItem -> table LineItem
+<   column line_item_id (String) = LineItem.lineItemId
+<   column order_id (Integer) = LineItem.orderId
+<   column type (String) = LineItem.type. item, tax, fee, or credit.
+<   column amount (Decimal) = LineItem.amount
+<   column memo (String) = LineItem.memo
+< ```
+<
+59c30
 < Everything above is true of this model wherever it is deployed. This section is not: it describes the binding this skill was generated from, which is profile `spanner`.
 ---
 > Everything above is true of this model wherever it is deployed. This section is not: it describes the binding this skill was generated from, which is profile `alloydb`.
-40c32
-< - Store: `my-project/my-instance/semantic_agent_demo`
+61c32
+< - Store: `my-project/my-instance/semantic_skill_demo`
 ---
-> - Store: `alloydb:my-project/us-central1/my-cluster/my-instance/semantic_agent_demo`
-47c39
+> - Store: `alloydb:my-project/us-central1/my-cluster/my-instance/semantic_skill_demo`
+68c39
 <   --profile spanner \
 ---
 >   --profile alloydb \
@@ -214,7 +266,7 @@ The first `diff` prints nothing: the reference page is the same bytes under both
 profiles, even though the two databases have different table names, a
 differently named column and a different SQL dialect between them. What changes
 in `SKILL.md` is the profile, the store, the command line's `--profile`, and the
-`gcloud` snippet that only a Spanner store has.
+read path that only a Spanner store has.
 
 The judge isn't a second axis, and it's worth saying why, because it looks like
 one. A rule stated in words is settled by asking a judge, and the runtime asks
@@ -241,7 +293,10 @@ tools by its own framework, which reaches the same runtime.
 * **Reads.** A skill describes the writes. The lookups a model derives are a
   read path nothing on the command line calls, so rather than pointing an agent
   at a tool that isn't there, the skill says where the key has to come from and,
-  for a Spanner store, gives the `gcloud` line that reads it.
+  for a Spanner store, gives the `gcloud` line that reads it and the schema to
+  write against. A model bound to AlloyDB gets neither, so an agent handed a
+  name under that profile has nothing in the skill telling it how to reach a
+  key.
 * **Metrics.** A metric reaches BigQuery as a `MEASURE`; nothing lowers one into
   a skill.
 * **A plugin.** An [Agent Plugin](https://agent-plugins.org/) bundles skills with
