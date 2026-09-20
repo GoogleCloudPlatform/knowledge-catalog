@@ -394,7 +394,7 @@ class StoreError extends Error {}
 function noRowMatched(
     stmt: spanner.Statement,
     result: {stats?: {rowCountExact?: string}}): string|null {
-  const verb = stmt.sql.trimStart().slice(0, 6).toUpperCase();
+  const verb = leadingVerb(stmt.sql);
   if (verb !== 'UPDATE' && verb !== 'DELETE') return null;
   const exact = result.stats?.rowCountExact;
   if (exact === undefined || exact === null) return null;
@@ -402,6 +402,55 @@ function noRowMatched(
   return `${verb === 'UPDATE' ? 'an UPDATE' : 'a DELETE'} matched no rows, ` +
       `so the action did not do what it says it does. Nothing was written. ` +
       `The statement was: ${stmt.sql.replace(/\s+/g, ' ').trim()}`;
+}
+
+
+// The DML verb a statement leads with, or '' when it leads with none.
+//
+// Reading the first six characters is not enough, and the ways it is wrong all
+// SAY the statement is harmless: a statement opening with a `--` comment, or
+// with a `WITH` clause ahead of its UPDATE, reports a verb nobody checks and
+// takes the zero-row refusal out of the path silently. So this walks the text
+// instead, skipping what cannot hold the verb -- comments, quoted strings, and
+// anything nested in parentheses -- and returns the first DML keyword left
+// standing at the top level. For `WITH x AS (SELECT ...) UPDATE ...` that is
+// the UPDATE, because the CTE body is inside parentheses; for
+// `UPDATE t SET note = 'DELETE'` it is the UPDATE, because the literal is not
+// read as a keyword.
+function leadingVerb(sql: string): string {
+  const verbs = new Set(['INSERT', 'UPDATE', 'DELETE', 'MERGE']);
+  let depth = 0;
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql[i];
+    if (c === '-' && sql[i + 1] === '-') {
+      const end = sql.indexOf('\n', i);
+      if (end < 0) break;
+      i = end;
+    } else if (c === '/' && sql[i + 1] === '*') {
+      const end = sql.indexOf('*/', i + 2);
+      if (end < 0) break;
+      i = end + 1;
+    } else if (c === '\'' || c === '"' || c === '`') {
+      for (i++; i < sql.length; i++) {
+        if (sql[i] === '\\') {
+          i++;
+        } else if (sql[i] === c) {
+          break;
+        }
+      }
+    } else if (c === '(') {
+      depth++;
+    } else if (c === ')') {
+      if (depth > 0) depth--;
+    } else if (depth === 0 && /[A-Za-z_]/.test(c)) {
+      let j = i;
+      while (j < sql.length && /[A-Za-z0-9_]/.test(sql[j])) j++;
+      const word = sql.slice(i, j).toUpperCase();
+      if (verbs.has(word)) return word;
+      i = j - 1;
+    }
+  }
+  return '';
 }
 
 
@@ -488,7 +537,7 @@ function unsafeToRunUnchecked(
   const blank =
       (model.constraints ?? [])
           .filter(c => guards.includes(c.name) && !(c.judgment ?? '').trim())
-                    .map(c => c.name);
+          .map(c => c.name);
   if (blank.length) {
     const says = blank.length === 1 ? 'states no rule to put to a judge' :
                                       'state no rule to put to a judge';
@@ -649,22 +698,22 @@ function unsettledGuards(model: SemanticModel, action: Action, judge?: Judge):
   const out: Array<{constraint: Constraint; why: string}> = [];
   for (const constraint of model.constraints ?? []) {
     if (!named.has(constraint.name)) continue;
-      if (!(constraint.judgment ?? '').trim()) {
+    if (!(constraint.judgment ?? '').trim()) {
       // No rule to put to a judge. Refused outright when the guard is anything
       // stricter; an advisory one is never refused, so it lands here instead
       // of reaching a judge as an empty rule. `kcmd` validates the model
       // first, so a constraint with no body at all arrives only through the
       // library entry point and reads the same way.
-        out.push({
-          constraint,
-          why: 'its judgment states no words to put to a judge.',
-        });
-        continue;
-      }
-      // One that had a judge was already put to it, and `askJudges` reported
-      // whatever came back.
-      if (judge) continue;
-      out.push({constraint, why: 'this run was given no judge to ask.'});
+      out.push({
+        constraint,
+        why: 'its judgment states no words to put to a judge.',
+      });
+      continue;
+    }
+    // One that had a judge was already put to it, and `askJudges` reported
+    // whatever came back.
+    if (judge) continue;
+    out.push({constraint, why: 'this run was given no judge to ask.'});
   }
   return out;
 }

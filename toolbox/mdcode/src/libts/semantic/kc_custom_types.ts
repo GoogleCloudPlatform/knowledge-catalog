@@ -277,6 +277,50 @@ const ACTION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
             },
             {
               index: 3,
+              name: 'isEntityRef',
+              type: 'bool',
+              annotations: {
+                displayName: 'Is Entity Reference (reserved)',
+                description:
+                    'Reserved and never written. It marked a parameter whose ' +
+                    '`type` named an entity, so the parameter referred to an ' +
+                    'object rather than carrying a value. Those parameters ' +
+                    'were removed; every parameter now carries a scalar, and ' +
+                    'one taken from a field names it in `concept`/`field`.',
+              },
+            },
+            {
+              index: 4,
+              name: 'description',
+              type: 'string',
+              annotations: {
+                displayName: 'Description',
+                description:
+                    'Human- and model-readable description of the parameter.',
+              },
+            },
+            {
+              index: 5,
+              name: 'required',
+              type: 'bool',
+              annotations: {
+                displayName: 'Required',
+                description:
+                    'Whether the parameter must be supplied when invoking the action.',
+              },
+            },
+            {
+              index: 6,
+              name: 'default',
+              type: 'string',
+              annotations: {
+                displayName: 'Default Value',
+                description:
+                    'Default value substituted when omitted, serialized as text.',
+              },
+            },
+            {
+              index: 7,
               name: 'concept',
               type: 'string',
               annotations: {
@@ -287,7 +331,7 @@ const ACTION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
               },
             },
             {
-              index: 4,
+              index: 8,
               name: 'field',
               type: 'string',
               annotations: {
@@ -295,36 +339,6 @@ const ACTION_ASPECT_TYPE: Omit<AspectType, 'name'> = {
                 description:
                     'The field within `concept` whose type and wording this ' +
                     'parameter takes. Present exactly when `concept` is.',
-              },
-            },
-            {
-              index: 5,
-              name: 'description',
-              type: 'string',
-              annotations: {
-                displayName: 'Description',
-                description:
-                    'Human- and model-readable description of the parameter.',
-              },
-            },
-            {
-              index: 6,
-              name: 'required',
-              type: 'bool',
-              annotations: {
-                displayName: 'Required',
-                description:
-                    'Whether the parameter must be supplied when invoking the action.',
-              },
-            },
-            {
-              index: 7,
-              name: 'default',
-              type: 'string',
-              annotations: {
-                displayName: 'Default Value',
-                description:
-                    'Default value substituted when omitted, serialized as text.',
               },
             },
           ],

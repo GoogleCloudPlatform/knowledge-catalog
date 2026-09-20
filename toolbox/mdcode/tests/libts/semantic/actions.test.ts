@@ -1015,6 +1015,43 @@ describe('parameter description, required, and default', () => {
         .toEqual([]);
   });
 
+  test('a projected and a declared parameter of one type still collide', () => {
+    // What a caller sees is the datatype, so that is what the check keys on.
+    // Keying it on the projection instead would let this pair through: the
+    // schema offers two integers, one of them says nothing about itself, and
+    // there is nothing to tell a caller which number goes where.
+    const missingDesc = withActions([{
+      name: 'PlaceOrder',
+      executor: MCP,
+      parameters: [
+        {name: 'customer', concept: 'customer', field: 'id'},
+        {name: 'quantity', type: 'Integer'},
+      ],
+    }]);
+    const errs = validatePushRequirements(
+        [{document: 'test.yaml', model: missingDesc.models[0]}],
+        {targetOptional: true});
+    expect(errs.some(
+               e => e.includes('multiple parameters of type \'Integer\'') &&
+                   e.includes('parameter \'quantity\' must have')))
+        .toBe(true);
+
+    // Describing the one that said nothing settles it; `customer` already
+    // inherited a description from the field it projects.
+    const withDesc = withActions([{
+      name: 'PlaceOrder',
+      executor: MCP,
+      parameters: [
+        {name: 'customer', concept: 'customer', field: 'id'},
+        {name: 'quantity', type: 'Integer', description: 'How many.'},
+      ],
+    }]);
+    expect(validatePushRequirements(
+               [{document: 'test.yaml', model: withDesc.models[0]}],
+               {targetOptional: true}))
+        .toEqual([]);
+  });
+
   test(
       'validateRunnable does not reject duplicate parameter types lacking descriptions',
       () => {

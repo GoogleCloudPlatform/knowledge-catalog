@@ -77,6 +77,19 @@ export function bindScalar(
           `cannot be bound to it.`,
     };
   }
+  // Everything below stringifies the value before matching it against the
+  // type, which is what lets a JSON `"12347"` bind as an Integer. An object or
+  // an array has a string form too -- `[object Object]` -- and it would sail
+  // through as a String and be written to the store verbatim. A parameter
+  // carries ONE scalar, so a composite is refused here rather than flattened.
+  if (raw !== undefined && raw !== null && typeof raw === 'object') {
+    return {
+      error: `Action parameter '${param.name}' (${type}) was given ${
+                 Array.isArray(raw) ? 'a list' :
+                                      'an object'}, but a parameter ` +
+          `carries a single scalar value.`,
+    };
+  }
   // An empty String IS a value: `--arg memo=` is the caller saying the memo is
   // blank, which is a different statement from not passing one. For every
   // other type there is no value empty text could be, so it stays an error.

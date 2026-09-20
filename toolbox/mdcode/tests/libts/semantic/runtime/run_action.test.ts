@@ -269,6 +269,7 @@ describe('binding a projected argument', () => {
                 field: 'accountId',
               },
               {name: 'amount', type: 'Float'},
+              {name: 'memo', type: 'String', required: false},
             ],
           }],
         }),
@@ -311,6 +312,27 @@ describe('binding a projected argument', () => {
             .toContain('\'source\' (Integer) was not given a value');
         expect(fake.sessionsOpened).toBe(0);
       });
+
+  test('refuses a composite value rather than stringifying it', async () => {
+    // Binding stringifies before matching the type, which is what lets a JSON
+    // `"7"` arrive as an Integer. An object has a string form too, and a
+    // String parameter would have taken `[object Object]` and written it.
+    const {fake, outcome} =
+        transferring({source: 7, amount: 100, memo: {note: 'hi'}});
+    const result = await outcome;
+    if (result.status !== 'error') throw new Error('expected an error');
+    expect(result.message).toContain('\'memo\' (String) was given an object');
+    expect(fake.committed).toBe(false);
+  });
+
+  test('refuses a list for the same reason', async () => {
+    const {fake, outcome} =
+        transferring({source: 7, amount: 100, memo: ['a', 'b']});
+    const result = await outcome;
+    if (result.status !== 'error') throw new Error('expected an error');
+    expect(result.message).toContain('\'memo\' (String) was given a list');
+    expect(fake.committed).toBe(false);
+  });
 });
 
 
@@ -356,6 +378,73 @@ describe('a write that matched no rows', () => {
     const fake = fakeStore();
     const outcome = await runCredit(fake);
     expect(outcome.status).toBe('committed');
+  });
+
+  // Finding the verb by reading the first six characters got all of these
+  // wrong, and got them wrong in the direction that SAYS the write was fine:
+  // the check saw no UPDATE, waved the statement through, and a write that
+  // touched nothing committed as applied.
+  describe('finds the verb whatever the statement leads with', () => {
+    function creditVia(statement: string) {
+      const fake = counting('0');
+      return {
+        fake,
+        outcome: act({
+          model: creditModel({
+            actions: [{
+              ...credit,
+              executor: {kind: 'sql', sql: {statements: [statement]}},
+            }],
+          }),
+          actionName: 'Credit',
+          args: {account: 'A1', amount: 100},
+          client: fake.client,
+        }),
+      };
+    }
+
+    test('a leading line comment', async () => {
+      const {fake, outcome} = creditVia(
+          '-- take the money back off the account\n' +
+          'UPDATE Account SET balance = balance - @amount ' +
+          'WHERE account_id = @account');
+      const result = await outcome;
+      if (result.status !== 'error') throw new Error('expected an error');
+      expect(result.message).toContain('an UPDATE matched no rows');
+      expect(fake.committed).toBe(false);
+    });
+
+    test('a leading block comment', async () => {
+      const {fake, outcome} = creditVia(
+          '/* settled 2026-01 */ DELETE FROM Account ' +
+          'WHERE account_id = @account');
+      const result = await outcome;
+      if (result.status !== 'error') throw new Error('expected an error');
+      expect(result.message).toContain('a DELETE matched no rows');
+      expect(fake.committed).toBe(false);
+    });
+
+    test('a CTE ahead of the verb', async () => {
+      const {fake, outcome} = creditVia(
+          'WITH stale AS (SELECT account_id FROM Account) ' +
+          'UPDATE Account SET balance = balance - @amount ' +
+          'WHERE account_id = @account');
+      const result = await outcome;
+      if (result.status !== 'error') throw new Error('expected an error');
+      expect(result.message).toContain('an UPDATE matched no rows');
+      expect(fake.committed).toBe(false);
+    });
+
+    test('a string literal naming another verb does not count', async () => {
+      // The refusal has to come from the statement's own verb, not from the
+      // word DELETE sitting inside a quoted value.
+      const {fake, outcome} = creditVia(
+          'INSERT INTO Entry (entry_id, account_id, amount) ' +
+          'VALUES (GENERATE_UUID(), @account, \'DELETE\')');
+      const result = await outcome;
+      expect(result.status).toBe('committed');
+      expect(fake.committed).toBe(true);
+    });
   });
 });
 

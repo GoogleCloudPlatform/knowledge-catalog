@@ -239,10 +239,12 @@ function validateActions(
     const where =
         `action '${action.name}' in model '${model.name}' (${document})`;
     // Two parameters are confusable when a caller cannot tell from their types
-    // which is which. Projecting the SAME field of the same concept is the
-    // stronger case of that -- two Account.accountId parameters are not merely
-    // both strings, they denote the same kind of thing -- so it keys on the
-    // projection where there is one and on the bare type otherwise.
+    // which is which, so this keys on the datatype the caller actually sees in
+    // the tool schema. Projecting the SAME field is the stronger case of that
+    // -- two Account.accountId parameters are not merely both integers, they
+    // denote the same kind of thing -- but it needs no key of its own: a
+    // projected parameter takes the field's type, so a same-field pair is
+    // already a same-type pair. The projection only picks the wording below.
     const byIdentity = new Map<string, ActionParameter[]>();
     for (const param of action.parameters) {
       errors.push(...parameterTypeErrors(param, where, concepts));
@@ -262,9 +264,8 @@ function validateActions(
               param.default}' is invalid: ${bound.error}`);
         }
       }
-      const identity = param.concept !== undefined ?
-          `${param.concept}.${param.field}` :
-          (param.type ?? '');
+      const identity = param.type ?? '';
+      if (identity === '') continue;
       const list = byIdentity.get(identity) ?? [];
       list.push(param);
       byIdentity.set(identity, list);
@@ -287,18 +288,22 @@ function validateActions(
                 !p.description?.trim());
         if (indistinct.length > 0) {
           const names = indistinct.map(p => `'${p.name}'`);
-          const shared = params[0].concept !== undefined ?
-              `multiple parameters projected from '${identity}'` :
+          // Name the projection only when every one of them came from the one
+          // field; a mixed bucket has nothing in common but the datatype.
+          const projections = new Set(indistinct.map(
+              p => p.concept !== undefined ? `${p.concept}.${p.field}` : ''));
+          const from = projections.size === 1 ? [...projections][0] : '';
+          const shared = from !== '' ?
+              `multiple parameters projected from '${from}'` :
               `multiple parameters of type '${identity}'`;
-          errors.push(
-              `${where} has ${shared}, so ${
-                  names.length === 1 ?
-                      `parameter ${names[0]}` :
-                      `parameters ${names.slice(0, -1).join(', ')} and ${
-                          names[names.length - 1]}`} must each have a ` +
-              `'description' of ${
-                  names.length === 1 ? 'its' : 'their'} own to distinguish ${
-                  names.length === 1 ? 'it' : 'them'}.`);
+          const one = names.length === 1;
+          errors.push(`${where} has ${shared}, so ${
+              one ? `parameter ${names[0]}` :
+                    `parameters ${names.slice(0, -1).join(', ')} and ${
+                        names[names.length - 1]}`} must ${
+              one ? 'have' : 'each have'} a 'description' of ${
+              one ? 'its' :
+                    'their'} own to distinguish ${one ? 'it' : 'them'}.`);
         }
       }
     }
@@ -465,9 +470,19 @@ function parameterTypeErrors(
     // second line repeating it would only add noise.
     if (!errors.length) {
       errors.push(
-          `${where} has parameter '${param.name}' with no type. A parameter ` +
-          `states a scalar 'type' (${DATA_TYPES.join('/')}), or projects one ` +
-          `from a field with 'concept' and 'field'.`);
+          param.concept !== undefined ?
+              // The projection resolved -- the field is simply untyped. Saying
+              // "state a type, or project one from a field" here would advise
+              // the author to do what they already did, and send them looking
+              // at the action instead of at the field that is missing one.
+              `${where} has parameter '${param.name}' projected from field '${
+                  param.concept}.${param.field}', which declares no ` +
+                  `datatype. Give that field a scalar 'type' (${
+                      DATA_TYPES.join('/')}) and the parameter takes it.` :
+              `${where} has parameter '${param.name}' with no type. A ` +
+                  `parameter states a scalar 'type' (${
+                      DATA_TYPES.join('/')}), or projects one from a field ` +
+                  `with 'concept' and 'field'.`);
     }
     return errors;
   }

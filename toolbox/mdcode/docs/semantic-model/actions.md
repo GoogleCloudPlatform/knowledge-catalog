@@ -163,8 +163,10 @@ field's datatype, description, label and AI context straight out of the model.
 `source` above is an `Integer` because `Account.accountId` is one, so a caller
 passes an account id and the write binds it as an integer. Change the field
 later and every parameter projected from it follows, because there's no second
-copy to keep in step. A `concept` names an entity or a relationship, the same
-way `affects` reads it.
+copy to keep in step. A `concept` is read the way `affects` reads one, so it can
+name a relationship as well as an entity — but what you project from in practice
+is an entity, because a relationship only has fields of its own when a junction
+table backs it, and this format has no syntax for one yet.
 
 Most projected parameters need no name of their own. Leave `name` out and the
 parameter answers to the field's, so this one is called `accountId`:

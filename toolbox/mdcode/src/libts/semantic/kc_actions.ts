@@ -354,7 +354,12 @@ function readParameter(
   const name = typeof p?.name === 'string' ? p.name : '';
   const type = typeof p?.type === 'string' ? p.type : '';
   if (!name) return undefined;
-  const param: ActionParameter = {name, type};
+  // An absent type comes back ABSENT, not as an empty string. `type` is
+  // required on the aspect, so a record without one is damage -- but the rest
+  // of the codebase reads `type === undefined` as "this parameter has no
+  // type", and a `''` would slip past every one of those checks while being
+  // no more of a datatype than `undefined` is.
+  const param: ActionParameter = type ? {name, type} : {name};
   const concept = typeof p?.concept === 'string' ? p.concept : '';
   const field = typeof p?.field === 'string' ? p.field : '';
   if (concept && field) {
@@ -375,7 +380,11 @@ function readParameter(
   if (p?.default !== undefined && p.default !== '') {
     param.default = parseDefaultFromAspect(p.default);
   }
-  if (!(DATA_TYPES as readonly string[]).includes(type)) {
+  if (!type) {
+    warnings.push(
+        `action '${actionName}': parameter '${name}' stores no type, which ` +
+        `the aspect requires; pulled without one`);
+  } else if (!(DATA_TYPES as readonly string[]).includes(type)) {
     // Every parameter is a scalar now, so a type that is not one is damage
     // rather than a reference this pull failed to resolve. Kept as stored --
     // dropping it would hide what the catalog actually holds -- and reported,

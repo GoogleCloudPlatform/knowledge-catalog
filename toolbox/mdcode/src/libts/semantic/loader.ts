@@ -813,15 +813,21 @@ function convertModel(
   // both places, inheritance included. Resolving THROWS on an `extends` naming
   // an entity the model does not declare, which this loader is not the place to
   // report: it accepts such a model deliberately, and validate names the
-  // failure once per model. So the unresolved view stands in, and the only cost
-  // is that a parameter projecting an INHERITED field of such a model warns
-  // here about a field the resolved model would have had.
+  // failure once per model. So an unresolved view stands in -- but it is a view
+  // in which NO entity has an inherited field, because the fallback drops
+  // `extends` model-wide rather than from the one entity that broke. Warning
+  // off it would tell an author that `Savings` does not declare `balance` when
+  // `Savings extends Account` and `Account` declares it, sending them to fix
+  // a parameter that is correct. So the projection warnings are withheld while
+  // the view is degraded, and validate's one accurate line stands alone.
   const relationshipNameSet = new Set(relationships.map(r => r.name));
   let concepts: Map<string, DeclaredConcept>;
+  let inheritanceResolved = true;
   try {
     concepts =
         declaredConceptFields({name: m.name, entities, relationships, metrics});
   } catch {
+    inheritanceResolved = false;
     concepts = declaredConceptFields({
       name: m.name,
       entities: entities.map(e => ({...e, extends: undefined})),
@@ -829,11 +835,11 @@ function convertModel(
       metrics,
     });
   }
-  const actions =
-      (m.actions ?? [])
-          .map(
-              a => convertAction(
-                  a, concepts, entityNameSet, relationshipNameSet, warnings));
+  const actions = (m.actions ?? [])
+                      .map(
+                          a => convertAction(
+                              a, concepts, entityNameSet, relationshipNameSet,
+                              warnings, inheritanceResolved));
   rejectDuplicateNames(
       actions.map(a => a.name), 'action name', `model '${m.name}'`);
 
@@ -1038,10 +1044,12 @@ function convertConstraint(c: ConstraintDoc): Constraint {
 function convertAction(
     a: ActionDoc, concepts: Map<string, DeclaredConcept>,
     entityNames: Set<string>, relationshipNames: Set<string>,
-    warnings: string[]): Action {
+    warnings: string[], inheritanceResolved = true): Action {
   const parameters =
-      (a.parameters ??
-       []).map(p => convertParameter(p, a.name, concepts, warnings));
+      (a.parameters ?? [])
+          .map(
+              p => convertParameter(
+                  p, a.name, concepts, warnings, inheritanceResolved));
   // Parameter names address the inputs at dispatch, so a collision is as
   // ambiguous as a duplicate field or metric name -- reject it the same way.
   rejectDuplicateNames(
@@ -1163,7 +1171,7 @@ function warnMixedAffectsPrecision(
 // exactly as it would with them.
 function convertParameter(
     p: ParameterDoc, actionName: string, concepts: Map<string, DeclaredConcept>,
-    warnings: string[]): ActionParameter {
+    warnings: string[], inheritanceResolved = true): ActionParameter {
   const where = `action '${actionName}'`;
   const hasConcept = p.concept !== undefined;
   const hasField = p.field !== undefined;
@@ -1209,7 +1217,9 @@ function convertParameter(
     warnings.push(
         `${where}: parameter '${name}' projects from '${p.concept}', which ` +
         `is neither an entity nor a relationship in this model.`);
-  } else if (hasConcept && !field) {
+  } else if (hasConcept && !field && inheritanceResolved) {
+    // Gated: with inheritance unresolved every entity looks like it declares
+    // only its own fields, so this would fire on projections that are fine.
     warnings.push(`${where}: parameter '${name}' projects field '${
         p.field}', which ${concept!.kind} '${p.concept}' does not declare.`);
   }
@@ -1230,13 +1240,21 @@ function convertParameter(
   if (p.default !== undefined) param.default = p.default;
 
   if (param.type === undefined) {
-    // Only reachable for a standalone parameter, or a reference that did not
-    // resolve (already warned about just above).
     if (!hasConcept) {
       warnings.push(
           `${where}: parameter '${name}' states no 'type' and projects no ` +
           `field. A parameter with no field behind it declares its own ` +
           `scalar type (${DATA_TYPES.join('/')}).`);
+    } else if (field && inheritanceResolved) {
+      // The projection resolved and the field is simply untyped, which is a
+      // third case and not the one above: the author wrote the parameter
+      // correctly, so the fix is on the field. A reference that did NOT
+      // resolve was already warned about above and says why there is no type.
+      warnings.push(
+          `${where}: parameter '${name}' projects field '${p.concept}.${
+              p.field}', which declares no datatype, so the parameter has ` +
+          `none either. Give that field a scalar type (${
+              DATA_TYPES.join('/')}).`);
     }
   } else if (!(DATA_TYPES as readonly string[]).includes(param.type)) {
     // A type naming a concept is the old entity-reference spelling, which has

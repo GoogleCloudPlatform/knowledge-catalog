@@ -1522,8 +1522,13 @@ function wrapTo(text: string, indent: string, hanging = indent): string {
 // Account.accountId)` is the same kind of value with a definition the model
 // already holds, which is where to go to read what it means.
 function describeParameter(p: ActionParameter): string {
+  // A parameter with no type at all is a broken model -- the loader warns and
+  // validate refuses to push it -- but `list` still has to print it, and
+  // interpolating the missing type puts the word `undefined` on the line as
+  // though that were a datatype. Name the hole instead.
+  const type = p.type ?? 'no type';
   const tags: string[] =
-      [p.concept ? `${p.type} from ${p.concept}.${p.field}` : `${p.type}`];
+      [p.concept ? `${type} from ${p.concept}.${p.field}` : type];
   if (p.default !== undefined) {
     tags.push(`default: ${JSON.stringify(p.default)}`);
   } else if (!isParameterRequired(p)) {
@@ -1550,7 +1555,7 @@ function describeParameter(p: ActionParameter): string {
 function runLine(a: Action, runtime: SemanticRuntime): string {
   const model = runtime.model;
   const args = a.parameters.filter(isParameterRequired)
-                   .map(p => ` --arg ${p.name}=<${p.type}>`)
+                   .map(p => ` --arg ${p.name}=<${p.type ?? 'no type'}>`)
                    .join('');
   const guards = new Set(a.guards ?? []);
   const judged = (model.constraints ?? []).some(c => guards.has(c.name));

@@ -43,6 +43,7 @@
 import * as yaml from 'yaml';
 
 import {Action, ActionParameter, AffectedConcept, AiContext, Constraint, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
+import {declaredConceptFields} from './resolve_inheritance';
 
 // The version stamped on every serialized document. Pull emits kcmd's extended
 // profile: it uses native extension keys (`entities`, `deployment_target`)
@@ -196,7 +197,8 @@ function modelDoc(model: SemanticModel, warnings: string[], logical: boolean):
     relationships: nonEmpty(
         (model.relationships ?? []).map(r => relationshipDoc(r, warnings))),
     metrics: nonEmpty((model.metrics ?? []).map(m => metricDoc(m, warnings))),
-    actions: nonEmpty((model.actions ?? []).map(a => actionDoc(a, warnings))),
+    actions: nonEmpty(
+        (model.actions ?? []).map(a => actionDoc(a, warnings, emitted(model)))),
     constraints: nonEmpty((model.constraints ?? []).map(c => constraintDoc(c))),
   });
 }
@@ -279,15 +281,39 @@ function metricDoc(metric: Metric, warnings: string[]): Record<string, any> {
   });
 }
 
+// The `Concept.field` pairs this document will still resolve on reload. A
+// projection is only worth emitting as a projection if the field it names
+// comes out in the same document -- see `parameterDoc`. It asks the loader's
+// own resolver rather than walking the model here, so the emitter cannot come
+// to a different answer than the load it is writing for. A resolver that
+// throws leaves every projection emitted as authored: the emitter is not the
+// place to discover that a model does not load.
+function emitted(model: SemanticModel): Set<string>|null {
+  let concepts;
+  try {
+    concepts = declaredConceptFields(model);
+  } catch {
+    return null;
+  }
+  const pairs = new Set<string>();
+  for (const [name, concept] of concepts) {
+    for (const field of concept.fields.keys()) pairs.add(`${name}.${field}`);
+  }
+  return pairs;
+}
+
 // Inverts loader.convertAction. The executor collapses back to the open
 // format's single-key object; parameters emit as their authoring form.
-function actionDoc(action: Action, warnings: string[]): Record<string, any> {
+function actionDoc(
+    action: Action, warnings: string[],
+    resolvable: Set<string>|null): Record<string, any> {
   dropExtensions(action.customExtensions, `action '${action.name}'`, warnings);
   return compact({
     name: action.name,
     description: action.description,
     executor: action.executor ? executorDoc(action.executor) : undefined,
-    parameters: nonEmpty((action.parameters ?? []).map(parameterDoc)),
+    parameters: nonEmpty(
+        (action.parameters ?? []).map(p => parameterDoc(p, resolvable))),
     guards: nonEmpty(action.guards),
     affects: nonEmpty((action.affects ?? []).map(affectedConceptDoc)),
     ai_context: aiContextDoc(action.aiContext),
@@ -310,12 +336,24 @@ function actionDoc(action: Action, warnings: string[]): Record<string, any> {
 //
 // `name` is likewise always written, even where the author let it default to
 // the field's name. Same trade, same reason.
-function parameterDoc(p: ActionParameter): Record<string, any> {
+// A projection emits as a projection only where the field it names comes out
+// in this same document. Pruning can take the concept away -- an entity no
+// binding reaches is dropped, and the parameter that projected from it is
+// deliberately kept, because it copied what it needed at load time. Emitting
+// `concept`/`field` anyway would write a document that no longer loads: the
+// pair resolves to nothing, and the type that would have rescued it was
+// suppressed precisely because the projection was supposed to supply it. So
+// where the field is gone, the parameter emits as the declared one it has
+// effectively become -- its resolved `type`, and none of the projection.
+function parameterDoc(
+    p: ActionParameter, resolvable: Set<string>|null): Record<string, any> {
+  const projects = p.concept !== undefined &&
+      (resolvable === null || resolvable.has(`${p.concept}.${p.field}`));
   return compact({
     name: p.name,
-    type: p.concept ? undefined : p.type,
-    concept: p.concept,
-    field: p.field,
+    type: projects ? undefined : p.type,
+    concept: projects ? p.concept : undefined,
+    field: projects ? p.field : undefined,
     label: p.label,
     description: p.description,
     ai_context: aiContextDoc(p.aiContext),
