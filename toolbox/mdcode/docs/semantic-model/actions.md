@@ -962,8 +962,7 @@ and reaches the same verdicts from the same sentences.
 
 `kcmd action list` prints the actions your model declares, each with its
 parameters, executor, guards and blast radius, plus the command line that
-calls it where the profile binds an executor -- flags and all, so a guarded
-action's line arrives ready to run:
+calls it -- flags and all, so a guarded action's line arrives ready to run:
 
 ```bash
 kcmd action list
@@ -979,6 +978,23 @@ Model 'payments' (payments_eg), profile 'operational':
     affects:    Account (modify), Transfer (create), TransferDebits (create)
     run:        kcmd action run TransferFunds --judge --judge-reads-store --arg source=<Integer> --arg target=<Integer> --arg amount=<Float>
 ```
+
+Where a run would be refused before it opened a transaction, that line says so
+instead, in the runtime's own words:
+
+```
+  NotifyCustomer
+    parameters: order (String from Order.key)
+    executor:   mcp
+    NOT RUNNABLE: Action 'NotifyCustomer' is executed by MCP, which runs
+    outside this transaction and could not be rolled back if the commit failed.
+    Supply a handler that performs the write as DML, or declare the action with
+    a 'sql' executor.
+```
+
+The listing asks the runtime that question rather than guessing at it, so the
+two cannot disagree: an action guarded by a rule your model never declares is
+marked here too, even though its executor is perfectly good.
 
 `kcmd action run` performs one of those actions, against the database your
 model's deployment target names under the selected profile.
@@ -1028,6 +1044,14 @@ reports a zero count for is refused, including a statement kcmd can't read a
 verb from at all — a procedure call wrapping the write, say. That direction is
 deliberate: a statement wrongly refused is a failed run you go and look at,
 while one wrongly allowed is a caller told its write landed when it didn't.
+
+The rule applies per statement, and it has no opt-out, so there's one shape of
+action you can't write today: a multi-statement action whose earlier statement
+is legitimately conditional. An action that clears a cart and then writes an
+order fails outright when the cart was already empty, because the `DELETE`
+matched nothing. Write that case as two actions, or move the condition into the
+statement that must write — a `DELETE` whose predicate you already know matches.
+There's no way to mark one statement as allowed to write nothing.
 
 The unknown outcome is a timeout or a 5xx, where your store may have applied the
 write and lost the response. kcmd can't settle which, so it reports the run as

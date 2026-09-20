@@ -188,6 +188,7 @@ function modelDoc(model: SemanticModel, warnings: string[], logical: boolean):
   // and is dropped with a warning (see extractDeploymentTarget).
   const deploymentTarget =
       extractDeploymentTarget(model.customExtensions, model.name, warnings);
+  const emittedFields = emitted(model);
   return compact({
     name: model.name,
     description: model.description,
@@ -197,8 +198,10 @@ function modelDoc(model: SemanticModel, warnings: string[], logical: boolean):
     relationships: nonEmpty(
         (model.relationships ?? []).map(r => relationshipDoc(r, warnings))),
     metrics: nonEmpty((model.metrics ?? []).map(m => metricDoc(m, warnings))),
+    // Hoisted out of the map: `emitted` resolves inheritance, which deep-clones
+    // the model, and the answer does not vary by action.
     actions: nonEmpty(
-        (model.actions ?? []).map(a => actionDoc(a, warnings, emitted(model)))),
+        (model.actions ?? []).map(a => actionDoc(a, warnings, emittedFields))),
     constraints: nonEmpty((model.constraints ?? []).map(c => constraintDoc(c))),
   });
 }
@@ -313,7 +316,8 @@ function actionDoc(
     description: action.description,
     executor: action.executor ? executorDoc(action.executor) : undefined,
     parameters: nonEmpty(
-        (action.parameters ?? []).map(p => parameterDoc(p, resolvable))),
+        (action.parameters ??
+         []).map(p => parameterDoc(p, resolvable, action.name, warnings))),
     guards: nonEmpty(action.guards),
     affects: nonEmpty((action.affects ?? []).map(affectedConceptDoc)),
     ai_context: aiContextDoc(action.aiContext),
@@ -346,9 +350,25 @@ function actionDoc(
 // where the field is gone, the parameter emits as the declared one it has
 // effectively become -- its resolved `type`, and none of the projection.
 function parameterDoc(
-    p: ActionParameter, resolvable: Set<string>|null): Record<string, any> {
+    p: ActionParameter, resolvable: Set<string>|null, action: string,
+    warnings: string[]): Record<string, any> {
   const projects = p.concept !== undefined &&
       (resolvable === null || resolvable.has(`${p.concept}.${p.field}`));
+  // The fallback above rests on there BEING a resolved type to fall back to,
+  // and a parameter can reach here without one -- a pull of an aspect written
+  // before the type was recorded, or a model whose inheritance would not
+  // resolve. Both keys then drop and the parameter emits as name and wording
+  // alone, which reloads as a typeless parameter and is rejected by validate.
+  // Nothing here can invent the type, so say so at write time rather than let
+  // it surface as a load error against a document this wrote.
+  if (!projects && p.concept !== undefined && p.type === undefined) {
+    warnings.push(
+        `action '${action}': parameter '${p.name}' projected from '${
+            p.concept}.${p.field}', which this document does not carry, and ` +
+        `no resolved datatype was recorded to write in its place. The ` +
+        `parameter emits with no type and the document will not load until ` +
+        `one is supplied.`);
+  }
   return compact({
     name: p.name,
     type: projects ? undefined : p.type,

@@ -24,9 +24,9 @@ import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
 import {AvailabilityReport, DEFAULT_PROFILE, mergeProfileOntoDoc, pruneUnavailable,} from '../libts/semantic/resolve_profiles';
 import {ActionTool, EntityTool, modelTools} from '../libts/semantic/runtime/agent_tools';
 import {dialectFor} from '../libts/semantic/runtime/dialect';
-import {JudgeStore} from '../libts/semantic/runtime/judge';
+import {Judge, JudgeStore} from '../libts/semantic/runtime/judge';
 import {modelJudgeStore, readableEntities} from '../libts/semantic/runtime/judge_store';
-import {isParameterRequired, runAction} from '../libts/semantic/runtime/run_action';
+import {isParameterRequired, runAction, whyRefusedWithoutRunning,} from '../libts/semantic/runtime/run_action';
 import {createSemanticRuntimes, runtimeClient, SemanticRuntime} from '../libts/semantic/runtime/runtime';
 import {dataClientFor, Store} from '../libts/semantic/runtime/store';
 import {transpileModels} from '../libts/semantic/transpile';
@@ -538,11 +538,8 @@ export async function push(options: PushOptions): Promise<number> {
     // Per model, what deploys through the Knowledge Catalog leg ALONE:
     // actions and constraints both have a catalog home and no graph one, so a
     // push that omits that leg has to account for either.
-    const catalogOnly = new Map < string, {
-      actions: number;
-      constraints: number
-    }
-    >();
+    const catalogOnly =
+        new Map<string, {actions: number; constraints: number}>();
     const noteCatalogOnly = (loaded: LoadedModel[]) => {
       for (const {model} of loaded) {
         const actions = model.actions?.length ?? 0;
@@ -1233,9 +1230,37 @@ export async function action(
 }
 
 
+// A `NOT RUNNABLE:` line wraps under the label column the other lines use, so
+// a reason running to three lines still reads as one entry's answer.
+const RUN_INDENT = '    ';
+
+
+// Stands in for the judge the printed run line promises.
+//
+// `--judge` is a `run` flag; the listing does not take one and asks nothing.
+// Handing the runtime nothing here would report every judged action as
+// unrunnable and send the reader off to fix a model that is fine -- the
+// command printed under it carries `--judge`, because `runLine` puts it there,
+// and that command is what this listing is describing. So the question asked
+// is asked with a judge in hand.
+//
+// It throws rather than answering. Nothing in a listing may reach a judge, and
+// a path that somehow got this far should say so loudly instead of settling a
+// rule with a stub verdict.
+const JUDGE_THE_RUN_LINE_SUPPLIES: Judge = {
+  name: 'the judge `--judge` supplies',
+  decide() {
+    throw new Error(
+        '`kcmd action list` lists what a run would do and never asks a judge.');
+  },
+};
+
+
 // Prints what each model declares as runnable. The last line of every entry is
 // the command that runs it, filled in with the declared parameters, so reading
-// the listing is enough to make the call without going back to the YAML.
+// the listing is enough to make the call without going back to the YAML -- or,
+// when the runtime would refuse the call before opening a transaction, what it
+// is waiting on instead.
 function listActions(
     runtimes: SemanticRuntime[], options: ActionOptions): number {
   // `--store` answers one question -- where would a run land -- on one line
@@ -1286,8 +1311,7 @@ function listActions(
           a.parameters.length ? a.parameters.map(describeParameter).join(', ') :
                                 '(none)'}`);
       console.log(`    executor:   ${
-          a.executor ? a.executor.kind :
-                       '(none under this profile -- declared, not runnable)'}`);
+          a.executor ? a.executor.kind : '(none under this profile)'}`);
       if (a.guards?.length) {
         console.log(`    guards:     ${a.guards.join(', ')}`);
       }
@@ -1299,11 +1323,24 @@ function listActions(
                                        f.concept)
                 .join(', ')}`);
       }
-      if (a.executor) {
-        console.log(`    run:        ${runLine(a, runtime)}`);
+      // Asked of the runtime rather than worked out here, for the reason
+      // `agent tools` asks: two copies of "can this run" drift, and neither
+      // direction of the drift is visible to the reader. This used to notice
+      // only a missing executor, so an action executed by HTTP -- which this
+      // command has no handler for and could not roll back -- printed a run
+      // line that always fails, and so did one guarded by a constraint the
+      // model never declares.
+      //
+      // The store is deliberately not part of the question. Whether one is
+      // reachable is the same sentence on every action in the model and says
+      // nothing about any of them, and the listing has already said it once,
+      // at the top, where it belongs.
+      const blocked = whyRefusedWithoutRunning(
+          model, a, undefined, JUDGE_THE_RUN_LINE_SUPPLIES);
+      if (blocked) {
+        console.log(wrapTo(`NOT RUNNABLE: ${blocked}`, RUN_INDENT));
       } else {
-        console.log(
-            `    run:        bind an executor in a profile to run this.`);
+        console.log(`    run:        ${runLine(a, runtime)}`);
       }
     }
   }

@@ -353,11 +353,14 @@ describe('kcmd action list', () => {
             '--judge-reads-store --arg order=<String> --arg amount=<Decimal>');
 
         // An action with no description, guards or blast radius shows only
-        // what it declares.
+        // what it declares. It is executed by MCP, which this command holds no
+        // handler for, so there is no command line to print -- what it is
+        // waiting on goes there instead.
         expect(out).toContain('NotifyCustomer');
         expect(out).toContain('executor:   mcp');
-        expect(out).toContain(
-            'run:        kcmd action run NotifyCustomer --arg order=<String>');
+        expect(out).toContain('NOT RUNNABLE:');
+        expect(out).toContain('is executed by MCP, which runs');
+        expect(out).not.toContain('kcmd action run NotifyCustomer');
       });
 
   test(
@@ -391,19 +394,46 @@ describe('kcmd action list', () => {
 
   test(
       'shows an action the profile withdrew as declared but not runnable',
-       async () => {
-         // The listing answers "what can this model do HERE". Printing a run
-         // line for a write this binding cannot perform would send the reader
-         // to a refusal, so it prints the fix instead.
-         writeWorkspace(LOGICAL);
-         const code = await action('list', undefined, {profile: 'readonly'});
-         expect(code).toBe(0);
-         const out = logs.join('\n');
-         expect(out).toContain('IssueCredit');
-         expect(out).toContain('executor:   (none under this profile');
-         expect(out).toContain('bind an executor in a profile to run this');
-         expect(out).not.toContain('kcmd action run IssueCredit');
-       });
+      async () => {
+        // The listing answers "what can this model do HERE". Printing a run
+        // line for a write this binding cannot perform would send the reader
+        // to a refusal, so it prints the fix instead.
+        writeWorkspace(LOGICAL);
+        const code = await action('list', undefined, {profile: 'readonly'});
+        expect(code).toBe(0);
+        const out = logs.join('\n');
+        expect(out).toContain('IssueCredit');
+        expect(out).toContain('executor:   (none under this profile');
+        // The runtime's own sentence, not a second one written here that would
+        // drift from what a run actually reports.
+        expect(out).toContain(
+            'NOT RUNNABLE: Action \'IssueCredit\' has no executor under this ' +
+            'binding');
+        expect(out).toContain('supplies one, and a profile that writes');
+        expect(out).not.toContain('kcmd action run IssueCredit');
+      });
+
+  test(
+      'a guard naming a rule the model does not declare is not runnable',
+      async () => {
+        // The case that made asking the runtime worth doing. An executor is
+        // present, so the old check -- "does this have an executor" -- saw
+        // nothing wrong and printed a run line; every run of it is refused
+        // before the transaction opens, because the model says the write is
+        // gated by a rule that is not in the model. Nothing about the
+        // executor says so, which is exactly why the listing cannot work it
+        // out from the executor.
+        writeWorkspace(MODEL.replace(
+            'guards: [CreditIsPositive]', 'guards: [NoSuchRule]'));
+        const code = await action('list', undefined);
+        expect(code).toBe(0);
+        const out = logs.join('\n');
+        expect(out).toContain('executor:   sql');
+        expect(out).toContain('NOT RUNNABLE:');
+        expect(out).toContain('\'NoSuchRule\'');
+        expect(out).toContain('declared by model \'commerce\'');
+        expect(out).not.toContain('kcmd action run IssueCredit');
+      });
 
   test(
       'the run line names both judge flags when a guard is judged',
@@ -422,9 +452,12 @@ describe('kcmd action list', () => {
         expect(out).toContain(
             'run:        kcmd action run IssueCredit --judge ' +
             '--judge-reads-store --arg order=<String>');
-        // The other action names no guard at all, so it gains nothing.
-        expect(out).toContain(
-            'run:        kcmd action run NotifyCustomer --arg order=<String>');
+        // And nowhere else. The other action names no guard, so it must gain
+        // neither flag; it prints no run line at all here -- MCP is not
+        // runnable from this command -- so counting is what is left to check
+        // that the flags are attached to the guard rather than to the listing.
+        expect(out.match(/--judge(?!-)/g)?.length).toBe(1);
+        expect(out.match(/--judge-reads-store/g)?.length).toBe(1);
       });
 
   test('says so when a model declares no actions', async () => {

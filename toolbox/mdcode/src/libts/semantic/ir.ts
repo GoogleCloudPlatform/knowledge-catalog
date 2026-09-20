@@ -470,22 +470,11 @@ export interface ActionParameter {
  * single kind key (`mcp` / `rest` / `grpc`); the loader normalizes that to this
  * discriminated union. Other kinds (SQL DML, CLI, ...) can be added later.
  */
-export type Executor =|{
-  kind: 'mcp';
-  mcp: McpExecutor
-}
-|{
-  kind: 'rest';
-  rest: RestExecutor
-}
-|{
-  kind: 'grpc';
-  grpc: GrpcExecutor
-}
-|{
-  kind: 'sql';
-  sql: SqlExecutor
-};
+export type Executor =
+  | { kind: 'mcp'; mcp: McpExecutor }
+  | { kind: 'rest'; rest: RestExecutor }
+  | { kind: 'grpc'; grpc: GrpcExecutor }
+  | { kind: 'sql'; sql: SqlExecutor };
 
 /**
  * A SQL executor: the write itself, declared in the model as an ordered list of

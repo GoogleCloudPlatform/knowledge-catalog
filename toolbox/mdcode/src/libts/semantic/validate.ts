@@ -230,8 +230,19 @@ function validateActions(
   // though the author's document names one that exists. A parameter needs only
   // the logical definition and the loader already copied it down, so nothing
   // about the push depends on resolving the reference a second time here.
-  const needsConcepts =
-      actions.some(a => a.affects?.length || a.parameters.some(p => p.concept));
+  // A `type` naming something that is not a scalar counts too, and it is the
+  // case that most needs the lookup: the message worth printing is "that is an
+  // entity, project the field you meant", and only the concept table can tell
+  // an entity from a typo. Leaving it out meant the one model making exactly
+  // this mistake -- the migration from an entity-reference parameter, with no
+  // `affects` and nothing yet projected -- got the generic "not a scalar
+  // datatype" instead of the instruction.
+  const needsConcepts = actions.some(
+      a => a.affects?.length ||
+          a.parameters.some(
+              p => p.concept ||
+                  (p.type &&
+                   !(DATA_TYPES as readonly string[]).includes(p.type))));
   const concepts = !fieldsPruned && needsConcepts ?
       ifResolvable(() => declaredConcepts(model)) :
       undefined;
@@ -361,6 +372,16 @@ function sqlExecutorErrors(action: Action, where: string): string[] {
       errors.push(`${at} is blank.`);
       return;
     }
+    // Deliberately the naive read, and deliberately NOT `leadingVerb` from the
+    // runtime, which skips comments and CTEs to find a verb further in. The two
+    // answer different questions for different populations. This one governs
+    // what a model may PUBLISH: a statement in a catalogued action has to begin
+    // with its verb, so a reader can see what it does without parsing it, and
+    // the rule is narrow on purpose. `leadingVerb` governs what the runtime may
+    // EXECUTE, which includes plans a handler wrote and validation never saw.
+    // Pointing this at the scanner would quietly admit MERGE and CTE-led
+    // statements into published models; deleting the scanner's extra handling
+    // would blind the row-count check on every handler plan.
     const verb = text.split(/\s/, 1)[0].toUpperCase();
     if (!(SQL_EXECUTOR_VERBS as readonly string[]).includes(verb)) {
       errors.push(
@@ -466,6 +487,15 @@ function parameterTypeErrors(
     }
   }
   if (param.type === undefined) {
+    // A projection this pass could not resolve at all says nothing about the
+    // field. `concepts` is undefined when the concept table would not build --
+    // a dangling `extends`, which is reported on its own line -- and the
+    // loader then drops `extends` model-wide, so a parameter projecting from
+    // an INHERITED field arrives here typeless for a reason that has nothing
+    // to do with the field. Blaming it would send the author to a field that
+    // is correctly typed, and away from the `extends` that is the actual
+    // fault.
+    if (param.concept !== undefined && !concepts) return errors;
     // A projection that failed above already says why there is no type; a
     // second line repeating it would only add noise.
     if (!errors.length) {
