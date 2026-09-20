@@ -51,6 +51,7 @@ import {referencedParameters} from '../sql_identifiers';
 
 import {dialectFor, SqlDialect} from './dialect';
 import {Judge, JudgeVerdict} from './judge';
+import {readableEntities} from './judge_store';
 import {runtimeClient, SemanticRuntime} from './runtime';
 
 export {bindScalar, isParameterRequired, sentence, storeCodeFor} from '../parameters';
@@ -403,6 +404,34 @@ class StoreError extends Error {}
 // was written" is a retry that writes twice.
 const DEFINITELY_NOT_COMMITTED = new Set([400, 401, 403, 404, 409, 412]);
 
+
+/**
+ * The `kcmd action run` line that would actually run this action here.
+ *
+ * Exported for the same reason `whyRefusedWithoutRunning` is. Three things
+ * about a call are easy to re-derive and easy to get wrong: whether a judge is
+ * needed, whether that judge has to read the store, and which arguments are
+ * required. Each is a rule the runtime already owns, and a second copy drifts
+ * silently -- into a suggested command that is refused the moment it is run.
+ *
+ * A guard counts only when it names a constraint the model declares, because
+ * an unresolved guard name is inert. `--judge-reads-store` rides along wherever
+ * the model has tables to read: a judgment comparing the call against what is
+ * recorded is refused without it, nothing in a constraint's wording marks which
+ * judgments those are, and a judge with nothing to look up looks nothing up.
+ */
+export function runLine(a: Action, runtime: SemanticRuntime): string {
+  const model = runtime.model;
+  const args = a.parameters.filter(isParameterRequired)
+                   .map(p => ` --arg ${p.name}=<${p.type}>`)
+                   .join('');
+  const guards = new Set(a.guards ?? []);
+  const judged = (model.constraints ?? []).some(c => guards.has(c.name));
+  const canRead = judged && !!runtime.store &&
+      readableEntities(runtime, dialectFor(runtime.store)).length > 0;
+  return `kcmd action run ${a.name}${judged ? ' --judge' : ''}${
+      canRead ? ' --judge-reads-store' : ''}${args}`;
+}
 
 /**
  * Why this runtime would refuse `action` before opening a transaction, or null

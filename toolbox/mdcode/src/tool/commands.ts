@@ -16,17 +16,16 @@ import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets} from '../libts/semantic/deployment_target';
-import {Action, ActionParameter} from '../libts/semantic/ir';
+import {ActionParameter} from '../libts/semantic/ir';
 import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
 import {AvailabilityReport, DEFAULT_PROFILE, mergeProfileOntoDoc, pruneUnavailable,} from '../libts/semantic/resolve_profiles';
 import {ActionTool, EntityTool, modelTools} from '../libts/semantic/runtime/agent_tools';
-import {dialectFor} from '../libts/semantic/runtime/dialect';
 import {JudgeStore} from '../libts/semantic/runtime/judge';
-import {modelJudgeStore, readableEntities} from '../libts/semantic/runtime/judge_store';
-import {isParameterRequired, runAction} from '../libts/semantic/runtime/run_action';
+import {modelJudgeStore} from '../libts/semantic/runtime/judge_store';
+import {isParameterRequired, runAction, runLine} from '../libts/semantic/runtime/run_action';
 import {createSemanticRuntimes, runtimeClient, SemanticRuntime} from '../libts/semantic/runtime/runtime';
 import {dataClientFor, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill} from '../libts/semantic/skills';
@@ -1459,6 +1458,11 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
 
   const root = options.out ?? 'skills';
   let failed = false;
+  // A skill name is a lossy form of a model name, so two models in one scope
+  // can arrive at one directory. Writing both would leave the second on disk
+  // and the first gone, with two "Wrote ..." lines and an exit code of 0
+  // saying otherwise.
+  const written = new Map<string, string>();
   for (const runtime of opened) {
     const generated = generateSkill({runtime, name: options.name, judge});
     if ('error' in generated) {
@@ -1466,28 +1470,69 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
       failed = true;
       continue;
     }
+    const clash = written.get(generated.name);
+    if (clash !== undefined) {
+      console.error(
+          `Error: models '${clash}' and '${runtime.model.name}' both name ` +
+          `their skill '${generated.name}'. Generate them separately with ` +
+          `--name, or rename one model.`);
+      failed = true;
+      continue;
+    }
+    written.set(generated.name, runtime.model.name);
+
     // The directory name IS the skill name -- a client that finds them
     // different skips the skill -- so it is taken from what was generated
     // rather than from anything the caller typed.
     const dir = path.join(root, generated.name);
-    const existing = path.join(dir, 'SKILL.md');
-    if (fs.existsSync(existing) && !options.force) {
+    if (fs.existsSync(dir) && !options.force) {
       console.error(
-          `Error: ${existing} already exists. Pass --force to rewrite it.`);
+          `Error: ${dir} already exists. Pass --force to rewrite it.`);
       failed = true;
       continue;
     }
-    for (const file of generated.files) {
-      const target = path.join(dir, file.path);
-      fs.mkdirSync(path.dirname(target), {recursive: true});
-      fs.writeFileSync(target, file.text);
-      console.log(`Wrote ${target}`);
-    }
+    // Warned before anything is written, so a reader who does not want this
+    // skill still has the chance not to have it.
     for (const warning of generated.warnings) {
       console.warn(`Warning: [${generated.name}] ${warning}`);
     }
+    try {
+      const keep = new Set(generated.files.map(f => f.path));
+      for (const file of generated.files) {
+        const target = path.join(dir, file.path);
+        fs.mkdirSync(path.dirname(target), {recursive: true});
+        fs.writeFileSync(target, file.text);
+        console.log(`Wrote ${target}`);
+      }
+      for (const stale of stalePages(dir, keep)) {
+        fs.rmSync(path.join(dir, stale));
+        console.log(`Removed ${path.join(dir, stale)}`);
+      }
+    } catch (e) {
+      // One unwritable path must not take the rest of the scope with it, and
+      // must not be reported as a bare errno with no model attached.
+      console.error(`Error: [${generated.name}] could not write under ${dir}: ${
+          e instanceof Error ? e.message : String(e)}`);
+      failed = true;
+    }
   }
   return failed ? 1 : 0;
+}
+
+// Reference pages left over from an action the model no longer declares.
+//
+// `--force` replaces a skill rather than layering a new one over it. Without
+// this, renaming an action leaves its old page on disk, and progressive
+// disclosure means an agent is expected to open files under `references/` on
+// demand -- so the stale page is read as current and describes a call that no
+// longer exists.
+function stalePages(dir: string, keep: Set<string>): string[] {
+  const refs = path.join(dir, 'references');
+  if (!fs.existsSync(refs)) return [];
+  return fs.readdirSync(refs)
+      .filter(f => f.endsWith('.md'))
+      .map(f => `references/${f}`)
+      .filter(f => !keep.has(f));
 }
 
 
@@ -1611,18 +1656,6 @@ function describeParameter(p: ActionParameter): string {
 // marks which judgments those are, so the only line safe to suggest is the one
 // that can settle either kind. A judge with nothing to look up looks nothing
 // up, and the offer costs one model call.
-function runLine(a: Action, runtime: SemanticRuntime): string {
-  const model = runtime.model;
-  const args = a.parameters.filter(isParameterRequired)
-                   .map(p => ` --arg ${p.name}=<${p.type}>`)
-                   .join('');
-  const guards = new Set(a.guards ?? []);
-  const judged = (model.constraints ?? []).some(c => guards.has(c.name));
-  const canRead = judged && !!runtime.store &&
-      readableEntities(runtime, dialectFor(runtime.store)).length > 0;
-  return `kcmd action run ${a.name}${judged ? ' --judge' : ''}${
-      canRead ? ' --judge-reads-store' : ''}${args}`;
-}
 
 
 // Runs one action against the store its model's deployment target names.

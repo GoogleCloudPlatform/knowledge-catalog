@@ -160,7 +160,9 @@ describe('SKILL.md frontmatter', () => {
       'the description says what the model is and when to reach for it', () => {
         const description = fm['description'] as string;
         expect(description).toContain(model.description!);
-        expect(description).toContain('place_order');
+        // The name `kcmd action run` takes, which is the name every command
+        // line in the package uses.
+        expect(description).toContain('PlaceOrder');
         expect(description.length).toBeLessThanOrEqual(1024);
       });
 
@@ -168,6 +170,31 @@ describe('SKILL.md frontmatter', () => {
     const wordy = {...model, description: 'word '.repeat(400)};
     const fmLong = frontmatter(generate(rt(wordy)).files['SKILL.md']);
     expect((fmLong['description'] as string).length).toBeLessThanOrEqual(1024);
+  });
+
+  test('what survives the cut is the part a client routes on', () => {
+    // Cutting the joined string would drop the acts and the "use when" -- the
+    // two parts that make this line a routing decision -- and leave a
+    // description that still reads well and no longer says what it is for.
+    const wordy = {
+      ...withAction(model, RUNNABLE),
+      description: 'word '.repeat(400),
+    };
+    const long =
+        frontmatter(generate(rt(wordy)).files['SKILL.md'])['description'] as
+        string;
+    expect(long.length).toBeLessThanOrEqual(1024);
+    expect(long).toContain('PlaceOrder');
+    expect(long).toContain('Use when');
+  });
+
+  test('a name YAML 1.1 would read as a boolean is quoted', () => {
+    // `name: no` loads as `false` in the parsers most non-JS clients use, so
+    // the name no longer equals its directory and a strict client skips the
+    // skill -- the one failure this generator exists to make impossible.
+    const skill = generate(rt({...model, name: 'No'})).files['SKILL.md'];
+    expect(skill).toContain('name: "no"');
+    expect(skill).not.toContain('name: no\n');
   });
 });
 
@@ -178,9 +205,18 @@ describe('SKILL.md is a router', () => {
   const skill = out.files['SKILL.md'];
 
   test('one row per action, pointing at the file with the detail', () => {
-    expect(skill).toContain('`place_order`');
+    expect(skill).toContain('`PlaceOrder`');
     expect(skill).toContain('`references/place-order.md`');
     expect(out.files['references/place-order.md']).toBeTruthy();
+  });
+
+  test('the router names the action the way the command line does', () => {
+    // The index and the one executable instruction have to agree. Naming the
+    // row `place_order` while the command reads `kcmd action run PlaceOrder`
+    // sends an agent that routed off the table to an action the CLI rejects.
+    const row = skill.split('\n').find(l => l.includes('references/'))!;
+    const named = row.split('|')[1].trim().replace(/`/g, '');
+    expect(skill).toContain(`kcmd action run ${named}`);
   });
 
   test('the per-argument detail is in the reference, not the router', () => {
@@ -254,8 +290,10 @@ describe('an action reference', () => {
   const reference = out.files['references/place-order.md'];
 
   test('names the action the author named, not only the tool', () => {
-    expect(reference).toContain('`PlaceOrder`');
-    expect(reference).toContain('# place_order');
+    // Both, once. An agent meets one or the other depending on whether it was
+    // handed a CLI or a framework's tool list.
+    expect(reference).toContain('# PlaceOrder');
+    expect(reference).toContain('`place_order`');
   });
 
   test('an entity argument asks for a reference, a scalar for its type', () => {
@@ -331,23 +369,35 @@ describe('when the runtime would refuse the call', () => {
 
   test('an action guarded with no judge to ask says so, and why', () => {
     // The fixture's guard is settled in words, and this runtime holds no
-    // judge, so the honest page says the call will be refused rather than
-    // describing a write that cannot happen.
-    const page = generate(rt(withAction(model, {
-                   executor: RUNNABLE.executor,
-                 }))).files['references/place-order.md'];
-    expect(page).toContain('Not runnable under this binding');
-    expect(page).toContain('no judge');
+    // judge, so the skill says the call will be refused rather than describing
+    // a write that cannot happen. It says it in SKILL.md, because whether a
+    // call can run here is a fact about the deployment and not about the
+    // action -- see the reference-page invariant below.
+    const out = generate(rt(withAction(model, {executor: RUNNABLE.executor})));
+    expect(out.files['SKILL.md']).toContain('no judge');
+    expect(out.files['references/place-order.md'])
+        .not.toContain('Not runnable');
   });
 
   test('an executor the runtime cannot roll back is reported as such', () => {
     // The fixture's own MCP executor: the write would commit in a system this
     // runtime does not control.
-    const page = generate(rt(withAction(model, {guards: []})))
-                     .files['references/place-order.md'];
-    expect(page).toContain('Not runnable under this binding');
-    expect(page).toContain('MCP');
+    const out = generate(rt(withAction(model, {guards: []})));
+    expect(out.files['SKILL.md']).toContain('MCP');
+    expect(out.files['references/place-order.md'])
+        .not.toContain('Not runnable');
   });
+
+  test(
+      'a skill that can run nothing warns rather than passing silently', () => {
+        // It still loads, still costs context on every request, and still names
+        // the model as the write path in frontmatter a client reads before the
+        // body. A caller who did not mean to make one has to be told.
+        const out =
+            generate(rt(withAction(model, {executor: RUNNABLE.executor})));
+        expect(out.warnings.join(' ')).toContain('runnable');
+        expect(out.warnings.join(' ')).toContain('--judge');
+      });
 
   test(
       'a skill for a model nothing here can run does not offer a command',
@@ -401,6 +451,23 @@ describe('the binding is one section', () => {
         .toBe(first.files['references/place-order.md']);
   });
 
+  test('nor when the deployment cannot run the action at all', () => {
+    // The case the two profiles above cannot reach, because both bind a
+    // working Spanner store. Whether an action is RUNNABLE is a binding fact
+    // wearing a logical name, so putting the reason on the action's own page
+    // -- which reads naturally, and which this module did at first -- makes
+    // every page profile-specific and the claim above false.
+    const storeless = generate(rt(here, {
+      profile: 'unbound',
+      store: undefined,
+      storeError: 'no deployment target.',
+    }));
+    expect(storeless.files['references/place-order.md'])
+        .toBe(first.files['references/place-order.md']);
+    // Not silently dropped: it moved to the section that owns the binding.
+    expect(storeless.files['SKILL.md']).toContain('Store: none.');
+  });
+
   test('no physical name reaches the skill', () => {
     // The statements name tables and columns the model does not. A skill that
     // leaked them would describe one deployment while claiming to describe
@@ -448,8 +515,45 @@ describe('text that would otherwise break the output', () => {
   test('a pipe in a description does not split a table row', () => {
     const piped = withAction(model, {...RUNNABLE, description: 'a | b | c'});
     const skill = generate(rt(piped)).files['SKILL.md'];
-    const row = skill.split('\n').find(l => l.includes('`place_order`'))!;
+    const row = skill.split('\n').find(l => l.includes('`PlaceOrder`'))!;
     // Three cells, however many pipes the author wrote.
     expect(row.replace(/\\\|/g, '').split('|').filter(Boolean)).toHaveLength(3);
+  });
+
+  test('a pipe in a default does not shift the argument table', () => {
+    // The Default cell was the one built without escaping, so a default
+    // containing a pipe moved every column after it by one -- on the page the
+    // skill tells an agent to read before making the call.
+    const piped = withAction(model, {
+      ...RUNNABLE,
+      parameters: [{name: 'mode', type: 'string', default: 'a|b'}],
+    });
+    const page = generate(rt(piped)).files['references/place-order.md'];
+    const row = page.split('\n').find(l => l.includes('`mode`'))!;
+    const header = page.split('\n').find(l => l.startsWith('| Name |'))!;
+    expect(row.replace(/\\\|/g, '').split('|').length)
+        .toBe(header.split('|').length);
+  });
+
+  test('an action name cannot write outside the skill directory', () => {
+    // An action name is a free string -- `actionSchema.name` is `z.string()`
+    // and nothing checks its characters -- and it used to reach the filesystem
+    // as a path component, so `../../..` escaped `--out` entirely.
+    const nasty = withAction(
+        model, {...RUNNABLE, name: '../../../../tmp/pwned'} as never);
+    for (const file of Object.keys(generate(rt(nasty)).files)) {
+      expect(file).not.toContain('..');
+      expect(path.normalize(path.join('/skills/x', file)))
+          .toStartWith('/skills/x/');
+    }
+  });
+
+  test('an action name that needs shell quoting gets it', () => {
+    // The command block is meant to be copied and run. A bare name with a
+    // space silently becomes a different action plus a stray positional.
+    const spaced =
+        withAction(model, {...RUNNABLE, name: 'Place Order'} as never);
+    const skill = generate(rt(spaced)).files['SKILL.md'];
+    expect(skill).toContain(`kcmd action run 'Place Order'`);
   });
 });

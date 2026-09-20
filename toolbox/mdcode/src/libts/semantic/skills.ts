@@ -28,13 +28,23 @@
  * The skill is written against the LOGICAL model, which is what makes it worth
  * generating once. An action's name, arguments, rules and blast radius are the
  * same wherever it is deployed, because an executor is a physical binding that
- * a profile supplies; only "Running an action" below reads the binding. Point
- * this at a different profile and one section changes.
+ * a profile supplies. So every `references/` page is a fact about the model
+ * and nothing else, and everything that reads the binding -- the store, the
+ * executor kinds, which actions this deployment cannot run and why, and the
+ * command line to try one with -- is gathered into "Running an action" in
+ * `SKILL.md`. Point this at a different profile and that section changes and
+ * the reference pages do not.
+ *
+ * Keeping that true takes some discipline: whether an action is RUNNABLE is a
+ * binding fact wearing a logical name, and putting `tool.unavailable` on the
+ * action's own page -- which reads naturally, and which this module did at
+ * first -- quietly makes every page profile-specific.
  */
 
 import {Action, AffectedConcept, Constraint, SemanticModel} from './ir';
 import {ActionTool, modelTools} from './runtime/agent_tools';
 import {Judge} from './runtime/judge';
+import {runLine} from './runtime/run_action';
 import {SemanticRuntime} from './runtime/runtime';
 import {storeLine} from './runtime/store';
 
@@ -103,17 +113,29 @@ export function generateSkill(opts: GenerateSkillOptions): SkillPackage|{
     warnings.push(
         `Model '${model.name}' declares no actions, so the skill describes ` +
         `nothing an agent can do. Generated anyway.`);
+  } else if (!actions.some(t => t.runnable)) {
+    // A skill whose every action is blocked still loads, still costs context
+    // on every request, and still advertises the model as the write path in
+    // frontmatter a client reads before the body. Saying so is the difference
+    // between an artifact the caller chose and one they did not notice.
+    warnings.push(
+        `No action in '${model.name}' is runnable under profile '${
+            runtime.profile}', so the skill describes ${actions.length} action${
+            actions.length === 1 ? '' : 's'} and can ` +
+        `run none of them. A guarded action needs a judge: pass --judge if ` +
+        `the agent this skill is for holds one.`);
   }
 
+  const paths = referencePaths(actions);
   const files: SkillFile[] = [{
     path: 'SKILL.md',
-    text: skillDocument(name, runtime, actions, instruction),
+    text: skillDocument(name, runtime, actions, instruction, paths),
   }];
   for (const tool of actions) {
     const action = actionFor(tool, model);
     if (!action) continue;
     files.push({
-      path: referencePath(tool),
+      path: paths.get(tool.actionName)!,
       text: referenceDocument(tool, action, model),
     });
   }
@@ -185,11 +207,16 @@ const MAX_BODY_TOKENS = 5000;
 
 function skillDocument(
     name: string, runtime: SemanticRuntime, actions: ActionTool[],
-    instruction: string): string {
+    instruction: string, paths: Map<string, string>): string {
   const model = runtime.model;
   const out: string[] = [];
   out.push('---');
-  out.push(`name: ${name}`);
+  // Quoted, though the name's alphabet is only `[a-z0-9-]`. YAML 1.1 reads
+  // `no`, `on`, `y` and an all-digit name as a boolean or an integer, so a
+  // model named `No` would emit `name: no` and load as `false` in the parsers
+  // most non-JS clients use -- a name that no longer equals its directory,
+  // which is the one failure this generator exists to make impossible.
+  out.push(`name: ${yamlString(name)}`);
   out.push(`description: ${yamlString(descriptionFor(model, actions))}`);
   out.push('---');
   out.push('');
@@ -211,9 +238,15 @@ function skillDocument(
     out.push('| Action | What it does | Reference |');
     out.push('| --- | --- | --- |');
     for (const tool of actions) {
-      const summary = firstLine(tool.description) || tool.actionName;
-      out.push(`| \`${tool.name}\` | ${cell(summary)} | \`${
-          referencePath(tool)}\` |`);
+      // The action's OWN description, not the tool's. `toolDescription`
+      // composes description, instructions, the gating-rules block and the
+      // refusal sentence in that order, so an action that declares no
+      // description would put its instructions -- or the literal "Calling this
+      // will not work" -- into the column a client scans to pick a page.
+      const summary = firstLine(actionFor(tool, model)?.description ?? '');
+      out.push(`| \`${tool.actionName}\` | ${
+          cell(summary || `Runs ${tool.actionName}.`)} | \`${
+          paths.get(tool.actionName)}\` |`);
     }
   } else {
     out.push(
@@ -228,7 +261,7 @@ function skillDocument(
   out.push(paragraph(instruction));
   out.push('');
 
-  out.push(...readSideSection(runtime));
+  out.push(...readSideSection(runtime, actions));
   out.push(...runningSection(runtime, actions));
   out.push(...outcomeSection(actions));
 
@@ -244,21 +277,39 @@ function skillDocument(
  * rejects is a skill that never loads at all.
  */
 function descriptionFor(model: SemanticModel, actions: ActionTool[]): string {
-  const subject = model.description?.trim() || `The ${model.name} model.`;
-  const parts = [sentenceEnd(collapse(subject))];
-  if (actions.length) {
-    parts.push(`Declares ${actions.length} action${
-        actions.length === 1 ? '' :
-                               's'}: ${actions.map(t => t.name).join(', ')}.`);
-    parts.push(
-        `Use when a request asks to change this data rather than only read it.`);
-  } else {
-    parts.push(`Declares no actions; it describes the data, and changes none.`);
-  }
-  const text = parts.join(' ');
-  return text.length <= MAX_DESCRIPTION ?
-      text :
-      `${text.slice(0, MAX_DESCRIPTION - 1).trimEnd()}…`;
+  // What makes this line a routing decision is the part after the author's
+  // prose: which acts the model offers, and that it is the write side. So the
+  // budget is spent from the front. Truncating the joined string instead would
+  // let a long model description push both out and leave a description that
+  // reads well and no longer says what the skill is for.
+  const tail = actions.length ?
+      [
+        `Declares ${actions.length} action${actions.length === 1 ? '' : 's'}: ${
+            actions.map(t => t.actionName).join(', ')}.`,
+        `Use when a request asks to change this data rather than only read it.`,
+      ] :
+      [`Declares no actions; it describes the data, and changes none.`];
+  const fixed = tail.join(' ');
+  const prose = model.description?.trim() || `The ${model.name} model.`;
+  const subject = sentenceEnd(collapse(prose));
+  const room = MAX_DESCRIPTION - fixed.length - 1;
+  if (subject.length <= room) return `${subject} ${fixed}`;
+  // Nothing of the subject fits: the acts are what a client routes on, so they
+  // are what survives.
+  if (room < 8) return fixed.slice(0, MAX_DESCRIPTION);
+  return `${truncate(subject, room)} ${fixed}`;
+}
+
+// Cut to a length in characters without splitting a surrogate pair -- a lone
+// half is not valid UTF-8 and reaches the file as U+FFFD -- and without
+// leaving a half-word where a space was close by.
+function truncate(text: string, max: number): string {
+  let end = max - 1;
+  const code = text.charCodeAt(end - 1);
+  if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+  const cut = text.slice(0, end);
+  const space = cut.lastIndexOf(' ');
+  return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
 
 // What this skill does not offer, said once rather than discovered per call.
@@ -268,7 +319,13 @@ function descriptionFor(model: SemanticModel, actions: ActionTool[]): string {
 // derived lookups are a read path nothing on the command line calls. Leaving
 // that out would leave an agent following an instruction to use a tool that is
 // not here, so it is named, along with what does work.
-function readSideSection(runtime: SemanticRuntime): string[] {
+function readSideSection(
+    runtime: SemanticRuntime, actions: ActionTool[]): string[] {
+  // Every sentence below is about supplying a key to an action, so a model
+  // with none has nothing to read a key FOR. Without this the skill says the
+  // model declares nothing to call and then closes on a shell recipe into the
+  // live store, which is the last and most concrete thing in the file.
+  if (!actions.length) return [];
   const entities = runtime.model.entities ?? [];
   if (!entities.length) return [];
   const out: string[] = [];
@@ -323,18 +380,29 @@ function runningSection(
   if (kinds.length) {
     out.push(`- Executor: ${kinds.map(k => `\`${k}\``).join(', ')}`);
   }
+  out.push('');
+
+  // The reasons live here rather than on each action's page, and that is the
+  // whole point of this section. `tool.unavailable` is partly a fact about the
+  // binding -- a profile that binds no store, or binds one the runtime cannot
+  // write -- so printing it per page would make every page change when the
+  // profile does, and the claim above would be false.
   const blocked = actions.filter(t => !t.runnable);
   if (blocked.length) {
     out.push(
-        `- Not runnable here: ${blocked.map(t => `\`${t.name}\``).join(', ')}`);
+        blocked.length === actions.length ?
+            `No action in this model can be run under this profile:` :
+            `Not runnable under this profile:`);
+    out.push('');
+    for (const tool of blocked) {
+      out.push(`- \`${tool.actionName}\` -- ${
+          sentenceEnd(collapse(tool.unavailable ?? 'no reason given'))}`);
+    }
+    out.push('');
   }
-  out.push('');
 
   if (blocked.length === actions.length) {
-    out.push(
-        `No action in this model can be run under this profile. The reasons ` +
-        `are on each action's reference page. Report that rather than ` +
-        `retrying.`);
+    out.push('Report that rather than retrying.');
     out.push('');
     return out;
   }
@@ -350,26 +418,41 @@ function runningSection(
   out.push('');
   const example = actions.find(t => t.runnable)!;
   const action = actionFor(example, runtime.model);
-  // Assembled as parts and joined, rather than pushed line by line, because an
-  // action with no parameters would otherwise end the command on a line
-  // continuation with nothing after it -- a command line that does not run,
-  // in the one place the skill is telling an agent what to run.
-  const parts = [`kcmd action run ${example.actionName}`];
-  parts.push(`--profile ${runtime.profile}`);
-  if (needsJudge(action)) parts.push('--judge');
-  const args = (action?.parameters ?? []).map(p => `--arg ${p.name}=<value>`);
-  if (args.length) parts.push(args.join(' '));
-  out.push('```bash');
-  out.push(parts.join(' \\\n  '));
-  out.push('```');
-  out.push('');
-  if (needsJudge(action)) {
+  // `runLine` is the runtime's own answer, and it is asked rather than
+  // reproduced. Whether a judge is needed, whether that judge has to read the
+  // store, and which arguments are required are three rules this module got
+  // wrong when it derived them itself: a guard was counted before it resolved
+  // to a declared constraint, `--judge-reads-store` was never offered, and
+  // every parameter was listed as if required. A line that is certain to be
+  // refused is worse than no line, so there is one copy of the rule.
+  const line = action ? runLine(action, runtime) : '';
+  if (line) {
+    // `runLine` is `kcmd action run <name>` and then its flags. The head is
+    // rebuilt so a name that needs shell quoting gets it -- nothing constrains
+    // what is in an action name, and this is a block meant to be copied and
+    // run -- and `--profile` goes first because it picks the binding the rest
+    // of the line is about. Joined rather than pushed line by line: an action
+    // with no flags at all would otherwise end on a continuation with nothing
+    // after it.
+    const parts = [
+      `kcmd action run ${shellArg(example.actionName)}`,
+      `--profile ${shellArg(runtime.profile)}`,
+      ...line.split(' --').slice(1).map(flag => `--${flag}`),
+    ];
+    out.push('```bash');
+    out.push(parts.join(' \\\n  '));
+    out.push('```');
+    out.push('');
+  }
+  if (line.includes('--judge')) {
     out.push(
         '`--judge` is what settles the rules stated in words. Without it a ' +
-        'guarded action is refused rather than run unchecked. A rule about ' +
-        'something on record rather than in the arguments also needs ' +
-        '`--judge-reads-store`, which lets the judge read the model\'s own ' +
-        'tables while it decides.');
+        'guarded action is refused rather than run unchecked.' +
+        (line.includes('--judge-reads-store') ?
+             ' `--judge-reads-store` lets that judge read the model\'s own ' +
+                 'tables, which a rule about something on record rather than ' +
+                 'in the arguments cannot be settled without.' :
+             ''));
     out.push('');
   }
   return out;
@@ -416,26 +499,63 @@ function outcomeSection(actions: ActionTool[]): string[] {
 // references/<action>.md: the detail, read on demand.
 // ---------------------------------------------------------------------------
 
-function referencePath(tool: ActionTool): string {
-  return `references/${tool.name.replace(/_/g, '-')}.md`;
+/**
+ * Where each action's page goes, keyed by the action's authored name.
+ *
+ * An action name is a free string: `actionSchema.name` is `z.string()` and
+ * validation checks the guards, the parameters and the blast radius but never
+ * the name's characters. So a name is not a path component. Slugging it to the
+ * same `[a-z0-9-]` alphabet the skill name uses makes a traversal structurally
+ * impossible rather than filtered for -- `../../../.bashrc` has nowhere to go
+ * once the separators and the dots are not in the alphabet.
+ *
+ * Slugging is lossy, so two names can arrive at one slug. They are numbered in
+ * declaration order, because the alternative is two actions sharing a page and
+ * the second silently overwriting the first.
+ */
+function referencePaths(actions: ActionTool[]): Map<string, string> {
+  const paths = new Map<string, string>();
+  const taken = new Set<string>();
+  for (const tool of actions) {
+    const base = skillNameFor(tool.actionName) || 'action';
+    let slug = base;
+    for (let n = 2; taken.has(slug); n++) slug = `${base}-${n}`;
+    taken.add(slug);
+    paths.set(tool.actionName, `references/${slug}.md`);
+  }
+  return paths;
+}
+
+// A bare token the shell passes through untouched, or a single-quoted one.
+// The action name reaches a ```bash block an agent is meant to copy and run,
+// and nothing upstream constrains what is in it.
+function shellArg(text: string): string {
+  return /^[A-Za-z0-9._-]+$/.test(text) ? text :
+                                          `'${text.replace(/'/g, `'\\''`)}'`;
 }
 
 function referenceDocument(
     tool: ActionTool, action: Action, model: SemanticModel): string {
   const out: string[] = [];
-  out.push(`# ${tool.name}`);
+  out.push(`# ${action.name}`);
   out.push('');
-  out.push(`Action \`${action.name}\` of the \`${model.name}\` model.`);
+  // Both names, once, here. `action.name` is what `kcmd action run` takes and
+  // what every command line in this package uses; `tool.name` is what the same
+  // action is called when a framework hands it over as a tool. An agent meets
+  // one or the other depending on how it was wired, and a page that showed
+  // only one would be wrong for half of them.
+  out.push(
+      `Action \`${action.name}\` of the \`${model.name}\` model. As a ` +
+      `tool it is named \`${tool.name}\`.`);
   out.push('');
   if (action.description) {
     out.push(paragraph(action.description));
     out.push('');
   }
-  if (!tool.runnable && tool.unavailable) {
-    out.push(`> **Not runnable under this binding.** ${
-        collapse(tool.unavailable)} Report that rather than retrying.`);
-    out.push('');
-  }
+  // Whether this binding can run it is NOT here. It is a fact about the
+  // deployment, and the deployment is described in one place -- "Running an
+  // action" in SKILL.md. Repeating it per page would make every page change
+  // when the profile does, which is the property this split exists to keep.
 
   out.push('## Arguments');
   out.push('');
@@ -445,11 +565,15 @@ function referenceDocument(
         hasDefault ? ' Default |' : ''} What to pass |`);
     out.push(`| --- | --- | --- |${hasDefault ? ' --- |' : ''} --- |`);
     for (const p of tool.parameters) {
-      const def = hasDefault ? ` ${
-                                   p.default === undefined ?
-                                       '' :
-                                       `\`${JSON.stringify(p.default)}\``} |` :
-                               '';
+      // Escaped like every other cell: a default is an arbitrary YAML value,
+      // and a pipe in one shifts every column after it by one for the rest of
+      // the row -- on the page the skill tells an agent to read before calling.
+      const def = hasDefault ?
+          ` ${
+              p.default === undefined ?
+                  '' :
+                  `\`${cell(JSON.stringify(p.default))}\``} |` :
+          '';
       out.push(`| \`${p.name}\` | ${p.type} | ${p.required ? 'yes' : 'no'} |${
           def} ${cell(p.description)} |`);
     }
@@ -548,14 +672,6 @@ function affectsRow(a: AffectedConcept): string {
 
 function actionFor(tool: ActionTool, model: SemanticModel): Action|undefined {
   return (model.actions ?? []).find(a => a.name === tool.actionName);
-}
-
-// A judge is what settles a rule stated in words, so an action names one in
-// its command line exactly when it is guarded by a rule that stops the write.
-// An advisory rule is still put to a judge, but an action guarded only by
-// advisory rules runs without one, so it does not ask for the flag.
-function needsJudge(action: Action|undefined): boolean {
-  return !!action?.guards?.length;
 }
 
 function distinctKinds(actions: Action[]): string[] {
