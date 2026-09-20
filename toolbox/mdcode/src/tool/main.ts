@@ -252,12 +252,20 @@ try {
 // exactly the same way and would exit 0 -- a script that misspells a
 // subcommand would read success. What separates the two is the verb the caller
 // actually typed, which cac does not keep once it has cleared the match, so
-// read it off `process.argv` rather than off `cli.args`: a command that took
-// positional arguments has had its own name removed from those, and the
-// leading token is the only place the verb is still intact.
-const typed = process.argv[2];
-const verbIsKnown = typed === undefined || typed.startsWith('-') ||
-    cli.commands.some(c => c.name === typed);
+// read it off `process.argv` rather than off `cli.args`. `cli.args` cannot
+// answer this: cac strips a matched command's own name from it and clears the
+// match in the same breath, so `action list --help` arrives holding `list` and
+// `bogusverb --help` holding `bogusverb`, and neither of those words names a
+// command.
+//
+// The verb is the first token that is not a flag, not the first token: the
+// flag may come first, and `kcmd --help bogusverb` still misspells a
+// subcommand. Scanning is exact here because the only options cac takes ahead
+// of a command are `--help` and `--version`, and neither swallows a value that
+// could be mistaken for the verb.
+const typed = process.argv.slice(2).find(arg => !arg.startsWith('-'));
+const verbIsKnown =
+    typed === undefined || cli.commands.some(c => c.name === typed);
 if (!cli.matchedCommand && (cli.options.help || cli.options.version) &&
     verbIsKnown) {
   process.exit(0);
