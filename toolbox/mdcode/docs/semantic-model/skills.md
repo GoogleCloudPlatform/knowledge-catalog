@@ -127,10 +127,12 @@ name a framework would register it under is on the reference page, stated once.
 
 Then **Finding a record**, which exists because a skill of writes has a hole in
 it: a request names a person and a day, and an action wants a key. The section
-says where the key can come from — the caller, or the entity-typed argument that
-accepts text identifying exactly one record — and, for a Spanner store, gives
-the `gcloud` line that reads the database, followed by the tables to write a
-`SELECT` against:
+says where the key can come from — the caller, or a read — and says what a wrong
+key costs, which is the call rather than the data: a statement that writes no
+rows fails the action and rolls the transaction back, so a guess is safe to be
+wrong about and unsafe to be right about by accident. Then, for a Spanner store,
+it gives the `gcloud` line that reads the database, followed by the tables to
+write a `SELECT` against:
 
 ```
 Customer -> table Customer
@@ -138,7 +140,7 @@ Customer -> table Customer
   column name (String) = Customer.name. The customer's display name, e.g. "Morgan Ellis".
   column email (String) = Customer.email
 Order -> table Orders
-  column order_id (Integer) = Order.orderId
+  column order_id (Integer) = Order.orderId. The order's number, which is how both the customer and the desk refer to it.
   column placed_on (Date) = Order.placedOn. The day the order was placed.
   column total (Decimal) = Order.total. What the customer owes on this order, in dollars.
 ```
@@ -235,7 +237,7 @@ $ diff spanner-skills/commerce/SKILL.md alloydb-skills/commerce/SKILL.md
 <   column name (String) = Customer.name. The customer's display name, e.g. "Morgan Ellis".
 <   column email (String) = Customer.email
 < Order -> table Orders
-<   column order_id (Integer) = Order.orderId
+<   column order_id (Integer) = Order.orderId. The order's number, which is how both the customer and the desk refer to it.
 <   column customer_id (Integer) = Order.customerId
 <   column placed_on (Date) = Order.placedOn. The day the order was placed.
 <   column total (Decimal) = Order.total. What the customer owes on this order, in dollars.

@@ -39,7 +39,7 @@ orders -> table orders
   column o_custkey (String) = orders.o_custkey
   column o_totalprice (String) = orders.o_totalprice
 customer -> table customer
-  column c_custkey (String) = customer.c_custkey
+  column c_custkey (Integer) = customer.c_custkey. The customer's account number.
   column c_name (String) = customer.c_name
 ```
 
