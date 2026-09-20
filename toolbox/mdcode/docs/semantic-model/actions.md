@@ -980,21 +980,27 @@ Model 'payments' (payments_eg), profile 'operational':
 ```
 
 Where a run would be refused before it opened a transaction, that line says so
-instead, in the runtime's own words:
+instead, in the runtime's own words. Misspell the guard — write
+`TransferIsWithinLimit` where the model declares
+`TransferWithinAvailableBalance` — and the same listing reads:
 
 ```
-  NotifyCustomer
-    parameters: order (String from Order.key)
-    executor:   mcp
-    NOT RUNNABLE: Action 'NotifyCustomer' is executed by MCP, which runs
-    outside this transaction and could not be rolled back if the commit failed.
-    Supply a handler that performs the write as DML, or declare the action with
-    a 'sql' executor.
+  TransferFunds: Move money from one account to another.
+    parameters: source (Integer from Account.accountId), target (Integer from Account.accountId), amount (Float)
+    executor:   sql
+    guards:     TransferIsWithinLimit
+    affects:    Account (modify), Transfer (create), TransferDebits (create)
+    NOT RUNNABLE: Action 'TransferFunds' is guarded by 'TransferIsWithinLimit',
+    which is not declared by model 'payments'. Running it would apply a write
+    the model says must be checked first, so it is refused rather than run
+    unchecked.
 ```
 
-The listing asks the runtime that question rather than guessing at it, so the
-two cannot disagree: an action guarded by a rule your model never declares is
-marked here too, even though its executor is perfectly good.
+The executor is perfectly good, and nothing about it says the action cannot
+run. The listing knows because it asks the runtime the same question a run
+asks, rather than working it out again here — so the two cannot disagree about
+what will happen. An action executed over MCP is marked the same way, since
+this command holds no handler for one and could not roll it back.
 
 `kcmd action run` performs one of those actions, against the database your
 model's deployment target names under the selected profile.
