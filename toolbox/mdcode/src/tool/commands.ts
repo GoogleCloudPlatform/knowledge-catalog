@@ -1400,7 +1400,6 @@ export async function agent(
 
 export interface SkillsGenerateOptions {
   profile?: string|boolean;
-  judge?: string|boolean;
   /**
    * Directory the skill directories are written under. Defaults to `skills`.
    */
@@ -1446,16 +1445,6 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
     return 1;
   }
 
-  // Built the way `kcmd agent tools --judge` builds it. Whether a guarded
-  // action is described as runnable depends on whether the agent reading the
-  // skill will hold a judge, and that is not something the model can say. No
-  // model is called here: generating a skill runs no action.
-  const judge = options.judge ?
-      new GeminiJudge(
-          ctx,
-          typeof options.judge === 'string' ? {model: options.judge} : {}) :
-      undefined;
-
   const root = options.out ?? 'skills';
   let failed = false;
   // A skill name is a lossy form of a model name, so two models in one scope
@@ -1464,7 +1453,7 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
   // saying otherwise.
   const written = new Map<string, string>();
   for (const runtime of opened) {
-    const generated = generateSkill({runtime, name: options.name, judge});
+    const generated = generateSkill({runtime, name: options.name});
     if ('error' in generated) {
       console.error(`Error: [${runtime.model.name}] ${generated.error}`);
       failed = true;

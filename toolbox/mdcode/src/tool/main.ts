@@ -201,9 +201,6 @@ cli.command(
         '--profile [name]',
         'Read the model under this binding profile, which is what the skill\'s one deployment-specific section describes; defaults to default_profile, else the inline bindings')
     .option(
-        '--judge [model]',
-        'Write the skill for an agent that holds a judge, naming a Gemini model or taking the default; without it, an action guarded by a rule stated in words is described as not runnable. No model is called either way')
-    .option(
         '--force',
         'Replace a skill that is already there, including deleting a reference file for an action the model no longer declares')
     .action(async (options) => {

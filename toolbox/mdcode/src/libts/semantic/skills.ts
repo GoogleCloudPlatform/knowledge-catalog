@@ -82,13 +82,28 @@ export interface GenerateSkillOptions {
    * rather than a skill some clients silently skip.
    */
   name?: string;
-  /**
-   * Whether the agent this skill is written for holds a judge. It decides
-   * whether a guarded action is described as runnable, exactly as it does for
-   * `kcmd agent tools`. No model is called.
-   */
-  judge?: Judge;
 }
+
+/**
+ * Stands in for the judge the runtime supplies.
+ *
+ * A rule stated in words is settled by asking a judge, and the runtime asks it
+ * before the transaction opens -- never the agent making the call, which would
+ * be the constrained thing certifying itself. So a guarded action only ever
+ * runs against a runtime that has one, and that is the runtime a skill
+ * describes. Whether whoever ran `skills-generate` had a judge configured is a
+ * fact about that invocation and about nothing the document is read against.
+ *
+ * `modelTools` asks only whether a judge is there. Generating a skill settles
+ * no rule, so this throws if anything reaches it.
+ */
+const ASSUMED_JUDGE: Judge = {
+  name: 'the judge the runtime supplies',
+  decide: () => {
+    throw new Error('generating a skill must not ask a judge');
+  },
+};
+
 
 /**
  * The skill for one model, as files a caller writes out.
@@ -108,7 +123,8 @@ export function generateSkill(opts: GenerateSkillOptions): SkillPackage|{
   const nameError = whyNameIsInvalid(name);
   if (nameError) return {error: nameError};
 
-  const {actions, instruction} = modelTools({runtime, judge: opts.judge});
+  const {actions, instruction} =
+      modelTools({runtime, judge: ASSUMED_JUDGE});
   const warnings: string[] = [];
   if (!actions.length) {
     warnings.push(
@@ -123,8 +139,8 @@ export function generateSkill(opts: GenerateSkillOptions): SkillPackage|{
         `No action in '${model.name}' is runnable under profile '${
             runtime.profile}', so the skill describes ${actions.length} action${
             actions.length === 1 ? '' : 's'} and can ` +
-        `run none of them. A guarded action needs a judge: pass --judge if ` +
-        `the agent this skill is for holds one.`);
+        `run none of them. "Running an action" in the skill gives the ` +
+        `reason for each.`);
   }
 
   const paths = referencePaths(actions);

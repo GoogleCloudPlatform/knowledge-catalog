@@ -137,15 +137,20 @@ written.
 Everything the binding decides lives in `SKILL.md`: the store, the executor
 kinds, which actions this deployment cannot run and why, and the `kcmd action
 run` line to try one with, all under one heading, plus the snippet for reading
-the store directly. A reference page is the same bytes under any profile, and
-with or without `--judge`.
+the store directly. A reference page is the same bytes under any profile.
+
+A guarded action is always described as runnable, because a rule stated in words
+is settled by the runtime before the transaction opens and a guarded action only
+ever runs against a runtime that has a judge. The command line printed for one
+says `--judge`. There is no flag here to say otherwise: whether the caller of
+`skills-generate` had a judge configured is a fact about that invocation, not
+about the deployment the document is read against.
 
 | Flag | Effect |
 |------|--------|
 | `--out <dir>` | Directory the skill directories are written under. Defaults to `skills`. |
 | `--name <name>` | Name the skill, and so its directory. Defaults to the model's own name. Rejected when the scope holds more than one model, because a name names one skill. |
 | `--profile [name]` | Read the model under this binding profile. Defaults to `default_profile`, else the model's inline bindings. It is what the one deployment-specific section describes. |
-| `--judge [model]` | Generate for an agent that holds a judge: an action guarded by a rule stated in words is described as runnable and given a command line. Without it, that action is listed as not runnable, with the rules it is waiting on. Takes a Gemini model id, defaulting to `gemini-2.5-flash`. No model is called either way -- generating a skill runs no action. |
 | `--force` | Replace a skill already at that path. A reference page for an action the model no longer declares is deleted and reported; a file outside `references/` is left alone. |
 
 Before anything is written, a warning is printed when no action in a model is

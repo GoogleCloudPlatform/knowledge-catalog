@@ -36,7 +36,7 @@ Run it in a semantic-model scope, the same directory `kcmd push` and
 `kcmd action run` work in:
 
 ```bash
-kcmd skills-generate --out skills --judge
+kcmd skills-generate --out skills
 ```
 
 ```
@@ -49,7 +49,6 @@ Wrote skills/commerce/references/issue-credit.md
 | `--out <dir>` | Directory the skill directories go under. Defaults to `skills` |
 | `--name <name>` | Names the skill, and so its directory. Defaults to the model's name. Only for a scope with one model |
 | `--profile [name]` | Read the model under this binding profile — it's what the one deployment-specific section describes |
-| `--judge [model]` | Write the skill for an agent that holds a judge. Without it, an action guarded by a rule stated in words is described as not runnable |
 | `--force` | Replace a skill that's already there |
 
 A skill directory already on disk isn't written into without `--force`. What's
@@ -66,18 +65,13 @@ stay where they are; a Markdown file under `references/` that the run didn't
 write is removed.
 
 Generating a skill that can't run anything is allowed and said out loud. The
-description is still true and the actions are still described, so this is the
-skill you hand an agent that will hold a judge — but it isn't usually what you
-meant to generate:
-
-```
-$ kcmd skills-generate --profile spanner
-Warning: [commerce] No action in 'commerce' is runnable under profile
-'spanner', so the skill describes 1 action and can run none of them. A guarded
-action needs a judge: pass --judge if the agent this skill is for holds one.
-Wrote skills/commerce/SKILL.md
-Wrote skills/commerce/references/issue-credit.md
-```
+description is still true and the actions are still described, so the document
+is worth having — but it isn't usually what you meant to generate. Two bindings
+get you there: a profile that binds no store, and an action whose executor the
+runtime won't wrap because it couldn't roll the write back. Either way you get
+`Warning: [<model>] No action in '<model>' is runnable under profile
+'<profile>', so the skill describes N actions and can run none of them.
+"Running an action" in the skill gives the reason for each.`
 
 The warning comes before anything is written, so a reader who didn't mean this
 still has the chance not to keep it.
@@ -186,8 +180,8 @@ Generate the commerce demo twice, once per profile, and the difference is that
 section and nothing else:
 
 ````console
-$ kcmd skills-generate --judge --profile spanner --out spanner-skills
-$ kcmd skills-generate --judge --profile alloydb --out alloydb-skills
+$ kcmd skills-generate --profile spanner --out spanner-skills
+$ kcmd skills-generate --profile alloydb --out alloydb-skills
 
 $ diff spanner-skills/commerce/references/issue-credit.md \
        alloydb-skills/commerce/references/issue-credit.md
@@ -222,13 +216,16 @@ differently named column and a different SQL dialect between them. What changes
 in `SKILL.md` is the profile, the store, the command line's `--profile`, and the
 `gcloud` snippet that only a Spanner store has.
 
-Dropping `--judge` doesn't move the page either, which is the case worth
-checking. Whether a guarded action is runnable reads like a property of the
-action, and it isn't one — it depends on whether the agent being handed the skill
-holds a judge. Generate `commerce` with and without, and the reference page is
-again the same bytes; the whole difference is inside that one section, which
-either carries a command line or, when nothing here can run, lists each action
-with the rules it's waiting on instead.
+The judge isn't a second axis, and it's worth saying why, because it looks like
+one. A rule stated in words is settled by asking a judge, and the runtime asks
+it before the transaction opens — not the agent making the call. An agent that
+judged its own call would be the constrained thing certifying itself, which is
+no guard at all. So a guarded action only ever runs against a runtime that has a
+judge, and that's the runtime every generated skill is written for: the command
+line says `--judge`, and the paragraph under it says what the flag settles.
+Whether you had a judge configured when you ran `skills-generate` is a fact
+about that invocation, not about the deployment the document describes, so
+there's no flag here to write the other kind of skill.
 
 That section names the profile, the store, the executor kinds in play, and any
 action that can't run here. It also carries a `kcmd action run` command line,

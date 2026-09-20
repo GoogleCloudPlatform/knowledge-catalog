@@ -28,7 +28,6 @@ import * as yaml from 'yaml';
 import * as spanner from '../../../src/libts/gcp/spanner';
 import {Action, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
-import {Judge} from '../../../src/libts/semantic/runtime/judge';
 import {SemanticRuntime} from '../../../src/libts/semantic/runtime/runtime';
 import {generateSkill, skillNameFor, whyNameIsInvalid} from '../../../src/libts/semantic/skills';
 
@@ -368,16 +367,14 @@ describe('the rules on a reference page', () => {
 describe('when the runtime would refuse the call', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
 
-  test('an action guarded with no judge to ask says so, and why', () => {
-    // The fixture's guard is settled in words, and this runtime holds no
-    // judge, so the skill says the call will be refused rather than describing
-    // a write that cannot happen. It says it in SKILL.md, because whether a
-    // call can run here is a fact about the deployment and not about the
-    // action -- see the reference-page invariant below.
+  test('a guarded action is runnable, because the runtime settles it', () => {
+    // The guard is settled in words, which is the runtime's job and not the
+    // reading agent's: an agent that judged its own call would be the
+    // constrained thing certifying itself. So the skill is written for a
+    // runtime that has a judge, and the command line it prints says `--judge`.
     const out = generate(rt(withAction(model, {executor: RUNNABLE.executor})));
-    expect(out.files['SKILL.md']).toContain('no judge');
-    expect(out.files['references/place-order.md'])
-        .not.toContain('Not runnable');
+    expect(out.files['SKILL.md']).toContain('--judge');
+    expect(out.warnings.join(' ')).not.toContain('runnable');
   });
 
   test('an executor the runtime cannot roll back is reported as such', () => {
@@ -393,11 +390,12 @@ describe('when the runtime would refuse the call', () => {
       'a skill that can run nothing warns rather than passing silently', () => {
         // It still loads, still costs context on every request, and still names
         // the model as the write path in frontmatter a client reads before the
-        // body. A caller who did not mean to make one has to be told.
-        const out =
-            generate(rt(withAction(model, {executor: RUNNABLE.executor})));
+        // body. A caller who did not mean to make one has to be told. The
+        // fixture's own MCP executor is the case: the runtime will not wrap a
+        // write it could not roll back.
+        const out = generate(rt(model));
         expect(out.warnings.join(' ')).toContain('runnable');
-        expect(out.warnings.join(' ')).toContain('--judge');
+        expect(out.warnings.join(' ')).toContain('Running an action');
       });
 
   test(
@@ -569,10 +567,10 @@ describe('text that would otherwise break the output', () => {
 // output off. Every defect the first review round found was of that kind. These
 // goldens put the generated files themselves in the diff.
 //
-// The corpus is one fixture under four bindings. One fixture because
+// The corpus is one fixture under three bindings. One fixture because
 // `actions_place_order.yaml` is the only one in the tree carrying actions and
-// constraints; four bindings because the binding is the axis this emitter has to
-// be invariant to. Each writes its own `SKILL.md`, and all four are checked
+// constraints; three bindings because the binding is the axis this emitter has
+// to be invariant to. Each writes its own `SKILL.md`, and all three are checked
 // against ONE reference-page golden -- that shared file IS the claim that an
 // action's page is a fact about the model. Break it and one assertion fails,
 // naming the binding that moved it.
@@ -582,21 +580,10 @@ describe('text that would otherwise break the output', () => {
 describe('golden skill: the fixture generates these exact files', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
 
-  // Never called. `modelTools` asks only whether the agent reading the skill
-  // will hold a judge, which is the question `kcmd agent tools --judge` asks;
-  // settling a rule happens when an action runs, and generating a skill runs
-  // none.
-  const JUDGE: Judge = {
-    name: 'test-judge',
-    decide: () => {
-      throw new Error('generating a skill must not call a judge');
-    },
-  };
-
   // The fixture performs PlaceOrder over MCP, which `kcmd` does not wrap. `sql`
-  // is what an agent usually meets, so three variants swap it in. The fourth
-  // keeps the authored executor, which is what makes it worth having: a
-  // different executor kind, the same reference page.
+  // is what an agent usually meets, so two variants swap it in. The third keeps
+  // the authored executor, which is what makes it worth having: a different
+  // executor kind, the same reference page.
   const guardedSql = withAction(model, {
     executor: {
       kind: 'sql',
@@ -606,33 +593,21 @@ describe('golden skill: the fixture generates these exact files', () => {
 
   const CASES = [
     {
-      // The case an agent actually meets: bound to a store and read by an
-      // agent holding a judge, so the guard is settleable and the section
-      // carries a command line.
+      // The case an agent actually meets: bound to a store, so the guarded
+      // action is runnable and the section carries a command line.
       golden: 'actions_place_order.skill.golden.md',
       runtime: rt(guardedSql),
-      judge: JUDGE,
-    },
-    {
-      // The same deployment, an agent holding no judge. PlaceOrder guards on
-      // OrderWithinCustomerCredit, so it is refused rather than run unchecked
-      // and the section names the rule it is waiting on.
-      golden: 'actions_place_order.no_judge.skill.golden.md',
-      runtime: rt(guardedSql),
-      judge: undefined,
     },
     {
       // A profile that binds no store. Calling an action needs one, so nothing
-      // here runs whatever the agent holds.
+      // here runs.
       golden: 'actions_place_order.no_store.skill.golden.md',
       runtime: rt(guardedSql, {store: undefined}),
-      judge: JUDGE,
     },
     {
       // The authored MCP executor.
       golden: 'actions_place_order.mcp.skill.golden.md',
       runtime: rt(model),
-      judge: JUDGE,
     },
   ];
 
@@ -654,9 +629,9 @@ describe('golden skill: the fixture generates these exact files', () => {
     expect(actual).toBe(fs.readFileSync(golden, 'utf8'));
   }
 
-  CASES.forEach(({golden, runtime, judge}, index) => {
+  CASES.forEach(({golden, runtime}, index) => {
     test(golden, () => {
-      const out = generateSkill({runtime, judge});
+      const out = generateSkill({runtime});
       if ('error' in out) throw new Error(out.error);
       const files = Object.fromEntries(out.files.map(f => [f.path, f.text]));
       expect(Object.keys(files).sort()).toEqual([
