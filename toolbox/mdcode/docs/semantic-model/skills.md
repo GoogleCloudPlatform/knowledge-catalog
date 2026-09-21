@@ -2,7 +2,7 @@
 
 `kcmd skills-generate` compiles a semantic model in the current catalog scope into an [Agent Skills](https://agentskills.io) package: a directory containing `SKILL.md` and one `references/<action>.md` page per declared action.
 
-Point `--out` at the skills directory your agent harness scans (such as `.claude/skills` or `.agents/skills`), and the agent receives the model's action index, business rules, physical table/column mappings for looking up keys, and execution coordinates for the selected binding profile.
+Point `--out` at the skills directory Gemini CLI scans (`.gemini/skills` or `.agents/skills`), and the agent receives the model's action index, business rules, physical table/column mappings for looking up keys, and execution coordinates for the selected binding profile.
 
 ## How progressive disclosure works
 
@@ -20,14 +20,14 @@ Keeping per-action contracts in `references/<action>.md` keeps `SKILL.md` well i
 
 ```bash
 cd demo/semantic-model/skill
-kcmd skills-generate --profile spanner --out .claude/skills --force
+kcmd skills-generate --profile spanner --out .gemini/skills --force
 ```
 
 This writes two files:
 
 ```text
-Wrote .claude/skills/commerce/SKILL.md
-Wrote .claude/skills/commerce/references/issue-credit.md
+Wrote .gemini/skills/commerce/SKILL.md
+Wrote .gemini/skills/commerce/references/issue-credit.md
 ```
 
 ### Flags
@@ -41,18 +41,14 @@ All flags are optional:
 | `--name <name>` | Derived from `model.name` | Override the generated skill name (and directory name `<out>/<name>`). Must match `[a-z0-9-]+` and be at most 64 characters. |
 | `--force` | `false` | Overwrite an existing `<out>/<skill-name>/` directory and remove any stale `.md` files in `<out>/<skill-name>/references/` left over from renamed or deleted actions. |
 
-### Where agent harnesses discover skills
+### Where Gemini CLI discovers skills
 
-Pass one of the following paths to `--out` so your agent harness discovers `<out>/<skill-name>/SKILL.md`:
+Pass one of the following paths to `--out` so Gemini CLI discovers `<out>/<skill-name>/SKILL.md` automatically:
 
-| Agent harness | Project scope (`--out`) | User scope (`--out`) |
-| :--- | :--- | :--- |
-| **Claude Code** | `.claude/skills` | `~/.claude/skills` |
-| **Gemini CLI** | `.agents/skills` or `.gemini/skills` | `~/.agents/skills` or `~/.gemini/skills` |
-| **Cursor** | `.agents/skills` or `.cursor/skills` | `~/.agents/skills` or `~/.cursor/skills` |
-
-> [!NOTE]
-> Claude Code and Gemini CLI were both run end to end against the generated skill in [`demo/semantic-model/skill/`](../../demo/semantic-model/skill/README.md). Cursor reads the same Agent Skills layout, and its paths above are taken from Cursor's documentation rather than a live run in this repository.
+| Scope | `--out` directory |
+| :--- | :--- |
+| **Project / workspace scope** | `.gemini/skills` or `.agents/skills` |
+| **User scope** | `~/.gemini/skills` or `~/.agents/skills` |
 
 ## How the model maps to the generated files
 
@@ -304,7 +300,7 @@ When an action cannot be run under the selected profile, its reference page is s
 ## What it doesn't generate yet
 
 - **No metrics or relationships in the skill.** `SKILL.md` emits the entity table and column map for looking up keys (`## Finding a record`) and `references/<action>.md` emits the write actions. Declared `metrics` and `relationships` are not emitted into the skill package.
-- **No plugin manifest or MCP server bundle.** When an action uses an `mcp`, `rest`, or `grpc` executor, `SKILL.md` prints its target coordinates (`MCP tool <tool> on <server>`, `HTTP <METHOD> <endpoint>`, `gRPC <service>/<method>`) so the agent or its harness can call it. `kcmd skills-generate` does not emit `.claude-plugin/marketplace.json` or register MCP servers with the harness.
+- **No plugin manifest or MCP server bundle.** When an action uses an `mcp`, `rest`, or `grpc` executor, `SKILL.md` prints its target coordinates (`MCP tool <tool> on <server>`, `HTTP <METHOD> <endpoint>`, `gRPC <service>/<method>`) so the agent or its harness can call it. `kcmd skills-generate` does not emit a plugin manifest or register MCP servers with the harness.
 - **No CLI runner for actions or judged guards.** `kcmd skills-generate` produces the static skill files from the model and profile. Executing actions and settling judged guards before opening a transaction is performed by the agent framework or tool runner that hosts the model's tools.
 
 ## See also
