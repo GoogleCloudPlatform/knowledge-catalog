@@ -91,7 +91,7 @@ IFS=/ read -r PROJECT INSTANCE DATABASE <<<"$(kcmd profiles --print-store)"
 ### action-list
 
 ```bash
-kcmd action-list [name]
+kcmd action-list
 ```
 
 Prints every action the models in the scope declare, with the store a run would

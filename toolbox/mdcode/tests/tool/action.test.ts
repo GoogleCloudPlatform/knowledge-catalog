@@ -323,36 +323,12 @@ afterEach(() => {
 
 
 describe('kcmd action-list', () => {
-  // The command is declared `action-list [name]`, so the positional has to
-  // do something. It used to be accepted and dropped: naming one action on a
-  // model that declares several printed them all and exited 0, which reads
-  // as the answer to the question that was asked.
-  test('a named action narrows the listing to it', async () => {
-    writeWorkspace();
-    const code = await actionList('NotifyCustomer');
-    expect(code).toBe(0);
-    const out = logs.join('\n');
-    expect(out).toContain('NotifyCustomer');
-    expect(out).not.toContain('IssueCredit: Credit an order');
-  });
-
-  // An empty listing under a misspelled name reads as "this model declares
-  // nothing", so the name is checked across the scope before anything prints.
-  test('a name no model declares is an error', async () => {
-    writeWorkspace();
-    const code = await actionList('IssueCredits');
-    expect(code).toBe(1);
-    const out = logs.join('\n');
-    expect(out).toContain("no model in this scope declares an action 'IssueCredits'");
-    expect(out).toContain('IssueCredit, NotifyCustomer');
-  });
-
   test(
       'prints each action with what it takes, what it touches, and the ' +
            'command line that runs it',
        async () => {
          writeWorkspace();
-         const code = await actionList(undefined);
+         const code = await actionList();
          expect(code).toBe(0);
          const out = logs.join('\n');
 
@@ -401,7 +377,7 @@ describe('kcmd action-list', () => {
                 '          - {name: literalNull, type: String, default: "null"}\n' +
                 '          - {name: memo, type: String, required: false}');
         writeWorkspace(optionalModel);
-        const code = await actionList(undefined);
+        const code = await actionList();
         expect(code).toBe(0);
         const out = logs.join('\n');
         expect(out).toContain(
@@ -423,7 +399,7 @@ describe('kcmd action-list', () => {
         // line for a write this binding cannot perform would send the reader
         // to a refusal, so it prints the fix instead.
         writeWorkspace(LOGICAL);
-        const code = await actionList(undefined, {profile: 'readonly'});
+        const code = await actionList({profile: 'readonly'});
         expect(code).toBe(0);
         const out = logs.join('\n');
         expect(out).toContain('IssueCredit');
@@ -449,7 +425,7 @@ describe('kcmd action-list', () => {
         // out from the executor.
         writeWorkspace(MODEL.replace(
             'guards: [CreditIsPositive]', 'guards: [NoSuchRule]'));
-        const code = await actionList(undefined);
+        const code = await actionList();
         expect(code).toBe(0);
         const out = logs.join('\n');
         expect(out).toContain('executor:   sql');
@@ -466,7 +442,7 @@ describe('kcmd action-list', () => {
     // in earnest -- so no flag here offers it, and the listing says the guard
     // is there without pretending it can be checked.
     writeWorkspace();
-    const code = await actionList(undefined);
+    const code = await actionList();
     expect(code).toBe(0);
     const out = logs.join('\n');
     expect(out).toContain('guards:     CreditIsPositive');
@@ -478,14 +454,14 @@ describe('kcmd action-list', () => {
 
   test('says so when a model declares no actions', async () => {
     writeWorkspace(NO_ACTIONS);
-    const code = await actionList(undefined);
+    const code = await actionList();
     expect(code).toBe(0);
     expect(logs.join('\n')).toContain('declares no actions.');
   });
 
   test('reads the model under a named profile', async () => {
     writeWorkspace(LOGICAL);
-    const code = await actionList(undefined, {profile: 'analytical'});
+    const code = await actionList({profile: 'analytical'});
     expect(code).toBe(0);
     expect(logs.join('\n')).toContain('profile \'analytical\'');
   });
@@ -494,7 +470,7 @@ describe('kcmd action-list', () => {
       'names the profiles that exist when given one that does not',
        async () => {
          writeWorkspace();
-         const code = await actionList(undefined, {profile: 'nope'});
+         const code = await actionList({profile: 'nope'});
          expect(code).toBe(1);
          const out = logs.join('\n');
         expect(out).toContain('unknown binding profile \'nope\'');
@@ -706,7 +682,7 @@ describe('kcmd action-list/action-run: what the command line can hold', () => {
          // cac yields `true` for `--profile` with no value. Reading it as a
          // name would fail the command with a profile the user never typed.
          writeWorkspace();
-         const code = await actionList(undefined, {profile: true});
+         const code = await actionList({profile: true});
          expect(code).toBe(0);
         expect(logs.join('\n')).toContain('profile \'default\'');
        });
@@ -714,14 +690,14 @@ describe('kcmd action-list/action-run: what the command line can hold', () => {
   test('--no-profile does not become a profile name either', async () => {
     // mri yields `false`, which `??` would pass straight through.
     writeWorkspace();
-    const code = await actionList(undefined, {profile: false});
+    const code = await actionList({profile: false});
     expect(code).toBe(0);
     expect(logs.join('\n')).toContain('profile \'default\'');
   });
 
   test('a named profile still selects that profile', async () => {
     writeWorkspace(LOGICAL);
-    const code = await actionList(undefined, {profile: 'analytical'});
+    const code = await actionList({profile: 'analytical'});
     expect(code).toBe(0);
     expect(logs.join('\n')).toContain('profile \'analytical\'');
   });
@@ -869,7 +845,7 @@ describe('kcmd action-run: the model has to be valid to run', () => {
           'refused rather than run',
       async () => {
         // A push rejects this outright, and running the model is running the
-        // same typo, so `action run` reports it by name rather than passing
+        // same typo, so `action-run` reports it by name rather than passing
         // over an entry that resolves to nothing.
         writeWorkspace(TYPO);
         const code =
@@ -880,6 +856,6 @@ describe('kcmd action-run: the model has to be valid to run', () => {
 
   test('but listing it still works, because listing runs nothing', async () => {
     writeWorkspace(TYPO);
-    expect(await actionList(undefined)).toBe(0);
+    expect(await actionList()).toBe(0);
   });
 });

@@ -139,15 +139,15 @@ cli.command(
 
 
 cli.command(
-       'action-list [name]',
+       'action-list',
        'List what a semantic model declares as runnable: parameters, executor, guards, blast radius, and the command that runs each one')
     .option(
         '--profile [name]',
         'Read the model under this binding profile; its deployment target names the database the action runs against; defaults to default_profile, else the inline bindings')
-    .action(async (name, options) => {
+    .action(async (options) => {
       let exitCode = 1;
       try {
-        exitCode = await commands.actionList(name, options);
+        exitCode = await commands.actionList(options);
       } catch (err: any) {
         console.error('Error:', err.message || err);
         exitCode = 1;
@@ -264,9 +264,9 @@ try {
 // actually typed, which cac does not keep once it has cleared the match, so
 // read it off `process.argv` rather than off `cli.args`. `cli.args` cannot
 // answer this: cac strips a matched command's own name from it and clears the
-// match in the same breath, so `action list --help` arrives holding `list` and
-// `bogusverb --help` holding `bogusverb`, and neither of those words names a
-// command.
+// match in the same breath, so `action-run IssueCredit --help` arrives holding
+// `IssueCredit` and `bogusverb --help` holding `bogusverb`, and neither of those
+// words names a command.
 //
 // The verb is the first token that is not a flag, not the first token: the
 // flag may come first, and `kcmd --help bogusverb` still misspells a

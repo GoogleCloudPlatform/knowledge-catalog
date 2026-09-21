@@ -107,12 +107,16 @@ describe('kcmd: --help and --version', () => {
   });
 
   test('`--help` past a command that takes arguments still succeeds', () => {
-    // `action-list [name]` has its own name taken out of `cli.args`, which
-    // therefore arrives empty here, so `process.argv` is the only place the
-    // verb survives to be checked.
-    const {code, out} = run('action-list', '--help');
+    // The command has to be one that takes a positional, or the case this
+    // covers does not arise: cac strips a matched command's own name from
+    // `cli.args` and clears the match together, so what is left here is
+    // `['IssueCredit']` -- a word that names no command, which is exactly what
+    // reading `cli.args` instead of `process.argv` would misread as a
+    // misspelled verb. `action-list` takes no positional and leaves `cli.args`
+    // empty, so it cannot stand in for this.
+    const {code, out} = run('action-run', 'IssueCredit', '--help');
     expect(code).toBe(0);
-    expect(out).toContain('kcmd action-list');
+    expect(out).toContain('kcmd action-run');
   });
 
   test('`--help` before an unknown verb is still an error', () => {

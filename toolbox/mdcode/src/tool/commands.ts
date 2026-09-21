@@ -1304,7 +1304,7 @@ async function openActionRuntimes(options: ActionOptions):
 
 // Lists what a semantic model declares as runnable.
 //
-//   kcmd action-list [name]
+//   kcmd action-list
 //
 // Answers "what can I run, and how": each action's parameters, executor,
 // guards and blast radius, ending with the command line that runs it. Naming
@@ -1312,11 +1312,11 @@ async function openActionRuntimes(options: ActionOptions):
 // error, because an empty listing reads as "this model declares nothing".
 //
 // Returns a process exit code (0 on success).
-export async function actionList(
-    name: string|undefined, options: ActionOptions = {}): Promise<number> {
+export async function actionList(options: ActionOptions = {}):
+    Promise<number> {
   const opened = await openActionRuntimes(options);
   if (typeof opened === 'number') return opened;
-  return listActions(opened, name, options);
+  return listActions(opened);
 }
 
 
@@ -1347,30 +1347,9 @@ const RUN_INDENT = '    ';
 // the listing is enough to make the call without going back to the YAML -- or,
 // when the runtime would refuse the call before opening a transaction, what it
 // is waiting on instead.
-function listActions(
-    runtimes: SemanticRuntime[], only: string|undefined,
-    options: ActionOptions): number {
-  // A name nothing declares is a typo, and printing every action under it
-  // would answer a question the caller did not ask while looking like the
-  // answer to the one they did. Checked across the whole scope before
-  // anything prints, so the error is not buried under a model's heading.
-  if (only) {
-    const known =
-        runtimes.flatMap(r => (r.model.actions ?? []).map(a => a.name));
-    if (!known.includes(only)) {
-      console.error(
-          `Error: no model in this scope declares an action '${only}'` +
-          (known.length ? `; declared: ${known.sort().join(', ')}.` : '.'));
-      return 1;
-    }
-  }
-
+function listActions(runtimes: SemanticRuntime[]): number {
   for (const runtime of runtimes) {
     const {model, store, storeError, profile, entryGroup} = runtime;
-    // A scope can hold several models and only one of them declare the action
-    // that was named. The others have nothing to say about it, and a heading
-    // over an empty listing reads as an answer.
-    if (only && !(model.actions ?? []).some(a => a.name === only)) continue;
     console.log(`Model '${model.name}' (${entryGroup}), profile '${profile}':`);
     // Where a run lands, said once at the top rather than left to be inferred
     // from a profile file the reader would have to go open.
@@ -1380,8 +1359,7 @@ function listActions(
     } else {
       console.log(`  store: ${storeLine(store)}`);
     }
-    const declared = model.actions ?? [];
-    const actions = only ? declared.filter(a => a.name === only) : declared;
+    const actions = model.actions ?? [];
     if (!actions.length) {
       console.log('  declares no actions.');
       continue;
@@ -1405,7 +1383,7 @@ function listActions(
                 .join(', ')}`);
       }
       // Asked of the runtime rather than worked out here, for the reason
-      // `agent tools` asks: two copies of "can this run" drift, and neither
+      // `agent-tools` asks: two copies of "can this run" drift, and neither
       // direction of the drift is visible to the reader. This used to notice
       // only a missing executor, so an action executed by HTTP -- which this
       // command has no handler for and could not roll back -- printed a run
