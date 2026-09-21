@@ -237,7 +237,7 @@ binding rather than the logical model:
 - **Executor**: The executor kind(s) (`sql`, `mcp`, `rest`, or `grpc`) across
   every action the model *declares*, not only the runnable ones. It is a summary
   of the binding, not a runnability signal: a profile in which nothing can run
-  still prints `- Executor: \`sql\`` above the list of reasons why.
+  still prints `` - Executor: `sql` `` above the list of reasons why.
 - **Remote executor coordinates**: When an action uses a remote executor, its
   target coordinates are printed directly under `Executor`:
   - `mcp`: ``- `PlaceOrder` (`place_order`): MCP tool `place_order` on
