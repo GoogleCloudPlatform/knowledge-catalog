@@ -109,11 +109,10 @@ semantic_model:
             tool: transfer_funds
         parameters:
           - name: source
-            concept: Account                  # takes Account.accountId's type
-            field: accountId
+            field: Account.accountId          # takes Account.accountId's type
             description: The account the money leaves.
           - name: target
-            concept: Account
+            concept: Account                  # the same projection, written in two keys
             field: accountId
             description: The account the money goes to.
           - name: amount
@@ -132,18 +131,6 @@ You author the rest of the model — the deployment target, the entity bindings,
 the relationships — the way you would for any model. See
 [Deploying a semantic model](README.md).
 
-The executor tells a consumer where the operation lives. Pick one of these four
-kinds, and give any one executor a single kind only:
-
-- **`mcp`** — `{server, tool}`. A tool you've already registered in Agent
-  Registry, named by the server's resource name and the tool's name within it.
-- **`rest`** — `{endpoint, method}`. An HTTP endpoint and the verb to call it
-  with.
-- **`grpc`** — `{service, method}`. A service and the method on it.
-- **`sql`** — `{statements}`. The write itself, carried in your model instead
-  of named as a pointer to whoever performs it, and the only kind kcmd runs.
-  See [carrying the write as DML](#carrying-the-write-as-dml).
-
 Both `description` and `ai_context.instructions` travel through to the catalog,
 and a parameter's `description` is what tells a caller which argument is which.
 Two parameters a caller could confuse must each carry one, or the push fails.
@@ -157,6 +144,8 @@ holds. What differs is where its definition comes from, and there are two ways
 to give it one: **project** it from a field of your ontology, or **declare** it
 on the spot.
 
+#### A projected parameter takes its definition from a field
+
 **A projected parameter** names a `concept` and a `field`, and takes that
 field's datatype, description, label and AI context straight out of the model.
 `source` above is an `Integer` because `Account.accountId` is one, so a caller
@@ -166,6 +155,20 @@ copy to keep in step. A `concept` is read the way `affects` reads one, so it can
 name a relationship as well as an entity — but what you project from in practice
 is an entity, because a relationship only has fields of its own when a junction
 table backs it, and this format has no syntax for one yet.
+
+The pair can be written two ways, and they load to the same parameter:
+
+```yaml
+          - { concept: Account, field: accountId }
+          - { field: Account.accountId }
+```
+
+The one-key form spells the projection the way a metric expression or a
+constraint judgment already spells a field, and is there for the same reason.
+A `field` that carries a dot is read as `Concept.field`, so a `field` with more
+than two parts is refused at load rather than read as half a reference, and so
+is a dotted `field` beside a `concept`, which would name the concept twice —
+that one is refused with both of the forms above spelled out for you.
 
 Most projected parameters need no name of their own. Leave `name` out and the
 parameter answers to the field's, so this one is called `accountId`:
@@ -182,15 +185,21 @@ columns takes three projected parameters, one per key field, each typed from
 the field it names — the same declaration a single-column key writes, three
 times.
 
+#### A declared parameter carries its own type
+
 **A declared parameter** carries a value no field holds: the `amount` above, a
 free-text memo, a reason code your store never keeps. Give it a `type` and a
 description of your own. `type` takes a scalar datatype only, and naming an
-entity there is an error telling you to project the field you meant.
+entity there is an error telling you to project the field you meant. `datatype`
+is accepted as a spelling of the same key — the one `fields:` already uses —
+and stating both at once is refused rather than guessed at.
 
 A projected parameter can't restate its field's `type`. If the type is wrong,
 fix the field. If a statement needs a different one, cast it in the DML, where
 the conversion is visible to whoever reads the write instead of buried in
 metadata.
+
+#### What else a parameter may carry
 
 Each parameter may also carry:
 
@@ -198,7 +207,9 @@ Each parameter may also carry:
   parameter inherits the field's, and overriding it is how `source` and
   `target` above say different things while projecting one field. Required when
   two parameters on the same action project the same field or share a declared
-  type, because neither can tell an agent which argument is which on its own.
+  type, because neither can tell an agent which argument is which on its own —
+  and the inherited wording does not count, since two parameters carrying one
+  field's description verbatim are as indistinguishable as two carrying none.
 - **`label`** and **`ai_context`** — inherited the same way, overridden the
   same way.
 - **`default`** — a fallback value substituted when the caller omits the
@@ -208,9 +219,24 @@ Each parameter may also carry:
   omitted call binds `NULL` in SQL.
 
 `default` and `required` are always yours to set, projected or not. A field
-says what a value *is*; the parameter says how this one call uses it.
+says what a value *is*; the parameter says how this one call uses it. A
+parameter that states neither is required, so the two keys above are the only
+ways to make one optional.
 
 ### Where the executor comes from
+
+The executor tells a consumer where the operation lives. Pick one of these four
+kinds, and give any one executor a single kind only:
+
+- **`mcp`** — `{server, tool}`. A tool you've already registered in Agent
+  Registry, named by the server's resource name and the tool's name within it.
+- **`rest`** — `{endpoint, method}`. An HTTP endpoint and the verb to call it
+  with.
+- **`grpc`** — `{service, method}`. A service and the method on it.
+- **`sql`** — `{statements}`. The write itself, carried in your model instead
+  of named as a pointer to whoever performs it, and the only kind that needs an
+  operational store to run against.
+  See [carrying the write as DML](#carrying-the-write-as-dml).
 
 Everything else your action declares is logical: what it takes, what gates it,
 what it changes. None of that changes when you deploy the same model somewhere
@@ -249,8 +275,8 @@ write itself opaque to your model: an `mcp` tool name says where the operation
 lives and nothing about what it touches. A `sql` executor carries the write
 instead, so what your action does becomes readable — and checkable — from the
 bound model, and an agent or tool framework can
-[run it directly against your store](#7-hand-it-to-an-agent) rather than
-handing the write to another system to perform.
+[run it directly against your store](#7-hand-it-to-an-agent-kcmd-skills-generate)
+rather than handing the write to another system to perform.
 
 Statements are written in one database's own table and column names, in its own
 dialect, so a `sql` executor goes in that database's [binding
@@ -1083,9 +1109,13 @@ This is a prototype. Four things you might reasonably expect are absent.
   that is likely the action itself; until there is one, keep it in whatever
   dispatches the call, and whoever wrote the statement owns the correctness of
   what it does.
-- **kcmd calls no executor but its own.** A `sql` action runs; an `mcp`, `rest`
-  or `grpc` one is published for whoever dispatches it, which is why those three
-  name coordinates instead of a statement.
-- **The store is Spanner or AlloyDB.** The runtime binds and transacts against
-  the database your profile's deployment target names, which may be either of
-  those. A model bound to BigQuery publishes its actions and runs none of them.
+- **Nothing here performs the write.** An action becomes a tool in a generated
+  skill, and the agent framework holding that skill is what calls it: a `sql`
+  action carries its statements, and an `mcp`, `rest` or `grpc` one carries the
+  coordinates of the service that performs it. No code in this repository
+  dispatches either.
+- **Only a `sql` action needs an operational store.** Its statements are
+  written against the database your profile's deployment target names, and only
+  Spanner and AlloyDB qualify, so a BigQuery profile lists its `sql` actions as
+  not runnable and says why. That profile's `mcp`, `rest` and `grpc` actions are
+  offered as tools like any other.

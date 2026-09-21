@@ -14,6 +14,7 @@ import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {fromDocument, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
+import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -26,6 +27,39 @@ const OPTS = {
 function loadFixtureModel(name: string): SemanticModel {
   const text = fs.readFileSync(path.join(FIXTURES, name), 'utf8');
   return loadModels(text).models[0];
+}
+
+const ACTIONS_DOC =
+    path.join(__dirname, '../../../docs/semantic-model/actions.md');
+
+// The first ```yaml fence under `heading` in the actions guide.
+//
+// The guide's examples are the ones a reader will copy, so the tests below run
+// the guide's own text rather than a copy of it: a copy keeps passing after
+// the doc is edited, which is exactly the drift worth catching. Throwing on a
+// heading or fence that is not there means renaming a section fails the test
+// loudly instead of silently testing nothing.
+function yamlFenceFromActionsDoc(heading: string): string {
+  const doc = fs.readFileSync(ACTIONS_DOC, 'utf8');
+  const at = doc.indexOf(`\n${heading}\n`);
+  if (at < 0) {
+    throw new Error(
+        `docs/semantic-model/actions.md has no heading '${heading}'. If it ` +
+        `was renamed, update this test to the new name.`);
+  }
+  const open = doc.indexOf('\n```yaml\n', at);
+  if (open < 0) {
+    throw new Error(
+        `docs/semantic-model/actions.md has no yaml fence under '${heading}'.`);
+  }
+  const body = open + '\n```yaml\n'.length;
+  const close = doc.indexOf('\n```', body);
+  if (close < 0) {
+    throw new Error(
+        `docs/semantic-model/actions.md has an unterminated yaml fence under ` +
+        `'${heading}'.`);
+  }
+  return doc.slice(body, close + 1);
 }
 
 // A one-entity document with an actions array, for focused loader tests.
@@ -164,14 +198,21 @@ describe('loader parses actions', () => {
         expect(b.aiContext).toEqual({synonyms: ['payee']});
       });
 
-  test('a `type` alongside `concept`/`field` is rejected at parse', () => {
+  test('a `type` or `datatype` alongside `concept`/`field` is rejected at parse', () => {
     expect(
         () => withActions([{
           name: 'A',
           parameters:
               [{name: 'x', type: 'String', concept: 'customer', field: 'id'}],
         }]))
-        .toThrow(/states a 'type'/);
+        .toThrow(/states a 'type' alongside 'concept: customer' and 'field: id'/);
+    expect(
+        () => withActions([{
+          name: 'A',
+          parameters:
+              [{name: 'x', datatype: 'String', field: 'customer.id'}],
+        }]))
+        .toThrow(/states a 'datatype' alongside 'field: customer\.id'/);
   });
 
   test('half a projection is rejected at parse', () => {
@@ -183,6 +224,64 @@ describe('loader parses actions', () => {
         () =>
             withActions([{name: 'A', parameters: [{name: 'x', field: 'id'}]}]))
         .toThrow(/states 'field' without 'concept'/);
+  });
+
+  test('dotted `field: Concept.field` shorthand projects the field and defaults name', () => {
+    const {models, warnings} = withActions([{
+      name: 'A',
+      parameters: [
+        {field: 'customer.id'},
+        {name: 'payee', field: 'customer.id', description: 'Recipient account.'},
+      ],
+    }]);
+    expect(warnings).toEqual([]);
+    expect(models[0].actions![0].parameters).toEqual([
+      {
+        name: 'id',
+        type: 'Integer',
+        concept: 'customer',
+        field: 'id',
+        description: 'The account number.',
+      },
+      {
+        name: 'payee',
+        type: 'Integer',
+        concept: 'customer',
+        field: 'id',
+        description: 'Recipient account.',
+      },
+    ]);
+    expect(
+        () => withActions([{
+          name: 'A',
+          parameters: [{concept: 'customer', field: 'customer.id'}],
+        }]))
+        .toThrow(/already contains a concept prefix/);
+    expect(
+        () => withActions([{
+          name: 'A',
+          parameters: [{name: 'x', field: 'a.b.c'}],
+        }]))
+        .toThrow(/not a valid 'Concept\.field' reference/);
+  });
+
+  test('`datatype` is accepted as an alias for `type` on standalone parameters', () => {
+    const {models, warnings} = withActions([{
+      name: 'A',
+      parameters: [{name: 'amount', datatype: 'Float', description: 'How much.'}],
+    }]);
+    expect(warnings).toEqual([]);
+    expect(models[0].actions![0].parameters[0]).toEqual({
+      name: 'amount',
+      type: 'Float',
+      description: 'How much.',
+    });
+    expect(
+        () => withActions([{
+          name: 'A',
+          parameters: [{name: 'amount', type: 'Float', datatype: 'Float'}],
+        }]))
+        .toThrow(/both 'type' and 'datatype'/);
   });
 
   test('an unknown concept and an unknown field read differently', () => {
@@ -1366,5 +1465,75 @@ describe('a projection the catalog cannot give back', () => {
     };
     const {warnings} = generateCatalogResources(model, OPTS);
     expect(warnings.some(w => w.includes('parameter \'who\''))).toBe(false);
+  });
+
+  test('Section 1 of docs/semantic-model/actions.md loads, validates, and publishes', () => {
+    // Read straight out of the guide rather than copied in here: a duplicate
+    // would keep passing while the doc drifted, which is the one failure this
+    // test exists to catch.
+    const docYaml = yamlFenceFromActionsDoc('## 1. Declare the action');
+    const loaded = loadModels(docYaml);
+    expect(loaded.warnings).toEqual([]);
+    const model = loaded.models[0];
+    // The doc writes `source` in the one-key form and `target` in the two-key
+    // form, and both have to land as the same projected parameter.
+    expect(model.actions![0].parameters).toEqual([
+      {
+        name: 'source',
+        type: 'Integer',
+        concept: 'Account',
+        field: 'accountId',
+        description: 'The account the money leaves.',
+      },
+      {
+        name: 'target',
+        type: 'Integer',
+        concept: 'Account',
+        field: 'accountId',
+        description: 'The account the money goes to.',
+      },
+      {
+        name: 'amount',
+        type: 'Float',
+        description: 'How much money to move.',
+      },
+    ]);
+    expect(validatePushRequirements(
+               [{document: 'payments.yaml', model}], {targetOptional: true}))
+        .toEqual([]);
+    const {warnings: kcWarnings} = generateCatalogResources(model, OPTS);
+    expect(kcWarnings.some(w => w.includes('parameter'))).toBe(false);
+
+    // The `sql` profile the guide shows next, merged onto that same model.
+    const operationalYaml =
+        yamlFenceFromActionsDoc('## Carrying the write as DML');
+    const merged = mergeProfileOntoDoc(docYaml, operationalYaml, 'operational');
+    expect('error' in merged).toBe(false);
+    if ('error' in merged) return;
+    const mergedModel = loadModels(merged.text).models[0];
+    expect(mergedModel.actions![0].executor).toEqual({
+      kind: 'sql',
+      sql: {
+        statements: [
+          'UPDATE account SET balance = balance - @amount WHERE account_id = @source',
+          'UPDATE account SET balance = balance + @amount WHERE account_id = @target',
+          'INSERT INTO transfer (transfer_id, amount, debited_account_id) VALUES (GENERATE_UUID(), @amount, @source)',
+        ],
+      },
+    });
+    expect(validatePushRequirements([
+      {document: 'payments.yaml', model: mergedModel}
+    ])).toEqual([]);
+  });
+
+  test('the guide teaches both spellings of a projection, and they agree', () => {
+    // Pins the claim under `A projected parameter takes its definition from a
+    // field`: the one-key and two-key forms load to the same parameter.
+    const docYaml = yamlFenceFromActionsDoc('## 1. Declare the action');
+    expect(docYaml).toContain('field: Account.accountId');
+    expect(docYaml).toContain('concept: Account');
+    const [source, target] = loadModels(docYaml).models[0].actions![0].parameters;
+    expect([source.concept, source.field, source.type])
+        .toEqual([target.concept, target.field, target.type]);
   });
 });
