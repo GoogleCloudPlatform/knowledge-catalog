@@ -20,11 +20,11 @@ with thirty actions costs the same at startup as a model with one:
    activate the skill when a request asks to change data rather than only read
    it.
 2. **Routing (`SKILL.md` body)**: Loaded when the skill activates. Gives the
-   agent a one-line-per-action router table (`## What you can do here`),
-   model-wide instructions (`## How this model wants to be used`), how to look
-   up record keys and the physical table/column map (`## Finding a record`), the
-   active profile's store and executor coordinates (`## Running an action`), and
-   how pre-commit guard evaluation works (`## What happens when you call one`).
+   agent a one-line-per-action router table (`What you can do here`),
+   model-wide instructions (`How this model wants to be used`), how to look
+   up record keys and the physical table/column map (`Finding a record`), the
+   active profile's store and executor coordinates (`Running an action`), and
+   how pre-commit guard evaluation works (`What happens when you call one`).
 3. **Execution (`references/<action>.md`)**: Read on demand only when the agent
    chooses an action from the router table. Contains that action's arguments,
    caller instructions, gating business rules (`guards`), and blast radius
@@ -98,19 +98,19 @@ Pass one of the following paths to `--out` so Gemini CLI discovers
 SemanticModel + Binding Profile
 │
 ├── SKILL.md
-│   ├── Frontmatter (name, description)     <── model.name, model.description, actions[].name
-│   ├── ## What you can do here             <── actions[].name, actions[].description
-│   ├── ## How this model wants to be used  <── model.ai_context.instructions + tool-contract rules
-│   ├── ## Finding a record                 <── profile store + entities[].fields (table & column map)
-│   ├── ## Running an action                <── active profile, store, actions[].executor
-│   └── ## What happens when you call one   <── pre-commit guard & transaction outcome contract
+│   ├── Frontmatter (name, description)  <── model.name, model.description, actions[].name
+│   ├── What you can do here             <── actions[].name, actions[].description
+│   ├── How this model wants to be used  <── model.ai_context.instructions + tool-contract rules
+│   ├── Finding a record                 <── profile store + entities[].fields (table & column map)
+│   ├── Running an action                <── active profile, store, actions[].executor
+│   └── What happens when you call one   <── pre-commit guard & transaction outcome contract
 │
 └── references/<action>.md (one per action, profile-independent)
-    ├── Heading & tool name                 <── action.name (and snake_case tool name)
-    ├── ## Arguments                        <── action.parameters
-    ├── ## How to call it                   <── action.ai_context.instructions
-    ├── ## Rules that apply to this call    <── action.guards resolved against model.constraints
-    └── ## What it changes                  <── action.affects (concept, operation, fields)
+    ├── Heading & tool name              <── action.name (and snake_case tool name)
+    ├── Arguments                        <── action.parameters
+    ├── How to call it                   <── action.ai_context.instructions
+    ├── Rules that apply to this call    <── action.guards resolved against model.constraints
+    └── What it changes                  <── action.affects (concept, operation, fields)
 ```
 
 ## Inside `SKILL.md`
@@ -139,7 +139,7 @@ description: "Customers, their orders, and the lines that make up an order. Decl
   (`Declares 60 actions: Act1, Act2, and 48 more.`) while keeping the routing
   sentence intact.
 
-### `## What you can do here`
+### `What you can do here`
 
 Lists one row per action and points the agent to its reference page in
 `references/`:
@@ -167,7 +167,7 @@ This is a different warning from the no-runnable-action one above: that one
 fires when actions exist but none can run, this one when the model declares none
 at all.
 
-### `## How this model wants to be used`
+### `How this model wants to be used`
 
 Starts with `ai_context.instructions` from the model (if provided), followed by
 the standard contract for identifiers, guards, and warnings:
@@ -176,7 +176,7 @@ the standard contract for identifiers, guards, and warnings:
 Never invent an identifier. When you are given a name or a description where an action wants a key, ask the caller or read the store directly. Check every rule that gates an action before running it: when a rule says a write must not happen, refuse and explain why; when it says a person has to decide, say so and stop, because you cannot approve it yourself; when an advisory rule goes unmet, report both the change and the warning. Finish by saying what you changed.
 ```
 
-### `## Finding a record`
+### `Finding a record`
 
 Actions take keys (`order_id`, `customer_id`), whereas users typically refer to
 records by name or date. Without a schema map in `SKILL.md`, an agent given a
@@ -185,7 +185,7 @@ map does not explicitly distinguish physical column names from logical model
 names, an agent writes `o.customerId` in SQL, hits a column-not-found error, and
 falls back to `INFORMATION_SCHEMA` anyway.
 
-When the active profile binds a store, `## Finding a record` gives the agent
+When the active profile binds a store, `Finding a record` gives the agent
 both the read entry point and the physical schema map:
 
 1. **Read command / connection guidance**:
@@ -222,7 +222,7 @@ LineItem -> table LineItem
   column memo (String) = LineItem.memo
 ```
 
-### `## Running an action`
+### `Running an action`
 
 This is the only section in the skill package that describes the deployment
 binding rather than the logical model:
@@ -261,7 +261,7 @@ binding rather than the logical model:
   3. It names a non-advisory guard that is not declared in `model.constraints`
      or has no `judgment` text.
 
-### `## What happens when you call one`
+### `What happens when you call one`
 
 States the execution and outcome rules:
 - Every guard is evaluated **before** opening a write transaction, so a refusal
@@ -290,7 +290,7 @@ Action `IssueCredit` of the `commerce` model. As a tool it is named `issue_credi
 When `action.name` differs from its `snake_case` tool name, both are named on
 the first line so the agent can match either spelling.
 
-### `## Arguments`
+### `Arguments`
 
 Built from `action.parameters`. A parameter projected from an entity or
 relationship field (`{concept: Order, field: orderId}`) inherits that field's
@@ -309,13 +309,13 @@ parameter (`{name: memo, type: String}`) uses its own `type`, `required`,
 If any parameter declares a `default`, a `Default` column is included between
 `Required` and `What to pass`.
 
-### `## How to call it`
+### `How to call it`
 
 Emitted when `action.ai_context.instructions` is present on the action, giving
 call-specific instructions (for example, what details must be included in a
 `memo` argument so a judged guard can evaluate it).
 
-### `## Rules that apply to this call`
+### `Rules that apply to this call`
 
 Lists every constraint named in `action.guards`, resolved against
 `model.constraints`. Each constraint prints its `on_violation` policy (`reject`,
@@ -340,7 +340,7 @@ On violation: `warn` -- this one reports and lets the write through.
 If it does not hold: Say in the credit memo what actually went wrong with the order.
 ```
 
-### `## What it changes`
+### `What it changes`
 
 Renders `action.affects` as a table showing which concepts and fields the action
 creates, modifies, or deletes:
@@ -368,7 +368,7 @@ diff /tmp/spanner-skills/commerce/references/issue-credit.md \
 ```
 
 `diff` exits with `0` and no output. Only `SKILL.md` changes, in
-`## Finding a record` and `## Running an action`:
+`Finding a record` and `Running an action`:
 
 ```diff
 --- /tmp/spanner-skills/commerce/SKILL.md
@@ -416,7 +416,7 @@ diff /tmp/spanner-skills/commerce/references/issue-credit.md \
 ## What it doesn't generate yet
 
 - **No metrics or relationships in the skill.** `SKILL.md` emits the entity
-  table and column map for looking up keys (`## Finding a record`) and
+  table and column map for looking up keys (`Finding a record`) and
   `references/<action>.md` emits the write actions. Declared `metrics` and
   `relationships` are not emitted into the skill package.
 - **No plugin manifest or MCP server bundle.** When an action uses an `mcp`,
