@@ -9,7 +9,7 @@ Sales orders with customer attributes
 
 ## What you can do here
 
-Each action below has a reference page with the arguments it takes, the rules that gate it, and what it changes. Read the page for an action before you call it.
+Each action below has a reference page with the arguments it takes, the rules that gate it, and what it changes. Read an action's page before every call to it: the rules that decide whether the call may proceed are on that page and nowhere else, so calling without reading it means writing under rules you have not read.
 
 | Action | What it does | Reference |
 | --- | --- | --- |
@@ -31,14 +31,14 @@ gcloud spanner databases execute-sql d \
   --sql='SELECT ...'
 ```
 
-Those are GoogleSQL statements. These are the whole of what there is to read, and the names to write in a statement are the names below -- not the model's own names, which follow each column for cross-reference:
+Those are GoogleSQL statements. These are the whole of what there is to read. On every line below, the name to write in a statement is to the left of the `=`, and the model's own name for the same thing follows it for cross-reference:
 
 ```
-orders -> orders
+orders = orders
   column o_orderkey (String) = orders.o_orderkey
   column o_custkey (String) = orders.o_custkey
   column o_totalprice (String) = orders.o_totalprice
-customer -> customer
+customer = customer
   column c_custkey (Integer) = customer.c_custkey. The customer's account number.
   column c_name (String) = customer.c_name
 ```
@@ -58,7 +58,7 @@ Settle every rule that gates an action before you perform it, not after. A rule 
 A call ends in one of these. Do not collapse them into worked and did not work:
 
 - **Applied.** The write landed. Say what changed, and say what the system that performed it reported.
-- **Refused.** You did not perform the write, and the reason says why. Repeat the reason plainly. If it says a person has to decide, say so and stop -- you cannot approve it yourself, and rephrasing the request to get past a rule is the one thing you must not do.
+- **Refused.** You did not perform the write, and the reason says why. Repeat the reason plainly. If it says a person has to decide, say so and stop -- you cannot approve it yourself, and rephrasing the request to get past a rule is the one thing you must not do. Needing a decision does not record the request anywhere: nothing is queued, nobody is notified, and no approval is pending. Say that the change did not happen and what the caller must do to have it made, and never report it as submitted or awaiting review.
 - **Applied with warnings.** The change landed and an advisory rule still went unmet. Report both. Reporting only the success tells the caller the write met every rule the model states, which is the one thing it did not.
 
 If you made the call and cannot tell whether it landed, that is a fourth thing and not a failure: say so, and say what to read to find out. Do not try it again. A retry that succeeds where the first attempt may also have succeeded leaves two of whatever the caller asked for one of.

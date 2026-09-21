@@ -233,10 +233,18 @@ function skillDocument(
   out.push('## What you can do here');
   out.push('');
   if (actions.length) {
+    // Worded as an obligation with a consequence rather than as advice. Under
+    // a runtime that loads a reference page on demand -- which is what an
+    // Agent Skills runtime is for -- the model decides whether to open it, and
+    // a polite `read the page first` gets skipped often enough to matter: the
+    // rules that gate an action live on that page and nowhere else, so a
+    // skipped read is a guarded write performed without its guards.
     out.push(
         'Each action below has a reference page with the arguments it takes, ' +
-        'the rules that gate it, and what it changes. Read the page for an ' +
-        'action before you call it.');
+        'the rules that gate it, and what it changes. Read an action\'s page ' +
+        'before every call to it: the rules that decide whether the call may ' +
+        'proceed are on that page and nowhere else, so calling without ' +
+        'reading it means writing under rules you have not read.');
     out.push('');
     out.push('| Action | What it does | Reference |');
     out.push('| --- | --- | --- |');
@@ -499,15 +507,21 @@ function readableSchema(runtime: SemanticRuntime): string[] {
   // an ordinary choice -- a field the model describes as derived is a view
   // column wherever it is honest about it. Calling one a table in the line an
   // agent reads before writing a statement is a small lie for no gain.
+  // One rule for every line, stated once: write what is left of the `=`. The
+  // entity line used to read `Order -> Orders` while the column lines under it
+  // read `column order_id ... = Order.orderId` -- the name to write first on
+  // one line and second on the next, with nothing saying which. An agent
+  // reading the block top-down picked the wrong side of the arrow and sent
+  // `FROM `Order``, which is the model's name and not a table.
   out.push(
       `${lead} These are the whole of ` +
-      'what there is to read, and the names to write in a statement are the ' +
-      'names below -- not the model\'s own names, which ' +
-      'follow each column for cross-reference:');
+      'what there is to read. On every line below, the name to write in a ' +
+      'statement is to the left of the `=`, and the model\'s own name for ' +
+      'the same thing follows it for cross-reference:');
   out.push('');
   out.push('```');
   for (const {entity, table, fields} of readable) {
-    out.push(`${entity.name} -> ${table}`);
+    out.push(`${table} = ${entity.name}`);
     for (const field of fields) {
       const says = field.description?.trim();
       out.push(`  column ${dialect.quote(field.column)} (${field.type}) = ${
@@ -691,10 +705,21 @@ function outcomeSection(
         'not work:',
     '',
     applied,
+    // The escalate sentence says what does *not* happen, because the gap it
+    // closes is one an agent fills in by itself. Told only that a person has
+    // to decide, a model reports the call as submitted for review -- "I have
+    // added the credit and it will be reviewed", with a projected new total,
+    // after issuing no statement at all. Nothing here queues anything: there
+    // is no pending state to be in, and a caller told their request is
+    // awaiting approval waits for an approval nobody will ever be asked for.
     '- **Refused.** You did not perform the write, and the reason says why. ' +
         'Repeat the reason plainly. If it says a person has to decide, say ' +
         'so and stop -- you cannot approve it yourself, and rephrasing the ' +
-        'request to get past a rule is the one thing you must not do.',
+        'request to get past a rule is the one thing you must not do. ' +
+        'Needing a decision does not record the request anywhere: nothing ' +
+        'is queued, nobody is notified, and no approval is pending. Say ' +
+        'that the change did not happen and what the caller must do to ' +
+        'have it made, and never report it as submitted or awaiting review.',
     '- **Applied with warnings.** The change landed and an advisory rule ' +
         'still went unmet. Report both. Reporting only the success tells the ' +
         'caller the write met every rule the model states, which is the one ' +

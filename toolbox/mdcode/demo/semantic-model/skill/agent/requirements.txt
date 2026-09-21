@@ -1,3 +1,9 @@
+# ADK brings the Agent Skills runtime -- `list_skills`, `load_skill` and
+# `load_skill_resource` -- and the loop that calls them. `pip` will report a
+# conflict between ADK's opentelemetry ceiling and the one google-api-core
+# asks for; the two work together at the higher version, and the resolver's
+# complaint is about the pins rather than about anything that breaks.
+google-adk>=2.9.0
 google-genai>=1.0.0
 google-cloud-spanner>=3.47.0
 google-cloud-bigquery>=3.25.0

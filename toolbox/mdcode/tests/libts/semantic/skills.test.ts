@@ -251,6 +251,13 @@ describe('SKILL.md is a router', () => {
         // one, because the first attempt may have landed.
         expect(skill).toContain('cannot tell whether it landed');
         expect(skill).toContain('Do not try it again.');
+        // An escalation is a refusal, not a submission. Told only that a
+        // person has to decide, an agent reports the call as sent for review
+        // -- observed live, announcing a credit it had added and the total it
+        // would leave behind, having issued no statement at all. There is no
+        // queue for it to have joined, so the skill says so outright.
+        expect(skill).toContain('nothing is queued');
+        expect(skill).toContain('never report it as submitted');
       });
 
   test('a model with no actions still yields a skill, and says so', () => {
@@ -662,10 +669,14 @@ describe('the binding is one section', () => {
     // runtime/store.test.ts -- so there is no case where the two differ and
     // no choice to make between them. This fixture builds its runtime by hand
     // and so can spell them apart; a loaded one cannot.
-    expect(bq.files['SKILL.md']).toContain('orders -> `p.sales_ds.orders`');
-    expect(bq.files['SKILL.md'])
-        .toContain('customer -> `p.sales_ds.customer`');
-    expect(bq.files['SKILL.md']).not.toContain('-> table ');
+    //
+    // The writable name comes first, as it does on every column line under
+    // it. An agent reads this block top-down and writes what it reads; when
+    // the entity line put the model's name first and the column lines put the
+    // store's name first, one of the two got copied into a FROM clause.
+    expect(bq.files['SKILL.md']).toContain('`p.sales_ds.orders` = orders');
+    expect(bq.files['SKILL.md']).toContain('`p.sales_ds.customer` = customer');
+    expect(bq.files['SKILL.md']).not.toContain('table `p.sales_ds');
     expect(bq.files['SKILL.md']).toContain('- Store: `bigquery:p/sales_ds`');
     // And the action is offered, not withheld. BigQuery executes DML, so a
     // profile that binds one is a deployment an action can run against; the

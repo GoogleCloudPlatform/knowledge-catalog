@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """An agent that knows nothing except how to load a skill and run SQL.
 
-It reads a generated skill directory into the system prompt, unedited, and
-offers one tool: `execute_sql`. There is no table name, no statement and no
-rule in this file -- everything it appears to know about commerce, it read.
-Point it at a skill generated from a different model and it is a different
-agent, with nothing here changed. Step 6 of the README makes that argument and
-step 10 says what it does not buy; steps 7 and 8 have the invocations, and
-`--help` has the flags.
+It hands a generated skill directory to ADK's skill toolset and adds one tool
+of its own: `execute_sql`. There is no table name, no statement and no rule in
+this file -- everything it appears to know about commerce, it read. Point it at
+a skill generated from a different model and it is a different agent, with
+nothing here changed. Step 6 of the README makes that argument and step 10 says
+what it does not buy; steps 7 and 8 have the invocations, and `--help` has the
+flags.
 """
 
 import argparse
+import asyncio
 import decimal
 import json
 import os
@@ -18,19 +19,23 @@ import pathlib
 import re
 import sys
 
-from google import genai
+from google.adk import skills
+from google.adk.agents import LlmAgent
+from google.adk.runners import InMemoryRunner
+from google.adk.tools import skill_toolset
 from google.genai import types
 
 
-# The only thing this harness tells the model that the skill does not: the name
-# of the tool it has. A skill is portable, so it can name a dialect and a store
-# but not the tooling its holder will have. Nothing about commerce belongs
-# here -- that would move the model's own policy into this file, where the
-# people who own the model cannot see it.
+# The only thing this harness tells the model that neither ADK nor the skill
+# already does: the name of the tool it has. ADK's skill toolset explains how
+# to find a skill and open its reference pages, so none of that is repeated
+# here. Nothing about commerce belongs here either -- that would move the
+# model's own policy into this file, where the people who own the model cannot
+# see it.
 HARNESS_PREAMBLE = """\
-You have one tool, `execute_sql`, which runs a single SQL statement against the
-store the skill below describes and returns the result. Use it wherever the
-skill tells you to read the store or to run a statement; ignore the shell
+You have one tool of your own, `execute_sql`, which runs a single SQL statement
+against the store the skill describes and returns the result. Use it wherever
+the skill tells you to read the store or to run a statement; ignore the shell
 commands the skill shows, which are for a human at a terminal. Bind values with
 named parameters rather than writing them into the statement text.
 
@@ -41,31 +46,7 @@ asking for it. If something is genuinely not in the request and not in the
 store, say what is missing and stop -- that is an answer. Refusing, escalating
 and asking for a fact nobody can supply are three different endings, and only
 the first two are ones the skill provides for.
-
-Everything after this line is the skill. Follow it.
 """
-
-
-def load_skill(root: pathlib.Path) -> str:
-    """SKILL.md and every reference page, as one string.
-
-    A real Agent Skills runtime reads a reference page only when the agent
-    opens it, which is the point of splitting them. This reads everything up
-    front: for a model with one action the whole skill is a couple of pages,
-    and a loader that fetched on demand would be the most interesting code in
-    a file whose job is to be uninteresting.
-    """
-    skill_md = root / 'SKILL.md'
-    if not skill_md.is_file():
-        sys.exit(f'{root} has no SKILL.md -- is that a generated skill '
-                 f'directory? Run `kcmd skills-generate` first.')
-    # Each part is announced by the path the skill refers to it by, so a
-    # cross-reference like `references/issue-credit.md` lands on something the
-    # model can see it has.
-    parts = [f'--- {skill_md.name} ---\n\n{skill_md.read_text()}']
-    for page in sorted((root / 'references').glob('*.md')):
-        parts.append(f'--- {page.relative_to(root)} ---\n\n{page.read_text()}')
-    return '\n\n'.join(parts)
 
 
 # --- The stores. Each runs one statement and says what happened, in words. ---
@@ -181,10 +162,10 @@ def _render_rows(names, rows):
 
 
 def sql_tool(store):
-    """The one tool the agent gets, closed over the store it runs against.
+    """The one tool this file adds, closed over the store it runs against.
 
-    The SDK turns the inner function into the declaration the model sees, so
-    its docstring is prompt text, not commentary.
+    ADK turns the inner function into the declaration the model sees, so its
+    docstring is prompt text, not commentary.
     """
 
     def execute_sql(sql: str, params: str = '{}') -> str:
@@ -226,26 +207,58 @@ def sql_tool(store):
     return execute_sql
 
 
-def print_transcript(history):
-    """The run in order: what the agent said, what it sent, what came back.
+def print_part(part):
+    """One piece of the run: what the agent said, what it sent, what came back.
 
-    Echoed exactly as the model sent it, so a number sent as a string -- which
-    is how an identifier comparison silently matches nothing -- is visible
-    here and not only in the row count.
+    The skill calls are worth showing rather than hiding. They are the agent
+    reaching for SKILL.md and then for one reference page, which is the whole
+    claim of the codelab happening in the open.
     """
-    for content in history[1:]:  # [0] is the request, already printed.
-        for part in content.parts or []:
-            if part.text and part.text.strip():
-                print(f'\n{part.text.strip()}')
-            if part.function_call:
-                args = part.function_call.args or {}
-                print(f'\n  [sql] {args.get("sql", "")}')
-                if args.get('params', '{}') != '{}':
-                    print(f'  [params] {args["params"]}')
-            if part.function_response:
-                out = str((part.function_response.response or {}).get('result'))
-                print('  [result] ' + (out if len(out) <= 400 else
-                                       f'{out.splitlines()[0]} [...]'))
+    if part.text and part.text.strip():
+        print(f'\n{part.text.strip()}')
+    call = part.function_call
+    if call and call.name == 'execute_sql':
+        args = call.args or {}
+        print(f'\n  [sql] {args.get("sql", "")}')
+        if args.get('params', '{}') != '{}':
+            print(f'  [params] {args["params"]}')
+    elif call:
+        args = call.args or {}
+        what = args.get('file_path') or args.get('skill_name') or ''
+        print(f'\n  [skill] {call.name} {what}'.rstrip())
+    # A skill tool's response is the page it just asked for, and the call line
+    # above already names it; echoing the page would bury the run in the skill
+    # the reader generated two steps ago.
+    resp = part.function_response
+    if resp and resp.name == 'execute_sql':
+        out = str((resp.response or {}).get('result'))
+        print('  [result] ' + (out if len(out) <= 400 else
+                               f'{out.splitlines()[0]} [...]'))
+
+
+async def converse(args, store):
+    """One request, one answer, with ADK running the loop in between."""
+    agent = LlmAgent(
+        model=args.model,
+        name='skill_agent',
+        instruction=HARNESS_PREAMBLE,
+        # Two toolsets and nothing else. The first is ADK's, and it is what
+        # makes the skill a skill rather than a wall of text: the model gets
+        # `list_skills`, `load_skill` and `load_skill_resource`, and opens a
+        # reference page when it decides it needs one.
+        tools=[skill_toolset.SkillToolset(
+                   skills=[skills.load_skill_from_dir(str(args.skill))]),
+               sql_tool(store)],
+    )
+    runner = InMemoryRunner(agent=agent, app_name='skill_demo')
+    session = await runner.session_service.create_session(
+        app_name='skill_demo', user_id='demo')
+    async for event in runner.run_async(
+            user_id='demo', session_id=session.id,
+            new_message=types.Content(
+                role='user', parts=[types.Part(text=args.request)])):
+        for part in (event.content.parts if event.content else None) or []:
+            print_part(part)
 
 
 def main():
@@ -274,32 +287,21 @@ def main():
             ap.error('--backend bigquery needs --dataset')
         store = BigQueryStore(args.project, args.dataset)
 
-    skill = load_skill(args.skill)
-    print(f'Skill: {args.skill} ({len(skill)} characters)')
+    if not (args.skill / 'SKILL.md').is_file():
+        sys.exit(f'{args.skill} has no SKILL.md -- is that a generated skill '
+                 f'directory? Run `kcmd skills-generate` first.')
+
+    # ADK reads the model's backend from the environment rather than from an
+    # argument, so the flags are turned into environment variables here.
+    os.environ['GOOGLE_GENAI_USE_VERTEXAI'] = '1'
+    os.environ['GOOGLE_CLOUD_PROJECT'] = args.project
+    os.environ['GOOGLE_CLOUD_LOCATION'] = args.location
+
+    print(f'Skill: {args.skill}')
     print(f'Store: {store.describe}')
     print(f'Model: {args.model} ({args.location})')
     print(f'\n> {args.request}')
-
-    # The SDK runs the tool loop: it sends the request, calls `execute_sql`
-    # when the model asks for it, feeds the result back, and returns when the
-    # model stops calling. That loop is the part of an agent that is the same
-    # everywhere, which is why it is not written out here.
-    chat = genai.Client(vertexai=True, project=args.project,
-                        location=args.location).chats.create(
-        model=args.model,
-        config=types.GenerateContentConfig(
-            system_instruction=HARNESS_PREAMBLE + '\n' + skill,
-            tools=[sql_tool(store)],
-            temperature=0,
-        ))
-    response = chat.send_message(args.request)
-    print_transcript(chat.get_history(curated=False))
-    if not response.candidates:
-        # A prompt the safety filter blocks comes back with no candidate at
-        # all, which is an answer from the service rather than a bug here.
-        print('\nThe model returned nothing, and no candidate to say why. '
-              f'Prompt feedback: {response.prompt_feedback}.')
-        return 1
+    asyncio.run(converse(args, store))
     return 0
 
 
