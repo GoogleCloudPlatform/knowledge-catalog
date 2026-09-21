@@ -20,7 +20,7 @@ import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
 import {AvailabilityReport, DEFAULT_PROFILE, mergeProfileOntoDoc, pruneUnavailable,} from '../libts/semantic/resolve_profiles';
-import {ActionTool, EntityTool, modelTools} from '../libts/semantic/runtime/agent_tools';
+import {ActionTool, modelTools} from '../libts/semantic/runtime/agent_tools';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {dataClientFor, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
@@ -1279,16 +1279,14 @@ export interface AgentOptions {
 //
 //   kcmd agent-tools
 //
-// Two halves and an instruction, all three derived: one lookup per entity, one
-// write per action, and what to tell the agent about using them. Nothing here
-// is written for a particular agent, which is the property worth being able to
+// One write tool per action and an instruction, both derived. Nothing here is
+// written for a particular agent, which is the property worth being able to
 // see -- the listing is the same whether the caller is ADK, LangChain or a
 // person reading it to decide whether the model says enough.
 //
 // A tool the runtime cannot run today is listed and marked rather than
 // dropped. The model declares it; what it is waiting on is the useful thing to
-// print. The read half is a SELECT the tool would issue, and `gcloud spanner
-// databases execute-sql` will run it.
+// print.
 //
 // A guard is not what decides whether a tool is listed. Who settles one
 // belongs to the application that embeds the runtime, and this command cannot
@@ -1335,10 +1333,9 @@ export async function agentTools(options: AgentOptions = {}): Promise<number> {
     console.log(`  store: ${storeLine(store)}`);
     console.log();
 
-    const {lookups, actions, instruction} =
+    const {actions, instruction} =
         modelTools({runtime, skipGuards: true});
     for (const tool of actions) printActionTool(tool);
-    for (const tool of lookups) printLookupTool(tool);
     console.log('  instruction:');
     console.log(indentBlock(instruction));
     console.log();
@@ -1503,37 +1500,6 @@ function printActionTool(tool: ActionTool): void {
         BODY_INDENT, PARAM_CONTINUATION));
   }
   console.log();
-}
-
-
-function printLookupTool(tool: EntityTool): void {
-  console.log(`  lookup  ${tool.name}  (${tool.entityName})${
-      tool.runnable ? '' : '  [NOT READABLE]'}`);
-  console.log(indentBlock(tool.description));
-  // One line per filter, like an action's parameters: the point of this
-  // command is that it shows what the agent gets, and a bare list of names
-  // hides the half of it the model wrote.
-  for (const p of tool.parameters) {
-    const said = describedPart(p.description);
-    console.log(wrapTo(
-        `${p.name}: ${p.type}${said ? `  -- ${said}` : ''}`, BODY_INDENT,
-        PARAM_CONTINUATION));
-  }
-  if (!tool.runnable) {
-    console.log(indentBlock(`NOT READABLE: ${tool.unavailable}`));
-  }
-  console.log();
-}
-
-
-// The model's half of a filter description, without the sentence the
-// derivation appends to every one of them. Printing that sentence once per
-// filter would bury what is actually worth reading.
-function describedPart(description: string): string {
-  // From the end: the derivation appends its sentence last, and a model is
-  // free to use the word in its own.
-  const boilerplate = description.lastIndexOf('Match ');
-  return boilerplate <= 0 ? '' : description.slice(0, boilerplate).trim();
 }
 
 

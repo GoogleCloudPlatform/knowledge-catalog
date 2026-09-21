@@ -284,13 +284,11 @@ when it cannot settle one the model requires.
 
 ## What it doesn't generate yet
 
-* **Reads.** A skill describes the writes. The lookups a model derives are a
-  read path nothing on the command line calls, so rather than pointing an agent
-  at a tool that isn't there, the skill says where the key has to come from and,
-  for a Spanner store, gives the `gcloud` line that reads it and the schema to
-  write against. A model bound to AlloyDB gets neither, so an agent handed a
-  name under that profile has nothing in the skill telling it how to reach a
-  key.
+* **Reads.** A skill describes the writes. Rather than generating read tools,
+  the skill says where a key has to come from and, for a Spanner store, gives
+  the `gcloud` line that reads it and the schema to write against. A model bound
+  to AlloyDB gets neither, so an agent handed a name under that profile has
+  nothing in the skill telling it how to reach a key.
 * **Metrics.** A metric reaches BigQuery as a `MEASURE`; nothing lowers one into
   a skill.
 * **A plugin.** An [Agent Plugin](https://agent-plugins.org/) bundles skills with

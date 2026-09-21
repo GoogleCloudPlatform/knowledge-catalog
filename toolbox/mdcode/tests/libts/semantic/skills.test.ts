@@ -402,9 +402,9 @@ describe('when the runtime would refuse the call', () => {
 describe('what a key matching nothing costs', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
 
-  // The model-level instruction sends an agent to lookup tools, and this skill
-  // has none. Saying where a key comes from instead is the answer to that, and
-  // it does not depend on the model declaring any entities.
+  // The model-level instruction tells an agent never to invent an identifier,
+  // and this skill offers only the write side. Saying where a key comes from
+  // instead does not depend on the model declaring any entities.
   const noEntities: SemanticModel = {
     ...model,
     entities: [],
@@ -413,7 +413,7 @@ describe('what a key matching nothing costs', () => {
 
   test('still says where a key has to come from', () => {
     const out = generate(rt(noEntities)).files['SKILL.md'];
-    expect(out).toContain('lookup tools');
+    expect(out).toContain('Never invent an identifier');
     expect(out).toContain('## Finding a record');
     expect(out).toContain('the key has to come from somewhere else');
   });

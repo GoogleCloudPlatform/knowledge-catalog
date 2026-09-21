@@ -371,11 +371,9 @@ const KEY_MATCHES_NOTHING =
 
 // What this skill does not offer, said once rather than discovered per call.
 //
-// The instruction above tells an agent to look a record up rather than invent
-// an identifier, which is right, and this skill has no way to do it: the
-// derived lookups are a read path nothing on the command line calls. Leaving
-// that out would leave an agent following an instruction to use a tool that is
-// not here, so it is named, along with what does work.
+// The instruction above tells an agent never to invent an identifier, and this
+// skill offers only the write side -- so where a key has to come from is named
+// here, along with how to read the store directly when one is bound.
 function readSideSection(
     runtime: SemanticRuntime, actions: ActionTool[]): string[] {
   // Every sentence below is about supplying a key to an action, so a model
@@ -388,9 +386,9 @@ function readSideSection(
   out.push('');
   // The last sentence is a promise about how a write fails, and only the
   // `sql` kind is executed by this runtime and can be promised. It is dropped
-  // rather than the section with it: the instruction above still sends an
-  // agent to lookup tools this skill does not have, and saying where a key
-  // comes from is the answer to that whichever kind performs the write.
+  // rather than the section with it: the instruction above still tells an
+  // agent never to invent an identifier, and saying where a key comes from is
+  // the answer to that whichever kind performs the write.
   const performedHere =
       distinctKinds(runtime.model.actions ?? []).includes('sql');
   out.push(
@@ -422,8 +420,7 @@ function readSideSection(
 // INFORMATION_SCHEMA -- which it did, twice, before reading a row. The model
 // already holds the answer: the binding profile says which table each entity
 // is and which column each field is, and `readableEntities` derives both from
-// the same place the lookup tools do, so what this page says is readable and
-// what a tool will actually serve cannot drift apart.
+// the profile.
 //
 // Both names appear, and which is which is spelled out rather than implied.
 // The rest of the skill is written in the model's names and a statement has to

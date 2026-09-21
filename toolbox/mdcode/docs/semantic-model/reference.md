@@ -94,11 +94,11 @@ IFS=/ read -r PROJECT INSTANCE DATABASE <<<"$(kcmd profiles --print-store)"
 kcmd agent-tools
 ```
 
-Prints what an agent would be handed for the models in the scope: one lookup
-tool per entity, and one tool per action. Each carries its description, the
-calling guidance the model wrote, and one line per parameter giving that field's
-own description. Reading the model is all this does — it touches no store and
-runs nothing.
+Prints what an agent would be handed for the models in the scope: one write
+tool per action, and the model's instruction. Each tool carries its description,
+the calling guidance the model wrote, and one line per parameter giving that
+parameter's own description. Reading the model is all this does — it touches no
+store and runs nothing.
 
 A tool the runtime cannot call is listed and marked `[NOT RUNNABLE]` rather than
 dropped, with the reason in its description, so a refusal is visible before any

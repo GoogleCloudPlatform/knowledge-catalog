@@ -29,7 +29,7 @@ graph LR
     P["a binding profile<br>tables, columns, executor, target"]
     RT(["one model, bound<br>ready to run"])
     ST["the store<br>where a write lands"]
-    AG["what an agent is handed<br>write tools, lookup tools, instruction"]
+    AG["what an agent is handed<br>write tools, instruction"]
 
     M --> RT
     P --> RT
@@ -955,19 +955,17 @@ model survive that trip and which don't.
 ## 7. Hand it to an agent
 
 You don't write the tools an agent calls. You point an agent at your model, and
-what it can read, what it can change and what gates the change are all derived
-from the model.
+what it can change and what gates the change are derived from the model.
 
 The **derivation** is the step that turns a bound model into the set an agent is
 handed. The library runs it, and `kcmd` calls the library, so a service that
 embeds the library hands its agents the same set. It produces a **write
-tool** for every action, a **lookup tool** for every entity, and one
-**instruction** from your model's `ai_context`.
+tool** for every action and one **instruction** from your model's `ai_context`.
 
 Nothing else in your model becomes a tool of its own. A constraint reaches an
-agent only through an action that guards on it. Relationships and metrics get no
-tool at all, so an agent walks a relationship by looking up each end itself, and
-nothing totals anything on its behalf.
+agent only through an action that guards on it. Entities, relationships and
+metrics get no tool here, so an agent reads or totals through its own read
+surface and calls these tools to change the store.
 
 ### The set an agent is handed
 
@@ -1001,42 +999,17 @@ Model 'payments' (payments_eg), profile 'operational':
       target: integer -- The account the money goes to.
       amount: number -- How much money to move.
 
-  lookup  find_account  (Account)
-      A customer's money at this bank.
-
-      Returns accountId, name, balance, minimumBalance, status. Every argument
-      is an exact match and every one is optional; giving none returns the
-      first rows. This tool cannot join, compare ranges, or total anything.
-      accountId: integer
-      name: string
-      balance: number
-      minimumBalance: number
-      status: string -- open, frozen or closed.
-
-  lookup  find_transfer  (Transfer)
-      One movement of money between two accounts.
-
-      Returns transferId, amount, debitedId. Every argument is an exact match
-      and every one is optional; giving none returns the first rows. This tool
-      cannot join, compare ranges, or total anything.
-      transferId: string
-      amount: number
-      debitedId: integer
-
   instruction:
       Never move money between two accounts held by the same customer without
       saying so in your answer.
 
-      Never invent an identifier. When you are given a name or a description
-      instead of one, find it with the lookup tools rather than asking for it
-      -- that is what they are for, and asking wastes the caller's time. Never
-      compute a total or a balance yourself; the tools do that. When a tool
-      reports that a write did not happen, read the reason it gives and repeat
-      it plainly; if it says a person has to decide, say so and stop, because
-      you cannot approve it yourself. When a write did happen and the tool
-      returns warnings, the change landed and a rule still went unmet or
-      unchecked: report both, because nobody else will. Finish by saying what
-      you changed.
+      Never invent an identifier. Never compute a total or a balance yourself;
+      the tools do that. When a tool reports that a write did not happen, read
+      the reason it gives and repeat it plainly; if it says a person has to
+      decide, say so and stop, because you cannot approve it yourself. When a
+      write did happen and the tool returns warnings, the change landed and a
+      rule still went unmet or unchecked: report both, because nobody else
+      will. Finish by saying what you changed.
 ```
 
 `transfer_funds` is offered, guard and all. The rule it is gated by is in the
@@ -1088,16 +1061,6 @@ line of output per key:
           description: How much                to move.
             money to move.
 
-  entities:
-    - name: Account                ───▶  lookup  find_account
-      description: A customer's…   ───▶      A customer's money at this bank.
-      fields:
-        - name: accountId
-          datatype: Integer        ───▶      accountId: integer
-        - name: status
-          description: open,…      ───▶      status: string -- open, frozen
-                                               or closed.
-
   ai_context:
     instructions: Never move…      ───▶  instruction:
                                              Never move money between two
@@ -1106,8 +1069,6 @@ line of output per key:
   the binding profile                    what the agent is handed
   ─────────────────────────────────      ───────────────────────────────────
   deployment_target                ───▶  store: <project>/<instance>/<db>
-  entities[].source                ───▶  the table a lookup reads
-  fields[].expression              ───▶  the column it filters on
   actions[].executor               ───▶  what the write tool runs
 ```
 
@@ -1129,16 +1090,16 @@ belongs to the model because an agent carrying the same rule in its own source
 is a place someone can change that rule without the people who own the model
 finding out. Agents get replaced when frameworks change; your model doesn't.
 
-The other part is about the tools rather than the business: what a lookup is
-for, and what a refused write means. The derivation owes that part, because it
-describes a contract this module defines and your model never stated. Write it
-into each agent instead and you copy the same paragraph into every adapter,
-where it drifts in each one.
+The other part is about the tools rather than the business: what a refused write
+or a warning means. The derivation owes that part, because it describes a
+contract this module defines and your model never stated. Write it into each
+agent instead and you copy the same paragraph into every adapter, where it
+drifts in each one.
 
 So an agent that appends a persona of its own is saying something your model did
 not. Put it in the model.
 
-### What a write tool and a lookup tool do
+### What a write tool does
 
 A **write tool** runs the action. Calling `transfer_funds` puts every guard the
 action names to whatever judge the runtime behind it holds, binds every argument
@@ -1155,22 +1116,9 @@ timeout or a 5xx where your store may have applied the write and lost the
 response, which is reported as unknown rather than as a rollback so a caller
 does not retry and apply the write twice.
 
-A **lookup tool** reads one entity: exact match on any bound field, combined
-with AND, capped at 50 rows. It can't join, compare ranges, aggregate or order.
-That's enough to turn `"Alice Checking"` into the account id your write tool
-needs, and it keeps the generated SQL checkable by eye. Table and column names
-come from your binding and every filter value is a bound parameter, so no caller
-text reaches the SQL.
-
-A lookup is named for its entity, and an action keeps its own name when the two
-collide. An entity named `Account` and an action named `FindAccount` both derive
-`find_account`. The action takes that name, because you wrote it, and the lookup
-becomes `lookup_account`. Deriving the write tools and the lookups together is
-what makes the collision visible at all.
-
 ### What a withheld tool is waiting on
 
-A **write tool** is withheld for one of three reasons:
+A **write tool** is withheld for one of four reasons:
 
 - This binding supplies no executor, because the model declared none or a
   profile withdrew it with `executor: null`.
@@ -1178,25 +1126,19 @@ A **write tool** is withheld for one of three reasons:
   to perform the write.
 - It names a guard this runtime cannot settle — a judgment with no judge to
   ask, or one with no words in it.
+- The runtime has no store, because a call needs somewhere to land.
 
 How an entity is keyed is not among them. Every parameter is a scalar, so an
 action taking the three key fields of a three-part key is as callable as one
 taking a single id.
 
-A **lookup** is withheld for reasons of its own:
-
-- The entity is abstract, so it groups its subtypes and has no table to read.
-- No field of it is bound to a plain column, so there is nothing to select.
-- Its `source` is empty, or reads as a query rather than a table.
-
-Either kind is withheld when the runtime has no store, because a call needs
-somewhere to land. The derivation asks the runtime for every one of these
-verdicts instead of working them out again, so the two can't drift: a tool
-advertised as runnable that refuses each call spends your agent's turn, and one
-withheld that would have worked is never tried. (`kcmd agent-tools` on the
-command line lists a guarded action as runnable even so, because a command-line
-listing describes the model rather than a particular caller's judge;
-`modelTools({runtime})` in code checks the `judge` on the runtime you hand in.)
+The derivation asks the runtime for every one of these verdicts instead of
+working them out again, so the two can't drift: a tool advertised as runnable
+that refuses each call spends your agent's turn, and one withheld that would
+have worked is never tried. (`kcmd agent-tools` on the command line lists a
+guarded action as runnable even so, because a command-line listing describes
+the model rather than a particular caller's judge; `modelTools({runtime})` in
+code checks the `judge` on the runtime you hand in.)
 
 ### When a rule stops the call
 
@@ -1310,10 +1252,11 @@ means the number 7, bound to `@source` wherever the statement puts it, as the
 type `Account.accountId` declares.
 
 So a caller holding a name rather than an id has to turn one into the other
-first, with a lookup tool (`find_account`) before the call. That's deliberate:
-finding the right row can be a search with several plausible answers, and the
-place to settle which one is in front of whoever is asking — not inside a write
-transaction, which would have to pick one silently and commit to it.
+first, by reading the store or asking for the key before the call. That's
+deliberate: finding the right row can be a search with several plausible
+answers, and the place to settle which one is in front of whoever is asking —
+not inside a write transaction, which would have to pick one silently and commit
+to it.
 
 **Targeting the write.** Your statement's `WHERE` clause decides how many rows
 it lands on, and nothing would stop one that hits every dormant account. That is
@@ -1347,13 +1290,12 @@ if (!runtime.store) throw new Error(runtime.storeError);
 const {callable, withheld, instruction} = callableTools(modelTools({runtime}));
 ```
 
-`modelTools` returns `{lookups, actions, instruction}` — the three things the
-listing printed. `callableTools` then sorts the lookups and the actions into the
-ones this binding can serve and the ones it can't, which is a split every
-adapter has to make and the same split every time. Each tool carries a
-`runnable` flag, and `unavailable` carries the reason. Offer `callable` to your
-agent, and report `withheld` instead of hiding it. `actionTools` and
-`entityTools` are exported for a caller that wants one kind.
+`modelTools` returns `{actions, instruction}` — the two things the listing
+printed. `callableTools` then sorts the actions into the ones this binding can
+serve and the ones it can't, which is a split every adapter has to make and the
+same split every time. Each tool carries a `runnable` flag, and `unavailable`
+carries the reason. Offer `callable` to your agent, and report `withheld`
+instead of hiding it.
 
 Each tool is a name, a description, typed parameters and `invoke(args)`, so
 binding one to ADK, to LangChain or to an MCP server is a short adapter over
@@ -1393,12 +1335,6 @@ statements need an operational database. A model whose profile binds no store at
 all still gets a runtime, with `storeError` saying why. Its tools are still
 derived, each marked unavailable for that reason, so your agent is told what the
 model offers and why it can't reach it.
-
-Go through `createSemanticRuntimes` instead of building a client yourself. It
-also checks that every entity is bound to a table in the store your profile
-targets. Without it, a model could be bound to some other system, and a lookup
-derived from that model would read whatever table of that name your target store
-happens to hold.
 
 ### The commerce demo, worked through
 

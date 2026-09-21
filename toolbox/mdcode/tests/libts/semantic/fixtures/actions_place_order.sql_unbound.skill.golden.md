@@ -17,7 +17,7 @@ Each action below has a reference page with the arguments it takes, the rules th
 
 ## How this model wants to be used
 
-Never invent an identifier. When you are given a name or a description instead of one, find it with the lookup tools rather than asking for it -- that is what they are for, and asking wastes the caller's time. Never compute a total or a balance yourself; the tools do that. When a tool reports that a write did not happen, read the reason it gives and repeat it plainly; if it says a person has to decide, say so and stop, because you cannot approve it yourself. When a write did happen and the tool returns warnings, the change landed and a rule still went unmet or unchecked: report both, because nobody else will. Finish by saying what you changed.
+Never invent an identifier. Never compute a total or a balance yourself; the tools do that. When a tool reports that a write did not happen, read the reason it gives and repeat it plainly; if it says a person has to decide, say so and stop, because you cannot approve it yourself. When a write did happen and the tool returns warnings, the change landed and a rule still went unmet or unchecked: report both, because nobody else will. Finish by saying what you changed.
 
 ## Finding a record
 

@@ -274,7 +274,7 @@ gcloud spanner databases execute-sql "$DATABASE" \
 
 That leaves order 12345 at $165.85 over four line items — including a $30
 shipping fee, which is what the first request below is about — 12346 at $18.00,
-and 12347 at $200.00. The two extra orders give the lookups something to tell
+and 12347 at $200.00. The two extra orders give a query something to tell
 12345 apart from.
 
 Every number quoted in this README came from a run against exactly this seed. To

@@ -16,7 +16,7 @@ import * as path from 'node:path';
 import * as spanner from '../../../../src/libts/gcp/spanner';
 import {Action, Constraint, Entity, SemanticModel} from '../../../../src/libts/semantic/ir';
 import {loadModels} from '../../../../src/libts/semantic/loader';
-import {actionTools, callableTools, describeOutcome, entityTools, modelTools} from '../../../../src/libts/semantic/runtime/agent_tools';
+import {actionTools, boundFields, callableTools, describeOutcome, modelTools} from '../../../../src/libts/semantic/runtime/agent_tools';
 import {Judge} from '../../../../src/libts/semantic/runtime/judge';
 import {SemanticRuntime} from '../../../../src/libts/semantic/runtime/runtime';
 
@@ -517,49 +517,6 @@ describe('what a tool says it is gated by', () => {
 });
 
 
-// The read side owes the same answer the write side owes, for the same reason.
-describe('a lookup that could not return a row says so up front', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
-
-  function lookupFor(entities: Entity[], name: string) {
-    return entityTools({runtime: rt({...model, entities})})
-        .find(t => t.entityName === name)!;
-  }
-
-  test('a bound entity is runnable', () => {
-    const tool = lookupFor(model.entities, 'customer');
-    expect(tool.runnable).toBe(true);
-    expect(tool.unavailable).toBeUndefined();
-  });
-
-  test('an abstract entity has no table to read', () => {
-    const entities = model.entities.map(
-        e => e.name === 'customer' ? {...e, abstract: true} : e);
-    const tool = lookupFor(entities, 'customer');
-    expect(tool.runnable).toBe(false);
-    expect(tool.unavailable).toContain('abstract');
-  });
-
-  test('an entity with no field bound to a column has nothing to read', () => {
-    const entities = model.entities.map(
-        e => e.name === 'customer' ?
-            {...e, fields: e.fields.map(f => ({...f, expression: undefined}))} :
-            e);
-    const tool = lookupFor(entities, 'customer');
-    expect(tool.runnable).toBe(false);
-    expect(tool.unavailable).toContain('binding profile');
-  });
-
-  test(
-      'the reason a call reports is the reason the tool advertised',
-      async () => {
-        const entities = model.entities.map(
-            e => e.name === 'customer' ? {...e, abstract: true} : e);
-        const tool = lookupFor(entities, 'customer');
-        const rows = await tool.invoke({});
-        expect(rows.problem).toBe(tool.unavailable);
-      });
-});
 
 
 // A `sql` executor's claim is that what runs is what the catalog published. A
@@ -630,211 +587,8 @@ describe('a skipped guard reaches the agent, not just the caller', () => {
 });
 
 
-describe('entity tools', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
-  const tools = entityTools({runtime: rt(model)});
-
-  test('one lookup tool per entity', () => {
-    expect(tools.map(t => t.name))
-        .toEqual(model.entities.map(
-            e => `find_${
-                e.name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase()}`));
-  });
-
-  test('the filters are the fields the profile bound to columns', () => {
-    const orders = tools.find(t => t.entityName === 'orders')!;
-    expect(orders.parameters.map(p => p.name))
-        .toEqual(model.entities.find(e => e.name === 'orders')!.fields.map(
-            f => f.name));
-  });
-
-  test('every filter is optional', () => {
-    // Giving none returns the first rows, which is how an agent starts looking.
-    for (const tool of tools) {
-      expect(tool.parameters.every(p => !p.required)).toBe(true);
-    }
-  });
-
-  test('the description states what the tool cannot do', () => {
-    // An agent that knows the limits asks a question the tool can answer.
-    const orders = tools.find(t => t.entityName === 'orders')!;
-    expect(orders.description).toContain('exact match');
-    expect(orders.description).toContain('cannot join');
-  });
-});
-
-
-// A coded field's allowed values are written in exactly one place -- the
-// field's description -- and a caller that does not get them has to guess one.
-// The action side already passes a parameter's description through; this is the
-// read side agreeing.
-describe('what a lookup filter says it matches', () => {
-  const model = loadModels(`version: "0.2.0.dev0/google"
-semantic_model:
-  - name: m
-    entities:
-      - name: LineItem
-        primary_key: [lineItemId]
-        source: //spanner.googleapis.com/projects/p/instances/i/databases/d/tables/LineItem
-        fields:
-          - {name: lineItemId, datatype: String, expression: line_item_id}
-          - name: type
-            datatype: String
-            description: item, tax, fee, or credit.
-            expression: type
-          - {name: amount, datatype: Decimal, expression: amount}
-`).models[0];
-  const [lineItem] = entityTools({runtime: rt(model)});
-
-  test('the field\'s own description leads', () => {
-    const type = lineItem.parameters.find(p => p.name === 'type')!;
-    expect(type.description.startsWith('item, tax, fee, or credit.'))
-        .toBe(true);
-  });
-
-  test('how the filter behaves is still said, after it', () => {
-    // The two halves are owed by different authors: what the field holds is
-    // the model's, that the match is exact is the derivation's.
-    const type = lineItem.parameters.find(p => p.name === 'type')!;
-    expect(type.description).toContain('Match LineItem.type exactly');
-    expect(type.description).toContain('Omit to leave it unfiltered');
-  });
-
-  test('a field the model says nothing about gets only the behavior', () => {
-    const amount = lineItem.parameters.find(p => p.name === 'amount')!;
-    expect(amount.description)
-        .toBe('Match LineItem.amount exactly. Omit to leave it unfiltered.');
-  });
-});
-
-
-// A filter has to be bound as the type its field declares. Casting the column
-// to STRING would let one predicate shape serve every type, and no index can
-// answer it -- a lookup on a primary key would scan the table.
-describe('how a lookup filter reaches the store', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
-
-  // The fixture declares no field types, so every field travels as text. This
-  // one gives `orders` a typed key, which is the case worth checking.
-  function typedOrders(): SemanticModel {
-    const orders = model.entities.find(e => e.name === 'orders')!;
-    const typed: Entity = {
-      ...orders,
-      dataSource:
-          '//spanner.googleapis.com/projects/p/instances/i/databases/d/tables/Orders',
-      fields: orders.fields.map(
-          f => f.name === 'o_orderkey' ? {...f, type: 'Integer'} : f),
-    };
-    return {...model, entities: [typed]};
-  }
-
-  test('the column is compared as itself, not cast to text', async () => {
-    const store = new FakeStore();
-    const [tool] = entityTools({runtime: rt(typedOrders(), store.client)});
-    await tool.invoke({o_orderkey: '12345'});
-
-    const [stmt] = store.statements;
-    expect(stmt.sql).toContain('WHERE o_orderkey = @f_0');
-    expect(stmt.sql).not.toContain('CAST(o_orderkey AS STRING) =');
-    expect(stmt.paramTypes!['f_0']).toEqual({code: 'INT64'});
-  });
-
-  test(
-      'a value the field\'s type has no room for is reported, not matched',
-      async () => {
-        const store = new FakeStore();
-        const [tool] = entityTools({runtime: rt(typedOrders(), store.client)});
-        const rows = await tool.invoke({o_orderkey: 'not-a-number'});
-        expect(rows.problem).toContain('Integer');
-        expect(rows.problem).toContain('No orders has o_orderkey');
-        // Nothing was asked of the store: there is no row it could mean.
-        expect(store.statements).toHaveLength(0);
-      });
-
-  test('an empty string filters on the empty string', async () => {
-    // The dangerous reading is the other one. Dropping '' as though the filter
-    // were absent turns a lookup meant to find one row into an unfiltered read
-    // of the first rows, which comes back to the agent looking like an answer.
-    // `bindScalar` draws the line in the same place for the write path.
-    const store = new FakeStore();
-    const [tool] = entityTools({runtime: rt(model, store.client)});
-    await tool.invoke({o_orderkey: ''});
-
-    const [stmt] = store.statements;
-    expect(stmt.sql).toContain('WHERE o_orderkey = @f_0');
-    expect(stmt.params!['f_0']).toBe('');
-  });
-
-  test('an omitted filter is not a filter', async () => {
-    const store = new FakeStore();
-    const [tool] = entityTools({runtime: rt(model, store.client)});
-    await tool.invoke({o_orderkey: undefined});
-
-    const [stmt] = store.statements;
-    expect(stmt.sql).not.toContain('WHERE');
-  });
-});
-
-
-// Every other failure in a lookup comes back as something the agent can read
-// out. A store that refuses the read is not a different kind of thing, and a
-// thrown error reaches an adapter as a crashed tool call instead.
-describe('a lookup the store will not answer', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
-
-  function bound(): SemanticModel {
-    const orders = model.entities.find(e => e.name === 'orders')!;
-    return {
-      ...model,
-      entities: [{
-        ...orders,
-        dataSource:
-            '//spanner.googleapis.com/projects/p/instances/i/databases/d/tables/Orders',
-      }],
-    };
-  }
-
-  test('a refused read is reported rather than thrown', async () => {
-    const store = new FakeStore();
-    store.queryStatus = 403;
-    store.queryMessage = 'caller lacks spanner.databases.select';
-    const [tool] = entityTools({runtime: rt(bound(), store.client)});
-    const rows = await tool.invoke({});
-    expect(rows.problem).toContain('Could not read orders');
-    expect(rows.problem).toContain('spanner.databases.select');
-    expect(rows.rows).toEqual([]);
-  });
-
-  test('a session that cannot be opened is reported too', async () => {
-    const store = new FakeStore();
-    store.sessionThrows = true;
-    const [tool] = entityTools({runtime: rt(bound(), store.client)});
-    const rows = await tool.invoke({});
-    expect(rows.problem).toContain('Could not read orders');
-    expect(rows.problem).toContain('403');
-  });
-});
-
-
-// Both halves land in one name space at the adapter, and a duplicate name
-// there is the framework's to resolve however it likes. Deriving them together
-// is the only place that can see the collision at all.
 describe('one name space for everything a model offers', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
-
-  test('an action keeps its name and the lookup takes the longer form', () => {
-    // `customer` the entity yields `find_customer`; an action named
-    // `FindCustomer` wants the same tool name, and it is the author's own.
-    const clashing = {
-      ...model,
-      actions: [{...model.actions![0], name: 'FindCustomer'}],
-    };
-    const {lookups, actions} = modelTools({runtime: rt(clashing)});
-    expect(actions.map(t => t.name)).toEqual(['find_customer']);
-    expect(lookups.map(t => t.name)).toEqual([
-      'find_orders', 'lookup_customer'
-    ]);
-  });
 
   test('two actions that snake-case alike are still told apart', () => {
     const twins = {
@@ -851,9 +605,8 @@ describe('one name space for everything a model offers', () => {
   });
 
   test('nothing is renamed when nothing collides', () => {
-    const {lookups, actions} = modelTools({runtime: rt(model)});
+    const {actions} = modelTools({runtime: rt(model)});
     expect(actions.map(t => t.name)).toEqual(['place_order']);
-    expect(lookups.map(t => t.name)).toEqual(['find_orders', 'find_customer']);
   });
 });
 
@@ -862,12 +615,10 @@ describe('sorting the tools an adapter can actually offer', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
   const runnable = withExecutor(model, RUNNABLE);
 
-  test('everything runnable is offered, lookups before actions', () => {
+  test('every runnable action is offered', () => {
     const {callable, withheld} =
         callableTools(modelTools({runtime: rt(runnable)}));
-    expect(callable.map(t => t.name)).toEqual([
-      'find_orders', 'find_customer', 'place_order'
-    ]);
+    expect(callable.map(t => t.name)).toEqual(['place_order']);
     expect(withheld).toEqual([]);
   });
 
@@ -884,7 +635,7 @@ describe('sorting the tools an adapter can actually offer', () => {
     };
     const {callable, withheld} =
         callableTools(modelTools({runtime: rt(guarded)}));
-    expect(callable.map(t => t.name)).toEqual(['find_orders', 'find_customer']);
+    expect(callable).toEqual([]);
     expect(withheld.map(t => t.name)).toEqual(['place_order']);
     expect(withheld[0].unavailable).toContain('UnderReview');
   });
@@ -918,7 +669,6 @@ describe('the instruction an agent is given comes from the model', () => {
         const {instruction} = modelTools({runtime: rt(model)});
         expect(model.aiContext?.instructions).toBeUndefined();
         expect(instruction).toContain('Never invent an identifier');
-        expect(instruction).toContain('lookup tools');
         expect(instruction).toContain('did not happen');
       });
 
@@ -1005,10 +755,7 @@ describe('what a caller is told about an outcome', () => {
 // `fieldBinding` is ir.ts's stated single source of truth for whether a field
 // is bound, and a field awaiting transpilation carries only the vendor
 // expression it was imported with. `createSemanticRuntimes` transpiles nothing,
-// so that is exactly the state a vendor-imported model reaches these tools in.
-// Consulting `expression` alone reported every one of its entities as having
-// no column to read, and told the caller to push the model with a binding
-// profile -- which is not the problem and would not fix it.
+// so that is exactly the state a vendor-imported model reaches `boundFields` in.
 describe('an entity whose fields await transpilation', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
 
@@ -1027,25 +774,11 @@ describe('an entity whose fields await transpilation', () => {
     });
   }
 
-  test(
-      'is readable, because the imported expression names a real column',
-      () => {
-        const tool =
-            entityTools({
-              runtime: rt({...model, entities: untranspiled('customer')})
-            }).find(t => t.entityName === 'customer')!;
-        expect(tool.runnable).toBe(true);
-        expect(tool.unavailable).toBeUndefined();
-      });
-
-  test('offers the same filters it would after transpilation', () => {
-    const before = entityTools({
-                     runtime: rt(model)
-                   }).find(t => t.entityName === 'customer')!;
-    const after = entityTools({
-                    runtime: rt({...model, entities: untranspiled('customer')})
-                  }).find(t => t.entityName === 'customer')!;
-    expect(after.parameters.map(p => p.name))
-        .toEqual(before.parameters.map(p => p.name));
+  test('yields the same bound fields it would after transpilation', () => {
+    const before =
+        boundFields(model.entities.find(e => e.name === 'customer')!);
+    const after = boundFields(
+        untranspiled('customer').find(e => e.name === 'customer')!);
+    expect(after).toEqual(before);
   });
 });
