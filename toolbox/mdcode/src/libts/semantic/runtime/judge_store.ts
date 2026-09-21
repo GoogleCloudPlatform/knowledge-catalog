@@ -201,7 +201,7 @@ interface ReadableEntity {
  * this leaves out is one the judge is never told about, so a rule that turns
  * on it is one the judge reports it cannot settle.
  */
-function readableEntities(
+export function readableEntities(
     runtime: SemanticRuntime, dialect: SqlDialect): ReadableEntity[] {
   const readable: ReadableEntity[] = [];
   for (const entity of runtime.model.entities ?? []) {
