@@ -24,7 +24,7 @@ with thirty actions costs the same at startup as a model with one:
    model-wide instructions (`How this model wants to be used`), how to look
    up record keys and the physical table/column map (`Finding a record`), the
    active profile's store and executor coordinates (`Running an action`), and
-   how pre-commit guard evaluation works (`What happens when you call one`).
+   the ways a call can end (`How a call ends`).
 3. **Execution (`references/<action>.md`)**: Read on demand only when the agent
    chooses an action from the router table. Contains that action's arguments,
    caller instructions, gating business rules (`guards`), and blast radius
@@ -103,7 +103,7 @@ SemanticModel + Binding Profile
 │   ├── How this model wants to be used  <── model.ai_context.instructions + tool-contract rules
 │   ├── Finding a record                 <── profile store + entities[].fields (table & column map)
 │   ├── Running an action                <── active profile, store, actions[].executor
-│   └── What happens when you call one   <── pre-commit guard & transaction outcome contract
+│   └── How a call ends                  <── guards settle first; the endings a call has
 │
 └── references/<action>.md (one per action, profile-independent)
     ├── Heading & tool name              <── action.name (and snake_case tool name)
@@ -147,7 +147,7 @@ Lists one row per action and points the agent to its reference page in
 ```markdown
 | Action | What it does | Reference |
 | --- | --- | --- |
-| `IssueCredit` | Credit a customer against one order -- a late delivery, a coupon, a shipping charge applied in error. The credit is added as a negative line and the order total is recomputed from the lines. | `references/issue-credit.md` |
+| `IssueCredit` | Credit a customer against one order -- a late delivery, a coupon, a shipping charge applied in error. The credit is added as a negative line on the order, and the order's total falls by that much because a total is the sum of its lines. | `references/issue-credit.md` |
 ```
 
 If a model declares no actions, the router table is replaced by:
@@ -188,39 +188,57 @@ falls back to `INFORMATION_SCHEMA` anyway.
 When the active profile binds a store, `Finding a record` gives the agent
 both the read entry point and the physical schema map:
 
-1. **Read command / connection guidance**:
-   - **Spanner (`store.kind === 'spanner'`)**: Emits
+1. **How to read**: Always stated as a `SELECT` against the store first, and a
+   command second — *"To read the store directly, run a `SELECT` against it."*
+   Whatever holds the skill may already have a way to run SQL, and a skill
+   cannot know what that is called, so a lead that went straight to a shell
+   command would tell such a holder to shell out with a better tool in hand.
+   What follows the lead is per store:
+   - **Spanner (`store.kind === 'spanner'`)**: *"If a shell is what you have:"*
+     and then
      `gcloud spanner databases execute-sql <database> --instance=<instance> --project=<project> --sql='SELECT ...'`.
-   - **BigQuery (`store.kind === 'bigquery'`)**: Emits
+   - **BigQuery (`store.kind === 'bigquery'`)**: the same lead, then
      `bq query --use_legacy_sql=false --project_id=<project> --dataset_id=<dataset> 'SELECT ...'`.
-   - **AlloyDB (`store.kind === 'alloydb'`)**: States that the skill supplies no
-     canned CLI command and names
-     `<project>/<location>/<cluster>/<instance>/<database>` for connection via
-     `psql` or the AlloyDB Auth Proxy.
-2. **Physical table and column map**: Lists every bound entity's physical table
-   name and columns in the store's SQL dialect (`GoogleSQL` for Spanner and
-   BigQuery, `PostgreSQL` with quoted identifiers for AlloyDB), labelling each
-   physical column `column` and following it with `= Entity.field` and the
-   field's description:
+   - **AlloyDB (`store.kind === 'alloydb'`)**: no canned command, and the
+     connection named instead — *"This skill supplies no canned CLI command for
+     AlloyDB; if a shell is what you have, connect to
+     `<project>/<location>/<cluster>/<instance>/<database>` via `psql` or the
+     AlloyDB Auth Proxy."*
+2. **Physical table and column map**: Lists every bound entity's table reference
+   and columns in the store's SQL dialect (`GoogleSQL` for Spanner and BigQuery,
+   `PostgreSQL` with quoted identifiers for AlloyDB), labelling each physical
+   column `column` and following it with `= Entity.field` and the field's
+   description:
 
 ```text
-Customer -> table Customer
+Customer -> Customer
   column customer_id (Integer) = Customer.customerId
   column name (String) = Customer.name. The customer's display name, e.g. "Morgan Ellis".
   column email (String) = Customer.email
-Order -> table Orders
+Order -> Orders
   column order_id (Integer) = Order.orderId. The order's number, which is how both the customer and the desk refer to it.
   column customer_id (Integer) = Order.customerId
   column placed_on (Date) = Order.placedOn. The day the order was placed.
   column total (Decimal) = Order.total. What the customer owes on this order, in dollars.
   column status (String) = Order.status. OPEN or CLOSED.
-LineItem -> table LineItem
+LineItem -> LineItem
   column line_item_id (String) = LineItem.lineItemId
   column order_id (Integer) = LineItem.orderId
   column type (String) = LineItem.type. item, tax, fee, or credit.
   column amount (Decimal) = LineItem.amount
   column memo (String) = LineItem.memo
 ```
+
+The table reference is qualified as far as the store requires and no further.
+Spanner and AlloyDB resolve an unqualified name against the database the
+connection is already on, so the name alone is the whole reference. BigQuery
+does not: it resolves an unqualified name against a default dataset, and a
+statement sent as a bare query — which is what a skill's holder sends — has
+none. So a BigQuery map reads
+`` Order -> `my-project.semantic_skill_demo.orders` ``, taking the project and
+dataset from the entity's own `source` and falling back to the deployment
+target's. A skill that named tables no statement could resolve would be worse
+than one that named none, because the reader would believe it.
 
 ### `Running an action`
 
@@ -246,11 +264,17 @@ binding rather than the logical model:
     `https://api.acme.example/v1/orders` ``
   - `grpc`: ``- `PlaceOrder` (`place_order`): gRPC
     `acme.orders.v1.OrderService/PlaceOrder` ``
+- **The statement itself**: Under a `sql` executor each runnable action prints
+  its statements verbatim from the profile, under the instruction *"Run what is
+  written and nothing else: this is what the model says the action is, and a
+  statement composed instead of this one is a write nobody declared and no rule
+  was written against."* They are printed exactly as the profile wrote them,
+  including a BigQuery profile's fully-qualified table names.
 - **Guard evaluation**: Whether an action's guards are settled is a property of
-  the model, not a `--judge` flag on `skills-generate`. An agent framework that
-  exposes these actions as tools puts the action's guards to a judge before
-  opening a transaction, and refuses rather than writing unchecked when it
-  cannot settle one the model requires.
+  the model, not a flag on `skills-generate`. An agent framework that exposes
+  these actions as tools puts the action's guards to a judge before it sends the
+  first statement, and refuses rather than writing unchecked when it cannot
+  settle one the model requires.
 - **Unrunnable actions (`Not runnable under this profile`)**: An action is
   marked not runnable in `SKILL.md` (while keeping its `references/<action>.md`
   page intact) only when:
@@ -260,17 +284,23 @@ binding rather than the logical model:
   3. It names a non-advisory guard that is not declared in `model.constraints`
      or has no `judgment` text.
 
-### `What happens when you call one`
+### `How a call ends`
 
-States the execution and outcome rules:
-- Every guard is evaluated **before** opening a write transaction, so a refusal
-  leaves the store untouched.
-- Every call returns one of three states: **Applied**, **Refused** (repeat the
-  reason plainly; if a supervisor must decide, stop rather than rephrasing the
-  request to get past the rule), or **Unknown** (the commit could not report its
-  outcome; do not blindly retry).
-- If a call comes back **Applied** alongside advisory warnings, the agent must
-  report both the applied change and the warnings.
+States when guards are settled, and the endings a call has:
+- Every guard is settled **before** the action is performed, not after — a rule
+  settled afterwards is not a gate, because the write has landed and there is
+  nothing left for it to prevent.
+- A call ends in one of three ways, and the section says not to collapse them
+  into worked and did not work: **Applied** (say what changed, and how many rows
+  changed), **Refused** (repeat the reason plainly; if a person has to decide,
+  say so and stop rather than rephrasing the request to get past the rule), or
+  **Applied with warnings** (report both — reporting only the success tells the
+  caller the write met every rule the model states, which is the one thing it
+  did not).
+- A fourth outcome is named as not being a failure: a statement was sent and the
+  caller cannot tell whether it landed. Say so, say what to read to find out,
+  and do not send it again, since a retry that succeeds where the first attempt
+  may also have succeeded leaves two of whatever was asked for one of.
 
 ## Inside `references/<action>.md`
 
@@ -298,15 +328,23 @@ parameter (`{name: memo, type: String}`) uses its own `type`, `required`,
 `default`, and `description`:
 
 ```markdown
-| Name | Type | Required | What to pass |
-| --- | --- | --- | --- |
-| `order` | integer | yes | The order's number, which is how both the customer and the desk refer to it. |
-| `amount` | number | yes | The amount, as a decimal number. |
-| `memo` | string | yes | The memo, as text. |
+| Name | Type | Required | Identifies | What to pass |
+| --- | --- | --- | --- | --- |
+| `order` | integer | yes | `Order.orderId` | The order's number, which is how both the customer and the desk refer to it. |
+| `amount` | number | yes |  | The amount, as a decimal number. |
+| `memo` | string | yes |  | The memo, as text. |
 ```
 
+**Identifies** carries the projection through rather than collapsing it into the
+description, and the table is followed by the sentence that makes it actionable:
+*"An argument with something in Identifies is the key of a record that has to
+exist already. Find it; do not invent it. 'Finding a record' in SKILL.md says
+where to look."* "Never invent an identifier" is only something an agent can act
+on against an argument it knows is an identifier, which is what a projection
+says and a bare `type` does not.
+
 If any parameter declares a `default`, a `Default` column is included between
-`Required` and `What to pass`.
+`Required` and `Identifies`.
 
 ### `How to call it`
 
@@ -317,14 +355,24 @@ call-specific instructions (for example, what details must be included in a
 ### `Rules that apply to this call`
 
 Lists every constraint named in `action.guards`, resolved against
-`model.constraints`. Each constraint prints its `on_violation` policy (`reject`,
-`escalate`, or `warn`), its `judgment` text as a blockquote, and its
-`description` under `If it does not hold:`:
+`model.constraints`. Each constraint prints its `on_violation` policy, its
+`judgment` text as a blockquote, and its `description` under
+`If it does not hold:`. The policy is never left as the bare keyword — each of
+the three is followed by what it means for the caller, since `escalate` and
+`reject` both mean "do not write" and differ only in whether there is anybody to
+refer the call to:
+
+- `reject` — *a call that does not satisfy it must not be performed at all.
+  There is nobody to refer it to.*
+- `escalate` — *a call that does not satisfy it is for a person to decide. Stop
+  and say so; do not approve it yourself.*
+- `warn` — *this one reports and lets the write through.* The heading also gains
+  an `(advisory)` suffix.
 
 ```markdown
 ### CreditUnderReviewThreshold
 
-On violation: `escalate`
+On violation: `escalate` -- a call that does not satisfy it is for a person to decide. Stop and say so; do not approve it yourself.
 
 > The credit amount requested must not exceed 25 dollars, which is the self-service ceiling for this desk. Read the amount as dollars.
 
@@ -348,22 +396,26 @@ creates, modifies, or deletes:
 | Concept | Operation | Fields |
 | --- | --- | --- |
 | `LineItem` | `create` | `type`, `amount`, `memo` |
-| `Order` | `modify` | `total` |
 ```
+
+One row, because `IssueCredit` writes one row. The order's total moves when it
+runs and `Order` is still not listed: the total is summed from the lines rather
+than stored, so nothing writes it. `affects` declares what a call **writes**,
+not everything that will look different afterwards.
 
 ## Switching binding profiles (`--profile`)
 
-When a model has multiple binding profiles (such as
-`commerce.profiles/spanner.yaml` and `commerce.profiles/alloydb.yaml` in
-`demo/semantic-model/skill`), running `kcmd skills-generate` under each profile
-leaves every `references/<action>.md` page **byte-identical**:
+When a model has multiple binding profiles — `commerce.profiles/spanner.yaml`,
+`bigquery.yaml` and `alloydb.yaml` in `demo/semantic-model/skill` — running
+`kcmd skills-generate` under each leaves every `references/<action>.md` page
+**byte-identical**:
 
 ```bash
 cd demo/semantic-model/skill
 kcmd skills-generate --profile spanner --out /tmp/spanner-skills --force
 kcmd skills-generate --profile alloydb --out /tmp/alloydb-skills --force
-diff /tmp/spanner-skills/commerce/references/issue-credit.md \
-     /tmp/alloydb-skills/commerce/references/issue-credit.md
+diff -r /tmp/spanner-skills/commerce/references \
+        /tmp/alloydb-skills/commerce/references
 ```
 
 `diff` exits with `0` and no output. Only `SKILL.md` changes, in
@@ -373,32 +425,33 @@ diff /tmp/spanner-skills/commerce/references/issue-credit.md \
 --- /tmp/spanner-skills/commerce/SKILL.md
 +++ /tmp/alloydb-skills/commerce/SKILL.md
 @@ ... @@
--To read the store directly:
+-To read the store directly, run a `SELECT` against it. If a shell is what you have:
 -
 -```bash
 -gcloud spanner databases execute-sql semantic_skill_demo \
 -  --instance=my-instance --project=my-project \
 -  --sql='SELECT ...'
 -```
-+This skill supplies no canned CLI command for AlloyDB; connect to `my-project/us-central1/my-cluster/my-instance/semantic_skill_demo` via `psql` or the AlloyDB Auth Proxy to run `SELECT` queries.
- 
--Those are GoogleSQL statements. These tables are the whole of what there is to read, and the names to write in a statement are the table and column names below -- not the model's own names, which follow each column for cross-reference:
-+Write PostgreSQL statements. These tables are the whole of what there is to read, and the names to write in a statement are the table and column names below -- not the model's own names, which follow each column for cross-reference:
+-
+-Those are GoogleSQL statements. These are the whole of what there is to read, and the names to write in a statement are the names below -- not the model's own names, which follow each column for cross-reference:
++To read the store directly, run a `SELECT` against it. This skill supplies no canned CLI command for AlloyDB; if a shell is what you have, connect to `my-project/us-central1/my-cluster/my-instance/semantic_skill_demo` via `psql` or the AlloyDB Auth Proxy.
++
++Write PostgreSQL statements. These are the whole of what there is to read, and the names to write in a statement are the names below -- not the model's own names, which follow each column for cross-reference:
  
  ```
--Customer -> table Customer
+-Customer -> Customer
 -  column customer_id (Integer) = Customer.customerId
-+Customer -> table "customer"
++Customer -> "customer"
 +  column "customer_id" (Integer) = Customer.customerId
  ...
--Order -> table Orders
-+Order -> table "purchase_order"
+-Order -> Orders
++Order -> "purchase_order"
  ...
 -  column total (Decimal) = Order.total. What the customer owes on this order, in dollars.
 +  column "order_total" (Decimal) = Order.total. What the customer owes on this order, in dollars.
  ...
--LineItem -> table LineItem
-+LineItem -> table "order_line"
+-LineItem -> LineItem
++LineItem -> "order_line"
  ...
  ```
  
@@ -410,7 +463,21 @@ diff /tmp/spanner-skills/commerce/references/issue-credit.md \
 -- Store: `my-project/my-instance/semantic_skill_demo`
 +- Store: `alloydb:my-project/us-central1/my-cluster/my-instance/semantic_skill_demo`
  - Executor: `sql`
+@@ ... @@
+-To perform one of these, run its GoogleSQL below against that store with the call's arguments bound to the named parameters. ...
++To perform one of these, run its PostgreSQL below against that store with the call's arguments bound to the named parameters. ...
+ 
+ ### IssueCredit
+ 
+ ```sql
+-INSERT INTO LineItem (line_item_id, order_id, type, amount, memo) VALUES (GENERATE_UUID(), @order, 'credit', -@amount, @memo)
++INSERT INTO order_line (line_item_id, order_id, type, amount, memo) VALUES (gen_random_uuid()::text, @order, 'credit', -@amount, @memo)
+ ```
 ```
+
+Swap `alloydb` for `bigquery` and the same holds, with one extra difference: the
+BigQuery map and statement carry a `project.dataset.` prefix the other two do
+not, for the reason given under `Finding a record` above.
 
 ## What it doesn't generate yet
 
@@ -425,9 +492,9 @@ diff /tmp/spanner-skills/commerce/references/issue-credit.md \
   `kcmd skills-generate` does not emit a plugin manifest or register MCP servers
   with the harness.
 - **No CLI runner for actions or judged guards.** `kcmd skills-generate`
-  produces the static skill files from the model and profile. Executing actions
-  and settling judged guards before opening a transaction is performed by the
-  agent framework or tool runner that hosts the model's tools.
+  produces the static skill files from the model and profile. `kcmd` performs no
+  action and settles no guard: both are the job of the agent framework or tool
+  runner that hosts the model's tools.
 
 ## See also
 
@@ -438,6 +505,6 @@ diff /tmp/spanner-skills/commerce/references/issue-credit.md \
   `alloydb`, and `bigquery` binding profiles.
 - [`reference.md`](reference.md) — full YAML schema reference for semantic
   models.
-- [`demo/semantic-model/skill/`](../../demo/semantic-model/skill/README.md) —
-  end-to-end walkthrough of `commerce` (`IssueCredit`) under Spanner and AlloyDB
-  profiles.
+- [`demo/semantic-model/skill/`](../../demo/semantic-model/skill/README.md) — a
+  codelab that generates this skill from `commerce` and hands it to a thin
+  Python agent, run live against Spanner and then against BigQuery.

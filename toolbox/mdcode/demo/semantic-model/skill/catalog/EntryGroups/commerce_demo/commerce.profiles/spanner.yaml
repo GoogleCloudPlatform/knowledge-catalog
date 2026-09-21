@@ -5,7 +5,7 @@
 # the loader rejects that -- so reading this file tells you the whole of what is
 # deployment-specific about the demo, and nothing about the business.
 #
-# If you are running against a different project, instance or database, the four
+# If you are running against a different project, instance or database, those
 # names appear in `deployment_target` and in each `source` below, and nowhere
 # else.
 #
@@ -27,6 +27,11 @@ semantic_model:
           - {name: name, expression: name}
           - {name: email, expression: email}
 
+      # Bound to the VIEW Orders, not to the OrderHeader table underneath it.
+      # `total` is summed from the lines there rather than stored, so the
+      # entity's own description -- "its total is the sum of its line items" --
+      # is true by construction instead of by convention. A source is a source;
+      # nothing in the model or in this profile has to say which kind it is.
       - name: Order
         source: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_skill_demo/tables/Orders
         fields:
@@ -49,21 +54,19 @@ semantic_model:
       - name: IssueCredit
         executor:
           sql:
+            # One statement, which is the whole action. `statements` is a list
+            # and the list is ordered, but nothing here promises the backend
+            # commits several of them together -- see actions.md. An action
+            # that has to be all-or-nothing wherever it runs is therefore
+            # written as one statement, and this one can be because the order
+            # total is derived rather than stored: crediting an order is
+            # inserting a line, and there is no second row to keep in step.
+            #
+            # Physical column names, not the model's field names: the statement
+            # is handed to Spanner as written. The new row's key comes from the
+            # statement too -- `GENERATE_UUID()` is Spanner's, and kcmd binds
+            # nothing for it.
             statements:
-              # Physical column names, not the model's field names: these
-              # statements are handed to Spanner as written. The new row's key
-              # comes from the statement -- `GENERATE_UUID()` is Spanner's, and
-              # kcmd binds nothing for it.
               - >-
                 INSERT INTO LineItem (line_item_id, order_id, type, amount, memo)
                 VALUES (GENERATE_UUID(), @order, 'credit', -@amount, @memo)
-              # Recomputed from the lines, not adjusted by the credit amount.
-              # Whatever the lines now say is what the total becomes, so the
-              # order cannot stop adding up however this action is called -- and
-              # there is no arithmetic for the agent to get wrong.
-              - >-
-                UPDATE Orders SET total = (
-                  SELECT COALESCE(SUM(li.amount), 0)
-                  FROM LineItem AS li
-                  WHERE li.order_id = @order
-                ) WHERE order_id = @order

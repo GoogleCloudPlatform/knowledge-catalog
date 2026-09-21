@@ -23,7 +23,7 @@ Never invent an identifier. When you are given a name or a description where an 
 
 This skill offers writes, not reads. When you are given a name or a description where an action wants a key, the key has to come from somewhere else: ask the caller, or read the store directly.
 
-To read the store directly:
+To read the store directly, run a `SELECT` against it. If a shell is what you have:
 
 ```bash
 gcloud spanner databases execute-sql d \
@@ -31,14 +31,14 @@ gcloud spanner databases execute-sql d \
   --sql='SELECT ...'
 ```
 
-Those are GoogleSQL statements. These tables are the whole of what there is to read, and the names to write in a statement are the table and column names below -- not the model's own names, which follow each column for cross-reference:
+Those are GoogleSQL statements. These are the whole of what there is to read, and the names to write in a statement are the names below -- not the model's own names, which follow each column for cross-reference:
 
 ```
-orders -> table orders
+orders -> orders
   column o_orderkey (String) = orders.o_orderkey
   column o_custkey (String) = orders.o_custkey
   column o_totalprice (String) = orders.o_totalprice
-customer -> table customer
+customer -> customer
   column c_custkey (Integer) = customer.c_custkey. The customer's account number.
   column c_name (String) = customer.c_name
 ```
@@ -51,16 +51,14 @@ Everything above is true of this model wherever it is deployed. This section is 
 - Executor: `mcp`
 - `PlaceOrder` (`place_order`): MCP tool `place_order` on `//agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/commerce`
 
-An agent that runs continuously should be handed these actions as tools by its own framework, which puts the action's guards to a judge before opening a transaction, and refuses rather than writing unchecked when it cannot settle one the model requires.
+## How a call ends
 
-## What happens when you call one
+Settle every rule that gates an action before you perform it, not after. A rule settled afterwards is not a gate: the write has landed and there is nothing left for the rule to prevent. Refusing first is what makes a refusal cost nothing.
 
-Every rule is settled before the write opens a transaction. So a refusal leaves the store exactly as it was, and no rule ever sees the write it gates. There is nothing to undo after a refusal.
+A call ends in one of these. Do not collapse them into worked and did not work:
 
-A call comes back in one of three states, and they are not two:
+- **Applied.** The write landed. Say what changed, and say how many rows changed.
+- **Refused.** You did not perform the write, and the reason says why. Repeat the reason plainly. If it says a person has to decide, say so and stop -- you cannot approve it yourself, and rephrasing the request to get past a rule is the one thing you must not do.
+- **Applied with warnings.** The change landed and an advisory rule still went unmet. Report both. Reporting only the success tells the caller the write met every rule the model states, which is the one thing it did not.
 
-- **Applied.** The write landed. Say what changed.
-- **Refused.** The write did not happen, and the reason says why. Repeat the reason plainly. If it says a person has to decide, say so and stop -- you cannot approve it yourself, and rephrasing the request to get past a rule is the one thing you must not do.
-- **Unknown.** The statements ran and the commit could not report its outcome. The write may or may not have landed. Do not retry: say that the outcome is unknown and what to check.
-
-A call can also come back applied **and** carry warnings. That means the change landed and a rule still went unmet, or went unchecked. Report both. Reporting only the success tells the caller the write met every rule the model states, which is the one thing it did not.
+If you sent a statement and cannot tell whether it landed, that is a fourth thing and not a failure: say so, and say what to read to find out. Do not send it again. A retry that succeeds where the first attempt may also have succeeded leaves two of whatever the caller asked for one of.

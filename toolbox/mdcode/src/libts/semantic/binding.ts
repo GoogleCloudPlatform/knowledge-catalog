@@ -113,3 +113,26 @@ function splitDotted(source: string): string[] {
 function unquote(part: string): string {
   return part.replace(/^[`"]/, '').replace(/[`"]$/, '');
 }
+
+
+/**
+ * The `[project, dataset]` a BigQuery source names, or null if it names none.
+ *
+ * `boundTable` reduces a source to its table name alone, which is what graph
+ * DDL wants: the DDL is submitted against a dataset and resolves the bare name
+ * there. A statement sent as a bare query has no dataset to resolve against,
+ * so a caller that emits one for somebody else to run needs the prefix back.
+ * This is where it comes from.
+ *
+ * Both spellings a source arrives in are accepted: the resource URI a profile
+ * writes, and the `project.dataset.table` the loader normalizes it to.
+ */
+export function sourceDataset(dataSource: string): [string, string]|null {
+  const trimmed = (dataSource ?? '').trim();
+  if (!trimmed || /\s/.test(trimmed)) return null;
+  const uri = trimmed.match(/\/projects\/([^/]+)\/datasets\/([^/]+)\//);
+  if (uri) return [uri[1], uri[2]];
+  const parts = splitDotted(trimmed).map(unquote);
+  if (parts.length < 3) return null;
+  return [parts[parts.length - 3], parts[parts.length - 2]];
+}

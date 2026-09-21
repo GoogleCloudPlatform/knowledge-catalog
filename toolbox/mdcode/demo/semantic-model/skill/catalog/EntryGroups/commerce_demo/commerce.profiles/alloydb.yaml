@@ -1,10 +1,8 @@
 # The same commerce model, in AlloyDB.
 #
-# This is the whole of what it takes to move the demo to a different database.
-# There is no second model, no second agent and no second set of tools: read
-# this file beside commerce.profiles/spanner.yaml and the differences are a
+# Read this file beside commerce.profiles/spanner.yaml and the differences are a
 # deployment target, three table names, one column name, and PostgreSQL in place
-# of GoogleSQL in the two statements. Everything the business means is in
+# of GoogleSQL in the statement. Everything the business means is in
 # commerce.yaml and is untouched.
 #
 # What each difference is:
@@ -17,17 +15,23 @@
 #
 #   * The tables are `customer`, `purchase_order` and `order_line`, because that
 #     is what somebody who only ever used PostgreSQL would have called them. The
-#     model calls the entities Customer, Order and LineItem in both deployments.
+#     model calls the entities Customer, Order and LineItem in all three
+#     deployments.
 #
-#   * `Order.total` is bound to `order_total` here and to `total` on Spanner. One
-#     renamed column is enough to show that a field is a logical name rather than
-#     a column with a nicer spelling.
+#   * `Order.total` is bound to `order_total` here and to `total` on the other
+#     two. One renamed column is enough to show that a field is a logical name
+#     rather than a column with a nicer spelling.
 #
-#   * The statements are PostgreSQL. The runtime never rewrites SQL a profile
-#     author wrote -- it is handed to the database as typed -- so a profile is
-#     where dialect belongs. The parameters are still `@name`, because that is
-#     one syntax across every backend; the AlloyDB client rewrites them to `$1`,
-#     `$2` on the way out.
+#   * The statement is PostgreSQL. Nothing rewrites SQL a profile author wrote
+#     -- it is handed to the database as typed -- so a profile is where dialect
+#     belongs. The parameters are still `@name`, because that is one syntax
+#     across every backend; a PostgreSQL client rewrites them to `$1`, `$2` on
+#     the way out.
+#
+# This is the profile the demo does NOT run. `kcmd push` has no AlloyDB client,
+# so the pre-flight that checks the statement against the store on the other two
+# profiles has nothing to check it with here -- which makes this file the honest
+# third case rather than a second copy of the same evidence.
 #
 # If you are running against a different project, region, cluster, instance or
 # database, those names appear in `deployment_target` and in each `source` below,
@@ -71,19 +75,9 @@ semantic_model:
           sql:
             statements:
               # Physical column names, not the model's field names, exactly as
-              # on the Spanner side. The new row's key comes from the statement
-              # here too, in this dialect's spelling: `gen_random_uuid()` cast
-              # to the text the column holds.
+              # on the other two profiles. The new row's key comes from the
+              # statement here too, in this dialect's spelling:
+              # `gen_random_uuid()` cast to the text the column holds.
               - >-
                 INSERT INTO order_line (line_item_id, order_id, type, amount, memo)
                 VALUES (gen_random_uuid()::text, @order, 'credit', -@amount, @memo)
-              # Recomputed from the lines, not adjusted by the credit amount --
-              # the same reasoning as on Spanner, and the same shape of
-              # statement. What differs is the table and column names and the
-              # dialect they are written in.
-              - >-
-                UPDATE purchase_order SET order_total = (
-                  SELECT COALESCE(SUM(li.amount), 0)
-                  FROM order_line AS li
-                  WHERE li.order_id = @order
-                ) WHERE order_id = @order

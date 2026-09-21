@@ -238,13 +238,19 @@ describe('SKILL.md is a router', () => {
   });
 
   test(
-      'how a refusal, a warning and an unknown outcome differ is stated',
+      'how a refusal, a warning and an unreported write differ is stated',
       () => {
         // An agent that reads a refusal as a retry, or a warning as nothing, is
         // wrong in the same way against every model, so every skill says it.
         expect(skill).toContain('Refused.');
-        expect(skill).toContain('Unknown.');
-        expect(skill).toContain('warnings');
+        expect(skill).toContain('Applied with warnings.');
+        // Nothing in this toolchain performs the write, so the skill cannot
+        // promise an outcome is reported back; what it can say is what to do
+        // when the agent itself cannot tell. Saying "do not send it again" is
+        // the load-bearing half: a retry is the intuitive move and the wrong
+        // one, because the first attempt may have landed.
+        expect(skill).toContain('cannot tell whether it landed');
+        expect(skill).toContain('Do not send it again.');
       });
 
   test('a model with no actions still yields a skill, and says so', () => {
@@ -272,15 +278,33 @@ describe('an action reference', () => {
       'a projected argument reads as the field, a declared one as itself',
       () => {
         // `customer` projects from `customer.c_custkey` and `quantity` states
-        // its own type, and the table does not say which is which -- by the
-        // time an agent reads this, both are one scalar to pass. What the
-        // projection buys is the wording: the field's datatype and the
-        // field's description, rather than an author restating them here and
-        // drifting from the column.
+        // its own type. Both are one scalar to pass by the time an agent
+        // reads this, and the projection buys two things. The wording: the
+        // field's datatype and description, rather than an author restating
+        // them here and drifting from the column. And the origin, in its own
+        // column -- which is what makes "never invent an identifier"
+        // actionable, since an agent cannot obey it without being told which
+        // argument IS one.
         expect(reference).toContain(
-            '| `customer` | integer | yes | The customer\'s account number. |');
-        expect(reference).toContain('| `quantity` | integer | yes |');
+            '| `customer` | integer | yes | `customer.c_custkey` | ' +
+            'The customer\'s account number. |');
+        expect(reference).toContain('| `quantity` | integer | yes |  |');
+        expect(reference).toContain(
+            'An argument with something in **Identifies** is the key of a ' +
+            'record that has to exist already.');
       });
+
+  test('the origin column is absent when no argument has one', () => {
+    // A column empty on every row costs width on a page read under a budget
+    // and says nothing.
+    const plain = generate(rt(withAction(model, {
+      ...RUNNABLE,
+      parameters: [{name: 'quantity', type: 'Integer'}],
+    })));
+    const page = plain.files['references/place-order.md'];
+    expect(page).toContain('| Name | Type | Required | What to pass |');
+    expect(page).not.toContain('Identifies');
+  });
 
   test('carries the action\'s own guidance for a caller', () => {
     expect(reference).toContain(
@@ -347,52 +371,66 @@ describe('the rules on a reference page', () => {
 describe('when the runtime would refuse the call', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
 
-  test('a guarded action is runnable, because the runtime settles it', () => {
-    // The guard is settled in words, which is the runtime's job and not the
-    // reading agent's: an agent that judged its own call would be the
-    // constrained thing certifying itself. So the skill is written for a
-    // runtime that has a judge, and carries no flag about one.
-    const out = generate(rt(withAction(model, {executor: RUNNABLE.executor})));
-    expect(out.files['SKILL.md']).not.toContain('--judge');
-    expect(out.files['SKILL.md'])
-        .toContain('puts the action\'s guards to a judge');
-    expect(out.warnings.join(' ')).not.toContain('runnable');
-  });
+  test(
+      'a guarded action is runnable, and the skill says to settle it first',
+      () => {
+        // A guard states its rule in words and the skill hands those words to
+        // whoever is holding it. Nothing in this toolchain settles one, and no
+        // flag offers to, so the skill does not name a settler -- it says when
+        // the settling has to happen, which is the part that is true wherever
+        // this runs.
+        const out =
+            generate(rt(withAction(model, {executor: RUNNABLE.executor})));
+        expect(out.files['SKILL.md']).not.toContain('--judge');
+        expect(out.files['SKILL.md'])
+            .toContain(
+                'Settle every rule that gates an action before you ' +
+                'perform it, not after.');
+        expect(out.warnings.join(' ')).not.toContain('runnable');
+      });
 
-  test('an MCP executor is runnable and emits its server and tool in SKILL.md', () => {
-    const out = generate(rt(model));
-    expect(out.files['SKILL.md'])
-        .toContain(
-            '`PlaceOrder` (`place_order`): MCP tool `place_order` on ' +
-            '`//agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/commerce`');
-    expect(out.files['references/place-order.md'])
-        .not.toContain('Not runnable');
-    expect(out.warnings.join(' ')).not.toContain('runnable');
-  });
+  test(
+      'an MCP executor is runnable and emits its server and tool in SKILL.md',
+      () => {
+        const out = generate(rt(model));
+        expect(out.files['SKILL.md'])
+            .toContain(
+                '`PlaceOrder` (`place_order`): MCP tool `place_order` on ' +
+                '`//agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/commerce`');
+        expect(out.files['references/place-order.md'])
+            .not.toContain('Not runnable');
+        expect(out.warnings.join(' ')).not.toContain('runnable');
+      });
 
-  test('REST and gRPC executors are runnable and emit their coordinates in SKILL.md', () => {
-    const restOut = generate(rt(withAction(model, {
-      executor: {
-        kind: 'rest',
-        rest: {method: 'POST', endpoint: 'https://api.acme.example/v1/orders'},
-      },
-    })));
-    expect(restOut.files['SKILL.md'])
-        .toContain(
-            '`PlaceOrder` (`place_order`): HTTP `POST` `https://api.acme.example/v1/orders`');
-    expect(restOut.warnings.join(' ')).not.toContain('runnable');
+  test(
+      'REST and gRPC executors are runnable and emit their coordinates in SKILL.md',
+      () => {
+        const restOut = generate(rt(withAction(model, {
+          executor: {
+            kind: 'rest',
+            rest: {
+              method: 'POST',
+              endpoint: 'https://api.acme.example/v1/orders'
+            },
+          },
+        })));
+        expect(restOut.files['SKILL.md'])
+            .toContain(
+                '`PlaceOrder` (`place_order`): HTTP `POST` `https://api.acme.example/v1/orders`');
+        expect(restOut.warnings.join(' ')).not.toContain('runnable');
 
-    const grpcOut = generate(rt(withAction(model, {
-      executor: {
-        kind: 'grpc',
-        grpc: {service: 'acme.orders.v1.OrderService', method: 'PlaceOrder'},
-      },
-    })));
-    expect(grpcOut.files['SKILL.md'])
-        .toContain(
-            '`PlaceOrder` (`place_order`): gRPC `acme.orders.v1.OrderService/PlaceOrder`');
-    expect(grpcOut.warnings.join(' ')).not.toContain('runnable');
-  });
+        const grpcOut = generate(rt(withAction(model, {
+          executor: {
+            kind: 'grpc',
+            grpc:
+                {service: 'acme.orders.v1.OrderService', method: 'PlaceOrder'},
+          },
+        })));
+        expect(grpcOut.files['SKILL.md'])
+            .toContain(
+                '`PlaceOrder` (`place_order`): gRPC `acme.orders.v1.OrderService/PlaceOrder`');
+        expect(grpcOut.warnings.join(' ')).not.toContain('runnable');
+      });
 
   test(
       'a skill that can run nothing warns rather than passing silently', () => {
@@ -442,23 +480,25 @@ describe('what a key matching nothing costs', () => {
     expect(out).toContain('the key has to come from somewhere else');
   });
 
-  test('a sql executor promises the refusal it performs', () => {
+  test('a sql executor warns that a wrong key is silent', () => {
     // Every argument is a scalar, so a wrong key reaches the statement rather
-    // than failing a resolve ahead of it. This runtime runs the statement, so
-    // it can say what happens next: no rows written, action failed, rolled
-    // back. An agent that does not know this hedges on a call that is safe to
-    // get wrong.
-    expect(generate(rt(noEntities)).files['SKILL.md'])
-        .toContain('costs you the call rather than the data');
+    // than failing a resolve ahead of it -- and nothing here performs the
+    // write, so nothing checks the row count and refuses on the agent's
+    // behalf. The statement succeeds having changed nothing, which is the one
+    // failure in this design that does not announce itself.
+    const out = generate(rt(noEntities)).files['SKILL.md'];
+    expect(out).toContain(
+        'A key that matches no record does not announce itself');
+    expect(out).toContain('reporting zero rows rather than an error');
   });
 
-  test('another kind does not promise what it does not perform', () => {
+  test('another kind does not claim what it cannot see', () => {
     // The fixture's own executor is MCP. Another system does the write, and
-    // nothing here knows whether that system refuses a statement matching no
-    // row -- so the section is still emitted, without the promise.
+    // nothing here knows what that system reports for a statement matching no
+    // row -- so the section is still emitted, without the claim.
     const out = generate(rt(model)).files['SKILL.md'];
     expect(out).toContain('## Finding a record');
-    expect(out).not.toContain('costs you the call rather than the data');
+    expect(out).not.toContain('does not announce itself');
   });
 });
 
@@ -481,7 +521,8 @@ describe('the binding is one section', () => {
     profile: 'alloydb',
     store: {
       kind: 'alloydb',
-      name: 'projects/q/locations/us-central1/clusters/j/instances/inst/databases/e',
+      name:
+          'projects/q/locations/us-central1/clusters/j/instances/inst/databases/e',
       project: 'q',
       location: 'us-central1',
       cluster: 'j',
@@ -515,26 +556,81 @@ describe('the binding is one section', () => {
     expect(storeless.files['SKILL.md']).toContain('Store: none.');
   });
 
-  test('no physical name from action SQL reaches the skill', () => {
-    // The statements name tables and columns the model does not. A skill that
-    // leaked them would describe one deployment while claiming to describe
-    // the model.
-    for (const text of Object.values(second.files)) {
+  test('no physical name from action SQL reaches a reference page', () => {
+    // The statements name tables and columns the model does not. A reference
+    // page that leaked one would describe a deployment while claiming to
+    // describe the model, and the pages would stop being the same bytes under
+    // two profiles.
+    for (const [path, text] of Object.entries(second.files)) {
+      if (path === 'SKILL.md') continue;
       expect(text).not.toContain('sales_order');
     }
+  });
+
+  test('the statements themselves are emitted, in the binding section', () => {
+    // The other half of the same split, and the reason the skill is worth
+    // generating at all: an agent holding it has to be able to perform the
+    // action, and nothing in this toolchain will perform it for one. Withhold
+    // the SQL and the agent composes its own -- a write nobody declared,
+    // against rules nobody checked.
+    expect(second.files['SKILL.md'])
+        .toContain('UPDATE sales_order SET amount = 0 WHERE 1 = 0');
+    expect(second.files['SKILL.md'])
+        .toContain('Run what is written and nothing else');
+    // Under the other profile it is the other profile's statement, and that
+    // is the whole of what moved.
+    expect(first.files['SKILL.md']).not.toContain('sales_order');
+  });
+
+  test('several statements are ordered, and not called one commit', () => {
+    // `statements` is a list and a list is ordered. Whether a backend commits
+    // several of them together is the backend's business, and a skill that
+    // promised a transaction would be promising something nothing here
+    // arranges -- so it says what to do when a later one fails instead.
+    const many = generate(
+        rt(withAction(model, {
+             executor: {
+               kind: 'sql',
+               sql: {statements: ['INSERT INTO a VALUES (1)', 'DELETE FROM b']},
+             },
+             guards: [],
+           }),
+           {profile: 'spanner'}));
+    const skill = many.files['SKILL.md'];
+    expect(skill).toContain('run them in the order given');
+    expect(skill).toContain('Nothing here makes them one commit');
+    expect(skill).toContain('INSERT INTO a VALUES (1)\n\nDELETE FROM b');
+    // And the sentence is not spent on an action that cannot hit the case.
+    expect(first.files['SKILL.md'])
+        .not.toContain('Nothing here makes them one commit');
   });
 
   test('what does change is named as the deployment-specific part', () => {
     expect(first.files['SKILL.md']).toContain('profile `spanner`');
     expect(second.files['SKILL.md']).toContain('profile `alloydb`');
     expect(first.files['SKILL.md']).toContain('`p/i/d`');
-    expect(second.files['SKILL.md']).toContain('`alloydb:q/us-central1/j/inst/e`');
-    expect(first.files['SKILL.md']).toContain('Those are GoogleSQL statements.');
+    expect(second.files['SKILL.md'])
+        .toContain('`alloydb:q/us-central1/j/inst/e`');
+    expect(first.files['SKILL.md'])
+        .toContain('Those are GoogleSQL statements.');
     expect(second.files['SKILL.md'])
         .toContain(
-            'This skill supplies no canned CLI command for AlloyDB; connect to ' +
-            '`q/us-central1/j/inst/e` via `psql` or the AlloyDB Auth Proxy');
+            'This skill supplies no canned CLI command for AlloyDB; if a ' +
+            'shell is what you have, connect to `q/us-central1/j/inst/e` ' +
+            'via `psql` or the AlloyDB Auth Proxy');
     expect(second.files['SKILL.md']).toContain('Write PostgreSQL statements.');
+  });
+
+  // A skill is read by whatever holds it, and a holder with its own way to
+  // run SQL -- an agent with a query tool, say -- should use that rather than
+  // shell out. The CLI is shown as one way and has to be introduced as one.
+  test('reading is asked for as a SELECT before any CLI is offered', () => {
+    const body = first.files['SKILL.md'];
+    expect(body).toContain(
+        'To read the store directly, run a `SELECT` against it. If a shell ' +
+        'is what you have:');
+    expect(body.indexOf('run a `SELECT` against it'))
+        .toBeLessThan(body.indexOf('gcloud spanner'));
   });
 
   test('a BigQuery store emits its bq read snippet and GoogleSQL schema map', () => {
@@ -551,7 +647,24 @@ describe('the binding is one section', () => {
         .toContain(
             'bq query --use_legacy_sql=false --project_id=p --dataset_id=sales_ds');
     expect(bq.files['SKILL.md']).toContain('Those are GoogleSQL statements.');
-    expect(bq.files['SKILL.md']).toContain('orders -> table orders');
+    // No "table": a profile binds an entity to whatever answers a SELECT, and
+    // a view is an ordinary choice -- calling one a table on the line an agent
+    // reads before writing a statement is a small lie for no gain.
+    // Qualified, because BigQuery resolves a bare name against a default
+    // dataset and a statement sent as a bare query has none. A skill that
+    // lists a name no statement can resolve is worse than one that lists
+    // nothing: the reader believes it and the query comes back "must be
+    // qualified with a dataset".
+    //
+    // And qualified from the entity's own source (`samples.tpch`) rather than
+    // from the store the graph deploys to (`p/sales_ds`), which this fixture
+    // deliberately spells differently. A profile may bind an entity to a
+    // table in another dataset, and the name that reaches the reader has to
+    // say where the table is rather than where the deployment points.
+    expect(bq.files['SKILL.md']).toContain('orders -> `samples.tpch.orders`');
+    expect(bq.files['SKILL.md'])
+        .toContain('customer -> `samples.tpch.customer`');
+    expect(bq.files['SKILL.md']).not.toContain('-> table ');
     expect(bq.files['SKILL.md']).toContain('- Store: `bigquery:p/sales_ds`');
     // And the action is offered, not withheld. BigQuery executes DML, so a
     // profile that binds one is a deployment an action can run against; the
