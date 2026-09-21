@@ -234,8 +234,8 @@ kinds, and give any one executor a single kind only:
   with.
 - **`grpc`** — `{service, method}`. A service and the method on it.
 - **`sql`** — `{statements}`. The write itself, carried in your model instead
-  of named as a pointer to whoever performs it, and the only kind that needs an
-  operational store to run against.
+  of named as a pointer to whoever performs it, and the only kind that needs a
+  store to run against at all.
   See [carrying the write as DML](#carrying-the-write-as-dml).
 
 Everything else your action declares is logical: what it takes, what gates it,
@@ -1123,8 +1123,7 @@ Two sections in `SKILL.md` come from the generator itself:
   generated in full, and `SKILL.md` lists the action with the reason why:
   1. The profile supplies no executor (none declared, or withdrawn with
      `executor: null`).
-  2. The executor is `sql` and the profile binds no operational store (`spanner`
-     or `alloydb`).
+  2. The executor is `sql` and the profile binds no store at all.
   3. The action names a non-advisory guard that is undeclared in `constraints`
      or has an empty `judgment`.
 
@@ -1160,8 +1159,9 @@ This is a prototype. Four things you might reasonably expect are absent.
   action carries its statements, and an `mcp`, `rest` or `grpc` one carries the
   coordinates of the service that performs it. No code in this repository
   dispatches either.
-- **Only a `sql` action needs an operational store.** Its statements are
-  written against the database your profile's deployment target names, and only
-  Spanner and AlloyDB qualify, so a BigQuery profile lists its `sql` actions as
-  not runnable and says why. That profile's `mcp`, `rest` and `grpc` actions are
-  offered as tools like any other.
+- **Only a `sql` action needs a store.** Its statements are written against the
+  database your profile's deployment target names, so a profile binding no
+  store lists its `sql` actions as not runnable and says why. Which backend
+  that store is does not matter: Spanner, AlloyDB and BigQuery all execute DML.
+  A profile's `mcp`, `rest` and `grpc` actions need no store and are offered as
+  tools either way.

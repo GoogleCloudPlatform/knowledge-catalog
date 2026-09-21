@@ -491,9 +491,9 @@ function runningSection(
 
   // The reasons live here rather than on each action's page, and that is the
   // whole point of this section. `tool.unavailable` is partly a fact about the
-  // binding -- a profile that binds no store, or binds one the runtime cannot
-  // write -- so printing it per page would make every page change when the
-  // profile does, and the claim above would be false.
+  // binding -- a profile that binds no store leaves a `sql` action with
+  // nothing to run against -- so printing it per page would make every page
+  // change when the profile does, and the claim above would be false.
   const blocked = actions.filter(t => !t.runnable);
   if (blocked.length) {
     out.push(

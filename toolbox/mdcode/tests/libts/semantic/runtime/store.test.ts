@@ -12,7 +12,7 @@ import {describe, expect, test} from 'bun:test';
 
 import {SemanticModel} from '../../../../src/libts/semantic/ir';
 import {loadModels} from '../../../../src/libts/semantic/loader';
-import {operationalStoreError, resolveStore} from '../../../../src/libts/semantic/runtime/store';
+import {resolveStore} from '../../../../src/libts/semantic/runtime/store';
 
 const DB = '//spanner.googleapis.com/projects/p/instances/i/databases/d';
 const DATASET = '//bigquery.googleapis.com/projects/p/datasets/s';
@@ -49,22 +49,18 @@ describe('where a model says it lives', () => {
     expect(store.instance).toBe('i');
     expect(store.database).toBe('d');
     expect(store.name).toBe('projects/p/instances/i/databases/d');
-    expect(operationalStoreError(store)).toBeNull();
   });
 
-  test('a BigQuery target is a store, and not one an action can write to',
-       () => {
-         const store = resolveStore(bound(
-             `${DATASET}/propertyGraphs/g`, `${DATASET}/tables/Customer`));
-         if ('error' in store) throw new Error(store.error);
-         expect(store.kind).toBe('bigquery');
-         expect(store.name).toBe('projects/p/datasets/s');
-
-         const err = operationalStoreError(store);
-         expect(err).not.toBeNull();
-         expect(err!).toContain('projects/p/datasets/s');
-         expect(err!).toContain('Spanner');
-       });
+  test('a BigQuery target is a store like any other', () => {
+    const store = resolveStore(
+        bound(`${DATASET}/propertyGraphs/g`, `${DATASET}/tables/Customer`));
+    if ('error' in store) throw new Error(store.error);
+    expect(store.kind).toBe('bigquery');
+    if (store.kind !== 'bigquery') return;
+    expect(store.project).toBe('p');
+    expect(store.dataset).toBe('s');
+    expect(store.name).toBe('projects/p/datasets/s');
+  });
 
   test('an AlloyDB target is a store, down to the database', () => {
     const store = resolveStore(bound(PG, `${PG}/tables/customer`));
@@ -78,7 +74,6 @@ describe('where a model says it lives', () => {
     expect(store.database).toBe('d');
     expect(store.name).toBe(
         'projects/p/locations/us-central1/clusters/c/instances/i/databases/d');
-    expect(operationalStoreError(store)).toBeNull();
   });
 
   // An AlloyDB target names a DATABASE, not a graph, because AlloyDB has no

@@ -256,8 +256,7 @@ binding rather than the logical model:
   page intact) only when:
   1. It has no executor under the active profile (`executor` omitted or
      withdrawn with `executor: null`).
-  2. Its executor is `sql` and the profile binds no operational store (`spanner`
-     or `alloydb`).
+  2. Its executor is `sql` and the profile binds no store at all.
   3. It names a non-advisory guard that is not declared in `model.constraints`
      or has no `judgment` text.
 

@@ -546,8 +546,6 @@ describe('the binding is one section', () => {
         project: 'p',
         dataset: 'sales_ds',
       },
-      storeError:
-          'This profile deploys to the BigQuery dataset p.sales_ds; an action\'s statements run against an operational database.',
     }));
     expect(bq.files['SKILL.md'])
         .toContain(
@@ -555,6 +553,13 @@ describe('the binding is one section', () => {
     expect(bq.files['SKILL.md']).toContain('Those are GoogleSQL statements.');
     expect(bq.files['SKILL.md']).toContain('orders -> table orders');
     expect(bq.files['SKILL.md']).toContain('- Store: `bigquery:p/sales_ds`');
+    // And the action is offered, not withheld. BigQuery executes DML, so a
+    // profile that binds one is a deployment an action can run against; the
+    // read snippet above would be of little use on a page that then said the
+    // model's only action could never be called.
+    expect(bq.files['SKILL.md']).not.toContain('Not runnable under this');
+    expect(bq.files['SKILL.md'])
+        .not.toContain('No action in this model can be run');
     expect(bq.files['references/place-order.md'])
         .toBe(first.files['references/place-order.md']);
   });

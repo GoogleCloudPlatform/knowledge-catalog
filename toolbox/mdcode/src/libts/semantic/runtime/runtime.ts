@@ -24,7 +24,7 @@ import {loadSemanticModels} from '../loader';
 import {resolveInheritance} from '../resolve_inheritance';
 import {DEFAULT_PROFILE, mergeProfileOntoDoc} from '../resolve_profiles';
 
-import {operationalStoreError, resolveStore, Store} from './store';
+import {resolveStore, Store} from './store';
 
 
 /**
@@ -50,8 +50,11 @@ export interface SemanticRuntime {
 
 
 /**
- * Why this runtime's store cannot execute SQL DML statements, or null when the
- * profile binds an operational store (Spanner or AlloyDB).
+ * Why this runtime cannot execute SQL DML statements, or null when it can.
+ *
+ * Having a store is the whole requirement. Every backend a profile can deploy
+ * to -- Spanner, AlloyDB, BigQuery -- executes DML, so the kind of store is not
+ * a reason to refuse an action.
  */
 export function runtimeStoreError(runtime: SemanticRuntime): string|null {
   if (!runtime.store) {
@@ -59,7 +62,7 @@ export function runtimeStoreError(runtime: SemanticRuntime): string|null {
         `Model '${runtime.model.name}' has no store under profile '${
             runtime.profile}'.`;
   }
-  return operationalStoreError(runtime.store);
+  return null;
 }
 
 

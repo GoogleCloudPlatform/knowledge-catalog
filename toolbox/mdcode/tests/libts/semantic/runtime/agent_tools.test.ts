@@ -156,11 +156,31 @@ describe('what counts as runnable under a profile', () => {
          expect(tool.unavailable).toBeUndefined();
        });
 
-  test('a sql executor without an operational store is not runnable', () => {
+  test('a sql executor with no store at all is not runnable', () => {
     const [tool] = actionTools(
         {runtime: rt(withExecutor(model, RUNNABLE), {store: undefined})});
     expect(tool.runnable).toBe(false);
     expect(tool.unavailable).toContain('no store');
+  });
+
+  // BigQuery executes DML like the other two backends, so binding one is not a
+  // reason to withhold an action. A warehouse write costs what a warehouse
+  // write costs, but that is the author's call to make, not a rule enforced
+  // here -- and the push-time pre-flight plans these statements against
+  // BigQuery too, which would be incoherent if they could never run.
+  test('a sql executor bound to BigQuery is runnable', () => {
+    const [tool] = actionTools({
+      runtime: rt(withExecutor(model, RUNNABLE), {
+        store: {
+          kind: 'bigquery',
+          name: 'projects/p/datasets/sales_ds',
+          project: 'p',
+          dataset: 'sales_ds',
+        },
+      }),
+    });
+    expect(tool.runnable).toBe(true);
+    expect(tool.unavailable).toBeUndefined();
   });
 
   test('an action with no executor blames the binding, not the action', () => {

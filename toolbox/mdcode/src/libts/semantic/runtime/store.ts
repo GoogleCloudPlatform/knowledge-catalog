@@ -2,14 +2,14 @@
 //
 // A binding profile supplies a deployment target; this module turns that
 // declaration into structured store coordinates. A profile may deploy to
-// Spanner, to AlloyDB or to BigQuery, and what may be done with the result
-// differs by which. `kind` is the discriminant, so a caller that needs an
-// operational database checks `kind` instead of assuming a target is writable.
+// Spanner, to AlloyDB or to BigQuery. `kind` is the discriminant, and what
+// differs by it is how the store is ADDRESSED -- the coordinates it takes and
+// the dialect it speaks -- not whether an action may write to it.
 //
-// Two of the three are OPERATIONAL: Spanner and AlloyDB hold rows an action's
-// SQL statements change, and either can be the store a model runs against.
-// BigQuery is the third and is not operational: it is where a graph goes to be
-// analyzed.
+// All three execute SQL DML, so all three can be the store a model's actions
+// run against. BigQuery is a warehouse rather than a transactional database
+// and a write there costs what a warehouse write costs, but that is a question
+// about the model an author is building, not a rule this module enforces.
 //
 // Identity is `name`, the resource the store addresses. Two profiles naming
 // the same database describe ONE store; the profile is how a caller found it,
@@ -19,7 +19,7 @@ import {googleDeploymentTargets} from '../deployment_target';
 import {SemanticModel} from '../ir';
 
 
-/** A Spanner database. An operational store: an action can write to it. */
+/** A Spanner database. An action's statements can write to it. */
 export interface SpannerStore {
   kind: 'spanner';
   /** `projects/<p>/instances/<i>/databases/<d>`. The store's identity. */
@@ -30,7 +30,7 @@ export interface SpannerStore {
 }
 
 
-/** An AlloyDB database. An operational store: an action can write to it. */
+/** An AlloyDB database. An action's statements can write to it. */
 export interface AlloyDbStore {
   kind: 'alloydb';
   /**
@@ -48,7 +48,7 @@ export interface AlloyDbStore {
 }
 
 
-/** A BigQuery dataset. A real store, but not one an action writes to. */
+/** A BigQuery dataset. An action's statements can write to it. */
 export interface BigQueryStore {
   kind: 'bigquery';
   /** `projects/<p>/datasets/<d>`. The store's identity. */
@@ -249,16 +249,4 @@ export function storeLine(store: Store): string {
     case 'bigquery':
       return `bigquery:${store.project}/${store.dataset}`;
   }
-}
-
-
-/**
- * Why this store cannot run SQL DML statements, or null when it is an
- * operational database (Spanner or AlloyDB).
- */
-export function operationalStoreError(store: Store): string|null {
-  if (store.kind === 'spanner' || store.kind === 'alloydb') return null;
-  return `This profile deploys to the BigQuery dataset ${store.name}, and ` +
-      `an action's statements run against an operational database. Select ` +
-      `a profile whose deployment target is a Spanner or AlloyDB database.`;
 }
