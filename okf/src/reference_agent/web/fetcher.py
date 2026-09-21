@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from html import unescape as _html_unescape
 from urllib.parse import urldefrag, urljoin, urlparse
 from urllib.request import Request, urlopen
 
@@ -38,7 +39,7 @@ def _extract_links(html: str, base_url: str) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
     for match in _HREF_RE.finditer(html):
-        href = match.group(1).strip()
+        href = _html_unescape(match.group(1).strip())
         if not href:
             continue
         scheme = urlparse(href).scheme.lower()
