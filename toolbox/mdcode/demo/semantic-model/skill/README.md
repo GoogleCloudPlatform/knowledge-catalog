@@ -16,8 +16,16 @@ the harness.
 
 There is no agent in this directory. Nothing here is written against a
 particular framework, and nothing here has to be rewritten to move to another
-one. The skill is a folder of Markdown, and the rules are enforced underneath it
-whatever reads it.
+one. The skill is a folder of Markdown, and the rules are stated in the model
+underneath it whatever reads it.
+
+One thing to know before you start, because the rest of this page depends on
+it: **the executor this demo hands the agent does not currently settle those
+rules.** `kcmd action-run` is a curation command line. It names the rules an
+action states and performs the write regardless. The runtime beneath it settles
+them when the caller gives it a judge, and no caller in this repository does
+today. Where that matters, this page says so, and the transcripts recorded when
+a command line did settle them are marked as such.
 
 ## What this demo is arguing
 
@@ -34,9 +42,12 @@ from them. So:
 - **The skill is generated, not written.** Change the model, regenerate. There
   is no second copy of the business to keep in step.
 - **The rules are not in the skill.** The skill *describes* them so the reading
-  agent knows what it is up against, but they are settled by the runtime that
-  performs the write. An agent that ignores the description still cannot get
-  past them.
+  agent knows what it is up against; settling them is the job of the runtime
+  that performs the write, not of the agent that asks. That separation is the
+  argument, and it is the part this revision does not currently demonstrate:
+  the runtime settles a rule only when its caller supplies a judge, and the
+  `kcmd` executor the skill names supplies none. An agent that ignores the
+  description gets past them today.
 - **Any harness will do.** The output is the published Agent Skill layout, so
   Claude Code, Gemini CLI, Cursor and the other clients that read that layout
   all take it as-is.
@@ -276,7 +287,7 @@ Before generating anything, see what `kcmd` reads out of the scope. Run this
 from this directory, the one holding `catalog.yaml`:
 
 ```console
-$ kcmd action list
+$ kcmd action-list
 Model 'commerce' (commerce_demo), profile 'spanner':
   store: my-project/my-instance/semantic_skill_demo
   IssueCredit: Credit a customer against one order -- a late delivery, a coupon, a shipping charge applied in error. The credit is added as a negative line and the order total is recomputed from the lines.
@@ -284,20 +295,92 @@ Model 'commerce' (commerce_demo), profile 'spanner':
     executor:   sql
     guards:     CreditWithinOrderTotal, CreditUnderReviewThreshold, CreditMemoNamesAServiceFailure, CreditIsNotSplitToAvoidReview
     affects:    LineItem (create), Order (modify)
-    run:        kcmd action run IssueCredit --judge --judge-reads-store --arg order=<Integer> --arg amount=<Decimal> --arg memo=<String>
+    run:        kcmd action-run IssueCredit --arg order=<Integer> --arg amount=<Decimal> --arg memo=<String>
 ```
 
 That is the model, the binding, and the command line to try a call, all derived.
-`kcmd` is a debugging command line rather than the runtime an agent should call
-in production, but a call it makes goes through the same runtime, so it is the
-fastest way to see what a rule does.
+The four names on the `guards` line are the rules this action states, and they
+are worth reading before the next command, because the next command does not
+check any of them.
 
-### Why the judge has to be able to read
+### What the command line settles: nothing
 
-`--judge` hires the judge that settles rules stated in words.
-`--judge-reads-store` lets it query the model's own tables while deciding. The
-difference is not a nicety. Without the read, `CreditWithinOrderTotal` is a rule
-about a number the judge cannot see:
+`kcmd action-run` binds the arguments, opens one transaction and applies the
+statements. It settles none of the rules. It says so before it writes, naming
+every guard it is passing over, so that nobody reads a committed write as a
+checked one:
+
+```console
+$ kcmd action-run IssueCredit \
+    --arg order=12346 --arg amount=3.00 --arg memo="Coupon applied late"
+Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_skill_demo...
+  NOT CHECKED: CreditWithinOrderTotal, CreditUnderReviewThreshold, CreditMemoNamesAServiceFailure, CreditIsNotSplitToAvoidReview -- this command settles no guard, and the write still happens
+Committed at 2026-09-21T01:19:39.284744Z.
+```
+
+That is the useful half for curating a model, and it is genuinely useful:
+whether an action binds its arguments, writes the line it says it writes and
+leaves the store consistent is a question about SQL, and one command against
+your own database answers it without standing up a judge first.
+
+It is also the whole of what this command tells you. Order 12346 was seeded at
+$18.00 and the credit above took it to $15.00. Here is the same command asked
+for $20.00 against it — a credit larger than the order it credits, which is
+precisely what `CreditWithinOrderTotal` exists to stop:
+
+```console
+$ kcmd action-run IssueCredit \
+    --arg order=12346 --arg amount=20.00 --arg memo="Shipping charge applied in error"
+Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_skill_demo...
+  NOT CHECKED: CreditWithinOrderTotal, CreditUnderReviewThreshold, CreditMemoNamesAServiceFailure, CreditIsNotSplitToAvoidReview -- this command settles no guard, and the write still happens
+Committed at 2026-09-21T01:19:55.792326Z.
+```
+
+```console
+$ gcloud spanner databases execute-sql "$DATABASE" \
+    --instance="$INSTANCE" --project="$PROJECT" \
+    --sql='SELECT order_id, total FROM Orders WHERE order_id = 12346'
+order_id  total
+12346     -5
+```
+
+An order with a total of **negative five dollars**, committed, with the rule
+that forbids it sitting right there in the model. The banner is not a formality.
+
+### Where the rules are settled instead
+
+Settling a rule stated in words takes a language model, and hiring one is a
+decision for whoever dispatches the call — it costs a model call per guard and
+credentials to reach one, and an author checking a `WHERE` clause should not
+have to stand either up. So the runtime takes a judge from the application that
+embeds it, at construction:
+
+```ts
+const judge = new GeminiJudge(ctx, {model: 'gemini-2.5-flash'});
+```
+
+Given one, the runtime puts each guard to it before the transaction opens and
+routes the verdict by `on_violation`. Given none, it refuses the call rather
+than running a write the model says must be checked. `kcmd action-run` is the
+one caller that opts out of both: it asks for no judge and refuses nothing,
+which is why it prints the banner instead.
+
+**No command line in this repository settles a guard.** Until one does, the
+transcripts below are the record of what settling them looked like.
+
+### What the rules caught, when something was settling them
+
+> These four were recorded when the command took a judge and could give that
+> judge the store to read. Neither is a flag any more, and the verb was two
+> words then, so each transcript below opens `kcmd action run` rather than
+> `kcmd action-run`. They are pasted as they were rather than corrected,
+> because a transcript that was never printed is not evidence of anything.
+> They are kept because what they show — one action, four rules, and every
+> one of the three `on_violation` outcomes — is not shown anywhere else, and
+> because the contrast with the two runs above is the point of this section.
+
+Without the store, `CreditWithinOrderTotal` is a rule about a number the judge
+cannot see:
 
 ```console
 $ kcmd action run IssueCredit --judge \
@@ -313,7 +396,7 @@ number. What it does instead is not predictable: this run said it could not
 tell, and an earlier run of the same call answered that $3.00 exceeded a total
 of $2.50 — a figure nothing in the database supports. A judge that cannot read
 either blocks a call it should pass or invents the fact it was missing, and you
-do not get to choose which. With the read, it looks:
+do not get to choose which. Given the store, it looks:
 
 ```console
 $ kcmd action run IssueCredit --judge --judge-reads-store \
@@ -325,13 +408,14 @@ Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/sem
 Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotal' (...), and gemini-2.5-flash (us-central1) judged that it does not hold for this call: The credit amount of 20.00 exceeds the order total of 18.00. Please request a credit amount that does not exceed the order total. The model marks this rule 'escalate', so an approver may allow it; nothing here can. A credit cannot exceed the total of the order it credits. Lower the credit amount, or split it across the orders it actually covers. No transaction was opened, so nothing was written.
 ```
 
-It wrote its own `SELECT`, from the model, and the refusal is now about the real
-total. Note what the message carries: which rule, the rule's own words, the
-judge's reason, the consequence the model attaches, the advice the model wrote
-for this case, and the fact that nothing was written. That whole message is what
-a reading agent gets back.
+That is the same call that now commits and leaves the order at -$5.00. The judge
+wrote its own `SELECT`, from the model, and refused against the real total. Note
+what the message carries: which rule, the rule's own words, the judge's reason,
+the consequence the model attaches, the advice the model wrote for this case,
+and the fact that nothing was written. That whole message is what a reading
+agent gets back.
 
-### With no judge at all
+Handed no judge at all, the runtime fails closed rather than writing unchecked:
 
 ```console
 $ kcmd action run IssueCredit \
@@ -339,10 +423,11 @@ $ kcmd action run IssueCredit \
 Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotal', 'CreditUnderReviewThreshold' and 'CreditIsNotSplitToAvoidReview', which are settled by reading the call, and this runtime was given no judge to ask. Running it would apply a write the model says must be checked first, so it is refused rather than run unchecked.
 ```
 
-Fail closed. A guarded action with nothing able to settle its guards does not
-run.
+That refusal is still the runtime's behaviour for any caller that supplies no
+judge. What changed is that the command line no longer asks: it declares the
+guards unchecked and proceeds, which is the banner in the two runs above.
 
-### The reject consequence
+And the `reject` consequence, the one an approver cannot wave through:
 
 ```console
 $ kcmd action run IssueCredit --judge --judge-reads-store \
@@ -467,8 +552,17 @@ Everything above is true of this model wherever it is deployed. This section is 
 - Executor: `sql`
 ```
 
-with the command line, and a note that `kcmd` is for trying calls rather than for
-production.
+with the command line, and — because that command line is `kcmd` — the
+generator writes the same warning the CLI prints at run time into the skill
+itself, so the reading agent has it before it calls:
+
+```markdown
+That command line settles no guard. It names the rules this action states and runs the write regardless, so it answers whether the call binds and the write lands, and nothing about whether the rules hold. The runtime your framework calls is what settles them.
+```
+
+An agent handed this skill is therefore told, in the skill, that the command it
+has been given is not the one that enforces the rules it just read. What it does
+with that is section 7.
 
 Then **What happens when you call one** — the three states a call comes back in,
 and the fourth case that is not a state:
@@ -514,7 +608,7 @@ this directory will offer the skill.
 
 ### Where the harness has to be running
 
-The command line in the skill is `kcmd action run IssueCredit --profile spanner
+The command line in the skill is `kcmd action-run IssueCredit --profile spanner
 ...`, with no path to the model — and `kcmd` takes the scope from the current
 directory, the one holding `catalog.yaml`. There is no flag to point it
 elsewhere. So the harness has to be working in the scope directory, and `kcmd`
@@ -535,6 +629,16 @@ no SQL.
 
 The four runs are consecutive against the seed from [section 3](#3-create-the-store),
 so the state each one starts from is the state the previous one left.
+
+> **These four were recorded when the generated command line was
+> `kcmd action run ... --judge --judge-reads-store`, and they are kept because
+> nothing else shows an agent meeting a rule it cannot talk its way past.** Read them for what the
+> agent did with a refusal, not as what this skill does today. Regenerate the
+> skill now and the command it writes settles no guard, so the first run below
+> would commit the $30 credit the desk is not allowed to approve, and the third
+> would land without the advisory ever being raised. The agent's own judgment
+> would be the only thing between the request and the write — which is exactly
+> the distinction the fourth run is about, applied to all four.
 
 ### A request that gets refused
 
@@ -692,7 +796,8 @@ something that was not JSON, and the runtime refused the call — *"judge […]
 returned an answer that is not JSON. No transaction was opened, so nothing was
 written."* A guard that cannot be settled is a refusal, not a pass. That is the
 same fail-closed rule as [running with no judge at
-all](#with-no-judge-at-all), reached by accident rather than by configuration.
+all](#what-the-rules-caught-when-something-was-settling-them), reached by
+accident rather than by configuration.
 
 ### An instruction to break a rule
 
@@ -722,11 +827,13 @@ approval control is behaviour a capable harness brings with it. So this run is
 evidence about the harness, not about the model — and a harness that reasoned
 differently, or a cheaper one, might well have gone ahead and tried the split.
 
-What makes the split impossible is the runtime, and the case that shows it is
-the one forced at the command line in [section 4](#the-reject-consequence): the
-same rule, the same wording, refused before a transaction opened with nothing
-written. That one is a guarantee. This one is a harness behaving well on top of
-it.
+What makes the split impossible is the runtime, not the harness, and the case
+that shows it is the `reject` transcript in [section
+4](#what-the-rules-caught-when-something-was-settling-them): the same rule, the
+same wording, refused before a transaction opened with nothing written. That one
+is a guarantee — but read the note above it. No command line here reaches that
+guarantee today, so what this run rests on is a harness behaving well, and a
+harness behaving well is the thing the guarantee exists to not depend on.
 
 ### Where the store ended up
 
@@ -791,8 +898,11 @@ Committed at 2026-09-20T20:01:35.712448Z.
 Order 12347 recomputed from its lines, $175.00 → $167.00.
 
 Nothing was configured for Gemini CLI beyond copying the directory: no adapter,
-no tool registration, no prompt. The rules held because they are enforced in the
-runtime under the action, not by whichever agent happens to be reading.
+no tool registration, no prompt. That part is the portability claim and it still
+holds. The rules held in these two runs because the command line the skill
+carried at the time put them to a judge — see the note in
+[section 7](#7-run-it); the same two requests against the skill as it generates
+today would both commit.
 
 ## 9. The same skill against a different database
 
@@ -829,6 +939,18 @@ model, two databases, two dialects, one renamed column, and the description of
 what may be done and under what rules is the same bytes.
 
 ## 10. Limits
+
+**Nothing in this repository settles a guard right now, so this demo no longer
+runs end to end as written.** `kcmd action-run` declares the guards unchecked
+and writes; the runtime settles them only for a caller that hands it a judge,
+and the one caller that did — the ADK agent this directory used to hold — was
+removed when the demo became a skill. The rules, the judgments, the
+`on_violation` routing and the judge itself are all still in the library and
+still tested; what is missing is a caller wired to them. Until one is back, the
+guarded transcripts on this page are a record rather than something you can
+reproduce, and the two unguarded runs in [section
+4](#what-the-command-line-settles-nothing) are what you get if you follow the
+commands.
 
 **The AlloyDB skill has no way to find a record.** The `gcloud` read snippet and
 the schema block are emitted for Spanner stores only. Under `alloydb` the skill
