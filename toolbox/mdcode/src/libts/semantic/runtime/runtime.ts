@@ -8,11 +8,11 @@
 // find a store for.
 //
 // Both halves were the CLI's private business until an agent needed them. An
-// agent derives its tools from the same bound model `kcmd agent-tools` reads,
-// against the same store, so it has to reach them the same way -- and a second
-// loader that merges profiles slightly differently is a demo that passes while
-// the product fails. The CLI calls this too, so there is one answer to "what
-// does this scope say" rather than one per caller.
+// agent skill derives its tools from the same bound model `kcmd skills-generate`
+// reads, against the same store, so it has to reach them the same way -- and a
+// second loader that merges profiles slightly differently is a demo that passes
+// while the product fails. The CLI calls this too, so there is one answer to
+// "what does this scope say" rather than one per caller.
 
 import * as context from '../../gcp/context';
 import {SemanticModelLayout} from '../../layouts/semantic-model';

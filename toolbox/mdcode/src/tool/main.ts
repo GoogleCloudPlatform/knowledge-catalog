@@ -139,25 +139,6 @@ cli.command(
 
 
 cli.command(
-       'agent-tools',
-       'List what an agent holding this semantic model is offered')
-    .option(
-        '--profile [name]',
-        'Read the model under this binding profile; defaults to default_profile, else the inline bindings')
-    .action(async (options) => {
-      let exitCode = 1;
-      try {
-        exitCode = await commands.agentTools(options);
-      } catch (err: any) {
-        console.error('Error:', err.message || err);
-        exitCode = 1;
-      }
-
-      process.exit(exitCode);
-    });
-
-
-cli.command(
        'skills-generate',
        'Write each model in the scope out as an Agent Skill: a SKILL.md an agent loads, with one reference file per action')
     .option(

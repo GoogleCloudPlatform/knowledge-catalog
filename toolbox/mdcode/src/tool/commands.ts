@@ -20,10 +20,8 @@ import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
 import {AvailabilityReport, DEFAULT_PROFILE, mergeProfileOntoDoc, pruneUnavailable,} from '../libts/semantic/resolve_profiles';
-import {ActionTool, modelTools} from '../libts/semantic/runtime/agent_tools';
-import {ASSUMED_JUDGE} from '../libts/semantic/runtime/judge';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
-import {dataClientFor, storeLine} from '../libts/semantic/runtime/store';
+import {storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryDataSources, validatePushRequirements} from '../libts/semantic/validate';
@@ -1269,82 +1267,6 @@ export function catalogOnlyWarning(
 }
 
 
-export interface AgentOptions {
-  // `string|boolean` for the same reason the others are: cac yields `true` for
-  // a bare `--profile` and `false` for `--no-profile`.
-  profile?: string|boolean;
-}
-
-
-// Prints what an agent is handed when it is pointed at this model.
-//
-//   kcmd agent-tools
-//
-// One write tool per action and an instruction, both derived. Nothing here is
-// written for a particular agent, which is the property worth being able to
-// see -- the listing is the same whether the caller is ADK, LangChain or a
-// person reading it to decide whether the model says enough.
-//
-// A tool the runtime cannot run today is listed and marked rather than
-// dropped. The model declares it; what it is waiting on is the useful thing to
-// print.
-//
-// A guard is not what decides whether a tool is listed. Who settles one
-// belongs to the application that embeds the runtime, and this command cannot
-// know what that will be, so withholding a guarded tool here would describe a
-// caller rather than the model. What it does say, in the tool's own
-// description, is which rules the agent's calls will be held to.
-//
-// Returns a process exit code (0 on success).
-export async function agentTools(options: AgentOptions = {}): Promise<number> {
-  const ctx = context.ApiContext.default();
-  const named =
-      typeof options.profile === 'string' ? options.profile : undefined;
-  const opened = await createSemanticRuntimes({profile: named, ctx});
-  if ('error' in opened) {
-    console.error(`Error: ${opened.error}`);
-    return 1;
-  }
-
-  let incomplete = false;
-  for (const runtime of opened) {
-    const {model, store, storeError, profile, entryGroup} = runtime;
-    // A tool is a thing that can be called, and calling one needs a store, so
-    // there is no honest listing without one. A model whose profile supplies
-    // no store offers no tools, which is reported for that model rather than
-    // ending the command: the rest of the scope still has an answer, and a
-    // partial listing followed by an error is the one outcome a reader cannot
-    // interpret.
-    console.log(`Model '${model.name}' (${entryGroup}), profile '${profile}':`);
-    // A store this path cannot execute against is the same answer as no
-    // store, and has to be reported the same way: every tool would be listed
-    // uncallable, and a caller reading the exit code would take a listing that
-    // offers nothing for a listing that offers everything.
-    const unusable = store ? dataClientFor(store) : undefined;
-    const why = store ?
-        (unusable && 'error' in unusable ? unusable.error : '') :
-        storeError ?? '';
-    if (!store || why) {
-      console.log('  offers no tools under this profile.');
-      console.log(wrapTo(why, BODY_INDENT));
-      console.log();
-      incomplete = true;
-      continue;
-    }
-    console.log(`  store: ${storeLine(store)}`);
-    console.log();
-
-    const {actions, instruction} =
-        modelTools({runtime, judge: ASSUMED_JUDGE});
-    for (const tool of actions) printActionTool(tool);
-    console.log('  instruction:');
-    console.log(indentBlock(instruction));
-    console.log();
-  }
-  return incomplete ? 1 : 0;
-}
-
-
 export interface SkillsGenerateOptions {
   profile?: string|boolean;
   /**
@@ -1360,11 +1282,9 @@ export interface SkillsGenerateOptions {
 
 // Writing a model out as an Agent Skill.
 //
-// `kcmd agent-tools` prints what an agent is offered and forgets it. This
-// writes the same derivation to disk in the form an agent loads by itself: a
+// Writes the derived model to disk in the form an agent loads by itself: a
 // directory per model, a `SKILL.md` a client reads, and the per-action detail
-// in files beside it. Same derivation, so a skill cannot describe a tool that
-// differs from the one that runs.
+// in files beside it.
 //
 // One skill per model in the scope, because a skill is named and a name
 // addresses one thing. `--name` therefore only applies to a scope with one
@@ -1484,65 +1404,5 @@ function stalePages(dir: string, keep: Set<string>): string[] {
       .filter(f => f.endsWith('.md'))
       .map(f => `references/${f}`)
       .filter(f => !keep.has(f));
-}
-
-
-// A wrapped parameter line is indented past its name, so a continuation is not
-// mistaken for the next parameter.
-const PARAM_CONTINUATION = '          ';
-
-function printActionTool(tool: ActionTool): void {
-  console.log(`  action  ${tool.name}  (${tool.actionName})${
-      tool.runnable ? '' : '  [NOT RUNNABLE]'}`);
-  console.log(indentBlock(tool.description));
-  for (const p of tool.parameters) {
-    console.log(wrapTo(
-        `${p.name}: ${p.type}${p.required ? '' : '?'}  -- ${p.description}`,
-        BODY_INDENT, PARAM_CONTINUATION));
-  }
-  console.log();
-}
-
-
-// A description or an instruction, indented under the line that introduces it.
-// Both arrive as prose the model's author wrote and wrapped where they liked,
-// so each line is re-indented rather than the block as a whole.
-function indentBlock(text: string): string {
-  return text.trim()
-      .split('\n')
-      .map(line => {
-        const trimmed = line.trim();
-        if (!trimmed) return '';
-        const hanging =
-            trimmed.startsWith('- ') ? `${BODY_INDENT}  ` : BODY_INDENT;
-        return wrapTo(trimmed, BODY_INDENT, hanging);
-      })
-      .join('\n');
-}
-
-
-// This listing is read by a person deciding whether the model says enough, and
-// some of what it prints -- a model's instructions, the reason a tool is
-// withheld -- runs to several hundred characters. Emitting that as one line
-// leaves the terminal to fold it at column zero, which loses the indent that
-// shows what belongs to which tool. So it is folded here instead, and a
-// continuation is indented past the first line to keep the structure visible.
-const LISTING_WIDTH = 79;
-const BODY_INDENT = '      ';
-
-function wrapTo(text: string, indent: string, hanging = indent): string {
-  const lines: string[] = [];
-  let line = '';
-  for (const word of text.split(/\s+/).filter(w => w)) {
-    const prefix = lines.length ? hanging : indent;
-    if (line && `${prefix}${line} ${word}`.length > LISTING_WIDTH) {
-      lines.push(prefix + line);
-      line = word;
-    } else {
-      line = line ? `${line} ${word}` : word;
-    }
-  }
-  if (line) lines.push((lines.length ? hanging : indent) + line);
-  return lines.join('\n');
 }
 

@@ -487,11 +487,11 @@ export type Executor =
  *   - The blast radius is checkable. `affects` can be read against the
  *     statements rather than taken on trust.
  *   - A guard becomes a real gate. An MCP, REST or gRPC call commits inside a
- *     system the runtime does not control, so a write it performed could not be
- *     rolled back if the rest of the action failed; a statement run in the
- *     runtime's own transaction can be. Guards settle before that transaction
- *     opens (see run_action.ts), so a refusal leaves the store untouched and no
- *     check ever observes the write it gates.
+ *     system the caller does not control, so a write it performed could not be
+ *     rolled back if the rest of the action failed; a statement run in a
+ *     database transaction can be. Guards settle before that transaction opens,
+ *     so a refusal leaves the store untouched and no check ever observes the
+ *     write it gates.
  *
  * The narrowness is the safety argument, and validate.ts enforces it. A
  * statement is a single INSERT, UPDATE or DELETE. Every `@name` it binds names

@@ -1,13 +1,5 @@
-// Behavior specification for deriving agent tools from a model.
-//
-// The claim under test is that a model already carries what an agent needs, so
-// an agent framework adapter has nothing left to invent: the tool's name, its
-// description, its parameter types and the guidance a caller should follow all
-// come out of the model. These tests read those out and check them, and check
-// the outcome mapping an agent reads after a call.
-//
-// Nothing here opens a Spanner transaction. Deriving the tools is pure, which
-// is the point: what an agent is offered can be checked without a database.
+// Behavior specification for deriving action tools and schema metadata from a
+// model.
 
 import {describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
@@ -16,20 +8,13 @@ import * as path from 'node:path';
 import * as spanner from '../../../../src/libts/gcp/spanner';
 import {Action, Constraint, Entity, SemanticModel} from '../../../../src/libts/semantic/ir';
 import {loadModels} from '../../../../src/libts/semantic/loader';
-import {actionTools, callableTools, describeOutcome, modelTools, readableEntities} from '../../../../src/libts/semantic/runtime/agent_tools';
+import {actionTools, modelTools, readableEntities} from '../../../../src/libts/semantic/runtime/agent_tools';
 import {dialectFor} from '../../../../src/libts/semantic/runtime/dialect';
-import {Judge} from '../../../../src/libts/semantic/runtime/judge';
 import {SemanticRuntime} from '../../../../src/libts/semantic/runtime/runtime';
 
 const FIXTURES = path.join(__dirname, '..', 'fixtures');
-
-// The tools never touch it: every test here reads the derivation, not a call.
 const NO_CLIENT = {} as any;
 
-// A model paired with a store, which is what the derivations take. The store
-// is real enough to be there -- a runtime carrying none yields tools that
-// refuse, which is its own test below -- and its client answers only the
-// tests that make a call.
 function rt(
     model: SemanticModel, client: unknown = NO_CLIENT): SemanticRuntime {
   return {
@@ -48,50 +33,11 @@ function rt(
   };
 }
 
-
-// A store that records the statements it is asked for and answers nothing.
-// What these tests check is the QUESTION -- which SQL, which parameters, bound
-// as what -- so the answer does not have to be interesting.
-class FakeStore {
-  readonly database = 'projects/p/instances/i/databases/d';
-  readonly statements: spanner.Statement[] = [];
-
-  async withSession<T>(fn: (s: string) => Promise<T>): Promise<T> {
-    return await fn('sessions/1');
-  }
-  async beginReadWrite() {
-    return {status: 200, result: {id: 'txn-1'}};
-  }
-  async executeSql(_s: string, _t: string, stmt: spanner.Statement) {
-    this.statements.push(stmt);
-    return {status: 200, result: {rows: [['1']]}};
-  }
-  async executeQuery(_s: string, stmt: spanner.Statement) {
-    this.statements.push(stmt);
-    return {status: 200, result: {rows: []}};
-  }
-  async commit() {
-    return {status: 200, result: {commitTimestamp: '2026-09-12T00:00:00Z'}};
-  }
-  async rollback() {
-    return {status: 200, result: {}};
-  }
-  get client(): spanner.SpannerDataClient {
-    return this as unknown as spanner.SpannerDataClient;
-  }
-  get sql(): string[] {
-    return this.statements.map(s => s.sql);
-  }
-}
-
 function loadFixtureModel(name: string): SemanticModel {
   return loadModels(fs.readFileSync(path.join(FIXTURES, name), 'utf8'))
       .models[0];
 }
 
-// The fixture's action is performed by MCP and gated by a constraint, so it is
-// the "cannot run here" case twice over. Several tests below need one the
-// runtime WOULD run, which means its own write and no guard.
 function withExecutor(
     model: SemanticModel, over: Partial<Action>): SemanticModel {
   const [action] = model.actions!;
@@ -130,7 +76,6 @@ describe('action tools', () => {
   });
 
   test('the description names the rules that gate the call', () => {
-    // A caller learns the shape of a refusal before it hits one.
     for (const guard of model.actions![0].guards ?? []) {
       expect(tools[0].description).toContain(guard);
     }
@@ -141,21 +86,15 @@ describe('action tools', () => {
         const byName =
             Object.fromEntries(tools[0].parameters.map(p => [p.name, p]));
 
-        // `customer` is projected from customer.c_custkey, so the tool asks for
-        // that field's type and describes it in that field's words. Nothing
-        // here tells a caller it is a projection: what the call needs is a
-        // value, and where the definition came from is the model's business.
         expect(byName['customer'].type).toBe('integer');
         expect(byName['customer'].description)
             .toBe('The customer\'s account number.');
 
-        // `quantity` stands alone, and falls back to wording built from its
-        // type.
         expect(byName['quantity'].type).toBe('integer');
         expect(byName['quantity'].description).toContain('whole number');
       });
 
-  test('every action parameter is required', () => {
+  test('every action parameter is required by default', () => {
     expect(tools[0].parameters.every(p => p.required)).toBe(true);
     expect(tools[0].parameters.map(p => p.name))
         .toEqual(model.actions![0].parameters.map(p => p.name));
@@ -167,9 +106,6 @@ describe('action tools', () => {
   });
 
   test('a tool offers no way to approve anything', () => {
-    // The caller that needs approving is not the party that grants it, so a
-    // tool exposes no approval. Guard the shape rather than the wording: a
-    // parameter that took approvals would show up.
     const names = tools[0].parameters.map(p => p.name.toLowerCase());
     expect(names.some(n => n.includes('approv'))).toBe(false);
     expect(Object.keys(tools[0])).not.toContain('approvals');
@@ -204,9 +140,6 @@ describe('action tools', () => {
         const byName =
             Object.fromEntries(tool.parameters.map(p => [p.name, p]));
 
-        // A projected parameter reaches the caller as the scalar it resolved
-        // to. Nothing tells it apart from a parameter that declared Integer
-        // itself, which is the point: the caller supplies a value either way.
         expect(byName['source'].description).toBe('The account money leaves.');
         expect(byName['source'].type).toBe('integer');
         expect(byName['source'].required).toBe(true);
@@ -230,12 +163,13 @@ describe('action tools', () => {
 });
 
 
-// Offering an agent a tool that refuses every call wastes its turn and tells
-// it nothing it can act on. The tool is still derived -- an action the model
-// declares should not vanish from what the model offers -- but it says up
-// front that it will not work, and why.
-describe('a tool this runtime would refuse', () => {
+describe('what counts as runnable under a profile', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
+
+  function guardedBy(constraint: Constraint, guard: string): SemanticModel {
+    const base = withExecutor(model, {...RUNNABLE, guards: [guard]});
+    return {...base, constraints: [constraint]};
+  }
 
   test('an action runnable here is marked so, with no excuse attached', () => {
     const [tool] = actionTools({runtime: rt(withExecutor(model, RUNNABLE))});
@@ -244,34 +178,14 @@ describe('a tool this runtime would refuse', () => {
     expect(tool.description).not.toContain('will not work');
   });
 
-  test(
-      'a guarded action is not runnable while nothing checks the guard', () => {
-        const guarded = withExecutor(
-            model, {...RUNNABLE, guards: ['OrderWithinCustomerCredit']});
-        const [tool] = actionTools({runtime: rt(guarded)});
-        expect(tool.runnable).toBe(false);
-        expect(tool.unavailable).toContain('OrderWithinCustomerCredit');
-        expect(tool.unavailable).toContain('refused rather than run unchecked');
-      });
-
-  test('a remote executor is not runnable without a handler', () => {
-    // The fixture's own action: MCP commits outside the transaction.
+  test('a remote executor is not runnable directly', () => {
     const [tool] = actionTools({runtime: rt(model)});
     expect(tool.runnable).toBe(false);
     expect(tool.unavailable).toContain('MCP');
-    expect(tool.unavailable).toContain('rolled back');
-  });
-
-  test('a handler makes a remote executor runnable again', () => {
-    const handler = async () => ({statements: []});
-    const ungated = withExecutor(model, {guards: []});
-    const [tool] = actionTools({runtime: rt(ungated), handler});
-    expect(tool.runnable).toBe(true);
+    expect(tool.unavailable).toContain('Declare the action with a \'sql\'');
   });
 
   test('an action with no executor blames the binding, not the action', () => {
-    // An executor is a physical facet. The action is fine; this binding
-    // simply does not perform it.
     const unbound = withExecutor(model, {executor: undefined, guards: []});
     const [tool] = actionTools({runtime: rt(unbound)});
     expect(tool.runnable).toBe(false);
@@ -285,25 +199,8 @@ describe('a tool this runtime would refuse', () => {
         expect(tool.description).toContain('will not work');
         expect(tool.description).toContain('Report that rather than retrying');
       });
-});
-
-
-// The runtime decides what it will not run. Deriving a tool has to reach the
-// same verdict, and the only way to be sure of that is to ask the runtime
-// rather than to keep a second copy of the rule here.
-describe('what counts as runnable is the runtime\'s answer, not a copy', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
-
-  function guardedBy(constraint: Constraint, guard: string): SemanticModel {
-    const base = withExecutor(model, {...RUNNABLE, guards: [guard]});
-    return {...base, constraints: [constraint]};
-  }
 
   test('a guard that only warns does not withhold the tool', () => {
-    // An advisory rule reports and lets the write through, so the runtime
-    // runs this action. A tool marked unrunnable would withhold one that
-    // works -- and an agent told "this will not work" about a call that would
-    // have, has no way to find that out.
     const advisory: Constraint = {
       name: 'AmountIsLarge',
       judgment: 'A quantity over 1000 should be called out.',
@@ -315,9 +212,19 @@ describe('what counts as runnable is the runtime\'s answer, not a copy', () => {
     expect(tool.unavailable).toBeUndefined();
   });
 
-  test('a guard naming nothing the model declares still withholds it', () => {
-    // The runtime refuses this: a name it cannot resolve is not something to
-    // guess about. A tool that called it anyway would fail every time.
+  test('a well-formed judged guard is runnable', () => {
+    const judged: Constraint = {
+      name: 'CreditIsJustified',
+      judgment: 'The memo must name what went wrong.',
+      onViolation: 'reject',
+    };
+    const [tool] =
+        actionTools({runtime: rt(guardedBy(judged, 'CreditIsJustified'))});
+    expect(tool.runnable).toBe(true);
+    expect(tool.unavailable).toBeUndefined();
+  });
+
+  test('a guard naming nothing the model declares withholds the tool', () => {
     const other: Constraint = {
       name: 'SomethingElse',
       judgment: 'Something else must hold.',
@@ -328,77 +235,19 @@ describe('what counts as runnable is the runtime\'s answer, not a copy', () => {
     expect(tool.unavailable).toContain('NoSuchRule');
   });
 
-  // What the caller holds is half of the verdict. A judged guard is settled by
-  // asking, so whether such an action can be offered depends on whether a
-  // judge was passed to the derivation -- and the derivation has to say so
-  // both ways round, or an adapter either withholds a tool that works or
-  // offers one that is refused on its first call.
-  const judged: Constraint = {
-    name: 'CreditIsJustified',
-    judgment: 'The memo must name what went wrong.',
-    onViolation: 'reject',
-  };
-
-  const neverAsked: Judge = {
-    name: 'test judge',
-    decide: () => {
-      throw new Error('the derivation must not call a judge');
-    },
-  };
-
-  test('a judged guard withholds the tool when no judge was supplied', () => {
+  test('a guard whose constraint states no rule text withholds the tool', () => {
+    const bodyless: Constraint = {
+      name: 'QuantityIsPositive',
+      onViolation: 'reject',
+    };
     const [tool] =
-        actionTools({runtime: rt(guardedBy(judged, 'CreditIsJustified'))});
+        actionTools({runtime: rt(guardedBy(bodyless, 'QuantityIsPositive'))});
     expect(tool.runnable).toBe(false);
-    expect(tool.unavailable).toContain('no judge');
+    expect(tool.unavailable).toContain('states no rule to put to a judge');
   });
-
-  test('a judge makes an action guarded by a judgment offerable', () => {
-    const [tool] = actionTools({
-      runtime: rt(guardedBy(judged, 'CreditIsJustified')),
-      judge: neverAsked
-    });
-    expect(tool.runnable).toBe(true);
-    expect(tool.unavailable).toBeUndefined();
-  });
-
-  test('deriving the tools asks the judge nothing', () => {
-    // `neverAsked` throws, so this passing is the assertion: a judge settles a
-    // rule when an action runs, and listing what an agent is offered runs
-    // none. A derivation that spent a model call per guarded action would make
-    // `kcmd agent-tools` cost money to read.
-    const [tool] = actionTools({
-      runtime: rt(guardedBy(judged, 'CreditIsJustified')),
-      judge: neverAsked
-    });
-    expect(tool.actionName).toBe('PlaceOrder');
-  });
-
-  test(
-      'a judge does not make a rule out of a constraint that states none',
-      () => {
-        // Supplying a judge must not widen what is offered past what it
-        // settles, and there is nothing to put to a judge here. A caller sent
-        // to fetch a judge, who fetched one and was refused again, has been
-        // sent the wrong way.
-        const bodyless: Constraint = {
-          name: 'QuantityIsPositive',
-          onViolation: 'reject',
-        };
-        const [tool] = actionTools({
-          runtime: rt(guardedBy(bodyless, 'QuantityIsPositive')),
-          judge: neverAsked,
-        });
-        expect(tool.runnable).toBe(false);
-        expect(tool.unavailable).toContain('states no rule to put to a judge');
-      });
 });
 
 
-// The shape of an entity's key used to decide whether a tool was offered at
-// all: one parameter carried a whole reference, and a key in more than one part
-// had nowhere to go. A parameter now carries a value, so that question is gone
-// and the tool is offered whatever the key looks like.
 describe('the shape of an entity key withholds no tool', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
 
@@ -417,8 +266,6 @@ describe('the shape of an entity key withholds no tool', () => {
   });
 
   test('a caller names each part of it as an ordinary parameter', () => {
-    // Nothing spells a two-part key for the author: the action states one
-    // parameter per column, and each takes its type from the field it names.
     const twoPart = withExecutor(model, {
       ...RUNNABLE,
       parameters: [
@@ -445,9 +292,6 @@ describe('the shape of an entity key withholds no tool', () => {
 });
 
 
-// The description tells a caller what it will meet. A rule that stops nothing
-// is not something it will meet, and saying otherwise teaches an LLM to expect
-// a refusal that never comes -- or to explain one that did not happen.
 describe('what a tool says it is gated by', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
 
@@ -509,47 +353,6 @@ describe('what a tool says it is gated by', () => {
 });
 
 
-
-
-// A `sql` executor's claim is that what runs is what the catalog published. A
-// handler exists for the executors this runtime cannot call, and it is one
-// function for the whole model -- so passing it everywhere would retract that
-// claim for every action at once, and nothing would say so.
-describe('a handler does not displace an action\'s own statements', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
-  const HANDLER_SQL = 'UPDATE orders SET o_totalprice = 999 WHERE 1 = 1';
-
-  test('the model\'s DML runs, not the handler\'s', async () => {
-    const store = new FakeStore();
-    const [tool] = actionTools({
-      runtime: rt(withExecutor(model, RUNNABLE), store.client),
-      handler: async () => ({statements: [{sql: HANDLER_SQL}]}),
-    });
-    const result = await tool.invoke({customer: 1, quantity: 2});
-    expect(result.applied).toBe(true);
-    expect(store.sql).toContain(
-        'UPDATE orders SET o_totalprice = 0 WHERE 1 = 0');
-    expect(store.sql).not.toContain(HANDLER_SQL);
-  });
-
-  test(
-      'a remote executor still gets the handler, which is what it is for',
-      async () => {
-        // The fixture's PlaceOrder is performed by MCP, so without a handler
-        // there is nothing this runtime can run.
-        const store = new FakeStore();
-        const [tool] = actionTools({
-          runtime: rt(withExecutor(model, {guards: []}), store.client),
-          handler: async () => ({statements: [{sql: HANDLER_SQL}]}),
-        });
-        expect(tool.runnable).toBe(true);
-        const result = await tool.invoke({customer: 1, quantity: 2});
-        expect(result.applied).toBe(true);
-        expect(store.sql).toContain(HANDLER_SQL);
-      });
-});
-
-
 describe('one name space for everything a model offers', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
 
@@ -574,40 +377,6 @@ describe('one name space for everything a model offers', () => {
 });
 
 
-describe('sorting the tools an adapter can actually offer', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
-  const runnable = withExecutor(model, RUNNABLE);
-
-  test('every runnable action is offered directly by modelTools', () => {
-    const {callable, withheld} = modelTools({runtime: rt(runnable)});
-    expect(callable.map(t => t.name)).toEqual(['place_order']);
-    expect(withheld).toEqual([]);
-  });
-
-  test('a guarded action without a judge is withheld, and says why', () => {
-    // A guard is the case that matters: the model says this write must be
-    // checked, no checker exists, so the tool must not be offered as callable.
-    const guarded = {
-      ...withExecutor(model, {...RUNNABLE, guards: ['UnderReview']}),
-      constraints: [{
-                     name: 'UnderReview',
-                     judgment: 'The quantity must be under 25.',
-                     onViolation: 'escalate',
-                   }] as Constraint[],
-    };
-    const {callable, withheld} = modelTools({runtime: rt(guarded)});
-    expect(callable).toEqual([]);
-    expect(withheld.map(t => t.name)).toEqual(['place_order']);
-    expect(withheld[0].unavailable).toContain('UnderReview');
-  });
-
-  test('the instruction is carried through untouched', () => {
-    const tools = modelTools({runtime: rt(runnable)});
-    expect(callableTools(tools).instruction).toBe(tools.instruction);
-  });
-});
-
-
 describe('the instruction an agent is given comes from the model', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
 
@@ -624,13 +393,10 @@ describe('the instruction an agent is given comes from the model', () => {
   test(
       'how to use the tools is supplied whether or not the model speaks',
       () => {
-        // The half that describes the tools is the derivation's to state: it
-        // is a contract this module defines, and a model that says nothing
-        // has not thereby withdrawn it.
         const {instruction} = modelTools({runtime: rt(model)});
         expect(model.aiContext?.instructions).toBeUndefined();
         expect(instruction).toContain('Never invent an identifier');
-        expect(instruction).toContain('did not happen');
+        expect(instruction).toContain('must not happen');
       });
 
   test('the two parts are separated, not run together', () => {
@@ -644,80 +410,6 @@ describe('the instruction an agent is given comes from the model', () => {
 });
 
 
-describe('what a caller is told about an outcome', () => {
-  test('a commit reports that it landed, and when', () => {
-    // Every argument is a value the caller supplied, so a commit has nothing
-    // to tell it about rows it picked out on its own -- the write either
-    // matched what the caller named or it refused.
-    const result = describeOutcome({
-      status: 'committed',
-      commitTimestamp: '2026-09-11T00:00:00Z',
-    });
-    expect(result.applied).toBe(true);
-    expect(result.committedAt).toBe('2026-09-11T00:00:00Z');
-    expect(result.unknown).toBeUndefined();
-  });
-
-  test('a commit carries what a rule reported without stopping it', () => {
-    // An advisory guard that did not hold, or one nothing could put to a
-    // judge, still committed. An agent shown only `applied: true` would report
-    // a write that met every rule the model states.
-    const result = describeOutcome({
-      status: 'committed',
-      warnings: ['\'CreditIsJustified\' was not checked: no judge to ask.'],
-    });
-    expect(result.applied).toBe(true);
-    expect(result.warnings).toEqual([
-      '\'CreditIsJustified\' was not checked: no judge to ask.'
-    ]);
-  });
-
-  test('a commit with nothing to report carries no warnings key', () => {
-    const result = describeOutcome({status: 'committed'});
-    expect(result.warnings).toBeUndefined();
-  });
-
-  test('a refusal is a failure the caller can read and act on', () => {
-    const result = describeOutcome(
-        {status: 'error', message: 'No Order matches \'xyz\'.'});
-    expect(result.applied).toBe(false);
-    expect(result.reason).toContain('No Order matches');
-    expect(result.whatToDo).toContain('Nothing was written');
-    expect(result.unknown).toBeUndefined();
-  });
-
-  test('a commit nothing can establish is not reported as a failure', () => {
-    // `applied: false` alone would invite a retry, and the write may already
-    // have landed. This is the one outcome where retrying is the wrong move.
-    const result = describeOutcome({
-      status: 'error',
-      message: 'The commit did not answer.',
-      indeterminate: true,
-    });
-    expect(result.applied).toBe(false);
-    expect(result.unknown).toBe(true);
-    expect(result.whatToDo).toContain('Do NOT retry');
-    expect(result.whatToDo).toContain('read the data back');
-  });
-
-  test('no outcome hands the caller an approval', () => {
-    // Whatever comes back, the party that needs approving cannot grant it.
-    for (const result
-             of [describeOutcome({status: 'committed', commitTimestamp: 't'}),
-                 describeOutcome({status: 'error', message: 'no'}),
-    ]) {
-      expect(Object.keys(result).join(' ').toLowerCase())
-          .not.toContain('approv');
-    }
-  });
-});
-
-
-// `fieldBinding` is ir.ts's stated single source of truth for whether a field
-// is bound, and a field awaiting transpilation carries only the vendor
-// expression it was imported with. `createSemanticRuntimes` transpiles nothing,
-// so that is exactly the state a vendor-imported model reaches
-// `readableEntities` in.
 describe('an entity whose fields await transpilation', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
 

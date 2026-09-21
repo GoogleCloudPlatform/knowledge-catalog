@@ -293,15 +293,13 @@ export function toPositional(
 // The HTTP status a PostgreSQL error is reported as, so that callers written
 // against the Spanner client's statuses reach the same conclusion.
 //
-// The distinction that matters is the one `run_action` draws around a commit:
-// an error it can be SURE did not commit is worth retrying and says so, while
-// anything else leaves the outcome unknown and must not claim otherwise. A
-// serialization failure and a deadlock are PostgreSQL's version of Spanner's
-// ABORTED -- the transaction is gone and applied nothing -- so they map to the
-// 409 the runtime already treats that way. A constraint violation is equally
-// definite. Anything unrecognized maps to 500, which the runtime reads as
-// indeterminate, because an error this code has never seen is not one to make
-// promises about.
+// The distinction that matters around a commit is whether the transaction
+// definitely did not apply: an error known to have rolled back is worth
+// retrying, while anything else leaves the outcome unknown and must not claim
+// otherwise. A serialization failure and a deadlock are PostgreSQL's version of
+// Spanner's ABORTED -- the transaction is gone and applied nothing -- so they
+// map to 409. A constraint violation is equally definite. Anything unrecognized
+// maps to 500, which indicates an indeterminate outcome.
 export function statusForSqlState(sqlState: string|undefined): number {
   if (!sqlState) return 500;
   // 40003 statement_completion_unknown is the one member of class 40 that is
@@ -339,9 +337,9 @@ export interface ResultSet {
 
 
 // Renders one PostgreSQL value the way the Spanner REST surface renders it: as
-// a string, or null. Doing this here is what lets `run_action` and the agent
-// tools read both backends with one set of rules -- they already parse from
-// strings, because that is the only thing Spanner ever gave them.
+// a string, or null. Doing this here lets callers read both Spanner and AlloyDB
+// with one set of rules -- they parse from strings, which is what Spanner's
+// REST surface returns.
 export function asString(value: unknown): string|null {
   if (value === null || value === undefined) return null;
   if (value instanceof Date) return value.toISOString();

@@ -1100,11 +1100,10 @@ describe('parameter description, required, and default', () => {
 
 
 describe('a published statement and a run read the verb the same way', () => {
-  // These are the forms `run_action.test.ts` already drives through a `sql`
-  // executor. Before the readers were shared, every one of them ran in the
-  // library and was refused by `kcmd push` (`validatePushRequirements`), which
-  // calls `sqlExecutorErrors` first -- so the tests below and those ones
-  // disagreed about the same model.
+  // Valid DML statements can begin with leading whitespace, comments, or CTEs,
+  // or use dialect-specific upsert forms (`INSERT OR UPDATE`). `kcmd push`
+  // (`validatePushRequirements`) calls `sqlExecutorErrors` to accept all of
+  // these while rejecting non-DML verbs.
   const target =
       '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
 

@@ -33,7 +33,7 @@ at startup as a model with one.
 ## Generate one
 
 Run it in a semantic-model scope, the same directory `kcmd push` and
-`kcmd agent-tools` work in:
+`kcmd profiles` work in:
 
 ```bash
 kcmd skills-generate --out skills
@@ -298,8 +298,7 @@ when it cannot settle one the model requires.
 
 ## See also
 
-* [Modeling write operations](actions.md) — declaring the actions a skill
-  describes, and `kcmd agent-tools`, which prints the same derivation instead of
-  writing it out
+* [Modeling write operations](actions.md) — declaring the actions, parameters,
+  and guards a skill describes
 * [Binding profiles](profiles.md) — the profile the deployment-specific section
   reads

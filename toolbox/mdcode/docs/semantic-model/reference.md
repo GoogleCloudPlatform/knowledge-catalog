@@ -88,35 +88,6 @@ seeds or drops that database asks for the name rather than repeating it:
 IFS=/ read -r PROJECT INSTANCE DATABASE <<<"$(kcmd profiles --print-store)"
 ```
 
-### agent-tools
-
-```bash
-kcmd agent-tools
-```
-
-Prints what an agent would be handed for the models in the scope: one write
-tool per action, and the model's instruction. Each tool carries its description,
-the calling guidance the model wrote, and one line per parameter giving that
-parameter's own description. Reading the model is all this does — it touches no
-store and runs nothing.
-
-A tool the runtime cannot call is listed and marked `[NOT RUNNABLE]` rather than
-dropped, with the reason in its description, so a refusal is visible before any
-agent exists. A guard is not one of those reasons: who settles a rule belongs to
-the application that embeds the runtime, and this command cannot know what that
-will be, so withholding a guarded tool here would describe a caller rather than
-the model. What it does print, in the tool's own description, is which rules the
-agent's calls will be held to.
-
-| Flag | Effect |
-|------|--------|
-| `--profile [name]` | Read the model under this binding profile. Defaults to `default_profile`, else the model's inline bindings. |
-
-A model whose profile names no Spanner database offers no tools, because calling
-one needs a store. That model is reported as offering none and the rest of the
-scope is still listed; the command exits non-zero. See
-[Hand it to an agent](actions.md#7-hand-it-to-an-agent).
-
 ### skills-generate
 
 ```bash

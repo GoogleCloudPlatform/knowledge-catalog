@@ -248,7 +248,8 @@ The first three kinds name a system that performs the write, which leaves the
 write itself opaque to your model: an `mcp` tool name says where the operation
 lives and nothing about what it touches. A `sql` executor carries the write
 instead, so what your action does becomes readable — and checkable — from the
-bound model, and the runtime can [run it](#7-hand-it-to-an-agent) rather than
+bound model, and an agent or tool framework can
+[run it directly against your store](#7-hand-it-to-an-agent) rather than
 handing the write to another system to perform.
 
 Statements are written in one database's own table and column names, in its own
@@ -289,19 +290,19 @@ what gates it and what it changes stay in the model, exactly as
 `statements` is a list because one business action is often more than one write.
 The transfer above debits one account, credits another, and records the
 transfer row itself, and a transfer that did only the first would lose money.
-kcmd opens one transaction, runs the statements in the order you wrote them,
-and commits at the end, so writes that only make sense together never apply by
-halves.
+Running the statements in the order you wrote them inside one transaction
+commits them together at the end, so writes that only make sense together never
+apply by halves.
 
 Carrying the write buys you two things:
 
 - **Your blast radius is checkable.** A reader can compare `affects` against the
   statements instead of taking it on trust.
 - **A guard becomes a real gate.** An MCP, REST or gRPC call commits inside a
-  system kcmd doesn't control, so a write it performed can't be rolled back if
-  the rest of the action fails. A `sql` action's guards settle before kcmd opens
-  a transaction, and a call that doesn't clear them never reaches one, so a
-  refusal leaves the store untouched.
+  system your caller doesn't control, so a write it performed can't be rolled
+  back if the rest of the action fails. Because a `sql` action declares its
+  statements up front, the agent or tool framework running it can settle its
+  guards before opening a transaction, so a refusal leaves the store untouched.
 
 ### Statements use your database names
 
@@ -311,7 +312,7 @@ executor above, the model's `Account` and `accountId` appear as `account` and
 `account_id`. Those are the table and the column that the entity's `source` key
 and its fields' `expression` keys bind it to.
 
-`@parameter` references are the exception: they name a value kcmd binds at call
+`@parameter` references are the exception: they name an argument bound at call
 time rather than anything in your database.
 
 A statement that says `accountId` where the column is `account_id` still passes
@@ -939,423 +940,130 @@ each action. The name, the description, the executor, the typed parameters,
 unchanged. [What push and pull preserve](fidelity.md) lists which parts of a
 model survive that trip and which don't.
 
-## 7. Hand it to an agent
+## 7. Hand it to an agent (`kcmd skills-generate`)
 
-You don't hand-write the write tools an agent calls. Point `kcmd` or the
-runtime library at your bound model, and it derives one **write tool** per
-action and one model-level **instruction**.
-
-Entities, relationships, and metrics get no tool here — an agent reads through
-its own read surface and calls these write tools to change the store. A
-constraint reaches an agent only through an action that names it in `guards`.
-
-### The set an agent is handed (`kcmd agent-tools`)
-
-`kcmd agent-tools` prints every write tool the derivation produces along with
-the model's instruction. It reads your model under the profile you name and
-opens no connection:
+You don't hand-write prompts or tool wrappers for each agent framework. Run
+`kcmd skills-generate` against your model and binding profile, and `kcmd`
+writes an [Agent Skill](https://agentskills.io) — a folder of Markdown files
+that Claude Code, Gemini CLI, Cursor, and other skill-compatible agents load
+directly:
 
 ```bash
-kcmd agent-tools
+kcmd skills-generate --out skills
 ```
 
-For the `payments` model built up on this page, that output is:
-
 ```
-Model 'payments' (payments_eg), profile 'operational':
-  store: my-project/my-instance/semantic_skill_demo
-
-  action  transfer_funds  (TransferFunds)
-      Move money from one account to another.
-
-      Resolve both accounts before calling.
-
-      This call is gated by TransferWithinAvailableBalance:
-      - TransferWithinAvailableBalance: The amount argument of this call must
-        not exceed Account.balance on the source account. That balance is on
-        record rather than stated in the arguments, and nothing puts it in
-        front of you. A transfer cannot move more than the source account
-        holds. Lower the amount, or choose another account.
-      source: integer -- The account the money leaves.
-      target: integer -- The account the money goes to.
-      amount: number -- How much money to move.
-
-  instruction:
-      Never move money between two accounts held by the same customer without
-      saying so in your answer.
-
-      Never invent an identifier. Never compute a total or a balance yourself;
-      the tools do that. When a tool reports that a write did not happen, read
-      the reason it gives and repeat it plainly; if it says a person has to
-      decide, say so and stop, because you cannot approve it yourself. When a
-      write did happen and the tool returns warnings, the change landed and a
-      rule still went unmet or unchecked: report both, because nobody else
-      will. Finish by saying what you changed.
+Wrote skills/payments/SKILL.md
+Wrote skills/payments/references/transfer-funds.md
 ```
 
-`transfer_funds` is offered, guard and all. The rule it is gated by is in the
-tool's own description, wording and all, so the agent argues its call against
-the rule before making it rather than learning it from a refusal.
+The generated skill splits into two layers so an agent only loads the detail of
+the action it actually needs:
 
-A guard is not a reason to withhold a tool here. Who settles a rule belongs to
-whoever dispatches the call, and this listing cannot know what that will be, so
-marking the action unrunnable would describe a caller rather than your model.
-What does get marked `[NOT RUNNABLE]` is what supplying a judge would not
-repair: no executor under this binding, an executor this runtime holds no
-handler for, a guard naming a rule your model never declares, or a guard naming
-one that states no rule to put to a judge. Such a tool is **withheld**, and the
-listing keeps it, printed named
-and described, with what it's waiting on underneath, because an action your
-model declares shouldn't vanish from the set your model offers.
+1. **`SKILL.md` (the router)** — loaded when the skill triggers. It carries the
+   model's description, a table of actions pointing to `references/*.md`, how
+   the model wants to be used (`ai_context.instructions`), how to read keys
+   from the bound store (`Finding a record`), and the deployment details for the
+   selected profile (`Running an action`).
+2. **`references/<action>.md` (one reference page per action)** — loaded on
+   demand when the agent picks an action. For `TransferFunds`,
+   `references/transfer-funds.md` carries:
 
-Nothing in the listing was written for a particular agent. It reads the same
-whether your caller is ADK, LangChain, or a person deciding whether the model
-says enough yet.
+```markdown
+# TransferFunds
 
-### Where each line comes from
+Action `TransferFunds` of the `payments` model. As a tool it is named `transfer_funds`.
 
-Most of the listing traces back to a key in your model or your profile, one
-line of output per key:
+Move money from one account to another.
 
-```
-  the model                              what the agent is handed
-  ─────────────────────────────────      ───────────────────────────────────
-  actions:
-    - name: TransferFunds          ───▶  action  transfer_funds
-      description: Move money…     ───▶      Move money from one account to
-                                               another.
-      ai_context:
-        instructions: Resolve…     ───▶      Resolve both accounts before
-                                               calling.
-      guards:                      ───▶      This call is gated by
-        - TransferWithinAvailable…             TransferWithinAvailableBalance:
-                                             - TransferWithinAvailableBalance:
-                                               The amount argument of this…
-      parameters:
-        - name: source
-          concept: Account
-          field: accountId         ───▶      source: integer -- The account the
-          description: The account             money leaves.
-            the money leaves.
-        - name: amount
-          type: Float              ───▶      amount: number -- How much money
-          description: How much                to move.
-            money to move.
+## Arguments
 
-  ai_context:
-    instructions: Never move…      ───▶  instruction:
-                                             Never move money between two
-                                             accounts held by the same…
+| Name | Type | Required | What to pass |
+| --- | --- | --- | --- |
+| `source` | integer | yes | The account the money leaves. |
+| `target` | integer | yes | The account the money goes to. |
+| `amount` | number | yes | How much money to move. |
 
-  the binding profile                    what the agent is handed
-  ─────────────────────────────────      ───────────────────────────────────
-  deployment_target                ───▶  store: <project>/<instance>/<db>
-  actions[].executor               ───▶  what the write tool runs
+## How to call it
+
+Resolve both accounts before calling.
+
+## Rules that apply to this call
+
+Each is settled before anything is written, from the attempted call and, where
+the rule is about something on record, the record.
+
+### TransferWithinAvailableBalance
+
+On violation: `reject`
+
+> The amount argument of this call must not exceed Account.balance on the source
+> account. That balance is on record rather than stated in the arguments, and
+> nothing puts it in front of you.
+
+If it does not hold: A transfer cannot move more than the source account holds.
+Lower the amount, or choose another account.
+
+## What it changes
+
+| Concept | Operation | Fields |
+| --- | --- | --- |
+| `Account` | `modify` | `balance` |
+| `Transfer` | `create` | `sourceAccountId`, `targetAccountId`, `amount`, `settledOn` |
 ```
 
-*Table 3: which key in your model or your profile produces each line of the
-agent listing.*
+### Where each part of the skill comes from
 
-Two things come from neither file. The derivation appends a paragraph to the
-instruction, its own text about using the tools, identical for every model. And
-where a call could not succeed, the runtime adds `[NOT RUNNABLE]` and the
-paragraph under it saying what stands in the way — absent above, because this
-call can.
-
-The instruction at the foot of the listing has two parts, because two different
-people own them.
-
-One part is your model's own `ai_context.instructions` — what this business asks
-of anything that acts on it, including the agents nobody has written yet. It
-belongs to the model because an agent carrying the same rule in its own source
-is a place someone can change that rule without the people who own the model
-finding out. Agents get replaced when frameworks change; your model doesn't.
-
-The other part is about the tools rather than the business: where a key has to
-come from, and what a refused write or a warning means. The derivation owes that
-part, because it describes a contract this module defines and your model never
-stated. Write it into each agent instead and you copy the same paragraph into
-every adapter, where it drifts in each one.
-
-So an agent that appends a persona of its own is saying something your model did
-not. Put it in the model.
-
-### What a write tool does
-
-A **write tool** runs the action. Calling `transfer_funds` puts every guard the
-action names to whatever judge the runtime behind it holds, binds every argument
-as a typed query parameter, and applies the action's statements in one
-transaction against the store your profile's deployment target names.
-
-Nothing is interpolated into a statement: the argument's ontology type — the
-field's, where the parameter projects one — decides the store type that
-parameter takes. Any failure before the commit rolls back, so no partial write
-survives, and an `UPDATE` or `DELETE` that matches no rows is one of those
-failures (`INSERT` is the one exemption, because it creates rows rather than
-finding them). A run ends applied, refused with nothing written, or unknown — a
-timeout or a 5xx where your store may have applied the write and lost the
-response, which is reported as unknown rather than as a rollback so a caller
-does not retry and apply the write twice.
-
-### What a withheld tool is waiting on
-
-A **write tool** is withheld for one of four reasons:
-
-- This binding supplies no executor, because the model declared none or a
-  profile withdrew it with `executor: null`.
-- The executor is `mcp`, `rest` or `grpc`, and the caller supplied no handler
-  to perform the write.
-- It names a guard this runtime cannot settle — a judgment with no judge to
-  ask, or one with no words in it.
-- The runtime has no store, because a call needs somewhere to land.
-
-How an entity is keyed is not among them. Every parameter is a scalar, so an
-action taking the three key fields of a three-part key is as callable as one
-taking a single id.
-
-The derivation asks the runtime for every one of these verdicts instead of
-working them out again, so the two can't drift: a tool advertised as runnable
-that refuses each call spends your agent's turn, and one withheld that would
-have worked is never tried. (`kcmd agent-tools` on the command line lists a
-guarded action as runnable even so, because a command-line listing describes
-the model rather than a particular caller's judge; `modelTools({runtime})` in
-code checks the `judge` on the runtime you hand in.)
-
-### When a rule stops the call
-
-Calling a write tool puts every rule the action names to the runtime behind it,
-and the outcomes below are what it does with the answers.
-
-Only a constraint the action names in `guards` has a say in a call, which is
-[section 2](#2-gate-it-with-a-constraint)'s rule reaching the runtime. A
-constraint your model declares and your action doesn't name has no bearing on
-the write, and nothing goes looking for one.
-
-A guard is a sentence, and settling a sentence needs something that reads one.
-A runtime given nothing to read with withholds the tool up front, and refuses a
-call that a non-advisory guard covers rather than running the write unchecked:
+Every section of `SKILL.md` and `references/<action>.md` maps directly to a key
+in your model or binding profile:
 
 ```
-Error: Action 'TransferFunds' is guarded by 'TransferWithinAvailableBalance',
-which is settled by reading the call, and this runtime was given no judge to
-ask. Running it would apply a write the model says must be checked first, so it
-is refused rather than run unchecked.
+  the model                              where it lands in the generated skill
+  ─────────────────────────────────      ─────────────────────────────────────────
+  name, description, actions[].name ───▶ SKILL.md frontmatter + action router table
+  ai_context.instructions           ───▶ SKILL.md "## How this model wants to be used"
+  entities[].fields                 ───▶ SKILL.md "## Finding a record" (physical
+                                           table & column map for looking up keys)
+  actions[]:
+    name, description               ───▶ references/<action>.md header & summary
+    parameters                      ───▶ references/<action>.md "## Arguments"
+    ai_context.instructions         ───▶ references/<action>.md "## How to call it"
+    guards (constraints[])          ───▶ references/<action>.md "## Rules that
+                                           apply to this call"
+    affects                         ───▶ references/<action>.md "## What it changes"
+
+  the binding profile                    where it lands in the generated skill
+  ─────────────────────────────────      ─────────────────────────────────────────
+  deployment_target                 ───▶ SKILL.md "## Finding a record" +
+                                           "## Running an action" (Store)
+  actions[].executor                ───▶ SKILL.md "## Running an action" (Executor
+                                           & whether each action is runnable)
 ```
 
-An advisory rule is one declaring `on_violation: warn`. It reports a violation
-instead of rejecting one, so gating on it would permanently block every run of a
-model that states advisory rules. An advisory guard stands down instead: the run
-carries on, and a warning line records that nothing checked the rule.
+*Table 3: which key in your model or binding profile produces each section of
+the generated Agent Skill.*
 
-A refusal is settled before a session opens, so a refused action leaves no
-transaction behind. A guard whose `judgment` has no words in it is refused the
-same way, before any judge is asked, because there is nothing to ask about.
+Two sections in `SKILL.md` come from the generator itself:
 
-### When the rule is a sentence
+- **The tool-contract rules in `How this model wants to be used`** — appended
+  after your model's `ai_context.instructions` so every skill states the same
+  rules once: never invent an identifier, ask the caller or read the store when
+  given a name instead of a key, repeat refusal reasons plainly, and always
+  report warnings alongside a successful write.
+- **`Not runnable under this profile` in `Running an action`** — when an action
+  cannot be run under the selected profile, its reference page is still
+  generated in full, and `SKILL.md` lists the action with the reason why:
+  1. The profile supplies no executor (none declared, or withdrawn with
+     `executor: null`).
+  2. The executor is `mcp`, `rest`, or `grpc` rather than a `sql` transaction.
+  3. The profile binds no operational store (`spanner` or `alloydb`).
+  4. The action names a non-advisory guard that is undeclared in `constraints`
+     or has an empty `judgment`.
 
-A guard stated as a `judgment` needs something that can read a sentence, and
-whatever dispatches the call has to be holding one. In the runtime shipped here
-that is Gemini on Vertex AI, hired by the application that embeds the runtime
-and handed to it once, at construction:
-
-```ts
-const judge = new GeminiJudge(ctx, {model: 'gemini-2.5-flash'});
-```
-
-Each rule's own sentence goes to the model with the attempted call. A verdict
-comes back with a reason, and `on_violation` decides what follows. With
-`reject` the call stops before a transaction opens. `escalate` stops it too and
-adds one sentence: "The model marks this rule 'escalate', so an approver may
-allow it; nothing here can." `warn` lets the write through and reports the
-verdict alongside the commit.
-
-Four things are in a refusal and kcmd wrote none of them: the constraint's name,
-your own sentence, the judge's reason, and the constraint's `description`, which
-is the line telling the caller what to do instead.
-
-**The rule is settled before the transaction opens.** A model call takes
-seconds, and holding write locks across one costs more than it buys, so the
-judge is asked first and the transaction opens only if the answer allows it. So
-no verdict is reached against the state the write produces, and none is reached
-under the transaction's locks either: two calls racing each other are judged
-independently, and a rule that only holds when they are serialised holds for
-neither. A rule about the state a write leaves, or one that has to hold under
-concurrency, belongs in your schema, where the store enforces it inside the
-transaction.
-
-**The judge gets the attempted call.** It receives the rule's text, the action's
-name and description, and the arguments as the caller stated them —
-`order=12347`, the value itself, and not the `Order` row it identifies. That's
-the whole of what it has.
-
-**A rule that never reached a judge is reported as unchecked.** You supplied no
-judge, or the model call failed. Either way the run learns nothing about the
-rule, and `on_violation` routes that like any other breach. An advisory guard
-lets the write through and warns, naming the rule and saying it was not checked.
-A guard declaring `reject` or `escalate` stops the call. The warning is there
-because committing in silence would tell you every rule passed when one was
-never put to anybody.
-
-### A rule the judge can't settle
-
-Some rules aren't about the call. *The credit must not exceed the total of the
-order it is applied to* compares an argument against a number in your database,
-and the caller is under no obligation to state it correctly. Nothing here goes
-and gets that number. A judge is handed the rule, the action and the arguments,
-and that is the whole of what it is shown.
-
-Write such a rule as a `judgment` anyway and what you get is a guess. Asked
-whether a $3.00 credit fits under order 12346's total, the judge has no total:
-it either reports that it can't tell — which `reject` and `escalate` turn into a
-refused call that was fine — or it answers against a figure it supplied itself.
-You don't get to choose which. So the judge is instructed to treat a rule it
-can't settle from the arguments as one that does not hold, and to say in its
-reason what was missing. That is the safe failure, not a working check.
-
-A rule like that belongs in your schema, where the store enforces it inside the
-transaction — the same place a rule about the state a write leaves belongs, for
-the reason given just above. `CreditWithinOrderTotal` and `CreditIsNotSplitToAvoidReview` in the
-worked example are both this kind: the first names a total that is on record,
-the second the credits already sitting on the order. They are written down here
-because the model is where the policy is recorded, and a rule nothing settles is
-still a rule an agent reading the action is told about. What no judge will do is
-enforce them.
-
-### Which rows a call touches
-
-Two things decide which rows a call touches, and they run at different moments:
-you pass a value, and the statement's own `WHERE` clause picks the rows that
-value lands on.
-
-**Passing a value.** An argument names a value rather than a row. Passing
-`source: 7` to `transfer_funds` doesn't mean *the account whose id is 7*; it
-means the number 7, bound to `@source` wherever the statement puts it, as the
-type `Account.accountId` declares.
-
-So a caller holding a name rather than an id has to turn one into the other
-first, by reading the store or asking for the key before the call. That's
-deliberate: finding the right row can be a search with several plausible
-answers, and the place to settle which one is in front of whoever is asking —
-not inside a write transaction, which would have to pick one silently and commit
-to it.
-
-**Targeting the write.** Your statement's `WHERE` clause decides how many rows
-it lands on, and nothing would stop one that hits every dormant account. That is
-what [section 3](#3-say-what-it-changes) means by `affects` declaring the blast
-radius rather than limiting it.
-
-The runtime checks one thing here: that an `UPDATE` or a `DELETE` matched
-something. Zero rows fails the run and rolls the transaction back, which catches
-an argument naming a row that isn't there. It can't catch an argument put in the
-wrong place — `WHERE region = @source` will match some row, and that row is the
-one your write lands on.
-
-### Calling it from code
-
-`kcmd agent-tools` prints these tools; `modelTools` returns them. Both take a
-**semantic runtime**: one model paired with the store your profile binds it to.
-`createSemanticRuntimes` assembles them the way `kcmd agent-tools` does, so your
-agent reads the model the CLI reads, under the same profile, with the same merge
-and the same warnings:
-
-```ts
-import {createSemanticRuntimes} from './src/libts/semantic/runtime/runtime';
-import {modelTools, callableTools} from './src/libts/semantic/runtime/agent_tools';
-
-const runtimes = await createSemanticRuntimes({profile: 'operational'});
-if ('error' in runtimes) throw new Error(runtimes.error);
-
-const runtime = runtimes[0];
-if (!runtime.store) throw new Error(runtime.storeError);
-
-const {callable, withheld, instruction} = callableTools(modelTools({runtime}));
-```
-
-`modelTools` returns `{actions, instruction}` — the two things the listing
-printed. `callableTools` then sorts the actions into the ones this binding can
-serve and the ones it can't, which is a split every adapter has to make and the
-same split every time. Each tool carries a `runnable` flag, and `unavailable`
-carries the reason. Offer `callable` to your agent, and report `withheld`
-instead of hiding it.
-
-Each tool is a name, a description, typed parameters and `invoke(args)`, so
-binding one to ADK, to LangChain or to an MCP server is a short adapter over
-that shape, and a second framework costs you nothing here. Nothing in this
-module imports an agent framework.
-
-`invoke` answers with three states: the write landed, the write didn't happen,
-or the statements ran and the commit gave no answer either way. That last one
-comes back as `unknown` alongside an explicit instruction not to retry, because
-a caller reading it as "nothing happened" applies the write twice. A write that
-landed carries `committedAt`; one that didn't carries `reason` and `whatToDo`.
-Only a write that landed carries `warnings`, so dropping them tells your agent a
-write met every rule the model states when it didn't.
-
-`modelTools` also takes `judge`, and an action guarded by a judgment is callable
-only when you pass one. `GeminiJudge` implements the seam over Vertex AI, and so
-does anything carrying a name and a `decide` method. Omit it and such an action
-is still derived and reported in `withheld`. The judge goes to the derivation
-rather than to each call because one object has to answer `runnable` and answer
-the call: a tool derived with a judge and then invoked without one would be
-advertised as callable and refused mid-call.
-
-Pass `handler` for an executor this runtime can't perform itself. An action with
-a `sql` executor never receives it. Such an action promises that the catalog
-published the statements it runs, and one handler serves the whole model, so
-handing it through would break that promise for every `sql` action at once.
-
-One call to `createSemanticRuntimes` returns a runtime for every model document
-in your entry group. Each runtime carries the store that its deployment target
-names, the profile it was built under, and the document it was authored in, so a
-message about one model can say which file and which profile produced it.
-
-`runtime.store.kind` is `'spanner'`, `'alloydb'` or `'bigquery'`, and only a
-Spanner or AlloyDB store takes a write. Ask a BigQuery-backed runtime for a
-client and you get an error naming the dataset instead, because an action's
-statements need an operational database. A model whose profile binds no store at
-all still gets a runtime, with `storeError` saying why. Its tools are still
-derived, each marked unavailable for that reason, so your agent is told what the
-model offers and why it can't reach it.
-
-### The commerce demo, worked through
-
-`demo/semantic-model/skill/` runs this against a live operational store, with no
-agent code at all: a commerce model, a binding profile, and an
-[Agent Skill](https://agentskills.io) generated from the pair by `kcmd
-skills-generate`. The skill is a folder of Markdown — a router naming the
-action, and a reference page carrying its arguments, its four rules verbatim and
-what it changes. Installed into a coding agent and handed a support request in
-English, that agent finds the order and attempts the write. Its README walks the
-steps and reaches all three of `on_violation`'s outcomes against that store: a
-$30 credit held because the model's $25 self-service ceiling is `escalate`, a
-credit written with a warning because the memo names no service failure, and a
-credit refused outright because the memo admits it's one piece of a larger
-amount.
-
-None of those three outcomes was decided by the agent reading the skill. The
-ceiling, the memo rule and the split-credit rule came out of the model, and the
-runtime settled each one on the way through the call — so an agent that ignores
-what the skill says about them still cannot get past them. Regenerate against a
-different model and profile and the skill describes a different business;
-nothing is hand-written, so there is nothing to keep in step.
-
-The README also states what that costs and what it can't do. The model guards on
-four judgments, so every guard on every call is a model call. That is most of
-the latency in the runs it captures. Three of its rules fall short of what they
-say:
-
-- **An order's total matching its line items is declared and not enforced.**
-  It's a statement about the state the write leaves behind, and guards settle
-  before the write.
-- **The credit-within-total rule is declared and not enforced.** The total is a
-  row, and a judge sees the arguments — see
-  [a rule the judge can't settle](#a-rule-the-judge-cant-settle). Its
-  transcripts were recorded when a judge could read; nothing settles it now.
-- **The split-credit rule catches only a disclosed split.** It fires because
-  the model tells callers to disclose a split in the memo, which makes it a
-  check on honest mistakes rather than a control. A version that held
-  regardless would count the credits already on the order, which is the same
-  stored fact nothing here reaches.
+For all `kcmd skills-generate` flags (`--out`, `--name`, `--profile`, `--force`)
+and how the deployment-specific section stays isolated to `SKILL.md`, see
+[Generating an Agent Skill](skills.md) and the full end-to-end walkthrough in
+`demo/semantic-model/skill/`.
 
 ## What is not modeled yet
 

@@ -18,11 +18,9 @@
  * startup as a model with one.
  *
  * Nothing here decides what an action means. `modelTools` already turns a
- * model into the tools an agent is offered -- the tool name, the description
- * with the gating rules folded in, the typed parameters, and whether this
- * binding can run it -- and an agent calling through ADK or MCP reads exactly
- * those. A second derivation here would be a skill that describes a different
- * tool than the one that runs, so this module renders what `modelTools`
+ * bound model into the action descriptors a skill needs -- the tool name, the
+ * description with the gating rules folded in, the typed parameters, and
+ * whether this binding can run it -- so this module renders what `modelTools`
  * returns and derives nothing of its own beyond layout.
  *
  * The skill is written against the LOGICAL model, which is what makes it worth
@@ -45,7 +43,6 @@
 import {Action, AffectedConcept, Constraint, SemanticModel} from './ir';
 import {ActionTool, modelTools, readableEntities} from './runtime/agent_tools';
 import {dialectFor} from './runtime/dialect';
-import {ASSUMED_JUDGE} from './runtime/judge';
 import {SemanticRuntime} from './runtime/runtime';
 import {storeLine} from './runtime/store';
 
@@ -103,7 +100,7 @@ export function generateSkill(opts: GenerateSkillOptions): SkillPackage|{
   const nameError = whyNameIsInvalid(name);
   if (nameError) return {error: nameError};
 
-  const {actions, instruction} = modelTools({runtime, judge: ASSUMED_JUDGE});
+  const {actions, instruction} = modelTools({runtime});
   const warnings: string[] = [];
   if (!actions.length) {
     warnings.push(

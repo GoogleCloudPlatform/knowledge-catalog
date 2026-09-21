@@ -80,8 +80,7 @@ export type Store = SpannerStore|AlloyDbStore|BigQueryStore;
  * They are separate classes over entirely different transports, and this union
  * is what says they answer the same questions. Both offer the same six
  * methods with the same result shape, so a caller holding one of these runs
- * statements without knowing which database it reached -- which is what makes
- * `run_action` and the agent tools one implementation rather than two.
+ * statements without knowing which database it reached.
  */
 export type DataClient = SpannerDataClient|AlloyDbDataClient;
 

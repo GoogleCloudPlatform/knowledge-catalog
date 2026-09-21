@@ -20,11 +20,11 @@ one. The skill is a folder of Markdown, and the rules are stated in the model
 underneath it whatever reads it.
 
 One thing to know before you start, because the rest of this page depends on
-it: **no command line in this repository currently runs an action or settles its
-rules.** The runtime settles them when an application embeds it and gives it a
-judge, and no caller in this repository does today. Where that matters, this
-page says so, and the transcripts recorded when a command line did run actions
-and settle their guards are marked as such.
+it: **`kcmd` compiles the model and generates the skill, and does not ship an
+action runner or a rule judge.** Enforcing an action's guards before opening a
+transaction is the job of the calling agent or a third-party tool framework
+that wraps the action. Where that matters, this page says so, and the
+transcripts recorded against the earlier CLI action runner are marked as such.
 
 ## What this demo is arguing
 
@@ -40,13 +40,13 @@ from them. So:
 
 - **The skill is generated, not written.** Change the model, regenerate. There
   is no second copy of the business to keep in step.
-- **The rules are not in the skill.** The skill *describes* them so the reading
-  agent knows what it is up against; settling them is the job of the runtime
-  that performs the write, not of the agent that asks. That separation is the
-  argument, and it is the part this revision does not currently demonstrate:
-  the runtime settles a rule only when its caller supplies a judge, and the
-  `kcmd` executor the skill names supplies none. An agent that ignores the
-  description gets past them today.
+- **The rules are stated once, in the model.** The skill renders them so the
+  reading agent (or a third-party tool framework wrapping the action) knows
+  what gates the write. Because `kcmd` does not ship an action runner or a
+  judge, nothing in this repository enforces those rules outside the agent: an
+  agent that runs statements directly against the database and ignores the
+  skill's instructions gets past them unless a third-party tool framework
+  mediates the write.
 - **Any harness will do.** The output is the published Agent Skill layout, so
   Claude Code, Gemini CLI, Cursor and the other clients that read that layout
   all take it as-is.
@@ -281,45 +281,19 @@ Every number quoted in this README came from a run against exactly this seed. To
 start over, drop the database with the command under [Cleaning
 up](#11-cleaning-up) and create and seed it again.
 
-## 4. Check what the model declares
+## 4. Check what the profile binds
 
-Before generating anything, see what `kcmd` derives from the scope. Run this
-from this directory, the one holding `catalog.yaml`:
+Before generating the skill, check that the profile binds the model to your
+store. Run this from this directory, the one holding `catalog.yaml`:
 
 ```console
-$ kcmd agent-tools
-Model 'commerce' (commerce_demo), profile 'spanner':
-  store: my-project/my-instance/semantic_skill_demo
-
-  action  issue_credit  (IssueCredit)
-      Credit a customer against one order -- a late delivery, a coupon, a
-      shipping charge applied in error. The credit is added as a negative line
-      and the order total is recomputed from the lines.
-
-      This call is gated by CreditWithinOrderTotal, CreditUnderReviewThreshold,
-      CreditMemoNamesAServiceFailure, CreditIsNotSplitToAvoidReview:
-...
+$ kcmd profiles
+Model 'commerce' (commerce_demo):
+  spanner  (default)
+    target: spanner:my-project/my-instance/semantic_skill_demo
+    entities: Customer, Order, LineItem
+    actions: IssueCredit (sql)
 ```
-
-That is the model, the binding, and the tools an agent is handed, all derived.
-
-### Where the rules are settled
-
-Settling a rule stated in words takes a language model, and hiring one is a
-decision for whoever dispatches the call — it costs a model call per guard and
-credentials to reach one. So the runtime takes a judge from the application that
-embeds it, at construction:
-
-```ts
-const judge = new GeminiJudge(ctx, {model: 'gemini-2.5-flash'});
-```
-
-Given one, the runtime puts each guard to it before the transaction opens and
-routes the verdict by `on_violation`. Given none, it refuses the call rather
-than running a write the model says must be checked.
-
-**No command line in this repository settles a guard.** Until one does, the
-transcripts below are the record of what settling them looked like.
 
 ### What the rules caught, when something was settling them
 
@@ -498,7 +472,9 @@ what a coded column's values actually are — `item, tax, fee, or credit` — an
 agent that guesses filters on a value the column never holds and gets an empty
 answer back, which reads like the record not existing.
 
-Then **Running an action**, the one deployment-specific section, which says so:
+Then **Running an action**, the one deployment-specific section, which names the
+bound store and executor and advises how an external agent framework should
+wrap the actions as tools (since `kcmd` itself only emits the skill):
 
 ```markdown
 Everything above is true of this model wherever it is deployed. This section is not: it describes the binding this skill was generated from, which is profile `spanner`.

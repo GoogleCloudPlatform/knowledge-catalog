@@ -1,39 +1,17 @@
 /**
- * Turning a model into agent tools.
+ * Deriving action tools and schema metadata for a bound semantic model.
  *
- * An action declares everything a write tool needs: a name, a description of
- * what it does, its typed parameters, the guidance an AI caller should follow
- * (`ai_context.instructions`), and the rules that gate it. This module reads
- * that out and hands back plain descriptions of the tools, each with a
- * function that runs it.
- *
- * The description is framework-neutral on purpose. Nothing here imports an
- * agent framework, so binding these to Google ADK, to LangChain, or to an MCP
- * server is a short adapter the caller writes, and adding a second framework
- * costs nothing in this file.
- *
- * What this module does NOT do is decide anything. A tool built here is a way
- * to ask. Every refusal is decided by runAction, and an agent that calls a
- * tool it should not have gets back an outcome it has to report rather than a
- * knob it can turn.
- *
- * What the runtime can settle shows through here, because it decides which
- * tools are worth handing out. Every guard is settled by asking a judge, so
- * passing one in is what makes a guarded action callable at all; without one
- * runAction refuses rather than running the write unchecked. A tool for an
- * action that would be refused every time it was called is a bad thing to hand
- * a caller that cannot see why. So a tool carries `runnable`, and an adapter
- * binds the ones that are; the rest are still returned, named and explained,
- * because an action the model declares should not vanish from a listing of
- * what the model declares.
+ * An action declares a name, a description of what it does, its typed
+ * parameters, the guidance an AI caller should follow
+ * (`ai_context.instructions`), and the rules that gate it (`guards`). This
+ * module resolves those declarations against the active binding profile so
+ * `kcmd skills-generate` can render the model as an Agent Skill.
  */
 
 import {boundTable} from '../binding';
 import {Action, ActionParameter, Constraint, Entity, fieldBinding, SemanticModel} from '../ir';
 
 import {SqlDialect} from './dialect';
-import {Judge} from './judge';
-import {ActionHandler, ActionOutcome, isParameterRequired, runAction, sentence, whyRefusedWithoutRunning,} from './run_action';
 import {runtimeClient, SemanticRuntime} from './runtime';
 
 
@@ -49,8 +27,7 @@ export interface ToolParameter {
   description: string;
   /**
    * Whether the caller must supply this argument. An action parameter is
-   * required unless declared `required: false` or given a `default`; entity
-   * filters are all optional.
+   * required unless declared `required: false` or given a `default`.
    */
   required: boolean;
   /**
@@ -74,74 +51,19 @@ export interface ActionTool {
   description: string;
   parameters: ToolParameter[];
   /**
-   * Whether calling this would reach the store. False when the runtime would
-   * refuse it before opening a transaction -- because the action names a guard
-   * nothing here can settle, or because this binding supplies no executor.
-   * Which guards can be settled depends on what was passed in: a judged guard
-   * needs a `judge`, and an expression needs an evaluator that does not exist
-   * yet. `invoke` still works and still reports the refusal; this is here so
-   * an adapter can decline to offer a tool that cannot work.
+   * Whether this action can run under the active binding profile. False when
+   * the profile supplies no operational store, no `sql` executor, or when the
+   * action names a guard that is undeclared or states no rule text.
    */
   runnable: boolean;
   /** Why `runnable` is false, in words a caller can report. */
   unavailable?: string;
-  /** Runs the action and reports the outcome in terms an agent can act on. */
-  invoke(args: Record<string, unknown>): Promise<ToolResult>;
-}
-
-
-/**
- * What a caller is told after invoking a tool.
- *
- * Three states, not two. A write that landed and a write that did not are the
- * obvious pair; the third is a commit whose outcome nothing can establish,
- * which a caller must not read as "nothing happened" and retry.
- */
-export interface ToolResult {
-  applied: boolean;
-  /** Present when the write committed. */
-  committedAt?: string;
-  /** Why the write did not happen, in the runtime's own words. */
-  reason?: string;
-  /**
-   * Set when the write may or may not have landed and nothing here can tell.
-   * The statements ran and the commit itself failed to answer.
-   */
-  unknown?: boolean;
-  /**
-   * What the caller should do next, when the outcome permits only one thing.
-   */
-  whatToDo?: string;
-  /**
-   * What a rule reported without stopping the write. An advisory guard whose
-   * rule did not hold lands here, and so does one nothing was able to put to a
-   * judge. Dropping these would tell the agent the write met every rule the
-   * model states, which is the one thing it must not conclude on its own.
-   */
-  warnings?: string[];
 }
 
 
 export interface ActionToolOptions {
   /** The model to derive tools from, and the store they would run against. */
   runtime: SemanticRuntime;
-  /**
-   * Supplies the writes for an action whose executor lives in another system.
-   * Without one, only a `sql` executor is runnable, because the runtime will
-   * not wrap a call it could not roll back.
-   */
-  handler?: ActionHandler;
-  /**
-   * Settles the guards the model states in words. An action guarded by a
-   * judgment is refused without one, so passing a judge here is what makes
-   * such an action offerable at all.
-   *
-   * The same judge answers `runnable` and the call, which is why it is passed
-   * to the derivation rather than to each invocation: a tool derived with a
-   * judge and then called without one would be advertised as runnable and
-   * refused mid-call.
-   */
-  judge?: Judge;
 }
 
 
@@ -158,23 +80,8 @@ export function actionTools(opts: ActionToolOptions): ActionTool[] {
 
 
 function toolFor(action: Action, opts: ActionToolOptions): ActionTool {
-  // A handler stands in for an executor this runtime cannot call. It must not
-  // stand in for one it CAN: the whole claim of a `sql` executor is that what
-  // runs is what the catalog published and reviewed, and `handler` here is one
-  // function for the whole model, so passing it through unconditionally would
-  // retract that claim for every action at once -- silently, since runAction
-  // prefers a handler over the action's own statements.
-  const handler = action.executor?.kind === 'sql' ? undefined : opts.handler;
-  // Asked of the runtime rather than worked out again here. Two copies of this
-  // rule drift, and neither direction of the drift is visible: a tool said to
-  // be runnable that refuses every call, or one withheld that would have run.
-  // Two ways a call cannot go through, reported in the order that helps: what
-  // is wrong with THIS action first, since it names something to fix in the
-  // model, then the runtime having no store, which is the same sentence on
-  // every tool and says nothing about this one.
   const model = opts.runtime.model;
-  const blocked =
-      whyRefusedWithoutRunning(model, action, handler, opts.judge) ??
+  const blocked = whyRefusedWithoutRunning(model, action) ??
       noStore(opts.runtime) ?? undefined;
   const tool: ActionTool = {
     name: snakeCase(action.name),
@@ -182,19 +89,72 @@ function toolFor(action: Action, opts: ActionToolOptions): ActionTool {
     description: toolDescription(action, model, blocked),
     parameters: action.parameters.map(toolParameter),
     runnable: !blocked,
-    async invoke(args: Record<string, unknown>): Promise<ToolResult> {
-      const outcome = await runAction({
-        runtime: opts.runtime,
-        actionName: action.name,
-        args,
-        handler,
-        judge: opts.judge,
-      });
-      return describeOutcome(outcome);
-    },
   };
   if (blocked) tool.unavailable = blocked;
   return tool;
+}
+
+
+function whyRefusedWithoutRunning(
+    model: SemanticModel, action: Action): string|null {
+  const executor = action.executor;
+  if (!executor) {
+    return `Action '${action.name}' has no executor under this binding, so ` +
+        `there is nothing to run. An executor is a physical binding: a ` +
+        `profile supplies one, and a profile that writes 'executor: null' ` +
+        `withdraws it. The action is still declared and still published; it ` +
+        `is only not performable here, and is performed somewhere else.`;
+  }
+  if (executor.kind !== 'sql') {
+    return `Action '${action.name}' is executed by ${
+               executor.kind.toUpperCase()}. Declare the action with a 'sql' ` +
+        `executor.`;
+  }
+  const advisory = new Set((model.constraints ?? [])
+                               .filter(c => c.onViolation === 'warn')
+                               .map(c => c.name));
+  const guards = (action.guards ?? []).filter(g => !advisory.has(g));
+  const blank =
+      (model.constraints ?? [])
+          .filter(c => guards.includes(c.name) && !(c.judgment ?? '').trim())
+          .map(c => c.name);
+  if (blank.length) {
+    const says = blank.length === 1 ? 'states no rule to put to a judge' :
+                                      'state no rule to put to a judge';
+    return `Action '${action.name}' is guarded by ${quoteList(blank)}, ` +
+        `which ${says}. There is nothing to put to a judge, so the action ` +
+        `is refused rather than run unchecked.`;
+  }
+  const declared = new Set((model.constraints ?? []).map(c => c.name));
+  const undeclared = guards.filter(g => !declared.has(g));
+  if (undeclared.length) {
+    return `Action '${action.name}' is guarded by ${quoteList(undeclared)}, ` +
+        `which ${undeclared.length === 1 ? 'is' : 'are'} not declared by ` +
+        `model '${
+               model.name}'. Running it would apply a write the model says ` +
+        `must be checked first, so it is refused rather than run unchecked.`;
+  }
+  return null;
+}
+
+
+function quoteList(names: readonly string[]): string {
+  const quoted = names.map(n => `'${n}'`);
+  if (quoted.length === 1) return quoted[0];
+  return `${quoted.slice(0, -1).join(', ')} and ${quoted[quoted.length - 1]}`;
+}
+
+
+function isParameterRequired(param: ActionParameter): boolean {
+  if (param.default !== undefined) return false;
+  return param.required !== false;
+}
+
+
+function sentence(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return '';
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
 
@@ -208,8 +168,6 @@ function toolDescription(
   if (action.description) parts.push(action.description.trim());
   const instructions = action.aiContext?.instructions?.trim();
   if (instructions) parts.push(instructions);
-  // Said even when the call cannot be made, because the reason it cannot is
-  // that these rules exist and this run has no way to settle them.
   const gates = gatingConstraints(action, model);
   if (gates.length) {
     const names = joinNames(gates.map(c => c.name));
@@ -238,16 +196,6 @@ function toolDescription(
 }
 
 
-// Which rules a caller will meet. `guards` names them, and it names all of
-// them: every constraint is settled before the write, from the attempted call
-// alone, so there is no second set checked afterwards that a caller would have
-// no way to anticipate.
-//
-// An ADVISORY guard is not named either. A constraint whose `onViolation` is
-// `warn` reports and lets the write through, so the runtime stands down and
-// the call goes ahead -- telling a caller it is "gated" by a rule that gates
-// nothing is the one kind of claim this file must not make. Saying less is the
-// honest half of saying it accurately.
 function gatingConstraints(action: Action, model: SemanticModel): Constraint[] {
   const byName = new Map((model.constraints ?? [])
                              .filter(c => c.onViolation !== 'warn')
@@ -258,17 +206,9 @@ function gatingConstraints(action: Action, model: SemanticModel): Constraint[] {
 }
 
 
-// Every parameter is a scalar, so every one is described the same way: its own
-// words, and its own type. A parameter projected from a field arrives here
-// already carrying the field's type and wording, resolved by the loader, so
-// there is nothing left for this to tell apart -- and nothing for it to say
-// about resolution, because the runtime resolves nothing.
 function toolParameter(param: ActionParameter): ToolParameter {
   const said = param.description?.trim();
   const guidance = scalarFormatGuidance(param.type);
-  // `sentence` whether or not the guidance follows: a description authored
-  // without a terminator is read by a model alongside every other one, and the
-  // odd one out reads as a fragment of the next line rather than its own.
   const out: ToolParameter = {
     name: param.name,
     type: jsonType(param.type),
@@ -295,9 +235,6 @@ function scalarFormatGuidance(dataType: string|undefined): string|undefined {
 }
 
 
-// The model's scalar types over the four JSON types a tool schema can express.
-// Anything temporal or opaque travels as a string, because that is what the
-// model's own text form uses and what the store parses back.
 function jsonType(dataType: string|undefined): ToolParameterType {
   switch (dataType) {
     case 'Integer':
@@ -336,45 +273,6 @@ function article(dataType: string|undefined): string {
 }
 
 
-/**
- * An outcome in the terms a caller can act on.
- *
- * Exported because an adapter for a framework with its own result shape needs
- * this mapping without needing the rest of the tool.
- */
-export function describeOutcome(outcome: ActionOutcome): ToolResult {
-  switch (outcome.status) {
-    case 'committed': {
-      const result: ToolResult = {applied: true};
-      if (outcome.commitTimestamp) result.committedAt = outcome.commitTimestamp;
-      if (outcome.warnings?.length) result.warnings = outcome.warnings;
-      return result;
-    }
-    case 'error':
-      // `indeterminate` is the one outcome where "applied: false" would be a
-      // lie the caller acts on: it retries, and the write lands twice.
-      if (outcome.indeterminate) {
-        return {
-          applied: false,
-          unknown: true,
-          reason: outcome.message,
-          whatToDo: 'Do NOT retry. Report that the outcome is unknown, and ' +
-              'read the data back before anything else acts on it.',
-        };
-      }
-      return {
-        applied: false,
-        reason: outcome.message,
-        whatToDo: 'Correct what the reason describes, or report it. Nothing ' +
-            'was written.',
-      };
-  }
-}
-
-
-// `IssueCredit` -> `issue_credit`, `HTTPRetry` -> `http_retry`. Tool names are
-// snake_case across every framework this targets, and an action name is
-// PascalCase by the model's own convention.
 function snakeCase(name: string): string {
   return name.replace(/([a-z0-9])([A-Z])/g, '$1_$2')
       .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
@@ -393,10 +291,6 @@ function joinNames(names: string[]): string {
 export interface ModelTools {
   /** One write per action. */
   actions: ActionTool[];
-  /** The ones a call would actually reach the store through. */
-  callable: ActionTool[];
-  /** The rest. Each carries `unavailable`, saying why. */
-  withheld: ActionTool[];
   /**
    * What to tell an agent holding these tools: the model's own
    * `ai_context.instructions` followed by how the tools are meant to be used.
@@ -407,10 +301,6 @@ export interface ModelTools {
 
 /**
  * Every tool a model offers, with the names guaranteed distinct.
- *
- * Two actions can snake-case alike (`IssueCredit` and `issue-credit`), and
- * there is no principled winner between two author names, so the later one is
- * numbered.
  */
 export function modelTools(opts: ActionToolOptions): ModelTools {
   const actions = actionTools(opts);
@@ -420,53 +310,11 @@ export function modelTools(opts: ActionToolOptions): ModelTools {
   }
   return {
     actions,
-    callable: actions.filter(tool => tool.runnable),
-    withheld: actions.filter(tool => !tool.runnable),
     instruction: instructionFor(opts.runtime.model),
   };
 }
 
 
-/** Derived tools sorted by whether this binding can serve them. */
-export interface CallableTools {
-  /** The ones a call would actually reach the store through. */
-  callable: ActionTool[];
-  /** The rest. Each carries `unavailable`, saying why. */
-  withheld: ActionTool[];
-  /** `ModelTools.instruction`, carried through unchanged. */
-  instruction: string;
-}
-
-
-/**
- * Sort the derived tools into the ones this binding can serve and the ones it
- * cannot.
- */
-export function callableTools(tools: ModelTools): CallableTools {
-  return {
-    callable: tools.callable,
-    withheld: tools.withheld,
-    instruction: tools.instruction,
-  };
-}
-
-
-// What to tell an agent that holds these tools, and the split is the point.
-//
-// The first part is the model's own `ai_context.instructions`: what this
-// business asks of anything that acts on it. It belongs to the model because
-// it outlives whichever agent is holding the tools this week, and because an
-// agent that carries it in its own source is a place the rule can be changed
-// without anyone who owns the model noticing.
-//
-// The second part is about the tools rather than the business -- where a key
-// has to come from, and what a refused write or a warning means. That half is
-// owed by whoever derived the tools, because it describes a contract this file
-// defines and the model never stated. Written into each agent instead, it is
-// the same paragraph copied into every adapter, drifting in each one.
-//
-// So neither half is the agent's to write, and an agent that appends its own
-// is saying something the model did not.
 function instructionFor(model: SemanticModel): string {
   const parts: string[] = [];
   const stated = model.aiContext?.instructions?.trim();
@@ -474,17 +322,15 @@ function instructionFor(model: SemanticModel): string {
   parts.push(
       'Never invent an identifier. When you are given a name or a ' +
       'description where an action wants a key, ask the caller or read the ' +
-      'store directly. When a tool reports that a write did not happen, read ' +
-      'the reason it gives and repeat it plainly; if it says a person has to ' +
-      'decide, say so and stop, because you cannot approve it yourself. When ' +
-      'a write did happen and the tool returns warnings, the change landed ' +
-      'and a rule still went unmet or unchecked: report both, because ' +
-      'nobody else will. Finish by saying what you changed.');
+      'store directly. Check every rule that gates an action before running ' +
+      'it: when a rule says a write must not happen, refuse and explain why; ' +
+      'when it says a person has to decide, say so and stop, because you ' +
+      'cannot approve it yourself; when an advisory rule goes unmet, report ' +
+      'both the change and the warning. Finish by saying what you changed.');
   return parts.join('\n\n');
 }
 
 
-// Reserves `base`, or the first numbered form of it that is free.
 function distinct(base: string, taken: Set<string>): string {
   let name = base;
   for (let n = 2; taken.has(name); n++) name = `${base}_${n}`;
@@ -493,18 +339,12 @@ function distinct(base: string, taken: Set<string>): string {
 }
 
 
-// Why nothing derived from this runtime can be called, or null when it can
-// be. Both halves of a runtime are needed to make a call: a model says what to
-// do and a store is where it happens, and a runtime carrying only the first is
-// a model an agent can read about but not use.
 function noStore(runtime: SemanticRuntime): string|null {
   const client = runtimeClient(runtime);
   return 'error' in client ? client.error : null;
 }
 
 
-// A field is readable when the profile bound it to a plain column. One bound
-// to an expression is skipped rather than guessed at.
 interface BoundField {
   name: string;
   type: string;
@@ -519,8 +359,6 @@ function boundFields(entity: Entity): BoundField[] {
   for (const field of entity.fields) {
     const expr = (fieldBinding(field) ?? '').trim();
     if (!expr || !/^[A-Za-z_]\w*$/.test(expr)) continue;
-    // A field with no declared type travels as text, which is the carrier
-    // every scalar has a faithful string form in.
     const said = field.description?.trim();
     bound.push({
       name: field.name,
@@ -546,10 +384,6 @@ export interface ReadableEntity {
 /**
  * What there is to read under this runtime: one entry per entity the model
  * declares, the profile binds to a table, and a statement can name.
- *
- * An abstract entity has no table, a field bound to an expression is not a
- * column, and a data source that is not a table reference cannot be read from.
- * An entity this leaves out is one nothing here can point a reader at.
  */
 export function readableEntities(
     runtime: SemanticRuntime, dialect: SqlDialect): ReadableEntity[] {

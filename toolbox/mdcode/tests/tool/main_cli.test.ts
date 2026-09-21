@@ -112,8 +112,8 @@ describe('kcmd: --help and --version', () => {
     // `cli.args` and clears the match together, so what is left here is
     // `['import']` -- a word that names no command, which is exactly what
     // reading `cli.args` instead of `process.argv` would misread as a
-    // misspelled verb. `agent-tools` takes no positional and leaves `cli.args`
-    // empty, so it cannot stand in for this.
+    // misspelled verb. `skills-generate` takes no positional and leaves
+    // `cli.args` empty, so it cannot stand in for this.
     const {code, out} = run('owl', 'import', '--help');
     expect(code).toBe(0);
     expect(out).toContain('kcmd owl');
@@ -129,7 +129,7 @@ describe('kcmd: --help and --version', () => {
   });
 
   test('`--help` before a known verb still succeeds', () => {
-    const {code, out} = run('--help', 'agent-tools');
+    const {code, out} = run('--help', 'skills-generate');
     expect(code).toBe(0);
     expect(out).not.toContain('Unknown command');
   });

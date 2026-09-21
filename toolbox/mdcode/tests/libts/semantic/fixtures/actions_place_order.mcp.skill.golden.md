@@ -17,7 +17,7 @@ Each action below has a reference page with the arguments it takes, the rules th
 
 ## How this model wants to be used
 
-Never invent an identifier. When you are given a name or a description where an action wants a key, ask the caller or read the store directly. When a tool reports that a write did not happen, read the reason it gives and repeat it plainly; if it says a person has to decide, say so and stop, because you cannot approve it yourself. When a write did happen and the tool returns warnings, the change landed and a rule still went unmet or unchecked: report both, because nobody else will. Finish by saying what you changed.
+Never invent an identifier. When you are given a name or a description where an action wants a key, ask the caller or read the store directly. Check every rule that gates an action before running it: when a rule says a write must not happen, refuse and explain why; when it says a person has to decide, say so and stop, because you cannot approve it yourself; when an advisory rule goes unmet, report both the change and the warning. Finish by saying what you changed.
 
 ## Finding a record
 
@@ -52,7 +52,7 @@ Everything above is true of this model wherever it is deployed. This section is 
 
 No action in this model can be run under this profile:
 
-- `PlaceOrder` -- Action 'PlaceOrder' is executed by MCP, which runs outside this transaction and could not be rolled back if the commit failed. Supply a handler that performs the write as DML, or declare the action with a 'sql' executor.
+- `PlaceOrder` -- Action 'PlaceOrder' is executed by MCP. Declare the action with a 'sql' executor.
 
 Report that rather than retrying.
 
