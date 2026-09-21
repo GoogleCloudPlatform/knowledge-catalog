@@ -1124,8 +1124,10 @@ names the guards it did not check; it is for finding out whether your statements
 do what you meant, not for finding out whether your rules hold. The two demands
 pull apart: a judge costs a model call per guard and credentials to reach one,
 and an author checking a `WHERE` clause should not have to stand either up. The
-[commerce demo](../../demo/semantic-model/skill/README.md) is where the guards
-are actually settled, against the same model, live.
+[commerce demo](../../demo/semantic-model/skill/README.md) is where what it
+takes to settle them is shown, against the same model — in runs recorded while a
+command line still hired a judge, because nothing in this repository hires one
+today.
 
 The rules below run against the commerce model under `demo/semantic-model/skill`
 — the [credit policy worked through earlier](#a-credit-policy-worked-through),
@@ -1141,7 +1143,7 @@ declares `warn` on the memo rule; the three outputs below come from setting that
 one field to each of its values in turn, so a single rule shows all three
 branches.
 
-> These three were recorded through `kcmd action-run`, back when it took a judge
+> These three were recorded through `kcmd action run`, back when it took a judge
 > and could give that judge the store to read — which is why each of them shows
 > the judge reading `Orders`. Neither is a command-line flag any more, for the
 > reason above. They are
@@ -1592,9 +1594,9 @@ withheld that would have worked is never tried.
 
 `kcmd agent-tools` prints these tools; `modelTools` returns them. Both take a
 **semantic runtime**: one model paired with the store your profile binds it to.
-`createSemanticRuntimes` assembles them the way `kcmd action` does, so your
-agent reads the model the CLI reads, under the same profile, with the same merge
-and the same warnings:
+`createSemanticRuntimes` assembles them the way `kcmd action-list` and
+`kcmd action-run` do, so your agent reads the model the CLI reads, under the
+same profile, with the same merge and the same warnings:
 
 ```ts
 import {createSemanticRuntimes} from './src/libts/semantic/runtime/runtime';

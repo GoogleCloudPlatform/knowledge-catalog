@@ -540,9 +540,9 @@ reads the document ([§6](#6-the-extension-mechanism)).
   refused rather than run past its rules. No command line here does that:
   `kcmd action-run` checks no guard, because who settles one belongs to whoever
   dispatches the call in earnest. The [commerce
-  demo](../../demo/semantic-model/skill/README.md) is where it is shown. Rules
-  in
-  [Reference → Validation](reference.md#validation).
+  demo](../../demo/semantic-model/skill/README.md) shows what hiring a judge
+  takes, in recorded runs — nothing in this repository embeds one today.
+  Rules in [Reference → Validation](reference.md#validation).
 
   A constraint says two things about a violation, under two separate keys.
   **`on_violation`** is what a violation does to the write that tripped it:

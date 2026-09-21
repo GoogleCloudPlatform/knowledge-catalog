@@ -123,11 +123,11 @@ watching one land sees what did not stand between them and it.
 
 Running an action is not what `kcmd` is for — the command exists so that an
 author can exercise a model they are curating, and find out whether the
-statements do what they meant, without first standing up an agent. To see the
-guards actually settled, run the model through something that embeds the
-runtime: the [commerce demo](../../demo/semantic-model/skill/README.md) hires
-a judge, gives it the model's tables to read, and refuses the call when a rule
-does not hold.
+statements do what they meant, without first standing up an agent. Settling the
+guards takes something that embeds the runtime and hires a judge for it. Nothing
+in this repository does today — the [commerce
+demo](../../demo/semantic-model/skill/README.md) shows what it takes and keeps
+recorded runs of it, but its own executor is this command, which settles none.
 
 What this command still refuses is a model that is wrong about its own rules: a
 guard naming a constraint the model does not declare, or one whose `judgment`
