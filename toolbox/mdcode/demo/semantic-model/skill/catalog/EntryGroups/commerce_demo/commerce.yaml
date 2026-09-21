@@ -50,10 +50,10 @@ semantic_model:
     # keeps privately is a rule that can be changed without the people who own
     # the model finding out. Agents come and go; the model stays.
     #
-    # Only what is specific to this business belongs here. How to use a lookup
-    # tool, and what to do when a write is refused, are properties of the tools
-    # rather than of commerce, so the derivation supplies those and this does
-    # not repeat them.
+    # Only what is specific to this business belongs here. Where a key has to
+    # come from, and what to do when a write is refused, are properties of the
+    # tools rather than of commerce, so the derivation supplies those and this
+    # does not repeat them.
     ai_context:
       instructions: >-
         You are working an internal operations desk for this business, fixing
@@ -153,13 +153,12 @@ semantic_model:
         ai_context:
           instructions: >-
             Give the order as its number, the amount in dollars, and a memo
-            saying why. Look the order up first if you were given a customer
-            name rather than a number: an Order is identified by its key alone.
-            Say in the memo what actually went wrong on the order -- a late
-            delivery, a damaged item, a shipping charge applied in error --
-            and, if this credit is part of a larger amount owed, say that and
-            give the total. A rule reads the memo, so a fact left out of it is
-            a fact the rule cannot weigh.
+            saying why: an Order is identified by its key alone. Say in the
+            memo what actually went wrong on the order -- a late delivery, a
+            damaged item, a shipping charge applied in error -- and, if this
+            credit is part of a larger amount owed, say that and give the
+            total. A rule reads the memo, so a fact left out of it is a fact
+            the rule cannot weigh.
 
     # The rules, settled by a judge reading the attempted call and, where the
     # rule is about something on record, the record. All four are what

@@ -61,3 +61,15 @@ export interface Judge {
   readonly name: string;
   decide(request: JudgeRequest): Promise<JudgeVerdict>;
 }
+
+/**
+ * Placeholder judge used when inspecting a model's derived tools (`kcmd
+ * agent-tools` and `kcmd skills-generate`) without invoking them.
+ */
+export const ASSUMED_JUDGE: Judge = {
+  name: 'the judge the runtime supplies',
+  decide: () => {
+    throw new Error('static tool derivation must not call a judge');
+  },
+};
+

@@ -121,18 +121,8 @@ export interface RunActionOptions {
   handler?: ActionHandler;
   // Settles the guards this model states in words. Omitting it does not mean
   // "run those unjudged": an action with a guard to settle is refused, because
-  // a judgment is the only body a constraint has and only a judge settles one.
+  // a judgment is the one body a constraint has and only a judge settles one.
   judge?: Judge;
-  // Runs the action without checking its guards at all. Not a weaker check --
-  // no check: every refusal a guard would have produced is skipped and the
-  // write happens. It exists because the refusals above are total. An author
-  // trying a model out locally, against their own database, has no judge to
-  // supply and would find every guarded action unrunnable; the alternative is
-  // deleting the guards to test the write, which is worse. The outcome names
-  // every guard the run passed over, in `warnings`, so nothing that reads the
-  // outcome -- a command line, or an agent handed the result of a tool call --
-  // is ever told the write passed rules nothing consulted.
-  skipGuards?: boolean;
 }
 
 
@@ -158,8 +148,8 @@ export async function runAction(opts: RunActionOptions):
   }
   // Decided BEFORE touching the store, so an action this runtime will not run
   // fails without having opened a transaction at all.
-  const refusal = whyRefusedWithoutRunning(
-      model, action, opts.handler, opts.judge, opts.skipGuards);
+  const refusal =
+      whyRefusedWithoutRunning(model, action, opts.handler, opts.judge);
   if (refusal) return {status: 'error', message: refusal};
 
   // Checked before the judge as well. A judge is asked whether a rule holds
@@ -183,13 +173,7 @@ export async function runAction(opts: RunActionOptions):
   // never the state the write produced, which means a rule about the RESULT of
   // a write is out of reach here and belongs in the schema.
   const warnings: string[] = [];
-  // `skipGuards` means nobody is asked -- the whole point of it -- so it
-  // stands the asking down too, not just the refusal for want of a judge
-  // and the unsettled-guard warnings. A caller that passed both used to
-  // reach the judge with those warnings suppressed, so a guard whose
-  // judgment states nothing, or one that threw while being asked, committed
-  // with no line about it anywhere.
-  if (opts.judge && !opts.skipGuards) {
+  if (opts.judge) {
     const judged = judgedGuards(model, action);
     if (judged.length) {
       // Returned rather than thrown. A throw from here reaches the catch at
@@ -204,27 +188,8 @@ export async function runAction(opts: RunActionOptions):
   // caller shown no line for it reads the write as having passed every rule the
   // model states. Every one reaching here is advisory, because anything
   // stricter was refused above.
-  //
-  // This travels with the outcome rather than being left to whoever called,
-  // including under `skipGuards`. A caller that asked for the skip does know it
-  // asked, but it is not the only one reading the result: `describeOutcome`
-  // hands these warnings to an agent as the tool's own answer, and an agent
-  // told only `applied: true` has been told the write met every rule the model
-  // states, which is the one thing it did not.
-  //
-  // One line for the whole skip rather than one per rule. The rules were not
-  // checked for one reason, and repeating it four times buries the outcome of
-  // the write under a list that says the same thing each time.
-  const skipped = skippedGuards(action, opts.skipGuards);
-  if (skipped.length) {
-    warnings.push(
-        `guards were not checked: ${skipped.join(', ')} -- this run was ` +
-        `told to skip them, and the write was made anyway`);
-  } else {
-    for (const {constraint, why} of unsettledGuards(
-             model, action, opts.judge)) {
-      warnings.push(`${citation(constraint)} was not checked: ${why}`);
-    }
+  for (const {constraint, why} of unsettledGuards(model, action, opts.judge)) {
+    warnings.push(`${citation(constraint)} was not checked: ${why}`);
   }
 
   // Whether a transaction was ever opened. A session that could not be
@@ -490,7 +455,7 @@ const DEFINITELY_NOT_COMMITTED = new Set([400, 401, 403, 404, 409, 412]);
  */
 export function whyRefusedWithoutRunning(
     model: SemanticModel, action: Action, handler?: ActionHandler,
-    judge?: Judge, skipGuards?: boolean): string|null {
+    judge?: Judge): string|null {
   // No executor at all is a binding outcome, not a broken model: the executor
   // is a physical facet, so an action can be declared here and performable
   // only somewhere else. Say which it is, because the fix is in the profile
@@ -515,7 +480,7 @@ export function whyRefusedWithoutRunning(
   // parameter is a scalar and binds as one, so a key with three parts is three
   // ordinary parameters and there is no shape of key this runtime cannot pass
   // to a statement. What is left is the guards.
-  return unsafeToRunUnchecked(model, action, judge, skipGuards);
+  return unsafeToRunUnchecked(model, action, judge);
 }
 
 
@@ -533,8 +498,7 @@ export function whyRefusedWithoutRunning(
 // does is the author's, which is what `affects` describes and what the
 // evaluator will check against the statements once it exists.
 function unsafeToRunUnchecked(
-    model: SemanticModel, action: Action, judge?: Judge,
-    skipGuards?: boolean): string|null {
+    model: SemanticModel, action: Action, judge?: Judge): string|null {
   // A guard names a constraint the author says is checked before the call.
   // One whose `onViolation` is `warn` reports rather than refuses, so an
   // evaluator would let the write through, and refusing here would make a
@@ -578,14 +542,7 @@ function unsafeToRunUnchecked(
   // Refusing it HERE is what keeps this function and `runAction` in agreement:
   // a tool advertised as runnable and then refused mid-call spends the
   // caller's turn and teaches it nothing.
-  //
-  // `skipGuards` is the caller saying nobody will be asked, so this refusal
-  // stands down. Only this one: the two above are the model being wrong about
-  // its own rules -- a guard that quotes nothing, a guard that names nothing --
-  // and not asking repairs neither. They are also what a push refuses, so
-  // standing them down here would make this runtime disagree with the
-  // validation that gates publishing the model.
-  if (!skipGuards && guards.length && !judge) {
+  if (guards.length && !judge) {
     return `Action '${action.name}' is guarded by ${quoteList(guards)}, ` +
         `which ${guards.length === 1 ? 'is' : 'are'} settled by reading the ` +
         `call, and this runtime was given no judge to ask. Running it would ` +
@@ -715,15 +672,6 @@ function citation(constraint: Constraint): string {
 // `unsafeToRunUnchecked` has refused everything stricter, so what turns up
 // here is advisory: it did not stop the write, and it still has to be
 // reported rather than left to read as a rule that passed.
-// The guards a `skipGuards` run passed over, in the order the action names
-// them. Reads the action rather than the model's constraints, because a guard
-// naming a constraint that does not exist was refused before this point and a
-// run that reaches here names only real ones.
-function skippedGuards(
-    action: Action, skipGuards?: boolean): readonly string[] {
-  if (!skipGuards) return [];
-  return action.guards ?? [];
-}
 
 
 function unsettledGuards(model: SemanticModel, action: Action, judge?: Judge):

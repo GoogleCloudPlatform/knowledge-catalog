@@ -142,16 +142,6 @@ export interface ActionToolOptions {
    * refused mid-call.
    */
   judge?: Judge;
-  /**
-   * Derive the tools as a caller that will not check the guards at all: the
-   * write happens and every rule the model states goes unenforced. For trying
-   * a model out where no judge is configured, which is otherwise a model whose
-   * every guarded action is unofferable.
-   *
-   * Passed to the call as well as to the derivation, for the reason `judge` is:
-   * a tool derived one way and called the other is advertised wrongly.
-   */
-  skipGuards?: boolean;
 }
 
 
@@ -183,8 +173,8 @@ function toolFor(action: Action, opts: ActionToolOptions): ActionTool {
   // model, then the runtime having no store, which is the same sentence on
   // every tool and says nothing about this one.
   const model = opts.runtime.model;
-  const blocked = whyRefusedWithoutRunning(
-                      model, action, handler, opts.judge, opts.skipGuards) ??
+  const blocked =
+      whyRefusedWithoutRunning(model, action, handler, opts.judge) ??
       noStore(opts.runtime) ?? undefined;
   const tool: ActionTool = {
     name: snakeCase(action.name),
@@ -199,7 +189,6 @@ function toolFor(action: Action, opts: ActionToolOptions): ActionTool {
         args,
         handler,
         judge: opts.judge,
-        skipGuards: opts.skipGuards,
       });
       return describeOutcome(outcome);
     },
@@ -404,6 +393,10 @@ function joinNames(names: string[]): string {
 export interface ModelTools {
   /** One write per action. */
   actions: ActionTool[];
+  /** The ones a call would actually reach the store through. */
+  callable: ActionTool[];
+  /** The rest. Each carries `unavailable`, saying why. */
+  withheld: ActionTool[];
   /**
    * What to tell an agent holding these tools: the model's own
    * `ai_context.instructions` followed by how the tools are meant to be used.
@@ -425,7 +418,12 @@ export function modelTools(opts: ActionToolOptions): ModelTools {
   for (const tool of actions) {
     tool.name = distinct(tool.name, taken);
   }
-  return {actions, instruction: instructionFor(opts.runtime.model)};
+  return {
+    actions,
+    callable: actions.filter(tool => tool.runnable),
+    withheld: actions.filter(tool => !tool.runnable),
+    instruction: instructionFor(opts.runtime.model),
+  };
 }
 
 
@@ -443,19 +441,11 @@ export interface CallableTools {
 /**
  * Sort the derived tools into the ones this binding can serve and the ones it
  * cannot.
- *
- * Every adapter has to make this split, and it is the same split every time. A
- * tool the runtime cannot run is still declared, still published and still
- * worth naming -- but offering it as callable spends a turn on a call that
- * cannot succeed and teaches the agent nothing it can act on.
- *
- * What to do about `withheld` stays the caller's: print it, log it, refuse to
- * start. Dropping it in silence is the one thing this does not make easy.
  */
 export function callableTools(tools: ModelTools): CallableTools {
   return {
-    callable: tools.actions.filter(tool => tool.runnable),
-    withheld: tools.actions.filter(tool => !tool.runnable),
+    callable: tools.callable,
+    withheld: tools.withheld,
     instruction: tools.instruction,
   };
 }
@@ -469,11 +459,11 @@ export function callableTools(tools: ModelTools): CallableTools {
 // agent that carries it in its own source is a place the rule can be changed
 // without anyone who owns the model noticing.
 //
-// The second part is about the tools rather than the business -- what a refused
-// write or a warning means. That half is owed by whoever derived the tools,
-// because it describes a contract this file defines and the model never stated.
-// Written into each agent instead, it is the same paragraph copied into every
-// adapter, drifting in each one.
+// The second part is about the tools rather than the business -- where a key
+// has to come from, and what a refused write or a warning means. That half is
+// owed by whoever derived the tools, because it describes a contract this file
+// defines and the model never stated. Written into each agent instead, it is
+// the same paragraph copied into every adapter, drifting in each one.
 //
 // So neither half is the agent's to write, and an agent that appends its own
 // is saying something the model did not.
@@ -482,13 +472,14 @@ function instructionFor(model: SemanticModel): string {
   const stated = model.aiContext?.instructions?.trim();
   if (stated) parts.push(stated);
   parts.push(
-      'Never invent an identifier. Never compute a total or a balance ' +
-      'yourself; the tools do that. When a tool reports that a write did not ' +
-      'happen, read the reason it gives and repeat it plainly; if it says a ' +
-      'person has to decide, say so and stop, because you cannot approve it ' +
-      'yourself. When a write did happen and the tool returns warnings, the ' +
-      'change landed and a rule still went unmet or unchecked: report both, ' +
-      'because nobody else will. Finish by saying what you changed.');
+      'Never invent an identifier. When you are given a name or a ' +
+      'description where an action wants a key, ask the caller or read the ' +
+      'store directly. When a tool reports that a write did not happen, read ' +
+      'the reason it gives and repeat it plainly; if it says a person has to ' +
+      'decide, say so and stop, because you cannot approve it yourself. When ' +
+      'a write did happen and the tool returns warnings, the change landed ' +
+      'and a rule still went unmet or unchecked: report both, because ' +
+      'nobody else will. Finish by saying what you changed.');
   return parts.join('\n\n');
 }
 
@@ -514,11 +505,7 @@ function noStore(runtime: SemanticRuntime): string|null {
 
 // A field is readable when the profile bound it to a plain column. One bound
 // to an expression is skipped rather than guessed at.
-//
-// Exported so a generated skill can list the physical tables and columns this
-// profile binds, keeping the agent from querying INFORMATION_SCHEMA to find
-// them.
-export interface BoundField {
+interface BoundField {
   name: string;
   type: string;
   column: string;
@@ -527,7 +514,7 @@ export interface BoundField {
 }
 
 
-export function boundFields(entity: Entity): BoundField[] {
+function boundFields(entity: Entity): BoundField[] {
   const bound: BoundField[] = [];
   for (const field of entity.fields) {
     const expr = (fieldBinding(field) ?? '').trim();

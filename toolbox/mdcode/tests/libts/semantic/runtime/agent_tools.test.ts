@@ -16,7 +16,8 @@ import * as path from 'node:path';
 import * as spanner from '../../../../src/libts/gcp/spanner';
 import {Action, Constraint, Entity, SemanticModel} from '../../../../src/libts/semantic/ir';
 import {loadModels} from '../../../../src/libts/semantic/loader';
-import {actionTools, boundFields, callableTools, describeOutcome, modelTools} from '../../../../src/libts/semantic/runtime/agent_tools';
+import {actionTools, callableTools, describeOutcome, modelTools, readableEntities} from '../../../../src/libts/semantic/runtime/agent_tools';
+import {dialectFor} from '../../../../src/libts/semantic/runtime/dialect';
 import {Judge} from '../../../../src/libts/semantic/runtime/judge';
 import {SemanticRuntime} from '../../../../src/libts/semantic/runtime/runtime';
 
@@ -54,14 +55,8 @@ function rt(
 class FakeStore {
   readonly database = 'projects/p/instances/i/databases/d';
   readonly statements: spanner.Statement[] = [];
-  queryStatus = 200;
-  queryMessage: string|undefined = undefined;
-  sessionThrows = false;
 
   async withSession<T>(fn: (s: string) => Promise<T>): Promise<T> {
-    if (this.sessionThrows) {
-      throw new Error('could not create a session on d (403).');
-    }
     return await fn('sessions/1');
   }
   async beginReadWrite() {
@@ -73,9 +68,6 @@ class FakeStore {
   }
   async executeQuery(_s: string, stmt: spanner.Statement) {
     this.statements.push(stmt);
-    if (this.queryStatus !== 200) {
-      return {status: this.queryStatus, message: this.queryMessage};
-    }
     return {status: 200, result: {rows: []}};
   }
   async commit() {
@@ -558,35 +550,6 @@ describe('a handler does not displace an action\'s own statements', () => {
 });
 
 
-// A tool derived with `skipGuards` is the only way a guarded action is offered
-// as callable at all, so what it says when it commits is the whole of what the
-// agent learns about the rules.
-describe('a skipped guard reaches the agent, not just the caller', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
-
-  test('the tool result names the guard the run passed over', async () => {
-    // The run used to come back `applied: true` and nothing else. The
-    // suppression was justified by the caller already knowing it asked for the
-    // skip -- true of the caller, and irrelevant to the agent reading the
-    // tool's result, which never saw the call that built the tool. An agent
-    // told only that the write applied has been told it met every rule the
-    // model states.
-    const store = new FakeStore();
-    const [tool] = actionTools({
-      runtime:
-          rt(withExecutor(model, {executor: RUNNABLE.executor}), store.client),
-      skipGuards: true,
-    });
-    expect(tool.runnable).toBe(true);
-    const result = await tool.invoke({customer: 1, quantity: 2});
-    expect(result.applied).toBe(true);
-    expect(result.warnings ?? []).toHaveLength(1);
-    expect((result.warnings ?? [])[0])
-        .toContain('guards were not checked: OrderWithinCustomerCredit');
-  });
-});
-
-
 describe('one name space for everything a model offers', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
 
@@ -615,14 +578,13 @@ describe('sorting the tools an adapter can actually offer', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
   const runnable = withExecutor(model, RUNNABLE);
 
-  test('every runnable action is offered', () => {
-    const {callable, withheld} =
-        callableTools(modelTools({runtime: rt(runnable)}));
+  test('every runnable action is offered directly by modelTools', () => {
+    const {callable, withheld} = modelTools({runtime: rt(runnable)});
     expect(callable.map(t => t.name)).toEqual(['place_order']);
     expect(withheld).toEqual([]);
   });
 
-  test('a guarded action is withheld, and says why', () => {
+  test('a guarded action without a judge is withheld, and says why', () => {
     // A guard is the case that matters: the model says this write must be
     // checked, no checker exists, so the tool must not be offered as callable.
     const guarded = {
@@ -633,8 +595,7 @@ describe('sorting the tools an adapter can actually offer', () => {
                      onViolation: 'escalate',
                    }] as Constraint[],
     };
-    const {callable, withheld} =
-        callableTools(modelTools({runtime: rt(guarded)}));
+    const {callable, withheld} = modelTools({runtime: rt(guarded)});
     expect(callable).toEqual([]);
     expect(withheld.map(t => t.name)).toEqual(['place_order']);
     expect(withheld[0].unavailable).toContain('UnderReview');
@@ -755,7 +716,8 @@ describe('what a caller is told about an outcome', () => {
 // `fieldBinding` is ir.ts's stated single source of truth for whether a field
 // is bound, and a field awaiting transpilation carries only the vendor
 // expression it was imported with. `createSemanticRuntimes` transpiles nothing,
-// so that is exactly the state a vendor-imported model reaches `boundFields` in.
+// so that is exactly the state a vendor-imported model reaches
+// `readableEntities` in.
 describe('an entity whose fields await transpilation', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
 
@@ -774,11 +736,15 @@ describe('an entity whose fields await transpilation', () => {
     });
   }
 
-  test('yields the same bound fields it would after transpilation', () => {
-    const before =
-        boundFields(model.entities.find(e => e.name === 'customer')!);
-    const after = boundFields(
-        untranspiled('customer').find(e => e.name === 'customer')!);
-    expect(after).toEqual(before);
+  test('yields the same readable schema it would after transpilation', () => {
+    const baseRuntime = rt(model);
+    const dialect = dialectFor(baseRuntime.store);
+    const before = readableEntities(baseRuntime, dialect)
+                       .find(r => r.entity.name === 'customer')!;
+    const after =
+        readableEntities(
+            rt({...model, entities: untranspiled('customer')}), dialect)
+            .find(r => r.entity.name === 'customer')!;
+    expect(after.fields).toEqual(before.fields);
   });
 });

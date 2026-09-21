@@ -413,8 +413,8 @@ describe('what a key matching nothing costs', () => {
 
   test('still says where a key has to come from', () => {
     const out = generate(rt(noEntities)).files['SKILL.md'];
-    expect(out).toContain('Never invent an identifier');
     expect(out).toContain('## Finding a record');
+    expect(out).toContain('This skill offers writes, not reads.');
     expect(out).toContain('the key has to come from somewhere else');
   });
 

@@ -45,7 +45,7 @@
 import {Action, AffectedConcept, Constraint, SemanticModel} from './ir';
 import {ActionTool, modelTools, readableEntities} from './runtime/agent_tools';
 import {dialectFor} from './runtime/dialect';
-import {Judge} from './runtime/judge';
+import {ASSUMED_JUDGE} from './runtime/judge';
 import {SemanticRuntime} from './runtime/runtime';
 import {storeLine} from './runtime/store';
 
@@ -83,26 +83,6 @@ export interface GenerateSkillOptions {
    */
   name?: string;
 }
-
-/**
- * Stands in for the judge the runtime supplies.
- *
- * A rule stated in words is settled by asking a judge, and the runtime asks it
- * before the transaction opens -- never the agent making the call, which would
- * be the constrained thing certifying itself. So a guarded action only ever
- * runs against a runtime that has one, and that is the runtime a skill
- * describes. Whether whoever ran `skills-generate` had a judge configured is a
- * fact about that invocation and about nothing the document is read against.
- *
- * `modelTools` asks only whether a judge is there. Generating a skill settles
- * no rule, so this throws if anything reaches it.
- */
-const ASSUMED_JUDGE: Judge = {
-  name: 'the judge the runtime supplies',
-  decide: () => {
-    throw new Error('generating a skill must not ask a judge');
-  },
-};
 
 
 /**

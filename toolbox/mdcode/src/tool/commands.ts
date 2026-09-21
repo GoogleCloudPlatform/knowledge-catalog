@@ -21,6 +21,7 @@ import {serializeModel} from '../libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
 import {AvailabilityReport, DEFAULT_PROFILE, mergeProfileOntoDoc, pruneUnavailable,} from '../libts/semantic/resolve_profiles';
 import {ActionTool, modelTools} from '../libts/semantic/runtime/agent_tools';
+import {ASSUMED_JUDGE} from '../libts/semantic/runtime/judge';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {dataClientFor, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
@@ -1334,7 +1335,7 @@ export async function agentTools(options: AgentOptions = {}): Promise<number> {
     console.log();
 
     const {actions, instruction} =
-        modelTools({runtime, skipGuards: true});
+        modelTools({runtime, judge: ASSUMED_JUDGE});
     for (const tool of actions) printActionTool(tool);
     console.log('  instruction:');
     console.log(indentBlock(instruction));

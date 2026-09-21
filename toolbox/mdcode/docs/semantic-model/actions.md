@@ -399,9 +399,8 @@ That rule is the honest shape of a balance check and it is also one nothing here
 enforces: the balance is a row, a judge is shown the arguments and no more, and
 a rule it cannot settle it reports as not holding — which under `reject` refuses
 every call. Declared this way it is a policy on record and a schema constraint
-waiting to be written, not a control. Keep reading with that in mind; [a rule
-the judge can't settle](#a-rule-the-judge-cant-settle) is where it is worked
-through.
+waiting to be written, not a control. Keep reading with that in mind; [what a
+guard can see](#what-a-guard-can-see) explains why.
 
 Whatever dispatches the call is what checks its guards, and it checks every one
 of them before the call, with the arguments bound and before any transaction
@@ -464,8 +463,7 @@ A rule that turns on a stored value is the second. Nothing fetches that value
 for the judge, so the sentence gets settled against a figure the model supplied
 itself or refused for want of one. Write the rule down anyway if the model is
 where your policy lives, and enforce it in your schema — see
-[a rule the judge can't settle](#a-rule-the-judge-cant-settle) for what you get
-if you don't.
+[what a guard can see](#what-a-guard-can-see).
 
 Every constraint must state `on_violation`, and any of the three words will do.
 Omit it and the push fails, because an unmarked constraint would reject, and
@@ -482,9 +480,10 @@ reads.
 Nothing settles a rule about a stored value the call doesn't carry. A judge is
 given the rule, the action and the arguments, and goes nowhere for anything
 else, so *the credit must not exceed the total of the order* has no total to
-compare against — see
-[a rule the judge can't settle](#a-rule-the-judge-cant-settle). Put that rule in
-your schema, where the store enforces it inside the transaction.
+compare against. The judge is instructed to treat a rule it cannot settle from
+the arguments as one that does not hold and to say in its reason what was
+missing — a safe failure, not a working check. Put that rule in your schema,
+where the store enforces it inside the transaction.
 
 Nothing settles a rule about the state a write *leaves behind*, either. "An
 order's total equals the sum of its lines" has nothing to look at when the guard
@@ -525,20 +524,8 @@ consistent:
    constraint.
 
 All five are about wording. Claim no more in the wording than a judge can
-settle.
-
-A judge settles a guard from the call's arguments and nothing else, so a
-sentence about stored data is a rule it has no evidence for. The instructions
-tell it to refuse in that case and say what's missing, but that instruction
-binds a model rather than the runtime, so the rule can come back held instead —
-a guard that never fires and never says why. Phrase the condition around the
-arguments the call carries, and try every guard against a case it ought to
-refuse.
-
-A rule that does need a stored row — comparing a credit against the order total,
-say — has no binding point here at all. Put it in your schema, where the store
-enforces it inside the transaction. See
-[a rule the judge can't settle](#a-rule-the-judge-cant-settle).
+settle: phrase the condition around the arguments the call carries, and put any
+rule that depends on a stored row into your schema.
 
 ## A credit policy, worked through
 
@@ -549,7 +536,7 @@ rules bear on whether they may:
 ```
   the business rule                        a breach   settled
   ──────────────────────────────────────   ────────   ────────────────────────
-  1  no credit above the order's total     escalate   judgment, reading a row
+  1  no credit above the order's total     escalate   judgment (policy; schema enforces)
   3  the memo names a service failure      warn       judgment
   4  not one credit split to evade review  reject     judgment
   ──────────────────────────────────────   ────────   ────────────────────────
@@ -638,7 +625,7 @@ else to put them but a policy document nothing links to.
 the amount argument against a number that lives in the database, and a judge
 sees the arguments only, so the rule is recorded in the model and enforced in
 your schema — see
-[a rule the judge can't settle](#a-rule-the-judge-cant-settle). Rule 2 is the
+[what a guard can see](#what-a-guard-can-see). Rule 2 is the
 same comparison against a literal rather than a row, and that difference is the
 whole reason it stays out of the model. Rule 4 reads on the credits already
 sitting on the order, so it is the same case as rule 1.
@@ -954,31 +941,25 @@ model survive that trip and which don't.
 
 ## 7. Hand it to an agent
 
-You don't write the tools an agent calls. You point an agent at your model, and
-what it can change and what gates the change are derived from the model.
+You don't hand-write the write tools an agent calls. Point `kcmd` or the
+runtime library at your bound model, and it derives one **write tool** per
+action and one model-level **instruction**.
 
-The **derivation** is the step that turns a bound model into the set an agent is
-handed. The library runs it, and `kcmd` calls the library, so a service that
-embeds the library hands its agents the same set. It produces a **write
-tool** for every action and one **instruction** from your model's `ai_context`.
+Entities, relationships, and metrics get no tool here — an agent reads through
+its own read surface and calls these write tools to change the store. A
+constraint reaches an agent only through an action that names it in `guards`.
 
-Nothing else in your model becomes a tool of its own. A constraint reaches an
-agent only through an action that guards on it. Entities, relationships and
-metrics get no tool here, so an agent reads or totals through its own read
-surface and calls these tools to change the store.
+### The set an agent is handed (`kcmd agent-tools`)
 
-### The set an agent is handed
-
-`kcmd agent-tools` prints every tool the derivation produces, with the
-instruction they arrive with. It reads your model under the profile you name and
-needs the store that profile binds, because what an agent can call depends on
-it. The command opens no connection and runs nothing:
+`kcmd agent-tools` prints every write tool the derivation produces along with
+the model's instruction. It reads your model under the profile you name and
+opens no connection:
 
 ```bash
 kcmd agent-tools
 ```
 
-For the model built up on this page, that set is:
+For the `payments` model built up on this page, that output is:
 
 ```
 Model 'payments' (payments_eg), profile 'operational':
@@ -992,9 +973,9 @@ Model 'payments' (payments_eg), profile 'operational':
       This call is gated by TransferWithinAvailableBalance:
       - TransferWithinAvailableBalance: The amount argument of this call must
         not exceed Account.balance on the source account. That balance is on
-        record rather than stated in the arguments, so read it before
-        answering. A transfer cannot move more than the source account holds.
-        Lower the amount, or choose another account.
+        record rather than stated in the arguments, and nothing puts it in
+        front of you. A transfer cannot move more than the source account
+        holds. Lower the amount, or choose another account.
       source: integer -- The account the money leaves.
       target: integer -- The account the money goes to.
       amount: number -- How much money to move.
@@ -1090,11 +1071,11 @@ belongs to the model because an agent carrying the same rule in its own source
 is a place someone can change that rule without the people who own the model
 finding out. Agents get replaced when frameworks change; your model doesn't.
 
-The other part is about the tools rather than the business: what a refused write
-or a warning means. The derivation owes that part, because it describes a
-contract this module defines and your model never stated. Write it into each
-agent instead and you copy the same paragraph into every adapter, where it
-drifts in each one.
+The other part is about the tools rather than the business: where a key has to
+come from, and what a refused write or a warning means. The derivation owes that
+part, because it describes a contract this module defines and your model never
+stated. Write it into each agent instead and you copy the same paragraph into
+every adapter, where it drifts in each one.
 
 So an agent that appends a persona of its own is saying something your model did
 not. Put it in the model.

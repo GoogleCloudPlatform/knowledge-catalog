@@ -7,10 +7,10 @@
 > names — BigQuery Graph or Spanner Graph — and the logical model to Knowledge
 > Catalog, which takes it under any profile.
 >
-> An action's statements run against an operational
-> store: **Spanner or AlloyDB**. An AlloyDB target runs and does not push, because
-> AlloyDB has no property-graph DDL for a push to deploy; a BigQuery target
-> pushes and does not run. A Spanner target does both.
+> An action's statements run against an operational store: **Spanner or
+> AlloyDB**. An AlloyDB target runs and does not push, because AlloyDB has no
+> property-graph DDL for a push to deploy; a BigQuery target pushes and does
+> not run. A Spanner target does both.
 >
 > A profile may still bind an entity to any other store (a lake table, a
 > partner's schema). `kcmd` merges it and reports its availability, and neither
