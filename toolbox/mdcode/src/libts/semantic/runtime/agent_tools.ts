@@ -35,7 +35,7 @@
 import {boundTable, spannerTable} from '../binding';
 import {Action, ActionParameter, Constraint, Entity, fieldBinding, SemanticModel} from '../ir';
 
-import {dialectFor} from './dialect';
+import {dialectFor, SqlDialect} from './dialect';
 import {Judge} from './judge';
 import {ActionHandler, ActionOutcome, bindScalar, isParameterRequired, runAction, sentence, whyRefusedWithoutRunning,} from './run_action';
 import {runtimeClient, SemanticRuntime} from './runtime';
@@ -667,9 +667,9 @@ function whyUnreadable(entity: Entity, bound: BoundField[]): string|null {
 // to an expression is skipped rather than guessed at, and an entity with no
 // plain-column fields yields a tool that reports the problem when called.
 //
-// Exported because judge_store.ts needs the same answer. Two readers deciding
-// separately what counts as readable is how a judge comes to be shown a column
-// the lookup tool will not return.
+// Exported because a skill's own account of what there is to read has to match
+// what the lookup tools will actually return. Two readers deciding separately
+// what counts as readable is how a skill comes to name a column no tool serves.
 export interface BoundField {
   name: string;
   type: string;
@@ -695,6 +695,42 @@ export function boundFields(entity: Entity): BoundField[] {
     });
   }
   return bound;
+}
+
+
+/**
+ * An entity a statement can name: one table, and the columns behind it.
+ */
+export interface ReadableEntity {
+  entity: Entity;
+  table: string;
+  fields: BoundField[];
+}
+
+
+/**
+ * What there is to read under this runtime: one entry per entity the model
+ * declares, the profile binds to a table, and a statement can name.
+ *
+ * The same test the lookup tools apply, for the same reason: an abstract
+ * entity has no table, a field bound to an expression is not a column, and a
+ * data source that is not a table reference cannot be read from. An entity
+ * this leaves out is one nothing here can point a reader at.
+ */
+export function readableEntities(
+    runtime: SemanticRuntime, dialect: SqlDialect): ReadableEntity[] {
+  const readable: ReadableEntity[] = [];
+  for (const entity of runtime.model.entities ?? []) {
+    if (entity.abstract) continue;
+    const fields = boundFields(entity);
+    if (!fields.length) continue;
+    const warnings: string[] = [];
+    const table =
+        boundTable(entity.dataSource, warnings, entity.name, dialect.quote);
+    if (warnings.length) continue;
+    readable.push({entity, table, fields});
+  }
+  return readable;
 }
 
 

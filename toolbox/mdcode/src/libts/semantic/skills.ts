@@ -43,10 +43,9 @@
  */
 
 import {Action, AffectedConcept, Constraint, SemanticModel} from './ir';
-import {ActionTool, modelTools} from './runtime/agent_tools';
+import {ActionTool, modelTools, readableEntities} from './runtime/agent_tools';
 import {dialectFor} from './runtime/dialect';
 import {Judge} from './runtime/judge';
-import {readableEntities} from './runtime/judge_store';
 import {runFlags} from './runtime/run_action';
 import {SemanticRuntime} from './runtime/runtime';
 import {storeLine} from './runtime/store';
@@ -423,9 +422,9 @@ function readSideSection(
 // nothing about its shape, so it spends its first turns querying
 // INFORMATION_SCHEMA -- which it did, twice, before reading a row. The model
 // already holds the answer: the binding profile says which table each entity
-// is and which column each field is, and `readableEntities` is the same
-// derivation a reading judge is shown, so the schema here and the schema the
-// judge writes against cannot drift apart.
+// is and which column each field is, and `readableEntities` derives both from
+// the same place the lookup tools do, so what this page says is readable and
+// what a tool will actually serve cannot drift apart.
 //
 // Both names appear, and which is which is spelled out rather than implied.
 // The rest of the skill is written in the model's names and a statement has to

@@ -178,7 +178,8 @@ different things:
 `escalate` means a person could allow it but nothing automatic can. `warn` lets
 the write through and reports. `reject` is a flat no. The fourth rule,
 `CreditWithinOrderTotal`, is about a number that is in the database rather than
-in the call, so settling it takes a read as well as a judgment.
+in the call. A judge is shown the arguments and nothing else, so that one is
+recorded here and settled by nothing — see [Limits](#10-limits).
 
 A constraint is inert until something references it. `guards:` on the action is
 what gives these four effect; a constraint nobody names is documentation.
@@ -389,10 +390,12 @@ transcripts below are the record of what settling them looked like.
 ### What the rules caught, when something was settling them
 
 > These four were recorded when the command took a judge and could give that
-> judge the store to read. Neither is a flag any more, and the verb was two
-> words then, so each transcript below opens `kcmd action run` rather than
-> `kcmd action-run`. They are pasted as they were rather than corrected,
-> because a transcript that was never printed is not evidence of anything.
+> judge the store to read. The command no longer takes a judge, no judge reads
+> a store any more — the seam for it was taken out of the runtime — and the
+> verb was two words then, so each transcript below opens `kcmd action run`
+> rather than `kcmd action-run`. They are pasted as they were rather than
+> corrected, because a transcript that was never printed is not evidence of
+> anything.
 > They are kept because what they show — one action, four rules, and every
 > one of the three `on_violation` outcomes — is not shown anywhere else, and
 > because the contrast with the two runs above is the point of this section.
@@ -414,7 +417,9 @@ number. What it does instead is not predictable: this run said it could not
 tell, and an earlier run of the same call answered that $3.00 exceeded a total
 of $2.50 — a figure nothing in the database supports. A judge that cannot read
 either blocks a call it should pass or invents the fact it was missing, and you
-do not get to choose which. Given the store, it looks:
+do not get to choose which. **That is what this rule does today**, and it is why
+a rule about a stored number belongs in the schema rather than in a judgment.
+Back when a judge could read, the same call looked like this:
 
 ```console
 $ kcmd action run IssueCredit --judge --judge-reads-store \
@@ -427,11 +432,12 @@ Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotal' (...), and ge
 ```
 
 That is the same call that now commits and leaves the order at -$5.00. The judge
-wrote its own `SELECT`, from the model, and refused against the real total. Note
-what the message carries: which rule, the rule's own words, the judge's reason,
-the consequence the model attaches, the advice the model wrote for this case,
-and the fact that nothing was written. That whole message is what a reading
-agent gets back.
+wrote its own `SELECT`, from the model, and refused against the real total. What
+survives the seam's removal is the rest of that message: which rule, the rule's
+own words, the judge's reason, the consequence the model attaches, the advice
+the model wrote for this case, and the fact that nothing was written. That whole
+message is what a reading agent gets back, for every rule a judge can still
+settle.
 
 Handed no judge at all, the runtime fails closed rather than writing unchecked:
 
@@ -651,7 +657,9 @@ so the state each one starts from is the state the previous one left.
 
 > **These four were recorded when the generated command line was
 > `kcmd action run ... --judge --judge-reads-store`, and they are kept because
-> nothing else shows an agent meeting a rule it cannot talk its way past.** Read them for what the
+> nothing else shows an agent meeting a rule it cannot talk its way past.**
+> Neither flag exists now, and no judge reads a store any more — the seam for
+> it was taken out of the runtime. Read them for what the
 > agent did with a refusal, not as what this skill does today. Regenerate the
 > skill now and the command it writes settles no guard, so the first run below
 > would commit the $30 credit the desk is not allowed to approve, and the third
@@ -993,13 +1001,20 @@ runtime, rather than shelling out to a debugging CLI — which is what the skill
 itself says.
 
 **Every guard is a model call, and a model can answer twice differently.** Four
-guards is four Gemini calls per attempt, plus a read for the one that needs it,
-which is most of the latency in the runs above. And a borderline call is not
-guaranteed to be settled the same way twice. `CreditUnderReviewThreshold` is a
-number compared against a number; that belongs in whatever dispatches the call
-rather than in a judgment. It is written as a judgment here for the contrast with
-`CreditWithinOrderTotal`, which has to read the store, and because a demo needs
-all three `on_violation` values.
+guards is four Gemini calls per attempt, which is most of the latency in the
+runs above. And a borderline call is not guaranteed to be settled the same way
+twice. `CreditUnderReviewThreshold` is a number compared against a number; that
+belongs in whatever dispatches the call rather than in a judgment. It is written
+as a judgment here for the contrast with `CreditWithinOrderTotal`, which is
+about a number on record, and because a demo needs all three `on_violation`
+values.
+
+**`CreditWithinOrderTotal` is declared and not enforced.** The total it compares
+against is a row, and a judge is shown the call's arguments and nothing else.
+The rule is in `commerce.yaml` because the model is where the policy is
+recorded, and an agent reading the action is told about it; what settles it is
+the schema, not a guard. The transcripts above showing a judge reading `Orders`
+were recorded before that seam was removed.
 
 **A judgment can be wrong.** Writing this demo caught one returning non-JSON and
 one inventing an order total it could not read — the first fails closed,

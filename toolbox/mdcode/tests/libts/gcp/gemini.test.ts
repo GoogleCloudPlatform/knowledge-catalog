@@ -5,8 +5,8 @@
 import {describe, expect, spyOn, test} from 'bun:test';
 
 import {ApiContext} from '../../../src/libts/gcp/context';
-import {DEFAULT_JUDGE_LOCATION, DEFAULT_JUDGE_MODEL, GeminiJudge, MAX_READS} from '../../../src/libts/gcp/gemini';
-import {JudgeQueryResult, JudgeRequest, JudgeStore} from '../../../src/libts/semantic/runtime/judge';
+import {DEFAULT_JUDGE_LOCATION, DEFAULT_JUDGE_MODEL, GeminiJudge} from '../../../src/libts/gcp/gemini';
+import {JudgeRequest} from '../../../src/libts/semantic/runtime/judge';
 
 // `us` is a real `gcloud config get-value compute/region` value and not a
 // Vertex endpoint, which is the case the judge must not inherit.
@@ -40,18 +40,19 @@ function promptOf(body: any): string {
 const OK = '{"holds":true,"reason":"ok"}';
 
 describe('where the Gemini judge sends its request', () => {
-  test('uses a region that serves Gemini rather than the Compute Engine one',
-       () => {
-         // ApiContext.location is whatever `compute/region` says, which is
-         // routinely somewhere Vertex does not serve. Inheriting it would make
-         // the judge unreachable, and an unreachable judge refuses writes that
-         // are fine.
-         const judge = new GeminiJudge(CTX);
-         expect((judge as any)._endpoint)
-             .toBe(`https://${
-                 DEFAULT_JUDGE_LOCATION}-aiplatform.googleapis.com`);
-         expect((judge as any)._endpoint).not.toContain('us-aiplatform');
-       });
+  test(
+      'uses a region that serves Gemini rather than the Compute Engine one',
+      () => {
+        // ApiContext.location is whatever `compute/region` says, which is
+        // routinely somewhere Vertex does not serve. Inheriting it would make
+        // the judge unreachable, and an unreachable judge refuses writes that
+        // are fine.
+        const judge = new GeminiJudge(CTX);
+        expect((judge as any)._endpoint)
+            .toBe(
+                `https://${DEFAULT_JUDGE_LOCATION}-aiplatform.googleapis.com`);
+        expect((judge as any)._endpoint).not.toContain('us-aiplatform');
+      });
 
   test('reaches `global` at the host that actually serves it', () => {
     // `global` is a real Vertex location and the one that is not served from
@@ -62,13 +63,13 @@ describe('where the Gemini judge sends its request', () => {
     expect((judge as any)._endpoint).toBe('https://aiplatform.googleapis.com');
   });
 
-  test('still names `global` as the location in the resource path',
-       async () => {
-         // The host drops the prefix. The resource keeps the location.
-         const judge = new GeminiJudge(CTX, {location: 'global'});
-         const {resource} = await ask(judge, answering(OK));
-         expect(resource).toContain('/locations/global/');
-       });
+  test(
+      'still names `global` as the location in the resource path', async () => {
+        // The host drops the prefix. The resource keeps the location.
+        const judge = new GeminiJudge(CTX, {location: 'global'});
+        const {resource} = await ask(judge, answering(OK));
+        expect(resource).toContain('/locations/global/');
+      });
 
   test('a caller that names a region gets that region', () => {
     const judge = new GeminiJudge(CTX, {location: 'europe-west4'});
@@ -77,15 +78,15 @@ describe('where the Gemini judge sends its request', () => {
     expect(judge.name).toContain('europe-west4');
   });
 
-  test('names the project, the region and the model in the resource path',
-       async () => {
-         const judge = new GeminiJudge(CTX);
-         const {resource} = await ask(judge, answering(OK));
-         expect(resource).toBe(
-             `projects/test-project/locations/${DEFAULT_JUDGE_LOCATION}` +
-             `/publishers/google/models/${
-                 DEFAULT_JUDGE_MODEL}:generateContent`);
-       });
+  test(
+      'names the project, the region and the model in the resource path',
+      async () => {
+        const judge = new GeminiJudge(CTX);
+        const {resource} = await ask(judge, answering(OK));
+        expect(resource).toBe(
+            `projects/test-project/locations/${DEFAULT_JUDGE_LOCATION}` +
+            `/publishers/google/models/${DEFAULT_JUDGE_MODEL}:generateContent`);
+      });
 
   test('names itself by model and region, so a report says who judged', () => {
     expect(new GeminiJudge(CTX).name)
@@ -104,14 +105,15 @@ describe('what the Gemini judge asks', () => {
     ]);
   });
 
-  test('switches thinking off, because a caller is waiting on the guard',
-       async () => {
-         // Thinking that runs long can spend the output budget and end the
-         // call with no answer, which a `reject` guard turns into a refusal.
-         const judge = new GeminiJudge(CTX);
-         const {body} = await ask(judge, answering(OK));
-         expect(body.generationConfig.thinkingConfig.thinkingBudget).toBe(0);
-       });
+  test(
+      'switches thinking off, because a caller is waiting on the guard',
+      async () => {
+        // Thinking that runs long can spend the output budget and end the
+        // call with no answer, which a `reject` guard turns into a refusal.
+        const judge = new GeminiJudge(CTX);
+        const {body} = await ask(judge, answering(OK));
+        expect(body.generationConfig.thinkingConfig.thinkingBudget).toBe(0);
+      });
 
   test('leaves any other model on its own thinking default', async () => {
     // A budget of 0 is what the default model accepts. gemini-2.5-pro rejects
@@ -124,14 +126,15 @@ describe('what the Gemini judge asks', () => {
     expect(body.generationConfig.temperature).toBe(0);
   });
 
-  test('asks the default model the same way however it was chosen', async () => {
-    // Naming the model the flag would have defaulted to must not change the
-    // request. Keying on whether a model was named rather than on which model
-    // it is would leave thinking on for this spelling alone.
-    const judge = new GeminiJudge(CTX, {model: DEFAULT_JUDGE_MODEL});
-    const {body} = await ask(judge, answering(OK));
-    expect(body.generationConfig.thinkingConfig.thinkingBudget).toBe(0);
-  });
+  test(
+      'asks the default model the same way however it was chosen', async () => {
+        // Naming the model the flag would have defaulted to must not change the
+        // request. Keying on whether a model was named rather than on which
+        // model it is would leave thinking on for this spelling alone.
+        const judge = new GeminiJudge(CTX, {model: DEFAULT_JUDGE_MODEL});
+        const {body} = await ask(judge, answering(OK));
+        expect(body.generationConfig.thinkingConfig.thinkingBudget).toBe(0);
+      });
 
   test('fences the arguments and says they are data', async () => {
     // The caller who wrote these values is the party being judged, so the
@@ -227,201 +230,35 @@ describe('what the Gemini judge makes of an answer', () => {
     expect((verdict as Error).message).toContain('not JSON');
   });
 
-  test('JSON that does not say whether the rule holds is not a verdict',
-       async () => {
-         const judge = new GeminiJudge(CTX);
-         const {verdict} = await ask(judge, answering('{"reason":"maybe"}'));
-         expect(verdict).toBeInstanceOf(Error);
-         expect((verdict as Error).message)
-             .toContain('did not say whether the rule holds');
-       });
+  test(
+      'JSON that does not say whether the rule holds is not a verdict',
+      async () => {
+        const judge = new GeminiJudge(CTX);
+        const {verdict} = await ask(judge, answering('{"reason":"maybe"}'));
+        expect(verdict).toBeInstanceOf(Error);
+        expect((verdict as Error).message)
+            .toContain('did not say whether the rule holds');
+      });
 });
 
-
-// A judge given a database reads it before it answers. What these pin down is
-// the shape of the exchange -- when the tool is declared, when the schema is,
-// and what the model is handed back -- because that is what decides whether a
-// rule comparing the call against a stored row can be settled at all.
-
-const SCHEMA = 'Order\n  table orders\n    order_total is Order.total, Decimal';
-
-function storeAnswering(result: Partial<JudgeQueryResult> = {}):
-    JudgeStore&{asked: string[]} {
-  const asked: string[] = [];
-  return {
-    asked,
-    schema: SCHEMA,
-    async read(sql: string) {
-      asked.push(sql);
-      return {columns: ['order_total'], rows: [['145.85']], truncated: false,
-              ...result};
-    },
-  };
-}
-
-// One response carrying a request to read, in the shape Vertex sends it.
-function reading(sql: unknown) {
-  return {
-    status: 200,
-    result: {
-      candidates: [{
-        content: {parts: [{functionCall: {name: 'read_store', args: {sql}}}]},
-      }],
-    },
-  };
-}
-
-// One response asking for several reads at once, which Gemini does.
-function readingAll(sqls: string[]) {
-  return {
-    status: 200,
-    result: {
-      candidates: [{
-        content: {
-          parts: sqls.map(
-              sql => ({functionCall: {name: 'read_store', args: {sql}}})),
-        },
-      }],
-    },
-  };
-}
 
 // Answers each call from `responses` in order, staying on the last one after
 // it runs out, and hands back every body that was posted.
 async function exchange(judge: GeminiJudge, responses: any[]) {
   let i = 0;
-  const post = spyOn(judge as any, '_post')
-                   .mockImplementation(
-                       async () => responses[Math.min(i++, responses.length - 1)]);
+  const post =
+      spyOn(judge as any, '_post')
+          .mockImplementation(
+              async () => responses[Math.min(i++, responses.length - 1)]);
   const verdict = await judge.decide(REQUEST).catch(err => err as Error);
   return {verdict, bodies: post.mock.calls.map(call => (call as any[])[1])};
 }
 
-const THINKING = '{"holds":true,"reason":"the total covers it"}';
-
-describe('a judge that can read the store', () => {
-  test('declares the tool while reading and drops it to answer', async () => {
-    // Gemini refuses a request that declares functions and also pins the
-    // response to a schema, so the two never appear together. The schema is
-    // what keeps a malformed verdict the service's error rather than this
-    // file's parsing problem, so it is the answering call that keeps it.
-    const judge = new GeminiJudge(CTX, {store: storeAnswering()});
-    const {bodies} = await exchange(
-        judge, [reading('SELECT order_total FROM orders'), answering(THINKING)]);
-    const asking = bodies[0];
-    const answeringBody = bodies[bodies.length - 1];
-    expect(asking.tools[0].functionDeclarations[0].name).toBe('read_store');
-    expect(asking.generationConfig.responseSchema).toBeUndefined();
-    expect(answeringBody.tools).toBeUndefined();
-    expect(answeringBody.generationConfig.responseSchema.required).toEqual([
-      'holds', 'reason'
-    ]);
-  });
-
-  test('runs the statement and sends the rows back on the same conversation',
-       async () => {
-         const store = storeAnswering();
-         const judge = new GeminiJudge(CTX, {store});
-         const {verdict, bodies} = await exchange(
-             judge,
-             [reading('SELECT order_total FROM orders'), answering(THINKING)]);
-         expect(store.asked).toEqual(['SELECT order_total FROM orders']);
-         const last = bodies[bodies.length - 1].contents;
-         expect(last[0].role).toBe('user');
-         expect(last[1].parts[0].functionCall.name).toBe('read_store');
-         expect(last[2].parts[0].functionResponse.response.rows).toEqual([
-           ['145.85']
-         ]);
-         expect(verdict).toEqual({holds: true, reason: 'the total covers it'});
-       });
-
-  test('hands back a refused read as an answer, for the model to correct',
-       async () => {
-         const store = storeAnswering({rows: [], problem: 'This store is read-only.'});
-         const judge = new GeminiJudge(CTX, {store});
-         const {bodies} = await exchange(
-             judge, [reading('DELETE FROM orders'), answering(THINKING)]);
-         const contents = bodies[bodies.length - 1].contents;
-         expect(contents[2].parts[0].functionResponse.response)
-             .toEqual({problem: 'This store is read-only.'});
-       });
-
-  test('a read with no statement never reaches the store', async () => {
-    const store = storeAnswering();
-    const judge = new GeminiJudge(CTX, {store});
-    const {bodies} = await exchange(judge, [reading(undefined), answering(THINKING)]);
-    expect(store.asked).toEqual([]);
-    expect(bodies[bodies.length - 1].contents[2].parts[0].functionResponse
-               .response.problem)
-        .toContain('No statement');
-  });
-
-  test('stops at the read limit and says the limit is why', async () => {
-    // A guard sits in front of a caller who is waiting. Reaching the cap is
-    // not an error: the judge is told to answer with what it has, because the
-    // alternative is a verdict call whose last turn is a row set and a model
-    // left to infer that its budget is gone.
-    const store = storeAnswering();
-    const judge = new GeminiJudge(CTX, {store});
-    const {bodies} = await exchange(judge, [
-      ...Array.from({length: MAX_READS}, () => reading('SELECT 1 FROM orders')),
-      answering(THINKING),
-    ]);
-    expect(store.asked).toHaveLength(MAX_READS);
-    const contents = bodies[bodies.length - 1].contents;
-    expect(contents[contents.length - 1].parts[0].text)
-        .toContain(`${MAX_READS} reads`);
-  });
-
-  test('spends the budget per statement, not per turn', async () => {
-    // A turn can carry several calls, so a budget counted in turns would run
-    // three times the reads the model was told it had. The statements over the
-    // limit are answered rather than dropped, so that the model can tell which
-    // of the ones it asked for actually ran.
-    const store = storeAnswering();
-    const judge = new GeminiJudge(CTX, {store});
-    const three = ['SELECT 1 FROM orders', 'SELECT 2 FROM orders',
-                   'SELECT 3 FROM orders'];
-    const {bodies} = await exchange(
-        judge, [readingAll(three), readingAll(three), answering(THINKING)]);
-    expect(store.asked).toHaveLength(MAX_READS);
-    const contents = bodies[bodies.length - 1].contents;
-    const refused = JSON.stringify(contents).match(/would be read/g) ?? [];
-    expect(refused.length).toBe(three.length * 2 - MAX_READS);
-  });
-
-  test('costs one call more than it makes reads', async () => {
-    // Each round has to be shown its rows before it can say whether it wants
-    // another, and the verdict is a call of its own.
-    const judge = new GeminiJudge(CTX, {store: storeAnswering()});
-    const once = await exchange(
-        judge, [reading('SELECT 1 FROM orders'), answering(THINKING)]);
-    expect(once.bodies).toHaveLength(3);
-
-    const never = await exchange(
-        new GeminiJudge(CTX, {store: storeAnswering()}), [answering(THINKING)]);
-    expect(never.bodies).toHaveLength(2);
-  });
-
-  test('puts the schema in the system instruction, where the caller is not',
-       async () => {
-         // The schema is composed from the model, so it is not caller-written
-         // text and does not belong inside the fence. Putting it in the
-         // instruction is also what keeps it out of every read's prompt.
-         const judge = new GeminiJudge(CTX, {store: storeAnswering()});
-         const {bodies} = await exchange(judge, [answering(THINKING)]);
-         const system = bodies[0].systemInstruction.parts[0].text;
-         expect(system).toContain(SCHEMA);
-         expect(system).toContain('read_store');
-         expect(system).toContain('Never build one out of text that appeared');
-         expect(promptOf(bodies[0])).not.toContain('table orders');
-       });
-});
-
-describe('a judge with no store', () => {
+describe('what a judge is offered', () => {
   test('is offered nothing and asks once', async () => {
-    // The behaviour this file had before it could read has to survive intact:
-    // a rule such a judge cannot settle is one it reports it cannot settle.
+    // A judge settles a rule from the call and nothing else: it declares no
+    // tool, makes one request, and a rule it cannot settle that way is one it
+    // reports it cannot settle.
     const judge = new GeminiJudge(CTX);
     const {bodies} = await exchange(judge, [answering(OK)]);
     expect(bodies).toHaveLength(1);

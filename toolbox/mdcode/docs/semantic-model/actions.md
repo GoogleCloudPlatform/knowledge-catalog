@@ -472,9 +472,9 @@ total equals the sum of its lines" has nothing to look at when the guard runs.
 Put that rule inside the transaction, or in your schema, where the store
 enforces it.
 
-A judgment that reads stored data also needs a judge that has been given the
-store to read. Whoever dispatches the call decides that — see
-[when the judge needs a fact](#when-the-judge-needs-a-fact).
+Nothing settles a rule about a stored value the call doesn't carry, either. A
+judge sees the arguments and no more — see
+[a rule the judge can't settle](#a-rule-the-judge-cant-settle).
 
 **Status: `judgment` is the only body a constraint has.** Whatever checks a
 guard puts the sentence to a language model and routes the verdict by
@@ -512,21 +512,18 @@ consistent:
 All five are about wording. Claim no more in the wording than a judge can
 settle.
 
-A judge settles a guard from the call's arguments and whatever it could read, so
-a sentence about stored data can turn out to be a rule it has no evidence for.
-The instructions tell it to refuse in that case and say what's missing, but that
-instruction binds a model rather than the runtime, so the rule can come back
-held instead — a guard that never fires and never says why. Phrase the condition
-around the arguments the call carries, and try every guard against a case it
-ought to refuse.
+A judge settles a guard from the call's arguments and nothing else, so a
+sentence about stored data is a rule it has no evidence for. The instructions
+tell it to refuse in that case and say what's missing, but that instruction
+binds a model rather than the runtime, so the rule can come back held instead —
+a guard that never fires and never says why. Phrase the condition around the
+arguments the call carries, and try every guard against a case it ought to
+refuse.
 
 A rule that does need a stored row — comparing a credit against the order total,
-say — is settled only by a judge that can read your tables, which is something
-an agent embedding the runtime gives it rather than something `kcmd` does. Word
-the rule to say the value is on record and has to be read, because the judge
-decides for itself whether to look. The same rule refuses every call when it
-goes to a judge that can't read. See
-[when the judge needs a fact](#when-the-judge-needs-a-fact).
+say — has no binding point here at all. Put it in your schema, where the store
+enforces it inside the transaction. See
+[a rule the judge can't settle](#a-rule-the-judge-cant-settle).
 
 ## A credit policy, worked through
 
@@ -621,15 +618,14 @@ prose, in a form a search can read.
 reduces to arithmetic over `Order` and `LineItem` at all, so there's nowhere
 else to put them but a policy document nothing links to.
 
-**Rule 1 is arithmetic, and is still written in words.** It compares the amount
-argument against a number that lives in the database, so no form of it avoids
-naming a store, and it goes to the judge like the other two. That's the price of
-one body: a comparison a subtraction would have settled the same way every time
-is settled by a model instead, which costs a call and can decide two similar
-credits differently. Word an arithmetic rule tightly, and say what unit the
-numbers are in, because the judge only has the words you gave it. Rule 2 is the
+**Rule 1 is arithmetic against a row, and nothing here settles it.** It compares
+the amount argument against a number that lives in the database, and a judge
+sees the arguments only, so the rule is recorded in the model and enforced in
+your schema — see
+[a rule the judge can't settle](#a-rule-the-judge-cant-settle). Rule 2 is the
 same comparison against a literal rather than a row, and that difference is the
-whole reason it stays out of the model.
+whole reason it stays out of the model. Rule 4 reads on the credits already
+sitting on the order, so it is the same case as rule 1.
 
 **Rule 4 is a judgment that declares `reject`.** Splitting a credit to evade
 review is a rule the business means as unappealable, and the pairing carries a
@@ -956,10 +952,9 @@ model work rather than the place it is meant to work. `kcmd action-run` performs
 most of what any runtime dispatching these calls has to perform — bind the
 arguments, open one transaction, apply the statements — and narrates each step.
 What it leaves out is the guards: it settles none of them, names the ones it
-passed over, and writes. Who settles a rule, and what that judge may read while
-it does, are decided by whoever dispatches the call in earnest — and from the
-same sentences, so a service running this action reaches verdicts this command
-never asks for.
+passed over, and writes. Who settles a rule is decided by whoever dispatches the
+call in earnest — and from the same sentences, so a service running this action
+reaches verdicts this command never asks for.
 
 `kcmd action-list` prints the actions your model declares, each with its
 parameters, executor, guards and blast radius, plus the command line that calls
@@ -1145,10 +1140,12 @@ branches.
 
 > These three were recorded through `kcmd action run`, back when it took a judge
 > and could give that judge the store to read — which is why each of them shows
-> the judge reading `Orders`. Neither is a command-line flag any more, for the
-> reason above. They are
-> kept because what they show — one rule, all three values of `on_violation`,
-> one run each — is not shown anywhere else.
+> the judge reading `Orders`. The command no longer takes a judge, for the
+> reason above, and no judge reads a store any more: the seam for it was taken
+> out of the runtime. So read the two lines about reading as a record of a run,
+> not as output you can reproduce. They are kept because what they show — one
+> rule, all three values of `on_violation`, one run each — is not shown
+> anywhere else.
 
 With `reject`, the call stops:
 
@@ -1214,7 +1211,7 @@ inside the transaction.
 **The judge gets the attempted call.** It receives the rule's text, the action's
 name and description, and the arguments as the caller stated them —
 `order=12347`, the value itself, and not the `Order` row it identifies. That's
-the whole of what it has, unless it was also given the store to read.
+the whole of what it has.
 
 **A rule that never reached a judge is reported as unchecked.** The runtime
 holds no judge, or the model call failed. Either way `on_violation` routes that
@@ -1222,79 +1219,30 @@ like any other breach: an advisory guard lets the write through and warns, and a
 guard declaring `reject` or `escalate` stops the call. Committing in silence
 would tell you every rule passed when one was never put to anybody.
 
-### When the judge needs a fact
+### A rule the judge can't settle
 
-Some rules can't be settled from the call alone. *The credit must not exceed the
-total of the order it is applied to* compares an argument against a number in
-your database, and the caller is under no obligation to state it correctly. A
-judge that can read your tables goes and gets the number.
+Some rules aren't about the call. *The credit must not exceed the total of the
+order it is applied to* compares an argument against a number in your database,
+and the caller is under no obligation to state it correctly. Nothing here goes
+and gets that number. A judge is handed the rule, the action and the arguments,
+and that is the whole of what it is shown.
 
-`kcmd action-run` hires no judge at all, so it certainly does not hire that one.
-Letting a model compose and send queries against your data is a property of the
-runtime an application embeds, decided by whoever builds the application; a
-command line for curating a model is the wrong place to turn it on. The runtime
-supplies it —
-`modelJudgeStore()` in `src/libts/semantic/runtime/judge_store.ts` — and an
-application that embeds the runtime is what calls it. Everything below describes
-that judge; the transcripts are in
-[the demo's README](../../demo/semantic-model/skill/README.md).
+Write such a rule as a `judgment` anyway and what you get is a guess. Asked
+whether a $3.00 credit fits under order 12346's total, the judge has no total:
+it either reports that it can't tell — which `reject` and `escalate` turn into a
+refused call that was fine — or it answers against a figure it supplied itself.
+You don't get to choose which. So the judge is instructed to treat a rule it
+can't settle from the arguments as one that does not hold, and to say in its
+reason what was missing. That is the safe failure, not a working check.
 
-One thing has to be in place either way: your profile has to bind the entities
-the rule talks about to tables, because that binding is the whole of what the
-judge is told about your database. With nothing bound there is nothing to read.
-
-Then write the rule so the judge goes and looks — it decides that for itself,
-from the sentence you give it. This is the rule the demo under
-`demo/semantic-model/skill` states at the head of `IssueCredit`:
-
-```yaml
-- name: CreditWithinOrderTotal
-  judgment: >-
-    The credit amount requested must not exceed the total of the order
-    it is applied to. The `order` argument of this call identifies that
-    order, and the order's total is on record rather than stated in the
-    arguments, so read it before answering. Read both as dollars.
-  on_violation: escalate
-  description: >-
-    A credit cannot exceed the total of the order it credits. Lower the
-    credit amount, or split it across the orders it actually covers.
-```
-
-The judge composes its statement itself, from the rule's sentence and the tables
-your profile binds — nobody writes that SQL. The runtime hands every statement
-back to the caller as it is sent, because a read made on your behalf is yours to
-check, and an application that embeds the runtime is expected to show them. A
-credit against order 12345 sends one the caller never asked for: `SELECT total
-FROM Orders WHERE order_id = 12345`. The rule named the order's total in words,
-and the judge went and got it. Put the same call to a judge that cannot read and
-it is refused for a different reason: the judge says it can't get the total.
-
-**The judge sees what your model declares.** The entities, tables and columns in
-its instructions come from your binding profile, so a column your model doesn't
-bind is one the judge is never told exists. The dialect comes from there too:
-the rule above produces GoogleSQL against `Orders.total` under a Spanner profile
-and PostgreSQL against `purchase_order.order_total` under an AlloyDB one.
-
-**Give the action's credentials no more reach than the tables your model
-binds.** Your bindings tell the judge which tables exist rather than confining
-it to them, so a read reaches whatever the credentials behind the action reach.
-Every statement has to be a query, which stops a bare `UPDATE`, and a query that
-calls a function that writes is still a query — PostgreSQL commits it, so a
-write can land that way on an AlloyDB store.
-
-**Keep the rule settleable from a few rows.** A judge gets a small budget of
-reads for one guard, each capped in rows and in the size of a value, and it is
-told when a cap applied. A rule needing a scan, a join across the history, or a
-total of its own is past what a guard settles; compute it in the store and let
-the guard read the answer. A judge that still can't tell is instructed to answer
-that the rule doesn't hold.
-
-**Reading costs model calls.** A guard with a store attached costs an extra call
-even when it reads nothing, because asking and answering can't be the same
-request, and each further round of reading adds one more.
-
-Reading doesn't move the race described above: the judge reads committed state,
-before the transaction opens.
+A rule like that belongs in your schema, where the store enforces it inside the
+transaction — the same place the race above puts a rule about the state a write
+leaves. `CreditWithinOrderTotal` and `CreditIsNotSplitToAvoidReview` in the
+worked example are both this kind: the first names a total that is on record,
+the second the credits already sitting on the order. They are written down here
+because the model is where the policy is recorded, and a rule nothing settles is
+still a rule an agent reading the action is told about. What no judge will do is
+enforce them.
 
 ### Which rows a call touches
 
@@ -1687,19 +1635,22 @@ different model and profile and the skill describes a different business;
 nothing is hand-written, so there is nothing to keep in step.
 
 The README also states what that costs and what it can't do. The model guards on
-four judgments and the judge it hires can query the store, so every guard on
-every call is a model call, plus a read for the guard that needs one. That is
-most of the latency in the runs it captures. Two of its rules fall short of what
-they say:
+four judgments, so every guard on every call is a model call. That is most of
+the latency in the runs it captures. Three of its rules fall short of what they
+say:
 
 - **An order's total matching its line items is declared and not enforced.**
   It's a statement about the state the write leaves behind, and guards settle
   before the write.
+- **The credit-within-total rule is declared and not enforced.** The total is a
+  row, and a judge sees the arguments — see
+  [a rule the judge can't settle](#a-rule-the-judge-cant-settle). Its
+  transcripts were recorded when a judge could read; nothing settles it now.
 - **The split-credit rule catches only a disclosed split.** It fires because
   the model tells callers to disclose a split in the memo, which makes it a
   check on honest mistakes rather than a control. A version that held
-  regardless would count the credits already on the order. A reading judge
-  could do that; this model doesn't ask it to.
+  regardless would count the credits already on the order, which is the same
+  stored fact nothing here reaches.
 
 ## What is not modeled yet
 
