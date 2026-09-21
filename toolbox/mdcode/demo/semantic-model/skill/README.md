@@ -381,7 +381,7 @@ Given one, the runtime puts each guard to it before the transaction opens and
 routes the verdict by `on_violation`. Given none, it refuses the call rather
 than running a write the model says must be checked. `kcmd action-run` is the
 one caller that opts out of both: it asks for no judge and refuses nothing,
-which is why it prints the banner instead.
+which is why its runs come back carrying that warning instead.
 
 **No command line in this repository settles a guard.** Until one does, the
 transcripts below are the record of what settling them looked like.
@@ -442,8 +442,9 @@ Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotal', 'CreditUnder
 ```
 
 That refusal is still the runtime's behaviour for any caller that supplies no
-judge. What changed is that the command line no longer asks: it declares the
-guards unchecked and proceeds, which is the banner in the two runs above.
+judge. What changed is that the command line no longer asks: it proceeds, and
+the run reports the guards it passed over, which is the warning in the two runs
+above.
 
 And the `reject` consequence, the one an approver cannot wave through:
 
