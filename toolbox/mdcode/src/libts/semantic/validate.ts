@@ -9,11 +9,13 @@
 // they read the GOOGLE deployment-target extension the BigQuery leg owns.
 
 import {BigQueryClient} from '../gcp/bigquery';
+import {SpannerClient} from '../gcp/spanner';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
+import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {LoadedModel} from './loader';
-import {bindScalar} from './parameters';
+import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, resolveInheritance} from './resolve_inheritance';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 
@@ -581,7 +583,7 @@ function validateConstraints(
           `'on_violation'.`);
       continue;
     }
-      errors.push(
+    errors.push(
         ...judgedConstraintErrors(c, where, fieldsByEntity, nonFieldNames));
   }
   return errors;
@@ -873,4 +875,251 @@ function probeableRef(dataSource: string|undefined): string|null {
     return null;
   }
   return trimmed;
+}
+
+
+// Live pre-flight over an action's DML: asks the store the profile binds to
+// parse, resolve and type-check every `sql` executor statement BEFORE the model
+// is published, without executing any of it. A statement that names a table or
+// column the database does not have fails the push instead of the first agent
+// that calls the action.
+//
+// WHY THIS EXISTS AT PUSH AND NOWHERE ELSE. An action's statements are handed
+// to the store verbatim -- unlike a metric, nothing translates the model's
+// names into the binding's -- and kcmd does not execute actions. A statement is
+// authored here, published here, and then run by somebody else's agent harness
+// through the generated skill. Push is the last moment the authoring toolchain
+// sees the text, so a check that does not happen here does not happen.
+//
+// WHY THE STORE AND NOT A NAME COMPARISON. The profile does hold the physical
+// names, so an offline pass could catch `accountId` where the column is
+// `account_id`. It could not catch the rest: a parameter placeholder or a
+// function from the wrong dialect (every identifier correct, the statement
+// still invalid), or a value assigned to a column of another type. Only the
+// engine that will run the statement knows all three, and asking it also yields
+// a better message than one assembled here -- both backends answer an unknown
+// column with "Did you mean account_id?".
+//
+// The two backends differ only in the request that means "plan, do not run":
+// Spanner takes `queryMode: PLAN` on a session (see SpannerClient.planDml),
+// BigQuery takes `dryRun` on jobs.query. Neither writes anything.
+
+
+// One `sql` executor statement awaiting its pre-flight, with everything a
+// message about it needs.
+interface PendingStatement {
+  document: string;
+  model: string;
+  action: Action;
+  // 0-based position in the executor's `statements` list; reported 1-based.
+  index: number;
+  sql: string;
+}
+
+
+// Every `sql` executor statement in a model, in declaration order. A blank one
+// is skipped: sqlExecutorErrors has already failed the push over it, and
+// sending it would earn a second, less useful complaint from the store.
+function pendingStatements({document, model}: LoadedModel): PendingStatement[] {
+  const pending: PendingStatement[] = [];
+  for (const action of model.actions ?? []) {
+    if (action.executor?.kind !== 'sql') continue;
+    const executor = action.executor as Extract<Executor, {kind: 'sql'}>;
+    executor.sql.statements.forEach((sql, index) => {
+      if (!sql.trim()) return;
+      pending.push({document, model: model.name, action, index, sql});
+    });
+  }
+  return pending;
+}
+
+
+// The parameter types to send with one statement's pre-flight request, keyed by
+// `@name`.
+//
+// Only the parameters the statement actually references are sent, and only
+// those whose declared type maps to a store type we can state. An `Opaque` type
+// is exactly the case we cannot: it means the model does not know the type, so
+// asserting one would invent a constraint the author never wrote. Those are
+// left out and the store resolves them from context, which both backends do.
+//
+// Sending the types at all is optional -- a statement with no parameter types
+// passes either backend's dry run. It is worth doing because it turns the
+// action's DECLARED parameter types into a claim checked against the real
+// column types, so a model that says `Float` where the column is a STRING fails
+// here rather than on the first call.
+function statementParameterTypes(
+    action: Action, sql: string): Record<string, string> {
+  const declared = new Map(action.parameters.map(p => [p.name, p.type]));
+  const types: Record<string, string> = {};
+  for (const name of referencedParameters(sql)) {
+    const type = declared.get(name);
+    if (!type || type === 'Opaque') continue;
+    types[name] = storeCodeFor(type);
+  }
+  return types;
+}
+
+
+// The message for a statement the store refused. `store` names the database so
+// a multi-profile push says which one answered.
+function rejectedStatement(
+    pending: PendingStatement, store: string, detail: string): string {
+  return `action '${pending.action.name}' in model '${pending.model}' (${
+             pending.document}): statement ${
+             pending.index + 1} of its sql executor was rejected by ${store}: ${
+             detail} Statements reach the store exactly as written, so every ` +
+      `table and column has to be the name the database uses.`;
+}
+
+
+// The first line of a multi-line diagnosis. The lines after it echo the
+// statement and point a caret at the offending token, which is worth nothing
+// here: the author has the statement open in the profile, the position in
+// `[at 1:54]` survives, and a caret counted from column 1 lands in the wrong
+// place once the message is embedded in a longer sentence.
+//
+// `\n` is matched in both its forms because Spanner's top-level `error.message`
+// arrives with its newlines ESCAPED -- a literal backslash and an n survive
+// JSON.parse -- while every other message uses real ones.
+function firstLine(message: string): string {
+  return message.replace(/\\n/g, '\n').split('\n')[0].trim();
+}
+
+
+// An error body reduced to the sentence worth showing. Both backends return a
+// google.rpc-shaped JSON whose message already reads as a diagnosis
+// ("Unrecognized name: accountId; Did you mean account_id? [at 1:54]"), so pull
+// that out when it parses and fall back to the raw text when it does not.
+//
+// A LocalizedMessage detail is preferred over the top-level `error.message`
+// because Spanner escapes the latter: a statement it quotes back comes through
+// as `Unexpected \"$1\"`, where the detail says `Unexpected "$1"`. BigQuery
+// sends no such detail, so the fallback is the normal path there, not an
+// unusual one.
+function storeMessage(body: string|undefined, status: number): string {
+  const raw = (body ?? '').trim();
+  if (!raw) return `HTTP ${status}.`;
+  try {
+    const error = JSON.parse(raw)?.error;
+    const details: unknown[] =
+        Array.isArray(error?.details) ? error.details : [];
+    for (const detail of details) {
+      const d = detail as {'@type'?: string, message?: unknown};
+      if (!d?.['@type']?.endsWith('LocalizedMessage')) continue;
+      if (typeof d.message === 'string' && d.message.trim()) {
+        return sentence(firstLine(d.message));
+      }
+    }
+    if (typeof error?.message === 'string' && error.message.trim()) {
+      return sentence(firstLine(error.message));
+    }
+  } catch {
+    // Not JSON (an HTML error page from a proxy, say): show what came back.
+  }
+  return sentence(firstLine(raw));
+}
+
+
+// The Spanner arm. Each distinct database gets one session, reused across every
+// statement bound to it and deleted at the end -- which also discards the
+// read-write transactions PLAN had to begin and never committed. Returns one
+// message per statement that failed to plan, empty when all pass.
+export async function validateSpannerActionStatements(
+    models: LoadedModel[], spanner: SpannerClient): Promise<string[]> {
+  // Group by database so a model set sharing one target opens one session
+  // rather than one per statement.
+  const byDatabase = new Map<
+      string, {target: SpannerGraphTarget, statements: PendingStatement[]}>();
+  for (const loaded of models) {
+    const statements = pendingStatements(loaded);
+    if (!statements.length) continue;
+    // The database an action writes to is the one this profile deploys its
+    // graph to: on Spanner the published graph and the operational rows live in
+    // the same database. A model with no parseable Spanner target contributes
+    // nothing -- validatePushRequirements has already reported that.
+    let target: SpannerGraphTarget|undefined;
+    try {
+      target = spannerGraphTargets(loaded.model).targets[0];
+    } catch {
+      continue;
+    }
+    if (!target) continue;
+    const key = `${target.project}/${target.instance}/${target.database}`;
+    const entry = byDatabase.get(key) ?? {target, statements: []};
+    entry.statements.push(...statements);
+    byDatabase.set(key, entry);
+  }
+
+  const errors: string[] = [];
+  for (const {target, statements} of byDatabase.values()) {
+    const store = `Spanner database '${target.project}/${target.instance}/${
+        target.database}'`;
+    const opened = await spanner.createSession(
+        target.project, target.instance, target.database);
+    const session = opened.result?.name;
+    if (!session) {
+      // Reaching the database is the whole check, so failing to open a session
+      // is reported rather than skipped: a push that could not verify its
+      // statements must not proceed as though it had.
+      errors.push(
+          `could not open a session on ${store} to verify the sql executor ` +
+          `statements in model '${statements[0].model}' (${
+              statements[0].document}): ${
+              storeMessage(opened.message, opened.status)}`);
+      continue;
+    }
+    try {
+      for (const pending of statements) {
+        const types = statementParameterTypes(pending.action, pending.sql);
+        const params: Record<string, null> = {};
+        const paramTypes: Record<string, {code: string}> = {};
+        for (const [name, code] of Object.entries(types)) {
+          params[name] = null;
+          paramTypes[name] = {code};
+        }
+        const res =
+            await spanner.planDml(session, pending.sql, params, paramTypes);
+        if (res.status === 200) continue;
+        errors.push(rejectedStatement(
+            pending, store, storeMessage(res.message, res.status)));
+      }
+    } finally {
+      // Best effort: a leaked session expires on its own, and failing the push
+      // over the cleanup would report a statement problem that does not exist.
+      await spanner.deleteSession(session);
+    }
+  }
+  return errors;
+}
+
+
+// The BigQuery arm. Each statement is dry-run on jobs.query, billed to the same
+// project the model's graph deploys to (a dry run scans nothing, but it still
+// needs a project to run in). There is no session to manage: a dry run is a
+// single stateless call. Returns one message per statement BigQuery refused.
+//
+// Note what this does NOT settle. BigQuery accepts DML against a native or
+// managed table and refuses it against most external ones, and a dry run
+// reports that refusal -- which is the point, because a real run would hit the
+// same wall.
+export async function validateBigQueryActionStatements(
+    models: LoadedModel[], bq: BigQueryClient,
+    defaultProject: string): Promise<string[]> {
+  const errors: string[] = [];
+  for (const loaded of models) {
+    const statements = pendingStatements(loaded);
+    if (!statements.length) continue;
+    const project = billingProject(loaded.model, defaultProject);
+    const store = `BigQuery (project '${project}')`;
+    for (const pending of statements) {
+      const res = await bq.query(
+          project, pending.sql, undefined, true,
+          statementParameterTypes(pending.action, pending.sql));
+      if (res.status === 200) continue;
+      errors.push(rejectedStatement(
+          pending, store, storeMessage(res.message, res.status)));
+    }
+  }
+  return errors;
 }

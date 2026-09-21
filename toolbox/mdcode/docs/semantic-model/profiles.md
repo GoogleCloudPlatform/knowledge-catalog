@@ -126,7 +126,8 @@ write differently — an action the profile does not mention keeps the default.
 This is the opposite of a field's column, which a profile must restate or leave
 unbound. The asymmetry is deliberate: a column inherited into a renamed schema
 binds to the wrong data and returns it silently, while an executor names a
-whole mechanism, so a wrong one fails at the first call rather than answering. To
+whole mechanism, so a wrong one fails rather than answering — at the first call,
+or already at push where the mechanism is a `sql` executor the store rejects. To
 withdraw an inherited executor — a read-only binding that performs no writes at
 all — a profile writes `executor: null`, which leaves the action declared and
 unavailable there.
@@ -435,6 +436,12 @@ writes nothing.
   dry run; a table that is missing or inaccessible fails and names it. Column
   names are not probed here — a mistyped column resolves to a real table and is
   caught at deploy, when BigQuery rejects the generated graph.
+- **Rejected DML** — every statement in an action's `sql` executor is planned
+  against the store this profile deploys to, without running it, and a store
+  that refuses one fails the push and quotes back why. The profile is what picks
+  the store, so the same statement can pass under one profile and fail under
+  another; see
+  [statements use your database names](actions.md#statements-use-your-database-names).
 - **Availability summary** — push resolves the dependency graph and prints, per
   profile, how many entities, metrics, relationships, and actions the binding
   leaves unavailable. `kcmd profiles` lists each one with the reason that stops

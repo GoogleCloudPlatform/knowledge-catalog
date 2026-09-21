@@ -321,7 +321,8 @@ differs from BigQuery Graph in four ways:
 
 Under `--validate-only` nothing is applied; add `--print` to see the generated
 Spanner DDL. Unlike the BigQuery leg, a Spanner-targeting model's source tables
-are **not** probed before deploy — the live pre-flight is BigQuery-only (see
+are **not** probed before deploy. Its actions are: every `sql` executor
+statement is planned against the target database first, on both legs (see
 [Validation](#validation)).
 
 ## What gets created in Knowledge Catalog
@@ -484,13 +485,15 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   requires exactly one kind, but 2 given (mcp, rest)`),
   the closed `create` / `modify` / `delete` vocabulary for `operation`, the
   rejection of a repeated guard name, and the rejection of a repeated
-  concept-and-operation pair in `affects`. Every check here is static, so it
-  runs on every push, regardless of destination. Static means nothing here asks
-  the store a question, so a statement naming a table or a column that does not
-  exist passes push and fails when the action runs. Note that actions themselves
+  concept-and-operation pair in `affects`. Every check named so far is static —
+  it reads the document alone — so it runs on every push, regardless of
+  destination. What the *names* in a statement mean is settled live instead, by
+  the store the profile binds: see the DML pre-flight under
+  [Validation](#validation). Note that actions themselves
   deploy **only** through the Knowledge Catalog leg — a
   graph-only `--no-kc` push validates them but has nowhere to put them, and
-  warns that they will not be deployed. *(static)*
+  warns that they will not be deployed. *(static, plus a live pre-flight for a
+  `sql` executor)*
 * **Every constraint states its rule as a judgment.** A constraint has one
   body, `judgment`, and it must be non-empty; one declaring no judgment states
   no rule at all, and the error names it. `expression` is a reserved key: a
@@ -533,10 +536,29 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   (a different system) and are **not** probed here. The `source` construct and its
   URI/dotted forms are defined in [model spec §7.1](model_spec.md#71-table-sources).
   *(live — needs BigQuery access)*
+* **Every `sql` executor statement is accepted by the store it will run
+  against.** Each statement is sent to the bound store with the request that
+  means *plan it, do not run it* — `dryRun` on BigQuery, `queryMode: PLAN` in an
+  uncommitted read-write transaction on Spanner — so the store parses, resolves
+  and type-checks it without writing anything. That catches a table or a column
+  the database does not have (answered with the store's own *Did you mean
+  `account_id`?*), a placeholder or a function from the wrong dialect, and a
+  parameter whose declared type does not match the column it is compared with:
+  the parameter types the action declares are sent with the statement, unbound,
+  which is what turns them into a claim the store checks. The database a
+  statement is planned against is the one the profile deploys the graph to, so
+  which store answers is the profile's choice, not the statement's. Failing to
+  reach the store at all fails the push rather than skipping the check — a push
+  that could not verify its statements must not proceed as though it had.
+  *(live — needs query access to the bound store)*
 
 The live table check runs whenever the BigQuery leg runs (some model targets
 BigQuery Graph), including under `--no-kc`, because the same tables back both a
-BigQuery graph and its Knowledge Catalog entries.
+BigQuery graph and its Knowledge Catalog entries. The DML pre-flight rides the
+same two legs: it runs before the BigQuery deploy and before the Spanner deploy,
+and both run under `--validate-only`, so a statement fails while nothing has
+been published. A catalog-only model — one declaring no deployment target at all
+— runs neither leg, so its statements are checked statically and no further.
 
 ## Permissions
 
@@ -546,8 +568,11 @@ BigQuery graph and its Knowledge Catalog entries.
 such a model is present), and for the validation pre-flight:
 
 * `bigquery.jobs.create` in the deployment-target project — to run the deploy's
-  `CREATE OR REPLACE PROPERTY GRAPH` and the validation dry-run query
+  `CREATE OR REPLACE PROPERTY GRAPH` and both pre-flight dry runs
 * read access on each entity's source table, so the dry-run can resolve it
+* read access on each table an action's `sql` executor names, for the same
+  reason — a dry run of a DML statement resolves the table it writes to, though
+  it writes nothing
 * `bigquery.datasets.get` on the target dataset (region detection; optional —
   push degrades gracefully without it)
 
@@ -558,6 +583,12 @@ model is present), on the database the target names:
   through `updateDatabaseDdl`
 * `spanner.databaseOperations.get` — to poll the long-running operation to
   completion
+* `spanner.sessions.create` and `spanner.sessions.delete`,
+  `spanner.databases.select`, and
+  `spanner.databases.beginOrRollbackReadWriteTransaction` — the DML pre-flight
+  plans each statement on a session, and a `PLAN` of a DML statement has to open
+  the read-write transaction it would write in even though it never commits one.
+  All four come with `roles/spanner.databaseUser`.
 
 **Knowledge Catalog / Dataplex** — for the Knowledge Catalog push (on by
 default; skip it with `--no-kc`):

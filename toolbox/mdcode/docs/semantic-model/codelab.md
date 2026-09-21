@@ -792,7 +792,8 @@ gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
 
 > **Why the tables come before the Spanner push.** Deploying the Spanner graph
 > applies the DDL through the `updateDatabaseDdl` long-running operation; it does
-> not create or pre-check the tables. So the tables must exist first.
+> not create the tables, and for a model like this one — which declares no
+> actions — it does not read them either. So the tables must exist first.
 
 ### Deploy the semantic model
 

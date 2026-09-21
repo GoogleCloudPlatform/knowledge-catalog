@@ -341,17 +341,44 @@ and its fields' `expression` keys bind it to.
 `@parameter` references are the exception: they name an argument bound at call
 time rather than anything in your database.
 
-A statement that says `accountId` where the column is `account_id` still passes
-push, because push never asks your store whether a table exists. The error comes
-from the store when the action runs, and it can read like a fault in the
-statement rather than a typo in a name. An entity named `Order` bound to a table
-named `Orders` produces
+Push checks those names for you, against the store itself. Before anything is
+published, every statement in a `sql` executor is sent to the database the
+profile binds — Spanner plans it, BigQuery dry-runs it — which parses it,
+resolves every table and column, and type-checks every parameter without
+executing a row of it. A statement that says `accountId` where the column is
+`account_id` fails the push:
+
+```
+Error: action 'TransferFunds' in model 'payments'
+(payments.profiles/operational.yaml): statement 1 of its sql executor was
+rejected by Spanner database 'my-project/my-instance/bank': Unrecognized name:
+accountId; Did you mean account? [at 1:54]. Statements reach the store exactly
+as written, so every table and column has to be the name the database uses.
+```
+
+Everything between the store's name and the closing sentence is the store's own
+answer, which is why it can point at column 54. That's also why the check is
+worth more than comparing your statements against the profile's bindings would
+be: the store catches what a name comparison can't see. A placeholder or a
+function borrowed from another dialect gets every identifier right and is still
+invalid. A parameter whose declared type doesn't fit the column it's compared to
+resolves every name correctly and fails on the type.
+
+An entity named `Order` bound to a table named `Orders` is the case worth
+recognizing, because the answer doesn't mention a table at all:
 
 ```
 Syntax error: Unexpected keyword ORDER [at 1:8]
 ```
 
-instead of "no such table", because `ORDER` is a reserved word.
+`ORDER` is a reserved word, so the statement stops parsing before anything goes
+looking for a table to write to.
+
+Nothing is written by any of this. Spanner plans inside a transaction that is
+never committed, and a BigQuery dry run doesn't execute the statement. What the
+check does need is access: it reaches the database your profile names, so a
+push from somewhere that can't reach it reports that rather than skipping the
+statements.
 
 ### Which file a `sql` executor belongs in
 
@@ -792,8 +819,9 @@ blast radius naming something it can't resolve.
 
 `kcmd push --validate-only` runs the checks a push runs and deploys nothing. It
 loads your model, checks each action against the ontology that same model
-declares, and prints every error it finds. A push clears the same gate before
-it writes anything, so whatever this reports would have stopped your deploy:
+declares, asks your store about any DML those actions carry, and prints every
+error it finds. A push clears the same gate before it writes anything, so
+whatever this reports would have stopped your deploy:
 
 ```bash
 kcmd push --validate-only
@@ -821,6 +849,10 @@ any of them stops the push:
 - **Every `affects` concept is an entity or relationship the model declares.**
   The list exists to answer *which actions change `Account`*. A typo is
   invisible on the page and would drop the action out of that answer.
+
+An action carrying a `sql` executor clears one more gate, and that one reads
+your database rather than your document: every statement is planned against the
+store your profile binds, as [described above](#statements-use-your-database-names).
 
 A model that breaks all five reports all five, one line each, and deploys
 nothing:
@@ -889,6 +921,12 @@ carries the write rather than a pointer to whoever performs it:
   time. `statements` is a fixed list in your model, so an action whose body
   arrived with the call would declare nothing, and a gate can't check what was
   never declared.
+
+Every one of those reads the statement text. The last check reads your database:
+as [described above](#statements-use-your-database-names), the store your
+profile binds parses, resolves and type-checks each statement before the push
+publishes anything, so a name the database doesn't have stops the push rather
+than the first agent to call the action.
 
 ## 5. Push it
 
@@ -1095,13 +1133,17 @@ and how the deployment-specific section stays isolated to `SKILL.md`, see
 
 This is a prototype. Four things you might reasonably expect are absent.
 
-- **Nothing checks a parameter against the column it's compared with.**
-  Projecting `source` from `Account.accountId` says what the value is; it says
-  nothing about where a statement puts it. `WHERE region = @source` is accepted
-  and runs, because the parameter is logical, the column is physical, and no
-  rule joins the two. Statements are sent to the store as written — see
-  [statements use your database names](#statements-use-your-database-names) —
-  so whoever writes one owns which column each argument lands in.
+- **Nothing checks that a parameter lands in the column it was projected
+  from.** Projecting `source` from `Account.accountId` says what the value is;
+  it says nothing about where a statement puts it. Push narrows this to the
+  same-type case: the parameter types your action declares are sent with the
+  statement, so the store rejects `WHERE region = @source` when `region` is a
+  string and `source` projects an integer — see
+  [statements use your database names](#statements-use-your-database-names).
+  What survives is a wrong column of the right type. `WHERE branch_id = @source`
+  passes, because the parameter is logical, the column is physical, and nothing
+  joins the two beyond the type they happen to share. Whoever writes a statement
+  still owns which column each argument lands in.
 - **A deterministic check over the call's own arguments has no home.** A
   constraint is settled by a model reading it, so `amount <= 25` written as a
   guard costs a model call and can come back differently twice — see

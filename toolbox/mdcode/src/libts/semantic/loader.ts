@@ -200,7 +200,9 @@ const metricSchema = z.object({
 // `sql` carries the write itself rather than a pointer to whoever performs it,
 // so the schema only checks its shape here. What makes it safe -- one DML verb
 // per statement, and every `@parameter` declared by the action -- is checked in
-// validate.ts, where the action's parameter list is in scope. See SqlExecutor.
+// validate.ts, where the action's parameter list is in scope. validate.ts also
+// holds the live pre-flight that plans each statement against the bound store,
+// which is where a name the database does not have is caught. See SqlExecutor.
 const EXECUTOR_KINDS = ['mcp', 'rest', 'grpc', 'sql'] as const;
 
 const executorSchema =

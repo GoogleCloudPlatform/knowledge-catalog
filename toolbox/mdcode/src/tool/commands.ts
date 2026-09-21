@@ -9,6 +9,7 @@ import * as kcmd from '../libts';
 import {BigQueryClient} from '../libts/gcp/bigquery';
 import * as context from '../libts/gcp/context';
 import * as dataplex from '../libts/gcp/dataplex';
+import {SpannerClient} from '../libts/gcp/spanner';
 import {SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import * as deploy from '../libts/semantic/deploy_bigquery';
@@ -24,7 +25,7 @@ import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {transpileModels} from '../libts/semantic/transpile';
-import {validateBigQueryDataSources, validatePushRequirements} from '../libts/semantic/validate';
+import {validateBigQueryActionStatements, validateBigQueryDataSources, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
@@ -586,10 +587,22 @@ export async function push(options: PushOptions): Promise<number> {
       }
       if (multiProfile) console.log(`\n-- Binding profile '${profileName}' --`);
       if (prepared.bqModels.length) {
+        const bq = new BigQueryClient(ctx);
         const accessErrors = await validateBigQueryDataSources(
-            prepared.bqModels, new BigQueryClient(ctx), defaultProject);
+            prepared.bqModels, bq, defaultProject);
         if (accessErrors.length) {
           for (const e of accessErrors) console.error(`Error: ${e}`);
+          return 1;
+        }
+        // Two pre-flights, in the order a failure is cheapest to read: the one
+        // above confirms each entity's source table is reachable, this one
+        // dry-runs each `sql` executor's DML. A missing source table would
+        // make every statement over it fail too, so reporting it first says
+        // "the table is gone" rather than listing each statement that noticed.
+        const dmlErrors = await validateBigQueryActionStatements(
+            prepared.bqModels, bq, defaultProject);
+        if (dmlErrors.length) {
+          for (const e of dmlErrors) console.error(`Error: ${e}`);
           return 1;
         }
         const code = await pushBigQuery(prepared.bqModels, ctx, options);
@@ -597,6 +610,18 @@ export async function push(options: PushOptions): Promise<number> {
         deployedGraphs += prepared.bqModels.length;
       }
       if (prepared.spannerModels.length) {
+        // Sibling of the BigQuery pre-flight above, over a different surface:
+        // that one confirms each entity's source table is reachable, this one
+        // PLANs each `sql` executor's DML against the database this profile
+        // binds. Both run before the deploy and both run under
+        // --validate-only, because the point is to fail while nothing has been
+        // published yet.
+        const dmlErrors = await validateSpannerActionStatements(
+            prepared.spannerModels, new SpannerClient(ctx));
+        if (dmlErrors.length) {
+          for (const e of dmlErrors) console.error(`Error: ${e}`);
+          return 1;
+        }
         const code = await pushSpanner(prepared.spannerModels, ctx, options);
         if (code !== 0) return code;
         deployedGraphs += prepared.spannerModels.length;

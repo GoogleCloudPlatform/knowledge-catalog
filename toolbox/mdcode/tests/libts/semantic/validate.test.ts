@@ -3,10 +3,10 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import {CustomExtension, Entity, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
+import {Action, CustomExtension, Entity, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
 import {LoadedModel} from '../../../src/libts/semantic/loader';
-import {validateBigQueryDataSources, validatePushRequirements} from '../../../src/libts/semantic/validate';
-import {BigQueryClientMock} from '../mocks';
+import {validateBigQueryActionStatements, validateBigQueryDataSources, validatePushRequirements, validateSpannerActionStatements} from '../../../src/libts/semantic/validate';
+import {BigQueryClientMock, mockSchema, SpannerClientMock} from '../mocks';
 
 // A parsed BigQuery Graph deployment target the strict matcher accepts.
 const BQ_TARGET =
@@ -330,5 +330,335 @@ describe('action parameters', () => {
     const errs = validatePushRequirements([loaded(m)]);
     expect(errs.some(e => e.includes('NoSuchEntity'))).toBe(true);
     expect(errs.some(e => e.includes('declares no datatype'))).toBe(false);
+  });
+});
+
+
+// The push-time live DML pre-flight. What these specify is the validator's own
+// behavior -- which statements it sends, where, with what parameter types, how
+// it reports a refusal and that it cleans up -- against a fake store that
+// answers from a declared schema. Whether the REAL backends refuse the same
+// statements is a question only a live run can settle; see the e2e tests.
+describe('action statement pre-flight', () => {
+  const ACCOUNT = {account: ['account_id', 'balance']};
+
+  // An action whose sql executor runs `statements`, with three declared
+  // parameters the statements may reference.
+  function sqlAction(statements: string[], name = 'Transfer'): Action {
+    return {
+      name,
+      parameters: [
+        {name: 'amount', type: 'Float'},
+        {name: 'id', type: 'Integer'},
+        {name: 'note', type: 'Opaque'},
+      ],
+      executor: {kind: 'sql', sql: {statements}},
+    } as Action;
+  }
+
+  function spannerModel(actions: Action[]): LoadedModel {
+    return loaded(model({actions}, [googleExt([SPANNER_TARGET])]));
+  }
+
+  function bqModel(actions: Action[]): LoadedModel {
+    return loaded(model({actions}, [googleExt([BQ_TARGET])]));
+  }
+
+  const GOOD = 'UPDATE account SET balance = @amount WHERE account_id = @id';
+
+  describe('validateSpannerActionStatements', () => {
+    test('a statement the database accepts passes', async () => {
+      const spanner = new SpannerClientMock();
+      spanner.schema = mockSchema(ACCOUNT);
+      expect(await validateSpannerActionStatements(
+                 [spannerModel([sqlAction([GOOD])])], spanner))
+          .toEqual([]);
+      expect(spanner.planned.length).toBe(1);
+    });
+
+    test('plans against the database the profile deploys to', async () => {
+      const spanner = new SpannerClientMock();
+      spanner.schema = mockSchema(ACCOUNT);
+      await validateSpannerActionStatements(
+          [spannerModel([sqlAction([GOOD])])], spanner);
+      // SPANNER_TARGET names projects/p/instances/i/databases/db: the action's
+      // rows live in the same database the graph is published to.
+      expect(spanner.createdSessions[0])
+          .toContain('projects/p/instances/i/databases/db/sessions/');
+    });
+
+    test('a table the database does not have fails the push', async () => {
+      const spanner = new SpannerClientMock();
+      spanner.schema = mockSchema(ACCOUNT);
+      const errs = await validateSpannerActionStatements(
+          [spannerModel([sqlAction(['DELETE FROM accounts WHERE 1=1'])])],
+          spanner);
+      expect(errs.length).toBe(1);
+      expect(errs[0]).toContain('action \'Transfer\'');
+      expect(errs[0]).toContain('statement 1');
+      expect(errs[0]).toContain('doc');
+      expect(errs[0]).toContain('Not found: Table accounts');
+    });
+
+    // The whole reason to ask the store rather than compare names here: its
+    // answer names the column the author meant. A message assembled locally
+    // would say only that `accountId` is not bound.
+    test('passes the store\'s did-you-mean through to the author', async () => {
+      const spanner = new SpannerClientMock();
+      spanner.schema = mockSchema(ACCOUNT);
+      const errs = await validateSpannerActionStatements(
+          [spannerModel([sqlAction([
+            'UPDATE account SET balance = @amount WHERE accountId = @id'
+          ])])],
+          spanner);
+      expect(errs.length).toBe(1);
+      expect(errs[0]).toContain('Did you mean account_id?');
+    });
+
+    // Sending the types is what makes the action's DECLARED parameter types a
+    // claim the store checks, rather than a comment.
+    test('sends the declared type of each referenced parameter', async () => {
+      const spanner = new SpannerClientMock();
+      spanner.schema = mockSchema(ACCOUNT);
+      await validateSpannerActionStatements(
+          [spannerModel([sqlAction([GOOD])])], spanner);
+      expect(spanner.planned[0].paramTypes)
+          .toEqual({amount: {code: 'FLOAT64'}, id: {code: 'INT64'}});
+    });
+
+    test('omits a parameter the statement does not reference', async () => {
+      const spanner = new SpannerClientMock();
+      spanner.schema = mockSchema(ACCOUNT);
+      await validateSpannerActionStatements(
+          [spannerModel(
+              [sqlAction(['DELETE FROM account WHERE account_id = @id'])])],
+          spanner);
+      expect(Object.keys(spanner.planned[0].paramTypes ?? {})).toEqual(['id']);
+    });
+
+    // An Opaque parameter means the model does not know the type. Asserting one
+    // would invent a constraint the author never wrote, so it is left for the
+    // store to infer.
+    test('omits an Opaque parameter rather than guessing a type', async () => {
+      const spanner = new SpannerClientMock();
+      spanner.schema = mockSchema({account: ['account_id', 'balance', 'memo']});
+      await validateSpannerActionStatements(
+          [spannerModel(
+              [sqlAction(['UPDATE account SET memo = @note WHERE 1=1'])])],
+          spanner);
+      expect(spanner.planned[0].paramTypes).toEqual({});
+    });
+
+    // PLAN mode has to begin a read-write transaction, which is never
+    // committed; deleting the session is what discards it.
+    test('deletes the session even when a statement is refused', async () => {
+      const spanner = new SpannerClientMock();
+      spanner.schema = mockSchema(ACCOUNT);
+      const errs = await validateSpannerActionStatements(
+          [spannerModel([sqlAction(['DELETE FROM ghost WHERE 1=1'])])],
+          spanner);
+      expect(errs.length).toBe(1);
+      expect(spanner.deletedSessions).toEqual(spanner.createdSessions);
+    });
+
+    // Spanner's error body, shaped after a live PLAN of a bad statement. Two
+    // things about it are load-bearing and neither is obvious. The top-level
+    // `message` is DOUBLY escaped -- one round of JSON escaping survives the
+    // parse, so its newlines arrive as a literal backslash and an n, and a
+    // statement it quotes back reads `Unexpected \"$1\"`. The LocalizedMessage
+    // detail carries the same text with nothing escaped.
+    function spannerErrorBody(diagnosis: string, echo: string): string {
+      const plain = `${diagnosis}\n${echo}\n     ^`;
+      return JSON.stringify({
+        error: {
+          code: 400,
+          // JSON.stringify minus its surrounding quotes is exactly the extra
+          // round of escaping Spanner applies.
+          message: JSON.stringify(plain).slice(1, -1),
+          status: 'INVALID_ARGUMENT',
+          details: [{
+            '@type': 'type.googleapis.com/google.rpc.LocalizedMessage',
+            locale: 'en-US',
+            message: plain,
+          }],
+        },
+      });
+    }
+
+    test('reports the diagnosis without the statement echo', async () => {
+      const spanner = new SpannerClientMock();
+      spanner.planDml = (async () => ({
+                           status: 400,
+                           message: spannerErrorBody(
+                               'Unrecognized name: accountId; Did you mean ' +
+                                   'account_id? [at 1:54]',
+                               'UPDATE account SET balance = @amount'),
+                         })) as any;
+      const errs = await validateSpannerActionStatements(
+          [spannerModel([sqlAction([GOOD])])], spanner);
+      expect(errs.length).toBe(1);
+      expect(errs[0]).toContain('Did you mean account_id? [at 1:54].');
+      // The echoed statement and its caret say nothing the author cannot see in
+      // their own profile, and the caret misaligns once the message sits inside
+      // a longer sentence.
+      expect(errs[0]).not.toContain('UPDATE account SET balance');
+      expect(errs[0]).not.toContain('^');
+    });
+
+    test('unescapes a statement the store quotes back', async () => {
+      const spanner = new SpannerClientMock();
+      spanner.planDml = (async () => ({
+                           status: 400,
+                           message: spannerErrorBody(
+                               'Syntax error: Unexpected "$1" [at 1:40]',
+                               'UPDATE account SET balance = $1'),
+                         })) as any;
+      const errs = await validateSpannerActionStatements(
+          [spannerModel([sqlAction([GOOD])])], spanner);
+      expect(errs[0]).toContain('Syntax error: Unexpected "$1" [at 1:40].');
+      expect(errs[0]).not.toContain('\\"');
+    });
+
+    // BigQuery sends no LocalizedMessage, so the top-level message is the
+    // normal path there rather than a fallback.
+    test(
+        'falls back to the top-level message when there is no detail',
+        async () => {
+          // What BigQuery sends: no LocalizedMessage, and the escaped newline
+          // Spanner uses at the top level, which is why the first line has to
+          // be found in both forms rather than by splitting on a real one.
+          const spanner = new SpannerClientMock();
+          spanner.planDml =
+              (async () => ({
+                 status: 404,
+                 message: JSON.stringify({
+                   error: {
+                     message: 'Not found: Table orders was not found\\n' +
+                         'UPDATE orders SET x = 1',
+                   },
+                 }),
+               })) as any;
+          const errs = await validateSpannerActionStatements(
+              [spannerModel([sqlAction([GOOD])])], spanner);
+          expect(errs[0]).toContain('Not found: Table orders was not found.');
+          expect(errs[0]).not.toContain('UPDATE orders');
+        });
+
+    test('shows a non-JSON body rather than swallowing it', async () => {
+      const spanner = new SpannerClientMock();
+      spanner.planDml = (async () => ({
+                           status: 502,
+                           message: '<html>Bad Gateway</html>',
+                         })) as any;
+      const errs = await validateSpannerActionStatements(
+          [spannerModel([sqlAction([GOOD])])], spanner);
+      expect(errs[0]).toContain('<html>Bad Gateway</html>');
+    });
+
+    test('opens one session for every statement on a database', async () => {
+      const spanner = new SpannerClientMock();
+      spanner.schema = mockSchema(ACCOUNT);
+      const a = spannerModel([sqlAction([GOOD, GOOD], 'A')]);
+      const b = spannerModel([sqlAction([GOOD], 'B')]);
+      expect(await validateSpannerActionStatements([a, b], spanner))
+          .toEqual([]);
+      expect(spanner.planned.length).toBe(3);
+      expect(spanner.createdSessions.length).toBe(1);
+    });
+
+    // A push that could not verify its statements must not proceed as though it
+    // had -- an unreachable database is a failed check, not an absent one.
+    test('reports a database it could not open a session on', async () => {
+      const spanner = new SpannerClientMock();
+      spanner.sessionError = 'PERMISSION_DENIED: spanner.sessions.create';
+      const errs = await validateSpannerActionStatements(
+          [spannerModel([sqlAction([GOOD])])], spanner);
+      expect(errs.length).toBe(1);
+      expect(errs[0]).toContain('could not open a session');
+      expect(errs[0]).toContain('spanner.sessions.create');
+      expect(spanner.planned.length).toBe(0);
+    });
+
+    test('a model with no sql executor sends nothing', async () => {
+      const spanner = new SpannerClientMock();
+      const m = spannerModel([{
+        name: 'Notify',
+        parameters: [],
+        executor: {kind: 'mcp', mcp: {server: 's', tool: 't'}},
+      } as unknown as Action]);
+      expect(await validateSpannerActionStatements([m], spanner)).toEqual([]);
+      expect(spanner.createdSessions).toEqual([]);
+    });
+
+    // A blank statement has already failed the push in
+    // validatePushRequirements; sending it would earn a second, less useful
+    // complaint from the store.
+    test('skips a blank statement', async () => {
+      const spanner = new SpannerClientMock();
+      spanner.schema = mockSchema(ACCOUNT);
+      const errs = await validateSpannerActionStatements(
+          [spannerModel([sqlAction(['  ', GOOD])])], spanner);
+      expect(errs).toEqual([]);
+      expect(spanner.planned.length).toBe(1);
+    });
+  });
+
+  describe('validateBigQueryActionStatements', () => {
+    test('a statement BigQuery accepts passes', async () => {
+      const bq = new BigQueryClientMock();
+      bq.dmlSchema = mockSchema(ACCOUNT);
+      expect(await validateBigQueryActionStatements(
+                 [bqModel([sqlAction([GOOD])])], bq, 'other'))
+          .toEqual([]);
+      expect(bq.dryRunDml.length).toBe(1);
+    });
+
+    test('bills the dry run to the model\'s own project', async () => {
+      const bq = new BigQueryClientMock();
+      bq.dmlSchema = mockSchema(ACCOUNT);
+      await validateBigQueryActionStatements(
+          [bqModel([sqlAction([GOOD])])], bq, 'fallback');
+      // BQ_TARGET names projects/p; the default is only used when the model
+      // declares no BigQuery target.
+      expect(bq.dryRunDml[0].project).toBe('p');
+    });
+
+    test('a column BigQuery does not have fails the push', async () => {
+      const bq = new BigQueryClientMock();
+      bq.dmlSchema = mockSchema(ACCOUNT);
+      const errs = await validateBigQueryActionStatements(
+          [bqModel([sqlAction([
+            'UPDATE account SET balance = @amount WHERE accountId = @id'
+          ])])],
+          bq, 'p');
+      expect(errs.length).toBe(1);
+      expect(errs[0]).toContain('action \'Transfer\'');
+      expect(errs[0]).toContain('Did you mean account_id?');
+      expect(errs[0]).toContain('BigQuery');
+    });
+
+    test('sends the declared type of each referenced parameter', async () => {
+      const bq = new BigQueryClientMock();
+      bq.dmlSchema = mockSchema(ACCOUNT);
+      await validateBigQueryActionStatements(
+          [bqModel([sqlAction([GOOD])])], bq, 'p');
+      expect(bq.dryRunDml[0].parameterTypes)
+          .toEqual({amount: 'FLOAT64', id: 'INT64'});
+    });
+
+    test('checks every statement of every action', async () => {
+      const bq = new BigQueryClientMock();
+      bq.dmlSchema = mockSchema(ACCOUNT);
+      const m = bqModel([
+        sqlAction([GOOD, 'DELETE FROM ghost WHERE 1=1'], 'A'),
+        sqlAction(['DELETE FROM alsoghost WHERE 1=1'], 'B'),
+      ]);
+      const errs = await validateBigQueryActionStatements([m], bq, 'p');
+      expect(errs.length).toBe(2);
+      expect(errs[0]).toContain('action \'A\'');
+      expect(errs[0]).toContain('statement 2');
+      expect(errs[1]).toContain('action \'B\'');
+      expect(errs[1]).toContain('statement 1');
+    });
   });
 });
