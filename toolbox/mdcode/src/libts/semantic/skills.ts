@@ -389,7 +389,8 @@ function readSideSection(
     out.push('To read the store directly:');
     out.push('');
     out.push('```bash');
-    out.push(`bq query --use_legacy_sql=false --project_id=${s.project} \\`);
+    out.push(`bq query --use_legacy_sql=false --project_id=${
+        s.project} --dataset_id=${s.dataset} \\`);
     out.push(`  'SELECT ...'`);
     out.push('```');
     out.push('');
@@ -421,8 +422,12 @@ function readableSchema(runtime: SemanticRuntime): string[] {
   const readable = readableEntities(runtime, dialect);
   if (!readable.length) return [];
   const out: string[] = [];
+  const hasSnippet = runtime.store?.kind === 'spanner' ||
+      runtime.store?.kind === 'bigquery';
+  const lead = hasSnippet ? `Those are ${dialect.name} statements.` :
+                            `Write ${dialect.name} statements.`;
   out.push(
-      `Those are ${dialect.name} statements. These tables are the whole of ` +
+      `${lead} These tables are the whole of ` +
       'what there is to read, and the names to write in a statement are the ' +
       'table and column names below -- not the model\'s own names, which ' +
       'follow each column for cross-reference:');

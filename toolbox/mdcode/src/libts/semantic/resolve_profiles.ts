@@ -489,24 +489,14 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
     // projected from. So a profile that leaves that concept unavailable leaves
     // the parameter intact, and dropping the action over it would withhold a
     // write the binding is perfectly able to perform.
-    let deadReason: string|undefined;
-    for (const f of a.affects ?? []) {
-      if (unavailableEntities.has(f.concept) || droppedRels.has(f.concept)) {
-        deadReason = `it affects ${f.concept}, which is unavailable`;
-        break;
-      }
-      const unboundField =
-          (f.fields ?? []).find(fld => unbound.has(`${f.concept}.${fld}`));
-      if (unboundField !== undefined) {
-        deadReason =
-            `it affects ${f.concept}.${unboundField}, which is unbound`;
-        break;
-      }
-    }
-    if (deadReason !== undefined) {
+    const deadAffected = (a.affects ?? [])
+                             .find(
+                                 f => unavailableEntities.has(f.concept) ||
+                                     droppedRels.has(f.concept));
+    if (deadAffected !== undefined) {
       report.droppedActions.push({
         name: a.name,
-        reason: deadReason,
+        reason: `it affects ${deadAffected.concept}, which is unavailable`,
       });
       continue;
     }

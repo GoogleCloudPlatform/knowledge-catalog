@@ -534,7 +534,7 @@ describe('the binding is one section', () => {
         .toContain(
             'This skill supplies no canned CLI command for AlloyDB; connect to ' +
             '`q/us-central1/j/inst/e` via `psql` or the AlloyDB Auth Proxy');
-    expect(second.files['SKILL.md']).toContain('Those are PostgreSQL statements.');
+    expect(second.files['SKILL.md']).toContain('Write PostgreSQL statements.');
   });
 
   test('a BigQuery store emits its bq read snippet and GoogleSQL schema map', () => {
@@ -550,7 +550,8 @@ describe('the binding is one section', () => {
           'This profile deploys to the BigQuery dataset p.sales_ds; an action\'s statements run against an operational database.',
     }));
     expect(bq.files['SKILL.md'])
-        .toContain('bq query --use_legacy_sql=false --project_id=p');
+        .toContain(
+            'bq query --use_legacy_sql=false --project_id=p --dataset_id=sales_ds');
     expect(bq.files['SKILL.md']).toContain('Those are GoogleSQL statements.');
     expect(bq.files['SKILL.md']).toContain('orders -> table orders');
     expect(bq.files['SKILL.md']).toContain('- Store: `bigquery:p/sales_ds`');

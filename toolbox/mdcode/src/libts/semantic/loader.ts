@@ -244,10 +244,8 @@ const parameterSchema = z.object({
   name: z.string().optional(),
   // A scalar DataType, and only on a standalone parameter. Resolved against
   // the model in convertParameter, not here, so the schema stays a plain
-  // string. `datatype` is accepted as an alias for `type` so parameters can be
-  // written with the same key as entity fields and metrics.
+  // string.
   type: z.string().optional(),
-  datatype: z.string().optional(),
   concept: z.string().optional(),
   field: z.string().optional(),
   description: z.string().optional(),
@@ -1175,36 +1173,8 @@ function convertParameter(
     p: ParameterDoc, actionName: string, concepts: Map<string, DeclaredConcept>,
     warnings: string[], inheritanceResolved = true): ActionParameter {
   const where = `action '${actionName}'`;
-  if (p.type !== undefined && p.datatype !== undefined) {
-    throw new Error(
-        `${where}: parameter ${p.name ? `'${p.name}' ` : ''}states both ` +
-        `'type' and 'datatype'; set one or the other (they are the same key).`);
-  }
-  const statedType = p.type ?? p.datatype;
-
-  let conceptName = p.concept;
-  let fieldName = p.field;
-  // Support `field: Account.accountId` as a concise one-key shorthand for
-  // `{concept: Account, field: accountId}`, matching the `Entity.field`
-  // syntax used in metric expressions and constraint judgments.
-  if (conceptName === undefined && fieldName !== undefined) {
-    const dot = fieldName.indexOf('.');
-    if (dot > 0 && dot < fieldName.length - 1 &&
-        !fieldName.slice(dot + 1).includes('.')) {
-      conceptName = fieldName.slice(0, dot);
-      fieldName = fieldName.slice(dot + 1);
-    }
-  } else if (conceptName !== undefined && fieldName?.includes('.')) {
-    throw new Error(
-        `${where}: parameter ${p.name ? `'${p.name}' ` : ''}states 'concept: ${
-            conceptName}' alongside 'field: ${
-            fieldName}', which already contains a concept prefix. ` +
-        `Write either {concept: ${conceptName}, field: ${
-            fieldName.split('.').pop()}} or {field: ${fieldName}}.`);
-  }
-
-  const hasConcept = conceptName !== undefined;
-  const hasField = fieldName !== undefined;
+  const hasConcept = p.concept !== undefined;
+  const hasField = p.field !== undefined;
 
   if (hasConcept !== hasField) {
     const given = hasConcept ? 'concept' : 'field';
@@ -1213,19 +1183,19 @@ function convertParameter(
         `${where}: parameter ${p.name ? `'${p.name}' ` : ''}states '${
             given}' without '${missing}'. A parameter projected from a field ` +
         `states both, as two separate keys: ` +
-        `{concept: Order, field: orderId} (or 'field: Order.orderId').`);
+        `{concept: Order, field: orderId}.`);
   }
 
-  if (hasConcept && statedType !== undefined) {
+  if (hasConcept && p.type !== undefined) {
     throw new Error(
         `${where}: parameter ${p.name ? `'${p.name}' ` : ''}states a 'type' ` +
-        `alongside 'concept: ${conceptName}' and 'field: ${fieldName}'. A ` +
+        `alongside 'concept: ${p.concept}' and 'field: ${p.field}'. A ` +
         `projected parameter takes its type from the field, so stating one ` +
         `here is a second place for it to be wrong: if the type is wrong, ` +
         `fix the field; if the call needs a different one, cast in the DML.`);
   }
 
-  const name = p.name ?? fieldName;
+  const name = p.name ?? p.field;
   if (name === undefined) {
     throw new Error(
         `${where}: a parameter states neither a 'name' nor a 'field' to take ` +
@@ -1237,28 +1207,27 @@ function convertParameter(
     // Kept whether or not it resolves: it is what the author wrote, and a
     // round-trip that dropped it would turn a projected parameter into a
     // standalone one carrying a type nobody stated.
-    param.concept = conceptName;
-    param.field = fieldName;
+    param.concept = p.concept;
+    param.field = p.field;
   }
 
-  const concept = hasConcept ? concepts.get(conceptName!) : undefined;
-  const field = concept?.fields.get(fieldName!);
+  const concept = hasConcept ? concepts.get(p.concept!) : undefined;
+  const field = concept?.fields.get(p.field!);
   if (hasConcept && !concept) {
     warnings.push(
-        `${where}: parameter '${name}' projects from '${conceptName}', which ` +
+        `${where}: parameter '${name}' projects from '${p.concept}', which ` +
         `is neither an entity nor a relationship in this model.`);
   } else if (hasConcept && !field && inheritanceResolved) {
     // Gated: with inheritance unresolved every entity looks like it declares
     // only its own fields, so this would fire on projections that are fine.
     warnings.push(`${where}: parameter '${name}' projects field '${
-        fieldName}', which ${concept!.kind} '${
-        conceptName}' does not declare.`);
+        p.field}', which ${concept!.kind} '${p.concept}' does not declare.`);
   }
 
   // The field's definition flows down; the parameter's own wording wins over
   // it. The type never does -- a projected parameter states none at all.
   if (field?.type !== undefined) param.type = field.type;
-  if (statedType !== undefined) param.type = statedType;
+  if (p.type !== undefined) param.type = p.type;
   const description = p.description ?? field?.description;
   if (description !== undefined) param.description = description;
   const label = p.label ?? field?.label;
@@ -1282,8 +1251,8 @@ function convertParameter(
       // correctly, so the fix is on the field. A reference that did NOT
       // resolve was already warned about above and says why there is no type.
       warnings.push(
-          `${where}: parameter '${name}' projects field '${conceptName}.${
-              fieldName}', which declares no datatype, so the parameter has ` +
+          `${where}: parameter '${name}' projects field '${p.concept}.${
+              p.field}', which declares no datatype, so the parameter has ` +
           `none either. Give that field a scalar type (${
               DATA_TYPES.join('/')}).`);
     }
