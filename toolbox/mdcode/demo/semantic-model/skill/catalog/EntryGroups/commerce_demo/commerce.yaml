@@ -170,8 +170,8 @@ semantic_model:
         judgment: >-
           The credit amount requested must not exceed the total of the order
           it is applied to. The `order` argument of this call identifies that
-          order, and the order's total is on record rather than stated in the
-          arguments, so read it before answering. Read both as dollars.
+          order, but the order's total is on record rather than stated in the
+          arguments, and nothing puts it in front of you. Read both as dollars.
         on_violation: escalate
         description: >-
           A credit cannot exceed the total of the order it credits. Lower the

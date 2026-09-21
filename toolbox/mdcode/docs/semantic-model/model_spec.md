@@ -531,9 +531,11 @@ reads the document ([§6](#6-the-extension-mechanism)).
   A constraint takes effect only where something references it. Declaring one
   adds a rule to the catalog and refuses nothing, so publishing a rule cannot
   change what an already-working call does. `guards` on an action is the only
-  reference the model defines, and it is where every kind of rule belongs: one
-  over an action's parameters has no other moment to run, and one over stored
-  data checks that the call does not start from a broken state.
+  reference the model defines, and it is where a rule over an action's
+  parameters belongs, having no other moment to run. A rule that turns on a
+  stored value can be declared there too, but nothing fetches that value: a
+  judge is given the rule, the action and the arguments, so such a rule is
+  recorded rather than enforced, and its enforcement belongs in your schema.
   Status: authored, validated, published, and settled at run time. Whatever
   dispatches a call puts each guard to a language model before the transaction
   opens and routes the verdict by `on_violation`; given no judge, the action is

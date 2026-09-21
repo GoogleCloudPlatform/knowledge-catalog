@@ -207,16 +207,8 @@ function promptFor(request: JudgeRequest): string {
 }
 
 
-interface FunctionCall {
-  name?: string;
-  args?: Record<string, unknown>;
-}
-
-
 interface Part {
   text?: string;
-  functionCall?: FunctionCall;
-  functionResponse?: {name: string; response: Record<string, unknown>};
 }
 
 

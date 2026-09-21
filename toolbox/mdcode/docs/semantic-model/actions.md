@@ -381,7 +381,7 @@ then name it on the action — one line on the `TransferFunds` from section 1:
         judgment: >-
           The amount argument of this call must not exceed Account.balance on
           the source account. That balance is on record rather than stated in
-          the arguments, so read it before answering.
+          the arguments, and nothing puts it in front of you.
         on_violation: reject
         description: >-
           A transfer cannot move more than the source account holds. Lower the
@@ -395,6 +395,14 @@ then name it on the action — one line on the `TransferFunds` from section 1:
 there is what makes it apply to that action. Put the reference on the action
 rather than on the constraint, because the same rule may gate `TransferFunds`
 and leave `CloseAccount` alone.
+
+That rule is the honest shape of a balance check and it is also one nothing here
+enforces: the balance is a row, a judge is shown the arguments and no more, and
+a rule it cannot settle it reports as not holding — which under `reject` refuses
+every call. Declared this way it is a policy on record and a schema constraint
+waiting to be written, not a control. Keep reading with that in mind; [a rule
+the judge can't settle](#a-rule-the-judge-cant-settle) is where it is worked
+through.
 
 Whatever dispatches the call is what checks its guards, and it checks every one
 of them before the call, with the arguments bound and before any transaction
@@ -446,12 +454,19 @@ attempted write. The verdict can also move: a ceiling of 25 dollars, stated as a
 judgment, can answer two identical calls differently, where `amount <= 25` could
 not.
 
-So write a judgment for a rule that has to read stored data or weigh what a
-caller wrote, where nothing shorter would settle it. A threshold over the call's
-own arguments is the case to keep out: `amount <= 25` reads nothing but the
-arguments, and a sentence buys you a model call and a verdict that can move.
+So write a judgment for a rule that has to weigh what a caller wrote, where
+nothing shorter would settle it. Two cases are worth keeping out. A threshold
+over the call's own arguments is the first: `amount <= 25` needs no reading at
+all, and a sentence buys you a model call and a verdict that can move.
 Leave it in whatever dispatches the call — the model has no home for it today,
 which is in [what is not modeled yet](#what-is-not-modeled-yet).
+
+A rule that turns on a stored value is the second. Nothing fetches that value
+for the judge, so the sentence gets settled against a figure the model supplied
+itself or refused for want of one. Write the rule down anyway if the model is
+where your policy lives, and enforce it in your schema — see
+[a rule the judge can't settle](#a-rule-the-judge-cant-settle) for what you get
+if you don't.
 
 Every constraint must state `on_violation`, and any of the three words will do.
 Omit it and the push fails, because an unmarked constraint would reject, and
@@ -460,21 +475,22 @@ that's too strong a consequence to inherit by silence.
 ### What a guard can see
 
 A guard is checked before the call, with the arguments bound and before any
-transaction opens. So it sees two things: the arguments it was handed, and the
-data the call starts from. A rule about the arguments — whether the memo the
-caller wrote names a real service failure, say — is settled completely, because
-the arguments are the whole of what it reads. A rule about stored data is
-settled against the state the call starts from, which is a weaker claim than it
-looks: that the call isn't starting from a broken state.
+transaction opens. It sees one thing: the arguments it was handed. A rule about
+the arguments — whether the memo the caller wrote names a real service failure,
+say — is settled completely, because the arguments are the whole of what it
+reads.
 
-Nothing settles a rule about the state a write *leaves behind*. "An order's
-total equals the sum of its lines" has nothing to look at when the guard runs.
-Put that rule inside the transaction, or in your schema, where the store
-enforces it.
+Nothing settles a rule about a stored value the call doesn't carry. A judge is
+given the rule, the action and the arguments, and goes nowhere for anything
+else, so *the credit must not exceed the total of the order* has no total to
+compare against — see
+[a rule the judge can't settle](#a-rule-the-judge-cant-settle). Put that rule in
+your schema, where the store enforces it inside the transaction.
 
-Nothing settles a rule about a stored value the call doesn't carry, either. A
-judge sees the arguments and no more — see
-[a rule the judge can't settle](#a-rule-the-judge-cant-settle).
+Nothing settles a rule about the state a write *leaves behind*, either. "An
+order's total equals the sum of its lines" has nothing to look at when the guard
+runs, for a second reason: the state it describes does not exist yet. That one
+belongs in the same place.
 
 **Status: `judgment` is the only body a constraint has.** Whatever checks a
 guard puts the sentence to a language model and routes the verdict by
@@ -493,8 +509,8 @@ consistent:
 2. **Name fields model-qualified.** Write `LineItem.memo` rather than "the
    memo". A push resolves every `Entity.field` token in the text against your
    model and fails when the entity declares no such field, so a rename can't
-   leave your sentence pointing at nothing. The qualified name also tells the
-   judge which value to read.
+   leave your sentence pointing at nothing. It also tells a reader which value
+   the rule is about, which the judge cannot go and fetch.
 3. **Say what doesn't count.** A rule with no negative example gets graded
    against whatever the model guesses you had in mind. The sentence "A memo
    that states only that the customer requested a credit does not satisfy this
@@ -564,7 +580,8 @@ outcome in `on_violation`:
         judgment: >-
           The amount argument of this call must not exceed the total of the
           Order it is applied to. That total is on record rather than stated in
-          the arguments, so read it before answering. Read both as dollars.
+          the arguments, and nothing puts it in front of you. Read both as
+          dollars.
         description: >-
           A credit cannot exceed the total of the order it credits. Lower the
           amount, or split it across the orders it actually covers.
@@ -1201,12 +1218,13 @@ Committed at 2026-09-19T15:02:02.059897Z.
 
 **The rule is settled before the transaction opens.** A model call takes
 seconds, and holding write locks across one costs more than it buys, so the
-judge is asked first and the transaction opens only if the answer allows it. No
-judge sees the state the write produces, and every judge reads committed state,
-so two calls racing each other can each be allowed against a total that neither
-will leave behind. A rule about the state a write leaves, or one that has to
-hold under concurrency, belongs in your schema, where the store enforces it
-inside the transaction.
+judge is asked first and the transaction opens only if the answer allows it. So
+no verdict is reached against the state the write produces, and none is reached
+under the transaction's locks either: two calls racing each other are judged
+independently, and a rule that only holds when they are serialised holds for
+neither. A rule about the state a write leaves, or one that has to hold under
+concurrency, belongs in your schema, where the store enforces it inside the
+transaction.
 
 **The judge gets the attempted call.** It receives the rule's text, the action's
 name and description, and the arguments as the caller stated them —
@@ -1236,8 +1254,8 @@ can't settle from the arguments as one that does not hold, and to say in its
 reason what was missing. That is the safe failure, not a working check.
 
 A rule like that belongs in your schema, where the store enforces it inside the
-transaction — the same place the race above puts a rule about the state a write
-leaves. `CreditWithinOrderTotal` and `CreditIsNotSplitToAvoidReview` in the
+transaction — the same place a rule about the state a write leaves belongs, for
+the reason given just above. `CreditWithinOrderTotal` and `CreditIsNotSplitToAvoidReview` in the
 worked example are both this kind: the first names a total that is on record,
 the second the credits already sitting on the order. They are written down here
 because the model is where the policy is recorded, and a rule nothing settles is
