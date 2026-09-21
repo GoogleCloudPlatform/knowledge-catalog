@@ -323,6 +323,30 @@ afterEach(() => {
 
 
 describe('kcmd action-list', () => {
+  // The command is declared `action-list [name]`, so the positional has to
+  // do something. It used to be accepted and dropped: naming one action on a
+  // model that declares several printed them all and exited 0, which reads
+  // as the answer to the question that was asked.
+  test('a named action narrows the listing to it', async () => {
+    writeWorkspace();
+    const code = await actionList('NotifyCustomer');
+    expect(code).toBe(0);
+    const out = logs.join('\n');
+    expect(out).toContain('NotifyCustomer');
+    expect(out).not.toContain('IssueCredit: Credit an order');
+  });
+
+  // An empty listing under a misspelled name reads as "this model declares
+  // nothing", so the name is checked across the scope before anything prints.
+  test('a name no model declares is an error', async () => {
+    writeWorkspace();
+    const code = await actionList('IssueCredits');
+    expect(code).toBe(1);
+    const out = logs.join('\n');
+    expect(out).toContain("no model in this scope declares an action 'IssueCredits'");
+    expect(out).toContain('IssueCredit, NotifyCustomer');
+  });
+
   test(
       'prints each action with what it takes, what it touches, and the ' +
            'command line that runs it',
@@ -546,8 +570,8 @@ describe('kcmd action-run: what it will not send to a store', () => {
     const out = logs.join('\n');
     expect(out).toContain('NOT CHECKED: CreditIsPositive');
     expect(out).toContain('this command settles no guard');
-    // Printed before the run banner's database line is reached, so it is read
-    // while the run is still a run.
+    // After the run banner, so the reader has been told which database is
+    // about to be written to before being told what will go unchecked on it.
     expect(out.indexOf('NOT CHECKED'))
         .toBeGreaterThan(out.indexOf('Running \'IssueCredit\''));
     expect(out).toContain(

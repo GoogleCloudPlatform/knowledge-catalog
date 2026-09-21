@@ -41,6 +41,15 @@ export interface InitOptions {
 }
 
 
+// What a model would deploy through the Knowledge Catalog leg alone. Named
+// rather than written inline at its one use site: an object literal inside a
+// generic argument is what editor formatters mangle first, and this one has
+// been mangled into `new Map < string, {...} > ()` more than once.
+interface CatalogOnlyCounts {
+  actions: number;
+  constraints: number;
+}
+
 export interface PushOptions {
   // Generic push flag for non-semantic-model (CatalogSync) scopes;
   // forwarded to CatalogSync.push. The semantic-model legs ignore it.
@@ -536,11 +545,7 @@ export async function push(options: PushOptions): Promise<number> {
     // Per model, what deploys through the Knowledge Catalog leg ALONE:
     // actions and constraints both have a catalog home and no graph one, so a
     // push that omits that leg has to account for either.
-    const catalogOnly = new Map < string, {
-      actions: number;
-      constraints: number
-    }
-    >();
+    const catalogOnly = new Map<string, CatalogOnlyCounts>();
     const noteCatalogOnly = (loaded: LoadedModel[]) => {
       for (const {model} of loaded) {
         const actions = model.actions?.length ?? 0;
@@ -802,19 +807,36 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   for (const doc of docs) {
     console.log(`Model '${doc.name}' (${source.entryGroup}):`);
     const declared = layout.profileDocuments(doc.name);
-    if (!declared.length) {
+    // 'default' is not a profile document and never can be -- a push rejects a
+    // file by that name. It names the inline bindings, which every model has,
+    // so it is the one profile name that is always right and has nothing to
+    // merge or prune. Reported here rather than falling into the typo check
+    // below, which would call a universally valid name undeclared.
+    if (only === DEFAULT_PROFILE) {
       console.log(
-          `  no binding profiles; the model document is its own inline ` +
-          `'default' binding.`);
+          `  profile '${DEFAULT_PROFILE}': the model document's own inline ` +
+          `bindings, as authored -- nothing merged, nothing withheld.`);
       continue;
     }
     const available = only ? declared.filter(p => p.name === only) : declared;
     // Naming a profile the model does not declare is a typo, not an empty
     // report: saying nothing would read as "this profile withholds nothing".
+    // Checked before the inline-binding line below, because a model that
+    // declares no profile documents still has to call a typo a typo -- saying
+    // "no binding profiles" and exiting 0 answers a question nobody asked.
     if (only && !available.length) {
-      console.error(`  no profile '${only}'; this model declares ${
-          declared.map(p => `'${p.name}'`).join(', ')}.`);
+      console.error(
+          `  no profile '${only}'; this model declares ` +
+          (declared.length ?
+               `${declared.map(p => `'${p.name}'`).join(', ')}.` :
+               `none, and its inline bindings are its 'default'.`));
       missing = true;
+      continue;
+    }
+    if (!declared.length) {
+      console.log(
+          `  no binding profiles; the model document is its own inline ` +
+          `'default' binding.`);
       continue;
     }
     for (const {name, text} of available) {
@@ -1285,14 +1307,16 @@ async function openActionRuntimes(options: ActionOptions):
 //   kcmd action-list [name]
 //
 // Answers "what can I run, and how": each action's parameters, executor,
-// guards and blast radius, ending with the command line that runs it.
+// guards and blast radius, ending with the command line that runs it. Naming
+// one narrows the listing to it; a name no model in scope declares is an
+// error, because an empty listing reads as "this model declares nothing".
 //
 // Returns a process exit code (0 on success).
 export async function actionList(
-    _name: string|undefined, options: ActionOptions = {}): Promise<number> {
+    name: string|undefined, options: ActionOptions = {}): Promise<number> {
   const opened = await openActionRuntimes(options);
   if (typeof opened === 'number') return opened;
-  return listActions(opened, options);
+  return listActions(opened, name, options);
 }
 
 
@@ -1324,9 +1348,29 @@ const RUN_INDENT = '    ';
 // when the runtime would refuse the call before opening a transaction, what it
 // is waiting on instead.
 function listActions(
-    runtimes: SemanticRuntime[], options: ActionOptions): number {
+    runtimes: SemanticRuntime[], only: string|undefined,
+    options: ActionOptions): number {
+  // A name nothing declares is a typo, and printing every action under it
+  // would answer a question the caller did not ask while looking like the
+  // answer to the one they did. Checked across the whole scope before
+  // anything prints, so the error is not buried under a model's heading.
+  if (only) {
+    const known =
+        runtimes.flatMap(r => (r.model.actions ?? []).map(a => a.name));
+    if (!known.includes(only)) {
+      console.error(
+          `Error: no model in this scope declares an action '${only}'` +
+          (known.length ? `; declared: ${known.sort().join(', ')}.` : '.'));
+      return 1;
+    }
+  }
+
   for (const runtime of runtimes) {
     const {model, store, storeError, profile, entryGroup} = runtime;
+    // A scope can hold several models and only one of them declare the action
+    // that was named. The others have nothing to say about it, and a heading
+    // over an empty listing reads as an answer.
+    if (only && !(model.actions ?? []).some(a => a.name === only)) continue;
     console.log(`Model '${model.name}' (${entryGroup}), profile '${profile}':`);
     // Where a run lands, said once at the top rather than left to be inferred
     // from a profile file the reader would have to go open.
@@ -1336,7 +1380,8 @@ function listActions(
     } else {
       console.log(`  store: ${storeLine(store)}`);
     }
-    const actions = model.actions ?? [];
+    const declared = model.actions ?? [];
+    const actions = only ? declared.filter(a => a.name === only) : declared;
     if (!actions.length) {
       console.log('  declares no actions.');
       continue;

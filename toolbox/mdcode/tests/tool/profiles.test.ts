@@ -84,8 +84,19 @@ function writeWorkspace(defaultProfile?: string): void {
   const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
   fs.mkdirSync(path.join(eg, 'commerce.profiles'), {recursive: true});
   fs.writeFileSync(path.join(eg, 'commerce.yaml'), LOGICAL);
-  fs.writeFileSync(path.join(eg, 'commerce.profiles', 'analytical.yaml'), ANALYTICAL);
-  fs.writeFileSync(path.join(eg, 'commerce.profiles', 'operational.yaml'), OPERATIONAL);
+  fs.writeFileSync(
+      path.join(eg, 'commerce.profiles', 'analytical.yaml'), ANALYTICAL);
+  fs.writeFileSync(
+      path.join(eg, 'commerce.profiles', 'operational.yaml'), OPERATIONAL);
+}
+
+// A model whose bindings are inline: it declares no profile documents, so
+// `profileDocuments` is empty and 'default' is the only binding there is.
+function writeInlineOnlyWorkspace(): void {
+  fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml(undefined));
+  const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+  fs.mkdirSync(eg, {recursive: true});
+  fs.writeFileSync(path.join(eg, 'commerce.yaml'), LOGICAL);
 }
 
 beforeEach(() => {
@@ -111,31 +122,32 @@ afterEach(() => {
 
 
 describe('kcmd profiles', () => {
-  test('lists each profile with its target, sources, and withheld coverage',
-       async () => {
-         writeWorkspace('analytical');
-         const code = await profiles();
-         expect(code).toBe(0);
-         const out = logs.join('\n');
+  test(
+      'lists each profile with its target, sources, and withheld coverage',
+      async () => {
+        writeWorkspace('analytical');
+        const code = await profiles();
+        expect(code).toBe(0);
+        const out = logs.join('\n');
 
-         // Both profiles listed; the default one is marked.
-         expect(out).toContain("profile 'analytical' (default)");
-         expect(out).toContain("profile 'operational'");
-         expect(out).not.toContain("profile 'operational' (default)");
+        // Both profiles listed; the default one is marked.
+        expect(out).toContain('profile \'analytical\' (default)');
+        expect(out).toContain('profile \'operational\'');
+        expect(out).not.toContain('profile \'operational\' (default)');
 
-         // Resolved targets and normalized sources.
-         expect(out).toContain(
-             'target: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/propertyGraphs/commerce');
-         expect(out).toContain('Customer -> acme-analytics.sales.customer');
-         expect(out).toContain(
-             'Customer -> //spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/tables/Customer');
+        // Resolved targets and normalized sources.
+        expect(out).toContain(
+            'target: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/propertyGraphs/commerce');
+        expect(out).toContain('Customer -> acme-analytics.sales.customer');
+        expect(out).toContain(
+            'Customer -> //spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/tables/Customer');
 
-         // Withheld coverage: availableCredit only under analytical,
-         // lifetimeValue (and the metric on it) only under operational.
-         expect(out).toContain('field Customer.availableCredit (unbound)');
-         expect(out).toContain('field Customer.lifetimeValue (unbound)');
-         expect(out).toContain('metric avg_lifetime_value');
-       });
+        // Withheld coverage: availableCredit only under analytical,
+        // lifetimeValue (and the metric on it) only under operational.
+        expect(out).toContain('field Customer.availableCredit (unbound)');
+        expect(out).toContain('field Customer.lifetimeValue (unbound)');
+        expect(out).toContain('metric avg_lifetime_value');
+      });
 
   test('marks no profile default when none is configured', async () => {
     writeWorkspace(undefined);
@@ -149,8 +161,8 @@ describe('kcmd profiles', () => {
     const code = await profiles({profile: 'operational'});
     expect(code).toBe(0);
     const out = logs.join('\n');
-    expect(out).toContain("profile 'operational'");
-    expect(out).not.toContain("profile 'analytical'");
+    expect(out).toContain('profile \'operational\'');
+    expect(out).not.toContain('profile \'analytical\'');
   });
 
   // An empty report would read as "this profile withholds nothing", which is
@@ -160,9 +172,48 @@ describe('kcmd profiles', () => {
     const code = await profiles({profile: 'operatonal'});
     expect(code).toBe(1);
     const out = logs.join('\n');
-    expect(out).toContain("no profile 'operatonal'");
-    expect(out).toContain("'analytical', 'operational'");
+    expect(out).toContain('no profile \'operatonal\'');
+    expect(out).toContain('\'analytical\', \'operational\'');
   });
+
+  // The typo has to be caught whether or not the model declares any profile
+  // documents. This used to report the inline binding and exit 0, because the
+  // "no binding profiles" line returned before the name was ever checked --
+  // so a script keying off the exit code read a misspelling as success.
+  test(
+      '`--profile` naming an undeclared profile is an error with inline bindings',
+      async () => {
+        writeInlineOnlyWorkspace();
+        const code = await profiles({profile: 'operatonal'});
+        expect(code).toBe(1);
+        const out = logs.join('\n');
+        expect(out).toContain('no profile \'operatonal\'');
+        // Says what this model does have, which is not a list of names.
+        expect(out).toContain('inline bindings');
+        expect(out).not.toContain('no binding profiles;');
+      });
+
+  // 'default' is the sentinel for the inline bindings, so it is valid against
+  // every model and a push rejects a profile file that claims the name. The
+  // typo check above must not treat the one always-correct name as a
+  // misspelling just because no profile document declares it -- which it did,
+  // for both a model with profiles and one without.
+  for (const [label, write] of [
+           ['profiles declared', writeWorkspace],
+           ['inline bindings only', writeInlineOnlyWorkspace],
+  ] as const) {
+    test(
+        `\`--profile default\` reports the inline bindings (${label})`,
+        async () => {
+          write();
+          const code = await profiles({profile: 'default'});
+          expect(code).toBe(0);
+          const out = logs.join('\n');
+          expect(out).toContain('profile \'default\'');
+          expect(out).toContain('inline');
+          expect(out).not.toContain('no profile \'default\'');
+        });
+  }
 
   // A bare `--profile` reaches cac as `true` and `--no-profile` as `false`.
   // Neither names a profile, so neither may narrow the report -- filtering on
@@ -173,8 +224,8 @@ describe('kcmd profiles', () => {
       const code = await profiles({profile});
       expect(code).toBe(0);
       const out = logs.join('\n');
-      expect(out).toContain("profile 'analytical'");
-      expect(out).toContain("profile 'operational'");
+      expect(out).toContain('profile \'analytical\'');
+      expect(out).toContain('profile \'operational\'');
     });
   }
 });
