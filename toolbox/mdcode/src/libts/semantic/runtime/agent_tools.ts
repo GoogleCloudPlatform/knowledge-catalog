@@ -8,7 +8,7 @@
  * `kcmd skills-generate` can render the model as an Agent Skill.
  */
 
-import {boundTable, sourceDataset} from '../binding';
+import {boundTable} from '../binding';
 import {Action, ActionParameter, Entity, fieldBinding, SemanticModel} from '../ir';
 
 import {SqlDialect} from './dialect';
@@ -355,11 +355,13 @@ function statementTable(
     warnings: string[]): string {
   const bare = boundTable(entity.dataSource, warnings, entity.name, id => id);
   if (runtime.store?.kind !== 'bigquery') return dialect.quote(bare);
-  // The entity's own source is asked first, so an entity bound to a table in
-  // a second dataset is named where it actually is rather than where the
-  // deployment target happens to point.
-  const [project, dataset] = sourceDataset(entity.dataSource) ??
-      [runtime.store.project, runtime.store.dataset];
+  // The store's own project and dataset, and not the entity's, because
+  // `resolveStore` has already refused any model that binds an entity outside
+  // its deployment target -- a statement addresses a table by name alone, so
+  // a stray binding would send the write to the target's table of that name.
+  // The two therefore cannot differ here, and reading the entity's source
+  // again would only suggest to a later reader that they can.
+  const {project, dataset} = runtime.store;
   return `\`${project}.${dataset}.${bare}\``;
 }
 

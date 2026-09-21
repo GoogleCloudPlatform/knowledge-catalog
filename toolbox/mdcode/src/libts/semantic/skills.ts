@@ -54,6 +54,7 @@ import {ActionTool, modelTools, readableEntities} from './runtime/agent_tools';
 import {dialectFor} from './runtime/dialect';
 import {SemanticRuntime} from './runtime/runtime';
 import {storeLine} from './runtime/store';
+import {leadingDmlVerb} from './sql_identifiers';
 
 /** One file of the generated package, at a path relative to the skill root. */
 export interface SkillFile {
@@ -265,7 +266,7 @@ function skillDocument(
 
   out.push(...readSideSection(runtime, actions));
   out.push(...runningSection(runtime, actions));
-  out.push(...outcomeSection(actions));
+  out.push(...outcomeSection(runtime, actions));
 
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
 }
@@ -347,18 +348,61 @@ function truncate(text: string, max: number): string {
 // no resolve step to get it wrong in: a wrong key reaches the statement.
 //
 // And a statement is all it reaches. Nothing in this toolchain performs the
-// write, so nothing checks the row count on the agent's behalf and refuses;
-// the statement runs, matches nothing, and succeeds. Saying so is the whole
-// point of the sentence -- a wrong key is the one failure mode here that does
-// not announce itself. The `sql` kind is the only one this can be said of,
-// because the kinds that hand the write to another system cannot say what that
-// system reports.
+// write, so nothing checks the row count on the agent's behalf and refuses.
+// What a wrong key then costs depends on the statement's verb, and the two
+// cases are opposites: an UPDATE or a DELETE keyed to nothing changes nothing
+// and says so in its row count, while an INSERT keyed to nothing lands a row
+// whose reference is dangling and reports that as a row written. Telling an
+// agent whose action inserts to read the row count would point it at the one
+// number that cannot answer the question, so the verb decides which of these
+// is said. The `sql` kind is the only one either can be said of, because the
+// kinds that hand the write to another system cannot say what that system
+// reports.
 const KEY_MATCHES_NOTHING =
-    ' A key that matches no record does not announce itself: the statement ' +
-    'runs, matches nothing, writes nothing, and comes back reporting zero ' +
-    'rows rather than an error. Read that count. A write that changed no rows ' +
-    'did not happen, however well the call went, and reporting it as done is ' +
-    'the one mistake here that nothing else will catch.';
+    ' A key that matches no record does not announce itself.';
+
+const KEY_MATCHES_NOTHING_UPDATE =
+    ' A statement that updates or deletes by key runs, matches nothing, ' +
+    'writes nothing, and comes back reporting zero rows rather than an ' +
+    'error. Read that count: a write that changed no rows did not happen, ' +
+    'however well the call went, and reporting it as done is a mistake ' +
+    'nothing else will catch.';
+
+const KEY_MATCHES_NOTHING_INSERT =
+    ' A statement that inserts is refused only where the store enforces that ' +
+    'key as a foreign key. Where it does not, the row lands, the call reports ' +
+    'a row written, and what the row refers to does not exist -- so read the ' +
+    'record a key names before you write against it, because no row count ' +
+    'will tell you afterwards.';
+
+/**
+ * What to say about a wrong key under this model, or nothing.
+ *
+ * Read from the leading verb of every statement a `sql` executor declares.
+ * validate.ts already refuses to publish a statement whose first word is not
+ * INSERT, UPDATE or DELETE, so an empty result here means the model binds no
+ * SQL statement rather than one that could not be read -- and a verb that
+ * cannot be read drops the sentence rather than guessing which half of it is
+ * true.
+ */
+function keyRiskSentence(runtime: SemanticRuntime): string {
+  const verbs = new Set<string>();
+  for (const action of runtime.model.actions ?? []) {
+    const executor = action.executor;
+    if (executor?.kind !== 'sql') continue;
+    for (const statement of executor.sql.statements) {
+      const verb = leadingDmlVerb(statement);
+      if (verb) verbs.add(verb);
+    }
+  }
+  const cases: string[] = [];
+  if (verbs.has('UPDATE') || verbs.has('DELETE')) {
+    cases.push(KEY_MATCHES_NOTHING_UPDATE);
+  }
+  if (verbs.has('INSERT')) cases.push(KEY_MATCHES_NOTHING_INSERT);
+  if (!cases.length) return '';
+  return KEY_MATCHES_NOTHING + cases.join('');
+}
 
 // How to read, said as a statement first and a command second. See the comment
 // at its use.
@@ -381,18 +425,16 @@ function readSideSection(
   const out: string[] = [];
   out.push('## Finding a record');
   out.push('');
-  // The last sentence is a promise about how a write fails, and only the
-  // `sql` kind is executed by this runtime and can be promised. It is dropped
-  // rather than the section with it: the instruction above still tells an
-  // agent never to invent an identifier, and saying where a key comes from is
-  // the answer to that whichever kind performs the write.
-  const performedHere =
-      distinctKinds(runtime.model.actions ?? []).includes('sql');
+  // The last sentences are a claim about how a write fails, and only a `sql`
+  // executor's statement is here to be read. They are dropped rather than the
+  // section with them: the instruction above still tells an agent never to
+  // invent an identifier, and saying where a key comes from is the answer to
+  // that whichever kind performs the write.
   out.push(
       'This skill offers writes, not reads. When you are given a name or a ' +
       'description where an action wants a key, the key has to come from ' +
       'somewhere else: ask the caller, or read the store directly.' +
-      (performedHere ? KEY_MATCHES_NOTHING : ''));
+      keyRiskSentence(runtime));
   out.push('');
   // Reading is stated as a SELECT against the store, and the CLI below is one
   // way to send it rather than the way. Whatever holds this skill may already
@@ -620,8 +662,23 @@ function statementsSection(
  * not about this model. An agent that treats a refusal as a retry, or a
  * warning as nothing, gets them wrong in the same way against every model.
  */
-function outcomeSection(actions: ActionTool[]): string[] {
+function outcomeSection(
+    runtime: SemanticRuntime, actions: ActionTool[]): string[] {
   if (!actions.length) return [];
+  // A row count is the `sql` kind's evidence and nobody else's. Where another
+  // system performs the write, what comes back is whatever that system chose
+  // to report, which may carry no count at all -- and asking an agent for a
+  // number it was never given gets an invented one.
+  const counted = distinctKinds(runtime.model.actions ?? []).includes('sql');
+  const applied = counted ?
+      '- **Applied.** The write landed. Say what changed, and say how many ' +
+          'rows changed.' :
+      '- **Applied.** The write landed. Say what changed, and say what the ' +
+          'system that performed it reported.';
+  const unsure = counted ? 'If you sent a statement and cannot tell whether ' +
+          'it landed' :
+                           'If you made the call and cannot tell whether it ' +
+          'landed';
   return [
     '## How a call ends',
     '',
@@ -633,8 +690,7 @@ function outcomeSection(actions: ActionTool[]): string[] {
     'A call ends in one of these. Do not collapse them into worked and did ' +
         'not work:',
     '',
-    '- **Applied.** The write landed. Say what changed, and say how many ' +
-        'rows changed.',
+    applied,
     '- **Refused.** You did not perform the write, and the reason says why. ' +
         'Repeat the reason plainly. If it says a person has to decide, say ' +
         'so and stop -- you cannot approve it yourself, and rephrasing the ' +
@@ -644,11 +700,10 @@ function outcomeSection(actions: ActionTool[]): string[] {
         'caller the write met every rule the model states, which is the one ' +
         'thing it did not.',
     '',
-    'If you sent a statement and cannot tell whether it landed, that is a ' +
-        'fourth thing and not a failure: say so, and say what to read to find ' +
-        'out. Do not send it again. A retry that succeeds where the first ' +
-        'attempt may also have succeeded leaves two of whatever the caller ' +
-        'asked for one of.',
+    `${unsure}, that is a fourth thing and not a failure: say so, and say ` +
+        'what to read to find out. Do not try it again. A retry that succeeds ' +
+        'where the first attempt may also have succeeded leaves two of ' +
+        'whatever the caller asked for one of.',
     '',
   ];
 }

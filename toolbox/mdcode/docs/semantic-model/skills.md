@@ -236,9 +236,12 @@ does not: it resolves an unqualified name against a default dataset, and a
 statement sent as a bare query — which is what a skill's holder sends — has
 none. So a BigQuery map reads
 `` Order -> `my-project.semantic_skill_demo.orders` ``, taking the project and
-dataset from the entity's own `source` and falling back to the deployment
-target's. A skill that named tables no statement could resolve would be worse
-than one that named none, because the reader would believe it.
+dataset from the deployment target. That is also the entity's own dataset: a
+model binding an entity outside its deployment target is refused when it loads,
+because an action's statements address a table by name alone and the write would
+land in the target's table of that name. A skill that named tables no statement
+could resolve would be worse than one that named none, because the reader would
+believe it.
 
 ### `Running an action`
 
@@ -270,11 +273,6 @@ binding rather than the logical model:
   statement composed instead of this one is a write nobody declared and no rule
   was written against."* They are printed exactly as the profile wrote them,
   including a BigQuery profile's fully-qualified table names.
-- **Guard evaluation**: Whether an action's guards are settled is a property of
-  the model, not a flag on `skills-generate`. An agent framework that exposes
-  these actions as tools puts the action's guards to a judge before it sends the
-  first statement, and refuses rather than writing unchecked when it cannot
-  settle one the model requires.
 - **Unrunnable actions (`Not runnable under this profile`)**: An action is
   marked not runnable in `SKILL.md` (while keeping its `references/<action>.md`
   page intact) only when:

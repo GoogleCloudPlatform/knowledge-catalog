@@ -196,22 +196,21 @@ export function referencedParameters(text: string): string[] {
 // action DML runs against Spanner, so `# credit the account` ahead of an INSERT
 // would otherwise hand back whatever verb the prose happened to use.
 //
-// It lives here, rather than beside the one caller that refuses a zero-row
-// write, because validation reads the same statements to decide what a model
-// may PUBLISH. Two readers meant the library accepted an authored `sql`
-// executor -- a leading comment, a CTE -- that `kcmd push` and `kcmd action
-// run` then refused before the runtime ever saw it. The verb SET stays wider
-// than what an executor may declare: MERGE is read so a caller can be told a
-// MERGE matched nothing, and rejected at publish time by SQL_EXECUTOR_VERBS,
-// which does not list it.
+// It lives here rather than beside either caller, because two things read the
+// same statements and must not disagree about where a statement's verb is:
+// validate.ts decides what a model may PUBLISH, and skills.ts decides what a
+// generated skill says a wrong key costs. A naive first-word read had them
+// answering differently about a leading comment and a CTE. The verb SET stays
+// wider than what an executor may declare: MERGE is read so a caller can
+// recognize one, and rejected at publish time by SQL_EXECUTOR_VERBS, which does
+// not list it.
 //
-// WHAT A MISREAD COSTS runs one way only, and it is worth knowing which. Since
-// noRowMatched refuses everything except a recognized INSERT, failing to read a
-// verb cannot hide a write that did nothing -- it can only refuse one that was
-// fine. The expensive direction is therefore a real INSERT this misses, and the
-// cheap direction is anything else it cannot parse. That is deliberate: a false
-// refusal is a failed run someone looks at, and a missed refusal is a caller
-// told its write landed when it did not.
+// WHAT A MISREAD COSTS is worth knowing, and both callers fall the safe way. A
+// verb validate.ts cannot read is a statement it refuses to publish -- a false
+// refusal, in front of the author who wrote it. A verb skills.ts cannot read
+// drops the sentence about wrong keys rather than printing the half of it that
+// might be wrong. Neither direction tells a caller a write landed when it did
+// not.
 //
 // This is a scanner, not a parser, and the repo does bundle a real one
 // (`@polyglot-sql/sdk`, used by transpile.ts and sql_identifiers.ts). It is not

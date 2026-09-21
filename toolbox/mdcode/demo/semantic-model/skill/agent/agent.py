@@ -48,6 +48,7 @@ import decimal
 import json
 import os
 import pathlib
+import re
 import sys
 
 from google import genai
@@ -117,13 +118,32 @@ def load_skill(root: pathlib.Path) -> str:
 # ---------------------------------------------------------------------------
 
 
+# Leading comments and opening parentheses, which a model puts in front of a
+# statement often enough to matter: Spanner rejects a SELECT sent down the DML
+# path, so `-- read the total\nSELECT ...` misrouted is a failed read rather
+# than a harmless one.
+_SQL_PREAMBLE = re.compile(r"""
+    \s* (?:
+      --[^\n]*\n        # -- line comment
+    | \#[^\n]*\n        # GoogleSQL takes # as well
+    | /\*.*?\*/         # /* block comment */
+    | \(                 # a parenthesized query
+    )""", re.VERBOSE | re.DOTALL)
+
+
 def _is_read(sql):
     """Whether to send this as a query or as a write.
 
     Crude on purpose: it is a dispatch decision inside one client, not a
     security boundary. Nothing here is deciding whether a write is allowed.
     """
-    head = sql.lstrip().lstrip('(').lower()
+    head = sql
+    while True:
+        stripped = _SQL_PREAMBLE.match(head)
+        if not stripped or not stripped.end():
+            break
+        head = head[stripped.end():]
+    head = head.lstrip().lower()
     return head.startswith('select') or head.startswith('with')
 
 
@@ -354,6 +374,14 @@ def main():
     for _ in range(MAX_TURNS):
         response = client.models.generate_content(
             model=args.model, contents=contents, config=config)
+        # A prompt the safety filter blocks comes back with no candidates at
+        # all, so this is checked before the subscript rather than after it:
+        # an IndexError here would report a bug in this file for what is
+        # really an answer from the service.
+        if not response.candidates:
+            print('\nThe model returned nothing, and no candidate to say why. '
+                  f'Prompt feedback: {response.prompt_feedback}.')
+            return 1
         candidate = response.candidates[0]
         if not candidate.content or not candidate.content.parts:
             print('\nThe model returned nothing. '

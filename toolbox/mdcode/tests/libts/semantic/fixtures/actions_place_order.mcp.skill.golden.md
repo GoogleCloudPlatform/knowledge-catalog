@@ -57,8 +57,8 @@ Settle every rule that gates an action before you perform it, not after. A rule 
 
 A call ends in one of these. Do not collapse them into worked and did not work:
 
-- **Applied.** The write landed. Say what changed, and say how many rows changed.
+- **Applied.** The write landed. Say what changed, and say what the system that performed it reported.
 - **Refused.** You did not perform the write, and the reason says why. Repeat the reason plainly. If it says a person has to decide, say so and stop -- you cannot approve it yourself, and rephrasing the request to get past a rule is the one thing you must not do.
 - **Applied with warnings.** The change landed and an advisory rule still went unmet. Report both. Reporting only the success tells the caller the write met every rule the model states, which is the one thing it did not.
 
-If you sent a statement and cannot tell whether it landed, that is a fourth thing and not a failure: say so, and say what to read to find out. Do not send it again. A retry that succeeds where the first attempt may also have succeeded leaves two of whatever the caller asked for one of.
+If you made the call and cannot tell whether it landed, that is a fourth thing and not a failure: say so, and say what to read to find out. Do not try it again. A retry that succeeds where the first attempt may also have succeeded leaves two of whatever the caller asked for one of.

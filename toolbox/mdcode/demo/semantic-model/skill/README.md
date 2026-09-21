@@ -427,9 +427,9 @@ settled by a language model, and that is what step 10 is about.
   }
 ]
 
-A credit of 4.50 cannot be applied to order 12346, which has a total of 3.00. A
-credit cannot exceed the total of the order it credits. Lower the credit amount,
-or split it across the orders it actually covers.
+A credit of 4.50 exceeds the order's total of 3.00. A credit cannot exceed the
+total of the order it credits. Lower the credit amount, or split it across the
+orders it actually covers.
 ```
 
 This is `CreditWithinOrderTotal`, and it's the rule that justifies writing rules
@@ -450,8 +450,10 @@ the business wrote it. Nothing was written.
 ```
 > We owe Morgan Ellis 20 dollars on order 12345 for the late delivery. Put through the first 10 now and I will raise the other half next week.
 
-This credit is one part of a larger amount. Raise it as a single credit for the
-full amount, and I will send it for supervisor review.
+A credit of 10 dollars on order 12345 would be one part of a larger, 20-dollar
+credit. A credit must be for the whole amount owed, not split into pieces to
+stay under the 25-dollar self-service ceiling. Raise this as a single credit for
+the full amount and send it for supervisor review.
 ```
 
 `CreditIsNotSplitToAvoidReview`, caught from the request itself, with no tool
@@ -468,28 +470,12 @@ look up.
 ```
 
 ```
-  [sql] SELECT amount FROM LineItem WHERE order_id = @order_id AND type = 'fee' AND memo = 'Shipping'
+  [sql] SELECT amount FROM LineItem WHERE order_id = @order_id AND type = 'fee'
   [params] {"order_id": 12345}
-  [result] 0 rows.
-
-  [sql] SELECT type, amount, memo FROM LineItem WHERE order_id = @order_id
-  [params] {"order_id": 12345}
-  [result] 3 row(s).
+  [result] 1 row(s).
 [
   {
-    "type": "item",
-    "amount": "42",
-    "memo": "Cast-iron skillet, 10 inch"
-  },
-  {
-    "type": "tax",
-    "amount": "3.36",
-    "memo": "State sales tax"
-  },
-  {
-    "type": "fee",
-    "amount": "4.5",
-    "memo": "Standard shipping"
+    "amount": "4.5"
   }
 ]
 
@@ -503,22 +489,28 @@ look up.
 ]
 
   [sql] INSERT INTO LineItem (line_item_id, order_id, type, amount, memo) VALUES (GENERATE_UUID(), @order, 'credit', -@amount, @memo)
-  [params] {"order": 12345, "amount": "4.5", "memo": "Credit for shipping charged in error."}
+  [params] {"order": 12345, "amount": "4.50", "memo": "Credit for shipping charged in error."}
   [result] 1 row(s) changed.
 
-I have credited order 12345 the $4.50 shipping charge. This changed 1 row.
+I have credited order 12345 for 4.50, the shipping charge that was applied in
+error. The credit has been applied to the order as a new line item.
 ```
 
-Four calls, and the first is the most instructive: the agent guessed the memo
-said `Shipping`, got `0 rows`, and widened the query rather than treating the
-empty result as an answer. The skill's "Finding a record" section is what told
-it to read that count — *"a key that matches no record does not announce itself:
-the statement runs, matches nothing, writes nothing, and comes back reporting
-zero rows rather than an error."*
+Three calls, and their order is the point. The agent read the fee line to find
+what shipping had actually cost, read the order total because
+`CreditWithinOrderTotal` told it to, and only then ran the `INSERT` — character
+for character the statement in the skill, with the arguments bound to the named
+parameters rather than pasted into the text.
 
-Then it read the total, because `CreditWithinOrderTotal` told it to. Then it ran
-the `INSERT` — character for character the statement in the skill, with the
-arguments bound to the named parameters rather than pasted into the text.
+It read before it wrote because the skill's "Finding a record" section says to:
+*"read the record a key names before you write against it, because no row count
+will tell you afterwards."* That sentence is in this skill because `IssueCredit`
+inserts. An insert carrying a key that matches nothing still reports a row
+written, so the row count an agent would otherwise check cannot catch the
+mistake — the credit simply lands against an order that does not exist. A model
+whose action updated by key gets the opposite advice, that a zero-row count is
+the signal to read, and the generator picks between the two by reading the
+statement's verb.
 
 ### A request that lands and reports a warning
 
@@ -540,11 +532,13 @@ arguments bound to the named parameters rather than pasted into the text.
 ]
 
   [sql] INSERT INTO LineItem (line_item_id, order_id, type, amount, memo) VALUES (GENERATE_UUID(), @order, 'credit', -@amount, @memo)
-  [params] {"order": 12345, "amount": 5, "memo": "a goodwill gesture, she asked nicely"}
+  [params] {"order": 12345, "amount": "5.0", "memo": "as a goodwill gesture, she asked nicely"}
   [result] 1 row(s) changed.
 
-Applied. A credit of $5.00 has been issued for order 12345, changing 1 row. This
-call did not state a specific service failure in the memo, which is required.
+I have issued a $5 credit to order 12345. This action was applied with a
+warning: the memo 'as a goodwill gesture, she asked nicely' does not name a
+specific service failure. In the future, please provide a specific reason for
+the credit in the memo.
 ```
 
 `CreditMemoNamesAServiceFailure` is `warn`, so the write goes through and the
@@ -574,7 +568,7 @@ total  type    amount  memo
 40.36  fee     4.5     Standard shipping
 40.36  tax     3.36    State sales tax
 40.36  credit  -4.5    Credit for shipping charged in error.
-40.36  credit  -5      a goodwill gesture, she asked nicely
+40.36  credit  -5      as a goodwill gesture, she asked nicely
 ```
 
 Two credits, two refusals, and a total that's the sum of five lines because it
@@ -651,7 +645,7 @@ Now run the same agent, same file, against it:
 ```
 
 ```
-Skill: skills-bq/commerce (9376 characters)
+Skill: skills-bq/commerce (9383 characters)
 Store: BigQuery my-project.semantic_skill_demo
 Model: gemini-2.5-pro (global)
 
@@ -723,18 +717,16 @@ description that gets quoted back to the caller:
 kcmd skills-generate --out ./skills --profile spanner --force
 ```
 
-Then re-run the request that landed a moment ago — the $4.50 shipping credit:
+Then ask for another $4.50 — the amount that went through in step 7:
+
+```bash
+.venv/bin/python agent/agent.py --skill ./skills/commerce \
+  --project "$PROJECT" --instance "$INSTANCE" --database "$DATABASE" \
+  "Order 12345 arrived two days late for Morgan Ellis. Credit her 4.50 for
+   the delay."
+```
 
 ```
-  [sql] SELECT li.amount FROM LineItem AS li JOIN Orders AS o ON li.order_id = o.order_id JOIN Customer AS c ON o.customer_id = c.customer_id WHERE li.type = 'fee' AND o.order_id = @order_id AND c.name = @customer_name
-  [params] {"order_id": 12345, "customer_name": "Morgan Ellis"}
-  [result] 1 row(s).
-[
-  {
-    "amount": "4.5"
-  }
-]
-
   [sql] SELECT total FROM Orders WHERE order_id = @order_id
   [params] {"order_id": 12345}
   [result] 1 row(s).
@@ -744,14 +736,22 @@ Then re-run the request that landed a moment ago — the $4.50 shipping credit:
   }
 ]
 
-A credit of $4.50 exceeds the $4.00 self-service ceiling for this desk. A
-supervisor must approve it.
+I cannot apply a credit of $4.50 to order 12345. A credit of more than $4.00 is
+above the self-service ceiling and has to be approved by a supervisor.
 ```
 
-Same reads, opposite ending, and no write. No line of `agent/agent.py` changed
+Same amount, opposite ending, and no write. No line of `agent/agent.py` changed
 and no prompt was edited: the number lives in one place, and that place is owned
 by whoever owns the business rather than by whoever owns the agent. Put the 25
 back before you move on.
+
+It's a fresh reason rather than the shipping request run again, and the reason
+why is worth seeing for itself. Re-running the identical shipping request at
+this point got a different refusal on our run — *"That order has already been
+credited for shipping. The credit was for $4.50, with the memo 'Credit for
+shipping charged in error.'"* — because the agent looked and found the credit
+step 7 had landed. That is the store answering, not the ceiling, and it would
+have hidden the change you just made.
 
 ## 10. What this does and doesn't get you
 

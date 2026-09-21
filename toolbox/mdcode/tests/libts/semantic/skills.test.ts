@@ -250,7 +250,7 @@ describe('SKILL.md is a router', () => {
         // the load-bearing half: a retry is the intuitive move and the wrong
         // one, because the first attempt may have landed.
         expect(skill).toContain('cannot tell whether it landed');
-        expect(skill).toContain('Do not send it again.');
+        expect(skill).toContain('Do not try it again.');
       });
 
   test('a model with no actions still yields a skill, and says so', () => {
@@ -656,14 +656,15 @@ describe('the binding is one section', () => {
     // nothing: the reader believes it and the query comes back "must be
     // qualified with a dataset".
     //
-    // And qualified from the entity's own source (`samples.tpch`) rather than
-    // from the store the graph deploys to (`p/sales_ds`), which this fixture
-    // deliberately spells differently. A profile may bind an entity to a
-    // table in another dataset, and the name that reaches the reader has to
-    // say where the table is rather than where the deployment points.
-    expect(bq.files['SKILL.md']).toContain('orders -> `samples.tpch.orders`');
+    // Qualified from the store, which is also the entity's own dataset: a
+    // model that binds an entity outside its deployment target does not load
+    // at all -- see 'a binding that disagrees with the target' in
+    // runtime/store.test.ts -- so there is no case where the two differ and
+    // no choice to make between them. This fixture builds its runtime by hand
+    // and so can spell them apart; a loaded one cannot.
+    expect(bq.files['SKILL.md']).toContain('orders -> `p.sales_ds.orders`');
     expect(bq.files['SKILL.md'])
-        .toContain('customer -> `samples.tpch.customer`');
+        .toContain('customer -> `p.sales_ds.customer`');
     expect(bq.files['SKILL.md']).not.toContain('-> table ');
     expect(bq.files['SKILL.md']).toContain('- Store: `bigquery:p/sales_ds`');
     // And the action is offered, not withheld. BigQuery executes DML, so a

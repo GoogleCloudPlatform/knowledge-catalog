@@ -21,7 +21,7 @@ Never invent an identifier. When you are given a name or a description where an 
 
 ## Finding a record
 
-This skill offers writes, not reads. When you are given a name or a description where an action wants a key, the key has to come from somewhere else: ask the caller, or read the store directly. A key that matches no record does not announce itself: the statement runs, matches nothing, writes nothing, and comes back reporting zero rows rather than an error. Read that count. A write that changed no rows did not happen, however well the call went, and reporting it as done is the one mistake here that nothing else will catch.
+This skill offers writes, not reads. When you are given a name or a description where an action wants a key, the key has to come from somewhere else: ask the caller, or read the store directly. A key that matches no record does not announce itself. A statement that updates or deletes by key runs, matches nothing, writes nothing, and comes back reporting zero rows rather than an error. Read that count: a write that changed no rows did not happen, however well the call went, and reporting it as done is a mistake nothing else will catch.
 
 ## Running an action
 
@@ -46,4 +46,4 @@ A call ends in one of these. Do not collapse them into worked and did not work:
 - **Refused.** You did not perform the write, and the reason says why. Repeat the reason plainly. If it says a person has to decide, say so and stop -- you cannot approve it yourself, and rephrasing the request to get past a rule is the one thing you must not do.
 - **Applied with warnings.** The change landed and an advisory rule still went unmet. Report both. Reporting only the success tells the caller the write met every rule the model states, which is the one thing it did not.
 
-If you sent a statement and cannot tell whether it landed, that is a fourth thing and not a failure: say so, and say what to read to find out. Do not send it again. A retry that succeeds where the first attempt may also have succeeded leaves two of whatever the caller asked for one of.
+If you sent a statement and cannot tell whether it landed, that is a fourth thing and not a failure: say so, and say what to read to find out. Do not try it again. A retry that succeeds where the first attempt may also have succeeded leaves two of whatever the caller asked for one of.

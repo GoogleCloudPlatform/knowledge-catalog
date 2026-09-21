@@ -24,9 +24,16 @@
 #
 #   * The statement is PostgreSQL. Nothing rewrites SQL a profile author wrote
 #     -- it is handed to the database as typed -- so a profile is where dialect
-#     belongs. The parameters are still `@name`, because that is one syntax
-#     across every backend; a PostgreSQL client rewrites them to `$1`, `$2` on
-#     the way out.
+#     belongs.
+#
+#   * The parameters are still `@name`, which is the model's one spelling for a
+#     parameter across every backend. Spanner and BigQuery bind that spelling
+#     natively; PostgreSQL does not have it at all, and answers `syntax error at
+#     or near "@"` to a statement sent verbatim. So whatever runs this profile
+#     has to bind `@order`, `@amount` and `@memo` as the positional `$1`, `$2`,
+#     `$3` its driver wants. That is a real cost of one spelling, and it is
+#     stated here rather than discovered: the skill generated from this profile
+#     prints the statement as written and says to run what is written.
 #
 # This is the profile the demo does NOT run. `kcmd push` has no AlloyDB client,
 # so the pre-flight that checks the statement against the store on the other two
