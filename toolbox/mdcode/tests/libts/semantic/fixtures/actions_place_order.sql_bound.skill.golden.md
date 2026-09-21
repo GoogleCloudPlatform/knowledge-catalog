@@ -59,7 +59,7 @@ kcmd action-run PlaceOrder \
   --arg quantity=<Integer>
 ```
 
-That command line settles no guard. It names the rules this action states and runs the write regardless, so it answers whether the call binds and the write lands, and nothing about whether the rules hold. The runtime your framework calls is what settles them.
+That command line settles no guard, for this action or any other in this model. It names whatever rules the action it runs states, and runs the write regardless, so it answers whether the call binds and the write lands, and nothing about whether the rules hold. The runtime your framework calls is what settles them.
 
 ## What happens when you call one
 

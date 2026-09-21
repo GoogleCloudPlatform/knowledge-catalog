@@ -553,15 +553,21 @@ function runningSection(
     out.push('```');
     out.push('');
   }
-  // Said wherever the action states a rule, because the command writes either
-  // way. An agent that tried the line, saw it commit, and took that for the
-  // rules holding would have drawn the one conclusion this command cannot
-  // support.
-  if (action?.guards?.length) {
+  // Said wherever ANY action in the model states a rule, not just the one the
+  // example line happens to name. The line is a template an agent adapts to
+  // whichever action it means to call, so keying the caveat to the example
+  // would drop it from a model whose first runnable action is unguarded and
+  // whose second is not -- leaving the reference page's "settled before
+  // anything is written" as the only thing said about running a guarded call.
+  // An agent that tried the line, saw it commit, and took that for the rules
+  // holding would have drawn the one conclusion this command cannot support.
+  const anyGuarded = (runtime.model.actions ?? []).some(a => a.guards?.length);
+  if (anyGuarded) {
     out.push(
-        'That command line settles no guard. It names the rules this action ' +
-        'states and runs the write regardless, so it answers whether the ' +
-        'call binds and the write lands, and nothing about whether the rules ' +
+        'That command line settles no guard, for this action or any other ' +
+        'in this model. It names whatever rules the action it runs states, ' +
+        'and runs the write regardless, so it answers whether the call ' +
+        'binds and the write lands, and nothing about whether the rules ' +
         'hold. The runtime your framework calls is what settles them.');
     out.push('');
   }

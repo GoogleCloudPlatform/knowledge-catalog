@@ -557,7 +557,7 @@ generator writes the same warning the CLI prints at run time into the skill
 itself, so the reading agent has it before it calls:
 
 ```markdown
-That command line settles no guard. It names the rules this action states and runs the write regardless, so it answers whether the call binds and the write lands, and nothing about whether the rules hold. The runtime your framework calls is what settles them.
+That command line settles no guard, for this action or any other in this model. It names whatever rules the action it runs states, and runs the write regardless, so it answers whether the call binds and the write lands, and nothing about whether the rules hold. The runtime your framework calls is what settles them.
 ```
 
 An agent handed this skill is therefore told, in the skill, that the command it

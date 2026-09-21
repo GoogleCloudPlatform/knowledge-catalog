@@ -388,6 +388,31 @@ describe('when the runtime would refuse the call', () => {
     expect(out.warnings.join(' ')).not.toContain('runnable');
   });
 
+  // The example command line is built from the FIRST runnable action, but an
+  // agent adapts it to whichever action it means to call. Keying the caveat to
+  // that example dropped it from a model whose first runnable action happens
+  // to be unguarded -- leaving the guarded action's reference page, which says
+  // its rules are "settled before anything is written", as the only thing the
+  // skill said about running one.
+  test('the caveat survives an unguarded first action', () => {
+    const [guarded] = model.actions!;
+    const unguarded: Action = {
+      ...guarded,
+      name: 'CloseOrder',
+      guards: [],
+      executor: RUNNABLE.executor,
+    };
+    const both: SemanticModel = {
+      ...model,
+      actions: [unguarded, {...guarded, executor: RUNNABLE.executor}],
+    };
+    const out = generate(rt(both));
+    // The example line is the unguarded action's, and the caveat is still
+    // there, because the model declares a guarded one.
+    expect(out.files['SKILL.md']).toContain('kcmd action-run CloseOrder');
+    expect(out.files['SKILL.md']).toContain('settles no guard');
+  });
+
   test('an executor the runtime cannot roll back is reported as such', () => {
     // The fixture's own MCP executor: the write would commit in a system this
     // runtime does not control.
