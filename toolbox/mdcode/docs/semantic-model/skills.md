@@ -136,8 +136,8 @@ description: "Customers, their orders, and the lines that make up an order. Decl
   (`Use when a request asks to change this data rather than only read it.`). If
   a model declares so many actions that the list would exceed the
   1,024-character limit, the action names are abridged
-  (`Declares 60 actions: Act1, Act2, ..., and 48 more.`) while keeping the
-  routing sentence intact.
+  (`Declares 60 actions: Act1, Act2, and 48 more.`) while keeping the routing
+  sentence intact.
 
 ### `## What you can do here`
 
@@ -150,8 +150,22 @@ Lists one row per action and points the agent to its reference page in
 | `IssueCredit` | Credit a customer against one order -- a late delivery, a coupon, a shipping charge applied in error. The credit is added as a negative line and the order total is recomputed from the lines. | `references/issue-credit.md` |
 ```
 
-If a model declares no actions, `SKILL.md` states:
-`This model declares no actions -- it describes data for reading only.`
+If a model declares no actions, the router table is replaced by:
+
+```text
+This model declares no actions, so there is nothing here to call. It describes what commerce means; it does not offer a way to change it.
+```
+
+Only `SKILL.md` is written in that case — no `references/` directory is created
+— and `kcmd skills-generate` warns:
+
+```text
+Warning: [commerce] Model 'commerce' declares no actions, so the skill describes nothing an agent can do. Generated anyway.
+```
+
+This is a different warning from the no-runnable-action one above: that one
+fires when actions exist but none can run, this one when the model declares none
+at all.
 
 ### `## How this model wants to be used`
 
@@ -200,6 +214,12 @@ Order -> table Orders
   column placed_on (Date) = Order.placedOn. The day the order was placed.
   column total (Decimal) = Order.total. What the customer owes on this order, in dollars.
   column status (String) = Order.status. OPEN or CLOSED.
+LineItem -> table LineItem
+  column line_item_id (String) = LineItem.lineItemId
+  column order_id (Integer) = LineItem.orderId
+  column type (String) = LineItem.type. item, tax, fee, or credit.
+  column amount (Decimal) = LineItem.amount
+  column memo (String) = LineItem.memo
 ```
 
 ### `## Running an action`
@@ -209,10 +229,15 @@ binding rather than the logical model:
 
 - **Store**: `<project>/<instance>/<database>` for Spanner,
   `alloydb:<project>/<location>/<cluster>/<instance>/<database>` for AlloyDB,
-  `bigquery:<project>/<dataset>` for BigQuery, or `none (<reason>)` when
-  unbound.
+  `bigquery:<project>/<dataset>` for BigQuery. When the profile binds no store
+  the line is `- Store: none.` followed by the reason, for example `- Store:
+  none. Model 'commerce' declares no deployment target under this profile, so
+  there is no store to run against. Select a profile whose deployment target
+  names a database.`
 - **Executor**: The executor kind(s) (`sql`, `mcp`, `rest`, or `grpc`) across
-  runnable actions.
+  every action the model *declares*, not only the runnable ones. It is a summary
+  of the binding, not a runnability signal: a profile in which nothing can run
+  still prints `- Executor: \`sql\`` above the list of reasons why.
 - **Remote executor coordinates**: When an action uses a remote executor, its
   target coordinates are printed directly under `Executor`:
   - `mcp`: ``- `PlaceOrder` (`place_order`): MCP tool `place_order` on
@@ -348,7 +373,7 @@ diff /tmp/spanner-skills/commerce/references/issue-credit.md \
 ```diff
 --- /tmp/spanner-skills/commerce/SKILL.md
 +++ /tmp/alloydb-skills/commerce/SKILL.md
-@@ -28,34 +28,28 @@
+@@ ... @@
 -To read the store directly:
 -
 -```bash
