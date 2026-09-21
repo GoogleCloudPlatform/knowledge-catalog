@@ -1813,18 +1813,13 @@ async function runOneAction(
   }
 
   console.log(`Running '${name}' on ${runtime.store.name}...`);
-  // Said before the write rather than after it, and named rule by rule, so a
-  // reader watching the run knows what went unenforced while it is still
-  // happening. This command checks no guard at all: settling one takes a judge,
-  // and who that is belongs to whoever dispatches the call in earnest. Nothing
-  // is printed for an action that declares none, because nothing was skipped.
-  const guards =
-      (runtime.model.actions ?? []).find(a => a.name === name)?.guards ?? [];
-  if (guards.length) {
-    console.log(
-        `  NOT CHECKED: ${guards.join(', ')} -- this command settles ` +
-        `no guard, and the write still happens`);
-  }
+  // Nothing is said about the guards here. This command settles none of them --
+  // that takes a judge, and who that is belongs to whoever dispatches the call
+  // in earnest -- but saying so before the run meant saying it before
+  // `runAction` had decided there would be a run at all, so a call with a
+  // missing argument announced that the write happens and then errored without
+  // opening a transaction. The run reports what it passed over in its own
+  // warnings, below, where it is a fact about a write that was made.
   const outcome = await runAction({
     runtime,
     actionName: name,

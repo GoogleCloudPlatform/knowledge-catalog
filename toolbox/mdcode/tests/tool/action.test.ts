@@ -537,22 +537,18 @@ describe('kcmd action-run: what it will not send to a store', () => {
             .toContain('which runs outside this transaction');
        });
 
-  test('names the guards it is not going to check', async () => {
-    // The command checks no guard, and the one thing it must not do is let
-    // that pass unremarked: a reader watching a write land is owed the list of
-    // rules that did not stand between them and it, by name, before it lands.
-    writeWorkspace();
-    await actionRun('IssueCredit', {arg: ['order=12345', 'amount=30']});
-    const out = logs.join('\n');
-    expect(out).toContain('NOT CHECKED: CreditIsPositive');
-    expect(out).toContain('this command settles no guard');
-    // After the run banner, so the reader has been told which database is
-    // about to be written to before being told what will go unchecked on it.
-    expect(out.indexOf('NOT CHECKED'))
-        .toBeGreaterThan(out.indexOf('Running \'IssueCredit\''));
-    expect(out).toContain(
-        'Running \'IssueCredit\' on projects/acme-ops/instances/prod/databases/commerce');
-  });
+  test('says nothing about guards until there is a write to say it about',
+       async () => {
+         // This used to be announced before the run, which meant announcing
+         // that "the write still happens" to a call that then failed to bind
+         // and wrote nothing at all. It is a fact about a write that was made,
+         // so it is not said until one has been.
+         writeWorkspace();
+         await actionRun('IssueCredit', {arg: 'order=12345'});
+         const out = logs.join('\n');
+         expect(out).toContain('was not given a value');
+         expect(out).not.toContain('guards were not checked');
+       });
 
   test('says nothing about guards for an action that declares none', async () => {
     // An action with no guards skipped no check, so a line saying one went
@@ -560,7 +556,7 @@ describe('kcmd action-run: what it will not send to a store', () => {
     // caveat nobody reads on the run that needed it.
     writeWorkspace(INHERITS);
     await actionRun('Touch', {arg: 'who=Alice'});
-    expect(logs.join('\n')).not.toContain('NOT CHECKED');
+    expect(logs.join('\n')).not.toContain('not checked');
   });
 });
 
@@ -814,7 +810,12 @@ describe('kcmd action-run: the guards go unchecked', () => {
     expect(code).toBe(0);
     expect(out).not.toContain('is guarded by \'CreditIsPositive\'');
     expect(asked.length).toBeGreaterThan(0);
-    expect(out).toContain('NOT CHECKED: CreditIsPositive');
+    // Named rule by rule, because a reader watching a write land is owed the
+    // list of rules that did not stand between them and it.
+    expect(out).toContain('guards were not checked: CreditIsPositive');
+    expect(out).toContain('the write was made anyway');
+    expect(out).toContain(
+        'Running \'IssueCredit\' on projects/acme-ops/instances/prod/databases/commerce');
   });
 
   test(

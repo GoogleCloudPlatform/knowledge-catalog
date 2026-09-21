@@ -273,8 +273,7 @@ describe('a tool this runtime would refuse', () => {
   test('a handler makes a remote executor runnable again', () => {
     const handler = async () => ({statements: []});
     const ungated = withExecutor(model, {guards: []});
-    const [tool] =
-        actionTools({runtime: rt(ungated), handler});
+    const [tool] = actionTools({runtime: rt(ungated), handler});
     expect(tool.runnable).toBe(true);
   });
 
@@ -391,16 +390,16 @@ describe('what counts as runnable is the runtime\'s answer, not a copy', () => {
         // to fetch a judge, who fetched one and was refused again, has been
         // sent the wrong way.
         const bodyless: Constraint = {
-      name: 'QuantityIsPositive',
-      onViolation: 'reject',
-    };
+          name: 'QuantityIsPositive',
+          onViolation: 'reject',
+        };
         const [tool] = actionTools({
           runtime: rt(guardedBy(bodyless, 'QuantityIsPositive')),
           judge: neverAsked,
         });
-    expect(tool.runnable).toBe(false);
+        expect(tool.runnable).toBe(false);
         expect(tool.unavailable).toContain('states no rule to put to a judge');
-  });
+      });
 });
 
 
@@ -599,6 +598,35 @@ describe('a handler does not displace an action\'s own statements', () => {
         expect(result.applied).toBe(true);
         expect(store.sql).toContain(HANDLER_SQL);
       });
+});
+
+
+// A tool derived with `skipGuards` is the only way a guarded action is offered
+// as callable at all, so what it says when it commits is the whole of what the
+// agent learns about the rules.
+describe('a skipped guard reaches the agent, not just the caller', () => {
+  const model = loadFixtureModel('actions_place_order.yaml');
+
+  test('the tool result names the guard the run passed over', async () => {
+    // The run used to come back `applied: true` and nothing else. The
+    // suppression was justified by the caller already knowing it asked for the
+    // skip -- true of the caller, and irrelevant to the agent reading the
+    // tool's result, which never saw the call that built the tool. An agent
+    // told only that the write applied has been told it met every rule the
+    // model states.
+    const store = new FakeStore();
+    const [tool] = actionTools({
+      runtime:
+          rt(withExecutor(model, {executor: RUNNABLE.executor}), store.client),
+      skipGuards: true,
+    });
+    expect(tool.runnable).toBe(true);
+    const result = await tool.invoke({customer: 1, quantity: 2});
+    expect(result.applied).toBe(true);
+    expect(result.warnings ?? []).toHaveLength(1);
+    expect((result.warnings ?? [])[0])
+        .toContain('guards were not checked: OrderWithinCustomerCredit');
+  });
 });
 
 
@@ -849,10 +877,10 @@ describe('sorting the tools an adapter can actually offer', () => {
     const guarded = {
       ...withExecutor(model, {...RUNNABLE, guards: ['UnderReview']}),
       constraints: [{
-        name: 'UnderReview',
+                     name: 'UnderReview',
                      judgment: 'The quantity must be under 25.',
-        onViolation: 'escalate',
-      }] as Constraint[],
+                     onViolation: 'escalate',
+                   }] as Constraint[],
     };
     const {callable, withheld} =
         callableTools(modelTools({runtime: rt(guarded)}));

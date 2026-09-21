@@ -306,17 +306,21 @@ check any of them.
 ### What the command line settles: nothing
 
 `kcmd action-run` binds the arguments, opens one transaction and applies the
-statements. It settles none of the rules. It says so before it writes, naming
-every guard it is passing over, so that nobody reads a committed write as a
-checked one:
+statements. It settles none of the rules, and the run says so itself: every
+guard it passed over is named in the outcome, alongside the commit, so that
+nobody reads a committed write as a checked one:
 
 ```console
 $ kcmd action-run IssueCredit \
     --arg order=12346 --arg amount=3.00 --arg memo="Coupon applied late"
 Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_skill_demo...
-  NOT CHECKED: CreditWithinOrderTotal, CreditUnderReviewThreshold, CreditMemoNamesAServiceFailure, CreditIsNotSplitToAvoidReview -- this command settles no guard, and the write still happens
-Committed at 2026-09-21T01:19:39.284744Z.
+Warning: guards were not checked: CreditWithinOrderTotal, CreditUnderReviewThreshold, CreditMemoNamesAServiceFailure, CreditIsNotSplitToAvoidReview -- this run was told to skip them, and the write was made anyway
+Committed at 2026-09-21T02:33:20.747065Z.
 ```
+
+That warning is a property of the run, not of this command line. It rides on the
+outcome, so an agent handed these actions as tools by its own framework reads
+the same sentence in the tool's result rather than a bare `applied: true`.
 
 That is the useful half for curating a model, and it is genuinely useful:
 whether an action binds its arguments, writes the line it says it writes and
@@ -332,8 +336,8 @@ precisely what `CreditWithinOrderTotal` exists to stop:
 $ kcmd action-run IssueCredit \
     --arg order=12346 --arg amount=20.00 --arg memo="Shipping charge applied in error"
 Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_skill_demo...
-  NOT CHECKED: CreditWithinOrderTotal, CreditUnderReviewThreshold, CreditMemoNamesAServiceFailure, CreditIsNotSplitToAvoidReview -- this command settles no guard, and the write still happens
-Committed at 2026-09-21T01:19:55.792326Z.
+Warning: guards were not checked: CreditWithinOrderTotal, CreditUnderReviewThreshold, CreditMemoNamesAServiceFailure, CreditIsNotSplitToAvoidReview -- this run was told to skip them, and the write was made anyway
+Committed at 2026-09-21T02:33:30.039525Z.
 ```
 
 ```console
@@ -345,7 +349,21 @@ order_id  total
 ```
 
 An order with a total of **negative five dollars**, committed, with the rule
-that forbids it sitting right there in the model. The banner is not a formality.
+that forbids it sitting right there in the model. The warning is not a
+formality.
+
+Those two writes really happened, so put 12346 back before going on — section 7
+runs against the seed from section 3, and expects this order at $18.00:
+
+```bash
+gcloud spanner databases execute-sql "$DATABASE" \
+  --instance="$INSTANCE" --project="$PROJECT" \
+  --sql="DELETE FROM LineItem WHERE order_id = 12346 AND type = 'credit'"
+
+gcloud spanner databases execute-sql "$DATABASE" \
+  --instance="$INSTANCE" --project="$PROJECT" \
+  --sql="UPDATE Orders SET total = NUMERIC '18.00' WHERE order_id = 12346"
+```
 
 ### Where the rules are settled instead
 

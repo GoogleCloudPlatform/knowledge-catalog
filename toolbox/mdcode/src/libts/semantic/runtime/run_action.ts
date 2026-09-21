@@ -128,9 +128,10 @@ export interface RunActionOptions {
   // write happens. It exists because the refusals above are total. An author
   // trying a model out locally, against their own database, has no judge to
   // supply and would find every guarded action unrunnable; the alternative is
-  // deleting the guards to test the write, which is worse. The run still
-  // reports each guard it did not check, so a caller reading the output is
-  // never told the write passed rules nothing consulted.
+  // deleting the guards to test the write, which is worse. The outcome names
+  // every guard the run passed over, in `warnings`, so nothing that reads the
+  // outcome -- a command line, or an agent handed the result of a tool call --
+  // is ever told the write passed rules nothing consulted.
   skipGuards?: boolean;
 }
 
@@ -199,16 +200,27 @@ export async function runAction(opts: RunActionOptions):
       warnings.push(...asked.warnings);
     }
   }
-  // An unsettled rule the caller did not ask to skip is a check the model
-  // asked for and did not get, and a caller shown no line for it reads the
-  // write as having passed every rule the model states. Every one reaching
-  // here is advisory, because anything stricter was refused above.
+  // An unsettled rule is a check the model asked for and did not get, and a
+  // caller shown no line for it reads the write as having passed every rule the
+  // model states. Every one reaching here is advisory, because anything
+  // stricter was refused above.
   //
-  // `skipGuards` is the one caller that gets no line, because it has already
-  // been told: it asked for the guards to go unchecked, and it says so where
-  // it asked. Repeating it here would quote every rule back at a caller who
-  // named them all a moment ago, and bury the outcome of the write under it.
-  if (!opts.skipGuards) {
+  // This travels with the outcome rather than being left to whoever called,
+  // including under `skipGuards`. A caller that asked for the skip does know it
+  // asked, but it is not the only one reading the result: `describeOutcome`
+  // hands these warnings to an agent as the tool's own answer, and an agent
+  // told only `applied: true` has been told the write met every rule the model
+  // states, which is the one thing it did not.
+  //
+  // One line for the whole skip rather than one per rule. The rules were not
+  // checked for one reason, and repeating it four times buries the outcome of
+  // the write under a list that says the same thing each time.
+  const skipped = skippedGuards(action, opts.skipGuards);
+  if (skipped.length) {
+    warnings.push(
+        `guards were not checked: ${skipped.join(', ')} -- this run was ` +
+        `told to skip them, and the write was made anyway`);
+  } else {
     for (const {constraint, why} of unsettledGuards(
              model, action, opts.judge)) {
       warnings.push(`${citation(constraint)} was not checked: ${why}`);
@@ -732,6 +744,17 @@ function citation(constraint: Constraint): string {
 // `unsafeToRunUnchecked` has refused everything stricter, so what turns up
 // here is advisory: it did not stop the write, and it still has to be
 // reported rather than left to read as a rule that passed.
+// The guards a `skipGuards` run passed over, in the order the action names
+// them. Reads the action rather than the model's constraints, because a guard
+// naming a constraint that does not exist was refused before this point and a
+// run that reaches here names only real ones.
+function skippedGuards(
+    action: Action, skipGuards?: boolean): readonly string[] {
+  if (!skipGuards) return [];
+  return action.guards ?? [];
+}
+
+
 function unsettledGuards(model: SemanticModel, action: Action, judge?: Judge):
     ReadonlyArray<{constraint: Constraint; why: string}> {
   const named = new Set(action.guards ?? []);
