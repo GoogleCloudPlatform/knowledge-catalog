@@ -116,7 +116,7 @@ agree on every structural row and differ only where a Spanner target has no
     Every other push target deploys nothing for it and warns once. Publishing is
     all that push does with a constraint; what settles one is a run, and the
     runtime an application embeds is what puts each guard to a judge before the
-    write. `kcmd action-run` is not that runtime and checks no guard.
+    write.
 14. **Binding profiles.** A model may define several physical realizations, one
     per binding profile. `--all-profiles` deploys a graph for every profile that
     declares a deployment target, each to the backend its own target names; a

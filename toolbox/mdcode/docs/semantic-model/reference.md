@@ -88,57 +88,6 @@ seeds or drops that database asks for the name rather than repeating it:
 IFS=/ read -r PROJECT INSTANCE DATABASE <<<"$(kcmd profiles --print-store)"
 ```
 
-### action-list
-
-```bash
-kcmd action-list
-```
-
-Prints every action the models in the scope declare, with the store a run would
-reach and the command line that runs each one. Opens no store and calls no
-model. See [Run it](actions.md#7-run-it).
-
-| Flag | Effect |
-|------|--------|
-| `--profile [name]` | Read the model under this binding profile. Its deployment target names the database the action runs against, so this is how you change stores. Defaults to `default_profile`, else the model's inline bindings. |
-
-To read back the store a profile deploys to, ask the binding rather than the
-listing: [`profiles --print-store`](#profiles).
-
-### action-run
-
-```bash
-kcmd action-run <name> --arg <name>=<value> ...
-```
-
-Executes one action against the Spanner or AlloyDB database the selected
-profile's deployment target names; only a `sql` executor runs.
-
-**This command does not check the action's guards.** A guard states its rule as
-a `judgment`, and settling one means putting it to a judge — which is a piece of
-the runtime an application embeds, not of a command line for curating a model.
-So the write happens and every rule the model states goes unenforced. The run
-names the guards it passed over, before it opens the transaction, so a reader
-watching one land sees what did not stand between them and it.
-
-Running an action is not what `kcmd` is for — the command exists so that an
-author can exercise a model they are curating, and find out whether the
-statements do what they meant, without first standing up an agent. Settling the
-guards takes something that embeds the runtime and hires a judge for it. Nothing
-in this repository does today — the [commerce
-demo](../../demo/semantic-model/skill/README.md) shows what it takes and keeps
-recorded runs of it, but its own executor is this command, which settles none.
-
-What this command still refuses is a model that is wrong about its own rules: a
-guard naming a constraint the model does not declare, or one whose `judgment`
-states nothing. Neither is a check standing down — they are the same two things
-a push refuses, and no judge would have repaired either.
-
-| Flag | Effect |
-|------|--------|
-| `--arg <name>=<value>` | Bind one action parameter. Repeat the flag for each one; the value is text, parsed against the parameter's declared ontology type. |
-| `--profile [name]` | Read the model under this binding profile. Its deployment target names the database the action runs against, so this is how you change stores. Defaults to `default_profile`, else the model's inline bindings. |
-
 ### agent-tools
 
 ```bash
@@ -166,7 +115,7 @@ agent's calls will be held to.
 A model whose profile names no Spanner database offers no tools, because calling
 one needs a store. That model is reported as offering none and the rest of the
 scope is still listed; the command exits non-zero. See
-[Hand it to an agent](actions.md#8-hand-it-to-an-agent).
+[Hand it to an agent](actions.md#7-hand-it-to-an-agent).
 
 ### skills-generate
 
@@ -186,17 +135,16 @@ the caller typed, and a name the format does not allow fails before anything is
 written.
 
 Everything the binding decides lives in `SKILL.md`: the store, the executor
-kinds, which actions this deployment cannot run and why, and the `kcmd
-action-run` line to try one with, all under one heading, plus the snippet for reading
-the store directly. A reference page is the same bytes under any profile.
+kinds, and which actions this deployment cannot run and why, all under one
+heading, plus the snippet for reading the store directly. A reference page is
+the same bytes under any profile.
 
 A guarded action is always described as runnable, because a rule stated in words
 is settled by the runtime before the transaction opens and a guarded action only
-ever runs against a runtime that has a judge. The command line printed for one
-is `kcmd`'s, and `kcmd` is not that runtime: it settles no guard, and the
-paragraph under the line says so. There is no flag here to say otherwise:
-whether the caller of `skills-generate` had a judge configured is a fact about
-that invocation, not about the deployment the document is read against.
+ever runs against a runtime that has a judge. There is no flag here to say
+otherwise: whether the caller of `skills-generate` had a judge configured is a
+fact about that invocation, not about the deployment the document is read
+against.
 
 | Flag | Effect |
 |------|--------|

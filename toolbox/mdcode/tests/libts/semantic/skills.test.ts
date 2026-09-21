@@ -160,8 +160,7 @@ describe('SKILL.md frontmatter', () => {
       'the description says what the model is and when to reach for it', () => {
         const description = fm['description'] as string;
         expect(description).toContain(model.description!);
-        // The name `kcmd action-run` takes, which is the name every command
-        // line in the package uses.
+        // The authored action name in the model.
         expect(description).toContain('PlaceOrder');
         expect(description.length).toBeLessThanOrEqual(1024);
       });
@@ -210,15 +209,6 @@ describe('SKILL.md is a router', () => {
     expect(out.files['references/place-order.md']).toBeTruthy();
   });
 
-  test('the router names the action the way the command line does', () => {
-    // The index and the one executable instruction have to agree. Naming the
-    // row `place_order` while the command reads `kcmd action-run PlaceOrder`
-    // sends an agent that routed off the table to an action the CLI rejects.
-    const row = skill.split('\n').find(l => l.includes('references/'))!;
-    const named = row.split('|')[1].trim().replace(/`/g, '');
-    expect(skill).toContain(`kcmd action-run ${named}`);
-  });
-
   test('the per-argument detail is in the reference, not the router', () => {
     // The anti-pattern this shape exists to avoid: a body that spends the
     // budget describing arguments of actions the agent did not ask about.
@@ -258,22 +248,6 @@ describe('SKILL.md is a router', () => {
         expect(skill).toContain('Unknown.');
         expect(skill).toContain('warnings');
       });
-
-  test('the command line it offers is one that would run', () => {
-    // Every continuation has a line after it. An action with no parameters is
-    // the case that gets this wrong: the command ends on a trailing backslash
-    // and does nothing, in the one place the skill says what to run.
-    const noArgs =
-        generate(rt(withAction(model, {...RUNNABLE, parameters: []})));
-    const lines = noArgs.files['SKILL.md'].split('\n');
-    const start = lines.findIndex(l => l.startsWith('kcmd action-run'));
-    expect(start).toBeGreaterThan(-1);
-    const end = lines.indexOf('```', start);
-    expect(end).toBeGreaterThan(start);
-    for (let i = start; i < end - 1; i++) expect(lines[i]).toEndWith('\\');
-    expect(lines[end - 1]).not.toEndWith('\\');
-    expect(lines[end - 1].trim()).not.toBe('');
-  });
 
   test('a model with no actions still yields a skill, and says so', () => {
     const readOnly = generate(rt({...model, actions: []}));
@@ -379,38 +353,11 @@ describe('when the runtime would refuse the call', () => {
     // The guard is settled in words, which is the runtime's job and not the
     // reading agent's: an agent that judged its own call would be the
     // constrained thing certifying itself. So the skill is written for a
-    // runtime that has a judge, and carries no flag about one: the command
-    // line it prints is kcmd's, which settles no guard, and the skill says so
-    // rather than letting a commit read as a rule that held.
+    // runtime that has a judge, and carries no flag about one.
     const out = generate(rt(withAction(model, {executor: RUNNABLE.executor})));
     expect(out.files['SKILL.md']).not.toContain('--judge');
-    expect(out.files['SKILL.md']).toContain('settles no guard');
+    expect(out.files['SKILL.md']).toContain('settles every guard');
     expect(out.warnings.join(' ')).not.toContain('runnable');
-  });
-
-  // The example command line is built from the FIRST runnable action, but an
-  // agent adapts it to whichever action it means to call. Keying the caveat to
-  // that example dropped it from a model whose first runnable action happens
-  // to be unguarded -- leaving the guarded action's reference page, which says
-  // its rules are "settled before anything is written", as the only thing the
-  // skill said about running one.
-  test('the caveat survives an unguarded first action', () => {
-    const [guarded] = model.actions!;
-    const unguarded: Action = {
-      ...guarded,
-      name: 'CloseOrder',
-      guards: [],
-      executor: RUNNABLE.executor,
-    };
-    const both: SemanticModel = {
-      ...model,
-      actions: [unguarded, {...guarded, executor: RUNNABLE.executor}],
-    };
-    const out = generate(rt(both));
-    // The example line is the unguarded action's, and the caveat is still
-    // there, because the model declares a guarded one.
-    expect(out.files['SKILL.md']).toContain('kcmd action-run CloseOrder');
-    expect(out.files['SKILL.md']).toContain('settles no guard');
   });
 
   test('an executor the runtime cannot roll back is reported as such', () => {
@@ -435,11 +382,10 @@ describe('when the runtime would refuse the call', () => {
       });
 
   test(
-      'a skill for a model nothing here can run does not offer a command',
+      'a skill for a model nothing here can run says so in the binding section',
       () => {
         const skill = generate(rt(model)).files['SKILL.md'];
         expect(skill).toContain('No action in this model can be run');
-        expect(skill).not.toContain('kcmd action-run');
       });
 
   test('a profile that binds no store says where the skill stands', () => {
@@ -647,26 +593,6 @@ describe('text that would otherwise break the output', () => {
       expect(path.normalize(path.join('/skills/x', file)))
           .toStartWith('/skills/x/');
     }
-  });
-
-  test('an action name containing " --" adds no flag of its own', () => {
-    // The command block used to be rebuilt by splitting the runtime's rendered
-    // line on ' --', which splits the name along with the flags: the block
-    // came back carrying `--Order` as if it were one.
-    const dashed =
-        withAction(model, {...RUNNABLE, name: 'Place --Order'} as never);
-    const skill = generate(rt(dashed)).files['SKILL.md'];
-    expect(skill).toContain(`kcmd action-run 'Place --Order'`);
-    expect(skill).not.toContain('\n  --Order');
-  });
-
-  test('an action name that needs shell quoting gets it', () => {
-    // The command block is meant to be copied and run. A bare name with a
-    // space silently becomes a different action plus a stray positional.
-    const spaced =
-        withAction(model, {...RUNNABLE, name: 'Place Order'} as never);
-    const skill = generate(rt(spaced)).files['SKILL.md'];
-    expect(skill).toContain(`kcmd action-run 'Place Order'`);
   });
 });
 

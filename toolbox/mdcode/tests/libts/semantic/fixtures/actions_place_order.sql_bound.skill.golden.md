@@ -50,16 +50,7 @@ Everything above is true of this model wherever it is deployed. This section is 
 - Store: `p/i/d`
 - Executor: `sql`
 
-`kcmd` is a command line for inspecting and debugging a model, not the runtime an agent should call in production. Use it to try a call and to see what a refusal says. An agent that runs continuously should be handed these actions as tools by its own framework, which reaches the same runtime.
-
-```bash
-kcmd action-run PlaceOrder \
-  --profile default \
-  --arg customer=<Integer> \
-  --arg quantity=<Integer>
-```
-
-That command line settles no guard, for this action or any other in this model. It names whatever rules the action it runs states, and runs the write regardless, so it answers whether the call binds and the write lands, and nothing about whether the rules hold. The runtime your framework calls is what settles them.
+An agent that runs continuously should be handed these actions as tools by its own framework, which settles every guard before opening a transaction and runs the write against the store above.
 
 ## What happens when you call one
 

@@ -110,13 +110,13 @@ describe('kcmd: --help and --version', () => {
     // The command has to be one that takes a positional, or the case this
     // covers does not arise: cac strips a matched command's own name from
     // `cli.args` and clears the match together, so what is left here is
-    // `['IssueCredit']` -- a word that names no command, which is exactly what
+    // `['import']` -- a word that names no command, which is exactly what
     // reading `cli.args` instead of `process.argv` would misread as a
-    // misspelled verb. `action-list` takes no positional and leaves `cli.args`
+    // misspelled verb. `agent-tools` takes no positional and leaves `cli.args`
     // empty, so it cannot stand in for this.
-    const {code, out} = run('action-run', 'IssueCredit', '--help');
+    const {code, out} = run('owl', 'import', '--help');
     expect(code).toBe(0);
-    expect(out).toContain('kcmd action-run');
+    expect(out).toContain('kcmd owl');
   });
 
   test('`--help` before an unknown verb is still an error', () => {
@@ -129,7 +129,7 @@ describe('kcmd: --help and --version', () => {
   });
 
   test('`--help` before a known verb still succeeds', () => {
-    const {code, out} = run('--help', 'action-list');
+    const {code, out} = run('--help', 'agent-tools');
     expect(code).toBe(0);
     expect(out).not.toContain('Unknown command');
   });

@@ -139,47 +139,6 @@ cli.command(
 
 
 cli.command(
-       'action-list',
-       'List what a semantic model declares as runnable: parameters, executor, guards, blast radius, and the command that runs each one')
-    .option(
-        '--profile [name]',
-        'Read the model under this binding profile; its deployment target names the database the action runs against; defaults to default_profile, else the inline bindings')
-    .action(async (options) => {
-      let exitCode = 1;
-      try {
-        exitCode = await commands.actionList(options);
-      } catch (err: any) {
-        console.error('Error:', err.message || err);
-        exitCode = 1;
-      }
-
-      process.exit(exitCode);
-    });
-
-
-cli.command(
-       'action-run <name>',
-       'Run one of a semantic model\'s actions against the store its deployment target names; the guards it declares are NOT checked')
-    .option(
-        '--arg <name=value...>',
-        'Bind one action parameter; repeat the flag for each one')
-    .option(
-        '--profile [name]',
-        'Read the model under this binding profile; its deployment target names the database the action runs against; defaults to default_profile, else the inline bindings')
-    .action(async (name, options) => {
-      let exitCode = 1;
-      try {
-        exitCode = await commands.actionRun(name, options);
-      } catch (err: any) {
-        console.error('Error:', err.message || err);
-        exitCode = 1;
-      }
-
-      process.exit(exitCode);
-    });
-
-
-cli.command(
        'agent-tools',
        'List what an agent holding this semantic model is offered')
     .option(
@@ -264,8 +223,8 @@ try {
 // actually typed, which cac does not keep once it has cleared the match, so
 // read it off `process.argv` rather than off `cli.args`. `cli.args` cannot
 // answer this: cac strips a matched command's own name from it and clears the
-// match in the same breath, so `action-run IssueCredit --help` arrives holding
-// `IssueCredit` and `bogusverb --help` holding `bogusverb`, and neither of those
+// match in the same breath, so `owl import --help` arrives holding
+// `import` and `bogusverb --help` holding `bogusverb`, and neither of those
 // words names a command.
 //
 // The verb is the first token that is not a flag, not the first token: the

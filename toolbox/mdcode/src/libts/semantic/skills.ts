@@ -46,7 +46,6 @@ import {Action, AffectedConcept, Constraint, SemanticModel} from './ir';
 import {ActionTool, modelTools, readableEntities} from './runtime/agent_tools';
 import {dialectFor} from './runtime/dialect';
 import {Judge} from './runtime/judge';
-import {runFlags} from './runtime/run_action';
 import {SemanticRuntime} from './runtime/runtime';
 import {storeLine} from './runtime/store';
 
@@ -516,60 +515,11 @@ function runningSection(
     return out;
   }
 
-  // Said plainly, because the alternative is an agent wiring a production
-  // call to a command whose flags are a debugging surface.
   out.push(
-      '`kcmd` is a command line for inspecting and debugging a model, not ' +
-      'the runtime an agent should call in production. Use it to try a call ' +
-      'and to see what a refusal says. An agent that runs continuously ' +
-      'should be handed these actions as tools by its own framework, which ' +
-      'reaches the same runtime.');
+      'An agent that runs continuously should be handed these actions as ' +
+      'tools by its own framework, which settles every guard before opening ' +
+      'a transaction and runs the write against the store above.');
   out.push('');
-  const example = actions.find(t => t.runnable)!;
-  const action = actionFor(example, runtime.model);
-  // `runLine` is the runtime's own answer, and it is asked rather than
-  // reproduced. Which arguments a call requires is a rule this module got
-  // wrong when it derived it itself, listing every parameter as if required.
-  // A line that is certain to be refused is worse than no line, so there is
-  // one copy of the rule.
-  const flags = action ? runFlags(action) : null;
-  if (flags) {
-    // The head is rebuilt so a name that needs shell quoting gets it --
-    // nothing constrains what is in an action name, and this is a block meant
-    // to be copied and run -- and `--profile` goes first because it picks the
-    // binding the rest of the line is about. The flags come from `runFlags`
-    // already separated, so a name containing ' --' cannot put a piece of
-    // itself among them. Joined rather than pushed line by line: an action
-    // with no flags at all would otherwise end on a continuation with nothing
-    // after it.
-    const parts = [
-      `kcmd action-run ${shellArg(example.actionName)}`,
-      `--profile ${shellArg(runtime.profile)}`,
-      ...flags,
-    ];
-    out.push('```bash');
-    out.push(parts.join(' \\\n  '));
-    out.push('```');
-    out.push('');
-  }
-  // Said wherever ANY action in the model states a rule, not just the one the
-  // example line happens to name. The line is a template an agent adapts to
-  // whichever action it means to call, so keying the caveat to the example
-  // would drop it from a model whose first runnable action is unguarded and
-  // whose second is not -- leaving the reference page's "settled before
-  // anything is written" as the only thing said about running a guarded call.
-  // An agent that tried the line, saw it commit, and took that for the rules
-  // holding would have drawn the one conclusion this command cannot support.
-  const anyGuarded = (runtime.model.actions ?? []).some(a => a.guards?.length);
-  if (anyGuarded) {
-    out.push(
-        'That command line settles no guard, for this action or any other ' +
-        'in this model. It names whatever rules the action it runs states, ' +
-        'and runs the write regardless, so it answers whether the call ' +
-        'binds and the write lands, and nothing about whether the rules ' +
-        'hold. The runtime your framework calls is what settles them.');
-    out.push('');
-  }
   return out;
 }
 
@@ -641,24 +591,15 @@ function referencePaths(actions: ActionTool[]): Map<string, string> {
   return paths;
 }
 
-// A bare token the shell passes through untouched, or a single-quoted one.
-// The action name reaches a ```bash block an agent is meant to copy and run,
-// and nothing upstream constrains what is in it.
-function shellArg(text: string): string {
-  return /^[A-Za-z0-9._-]+$/.test(text) ? text :
-                                          `'${text.replace(/'/g, `'\\''`)}'`;
-}
-
 function referenceDocument(
     tool: ActionTool, action: Action, model: SemanticModel): string {
   const out: string[] = [];
   out.push(`# ${action.name}`);
   out.push('');
-  // Both names, once, here. `action.name` is what `kcmd action-run` takes and
-  // what every command line in this package uses; `tool.name` is what the same
-  // action is called when a framework hands it over as a tool. An agent meets
-  // one or the other depending on how it was wired, and a page that showed
-  // only one would be wrong for half of them.
+  // Both names, once, here. `action.name` is the authored action name in the
+  // model; `tool.name` is what the same action is called when a framework hands
+  // it over as a tool. An agent meets one or the other depending on how it was
+  // wired, and a page that showed only one would be wrong for half of them.
   out.push(
       `Action \`${action.name}\` of the \`${model.name}\` model. As a ` +
       `tool it is named \`${tool.name}\`.`);

@@ -33,7 +33,7 @@ at startup as a model with one.
 ## Generate one
 
 Run it in a semantic-model scope, the same directory `kcmd push` and
-`kcmd action-run` work in:
+`kcmd agent-tools` work in:
 
 ```bash
 kcmd skills-generate --out skills
@@ -121,9 +121,9 @@ it, which lives in the model rather than in whoever wrote the agent:
 | `IssueCredit` | Credit a customer against one order -- a late delivery, a coupon, a … | `references/issue-credit.md` |
 ```
 
-The row names the action the way it was authored, because that's the string
-`kcmd action-run` takes and the string a refusal quotes back. The snake_case tool
-name a framework would register it under is on the reference page, stated once.
+The row names the action the way it was authored, because that's the string a
+refusal quotes back. The snake_case tool name a framework would register it under
+is on the reference page, stated once.
 
 Then **Finding a record**, which exists because a skill of writes has a hole in
 it: a request names a person and a day, and an action wants a key. The section
@@ -258,39 +258,28 @@ $ diff spanner-skills/commerce/SKILL.md alloydb-skills/commerce/SKILL.md
 < - Store: `my-project/my-instance/semantic_skill_demo`
 ---
 > - Store: `alloydb:my-project/us-central1/my-cluster/my-instance/semantic_skill_demo`
-68c39
-<   --profile spanner \
----
->   --profile alloydb \
 ````
 
 The first `diff` prints nothing: the reference page is the same bytes under both
 profiles, even though the two databases have different table names, a
 differently named column and a different SQL dialect between them. What changes
-in `SKILL.md` is the profile, the store, the command line's `--profile`, and the
-read path that only a Spanner store has.
+in `SKILL.md` is the profile, the store, and the read path that only a Spanner
+store has.
 
 The judge isn't a second axis, and it's worth saying why, because it looks like
 one. A rule stated in words is settled by asking a judge, and the runtime asks
 it before the transaction opens — not the agent making the call. An agent that
 judged its own call would be the constrained thing certifying itself, which is
 no guard at all. So a guarded action only ever runs against a runtime that has a
-judge, and that's the runtime every generated skill is written for. The command
-line in the skill is `kcmd`'s, and `kcmd` isn't that runtime: it settles no
-guard, and the paragraph under the line says so, so an agent that tries the call
-and watches it commit doesn't read that as the rules having held.
-Whether you had a judge configured when you ran `skills-generate` is a fact
-about that invocation, not about the deployment the document describes, so
-there's no flag here to write the other kind of skill.
+judge, and that's the runtime every generated skill is written for. Whether you
+had a judge configured when you ran `skills-generate` is a fact about that
+invocation, not about the deployment the document describes, so there's no flag
+here to write the other kind of skill.
 
 That section names the profile, the store, the executor kinds in play, and any
-action that can't run here. It also carries a `kcmd action-run` command line,
-built by the same code that prints one under `kcmd action-list` — so it arrives
-with a typed placeholder per required argument and nothing else, and it's
-marked, in the skill itself, as the debugging path. `kcmd` is
-a command line for inspecting a model, not the runtime an agent should call in
-production; an agent that runs continuously should be handed these actions as
-tools by its own framework, which reaches the same runtime.
+action that can't run here. An agent that runs continuously should be handed
+these actions as tools by its own framework, which settles every guard before
+opening a transaction and runs the write against that store.
 
 ## What it doesn't generate yet
 

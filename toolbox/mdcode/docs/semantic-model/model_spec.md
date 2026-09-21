@@ -539,9 +539,7 @@ reads the document ([§6](#6-the-extension-mechanism)).
   Status: authored, validated, published, and settled at run time. Whatever
   dispatches a call puts each guard to a language model before the transaction
   opens and routes the verdict by `on_violation`; given no judge, the action is
-  refused rather than run past its rules. No command line here does that:
-  `kcmd action-run` checks no guard, because who settles one belongs to whoever
-  dispatches the call in earnest. The [commerce
+  refused rather than run past its rules. The [commerce
   demo](../../demo/semantic-model/skill/README.md) shows what hiring a judge
   takes, in recorded runs — nothing in this repository embeds one today.
   Rules in [Reference → Validation](reference.md#validation).

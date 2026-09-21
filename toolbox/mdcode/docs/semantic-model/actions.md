@@ -45,11 +45,10 @@ accounts — from a name in your model through to an agent that can call it. A
 second example, a customer-service credit, comes in once the rules get harder to
 write.
 
-The commands here are `kcmd`, which reads a model, pushes it, and runs an action
-against the store a profile binds. It is how you exercise what you wrote and see
-each step of a call, and it is deliberately a small tool: what the model states
-holds for any runtime that reads it, and the library `kcmd` is built on is the
-same one a service would embed.
+The commands here are `kcmd`, which reads a model, pushes it, and derives the
+tools an agent is handed under a binding profile. What the model states holds
+for any runtime that reads it, and the library `kcmd` is built on is the same
+one a service would embed.
 
 ## When to use an action
 
@@ -249,8 +248,8 @@ The first three kinds name a system that performs the write, which leaves the
 write itself opaque to your model: an `mcp` tool name says where the operation
 lives and nothing about what it touches. A `sql` executor carries the write
 instead, so what your action does becomes readable — and checkable — from the
-bound model, and kcmd can [run it](#7-run-it) rather than handing the write to
-another system to perform.
+bound model, and the runtime can [run it](#7-hand-it-to-an-agent) rather than
+handing the write to another system to perform.
 
 Statements are written in one database's own table and column names, in its own
 dialect, so a `sql` executor goes in that database's [binding
@@ -688,10 +687,7 @@ an `escalate` with nothing stricter beside it holds the first call, and rule 4's
 guards to the judge in the order your model declares them and stops at the
 first one that fails without being advisory. What comes back is that guard's
 outcome rather than the strictest of them, and a `warn` collected on the way
-there doesn't travel with the refusal. And [`kcmd action-run`](#7-run-it)
-settles no guard at all, so the two calls above are what the published policy
-says should happen rather than what that command does with this action
-today.
+there doesn't travel with the refusal.
 
 ## 3. Say what it changes
 
@@ -845,9 +841,9 @@ resolves your model. Resolving drops entities and relationships the profile
 can't bind, so holding `affects` to the ontology there would fail your deploy
 over a concept the profile removed rather than one you mistyped. An undeclared
 concept and an undeclared field fall back to the warning the loader already
-gave. A catalog-only push and `kcmd action-run` read the author's model
-whole, so both treat the same two as hard errors. Fields beside a `delete` read
-only the entry, so that one fails everywhere.
+gave. A catalog-only push reads the author's model whole, so it treats the same
+two as hard errors. Fields beside a `delete` read only the entry, so that one
+fails everywhere.
 
 ### What push holds a statement to
 
@@ -956,128 +952,7 @@ each action. The name, the description, the executor, the typed parameters,
 unchanged. [What push and pull preserve](fidelity.md) lists which parts of a
 model survive that trip and which don't.
 
-## 7. Run it
-
-The sections so far declared an action, checked it and published it, and none
-of that has put it in front of the database the write lands on. This section is
-how you run one there, with arguments you choose, and see what comes back.
-Pasting the statements into a SQL console would tell you the DML is valid; a
-run is what exercises everything wrapped around it.
-
-This is a command line, which makes it a way of watching the model work rather
-than the place it is meant to work. `kcmd action-run` performs most of what any
-runtime dispatching these calls has to perform — bind the arguments, open one
-transaction, apply the statements. What it leaves out is the guards: it settles
-none of them, names the ones it passed over, and writes. Who settles a rule
-belongs to whoever dispatches the call in earnest, and that is
-[section 8](#8-hand-it-to-an-agent), where the same model reaches verdicts this
-command never asks for.
-
-`kcmd action-list` prints the actions your model declares, each with its
-parameters, executor, guards and blast radius, plus the command line that calls
-it, filled in with the parameters that line has to carry:
-
-```bash
-kcmd action-list
-```
-
-```
-Model 'payments' (payments_eg), profile 'operational':
-  store: my-project/my-instance/semantic_skill_demo
-  TransferFunds: Move money from one account to another.
-    parameters: source (Integer from Account.accountId), target (Integer from Account.accountId), amount (Float)
-    executor:   sql
-    guards:     TransferWithinAvailableBalance
-    affects:    Account (modify), Transfer (create), TransferDebits (create)
-    run:        kcmd action-run TransferFunds --arg source=<Integer> --arg target=<Integer> --arg amount=<Float>
-```
-
-Where a run would be refused before it opened a transaction, that line says so
-instead, in the runtime's own words. Misspell the guard — write
-`TransferIsWithinLimit` where the model declares
-`TransferWithinAvailableBalance` — and the same listing reads:
-
-```
-  TransferFunds: Move money from one account to another.
-    parameters: source (Integer from Account.accountId), target (Integer from Account.accountId), amount (Float)
-    executor:   sql
-    guards:     TransferIsWithinLimit
-    affects:    Account (modify), Transfer (create), TransferDebits (create)
-    NOT RUNNABLE: Action 'TransferFunds' is guarded by 'TransferIsWithinLimit',
-    which is not declared by model 'payments'. Running it would apply a write
-    the model says must be checked first, so it is refused rather than run
-    unchecked.
-```
-
-The executor is perfectly good, and nothing about it says the action cannot
-run. The listing knows because it asks the runtime the same question a run
-asks, rather than working it out again here — so the two cannot disagree about
-what will happen. An action executed over MCP is marked the same way, since
-this command holds no handler for one and could not roll it back.
-
-`kcmd action-run` performs one of those actions, against the database your
-model's deployment target names under the selected profile.
-
-### What a run does
-
-`kcmd action-run` binds every argument as a typed query parameter, then applies
-the action's statements in one transaction. `TransferFunds` is guarded, and this
-command settles no guard -- it names the ones it passed over and writes anyway,
-in a warning that rides on the outcome rather than on the command line:
-
-```
-Warning: guards were not checked: TransferWithinAvailableBalance -- this run
-was told to skip them, and the write was made anyway
-```
-
-A run ends committed, with nothing written, or unknown. The
-[commerce demo](../../demo/semantic-model/skill/README.md) records two committed
-runs against a live store, each carrying that warning.
-
-Nothing is interpolated into a statement. Every argument goes in as a query
-parameter, and the argument's ontology type — the field's, where the parameter
-projects one — decides the store type that parameter takes. Any failure before
-the commit rolls back, so no partial write survives, and a refused commit wrote
-nothing either. The commonest refusal is Spanner's `ABORTED` under lock
-contention, and the answer is to run the action again.
-
-An `UPDATE` or `DELETE` that matches no rows is one of those failures. A caller
-who passes an account id that isn't in the table gets a statement that changes
-nothing, and reporting that as a successful write would tell them money moved
-when none did — so the run is refused and the transaction rolls back naming the
-statement that matched nothing.
-
-`INSERT` is the one exemption, because it creates rows rather than finding them,
-so writing none is something an author can mean. Everything else your store
-reports a zero count for is refused, including a statement kcmd can't read a
-verb from at all — a procedure call wrapping the write, say. That direction is
-deliberate: a statement wrongly refused is a failed run you go and look at,
-while one wrongly allowed is a caller told its write landed when it didn't.
-
-The rule applies per statement, and it has no opt-out, so there's one shape of
-action you can't write today: a multi-statement action whose earlier statement
-is legitimately conditional. An action that clears a cart and then writes an
-order fails outright when the cart was already empty, because the `DELETE`
-matched nothing. Write that case as two actions, or move the condition into the
-statement that must write — a `DELETE` whose predicate you already know matches.
-There's no way to mark one statement as allowed to write nothing.
-
-The unknown outcome is a timeout or a 5xx, where your store may have applied the
-write and lost the response. kcmd can't settle which, so it reports the run as
-unknown rather than as a rollback, and a caller who retries on that report may
-apply the write twice.
-
-Only a `sql` executor runs. An `mcp`, `rest` or `grpc` executor names an
-operation in another system, which kcmd can't call and couldn't roll back if the
-commit failed, so the call is refused rather than half-performed:
-
-```
-Error: Action 'TransferFunds' is executed by MCP, which runs outside this
-transaction and could not be rolled back if the commit failed. Supply a handler
-that performs the write as DML, or declare the action with a 'sql' executor.
-```
-
-## 8. Hand it to an agent
+## 7. Hand it to an agent
 
 You don't write the tools an agent calls. You point an agent at your model, and
 what it can read, what it can change and what gates the change are all derived
@@ -1265,11 +1140,20 @@ not. Put it in the model.
 
 ### What a write tool and a lookup tool do
 
-A **write tool** runs the action. Calling `transfer_funds` does the same bind
-and transact as [`kcmd action-run TransferFunds`](#7-run-it) — the same typed
-parameters, the same single transaction, the same three outcomes. The guards are
-where the two part: the tool puts each one to whatever judge the runtime behind
-it holds, and the command line settles none.
+A **write tool** runs the action. Calling `transfer_funds` puts every guard the
+action names to whatever judge the runtime behind it holds, binds every argument
+as a typed query parameter, and applies the action's statements in one
+transaction against the store your profile's deployment target names.
+
+Nothing is interpolated into a statement: the argument's ontology type — the
+field's, where the parameter projects one — decides the store type that
+parameter takes. Any failure before the commit rolls back, so no partial write
+survives, and an `UPDATE` or `DELETE` that matches no rows is one of those
+failures (`INSERT` is the one exemption, because it creates rows rather than
+finding them). A run ends applied, refused with nothing written, or unknown — a
+timeout or a 5xx where your store may have applied the write and lost the
+response, which is reported as unknown rather than as a rollback so a caller
+does not retry and apply the write twice.
 
 A **lookup tool** reads one entity: exact match on any bound field, combined
 with AND, capped at 50 rows. It can't join, compare ranges, aggregate or order.
@@ -1299,25 +1183,6 @@ How an entity is keyed is not among them. Every parameter is a scalar, so an
 action taking the three key fields of a three-part key is as callable as one
 taking a single id.
 
-A guard is not one of the reasons a tool is withheld. Who settles a rule belongs
-to the application that embeds the runtime, and this command cannot know what
-that will be, so marking a guarded action unrunnable here would describe a
-caller rather than the model. What the listing does print, in the tool's own
-description, is which rules the agent's calls will be held to:
-
-```console
-$ kcmd agent-tools
-...
-  action  issue_credit  (IssueCredit)
-      ...
-      This call is gated by CreditWithinOrderTotal, CreditUnderReviewThreshold
-      and CreditIsNotSplitToAvoidReview:
-```
-
-No model is called. A judge settles a rule when an action runs, and printing
-what an agent is offered runs no action, so this listing costs you nothing
-however many guarded actions it names.
-
 A **lookup** is withheld for reasons of its own:
 
 - The entity is abstract, so it groups its subtypes and has no table to read.
@@ -1333,9 +1198,7 @@ withheld that would have worked is never tried.
 ### When a rule stops the call
 
 Calling a write tool puts every rule the action names to the runtime behind it,
-and the outcomes below are what it does with the answers. This is the half
-[section 7](#7-run-it) leaves out: `kcmd action-run` settles no guard, so none
-of what follows comes out of that command line.
+and the outcomes below are what it does with the answers.
 
 Only a constraint the action names in `guards` has a say in a call, which is
 [section 2](#2-gate-it-with-a-constraint)'s rule reaching the runtime. A
@@ -1343,9 +1206,8 @@ constraint your model declares and your action doesn't name has no bearing on
 the write, and nothing goes looking for one.
 
 A guard is a sentence, and settling a sentence needs something that reads one.
-A run given nothing to read with refuses a call that a non-advisory guard covers
-rather than running the write unchecked, which would leave anyone reading the
-model believing it was checked. The refusal names the rule:
+A runtime given nothing to read with withholds the tool up front, and refuses a
+call that a non-advisory guard covers rather than running the write unchecked:
 
 ```
 Error: Action 'TransferFunds' is guarded by 'TransferWithinAvailableBalance',
@@ -1374,16 +1236,6 @@ and handed to it once, at construction:
 const judge = new GeminiJudge(ctx, {model: 'gemini-2.5-flash'});
 ```
 
-**No kcmd command line hires one.** `kcmd action-run` performs the write and
-names the guards it did not check; it is for finding out whether your statements
-do what you meant, not for finding out whether your rules hold. The two demands
-pull apart: a judge costs a model call per guard and credentials to reach one,
-and an author checking a `WHERE` clause should not have to stand either up. The
-[commerce demo](../../demo/semantic-model/skill/README.md) is where what it
-takes to settle them is shown, against the same model — in runs recorded while a
-command line still hired a judge, because nothing in this repository hires one
-today.
-
 Each rule's own sentence goes to the model with the attempted call. A verdict
 comes back with a reason, and `on_violation` decides what follows. With
 `reject` the call stops before a transaction opens. `escalate` stops it too and
@@ -1394,15 +1246,6 @@ verdict alongside the commit.
 Four things are in a refusal and kcmd wrote none of them: the constraint's name,
 your own sentence, the judge's reason, and the constraint's `description`, which
 is the line telling the caller what to do instead.
-
-The demo's README carries a run of each, against the
-[credit policy worked through earlier](#a-credit-policy-worked-through) rebuilt
-around what a runtime can settle today: a profile binds `IssueCredit` to a `sql`
-executor, and the action names four rules in `guards`, with one of them set to
-each value of `on_violation` in turn so that a single rule shows all three
-branches. One of the four is the 25-dollar ceiling, written as a judgment rather
-than left to the desk, which is what settling arithmetic with a model call
-costs.
 
 **The rule is settled before the transaction opens.** A model call takes
 seconds, and holding write locks across one costs more than it buys, so the
@@ -1418,12 +1261,6 @@ transaction.
 name and description, and the arguments as the caller stated them —
 `order=12347`, the value itself, and not the `Order` row it identifies. That's
 the whole of what it has.
-
-**A rule that never reached a judge is reported as unchecked.** The runtime
-holds no judge, or the model call failed. Either way `on_violation` routes that
-like any other breach: an advisory guard lets the write through and warns, and a
-guard declaring `reject` or `escalate` stops the call. Committing in silence
-would tell you every rule passed when one was never put to anybody.
 
 ### A rule the judge can't settle
 
@@ -1456,15 +1293,15 @@ Two things decide which rows a call touches, and they run at different moments:
 you pass a value, and the statement's own `WHERE` clause picks the rows that
 value lands on.
 
-**Passing a value.** An argument names a value rather than a row. `--arg
-source=7` doesn't mean *the account whose id is 7*; it means the number 7,
-bound to `@source` wherever the statement puts it, as the type
-`Account.accountId` declares.
+**Passing a value.** An argument names a value rather than a row. Passing
+`source: 7` to `transfer_funds` doesn't mean *the account whose id is 7*; it
+means the number 7, bound to `@source` wherever the statement puts it, as the
+type `Account.accountId` declares.
 
 So a caller holding a name rather than an id has to turn one into the other
-first, with a query of its own, before the call. That's deliberate: finding the
-right row can be a search with several plausible answers, and the place to
-settle which one is in front of whoever is asking — not inside a write
+first, with a lookup tool (`find_account`) before the call. That's deliberate:
+finding the right row can be a search with several plausible answers, and the
+place to settle which one is in front of whoever is asking — not inside a write
 transaction, which would have to pick one silently and commit to it.
 
 **Targeting the write.** Your statement's `WHERE` clause decides how many rows
@@ -1482,9 +1319,9 @@ one your write lands on.
 
 `kcmd agent-tools` prints these tools; `modelTools` returns them. Both take a
 **semantic runtime**: one model paired with the store your profile binds it to.
-`createSemanticRuntimes` assembles them the way `kcmd action-list` and
-`kcmd action-run` do, so your agent reads the model the CLI reads, under the
-same profile, with the same merge and the same warnings:
+`createSemanticRuntimes` assembles them the way `kcmd agent-tools` does, so your
+agent reads the model the CLI reads, under the same profile, with the same merge
+and the same warnings:
 
 ```ts
 import {createSemanticRuntimes} from './src/libts/semantic/runtime/runtime';
@@ -1613,7 +1450,6 @@ This is a prototype. Four things you might reasonably expect are absent.
 - **kcmd calls no executor but its own.** A `sql` action runs; an `mcp`, `rest`
   or `grpc` one is published for whoever dispatches it, which is why those three
   name coordinates instead of a statement.
-- **The store is Spanner or AlloyDB.** `kcmd action-run` binds and
-  transacts against the database your profile's deployment target names, which
-  may be either of those. A model bound to BigQuery publishes its actions and
-  runs none of them.
+- **The store is Spanner or AlloyDB.** The runtime binds and transacts against
+  the database your profile's deployment target names, which may be either of
+  those. A model bound to BigQuery publishes its actions and runs none of them.

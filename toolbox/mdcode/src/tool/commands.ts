@@ -15,19 +15,17 @@ import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets} from '../libts/semantic/deployment_target';
-import {ActionParameter} from '../libts/semantic/ir';
 import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
 import {AvailabilityReport, DEFAULT_PROFILE, mergeProfileOntoDoc, pruneUnavailable,} from '../libts/semantic/resolve_profiles';
 import {ActionTool, EntityTool, modelTools} from '../libts/semantic/runtime/agent_tools';
-import {isParameterRequired, runAction, runLine, whyRefusedWithoutRunning,} from '../libts/semantic/runtime/run_action';
-import {createSemanticRuntimes, runtimeClient, SemanticRuntime} from '../libts/semantic/runtime/runtime';
+import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {dataClientFor, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {transpileModels} from '../libts/semantic/transpile';
-import {validateBigQueryDataSources, validatePushRequirements, validateRunnable} from '../libts/semantic/validate';
+import {validateBigQueryDataSources, validatePushRequirements} from '../libts/semantic/validate';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
@@ -1270,149 +1268,6 @@ export function catalogOnlyWarning(
 }
 
 
-export interface ActionOptions {
-  // `--arg <name>=<value>`, repeatable. cac hands back a bare string for one
-  // occurrence and an array for several.
-  arg?: string|string[];
-  // `string|boolean` for the same reason push's is: cac yields `true` for a
-  // bare `--profile` and `false` for `--no-profile`.
-  profile?: string|boolean;
-}
-
-
-// Opens every semantic model in scope under the named binding profile, which
-// is the one thing both action commands need before they can say anything.
-// Returns the runtimes, or an exit code if the scope would not open.
-async function openActionRuntimes(options: ActionOptions):
-    Promise<SemanticRuntime[]|number> {
-  const ctx = context.ApiContext.default();
-  // cac hands back `true` for a bare `--profile` and mri `false` for
-  // `--no-profile`; neither names a profile, and `??` would let both through
-  // to be looked up as one. Same guard push uses.
-  const named =
-      typeof options.profile === 'string' ? options.profile : undefined;
-
-  const opened = await createSemanticRuntimes({profile: named, ctx});
-  if ('error' in opened) {
-    console.error(`Error: ${opened.error}`);
-    return 1;
-  }
-
-  return opened;
-}
-
-
-// Lists what a semantic model declares as runnable.
-//
-//   kcmd action-list
-//
-// Answers "what can I run, and how": each action's parameters, executor,
-// guards and blast radius, ending with the command line that runs it. Naming
-// one narrows the listing to it; a name no model in scope declares is an
-// error, because an empty listing reads as "this model declares nothing".
-//
-// Returns a process exit code (0 on success).
-export async function actionList(options: ActionOptions = {}):
-    Promise<number> {
-  const opened = await openActionRuntimes(options);
-  if (typeof opened === 'number') return opened;
-  return listActions(opened);
-}
-
-
-// Runs one of a semantic model's actions.
-//
-//   kcmd action-run <name> --arg <name>=<value> ...
-//
-// Executes against the store the model's deployment target names -- the
-// command line never says where to write, the same rule push follows, so
-// changing stores is changing profiles rather than remembering a flag.
-//
-// Returns a process exit code (0 on success).
-export async function actionRun(
-    name: string|undefined, options: ActionOptions = {}): Promise<number> {
-  const opened = await openActionRuntimes(options);
-  if (typeof opened === 'number') return opened;
-  return await runOneAction(opened, name, options);
-}
-
-
-// A `NOT RUNNABLE:` line wraps under the label column the other lines use, so
-// a reason running to three lines still reads as one entry's answer.
-const RUN_INDENT = '    ';
-
-
-// Prints what each model declares as runnable. The last line of every entry is
-// the command that runs it, filled in with the declared parameters, so reading
-// the listing is enough to make the call without going back to the YAML -- or,
-// when the runtime would refuse the call before opening a transaction, what it
-// is waiting on instead.
-function listActions(runtimes: SemanticRuntime[]): number {
-  for (const runtime of runtimes) {
-    const {model, store, storeError, profile, entryGroup} = runtime;
-    console.log(`Model '${model.name}' (${entryGroup}), profile '${profile}':`);
-    // Where a run lands, said once at the top rather than left to be inferred
-    // from a profile file the reader would have to go open.
-    if (!store) {
-      console.log('  store: unavailable under this profile');
-      console.log(wrapTo(storeError ?? '', BODY_INDENT));
-    } else {
-      console.log(`  store: ${storeLine(store)}`);
-    }
-    const actions = model.actions ?? [];
-    if (!actions.length) {
-      console.log('  declares no actions.');
-      continue;
-    }
-    for (const a of actions) {
-      console.log(`  ${a.name}${a.description ? `: ${a.description}` : ''}`);
-      console.log(`    parameters: ${
-          a.parameters.length ? a.parameters.map(describeParameter).join(', ') :
-                                '(none)'}`);
-      console.log(`    executor:   ${
-          a.executor ? a.executor.kind : '(none under this profile)'}`);
-      if (a.guards?.length) {
-        console.log(`    guards:     ${a.guards.join(', ')}`);
-      }
-      if (a.affects?.length) {
-        console.log(`    affects:    ${
-            a.affects
-                .map(
-                    f => f.operation ? `${f.concept} (${f.operation})` :
-                                       f.concept)
-                .join(', ')}`);
-      }
-      // Asked of the runtime rather than worked out here, for the reason
-      // `agent-tools` asks: two copies of "can this run" drift, and neither
-      // direction of the drift is visible to the reader. This used to notice
-      // only a missing executor, so an action executed by HTTP -- which this
-      // command has no handler for and could not roll back -- printed a run
-      // line that always fails, and so did one guarded by a constraint the
-      // model never declares.
-      //
-      // The store is deliberately not part of the question. Whether one is
-      // reachable is the same sentence on every action in the model and says
-      // nothing about any of them, and the listing has already said it once,
-      // at the top, where it belongs.
-      //
-      // Asked the way `kcmd action-run` runs: with nobody to settle a guard,
-      // and not held up for want of one. What survives that is a model this
-      // command could not run however it was invoked -- an executor it holds
-      // no handler for, a guard quoting nothing, a guard naming nothing --
-      // which is a thing to fix rather than a flag to add.
-      const blocked =
-          whyRefusedWithoutRunning(model, a, undefined, undefined, true);
-      if (blocked) {
-        console.log(wrapTo(`NOT RUNNABLE: ${blocked}`, RUN_INDENT));
-      } else {
-        console.log(`    run:        ${runLine(a)}`);
-      }
-    }
-  }
-  return 0;
-}
-
-
 export interface AgentOptions {
   // `string|boolean` for the same reason the others are: cac yields `true` for
   // a bare `--profile` and `false` for `--no-profile`.
@@ -1432,8 +1287,8 @@ export interface AgentOptions {
 //
 // A tool the runtime cannot run today is listed and marked rather than
 // dropped. The model declares it; what it is waiting on is the useful thing to
-// print. `kcmd action-run` calls the write half; the read half is a SELECT the
-// tool would issue, and `gcloud spanner databases execute-sql` will run it.
+// print. The read half is a SELECT the tool would issue, and `gcloud spanner
+// databases execute-sql` will run it.
 //
 // A guard is not what decides whether a tool is listed. Who settles one
 // belongs to the application that embeds the runtime, and this command cannot
@@ -1724,151 +1579,3 @@ function wrapTo(text: string, indent: string, hanging = indent): string {
   return lines.join('\n');
 }
 
-
-// One parameter as `name (Type)`, saying where a projected one got its type:
-// `amount (Float)` is a value the caller states, and `source (Integer from
-// Account.accountId)` is the same kind of value with a definition the model
-// already holds, which is where to go to read what it means.
-function describeParameter(p: ActionParameter): string {
-  // A parameter with no type at all is a broken model -- the loader warns and
-  // validate refuses to push it -- but `list` still has to print it, and
-  // interpolating the missing type puts the word `undefined` on the line as
-  // though that were a datatype. Name the hole instead.
-  const type = p.type ?? 'no type';
-  const tags: string[] =
-      [p.concept ? `${type} from ${p.concept}.${p.field}` : type];
-  if (p.default !== undefined) {
-    tags.push(`default: ${JSON.stringify(p.default)}`);
-  } else if (!isParameterRequired(p)) {
-    tags.push('optional');
-  }
-  return `${p.name} (${tags.join(', ')})`;
-}
-
-
-// Runs one action against the store its model's deployment target names.
-async function runOneAction(
-    runtimes: SemanticRuntime[], name: string|undefined,
-    options: ActionOptions): Promise<number> {
-  if (!name) {
-    console.error(
-        'Error: `kcmd action-run` needs an action name; `kcmd action-list` ' +
-        'shows what this scope declares.');
-    return 1;
-  }
-
-  const declaring =
-      runtimes.filter(r => (r.model.actions ?? []).some(a => a.name === name));
-  if (!declaring.length) {
-    const known =
-        runtimes.flatMap(r => (r.model.actions ?? []).map(a => a.name)).sort();
-    console.error(
-        `Error: no model in this scope declares an action '${name}'` +
-        (known.length ? `; declared: ${known.join(', ')}.` : '.'));
-    return 1;
-  }
-  if (declaring.length > 1) {
-    console.error(
-        `Error: '${name}' is declared by ${declaring.length} models (${
-            declaring.map(r => r.model.name).join(', ')}), so which one to ` +
-        `run is ambiguous.`);
-    return 1;
-  }
-  const runtime = declaring[0];
-
-  // `list` reads the model as authored and is happy with whatever it finds.
-  // `run` executes it, and the runtime's refusal gate trusts what validation
-  // checks: a push would reject an `affects` entry naming an undeclared
-  // concept, and running one would find no constraint over that name and go
-  // ahead unchecked. Only the run-relevant checks, not the deployment ones --
-  // an action needs no deployed graph.
-  //
-  // Only the model being run. A scope holds many documents, and a typo in one
-  // the run will not touch is a real error to fix but not a reason to refuse
-  // this call -- refusing on it would report a model the reader did not name.
-  const invalid =
-      validateRunnable([{document: runtime.document, model: runtime.model}]);
-  if (invalid.length) {
-    for (const e of invalid) console.error(`Error: ${e}`);
-    return 1;
-  }
-
-  const parsed = parseActionArgs(options.arg);
-  if ('error' in parsed) {
-    console.error(`Error: ${parsed.error}`);
-    return 1;
-  }
-
-  if (!runtime.store) {
-    console.error(`Error: ${runtime.storeError}`);
-    return 1;
-  }
-
-  // Before the banner, because the banner says where the run lands and a
-  // store no statement can reach is not somewhere it lands.
-  const client = runtimeClient(runtime);
-  if ('error' in client) {
-    console.error(`Error: ${client.error}`);
-    return 1;
-  }
-
-  console.log(`Running '${name}' on ${runtime.store.name}...`);
-  // Nothing is said about the guards here. This command settles none of them --
-  // that takes a judge, and who that is belongs to whoever dispatches the call
-  // in earnest -- but saying so before the run meant saying it before
-  // `runAction` had decided there would be a run at all, so a call with a
-  // missing argument announced that the write happens and then errored without
-  // opening a transaction. The run reports what it passed over in its own
-  // warnings, below, where it is a fact about a write that was made.
-  const outcome = await runAction({
-    runtime,
-    actionName: name,
-    args: parsed.args,
-    skipGuards: true,
-  });
-  if (outcome.status === 'error') {
-    console.error(`Error: ${outcome.message}`);
-    return 1;
-  }
-  // Before the commit line, so the last thing printed is what happened to the
-  // write rather than a caveat about it.
-  for (const w of outcome.warnings ?? []) console.warn(`Warning: ${w}`);
-  console.log(`Committed${
-      outcome.commitTimestamp ? ` at ${outcome.commitTimestamp}` : ''}.`);
-  return 0;
-}
-
-
-// `--arg <name>=<value>` pairs. Values are kept as text: the runtime parses
-// every argument from text against its declared ontology type, so the command
-// line does not have to guess whether `30` is a number, an amount, or a string.
-function parseActionArgs(raw: unknown): {args: Record<string, unknown>}|{
-  error: string
-}
-{
-  const pairs: unknown[] =
-      raw === undefined ? [] : (Array.isArray(raw) ? raw : [raw]);
-  // Null-prototype, because these names come off the command line: on a plain
-  // object `--arg toString=x` would report itself as given twice, and
-  // `--arg __proto__=x` would set the prototype instead of an argument.
-  const args: Record<string, unknown> = Object.create(null);
-  for (const given of pairs) {
-    // cac does not hand back a string for every `--arg`. It coerces a bare
-    // numeric value, so the likeliest typo of all -- `--arg amount 30`, or
-    // `--arg=5` -- arrives as the NUMBER 30, and calling a string method on it
-    // would throw a TypeError past this function instead of the message below.
-    const pair = String(given);
-    const eq = pair.indexOf('=');
-    // An `=` at position 0 is a nameless argument, and none at all is a bare
-    // word; neither names a parameter.
-    if (eq <= 0) {
-      return {error: `--arg expects <name>=<value>, but got '${pair}'.`};
-    }
-    const name = pair.slice(0, eq).trim();
-    if (Object.hasOwn(args, name)) {
-      return {error: `--arg ${name} was given twice.`};
-    }
-    args[name] = pair.slice(eq + 1);
-  }
-  return {args};
-}
