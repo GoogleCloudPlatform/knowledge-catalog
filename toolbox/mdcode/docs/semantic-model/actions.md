@@ -964,14 +964,14 @@ how you run one there, with arguments you choose, and see what comes back.
 Pasting the statements into a SQL console would tell you the DML is valid; a
 run is what exercises everything wrapped around it.
 
-Everything below happens at a command line, and that is a way of watching the
-model work rather than the place it is meant to work. `kcmd action-run` performs
-most of what any runtime dispatching these calls has to perform — bind the
-arguments, open one transaction, apply the statements — and narrates each step.
-What it leaves out is the guards: it settles none of them, names the ones it
-passed over, and writes. Who settles a rule is decided by whoever dispatches the
-call in earnest — and from the same sentences, so a service running this action
-reaches verdicts this command never asks for.
+This is a command line, which makes it a way of watching the model work rather
+than the place it is meant to work. `kcmd action-run` performs most of what any
+runtime dispatching these calls has to perform — bind the arguments, open one
+transaction, apply the statements. What it leaves out is the guards: it settles
+none of them, names the ones it passed over, and writes. Who settles a rule
+belongs to whoever dispatches the call in earnest, and that is
+[section 8](#8-hand-it-to-an-agent), where the same model reaches verdicts this
+command never asks for.
 
 `kcmd action-list` prints the actions your model declares, each with its
 parameters, executor, guards and blast radius, plus the command line that calls
@@ -1022,28 +1022,17 @@ model's deployment target names under the selected profile.
 
 `kcmd action-run` binds every argument as a typed query parameter, then applies
 the action's statements in one transaction. `TransferFunds` is guarded, and this
-command settles no guard -- it names the ones it passed over and writes anyway.
-[When the rule is a sentence](#when-the-rule-is-a-sentence) covers who does
-settle them:
+command settles no guard -- it names the ones it passed over and writes anyway,
+in a warning that rides on the outcome rather than on the command line:
 
 ```
-  kcmd action-run TransferFunds --arg source=7 --arg target=8 --arg amount=250
-     │
-     │ bind      @source = 7      as Integer, from Account.accountId
-     │           @target = 8      as Integer, from Account.accountId
-     │           @amount = 250    as Float, so 9 is less than 10
-     │
-     │ apply     BEGIN
-     │             UPDATE account SET balance = balance - @amount
-     │               WHERE account_id = @source
-     │             every UPDATE and DELETE has to match a row
-     │           COMMIT
-     ▼
-   committed      ·      nothing written      ·      unknown, do not retry
+Warning: guards were not checked: TransferWithinAvailableBalance -- this run
+was told to skip them, and the write was made anyway
 ```
 
-*Figure 3: the path of a run, from the argument the caller typed to the three
-ways it can end.*
+A run ends committed, with nothing written, or unknown. The
+[commerce demo](../../demo/semantic-model/skill/README.md) records two committed
+runs against a live store, each carrying that warning.
 
 Nothing is interpolated into a statement. Every argument goes in as a query
 parameter, and the argument's ontology type — the field's, where the parameter
@@ -1087,221 +1076,6 @@ Error: Action 'TransferFunds' is executed by MCP, which runs outside this
 transaction and could not be rolled back if the commit failed. Supply a handler
 that performs the write as DML, or declare the action with a 'sql' executor.
 ```
-
-### When a rule stops the call
-
-This is what a runtime does with a guard, and `kcmd action-run` is not that
-runtime: it settles none of them, so none of the outcomes below come out of the
-command line above. They come out of whatever dispatches the call in earnest.
-
-Only a constraint the action names in `guards` has a say in a call, which is
-[section 2](#2-gate-it-with-a-constraint)'s rule reaching the runtime. A
-constraint your model declares and your action doesn't name has no bearing on
-the write, and nothing goes looking for one.
-
-A guard is a sentence, and settling a sentence needs something that reads one.
-A run given nothing to read with refuses a call that a non-advisory guard covers
-rather than running the write unchecked, which would leave anyone reading the
-model believing it was checked. The refusal names the rule:
-
-```
-Error: Action 'TransferFunds' is guarded by 'TransferWithinAvailableBalance',
-which is settled by reading the call, and this runtime was given no judge to
-ask. Running it would apply a write the model says must be checked first, so it
-is refused rather than run unchecked.
-```
-
-An advisory rule is one declaring `on_violation: warn`. It reports a violation
-instead of rejecting one, so gating on it would permanently block every run of a
-model that states advisory rules. An advisory guard stands down instead: the run
-carries on, and a warning line records that nothing checked the rule.
-
-A refusal is settled before a session opens, so a refused action leaves no
-transaction behind. A guard whose `judgment` has no words in it is refused the
-same way, before any judge is asked, because there is nothing to ask about.
-
-### When the rule is a sentence
-
-A guard stated as a `judgment` needs something that can read a sentence, and
-whatever dispatches the call has to be holding one. In the runtime shipped here
-that is Gemini on Vertex AI, hired by the application that embeds the runtime
-and handed to it once, at construction:
-
-```ts
-const judge = new GeminiJudge(ctx, {model: 'gemini-2.5-flash'});
-```
-
-**No kcmd command line hires one.** `kcmd action-run` performs the write and
-names the guards it did not check; it is for finding out whether your statements
-do what you meant, not for finding out whether your rules hold. The two demands
-pull apart: a judge costs a model call per guard and credentials to reach one,
-and an author checking a `WHERE` clause should not have to stand either up. The
-[commerce demo](../../demo/semantic-model/skill/README.md) is where what it
-takes to settle them is shown, against the same model — in runs recorded while a
-command line still hired a judge, because nothing in this repository hires one
-today.
-
-The rules below run against the commerce model under `demo/semantic-model/skill`
-— the [credit policy worked through earlier](#a-credit-policy-worked-through),
-rebuilt around what a runtime can settle today. A profile binds `IssueCredit` to
-a `sql` executor, and the action names four rules in `guards`. One of the four
-is the 25-dollar ceiling, written there as a judgment rather than left to the
-desk; the demo keeps it to show what settling arithmetic with a model call
-costs.
-
-Each rule's own sentence goes to the model with the attempted call. A verdict
-comes back with a reason, and `on_violation` decides what follows. The demo
-declares `warn` on the memo rule; the three outputs below come from setting that
-one field to each of its values in turn, so a single rule shows all three
-branches.
-
-> These three were recorded through `kcmd action run`, back when it took a judge
-> and could give that judge the store to read — which is why each of them shows
-> the judge reading `Orders`. The command no longer takes a judge, for the
-> reason above, and no judge reads a store any more: the seam for it was taken
-> out of the runtime. So read the two lines about reading as a record of a run,
-> not as output you can reproduce. They are kept because what they show — one
-> rule, all three values of `on_violation`, one run each — is not shown
-> anywhere else.
-
-With `reject`, the call stops:
-
-```
-Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_skill_demo...
-  rules stated in words go to gemini-2.5-flash (us-central1)
-  it may read commerce's tables to settle them
-  the judge reads: SELECT total FROM Orders WHERE order_id = 12347
-Error: Action 'IssueCredit' is guarded by 'CreditMemoNamesAServiceFailure'
-("The memo argument of this call must name a specific thing that went wrong on
-the order: a late delivery, a damaged item, a shipping charge applied in error.
-A memo saying only that the customer asked, or that the credit is goodwill, or
-giving no reason at all, names no failure and does not satisfy this rule."), and
-gemini-2.5-flash (us-central1) judged that it does not hold for this call: The
-memo "customer asked for a credit" does not name a specific thing that went
-wrong with the order, such as a late delivery, a damaged item, or a shipping
-charge applied in error. Say in the credit memo what actually went wrong with
-the order. No transaction was opened, so nothing was written.
-```
-
-Four things are in that message and kcmd wrote none of them: the constraint's
-name, your own sentence, the judge's reason, and the constraint's `description`,
-which is the line telling the caller what to do instead. A memo that names a
-failure gets the write:
-
-```
-Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_skill_demo...
-  rules stated in words go to gemini-2.5-flash (us-central1)
-  it may read commerce's tables to settle them
-  the judge reads: SELECT total FROM Orders WHERE order_id = 12347
-  order: '12347' -> Order 12347
-Committed at 2026-09-19T15:01:29.694435Z.
-```
-
-A rule declaring `escalate` stops the call and adds one sentence: "The model
-marks this rule 'escalate', so an approver may allow it; nothing here can." A
-rule declaring `warn` lets the write through and reports the verdict:
-
-```
-Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/semantic_skill_demo...
-  rules stated in words go to gemini-2.5-flash (us-central1)
-  it may read commerce's tables to settle them
-  the judge reads: SELECT total FROM Orders WHERE order_id = 12347
-  order: '12347' -> Order 12347
-Warning: 'CreditMemoNamesAServiceFailure' ("The memo argument of this call must
-name a specific thing that went wrong on the order: ...") is advisory, and
-gemini-2.5-flash (us-central1) judged that it does not hold for this call: The
-memo "customer asked for a credit" does not name a specific service failure. It
-states that the customer asked for a credit, which is explicitly disallowed by
-the rule.
-Committed at 2026-09-19T15:02:02.059897Z.
-```
-
-**The rule is settled before the transaction opens.** A model call takes
-seconds, and holding write locks across one costs more than it buys, so the
-judge is asked first and the transaction opens only if the answer allows it. So
-no verdict is reached against the state the write produces, and none is reached
-under the transaction's locks either: two calls racing each other are judged
-independently, and a rule that only holds when they are serialised holds for
-neither. A rule about the state a write leaves, or one that has to hold under
-concurrency, belongs in your schema, where the store enforces it inside the
-transaction.
-
-**The judge gets the attempted call.** It receives the rule's text, the action's
-name and description, and the arguments as the caller stated them —
-`order=12347`, the value itself, and not the `Order` row it identifies. That's
-the whole of what it has.
-
-**A rule that never reached a judge is reported as unchecked.** The runtime
-holds no judge, or the model call failed. Either way `on_violation` routes that
-like any other breach: an advisory guard lets the write through and warns, and a
-guard declaring `reject` or `escalate` stops the call. Committing in silence
-would tell you every rule passed when one was never put to anybody.
-
-### A rule the judge can't settle
-
-Some rules aren't about the call. *The credit must not exceed the total of the
-order it is applied to* compares an argument against a number in your database,
-and the caller is under no obligation to state it correctly. Nothing here goes
-and gets that number. A judge is handed the rule, the action and the arguments,
-and that is the whole of what it is shown.
-
-Write such a rule as a `judgment` anyway and what you get is a guess. Asked
-whether a $3.00 credit fits under order 12346's total, the judge has no total:
-it either reports that it can't tell — which `reject` and `escalate` turn into a
-refused call that was fine — or it answers against a figure it supplied itself.
-You don't get to choose which. So the judge is instructed to treat a rule it
-can't settle from the arguments as one that does not hold, and to say in its
-reason what was missing. That is the safe failure, not a working check.
-
-A rule like that belongs in your schema, where the store enforces it inside the
-transaction — the same place a rule about the state a write leaves belongs, for
-the reason given just above. `CreditWithinOrderTotal` and `CreditIsNotSplitToAvoidReview` in the
-worked example are both this kind: the first names a total that is on record,
-the second the credits already sitting on the order. They are written down here
-because the model is where the policy is recorded, and a rule nothing settles is
-still a rule an agent reading the action is told about. What no judge will do is
-enforce them.
-
-### Which rows a call touches
-
-Two things decide which rows a call touches, and they run at different moments:
-you pass a value, and the statement's own `WHERE` clause picks the rows that
-value lands on.
-
-```
-              the value you pass        the rows the write lands on
-              ───────────────────────   ──────────────────────────────────
-  what        --arg source=7            the statement's own WHERE clause
-  who runs    kcmd, before the write    the store, in the transaction
-  how many    one value, bound as       however many rows it matches;
-              Account.accountId's type  kcmd does not constrain it
-  checked     that the value fits       that an UPDATE or DELETE matched
-              that type                 at least one row
-```
-
-*Table 3: what each step takes, who runs it, and how many rows it may reach.*
-
-**Passing a value.** An argument names a value rather than a row. `--arg
-source=7` doesn't mean *the account whose id is 7*; it means the number 7,
-bound to `@source` wherever the statement puts it, as the type
-`Account.accountId` declares.
-
-So a caller holding a name rather than an id has to turn one into the other
-first, with a query of its own, before the call. That's deliberate: finding the
-right row can be a search with several plausible answers, and the place to
-settle which one is in front of whoever is asking — not inside a write
-transaction, which would have to pick one silently and commit to it.
-
-**Targeting the write.** Your statement's `WHERE` clause decides how many rows
-it lands on, and nothing would stop one that hits every dormant account. That is
-what [section 3](#3-say-what-it-changes) means by `affects` declaring the blast
-radius rather than limiting it.
-
-The runtime checks one thing here: that an `UPDATE` or a `DELETE` matched
-something. Zero rows fails the run and rolls the transaction back, which catches
-an argument naming a row that isn't there. It can't catch an argument put in the
-wrong place — `WHERE region = @source` will match some row, and that row is the
-one your write lands on.
 
 ## 8. Hand it to an agent
 
@@ -1462,7 +1236,7 @@ line of output per key:
   actions[].executor               ───▶  what the write tool runs
 ```
 
-*Table 4: which key in your model or your profile produces each line of the
+*Table 3: which key in your model or your profile produces each line of the
 agent listing.*
 
 Two things come from neither file. The derivation appends a paragraph to the
@@ -1555,6 +1329,154 @@ somewhere to land. The derivation asks the runtime for every one of these
 verdicts instead of working them out again, so the two can't drift: a tool
 advertised as runnable that refuses each call spends your agent's turn, and one
 withheld that would have worked is never tried.
+
+### When a rule stops the call
+
+Calling a write tool puts every rule the action names to the runtime behind it,
+and the outcomes below are what it does with the answers. This is the half
+[section 7](#7-run-it) leaves out: `kcmd action-run` settles no guard, so none
+of what follows comes out of that command line.
+
+Only a constraint the action names in `guards` has a say in a call, which is
+[section 2](#2-gate-it-with-a-constraint)'s rule reaching the runtime. A
+constraint your model declares and your action doesn't name has no bearing on
+the write, and nothing goes looking for one.
+
+A guard is a sentence, and settling a sentence needs something that reads one.
+A run given nothing to read with refuses a call that a non-advisory guard covers
+rather than running the write unchecked, which would leave anyone reading the
+model believing it was checked. The refusal names the rule:
+
+```
+Error: Action 'TransferFunds' is guarded by 'TransferWithinAvailableBalance',
+which is settled by reading the call, and this runtime was given no judge to
+ask. Running it would apply a write the model says must be checked first, so it
+is refused rather than run unchecked.
+```
+
+An advisory rule is one declaring `on_violation: warn`. It reports a violation
+instead of rejecting one, so gating on it would permanently block every run of a
+model that states advisory rules. An advisory guard stands down instead: the run
+carries on, and a warning line records that nothing checked the rule.
+
+A refusal is settled before a session opens, so a refused action leaves no
+transaction behind. A guard whose `judgment` has no words in it is refused the
+same way, before any judge is asked, because there is nothing to ask about.
+
+### When the rule is a sentence
+
+A guard stated as a `judgment` needs something that can read a sentence, and
+whatever dispatches the call has to be holding one. In the runtime shipped here
+that is Gemini on Vertex AI, hired by the application that embeds the runtime
+and handed to it once, at construction:
+
+```ts
+const judge = new GeminiJudge(ctx, {model: 'gemini-2.5-flash'});
+```
+
+**No kcmd command line hires one.** `kcmd action-run` performs the write and
+names the guards it did not check; it is for finding out whether your statements
+do what you meant, not for finding out whether your rules hold. The two demands
+pull apart: a judge costs a model call per guard and credentials to reach one,
+and an author checking a `WHERE` clause should not have to stand either up. The
+[commerce demo](../../demo/semantic-model/skill/README.md) is where what it
+takes to settle them is shown, against the same model — in runs recorded while a
+command line still hired a judge, because nothing in this repository hires one
+today.
+
+Each rule's own sentence goes to the model with the attempted call. A verdict
+comes back with a reason, and `on_violation` decides what follows. With
+`reject` the call stops before a transaction opens. `escalate` stops it too and
+adds one sentence: "The model marks this rule 'escalate', so an approver may
+allow it; nothing here can." `warn` lets the write through and reports the
+verdict alongside the commit.
+
+Four things are in a refusal and kcmd wrote none of them: the constraint's name,
+your own sentence, the judge's reason, and the constraint's `description`, which
+is the line telling the caller what to do instead.
+
+The demo's README carries a run of each, against the
+[credit policy worked through earlier](#a-credit-policy-worked-through) rebuilt
+around what a runtime can settle today: a profile binds `IssueCredit` to a `sql`
+executor, and the action names four rules in `guards`, with one of them set to
+each value of `on_violation` in turn so that a single rule shows all three
+branches. One of the four is the 25-dollar ceiling, written as a judgment rather
+than left to the desk, which is what settling arithmetic with a model call
+costs.
+
+**The rule is settled before the transaction opens.** A model call takes
+seconds, and holding write locks across one costs more than it buys, so the
+judge is asked first and the transaction opens only if the answer allows it. So
+no verdict is reached against the state the write produces, and none is reached
+under the transaction's locks either: two calls racing each other are judged
+independently, and a rule that only holds when they are serialised holds for
+neither. A rule about the state a write leaves, or one that has to hold under
+concurrency, belongs in your schema, where the store enforces it inside the
+transaction.
+
+**The judge gets the attempted call.** It receives the rule's text, the action's
+name and description, and the arguments as the caller stated them —
+`order=12347`, the value itself, and not the `Order` row it identifies. That's
+the whole of what it has.
+
+**A rule that never reached a judge is reported as unchecked.** The runtime
+holds no judge, or the model call failed. Either way `on_violation` routes that
+like any other breach: an advisory guard lets the write through and warns, and a
+guard declaring `reject` or `escalate` stops the call. Committing in silence
+would tell you every rule passed when one was never put to anybody.
+
+### A rule the judge can't settle
+
+Some rules aren't about the call. *The credit must not exceed the total of the
+order it is applied to* compares an argument against a number in your database,
+and the caller is under no obligation to state it correctly. Nothing here goes
+and gets that number. A judge is handed the rule, the action and the arguments,
+and that is the whole of what it is shown.
+
+Write such a rule as a `judgment` anyway and what you get is a guess. Asked
+whether a $3.00 credit fits under order 12346's total, the judge has no total:
+it either reports that it can't tell — which `reject` and `escalate` turn into a
+refused call that was fine — or it answers against a figure it supplied itself.
+You don't get to choose which. So the judge is instructed to treat a rule it
+can't settle from the arguments as one that does not hold, and to say in its
+reason what was missing. That is the safe failure, not a working check.
+
+A rule like that belongs in your schema, where the store enforces it inside the
+transaction — the same place a rule about the state a write leaves belongs, for
+the reason given just above. `CreditWithinOrderTotal` and `CreditIsNotSplitToAvoidReview` in the
+worked example are both this kind: the first names a total that is on record,
+the second the credits already sitting on the order. They are written down here
+because the model is where the policy is recorded, and a rule nothing settles is
+still a rule an agent reading the action is told about. What no judge will do is
+enforce them.
+
+### Which rows a call touches
+
+Two things decide which rows a call touches, and they run at different moments:
+you pass a value, and the statement's own `WHERE` clause picks the rows that
+value lands on.
+
+**Passing a value.** An argument names a value rather than a row. `--arg
+source=7` doesn't mean *the account whose id is 7*; it means the number 7,
+bound to `@source` wherever the statement puts it, as the type
+`Account.accountId` declares.
+
+So a caller holding a name rather than an id has to turn one into the other
+first, with a query of its own, before the call. That's deliberate: finding the
+right row can be a search with several plausible answers, and the place to
+settle which one is in front of whoever is asking — not inside a write
+transaction, which would have to pick one silently and commit to it.
+
+**Targeting the write.** Your statement's `WHERE` clause decides how many rows
+it lands on, and nothing would stop one that hits every dormant account. That is
+what [section 3](#3-say-what-it-changes) means by `affects` declaring the blast
+radius rather than limiting it.
+
+The runtime checks one thing here: that an `UPDATE` or a `DELETE` matched
+something. Zero rows fails the run and rolls the transaction back, which catches
+an argument naming a row that isn't there. It can't catch an argument put in the
+wrong place — `WHERE region = @source` will match some row, and that row is the
+one your write lands on.
 
 ### Calling it from code
 
