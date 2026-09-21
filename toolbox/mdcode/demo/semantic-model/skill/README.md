@@ -857,7 +857,9 @@ than something you can reproduce from `kcmd`.
 and `alloydb` skills emit the full physical table and column schema map (`GoogleSQL`
 and `PostgreSQL`), the `gcloud spanner databases execute-sql` command block is
 emitted for Spanner stores only because AlloyDB queries depend on the caller's
-network path (`psql` or AlloyDB Auth Proxy).
+network path (`psql` or AlloyDB Auth Proxy). The Spanner leg of this demo was
+run live; the AlloyDB leg was not re-run against a live AlloyDB cluster for this
+revision, and the claim above about its generated output is from the diff.
 
 **Two harnesses were run, not every harness.** Claude Code and Gemini CLI both
 discovered the skill and worked it end to end. Cursor and the other clients in

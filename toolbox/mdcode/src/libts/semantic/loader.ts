@@ -1184,16 +1184,6 @@ function convertParameter(
 
   let conceptName = p.concept;
   let fieldName = p.field;
-  if (conceptName !== undefined && fieldName !== undefined &&
-      fieldName.includes('.')) {
-    throw new Error(
-        `${where}: parameter ${p.name ? `'${p.name}' ` : ''}states ` +
-        `'concept: ${conceptName}' alongside 'field: ${fieldName}', which ` +
-        `already contains a concept prefix; use either ` +
-        `{concept: ${conceptName}, field: ${
-            fieldName.slice(fieldName.indexOf('.') + 1)}} or ` +
-        `{field: ${fieldName}}.`);
-  }
   // Support `field: Account.accountId` as a concise one-key shorthand for
   // `{concept: Account, field: accountId}`, matching the `Entity.field`
   // syntax used in metric expressions and constraint judgments.

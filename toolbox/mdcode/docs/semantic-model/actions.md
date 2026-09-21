@@ -63,13 +63,21 @@ If the call should hand back an answer instead of changing something, you want a
 
 ## 1. Declare the action
 
-Start with the name and the parameters. They're the contract every later step
-builds on, and they live in your model and nowhere else — no profile can change
-them.
+An `actions` block sits at the top level of your semantic model alongside
+`entities`, `relationships`, and `metrics`. Every action declaration has two
+parts:
 
-Actions sit at model level, beside your metrics. Each one carries a name, its
-parameters, and an executor. Treat that executor as a default, because it's the
-one part a binding profile can replace:
+1. **The logical contract** (`name`, `description`, `parameters`, and
+   `ai_context`) — defines *what* the operation is and what inputs it takes.
+   This contract lives in your model and stays identical across every deployment
+   environment.
+2. **The physical `executor`** (`mcp`, `rest`, `grpc`, or `sql`) — defines *how*
+   the write is carried out. You can set a default `executor` in the model,
+   override or supply it in a [binding profile](profiles.md), or omit it when
+   an action is only being cataloged.
+
+Here is `TransferFunds` declared alongside the `Account` and `Transfer`
+entities it operates on:
 
 ```yaml
 version: "0.2.0.dev0/google"    # `actions` is a kcmd extension key
@@ -109,157 +117,165 @@ semantic_model:
             tool: transfer_funds
         parameters:
           - name: source
-            concept: Account                  # takes Account.accountId's type
-            field: accountId
+            field: Account.accountId          # or { concept: Account, field: accountId }
             description: The account the money leaves.
           - name: target
-            concept: Account
-            field: accountId
+            field: Account.accountId          # projects Account.accountId's Integer type
             description: The account the money goes to.
           - name: amount
-            type: Float                       # no field carries this one
+            type: Float                       # declared directly (`datatype: Float` also works)
             description: How much money to move.
         ai_context:
           instructions: >-
             Resolve both accounts before calling.
-    ai_context:                             # model level: true of every caller
+    ai_context:                             # model level: applies to every action and query
       instructions: >-
         Never move money between two accounts held by the same customer
         without saying so in your answer.
 ```
 
 You author the rest of the model — the deployment target, the entity bindings,
-the relationships — the way you would for any model. See
-[Deploying a semantic model](README.md).
-
-The executor tells a consumer where the operation lives. Pick one of these four
-kinds, and give any one executor a single kind only:
-
-- **`mcp`** — `{server, tool}`. A tool you've already registered in Agent
-  Registry, named by the server's resource name and the tool's name within it.
-- **`rest`** — `{endpoint, method}`. An HTTP endpoint and the verb to call it
-  with.
-- **`grpc`** — `{service, method}`. A service and the method on it.
-- **`sql`** — `{statements}`. The write itself, carried in your model instead
-  of named as a pointer to whoever performs it, and the only kind kcmd runs.
-  See [carrying the write as DML](#carrying-the-write-as-dml).
-
-Both `description` and `ai_context.instructions` travel through to the catalog,
-and a parameter's `description` is what tells a caller which argument is which.
-Two parameters a caller could confuse must each carry one, or the push fails.
-Write the instructions for the agent that's going to call the action, the way
-the example does.
+and the relationships — the same way you would for any semantic model (see
+[Deploying a semantic model](README.md)). Both `description` and
+`ai_context.instructions` publish to Knowledge Catalog and into generated Agent
+Skills, so write `ai_context.instructions` directly to the agent that will call
+the action.
 
 ### Projecting a parameter from a field
 
-Every parameter carries one scalar value — the same kind of value a column
-holds. What differs is where its definition comes from, and there are two ways
-to give it one: **project** it from a field of your ontology, or **declare** it
-on the spot.
+Every action parameter holds a single scalar value (`Integer`, `Float`,
+`String`, `Boolean`, `Date`, or `Timestamp`) — never a whole entity or nested
+record. There are two ways to define a parameter's type:
 
-**A projected parameter** names a `concept` and a `field`, and takes that
-field's datatype, description, label and AI context straight out of the model.
-`source` above is an `Integer` because `Account.accountId` is one, so a caller
-passes an account id and the write binds it as an integer. Change the field
-later and every parameter projected from it follows, because there's no second
-copy to keep in step. A `concept` is read the way `affects` reads one, so it can
-name a relationship as well as an entity — but what you project from in practice
-is an entity, because a relationship only has fields of its own when a junction
-table backs it, and this format has no syntax for one yet.
+1. **Project it from a field in your ontology (`field: Concept.field` or
+   `concept` + `field`)** when the input identifies an entity or supplies one of
+   its attributes.
+2. **Declare a scalar type directly (`type` or `datatype`)** when the input is a
+   standalone value not tied to a field (such as a free-text `memo`, a reason
+   code, or a scalar `amount`).
 
-Most projected parameters need no name of their own. Leave `name` out and the
-parameter answers to the field's, so this one is called `accountId`:
+#### 1. Projected parameters (`field: Account.accountId`)
+
+A projected parameter points to a field on an entity (or relationship) in your
+model using either the dotted shorthand `field: Account.accountId` or the
+two-key form `{ concept: Account, field: accountId }`. It automatically inherits
+that field's `datatype`, `description`, `label`, and `ai_context`, and records
+the ontology link in Knowledge Catalog. If you later change the datatype or
+metadata of `Account.accountId`, every parameter projected from it updates
+automatically.
+
+- **Default name when used once:** If an action projects a field only once, you
+  can omit `name` and the parameter takes the field's name (`accountId`):
+  ```yaml
+          - { field: Account.accountId }
+          # equivalent two-key form:
+          - { concept: Account, field: accountId }
+  ```
+- **Explicit names when used more than once:** When one action projects the same
+  field multiple times — the way `TransferFunds` takes both a `source` and a
+  `target` account ID — give each parameter its own `name` and `description` so
+  callers can tell the two arguments apart.
+- **Composite keys:** Because each parameter is a single scalar, an entity with
+  a multi-column primary key uses one projected parameter per key field.
+- **No `type` override:** A projected parameter cannot specify `type` or
+  `datatype` alongside `concept`/`field`. If the field's type is wrong, fix the
+  field; if a SQL statement needs a cast, write the cast in the SQL DML.
+
+#### 2. Standalone scalar parameters (`type: Float`)
+
+When a parameter is not projected from a field — for example, a call-only
+`memo`, a reason code, or `amount` above — give it a scalar `type` (or
+`datatype`, which is accepted as an alias) and a `description`:
 
 ```yaml
-          - { concept: Account, field: accountId }
+          - name: amount
+            type: Float                       # `datatype: Float` is equivalent
+            description: How much money to move.
 ```
 
-Name it yourself when one action takes the same field twice, the way
-`TransferFunds` takes both a `source` and a `target`.
+`type` accepts scalar datatypes only. Naming an entity (`type: Account`) is an
+error that tells you to project the specific field (`field: Account.accountId`)
+instead.
 
-This shape holds however an entity is keyed. An `Account` identified by three
-columns takes three projected parameters, one per key field, each typed from
-the field it names — the same declaration a single-column key writes, three
-times.
+#### Parameter descriptions and optional arguments
 
-**A declared parameter** carries a value no field holds: the `amount` above, a
-free-text memo, a reason code your store never keeps. Give it a `type` and a
-description of your own. `type` takes a scalar datatype only, and naming an
-entity there is an error telling you to project the field you meant.
+Whether a parameter is projected or declared directly, it may also set:
 
-A projected parameter can't restate its field's `type`. If the type is wrong,
-fix the field. If a statement needs a different one, cast it in the DML, where
-the conversion is visible to whoever reads the write instead of buried in
-metadata.
-
-Each parameter may also carry:
-
-- **`description`** — what the parameter means for this call. A projected
-  parameter inherits the field's, and overriding it is how `source` and
-  `target` above say different things while projecting one field. Required when
-  two parameters on the same action project the same field or share a declared
-  type, because neither can tell an agent which argument is which on its own.
-- **`label`** and **`ai_context`** — inherited the same way, overridden the
-  same way.
-- **`default`** — a fallback value substituted when the caller omits the
-  argument. Giving a parameter a default makes it optional; setting
-  `required: true` alongside `default` is rejected.
-- **`required: false`** — marks a parameter optional with no fallback; an
-  omitted call binds `NULL` in SQL.
-
-`default` and `required` are always yours to set, projected or not. A field
-says what a value *is*; the parameter says how this one call uses it.
+- **`description`** — explains what the parameter means for this call. A
+  projected parameter inherits the field's description unless overridden.
+  **Required** whenever two or more parameters on the same action project the
+  same field or share the same scalar datatype, so an agent can always tell
+  which argument is which.
+- **`label`** and **`ai_context`** — inherited from the projected field, or
+  overridden on the parameter.
+- **`default`** — a fallback scalar value used when the caller omits the
+  argument. Setting `default` makes the parameter optional (combining
+  `required: true` with `default` is rejected).
+- **`required: false`** — marks a parameter optional with no fallback value (an
+  omitted argument binds `NULL` in SQL). Every parameter without `default` or
+  `required: false` is required by default.
 
 ### Where the executor comes from
 
-Everything else your action declares is logical: what it takes, what gates it,
-what it changes. None of that changes when you deploy the same model somewhere
-else. The executor does, which is why it sits on the physical side with an
-entity's `source`, and why a [binding profile](profiles.md) can supply one or
-replace the one your model declares — for any of the four kinds. An action a
-profile says nothing about keeps the executor the model gave it.
+While an action's name, parameters, guards, and affected concepts are logical
+and never change across environments, the **`executor`** is physical. Each
+executor specifies **exactly one** of four kinds:
 
-It changes for two different reasons. An `mcp`, `rest` or `grpc` executor is an
-address: the operation lives at a different server, endpoint or service in
-staging than it does in production, and where your rows sit never enters it. A
-`sql` executor is the statement, written in the bound store's table and column
-names and in its dialect, so until you know which store answers there's nothing
-to write down. Only that last case turns on where the data lives.
+- **`mcp`** — `{ server, tool }`. An MCP tool registered in Agent Registry,
+  identified by the server resource name and tool name.
+- **`rest`** — `{ endpoint, method }`. An HTTP endpoint URL and verb (`POST`,
+  `PUT`, `DELETE`, etc.).
+- **`grpc`** — `{ service, method }`. A gRPC service and method name.
+- **`sql`** — `{ statements }`. Parameterized DML (`INSERT`, `UPDATE`, `DELETE`)
+  executed directly against the bound operational store (`spanner` or
+  `alloydb`). See [Carrying the write as DML](#carrying-the-write-as-dml).
+
+Because the executor sits on the physical side alongside entity `source`
+bindings, a [binding profile](profiles.md) can supply an executor or replace the
+default one declared in the model. If a profile says nothing about an action's
+executor, the action keeps the executor from the model.
+
+Profiles override executors for two main reasons:
+
+1. **Different service coordinates per environment (`mcp`, `rest`, `grpc`):**
+   The write is performed by a remote service whose server, endpoint, or service
+   address differs between staging and production, regardless of where your
+   database rows live.
+2. **Store-specific statements (`sql`):** The write is expressed as SQL DML
+   using a specific database's table names, column names, and SQL dialect, so it
+   belongs in the binding profile for the operational store (`spanner` or
+   `alloydb`) that owns those tables.
 
 ### Actions declared but not performable
 
-An action with no executor anywhere — none in the model, none in any profile —
-is **declared but not performable**. It still says what it does, what it takes,
-what gates it and what it changes; the only thing missing is who carries the
-write out. Write one when nobody has wired the write up yet, or when another
-team owns it and your model needs only to record that it exists.
+An action with no executor in the model and none in the selected binding profile
+(or whose default executor is removed by a profile with `executor: null`) is
+**declared but not performable** under that binding. You can declare an action
+without an executor when the implementation hasn't been wired up yet, when
+another team owns the service, or when a profile targets a read-only analytical
+warehouse like BigQuery.
 
-Nothing declares this state: it follows from the executor being absent, so the
-same action is performable under a profile that supplies one and not
-performable under a profile that supplies none or withdraws the model's with
-`executor: null`. A catalog-only push — `--no-profile`,
-or a model with no deployment target — publishes it like any other action, and
-`kcmd profiles` lists it under `cannot run:` for each binding that supplies no
-executor for it.
+A catalog-only push (`--no-profile`, or a model without a deployment target)
+publishes the action to Knowledge Catalog like any other action. When you
+inspect bindings with `kcmd profiles` or generate an Agent Skill with
+`kcmd skills-generate`, any action without a usable executor under that profile
+is listed as not runnable alongside the reason why.
 
 ## Carrying the write as DML
 
-The first three kinds name a system that performs the write, which leaves the
-write itself opaque to your model: an `mcp` tool name says where the operation
-lives and nothing about what it touches. A `sql` executor carries the write
-instead, so what your action does becomes readable — and checkable — from the
-bound model, and an agent or tool framework can
-[run it directly against your store](#7-hand-it-to-an-agent) rather than
-handing the write to another system to perform.
+While `mcp`, `rest`, and `grpc` executors delegate the write to an external
+service, a `sql` executor carries the `INSERT`, `UPDATE`, and `DELETE`
+statements directly. That makes the exact database changes readable in your
+model and lets an agent or runtime
+[run them directly against your operational store](#7-hand-it-to-an-agent-kcmd-skills-generate)
+(`spanner` or `alloydb`).
 
-Statements are written in one database's own table and column names, in its own
-dialect, so a `sql` executor goes in that database's [binding
-profile](profiles.md) — beside the bindings for those same tables and columns —
-rather than in the model it binds. Here it replaces the `mcp` executor the model
-declared for `TransferFunds`:
+Here is `payments.profiles/operational.yaml`, which binds `payments` to a
+Spanner database and replaces `TransferFunds`'s default `mcp` executor with a
+three-statement `sql` executor:
 
 ```yaml
-# payments.profiles/operational.yaml — this store owns the rows, so it writes them
+# payments.profiles/operational.yaml — binds Spanner tables, columns, and SQL DML
 semantic_model:
   - name: payments
     deployment_target: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/propertyGraphs/payments
@@ -280,57 +296,63 @@ semantic_model:
               - INSERT INTO transfer (transfer_id, amount, debited_account_id) VALUES (GENERATE_UUID(), @amount, @source)
 ```
 
-Selecting a profile replaces the model's bindings with that profile's, so the
-one you put a `sql` executor in has to carry the columns its statements name as
-well — leave them out and the fields come back unbound and the action cannot
-run. Of the action itself, only the executor is restated: what the call takes,
-what gates it and what it changes stay in the model, exactly as
-[declared](#1-declare-the-action).
+Notice two things about how `operational.yaml` is written:
 
-`statements` is a list because one business action is often more than one write.
-The transfer above debits one account, credits another, and records the
-transfer row itself, and a transfer that did only the first would lose money.
-Running the statements in the order you wrote them inside one transaction
-commits them together at the end, so writes that only make sense together never
-apply by halves.
-
-Carrying the write buys you two things:
-
-- **Your blast radius is checkable.** A reader can compare `affects` against the
-  statements instead of taking it on trust.
-- **A guard becomes a real gate.** An MCP, REST or gRPC call commits inside a
-  system your caller doesn't control, so a write it performed can't be rolled
-  back if the rest of the action fails. Because a `sql` action declares its
-  statements up front, the agent or tool framework running it can settle its
-  guards before opening a transaction, so a refusal leaves the store untouched.
+1. **Only `executor` is restated on `TransferFunds`.** The action's logical
+   contract — its `parameters`, `description`, `ai_context`, and any `guards` or
+   `affects` you add in Steps 2 and 3 — stays in the base model as
+   [declared above](#1-declare-the-action).
+2. **`statements` is an ordered list executed in a single transaction.** One
+   business action often requires multiple writes: `TransferFunds` debits the
+   source account, credits the target account, and inserts a `transfer` row.
+   Running all `statements` in order inside one database transaction ensures
+   they either commit together or roll back together — money is never debited
+   from `@source` without crediting `@target`.
 
 ### Statements use your database names
 
-**An action's statements reach your store exactly as you wrote them**, so every
-table and column in one has to be the name your database uses. In the `sql`
-executor above, the model's `Account` and `accountId` appear as `account` and
-`account_id`. Those are the table and the column that the entity's `source` key
-and its fields' `expression` keys bind it to.
+The runtime sends `statements` to your database verbatim, without translating
+concept or field names. That means:
 
-`@parameter` references are the exception: they name an argument bound at call
-time rather than anything in your database.
+- **Tables and columns must use physical database names:** Write `account`,
+  `account_id`, and `balance` (matching each entity's `source` table and each
+  field's `expression` column), **not** the logical model names `Account` and
+  `accountId`.
+- **`@parameter` placeholders bind action parameters:** Tokens starting with `@`
+  (`@source`, `@target`, `@amount`) are bound at call time from the action's
+  declared `parameters`. Every `@name` in `statements` must match a declared
+  parameter on the action.
 
-A statement that says `accountId` where the column is `account_id` still passes
-push, because push never asks your store whether a table exists. The error comes
-from the store when the action runs, and it can read like a fault in the
-statement rather than a typo in a name. An entity named `Order` bound to a table
-named `Orders` produces
+Because `kcmd push` checks statement structure (one `INSERT`, `UPDATE`, or
+`DELETE` per entry, and valid `@parameter` names) without connecting to your
+database schema, accidentally writing a logical name in SQL will pass `push` and
+fail at runtime when the database parses the statement. For example, writing an
+entity name `Order` instead of its physical table name `Orders` fails in SQL
+with:
 
 ```
 Syntax error: Unexpected keyword ORDER [at 1:8]
 ```
 
-instead of "no such table", because `ORDER` is a reserved word.
+because `ORDER` is a reserved SQL keyword.
 
 ### Which file a `sql` executor belongs in
 
-The placement is enforced: select a profile whose model declares a `sql`
-executor and the command refuses, naming the action:
+Because SQL statements hardcode a specific database's table names, column
+names, and SQL dialect (`GENERATE_UUID()` in Spanner GoogleSQL vs.
+`gen_random_uuid()` in AlloyDB PostgreSQL), **whenever a model uses binding
+profiles, a `sql` executor must live in the binding profile, not in the base
+model.**
+
+Selecting a binding profile replaces all inline `source` and `expression`
+bindings from the base model, so `operational.yaml` must bind both the entities'
+tables and columns (`Account`, `Transfer`) and the `sql` executor that writes to
+them. Leave an entity's key or an affected field's `expression` out of the
+profile and that field becomes unbound under that profile, making any metric,
+relationship, or action `affects` entry that depends on it unavailable.
+
+`kcmd` enforces this separation automatically. If a base model declares a `sql`
+executor and you select a binding profile, `kcmd` refuses with:
 
 ```
 Error: [payments] profile 'operational': action 'TransferFunds' in model
@@ -339,9 +361,10 @@ tables and columns, so it belongs in the profile that binds them, not in the
 model. Move the executor into each profile that performs this write as DML.
 ```
 
-A single-file model is the exception: that one document is both the model and
-its binding, so its statements already sit beside the columns they name. Add a
-profile beside it later and they move into the profile.
+The only exception is a **single-file model with no binding profiles**: when one
+YAML file holds both the logical model and its sole physical binding, you can
+write `executor: { sql: ... }` directly in that file. If you later add a binding
+profile alongside it, move the `sql` executor into the profile.
 
 ## 2. Gate it with a constraint
 
@@ -1083,9 +1106,14 @@ This is a prototype. Four things you might reasonably expect are absent.
   that is likely the action itself; until there is one, keep it in whatever
   dispatches the call, and whoever wrote the statement owns the correctness of
   what it does.
-- **kcmd calls no executor but its own.** A `sql` action runs; an `mcp`, `rest`
-  or `grpc` one is published for whoever dispatches it, which is why those three
-  name coordinates instead of a statement.
-- **The store is Spanner or AlloyDB.** The runtime binds and transacts against
-  the database your profile's deployment target names, which may be either of
-  those. A model bound to BigQuery publishes its actions and runs none of them.
+- **Remote executors (`mcp`, `rest`, `grpc`) are dispatched by the caller, not
+  the in-process SQL runtime.** The embedded `SemanticRuntime` executes `sql`
+  statements directly against the store, whereas `mcp`, `rest`, and `grpc`
+  executors publish their service coordinates to Knowledge Catalog and generated
+  Agent Skills (`kcmd skills-generate`) for the agent or tool framework to
+  invoke directly.
+- **SQL actions require Spanner or AlloyDB.** A `sql` executor binds and
+  transacts against the operational database your profile's `deployment_target`
+  names (`spanner` or `alloydb`). A model bound to BigQuery publishes all of its
+  actions and can still offer `mcp`, `rest`, or `grpc` executors, while `sql`
+  executors are marked not runnable under that profile.

@@ -14,6 +14,7 @@ import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {fromDocument, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
+import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -1418,5 +1419,138 @@ describe('a projection the catalog cannot give back', () => {
     };
     const {warnings} = generateCatalogResources(model, OPTS);
     expect(warnings.some(w => w.includes('parameter \'who\''))).toBe(false);
+  });
+
+  test('the exact Section 1 YAML from docs/semantic-model/actions.md loads, validates, and publishes', () => {
+    const docYaml = `
+version: "0.2.0.dev0/google"    # \`actions\` is a kcmd extension key
+semantic_model:
+  - name: payments
+    entities:
+      - name: Account
+        description: A customer's money at this bank.
+        primary_key: [accountId]
+        source: my-project.bank.account
+        fields:
+          - { name: accountId,      datatype: Integer, expression: account_id }
+          - { name: name,           datatype: String,  expression: name }
+          - { name: balance,        datatype: Float,   expression: balance }
+          - { name: minimumBalance, datatype: Float,   expression: minimum_balance }
+          - { name: status,         datatype: String,  expression: status, description: "open, frozen or closed." }
+      - name: Transfer
+        description: One movement of money between two accounts.
+        primary_key: [transferId]
+        source: my-project.bank.transfer
+        fields:
+          - { name: transferId, datatype: String,  expression: transfer_id }
+          - { name: amount,     datatype: Float,   expression: amount }
+          - { name: debitedId,  datatype: Integer, expression: debited_account_id }
+    relationships:
+      - name: TransferDebits
+        from: Transfer
+        to: Account
+        from_columns: [debitedId]
+        to_columns: [accountId]
+    actions:
+      - name: TransferFunds
+        description: Move money from one account to another.
+        executor:                             # one kind only: mcp / rest / grpc / sql
+          mcp:
+            server: //agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/payments
+            tool: transfer_funds
+        parameters:
+          - name: source
+            field: Account.accountId          # or { concept: Account, field: accountId }
+            description: The account the money leaves.
+          - name: target
+            field: Account.accountId          # projects Account.accountId's Integer type
+            description: The account the money goes to.
+          - name: amount
+            type: Float                       # declared directly (\`datatype: Float\` also works)
+            description: How much money to move.
+        ai_context:
+          instructions: >-
+            Resolve both accounts before calling.
+    ai_context:                             # model level: applies to every action and query
+      instructions: >-
+        Never move money between two accounts held by the same customer
+        without saying so in your answer.
+`;
+    const loaded = loadModels(docYaml);
+    expect(loaded.warnings).toEqual([]);
+    const model = loaded.models[0];
+    expect(model.actions![0].parameters).toEqual([
+      {
+        name: 'source',
+        type: 'Integer',
+        concept: 'Account',
+        field: 'accountId',
+        description: 'The account the money leaves.',
+      },
+      {
+        name: 'target',
+        type: 'Integer',
+        concept: 'Account',
+        field: 'accountId',
+        description: 'The account the money goes to.',
+      },
+      {
+        name: 'amount',
+        type: 'Float',
+        description: 'How much money to move.',
+      },
+    ]);
+    expect(validatePushRequirements([{document: 'payments.yaml', model}], {targetOptional: true})).toEqual([]);
+    const {warnings: kcWarnings} = generateCatalogResources(model, OPTS);
+    expect(kcWarnings.some(w => w.includes('parameter'))).toBe(false);
+
+    // Also verify merging the Section 1 `operational.yaml` profile (`sql`
+    // executor) onto the base `payments.yaml` model:
+    const operationalYaml = `
+semantic_model:
+  - name: payments
+    deployment_target: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/propertyGraphs/payments
+    entities:
+      - name: Account
+        source: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/tables/account
+        fields:
+          - { name: accountId,      expression: account_id }
+          - { name: name,           expression: name }
+          - { name: balance,        expression: balance }
+          - { name: minimumBalance, expression: minimum_balance }
+          - { name: status,         expression: status }
+      - name: Transfer
+        source: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/tables/transfer
+        fields:
+          - { name: transferId, expression: transfer_id }
+          - { name: amount,     expression: amount }
+          - { name: debitedId,  expression: debited_account_id }
+    actions:
+      - name: TransferFunds
+        executor:
+          sql:
+            statements:
+              - UPDATE account SET balance = balance - @amount WHERE account_id = @source
+              - UPDATE account SET balance = balance + @amount WHERE account_id = @target
+              - INSERT INTO transfer (transfer_id, amount, debited_account_id) VALUES (GENERATE_UUID(), @amount, @source)
+`;
+    const merged = mergeProfileOntoDoc(docYaml, operationalYaml, 'operational');
+    expect('error' in merged).toBe(false);
+    if (!('error' in merged)) {
+      const mergedLoaded = loadModels(merged.text);
+      expect(mergedLoaded.warnings).toEqual([]);
+      const mergedModel = mergedLoaded.models[0];
+      expect(mergedModel.actions![0].executor).toEqual({
+        kind: 'sql',
+        sql: {
+          statements: [
+            'UPDATE account SET balance = balance - @amount WHERE account_id = @source',
+            'UPDATE account SET balance = balance + @amount WHERE account_id = @target',
+            'INSERT INTO transfer (transfer_id, amount, debited_account_id) VALUES (GENERATE_UUID(), @amount, @source)',
+          ],
+        },
+      });
+      expect(validatePushRequirements([{document: 'payments.yaml', model: mergedModel}])).toEqual([]);
+    }
   });
 });

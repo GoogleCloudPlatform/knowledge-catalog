@@ -384,6 +384,23 @@ function readSideSection(
     out.push(`  --sql='SELECT ...'`);
     out.push('```');
     out.push('');
+  } else if (runtime.store?.kind === 'bigquery') {
+    const s = runtime.store;
+    out.push('To read the store directly:');
+    out.push('');
+    out.push('```bash');
+    out.push(`bq query --use_legacy_sql=false --project_id=${s.project} \\`);
+    out.push(`  'SELECT ...'`);
+    out.push('```');
+    out.push('');
+  } else if (runtime.store?.kind === 'alloydb') {
+    const s = runtime.store;
+    out.push(
+        `This skill supplies no canned CLI command for AlloyDB; connect to ` +
+        `\`${s.project}/${s.location}/${s.cluster}/${s.instance}/${
+            s.database}\` via \`psql\` or the AlloyDB Auth Proxy to run ` +
+        `\`SELECT\` queries.`);
+    out.push('');
   }
   if (runtime.store) {
     out.push(...readableSchema(runtime));
@@ -404,11 +421,8 @@ function readableSchema(runtime: SemanticRuntime): string[] {
   const readable = readableEntities(runtime, dialect);
   if (!readable.length) return [];
   const out: string[] = [];
-  const lead = runtime.store?.kind === 'spanner' ?
-      `Those are ${dialect.name} statements.` :
-      `The store uses ${dialect.name}.`;
   out.push(
-      `${lead} These tables are the whole of ` +
+      `Those are ${dialect.name} statements. These tables are the whole of ` +
       'what there is to read, and the names to write in a statement are the ' +
       'table and column names below -- not the model\'s own names, which ' +
       'follow each column for cross-reference:');

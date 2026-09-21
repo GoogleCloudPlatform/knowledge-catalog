@@ -370,6 +370,30 @@ describe('when the runtime would refuse the call', () => {
     expect(out.warnings.join(' ')).not.toContain('runnable');
   });
 
+  test('REST and gRPC executors are runnable and emit their coordinates in SKILL.md', () => {
+    const restOut = generate(rt(withAction(model, {
+      executor: {
+        kind: 'rest',
+        rest: {method: 'POST', endpoint: 'https://api.acme.example/v1/orders'},
+      },
+    })));
+    expect(restOut.files['SKILL.md'])
+        .toContain(
+            '`PlaceOrder` (`place_order`): HTTP `POST` `https://api.acme.example/v1/orders`');
+    expect(restOut.warnings.join(' ')).not.toContain('runnable');
+
+    const grpcOut = generate(rt(withAction(model, {
+      executor: {
+        kind: 'grpc',
+        grpc: {service: 'acme.orders.v1.OrderService', method: 'PlaceOrder'},
+      },
+    })));
+    expect(grpcOut.files['SKILL.md'])
+        .toContain(
+            '`PlaceOrder` (`place_order`): gRPC `acme.orders.v1.OrderService/PlaceOrder`');
+    expect(grpcOut.warnings.join(' ')).not.toContain('runnable');
+  });
+
   test(
       'a skill that can run nothing warns rather than passing silently', () => {
         // It still loads, still costs context on every request, and still names
@@ -506,7 +530,32 @@ describe('the binding is one section', () => {
     expect(first.files['SKILL.md']).toContain('`p/i/d`');
     expect(second.files['SKILL.md']).toContain('`alloydb:q/us-central1/j/inst/e`');
     expect(first.files['SKILL.md']).toContain('Those are GoogleSQL statements.');
-    expect(second.files['SKILL.md']).toContain('The store uses PostgreSQL.');
+    expect(second.files['SKILL.md'])
+        .toContain(
+            'This skill supplies no canned CLI command for AlloyDB; connect to ' +
+            '`q/us-central1/j/inst/e` via `psql` or the AlloyDB Auth Proxy');
+    expect(second.files['SKILL.md']).toContain('Those are PostgreSQL statements.');
+  });
+
+  test('a BigQuery store emits its bq read snippet and GoogleSQL schema map', () => {
+    const bq = generate(rt(here, {
+      profile: 'bq',
+      store: {
+        kind: 'bigquery',
+        name: 'projects/p/datasets/sales_ds',
+        project: 'p',
+        dataset: 'sales_ds',
+      },
+      storeError:
+          'This profile deploys to the BigQuery dataset p.sales_ds; an action\'s statements run against an operational database.',
+    }));
+    expect(bq.files['SKILL.md'])
+        .toContain('bq query --use_legacy_sql=false --project_id=p');
+    expect(bq.files['SKILL.md']).toContain('Those are GoogleSQL statements.');
+    expect(bq.files['SKILL.md']).toContain('orders -> table orders');
+    expect(bq.files['SKILL.md']).toContain('- Store: `bigquery:p/sales_ds`');
+    expect(bq.files['references/place-order.md'])
+        .toBe(first.files['references/place-order.md']);
   });
 });
 

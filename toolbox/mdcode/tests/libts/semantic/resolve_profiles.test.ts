@@ -584,6 +584,20 @@ describe('an action a binding cannot perform is unavailable', () => {
         .toMatch(/Customer/);
   });
 
+  test('an action that affects an unbound field on an available entity is dropped', () => {
+    const m = irWithActions();
+    m.actions.push({
+      name: 'AdjustLifetimeValue',
+      parameters: [],
+      affects: [{concept: 'Customer', operation: 'modify', fields: ['lifetimeValue']}],
+      executor: {kind: 'sql', sql: {statements: ['UPDATE customer SET ltv = 0']}},
+    });
+    const {model, report} = pruneUnavailable(m, 'operational');
+    expect(actionNames(model)).not.toContain('AdjustLifetimeValue');
+    expect(report.droppedActions.find(d => d.name === 'AdjustLifetimeValue')?.reason)
+        .toBe('it affects Customer.lifetimeValue, which is unbound');
+  });
+
   test('a model that declares no actions reports none dropped', () => {
     const {report} = pruneUnavailable(irModel(), 'operational');
     expect(report.droppedActions).toEqual([]);
