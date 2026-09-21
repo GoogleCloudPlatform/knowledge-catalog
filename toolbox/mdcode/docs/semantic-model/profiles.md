@@ -436,11 +436,13 @@ writes nothing.
   dry run; a table that is missing or inaccessible fails and names it. Column
   names are not probed here — a mistyped column resolves to a real table and is
   caught at deploy, when BigQuery rejects the generated graph.
-- **Rejected DML** — every statement in an action's `sql` executor is planned
-  against the store this profile deploys to, without running it, and a store
-  that refuses one fails the push and quotes back why. The profile is what picks
-  the store, so the same statement can pass under one profile and fail under
-  another; see
+- **Rejected DML** — where this profile deploys to Spanner or BigQuery, every
+  statement in an action's `sql` executor is planned against that store without
+  running it, and a store that refuses one fails the push and quotes back why.
+  The profile is what picks the store, so the same statement can pass under one
+  profile and fail under another. A profile deploying to **AlloyDB** is the
+  exception: its statements are checked for shape but never sent anywhere, so
+  nothing confirms the names in them. See
   [statements use your database names](actions.md#statements-use-your-database-names).
 - **Availability summary** — push resolves the dependency graph and prints, per
   profile, how many entities, metrics, relationships, and actions the binding

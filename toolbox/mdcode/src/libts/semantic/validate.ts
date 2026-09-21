@@ -1085,9 +1085,15 @@ export async function validateSpannerActionStatements(
             pending, store, storeMessage(res.message, res.status)));
       }
     } finally {
-      // Best effort: a leaked session expires on its own, and failing the push
-      // over the cleanup would report a statement problem that does not exist.
-      await spanner.deleteSession(session);
+      // Best effort, and the catch is what makes it one. A leaked session
+      // expires on its own, while letting a cleanup failure escape would throw
+      // away every statement error collected above and report a transport
+      // problem as though the statements had never been checked.
+      try {
+        await spanner.deleteSession(session);
+      } catch {
+        // Nothing to say: the session is the store's to reclaim.
+      }
     }
   }
   return errors;

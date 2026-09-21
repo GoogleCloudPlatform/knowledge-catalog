@@ -557,8 +557,12 @@ BigQuery Graph), including under `--no-kc`, because the same tables back both a
 BigQuery graph and its Knowledge Catalog entries. The DML pre-flight rides the
 same two legs: it runs before the BigQuery deploy and before the Spanner deploy,
 and both run under `--validate-only`, so a statement fails while nothing has
-been published. A catalog-only model — one declaring no deployment target at all
-— runs neither leg, so its statements are checked statically and no further.
+been published. Two kinds of model run neither leg and are therefore checked
+statically and no further: a catalog-only model, which declares no deployment
+target at all, and an **AlloyDB**-targeting one — AlloyDB is a valid deployment
+target and a valid store for an action to write to, but push has no client for
+it, so its statements are never sent anywhere. Neither case is reported as
+verified.
 
 ## Permissions
 

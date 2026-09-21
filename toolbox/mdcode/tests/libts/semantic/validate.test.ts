@@ -461,6 +461,24 @@ describe('action statement pre-flight', () => {
       expect(spanner.deletedSessions).toEqual(spanner.createdSessions);
     });
 
+    // deleteSession goes over the wire, and a transport failure REJECTS rather
+    // than returning a status. Letting that escape would discard the statement
+    // errors already collected and surface a cleanup problem as an unhandled
+    // rejection out of push -- reporting nothing about the statements that are
+    // actually wrong.
+    test('reports statement errors even when the cleanup throws', async () => {
+      const spanner = new SpannerClientMock();
+      spanner.schema = mockSchema(ACCOUNT);
+      spanner.deleteSession = async () => {
+        throw new Error('ECONNRESET');
+      };
+      const errs = await validateSpannerActionStatements(
+          [spannerModel([sqlAction(['DELETE FROM ghost WHERE 1=1'])])],
+          spanner);
+      expect(errs.length).toBe(1);
+      expect(errs[0]).toContain('statement 1');
+    });
+
     // Spanner's error body, shaped after a live PLAN of a bad statement. Two
     // things about it are load-bearing and neither is obvious. The top-level
     // `message` is DOUBLY escaped -- one round of JSON escaping survives the

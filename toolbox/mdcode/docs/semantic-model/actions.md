@@ -357,7 +357,11 @@ as written, so every table and column has to be the name the database uses.
 ```
 
 Everything between the store's name and the closing sentence is the store's own
-answer, which is why it can point at column 54. That's also why the check is
+answer, which is why it can point at column 54. It also explains the suggestion:
+Spanner offers `account`, the table, because that is the nearest name in scope
+where the statement went wrong — BigQuery, dry-running the same mistake, answers
+*Did you mean `account_id`?* instead. Take the diagnosis from the store you
+actually deploy to. That's also why the check is
 worth more than comparing your statements against the profile's bindings would
 be: the store catches what a name comparison can't see. A placeholder or a
 function borrowed from another dialect gets every identifier right and is still
