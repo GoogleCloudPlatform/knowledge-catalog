@@ -1257,6 +1257,32 @@ describe('a guard settled by judgment', () => {
     expect(outcome.warnings ?? []).toEqual([]);
   });
 
+  test('skipGuards asks no judge, even when one is handed over', async () => {
+    // `skipGuards` means nobody is asked. A caller that passed both used to
+    // reach the judge anyway while the unsettled-guard warnings stayed
+    // suppressed -- the worst of both, since a judge that threw or returned
+    // nothing then committed with no line about it anywhere.
+    const fake = fakeStore();
+    let asked = 0;
+    const outcome = await act({
+      model: guarding([justified]),
+      actionName: 'Credit',
+      args: {account: 'A1', amount: 100},
+      client: fake.client,
+      skipGuards: true,
+      judge: {
+        name: 'a judge nobody should reach',
+        decide: async () => {
+          asked++;
+          return {holds: false, reason: 'refused'};
+        },
+      },
+    });
+    expect(asked).toBe(0);
+    if (outcome.status !== 'committed') throw new Error(outcome.message);
+    expect(fake.committed).toBe(true);
+  });
+
   test('skipGuards does not clear a guard that names nothing', async () => {
     // Not checking the guards is not the same as not reading them. A guard
     // naming a rule the model never declares is the model being wrong about

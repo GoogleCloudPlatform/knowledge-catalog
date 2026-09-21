@@ -182,7 +182,13 @@ export async function runAction(opts: RunActionOptions):
   // never the state the write produced, which means a rule about the RESULT of
   // a write is out of reach here and belongs in the schema.
   const warnings: string[] = [];
-  if (opts.judge) {
+  // `skipGuards` means nobody is asked -- the whole point of it -- so it
+  // stands the asking down too, not just the refusal for want of a judge
+  // and the unsettled-guard warnings. A caller that passed both used to
+  // reach the judge with those warnings suppressed, so a guard whose
+  // judgment states nothing, or one that threw while being asked, committed
+  // with no line about it anywhere.
+  if (opts.judge && !opts.skipGuards) {
     const judged = judgedGuards(model, action);
     if (judged.length) {
       // Returned rather than thrown. A throw from here reaches the catch at
