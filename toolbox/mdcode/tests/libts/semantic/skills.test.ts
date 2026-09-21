@@ -356,7 +356,8 @@ describe('when the runtime would refuse the call', () => {
     // runtime that has a judge, and carries no flag about one.
     const out = generate(rt(withAction(model, {executor: RUNNABLE.executor})));
     expect(out.files['SKILL.md']).not.toContain('--judge');
-    expect(out.files['SKILL.md']).toContain('settles every guard');
+    expect(out.files['SKILL.md'])
+        .toContain('puts the action\'s guards to a judge');
     expect(out.warnings.join(' ')).not.toContain('runnable');
   });
 

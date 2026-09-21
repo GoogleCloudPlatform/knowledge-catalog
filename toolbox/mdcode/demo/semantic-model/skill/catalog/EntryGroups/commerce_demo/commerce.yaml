@@ -23,9 +23,9 @@
 # a judge can settle only if it can read the database. Running this demo
 # therefore takes a judge that has been given one -- a `store` on the judge the
 # agent hires. Giving a judge your tables belongs to whoever embeds the
-# runtime, so no kcmd flag offers it. `kcmd action-run` settles no guard at
-# all -- it names them and writes anyway -- so running this demo from the
-# command line reaches none of the rules below.
+# runtime, so no kcmd flag offers it. No kcmd command line runs an action or
+# hires a judge, so the rules below are settled only by an application that
+# embeds the runtime.
 #
 # What this costs: every gate is a model call, and a model can answer two
 # identical calls differently. Don't copy the `$25` ceiling below -- a threshold

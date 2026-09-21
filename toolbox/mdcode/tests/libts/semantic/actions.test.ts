@@ -14,7 +14,7 @@ import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {fromDocument, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
-import {validatePushRequirements, validateRunnable} from '../../../src/libts/semantic/validate';
+import {validatePushRequirements} from '../../../src/libts/semantic/validate';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 const OPTS = {
@@ -1053,22 +1053,6 @@ describe('parameter description, required, and default', () => {
   });
 
   test(
-      'validateRunnable does not reject duplicate parameter types lacking descriptions',
-      () => {
-        const missingDesc = withActions([{
-          name: 'TransferFunds',
-          executor: MCP,
-          parameters: [
-            {name: 'source', type: 'String'},
-            {name: 'target', type: 'String'},
-          ],
-        }]);
-        expect(validateRunnable([
-          {document: 'test.yaml', model: missingDesc.models[0]}
-        ])).toEqual([]);
-      });
-
-  test(
       'KC round-trip preserves empty string, null, literal "null", and exact decimal defaults',
       () => {
         const {models} = withActions([{
@@ -1118,8 +1102,8 @@ describe('parameter description, required, and default', () => {
 describe('a published statement and a run read the verb the same way', () => {
   // These are the forms `run_action.test.ts` already drives through a `sql`
   // executor. Before the readers were shared, every one of them ran in the
-  // library and was refused by `kcmd push` and `validateRunnable`, which both
-  // call `sqlExecutorErrors` first -- so the tests below and those ones
+  // library and was refused by `kcmd push` (`validatePushRequirements`), which
+  // calls `sqlExecutorErrors` first -- so the tests below and those ones
   // disagreed about the same model.
   const target =
       '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';

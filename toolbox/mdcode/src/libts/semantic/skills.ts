@@ -517,8 +517,9 @@ function runningSection(
 
   out.push(
       'An agent that runs continuously should be handed these actions as ' +
-      'tools by its own framework, which settles every guard before opening ' +
-      'a transaction and runs the write against the store above.');
+      'tools by its own framework, which puts the action\'s guards to a ' +
+      'judge before opening a transaction, and refuses rather than writing ' +
+      'unchecked when it cannot settle one the model requires.');
   out.push('');
   return out;
 }

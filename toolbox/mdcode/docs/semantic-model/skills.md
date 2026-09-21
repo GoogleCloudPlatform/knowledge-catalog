@@ -278,8 +278,9 @@ here to write the other kind of skill.
 
 That section names the profile, the store, the executor kinds in play, and any
 action that can't run here. An agent that runs continuously should be handed
-these actions as tools by its own framework, which settles every guard before
-opening a transaction and runs the write against that store.
+these actions as tools by its own framework, which puts the action's guards to a
+judge before opening a transaction, and refuses rather than writing unchecked
+when it cannot settle one the model requires.
 
 ## What it doesn't generate yet
 

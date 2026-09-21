@@ -1193,7 +1193,10 @@ Either kind is withheld when the runtime has no store, because a call needs
 somewhere to land. The derivation asks the runtime for every one of these
 verdicts instead of working them out again, so the two can't drift: a tool
 advertised as runnable that refuses each call spends your agent's turn, and one
-withheld that would have worked is never tried.
+withheld that would have worked is never tried. (`kcmd agent-tools` on the
+command line lists a guarded action as runnable even so, because a command-line
+listing describes the model rather than a particular caller's judge;
+`modelTools({runtime})` in code checks the `judge` on the runtime you hand in.)
 
 ### When a rule stops the call
 
@@ -1261,6 +1264,14 @@ transaction.
 name and description, and the arguments as the caller stated them —
 `order=12347`, the value itself, and not the `Order` row it identifies. That's
 the whole of what it has.
+
+**A rule that never reached a judge is reported as unchecked.** You supplied no
+judge, or the model call failed. Either way the run learns nothing about the
+rule, and `on_violation` routes that like any other breach. An advisory guard
+lets the write through and warns, naming the rule and saying it was not checked.
+A guard declaring `reject` or `escalate` stops the call. The warning is there
+because committing in silence would tell you every rule passed when one was
+never put to anybody.
 
 ### A rule the judge can't settle
 

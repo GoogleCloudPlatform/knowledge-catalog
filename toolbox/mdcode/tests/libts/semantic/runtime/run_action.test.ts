@@ -1534,10 +1534,10 @@ describe('a constraint that only warns', () => {
   test(
       'but a guard naming nothing the model declares still refuses',
       async () => {
-        // Validation (`validateRunnable`) makes that a hard error -- but a
-        // library caller reaching runAction directly gets no such pass, and a
-        // guard this cannot account for is not something to wave through on the
-        // grounds that it was not found.
+        // Validation (`validatePushRequirements`) makes that a hard error --
+        // but a library caller reaching runAction directly gets no such pass,
+        // and a guard this cannot account for is not something to wave through
+        // on the grounds that it was not found.
         const outcome = await act({
           model: creditModel({
             actions: [{...credit, guards: ['NoSuchRule']}],

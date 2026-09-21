@@ -169,29 +169,6 @@ export function validatePushRequirements(
   return errors;
 }
 
-// The subset of the push checks that bear on RUNNING an action rather than on
-// deploying a model. A caller running an action skips the deployment checks on
-// purpose -- it deploys nothing -- but it must not skip these, because the
-// runtime acts on exactly what they verify.
-//
-// The guard check is the one that matters most. An action naming a constraint
-// the model does not declare claims to be checked, and running it would be
-// running it unchecked. The parameter and executor checks decide what the
-// binder can fill and what the plan can call. The `affects` checks change
-// nothing about the run, and they are here so that a model failing its own push
-// fails the same way when it is run instead, naming the typo rather than
-// passing over it. Nothing has pruned fields on this path, so the field checks
-// that stand down for a profile push apply in full.
-export function validateRunnable(models: LoadedModel[]): string[] {
-  const errors: string[] = [];
-  for (const {document, model} of models) {
-    errors.push(...validateActions(model, document, false, false));
-    errors.push(...validateConstraints(model, document, false));
-  }
-  return errors;
-}
-
-
 // Static, target-independent checks for a model's actions. Returns one message
 // per violation. What can be statically wrong once the model has parsed:
 //   - a parameter projects from a concept the model does not declare, or a

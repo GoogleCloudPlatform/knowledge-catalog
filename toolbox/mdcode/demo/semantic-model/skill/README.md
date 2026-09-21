@@ -295,6 +295,9 @@ Model 'commerce' (commerce_demo), profile 'spanner':
       Credit a customer against one order -- a late delivery, a coupon, a
       shipping charge applied in error. The credit is added as a negative line
       and the order total is recomputed from the lines.
+
+      This call is gated by CreditWithinOrderTotal, CreditUnderReviewThreshold,
+      CreditMemoNamesAServiceFailure, CreditIsNotSplitToAvoidReview:
 ...
 ```
 
@@ -360,13 +363,12 @@ Running 'IssueCredit' on projects/my-project/instances/my-instance/databases/sem
 Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotal' (...), and gemini-2.5-flash (us-central1) judged that it does not hold for this call: The credit amount of 20.00 exceeds the order total of 18.00. Please request a credit amount that does not exceed the order total. The model marks this rule 'escalate', so an approver may allow it; nothing here can. A credit cannot exceed the total of the order it credits. Lower the credit amount, or split it across the orders it actually covers. No transaction was opened, so nothing was written.
 ```
 
-That is the same call that now commits and leaves the order at -$5.00. The judge
-wrote its own `SELECT`, from the model, and refused against the real total. What
-survives the seam's removal is the rest of that message: which rule, the rule's
-own words, the judge's reason, the consequence the model attaches, the advice
-the model wrote for this case, and the fact that nothing was written. That whole
-message is what a reading agent gets back, for every rule a judge can still
-settle.
+When a judge could read the store, it wrote its own `SELECT`, from the model,
+and refused against the real total. What survives the seam's removal is the rest
+of that message: which rule, the rule's own words, the judge's reason, the
+consequence the model attaches, the advice the model wrote for this case, and
+the fact that nothing was written. That whole message is what a reading agent
+gets back, for every rule a judge can still settle.
 
 Handed no judge at all, the runtime fails closed rather than writing unchecked:
 
@@ -377,9 +379,8 @@ Error: Action 'IssueCredit' is guarded by 'CreditWithinOrderTotal', 'CreditUnder
 ```
 
 That refusal is still the runtime's behaviour for any caller that supplies no
-judge. What changed is that the command line no longer asks: it proceeds, and
-the run reports the guards it passed over, which is the warning in the two runs
-above.
+judge: rather than applying a write the model says must be checked first, it
+stops before a transaction opens.
 
 And the `reject` consequence, the one an approver cannot wave through:
 
@@ -505,7 +506,7 @@ Everything above is true of this model wherever it is deployed. This section is 
 - Store: `my-project/my-instance/semantic_skill_demo`
 - Executor: `sql`
 
-An agent that runs continuously should be handed these actions as tools by its own framework, which settles every guard before opening a transaction and runs the write against the store above.
+An agent that runs continuously should be handed these actions as tools by its own framework, which puts the action's guards to a judge before opening a transaction, and refuses rather than writing unchecked when it cannot settle one the model requires.
 ```
 
 Then **What happens when you call one** — the three states a call comes back in,
@@ -561,8 +562,10 @@ no SQL.
 The four runs are consecutive against the seed from [section 3](#3-create-the-store),
 so the state each one starts from is the state the previous one left.
 
-> **These four were recorded when the skill carried a `kcmd action run ... --judge --judge-reads-store` command line, and they are kept because
-> nothing else shows an agent meeting a rule it cannot talk its way past.**
+> **These four were recorded when the skill carried a
+> `kcmd action run ... --judge --judge-reads-store` command line, and they are
+> kept because nothing else shows an agent meeting a rule it cannot talk its way
+> past.**
 > That command and those flags have since been removed, and no judge reads a
 > store any more — the seam for it was taken out of the runtime. Read them for
 > what the agent did with a refusal, not as what the CLI runs today.

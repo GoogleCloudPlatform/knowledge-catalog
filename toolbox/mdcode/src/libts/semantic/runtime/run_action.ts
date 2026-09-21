@@ -546,9 +546,10 @@ function unsafeToRunUnchecked(
                                .map(c => c.name));
   const guards = (action.guards ?? []).filter(g => !advisory.has(g));
   // A judgment with no words in it -- or no judgment at all -- is nothing to
-  // put to a judge. `kcmd` validates the model first, so this arrives only
-  // through the library entry point, where asking anyway would refuse every
-  // call and cite a rule it cannot quote.
+  // put to a judge. `kcmd push` validates the model before deploying, but a
+  // caller reaching the runtime directly can hand in an unvalidated model,
+  // where asking anyway would refuse every call and cite a rule it cannot
+  // quote.
   const blank =
       (model.constraints ?? [])
           .filter(c => guards.includes(c.name) && !(c.judgment ?? '').trim())
