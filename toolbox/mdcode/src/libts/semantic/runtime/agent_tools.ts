@@ -9,10 +9,10 @@
  */
 
 import {boundTable} from '../binding';
-import {Action, ActionParameter, Constraint, Entity, fieldBinding, SemanticModel} from '../ir';
+import {Action, ActionParameter, Entity, fieldBinding, SemanticModel} from '../ir';
 
 import {SqlDialect} from './dialect';
-import {runtimeClient, SemanticRuntime} from './runtime';
+import {runtimeStoreError, SemanticRuntime} from './runtime';
 
 
 /** The JSON types a tool parameter can take. */
@@ -43,17 +43,12 @@ export interface ActionTool {
   name: string;
   /** The action this tool calls, by its authored name. */
   actionName: string;
-  /**
-   * What the tool does and how to call it: the action's description, its
-   * `ai_context.instructions`, and a line naming the rules that gate it so a
-   * caller learns the shape of a refusal before it hits one.
-   */
-  description: string;
   parameters: ToolParameter[];
   /**
    * Whether this action can run under the active binding profile. False when
-   * the profile supplies no operational store, no `sql` executor, or when the
-   * action names a guard that is undeclared or states no rule text.
+   * the profile supplies no executor, when a `sql` executor has no operational
+   * store, or when the action names a guard that is undeclared or states no
+   * rule text.
    */
   runnable: boolean;
   /** Why `runnable` is false, in words a caller can report. */
@@ -80,13 +75,10 @@ export function actionTools(opts: ActionToolOptions): ActionTool[] {
 
 
 function toolFor(action: Action, opts: ActionToolOptions): ActionTool {
-  const model = opts.runtime.model;
-  const blocked = whyRefusedWithoutRunning(model, action) ??
-      noStore(opts.runtime) ?? undefined;
+  const blocked = whyRefusedWithoutRunning(opts.runtime, action) ?? undefined;
   const tool: ActionTool = {
     name: snakeCase(action.name),
     actionName: action.name,
-    description: toolDescription(action, model, blocked),
     parameters: action.parameters.map(toolParameter),
     runnable: !blocked,
   };
@@ -96,7 +88,8 @@ function toolFor(action: Action, opts: ActionToolOptions): ActionTool {
 
 
 function whyRefusedWithoutRunning(
-    model: SemanticModel, action: Action): string|null {
+    runtime: SemanticRuntime, action: Action): string|null {
+  const model = runtime.model;
   const executor = action.executor;
   if (!executor) {
     return `Action '${action.name}' has no executor under this binding, so ` +
@@ -104,11 +97,6 @@ function whyRefusedWithoutRunning(
         `profile supplies one, and a profile that writes 'executor: null' ` +
         `withdraws it. The action is still declared and still published; it ` +
         `is only not performable here, and is performed somewhere else.`;
-  }
-  if (executor.kind !== 'sql') {
-    return `Action '${action.name}' is executed by ${
-               executor.kind.toUpperCase()}. Declare the action with a 'sql' ` +
-        `executor.`;
   }
   const advisory = new Set((model.constraints ?? [])
                                .filter(c => c.onViolation === 'warn')
@@ -134,6 +122,9 @@ function whyRefusedWithoutRunning(
                model.name}'. Running it would apply a write the model says ` +
         `must be checked first, so it is refused rather than run unchecked.`;
   }
+  if (executor.kind === 'sql') {
+    return runtimeStoreError(runtime);
+  }
   return null;
 }
 
@@ -155,54 +146,6 @@ function sentence(text: string): string {
   const trimmed = text.trim();
   if (!trimmed) return '';
   return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
-}
-
-
-// The three sources of description, in the order a caller needs them: what the
-// action does, how to call it, and why it would be refused. A model that
-// supplies none of them still yields a usable tool, because the parameter
-// descriptions carry their own types.
-function toolDescription(
-    action: Action, model: SemanticModel, blocked?: string): string {
-  const parts: string[] = [];
-  if (action.description) parts.push(action.description.trim());
-  const instructions = action.aiContext?.instructions?.trim();
-  if (instructions) parts.push(instructions);
-  const gates = gatingConstraints(action, model);
-  if (gates.length) {
-    const names = joinNames(gates.map(c => c.name));
-    const rules = gates
-                      .map(c => {
-                        const body = (c.judgment ?? '').trim();
-                        const desc = (c.description ?? '').trim();
-                        const text = body && desc ?
-                            `${sentence(body)} ${sentence(desc)}` :
-                            (body || desc);
-                        return text ? `- ${c.name}: ${text}` : undefined;
-                      })
-                      .filter((s): s is string => s !== undefined);
-    if (rules.length) {
-      parts.push(`This call is gated by ${names}:\n${rules.join('\n')}`);
-    } else {
-      parts.push(`This call is gated by ${names}.`);
-    }
-  }
-  if (blocked) {
-    parts.push(
-        `Calling this will not work: ${blocked} Report that rather ` +
-        `than retrying.`);
-  }
-  return parts.join('\n\n');
-}
-
-
-function gatingConstraints(action: Action, model: SemanticModel): Constraint[] {
-  const byName = new Map((model.constraints ?? [])
-                             .filter(c => c.onViolation !== 'warn')
-                             .map(c => [c.name, c]));
-  return (action.guards ?? [])
-      .map(name => byName.get(name))
-      .filter((c): c is Constraint => c !== undefined);
 }
 
 
@@ -281,12 +224,6 @@ function snakeCase(name: string): string {
 }
 
 
-function joinNames(names: string[]): string {
-  if (names.length === 1) return names[0];
-  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
-}
-
-
 /** Everything a model offers an agent, in one name space. */
 export interface ModelTools {
   /** One write per action. */
@@ -336,12 +273,6 @@ function distinct(base: string, taken: Set<string>): string {
   for (let n = 2; taken.has(name); n++) name = `${base}_${n}`;
   taken.add(name);
   return name;
-}
-
-
-function noStore(runtime: SemanticRuntime): string|null {
-  const client = runtimeClient(runtime);
-  return 'error' in client ? client.error : null;
 }
 
 

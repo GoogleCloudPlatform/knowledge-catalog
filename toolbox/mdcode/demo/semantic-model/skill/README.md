@@ -834,8 +834,9 @@ The reference page is byte-identical. Arguments, rules, judgments, consequences,
 +- Store: `alloydb:my-project/us-central1/my-cluster/my-instance/semantic_skill_demo`
 ```
 
-and the read path from **Finding a record**, which the AlloyDB skill does not
-have at all — see [Limits](#10-limits).
+and the read path from **Finding a record**, which switches from the Spanner
+`gcloud` snippet and `GoogleSQL` table/column map to the `PostgreSQL`
+table/column map (`purchase_order`, `order_line`, `order_total`).
 
 That is the portability claim, and it is a diff rather than an assertion: one
 model, two databases, two dialects, one renamed column, and the description of
@@ -852,13 +853,11 @@ are all still in the library and still tested; what is missing is a caller wired
 to them. Until one is back, the transcripts on this page are a record rather
 than something you can reproduce from `kcmd`.
 
-**The AlloyDB skill has no way to find a record.** The `gcloud` read snippet and
-the schema block are emitted for Spanner stores only. Under `alloydb` the skill
-still describes the action and its rules correctly and the action still runs, but
-an agent handed a customer name has nothing in the skill telling it how to get to
-a key. The Spanner leg of this demo was run live today; the AlloyDB leg was not
-re-run for this revision, and the claim above about its generated output is from
-the diff, not from a live action against an AlloyDB cluster.
+**The AlloyDB skill omits a canned CLI read command.** While both the `spanner`
+and `alloydb` skills emit the full physical table and column schema map (`GoogleSQL`
+and `PostgreSQL`), the `gcloud spanner databases execute-sql` command block is
+emitted for Spanner stores only because AlloyDB queries depend on the caller's
+network path (`psql` or AlloyDB Auth Proxy).
 
 **Two harnesses were run, not every harness.** Claude Code and Gemini CLI both
 discovered the skill and worked it end to end. Cursor and the other clients in

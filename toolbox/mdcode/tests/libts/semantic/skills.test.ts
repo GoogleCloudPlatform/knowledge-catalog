@@ -25,7 +25,6 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
 
-import * as spanner from '../../../src/libts/gcp/spanner';
 import {Action, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {SemanticRuntime} from '../../../src/libts/semantic/runtime/runtime';
@@ -39,8 +38,8 @@ function loadFixtureModel(name: string): SemanticModel {
 }
 
 // A model paired with a store. Nothing here calls the store; it is there
-// because a runtime that has none describes every action as unrunnable, which
-// is its own case below.
+// because a runtime that has none describes every sql action as unrunnable,
+// which is its own case below.
 function rt(model: SemanticModel, over: Partial<SemanticRuntime> = {}):
     SemanticRuntime {
   return {
@@ -52,7 +51,6 @@ function rt(model: SemanticModel, over: Partial<SemanticRuntime> = {}):
       project: 'p',
       instance: 'i',
       database: 'd',
-      client: {} as spanner.SpannerDataClient,
     },
     profile: 'default',
     entryGroup: 'eg',
@@ -361,23 +359,24 @@ describe('when the runtime would refuse the call', () => {
     expect(out.warnings.join(' ')).not.toContain('runnable');
   });
 
-  test('an executor the runtime cannot roll back is reported as such', () => {
-    // The fixture's own MCP executor: the write would commit in a system this
-    // runtime does not control.
-    const out = generate(rt(withAction(model, {guards: []})));
-    expect(out.files['SKILL.md']).toContain('MCP');
+  test('an MCP executor is runnable and emits its server and tool in SKILL.md', () => {
+    const out = generate(rt(model));
+    expect(out.files['SKILL.md'])
+        .toContain(
+            '`PlaceOrder` (`place_order`): MCP tool `place_order` on ' +
+            '`//agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/commerce`');
     expect(out.files['references/place-order.md'])
         .not.toContain('Not runnable');
+    expect(out.warnings.join(' ')).not.toContain('runnable');
   });
 
   test(
       'a skill that can run nothing warns rather than passing silently', () => {
         // It still loads, still costs context on every request, and still names
         // the model as the write path in frontmatter a client reads before the
-        // body. A caller who did not mean to make one has to be told. The
-        // fixture's own MCP executor is the case: the runtime will not wrap a
-        // write it could not roll back.
-        const out = generate(rt(model));
+        // body. A caller who did not mean to make one has to be told.
+        const unrunnable = withAction(model, {executor: undefined});
+        const out = generate(rt(unrunnable));
         expect(out.warnings.join(' ')).toContain('runnable');
         expect(out.warnings.join(' ')).toContain('Running an action');
       });
@@ -385,7 +384,8 @@ describe('when the runtime would refuse the call', () => {
   test(
       'a skill for a model nothing here can run says so in the binding section',
       () => {
-        const skill = generate(rt(model)).files['SKILL.md'];
+        const unrunnable = withAction(model, {executor: undefined});
+        const skill = generate(rt(unrunnable)).files['SKILL.md'];
         expect(skill).toContain('No action in this model can be run');
       });
 
@@ -456,12 +456,13 @@ describe('the binding is one section', () => {
   const second = generate(rt(there, {
     profile: 'alloydb',
     store: {
-      kind: 'spanner',
-      name: 'projects/q/instances/j/databases/e',
+      kind: 'alloydb',
+      name: 'projects/q/locations/us-central1/clusters/j/instances/inst/databases/e',
       project: 'q',
-      instance: 'j',
+      location: 'us-central1',
+      cluster: 'j',
+      instance: 'inst',
       database: 'e',
-      client: {} as spanner.SpannerDataClient,
     },
   }));
 
@@ -475,7 +476,7 @@ describe('the binding is one section', () => {
 
   test('nor when the deployment cannot run the action at all', () => {
     // The case the two profiles above cannot reach, because both bind a
-    // working Spanner store. Whether an action is RUNNABLE is a binding fact
+    // working store. Whether an action is RUNNABLE is a binding fact
     // wearing a logical name, so putting the reason on the action's own page
     // -- which reads naturally, and which this module did at first -- makes
     // every page profile-specific and the claim above false.
@@ -490,7 +491,7 @@ describe('the binding is one section', () => {
     expect(storeless.files['SKILL.md']).toContain('Store: none.');
   });
 
-  test('no physical name reaches the skill', () => {
+  test('no physical name from action SQL reaches the skill', () => {
     // The statements name tables and columns the model does not. A skill that
     // leaked them would describe one deployment while claiming to describe
     // the model.
@@ -503,7 +504,9 @@ describe('the binding is one section', () => {
     expect(first.files['SKILL.md']).toContain('profile `spanner`');
     expect(second.files['SKILL.md']).toContain('profile `alloydb`');
     expect(first.files['SKILL.md']).toContain('`p/i/d`');
-    expect(second.files['SKILL.md']).toContain('`q/j/e`');
+    expect(second.files['SKILL.md']).toContain('`alloydb:q/us-central1/j/inst/e`');
+    expect(first.files['SKILL.md']).toContain('Those are GoogleSQL statements.');
+    expect(second.files['SKILL.md']).toContain('The store uses PostgreSQL.');
   });
 });
 

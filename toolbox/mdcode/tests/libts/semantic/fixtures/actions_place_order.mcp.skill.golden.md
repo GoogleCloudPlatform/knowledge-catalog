@@ -49,12 +49,9 @@ Everything above is true of this model wherever it is deployed. This section is 
 
 - Store: `p/i/d`
 - Executor: `mcp`
+- `PlaceOrder` (`place_order`): MCP tool `place_order` on `//agentregistry.googleapis.com/projects/acme-ops/locations/us-central1/mcpServers/commerce`
 
-No action in this model can be run under this profile:
-
-- `PlaceOrder` -- Action 'PlaceOrder' is executed by MCP. Declare the action with a 'sql' executor.
-
-Report that rather than retrying.
+An agent that runs continuously should be handed these actions as tools by its own framework, which puts the action's guards to a judge before opening a transaction, and refuses rather than writing unchecked when it cannot settle one the model requires.
 
 ## What happens when you call one
 

@@ -1055,9 +1055,9 @@ Two sections in `SKILL.md` come from the generator itself:
   generated in full, and `SKILL.md` lists the action with the reason why:
   1. The profile supplies no executor (none declared, or withdrawn with
      `executor: null`).
-  2. The executor is `mcp`, `rest`, or `grpc` rather than a `sql` transaction.
-  3. The profile binds no operational store (`spanner` or `alloydb`).
-  4. The action names a non-advisory guard that is undeclared in `constraints`
+  2. The executor is `sql` and the profile binds no operational store (`spanner`
+     or `alloydb`).
+  3. The action names a non-advisory guard that is undeclared in `constraints`
      or has an empty `judgment`.
 
 For all `kcmd skills-generate` flags (`--out`, `--name`, `--profile`, `--force`)

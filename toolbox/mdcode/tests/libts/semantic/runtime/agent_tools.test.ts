@@ -5,7 +5,6 @@ import {describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import * as spanner from '../../../../src/libts/gcp/spanner';
 import {Action, Constraint, Entity, SemanticModel} from '../../../../src/libts/semantic/ir';
 import {loadModels} from '../../../../src/libts/semantic/loader';
 import {actionTools, modelTools, readableEntities} from '../../../../src/libts/semantic/runtime/agent_tools';
@@ -13,10 +12,10 @@ import {dialectFor} from '../../../../src/libts/semantic/runtime/dialect';
 import {SemanticRuntime} from '../../../../src/libts/semantic/runtime/runtime';
 
 const FIXTURES = path.join(__dirname, '..', 'fixtures');
-const NO_CLIENT = {} as any;
 
 function rt(
-    model: SemanticModel, client: unknown = NO_CLIENT): SemanticRuntime {
+    model: SemanticModel,
+    over: Partial<SemanticRuntime> = {}): SemanticRuntime {
   return {
     model,
     document: 'test',
@@ -26,10 +25,10 @@ function rt(
       project: 'p',
       instance: 'i',
       database: 'd',
-      client: client as spanner.SpannerDataClient,
     },
     profile: 'default',
     entryGroup: 'eg',
+    ...over,
   };
 }
 
@@ -61,24 +60,6 @@ describe('action tools', () => {
     expect(tools).toHaveLength(1);
     expect(tools[0].name).toBe('place_order');
     expect(tools[0].actionName).toBe('PlaceOrder');
-  });
-
-  test('the description carries what the action says it does', () => {
-    const action = model.actions![0];
-    expect(action.description).toBeTruthy();
-    expect(tools[0].description).toContain(action.description!.trim());
-  });
-
-  test('the description carries the guidance for AI callers', () => {
-    const instructions = model.actions![0].aiContext?.instructions;
-    expect(instructions).toBeTruthy();
-    expect(tools[0].description).toContain(instructions!.trim());
-  });
-
-  test('the description names the rules that gate the call', () => {
-    for (const guard of model.actions![0].guards ?? []) {
-      expect(tools[0].description).toContain(guard);
-    }
   });
 
   test(
@@ -150,16 +131,6 @@ describe('action tools', () => {
 
         expect(byName['memo'].required).toBe(false);
       });
-
-  test('the tool description includes the gating constraint rule text', () => {
-    expect(tools[0].description)
-        .toContain(
-            'OrderWithinCustomerCredit: The resulting ' +
-            'orders.o_totalprice must not exceed the credit this customer ' +
-            'has on record. That figure is not stated in the arguments, so ' +
-            'read it before answering. An order cannot exceed the credit on ' +
-            'record for this customer.');
-  });
 });
 
 
@@ -175,14 +146,21 @@ describe('what counts as runnable under a profile', () => {
     const [tool] = actionTools({runtime: rt(withExecutor(model, RUNNABLE))});
     expect(tool.runnable).toBe(true);
     expect(tool.unavailable).toBeUndefined();
-    expect(tool.description).not.toContain('will not work');
   });
 
-  test('a remote executor is not runnable directly', () => {
-    const [tool] = actionTools({runtime: rt(model)});
+  test('a remote executor (MCP, REST, gRPC) is runnable even without a store',
+       () => {
+         const [tool] =
+             actionTools({runtime: rt(model, {store: undefined})});
+         expect(tool.runnable).toBe(true);
+         expect(tool.unavailable).toBeUndefined();
+       });
+
+  test('a sql executor without an operational store is not runnable', () => {
+    const [tool] = actionTools(
+        {runtime: rt(withExecutor(model, RUNNABLE), {store: undefined})});
     expect(tool.runnable).toBe(false);
-    expect(tool.unavailable).toContain('MCP');
-    expect(tool.unavailable).toContain('Declare the action with a \'sql\'');
+    expect(tool.unavailable).toContain('no store');
   });
 
   test('an action with no executor blames the binding, not the action', () => {
@@ -192,13 +170,6 @@ describe('what counts as runnable under a profile', () => {
     expect(tool.unavailable).toContain('no executor');
     expect(tool.unavailable).toContain('somewhere else');
   });
-
-  test(
-      'the reason reaches the description, where a caller will read it', () => {
-        const [tool] = actionTools({runtime: rt(model)});
-        expect(tool.description).toContain('will not work');
-        expect(tool.description).toContain('Report that rather than retrying');
-      });
 
   test('a guard that only warns does not withhold the tool', () => {
     const advisory: Constraint = {
@@ -292,38 +263,8 @@ describe('the shape of an entity key withholds no tool', () => {
 });
 
 
-describe('what a tool says it is gated by', () => {
+describe('parameter formatting', () => {
   const model = loadFixtureModel('actions_place_order.yaml');
-
-  test('an advisory guard is not announced as a gate', () => {
-    const advisory: Constraint = {
-      name: 'AmountIsLarge',
-      judgment: 'A quantity over 1000 should be called out.',
-      onViolation: 'warn',
-    };
-    const base = withExecutor(model, {...RUNNABLE, guards: ['AmountIsLarge']});
-    const [tool] =
-        actionTools({runtime: rt({...base, constraints: [advisory]})});
-    expect(tool.runnable).toBe(true);
-    expect(tool.description).not.toContain('gated by');
-  });
-
-  test('a guard that does stop the call is', () => {
-    const blocking: Constraint = {
-      name: 'QuantityIsSane',
-      judgment: 'The quantity argument must be positive.',
-      description: 'Ask finance first.',
-      onViolation: 'reject',
-    };
-    const base = withExecutor(model, {...RUNNABLE, guards: ['QuantityIsSane']});
-    const [tool] =
-        actionTools({runtime: rt({...base, constraints: [blocking]})});
-    expect(tool.description).toContain('gated by QuantityIsSane');
-    expect(tool.description)
-        .toContain(
-            '- QuantityIsSane: The quantity argument must be positive. ' +
-            'Ask finance first.');
-  });
 
   test(
       'authored parameter descriptions normalize terminators and keep temporal format guidance',

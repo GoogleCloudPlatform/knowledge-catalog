@@ -24,17 +24,12 @@ import {loadSemanticModels} from '../loader';
 import {resolveInheritance} from '../resolve_inheritance';
 import {DEFAULT_PROFILE, mergeProfileOntoDoc} from '../resolve_profiles';
 
-import {DataClient, dataClientFor, resolveStore, Store} from './store';
+import {operationalStoreError, resolveStore, Store} from './store';
 
 
 /**
  * A semantic model made operational: the model as authored under one binding
  * profile, and the store it runs against.
- *
- * The pair is the unit every caller works in. A model alone says what things
- * mean; a store alone is a database with no idea what its tables are for.
- * `runAction` and the agent tool derivations all take one of these, so no
- * caller can pair a model with a store from a different profile by accident.
  */
 export interface SemanticRuntime {
   model: SemanticModel;
@@ -55,25 +50,16 @@ export interface SemanticRuntime {
 
 
 /**
- * The client a runtime can run statements on, or why it has none.
- * Two different answers collapse into one question here -- the profile binds
- * no store at all, or binds one this path cannot execute against -- and each
- * sends the reader somewhere different, so each keeps its own wording.
- *
- * Which database is behind it is not part of the answer. A caller asks a
- * runtime for a client and runs statements on it; whether those reach Spanner
- * or AlloyDB was settled by the binding profile, upstream of everything here.
+ * Why this runtime's store cannot execute SQL DML statements, or null when the
+ * profile binds an operational store (Spanner or AlloyDB).
  */
-export function runtimeClient(runtime: SemanticRuntime): DataClient|
-    {error: string} {
+export function runtimeStoreError(runtime: SemanticRuntime): string|null {
   if (!runtime.store) {
-    return {
-      error: runtime.storeError ??
-          `Model '${runtime.model.name}' has no store under profile '${
-              runtime.profile}'.`,
-    };
+    return runtime.storeError ??
+        `Model '${runtime.model.name}' has no store under profile '${
+            runtime.profile}'.`;
   }
-  return dataClientFor(runtime.store);
+  return operationalStoreError(runtime.store);
 }
 
 
@@ -168,12 +154,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   for (const {document, model: authored} of loaded.models) {
     const resolved = resolveInheritance(authored);
     for (const w of resolved.warnings) warn(`Warning: ${w}`);
-    // Resolving the store opens no connection -- a Spanner client is a base
-    // URL and a database path until something calls it, and an AlloyDB client
-    // holds off on its address lookup and its pool for the same reason -- so
-    // every runtime can carry its store, and a caller reads `store` rather
-    // than repeating the lookup and the three ways it fails.
-    const store = resolveStore(resolved.model, ctx);
+    const store = resolveStore(resolved.model);
     runtimes.push({
       model: resolved.model,
       document,

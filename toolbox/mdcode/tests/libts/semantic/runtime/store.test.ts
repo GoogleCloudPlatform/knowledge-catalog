@@ -12,7 +12,7 @@ import {describe, expect, test} from 'bun:test';
 
 import {SemanticModel} from '../../../../src/libts/semantic/ir';
 import {loadModels} from '../../../../src/libts/semantic/loader';
-import {dataClientFor, resolveStore} from '../../../../src/libts/semantic/runtime/store';
+import {operationalStoreError, resolveStore} from '../../../../src/libts/semantic/runtime/store';
 
 const DB = '//spanner.googleapis.com/projects/p/instances/i/databases/d';
 const DATASET = '//bigquery.googleapis.com/projects/p/datasets/s';
@@ -49,13 +49,9 @@ describe('where a model says it lives', () => {
     expect(store.instance).toBe('i');
     expect(store.database).toBe('d');
     expect(store.name).toBe('projects/p/instances/i/databases/d');
-    expect(store.client.database).toBe('projects/p/instances/i/databases/d');
+    expect(operationalStoreError(store)).toBeNull();
   });
 
-  // A dataset is somewhere the model's data really is, so it resolves. What
-  // it is not is somewhere an action can write, and saying that at the point
-  // a caller asks for a client keeps "no store" and "not this kind of store"
-  // as the two different answers they are.
   test('a BigQuery target is a store, and not one an action can write to',
        () => {
          const store = resolveStore(bound(
@@ -64,16 +60,12 @@ describe('where a model says it lives', () => {
          expect(store.kind).toBe('bigquery');
          expect(store.name).toBe('projects/p/datasets/s');
 
-         const client = dataClientFor(store);
-         expect('error' in client).toBe(true);
-         if (!('error' in client)) return;
-         expect(client.error).toContain('projects/p/datasets/s');
-         expect(client.error).toContain('Spanner');
+         const err = operationalStoreError(store);
+         expect(err).not.toBeNull();
+         expect(err!).toContain('projects/p/datasets/s');
+         expect(err!).toContain('Spanner');
        });
 
-  // The same three questions asked of the other operational backend. That they
-  // have the same answers is the claim the cross-database demo rests on: a
-  // model says where it lives, and AlloyDB is one of the places it can say.
   test('an AlloyDB target is a store, down to the database', () => {
     const store = resolveStore(bound(PG, `${PG}/tables/customer`));
     if ('error' in store) throw new Error(store.error);
@@ -86,11 +78,7 @@ describe('where a model says it lives', () => {
     expect(store.database).toBe('d');
     expect(store.name).toBe(
         'projects/p/locations/us-central1/clusters/c/instances/i/databases/d');
-    expect(store.client.database).toBe(store.name);
-
-    // And unlike BigQuery, it hands back a client rather than a reason.
-    const client = dataClientFor(store);
-    expect('error' in client).toBe(false);
+    expect(operationalStoreError(store)).toBeNull();
   });
 
   // An AlloyDB target names a DATABASE, not a graph, because AlloyDB has no

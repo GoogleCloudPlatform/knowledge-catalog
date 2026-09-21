@@ -384,35 +384,31 @@ function readSideSection(
     out.push(`  --sql='SELECT ...'`);
     out.push('```');
     out.push('');
+  }
+  if (runtime.store) {
     out.push(...readableSchema(runtime));
   }
   return out;
 }
 
 
-// The tables that snippet can name, listed rather than left to be discovered.
+// The tables a SELECT can name, listed rather than left to be discovered.
 //
-// Without this an agent given `--sql='SELECT ...'` knows there is a store and
-// nothing about its shape, so it spends its first turns querying
-// INFORMATION_SCHEMA -- which it did, twice, before reading a row. The model
-// already holds the answer: the binding profile says which table each entity
-// is and which column each field is, and `readableEntities` derives both from
-// the profile.
-//
-// Both names appear, and which is which is spelled out rather than implied.
-// The rest of the skill is written in the model's names and a statement has to
-// contain the store's, so an agent reading this has to cross between them --
-// and `customer_id is Customer.customerId` does not say which side goes in the
-// SQL. Given exactly that, an agent wrote `o.customerId`, got a name-not-found
-// error, and fell back to INFORMATION_SCHEMA anyway. So the column is labelled
-// `column` and the sentence above says the quoted name is the one to write.
+// Without this an agent knows there is a store and nothing about its shape, so
+// it spends its first turns querying INFORMATION_SCHEMA. The model already
+// holds the answer: the binding profile says which table each entity is and
+// which column each field is, and `readableEntities` derives both from the
+// profile in the store's SQL dialect (GoogleSQL or PostgreSQL).
 function readableSchema(runtime: SemanticRuntime): string[] {
   const dialect = dialectFor(runtime.store);
   const readable = readableEntities(runtime, dialect);
   if (!readable.length) return [];
   const out: string[] = [];
+  const lead = runtime.store?.kind === 'spanner' ?
+      `Those are ${dialect.name} statements.` :
+      `The store uses ${dialect.name}.`;
   out.push(
-      `Those are ${dialect.name} statements. These tables are the whole of ` +
+      `${lead} These tables are the whole of ` +
       'what there is to read, and the names to write in a statement are the ' +
       'table and column names below -- not the model\'s own names, which ' +
       'follow each column for cross-reference:');
@@ -421,10 +417,6 @@ function readableSchema(runtime: SemanticRuntime): string[] {
   for (const {entity, table, fields} of readable) {
     out.push(`${entity.name} -> table ${table}`);
     for (const field of fields) {
-      // The field's own description carries what a coded column's values are
-      // -- `item, tax, fee, or credit` -- and an agent that has to guess them
-      // filters on a value the column never holds and gets an empty answer
-      // back, which reads like the record not existing.
       const says = field.description?.trim();
       out.push(`  column ${dialect.quote(field.column)} (${field.type}) = ${
           entity.name}.${field.name}${
@@ -461,6 +453,20 @@ function runningSection(
   const kinds = distinctKinds(runtime.model.actions ?? []);
   if (kinds.length) {
     out.push(`- Executor: ${kinds.map(k => `\`${k}\``).join(', ')}`);
+  }
+  for (const tool of actions.filter(t => t.runnable)) {
+    const ex = actionFor(tool, runtime.model)?.executor;
+    if (!ex) continue;
+    if (ex.kind === 'mcp') {
+      out.push(`- \`${tool.actionName}\` (\`${tool.name}\`): MCP tool \`${
+          ex.mcp.tool}\` on \`${ex.mcp.server}\``);
+    } else if (ex.kind === 'rest') {
+      out.push(`- \`${tool.actionName}\` (\`${tool.name}\`): HTTP \`${
+          ex.rest.method}\` \`${ex.rest.endpoint}\``);
+    } else if (ex.kind === 'grpc') {
+      out.push(`- \`${tool.actionName}\` (\`${tool.name}\`): gRPC \`${
+          ex.grpc.service}/${ex.grpc.method}\``);
+    }
   }
   out.push('');
 

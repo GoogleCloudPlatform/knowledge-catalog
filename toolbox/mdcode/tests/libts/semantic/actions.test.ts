@@ -185,6 +185,58 @@ describe('loader parses actions', () => {
         .toThrow(/states 'field' without 'concept'/);
   });
 
+  test('dotted `field: Concept.field` shorthand projects the field and defaults name', () => {
+    const {models, warnings} = withActions([{
+      name: 'A',
+      parameters: [
+        {field: 'customer.id'},
+        {name: 'payee', field: 'customer.id', description: 'Recipient account.'},
+      ],
+    }]);
+    expect(warnings).toEqual([]);
+    expect(models[0].actions![0].parameters).toEqual([
+      {
+        name: 'id',
+        type: 'Integer',
+        concept: 'customer',
+        field: 'id',
+        description: 'The account number.',
+      },
+      {
+        name: 'payee',
+        type: 'Integer',
+        concept: 'customer',
+        field: 'id',
+        description: 'Recipient account.',
+      },
+    ]);
+    expect(
+        () => withActions([{
+          name: 'A',
+          parameters: [{concept: 'customer', field: 'customer.id'}],
+        }]))
+        .toThrow(/already contains a concept prefix/);
+  });
+
+  test('`datatype` is accepted as an alias for `type` on standalone parameters', () => {
+    const {models, warnings} = withActions([{
+      name: 'A',
+      parameters: [{name: 'amount', datatype: 'Float', description: 'How much.'}],
+    }]);
+    expect(warnings).toEqual([]);
+    expect(models[0].actions![0].parameters[0]).toEqual({
+      name: 'amount',
+      type: 'Float',
+      description: 'How much.',
+    });
+    expect(
+        () => withActions([{
+          name: 'A',
+          parameters: [{name: 'amount', type: 'Float', datatype: 'Float'}],
+        }]))
+        .toThrow(/both 'type' and 'datatype'/);
+  });
+
   test('an unknown concept and an unknown field read differently', () => {
     const unknownConcept = withActions([{
       name: 'A',
