@@ -3,9 +3,10 @@
 A semantic model says what a business is, what may be done to it, and under what
 rules. In this codelab you'll take one, generate an
 [Agent Skill](https://agentskills.io) from it with a single command, and hand
-that skill to a 300-line Python agent that knows nothing else. Then you'll watch
-the agent read the store, refuse two requests, apply two more, and report a
-warning on one of those — none of which is written in the agent.
+that skill to a 300-line Python agent that knows nothing else — and 110 of those
+lines are the two database clients. Then you'll watch the agent read the store,
+refuse two requests, apply two more, and report a warning on one of those — none
+of which is written in the agent.
 
 Then you'll point the same model at a second database, regenerate, and run the
 same agent unchanged.
@@ -395,8 +396,10 @@ And each rule, with its consequence spelled out rather than left as a keyword:
 
 Now open `agent/agent.py` and notice what is *not* in it. No table name. No
 column. No credit, no order, no ceiling, no memo rule. It reads the skill
-directory into a system prompt, offers one tool — `execute_sql(sql, params)` —
-and loops. Everything the agent is about to appear to know, it's about to read.
+directory into a system prompt, hands the SDK one Python function —
+`execute_sql(sql, params)` — and sends the request. The SDK runs the calling
+loop, which is why there isn't one here. Everything the agent is about to appear
+to know, it's about to read.
 
 ## 7. Run it
 
@@ -427,16 +430,31 @@ settled by a language model, and that is what step 10 is about.
   }
 ]
 
-A credit of 4.50 exceeds the order's total of 3.00. A credit cannot exceed the
-total of the order it credits. Lower the credit amount, or split it across the
-orders it actually covers.
+  [sql] SELECT total FROM Orders WHERE order_id = @order_id
+  [params] {"order_id": 12346}
+  [result] 1 row(s).
+[
+  {
+    "total": "3"
+  }
+]
+
+A credit of $4.50 on an order with a total of $3.00 is more than the order is
+worth. A credit cannot exceed the total of the order it credits. Lower the
+credit amount, or split it across the orders it actually covers.
 ```
 
 This is `CreditWithinOrderTotal`, and it's the rule that justifies writing rules
 as prose. The judgment says the total is on record and to go read it, so the
-agent did — one `SELECT`, against the view named in the skill's schema map — and
+agent did — a `SELECT` against the view named in the skill's schema map — and
 then refused in the constraint's own words, which is why the refusal reads like
 the business wrote it. Nothing was written.
+
+It read the same row twice, which is worth noticing rather than tidying away.
+Each guard is settled on its own, two of them want the order's total, and
+nothing tells the agent that the answer it got for one is still good for the
+other. That's the shape of the cost: rules written as prose are read by a model,
+one at a time, and a model re-reads.
 
 ### A request that must not be performed at all
 
@@ -450,10 +468,9 @@ the business wrote it. Nothing was written.
 ```
 > We owe Morgan Ellis 20 dollars on order 12345 for the late delivery. Put through the first 10 now and I will raise the other half next week.
 
-A credit of 10 dollars on order 12345 would be one part of a larger, 20-dollar
-credit. A credit must be for the whole amount owed, not split into pieces to
-stay under the 25-dollar self-service ceiling. Raise this as a single credit for
-the full amount and send it for supervisor review.
+I cannot apply that credit. The credit requested is part of a larger amount, and
+a credit must be the whole of what an order is owed. Raise this as a single
+credit for the full amount and send it for supervisor review.
 ```
 
 `CreditIsNotSplitToAvoidReview`, caught from the request itself, with no tool
@@ -489,11 +506,11 @@ look up.
 ]
 
   [sql] INSERT INTO LineItem (line_item_id, order_id, type, amount, memo) VALUES (GENERATE_UUID(), @order, 'credit', -@amount, @memo)
-  [params] {"order": 12345, "amount": "4.50", "memo": "Credit for shipping charged in error."}
+  [params] {"order": 12345, "amount": 4.50, "memo": "shipping charge applied in error"}
   [result] 1 row(s) changed.
 
-I have credited order 12345 for 4.50, the shipping charge that was applied in
-error. The credit has been applied to the order as a new line item.
+I have credited order 12345 for $4.50 to refund the shipping charge that was
+applied in error.
 ```
 
 Three calls, and their order is the point. The agent read the fee line to find
@@ -532,13 +549,11 @@ statement's verb.
 ]
 
   [sql] INSERT INTO LineItem (line_item_id, order_id, type, amount, memo) VALUES (GENERATE_UUID(), @order, 'credit', -@amount, @memo)
-  [params] {"order": 12345, "amount": "5.0", "memo": "as a goodwill gesture, she asked nicely"}
+  [params] {"order": 12345, "amount": 5.0, "memo": "Goodwill gesture."}
   [result] 1 row(s) changed.
 
-I have issued a $5 credit to order 12345. This action was applied with a
-warning: the memo 'as a goodwill gesture, she asked nicely' does not name a
-specific service failure. In the future, please provide a specific reason for
-the credit in the memo.
+I have issued a credit of $5.00 to order 12345. This was applied with a warning:
+the memo "Goodwill gesture." does not name a specific service failure.
 ```
 
 `CreditMemoNamesAServiceFailure` is `warn`, so the write goes through and the
@@ -567,8 +582,8 @@ total  type    amount  memo
 40.36  item    42      Cast-iron skillet, 10 inch
 40.36  fee     4.5     Standard shipping
 40.36  tax     3.36    State sales tax
-40.36  credit  -4.5    Credit for shipping charged in error.
-40.36  credit  -5      as a goodwill gesture, she asked nicely
+40.36  credit  -4.5    shipping charge applied in error
+40.36  credit  -5      Goodwill gesture.
 ```
 
 Two credits, two refusals, and a total that's the sum of five lines because it
@@ -670,11 +685,11 @@ Model: gemini-2.5-pro (global)
 ]
 
   [sql] INSERT INTO `my-project.semantic_skill_demo.line_item` (line_item_id, order_id, type, amount, memo) VALUES (GENERATE_UUID(), @order, 'credit', -@amount, @memo)
-  [params] {"order": 12345, "amount": "4.50", "memo": "Credit for shipping charged in error"}
+  [params] {"order": 12345, "amount": 4.5, "memo": "Credit for shipping charge applied in error"}
   [result] 1 row(s) changed.
 
-Done. I have credited order 12345 for $4.50 to cover the shipping charge, with
-the memo "Credit for shipping charged in error".
+I have credited order 12345 for 4.50, for the shipping charge that was applied
+in error.
 ```
 
 Different tables, different statements, same behaviour. The only thing that
@@ -736,8 +751,8 @@ Then ask for another $4.50 — the amount that went through in step 7:
   }
 ]
 
-I cannot apply a credit of $4.50 to order 12345. A credit of more than $4.00 is
-above the self-service ceiling and has to be approved by a supervisor.
+A credit of $4.50 is over the $4 self-service ceiling for this desk. A
+supervisor must approve it.
 ```
 
 Same amount, opposite ending, and no write. No line of `agent/agent.py` changed
@@ -747,11 +762,11 @@ back before you move on.
 
 It's a fresh reason rather than the shipping request run again, and the reason
 why is worth seeing for itself. Re-running the identical shipping request at
-this point got a different refusal on our run — *"That order has already been
-credited for shipping. The credit was for $4.50, with the memo 'Credit for
-shipping charged in error.'"* — because the agent looked and found the credit
-step 7 had landed. That is the store answering, not the ceiling, and it would
-have hidden the change you just made.
+this point ends somewhere else — on our run the agent listed the order's lines,
+found the credit step 7 had landed, and answered *"I have examined order 12345
+and found that the $4.50 shipping charge has already been credited."* That is
+the store answering, not the ceiling, and it would have hidden the change you
+just made.
 
 ## 10. What this does and doesn't get you
 

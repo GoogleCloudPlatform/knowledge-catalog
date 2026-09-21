@@ -1,46 +1,13 @@
 #!/usr/bin/env python3
 """An agent that knows nothing except how to load a skill and run SQL.
 
-This file is the demo's whole client side. It has no idea what a semantic
-model is, what an action is, what a guard is, or that binding profiles exist.
-It does two things:
-
-  1. Reads a generated skill directory -- `SKILL.md` and every page under
-     `references/` -- and puts the bytes in the system prompt, unedited.
-  2. Offers exactly one tool, `execute_sql`, which sends one statement to one
-     database and returns what came back.
-
-Everything else the agent appears to know -- which tables to read, which
-statement performs a credit, that a credit over $25 needs a supervisor, that a
-memo has to name what went wrong -- it knows because the skill said so. Point
-it at a skill generated from a different model and it is a different agent,
-with no edit to this file. That is the claim the demo exists to make, and the
-reason to keep this file boring.
-
-The two things it adds to the skill are marked in the code below: a short
-preamble naming the tool the skill cannot know the name of, and the plumbing
-that turns a JSON argument into a typed query parameter. Both are properties of
-this harness rather than of the business, which is why they are here and not in
-the model.
-
-What this deliberately does NOT do is enforce anything. There is one general
-`execute_sql` tool, so nothing in this process stops the model sending a
-statement the model never declared. The skill does not make a bad write
-impossible; it makes it impossible for the agent to say it did not know the
-rules. An agent you want held to the rules mechanically needs a narrower tool
-than this one -- one per action, with the statement fixed on the server side --
-and that is a different demo.
-
-Usage:
-
-    python agent.py --skill ./skills/commerce \
-        --project my-project --instance my-instance --database semantic_skill_demo \
-        "Morgan Ellis was charged $4.50 shipping on order 12345 that should
-         have been free. Credit it."
-
-    python agent.py --skill ./skills/commerce --backend bigquery \
-        --project my-project --dataset semantic_skill_demo \
-        "..."
+It reads a generated skill directory into the system prompt, unedited, and
+offers one tool: `execute_sql`. There is no table name, no statement and no
+rule in this file -- everything it appears to know about commerce, it read.
+Point it at a skill generated from a different model and it is a different
+agent, with nothing here changed. Step 6 of the README makes that argument and
+step 10 says what it does not buy; steps 7 and 8 have the invocations, and
+`--help` has the flags.
 """
 
 import argparse
@@ -55,15 +22,11 @@ from google import genai
 from google.genai import types
 
 
-# The only thing this harness tells the model that the skill does not.
-#
-# A skill is written to be portable, so it can name a dialect and a store but
-# not the tool its holder will have -- it says "run a SELECT against it" and
-# shows a shell command as one way. This names the way that is actually
-# available here. It says nothing about commerce, credits or rules: those are
-# the skill's business, and repeating any of them here would quietly move the
-# model's own policy into this file, where the people who own the model cannot
-# see it.
+# The only thing this harness tells the model that the skill does not: the name
+# of the tool it has. A skill is portable, so it can name a dialect and a store
+# but not the tooling its holder will have. Nothing about commerce belongs
+# here -- that would move the model's own policy into this file, where the
+# people who own the model cannot see it.
 HARNESS_PREAMBLE = """\
 You have one tool, `execute_sql`, which runs a single SQL statement against the
 store the skill below describes and returns the result. Use it wherever the
@@ -84,96 +47,75 @@ Everything after this line is the skill. Follow it.
 
 
 def load_skill(root: pathlib.Path) -> str:
-    """The skill as one string: SKILL.md, then every reference page.
+    """SKILL.md and every reference page, as one string.
 
-    A real Agent Skills runtime is lazier than this. It reads the frontmatter
-    at startup, the body when the skill is chosen, and a reference page only
-    when the agent opens it -- which is the point of splitting them. This reads
-    everything up front, because for a model with one action the whole skill is
-    a couple of pages, and a loader that fetched on demand would be the most
-    interesting code in a file whose job is to be uninteresting.
-
-    Each part is announced by the path the skill refers to it by, so a
-    cross-reference in SKILL.md like `references/issue-credit.md` lands on
-    something the model can see it has.
+    A real Agent Skills runtime reads a reference page only when the agent
+    opens it, which is the point of splitting them. This reads everything up
+    front: for a model with one action the whole skill is a couple of pages,
+    and a loader that fetched on demand would be the most interesting code in
+    a file whose job is to be uninteresting.
     """
     skill_md = root / 'SKILL.md'
     if not skill_md.is_file():
         sys.exit(f'{root} has no SKILL.md -- is that a generated skill '
                  f'directory? Run `kcmd skills-generate` first.')
+    # Each part is announced by the path the skill refers to it by, so a
+    # cross-reference like `references/issue-credit.md` lands on something the
+    # model can see it has.
     parts = [f'--- {skill_md.name} ---\n\n{skill_md.read_text()}']
     for page in sorted((root / 'references').glob('*.md')):
-        rel = page.relative_to(root)
-        parts.append(f'--- {rel} ---\n\n{page.read_text()}')
+        parts.append(f'--- {page.relative_to(root)} ---\n\n{page.read_text()}')
     return '\n\n'.join(parts)
 
 
-# ---------------------------------------------------------------------------
-# The stores. Each one runs a statement and says what happened, in words.
+# --- The stores. Each runs one statement and says what happened, in words. ---
 #
-# These differ only in client library. Neither knows what it is running: the
-# statement arrives as text from the model, which got it from the skill, which
-# got it from the binding profile. That chain is the demo -- a table name
-# appearing in this file would break it.
-# ---------------------------------------------------------------------------
+# Neither knows what it is running: the statement arrives as text from the
+# model, which got it from the skill, which got it from the binding profile.
+# That chain is the demo -- a table name in this file would break it.
 
+# GoogleSQL type names, which Spanner and BigQuery spell the same way.
+SQL_TYPES = {bool: 'BOOL', int: 'INT64', float: 'FLOAT64',
+             decimal.Decimal: 'NUMERIC', str: 'STRING'}
 
-# Leading comments and opening parentheses, which a model puts in front of a
-# statement often enough to matter: Spanner rejects a SELECT sent down the DML
-# path, so `-- read the total\nSELECT ...` misrouted is a failed read rather
-# than a harmless one.
-_SQL_PREAMBLE = re.compile(r"""
-    \s* (?:
-      --[^\n]*\n        # -- line comment
-    | \#[^\n]*\n        # GoogleSQL takes # as well
-    | /\*.*?\*/         # /* block comment */
-    | \(                 # a parenthesized query
-    )""", re.VERBOSE | re.DOTALL)
+# Leading comments and an opening parenthesis, which a model puts in front of
+# a statement often enough to matter: Spanner rejects a SELECT sent down the
+# DML path, so `-- read the total\nSELECT ...` misrouted is a failed read
+# rather than a harmless one. Every branch consumes a character, so the loop
+# below ends.
+_PREAMBLE = re.compile(r'\s*(?:--[^\n]*\n|\#[^\n]*\n|/\*.*?\*/|\()', re.DOTALL)
 
 
 def _is_read(sql):
     """Whether to send this as a query or as a write.
 
-    Crude on purpose: it is a dispatch decision inside one client, not a
-    security boundary. Nothing here is deciding whether a write is allowed.
+    Crude on purpose: a dispatch decision inside one client, not a security
+    boundary. Nothing here is deciding whether a write is allowed.
     """
-    head = sql
-    while True:
-        stripped = _SQL_PREAMBLE.match(head)
-        if not stripped or not stripped.end():
-            break
-        head = head[stripped.end():]
-    head = head.lstrip().lower()
-    return head.startswith('select') or head.startswith('with')
+    while skipped := _PREAMBLE.match(sql):
+        sql = sql[skipped.end():]
+    return sql.lstrip().lower().startswith(('select', 'with'))
 
 
 class SpannerStore:
     """Cloud Spanner, in the GoogleSQL dialect."""
 
     def __init__(self, project, instance, database):
-        # Read before the client library is imported. Its built-in metrics
+        # Set before the client library is imported. Its built-in metrics
         # exporter writes to Cloud Monitoring on shutdown and, from a
         # workstation, usually fails -- printing a screenful of unrelated
         # error after the agent's answer. Nothing in the demo needs it.
         os.environ.setdefault('SPANNER_DISABLE_BUILTIN_METRICS', 'true')
         from google.cloud import spanner
         self.database = (spanner.Client(project=project)
-                         .instance(instance)
-                         .database(database))
+                         .instance(instance).database(database))
         self.describe = f'Spanner {project}/{instance}/{database}'
 
     def run(self, sql, params):
         from google.cloud.spanner_v1 import param_types
-        kinds = {
-            bool: param_types.BOOL,
-            int: param_types.INT64,
-            float: param_types.FLOAT64,
-            decimal.Decimal: param_types.NUMERIC,
-            str: param_types.STRING,
-        }
-        typed = {k: kinds.get(type(v), param_types.STRING)
-                 for k, v in params.items()}
-        bind = {'params': params, 'param_types': typed} if params else {}
+        bind = {'params': params, 'param_types': {
+            k: getattr(param_types, SQL_TYPES.get(type(v), 'STRING'))
+            for k, v in params.items()}} if params else {}
         if _is_read(sql):
             with self.database.snapshot() as snapshot:
                 results = snapshot.execute_sql(sql, **bind)
@@ -194,9 +136,8 @@ class BigQueryStore:
 
     No default dataset is set, so every table a statement names has to be
     fully qualified -- which is exactly the condition the `bigquery` binding
-    profile writes its statements under, and the reason they look the way they
-    do. Setting one here would make statements work in the agent that fail the
-    pre-flight `kcmd push` runs.
+    profile writes its statements under. Setting one here would make
+    statements work in the agent that fail the pre-flight `kcmd push` runs.
     """
 
     def __init__(self, project, dataset):
@@ -207,126 +148,104 @@ class BigQueryStore:
 
     def run(self, sql, params):
         bq = self.bigquery
-        kinds = {
-            bool: 'BOOL',
-            int: 'INT64',
-            float: 'FLOAT64',
-            decimal.Decimal: 'NUMERIC',
-            str: 'STRING',
-        }
         job = self.client.query(sql, job_config=bq.QueryJobConfig(
             query_parameters=[
-                bq.ScalarQueryParameter(k, kinds.get(type(v), 'STRING'), v)
-                for k, v in params.items()
-            ]))
+                bq.ScalarQueryParameter(k, SQL_TYPES.get(type(v), 'STRING'), v)
+                for k, v in params.items()]))
         results = job.result()
         if job.num_dml_affected_rows is not None:
             return f'{job.num_dml_affected_rows} row(s) changed.'
-        names = [f.name for f in results.schema]
-        return _render_rows(names, [tuple(r.values()) for r in results])
+        return _render_rows([f.name for f in results.schema],
+                            [tuple(r.values()) for r in results])
 
 
 MAX_ROWS = 50
 
 
 def _render_rows(names, rows):
-    """Rows as JSON the model can read, with a stated cap.
+    """Rows as JSON the model can read, with the cap announced not silent.
 
-    The cap is announced rather than silent. A model shown 50 of 900 line
-    items and told nothing will answer about the order as though it had seen
-    all of them.
+    A model shown 50 of 900 line items and told nothing will answer about the
+    order as though it had seen all of them. `default=str` catches the types
+    JSON has no spelling for, which here means a NUMERIC: as a string it
+    reaches the model with the digits the database holds rather than the
+    nearest binary float to them.
     """
     if not rows:
         return '0 rows.'
-    shown = rows[:MAX_ROWS]
-    body = json.dumps(
-        [dict(zip(names, (_jsonable(v) for v in row))) for row in shown],
-        indent=2)
-    if len(rows) > MAX_ROWS:
-        return (f'{len(rows)} rows, first {MAX_ROWS} shown. Narrow the query '
-                f'if you need the rest.\n{body}')
-    return f'{len(rows)} row(s).\n{body}'
+    body = json.dumps([dict(zip(names, row)) for row in rows[:MAX_ROWS]],
+                      indent=2, default=str)
+    capped = (f', first {MAX_ROWS} shown -- narrow the query for the rest'
+              if len(rows) > MAX_ROWS else '')
+    return f'{len(rows)} row(s){capped}.\n{body}'
 
 
-def _jsonable(value):
-    if isinstance(value, decimal.Decimal):
-        # As a string, so a money value reaches the model with the digits it
-        # has in the database rather than the nearest binary float to them.
-        return str(value)
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return str(value)
+def sql_tool(store):
+    """The one tool the agent gets, closed over the store it runs against.
 
-
-# ---------------------------------------------------------------------------
-# The tool, and the loop.
-# ---------------------------------------------------------------------------
-
-
-EXECUTE_SQL = types.FunctionDeclaration(
-    name='execute_sql',
-    description=(
-        'Run one SQL statement against the store and return the result. A '
-        'SELECT returns its rows. An INSERT, UPDATE or DELETE returns the '
-        'number of rows it changed -- read that number, because a statement '
-        'that matched nothing changes zero rows and does not fail.'),
-    parameters=types.Schema(
-        type='OBJECT',
-        properties={
-            'sql': types.Schema(
-                type='STRING',
-                description=('One statement, in the dialect the skill names. '
-                             'No trailing semicolon. Refer to values as named '
-                             'parameters, @like_this.')),
-            'params': types.Schema(
-                type='STRING',
-                description=('A JSON object giving a value for every named '
-                             'parameter in `sql`, e.g. {"order": 12345, '
-                             '"amount": 4.50}. Omit when there are none.')),
-        },
-        required=['sql'],
-    ),
-)
-
-
-def call_tool(store, args):
-    """Run one `execute_sql` call and return what to tell the model.
-
-    An error comes back as text rather than as an exception, because a
-    rejected statement is something the agent should read and act on -- the
-    codelab leans on this when a column name is wrong.
+    The SDK turns the inner function into the declaration the model sees, so
+    its docstring is prompt text, not commentary.
     """
-    sql = (args.get('sql') or '').strip().rstrip(';')
-    if not sql:
-        return 'Error: no statement given.'
-    try:
-        # `parse_float=Decimal` is the whole of this harness's opinion about
-        # money: a JSON `4.50` becomes Decimal('4.50') and reaches the database
-        # as the NUMERIC it is, rather than as the nearest double to it.
-        params = json.loads(args.get('params') or '{}',
-                            parse_float=decimal.Decimal)
-    except json.JSONDecodeError as err:
-        return f'Error: `params` is not valid JSON: {err}'
-    if not isinstance(params, dict):
-        return 'Error: `params` must be a JSON object of name to value.'
-    # Everything the agent sends is echoed, because watching it is the demo.
-    # A parameter prints as the type it will be bound as, so that a number
-    # sent as a string -- which is how an identifier comparison silently
-    # matches nothing -- is visible here rather than only in the row count.
-    print(f'\n  [sql] {sql}')
-    if params:
-        printable = {k: _jsonable(v) for k, v in params.items()}
-        print(f'  [params] {json.dumps(printable)}')
-    try:
-        out = store.run(sql, params)
-    except Exception as err:  # noqa: BLE001 -- the model is the error handler.
-        out = f'Error: {type(err).__name__}: {err}'
-    shown = out if len(out) <= 400 else f'{out.splitlines()[0]} [...]'
-    print(f'  [result] {shown}\n')
-    return out
+
+    def execute_sql(sql: str, params: str = '{}') -> str:
+        """Run one SQL statement against the store and return the result.
+
+        A SELECT returns its rows. An INSERT, UPDATE or DELETE returns the
+        number of rows it changed -- read that number, because a statement
+        that matched nothing changes zero rows and does not fail.
+
+        Args:
+          sql: One statement, in the dialect the skill names. No trailing
+            semicolon. Refer to values as named parameters, @like_this.
+          params: A JSON object giving a value for every named parameter in
+            `sql`, e.g. {"order": 12345, "amount": 4.50}. Omit when there are
+            none.
+        """
+        statement = sql.strip().rstrip(';')
+        if not statement:
+            return 'Error: no statement given.'
+        try:
+            # `parse_float=Decimal` is the whole of this harness's opinion
+            # about money: a JSON `4.50` becomes Decimal('4.50') and reaches
+            # the database as the NUMERIC it is, rather than as the nearest
+            # double to it.
+            bound = json.loads(params or '{}', parse_float=decimal.Decimal)
+        except json.JSONDecodeError as err:
+            return f'Error: `params` is not valid JSON: {err}'
+        if not isinstance(bound, dict):
+            return 'Error: `params` must be a JSON object of name to value.'
+        try:
+            return store.run(statement, bound)
+        except Exception as err:  # noqa: BLE001 -- the model is the handler.
+            # Returned as text rather than raised, because a rejected
+            # statement is something the agent should read and act on -- the
+            # codelab leans on this when a column name is wrong. Raising here
+            # would end the run instead of giving it back to the model.
+            return f'Error: {type(err).__name__}: {err}'
+
+    return execute_sql
 
 
-MAX_TURNS = 12
+def print_transcript(history):
+    """The run in order: what the agent said, what it sent, what came back.
+
+    Echoed exactly as the model sent it, so a number sent as a string -- which
+    is how an identifier comparison silently matches nothing -- is visible
+    here and not only in the row count.
+    """
+    for content in history[1:]:  # [0] is the request, already printed.
+        for part in content.parts or []:
+            if part.text and part.text.strip():
+                print(f'\n{part.text.strip()}')
+            if part.function_call:
+                args = part.function_call.args or {}
+                print(f'\n  [sql] {args.get("sql", "")}')
+                if args.get('params', '{}') != '{}':
+                    print(f'  [params] {args["params"]}')
+            if part.function_response:
+                out = str((part.function_response.response or {}).get('result'))
+                print('  [result] ' + (out if len(out) <= 400 else
+                                       f'{out.splitlines()[0]} [...]'))
 
 
 def main():
@@ -361,53 +280,27 @@ def main():
     print(f'Model: {args.model} ({args.location})')
     print(f'\n> {args.request}')
 
-    client = genai.Client(vertexai=True, project=args.project,
-                          location=args.location)
-    config = types.GenerateContentConfig(
-        system_instruction=HARNESS_PREAMBLE + '\n' + skill,
-        tools=[types.Tool(function_declarations=[EXECUTE_SQL])],
-        temperature=0,
-    )
-    contents = [types.Content(role='user',
-                              parts=[types.Part(text=args.request)])]
-
-    for _ in range(MAX_TURNS):
-        response = client.models.generate_content(
-            model=args.model, contents=contents, config=config)
-        # A prompt the safety filter blocks comes back with no candidates at
-        # all, so this is checked before the subscript rather than after it:
-        # an IndexError here would report a bug in this file for what is
-        # really an answer from the service.
-        if not response.candidates:
-            print('\nThe model returned nothing, and no candidate to say why. '
-                  f'Prompt feedback: {response.prompt_feedback}.')
-            return 1
-        candidate = response.candidates[0]
-        if not candidate.content or not candidate.content.parts:
-            print('\nThe model returned nothing. '
-                  f'Finish reason: {candidate.finish_reason}.')
-            return 1
-        contents.append(candidate.content)
-        calls = [p.function_call for p in candidate.content.parts
-                 if p.function_call]
-        if not calls:
-            print(f'\n{(response.text or "").strip()}')
-            return 0
-        # Text alongside a tool call is the model narrating what it is about
-        # to do. Worth showing: in this demo it is where the agent says which
-        # rule it is checking, and how it read the rule.
-        for part in candidate.content.parts:
-            if part.text and part.text.strip():
-                print(f'\n{part.text.strip()}')
-        contents.append(types.Content(role='user', parts=[
-            types.Part.from_function_response(
-                name=call.name,
-                response={'result': call_tool(store, dict(call.args or {}))})
-            for call in calls
-        ]))
-
-    print(f'\nStopped after {MAX_TURNS} turns without a final answer.')
-    return 1
+    # The SDK runs the tool loop: it sends the request, calls `execute_sql`
+    # when the model asks for it, feeds the result back, and returns when the
+    # model stops calling. That loop is the part of an agent that is the same
+    # everywhere, which is why it is not written out here.
+    chat = genai.Client(vertexai=True, project=args.project,
+                        location=args.location).chats.create(
+        model=args.model,
+        config=types.GenerateContentConfig(
+            system_instruction=HARNESS_PREAMBLE + '\n' + skill,
+            tools=[sql_tool(store)],
+            temperature=0,
+        ))
+    response = chat.send_message(args.request)
+    print_transcript(chat.get_history(curated=False))
+    if not response.candidates:
+        # A prompt the safety filter blocks comes back with no candidate at
+        # all, which is an answer from the service rather than a bug here.
+        print('\nThe model returned nothing, and no candidate to say why. '
+              f'Prompt feedback: {response.prompt_feedback}.')
+        return 1
+    return 0
 
 
 if __name__ == '__main__':
