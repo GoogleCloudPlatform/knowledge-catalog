@@ -87,9 +87,11 @@ step 4). Examples, written from a doc at `tables/<this_table>.md`:
 
 Rules:
 
-- Use file-relative paths only. Never start a link with `/` (that breaks
-  GitHub rendering), and don't use bare filenames that aren't actual
-  siblings.
+- Use file-relative paths only, and don't use bare filenames that aren't
+  actual siblings. SPEC §6.1 also permits bundle-absolute links (starting
+  with `/`); this agent emits the relative form because these bundles are
+  browsed on GitHub, where a leading `/` resolves against the repository
+  root rather than the bundle root.
 - Only link to ids returned by `list_concepts()`. Do not invent link targets.
 - One link per concept mention per section is enough. Do not over-link.
 - Do not link from headers, fenced code blocks, or schema field-name listings.
