@@ -8,10 +8,12 @@ from urllib.parse import urlparse
 
 from reference_agent.agent import DEFAULT_MODEL
 from reference_agent.bundle.paths import parse_concept_id
+from reference_agent.providers import known_models
 from reference_agent.runner import ReferenceRunner
 from reference_agent.sources.bigquery import BigQuerySource
 
 _SOURCES = ("bq",)
+KNOWN_MINIMAX_MODELS = known_models()
 
 
 def _build_source(name: str, args: argparse.Namespace):
@@ -86,7 +88,13 @@ def _parser() -> argparse.ArgumentParser:
     enrich.add_argument(
         "--model",
         default=DEFAULT_MODEL,
-        help=f"Gemini model id (default: {DEFAULT_MODEL}).",
+        help=(
+            f"Model id (default: {DEFAULT_MODEL}). A Gemini id runs on Gemini; "
+            f"a MiniMax id ({', '.join(KNOWN_MINIMAX_MODELS)}) runs on MiniMax "
+            "via its chat-completions endpoint. Set MINIMAX_API_KEY and, to "
+            "target the China endpoint, KC_MINIMAX_REGION=cn_zh "
+            "(default global_en)."
+        ),
     )
     enrich.add_argument(
         "--web-seed",
