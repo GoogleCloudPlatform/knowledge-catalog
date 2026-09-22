@@ -995,22 +995,21 @@ anything else that reads the Agent Skills layout — is a better host for this
 skill than `agent.py` is. `agent.py` exists to make it obvious how little the
 host has to know, which is why it's worth reading once and not worth extending.
 
-**`execute_sql` is hand-written, and that's the part worth questioning.** ADK
-ships Spanner and BigQuery toolsets, and MCP Toolbox for Databases ships tools
-for both as well; any of them would supply this tool for free. Three things
-ruled them out here, each checked against the shipped code rather than the
-docs. ADK's Spanner toolset runs every statement inside `database.snapshot()`,
-so it can't issue the `INSERT` this whole page is about. None of the generic
-tools — ADK's two, Toolbox's `spanner-execute-sql` and `bigquery-execute-sql` —
-takes query parameters, so the values would have to be spliced into the
-statement text by the model, which is the one thing the skill tells it not to
-do. And none of them reports how many rows a write changed, which step 7 leans
-on: a statement keyed to an order that isn't there changes nothing and doesn't
-fail. Toolbox's `spanner-sql` does bind parameters and does write, but only for
-statements declared ahead of time in its own YAML — which takes SQL out of the
-model's hands, and step 8's portability argument with it. That's a reasonable
-trade for production and the wrong one for a page about what the model can read
-and write on its own.
+**`execute_sql` is hand-written, and that's the part worth questioning.** Plenty
+of tools would supply it instead — ADK ships Spanner and BigQuery toolsets, MCP
+Toolbox for Databases ships a SQL tool per store, and Google runs managed MCP
+endpoints in front of both databases. What this page needs from one of them is
+narrower than it looks: bind the statement's parameters, report how many rows a
+write changed, and cap what a read hands back. Step 7 turns on the second and
+step 8 on all three behaving the same way against either store.
+
+Which tools meet that is a moving target — it moved twice while this page was
+being written — so it isn't worth recording here, and it's a question you can
+settle in a minute for whichever tool you're holding. Ask it for its schema: an
+MCP server answers `tools/list` with the arguments each tool takes, and a
+parameters argument next to the statement argument is the one to look for. If
+it isn't there, the values can only reach the store inside the statement text,
+which is what the skill tells the model not to do.
 
 **Two backends were run, not three.** Spanner and BigQuery in this codelab, live.
 AlloyDB is generated and not executed.

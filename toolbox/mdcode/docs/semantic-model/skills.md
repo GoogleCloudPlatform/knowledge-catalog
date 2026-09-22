@@ -431,25 +431,25 @@ diff -r /tmp/spanner-skills/commerce/references \
 -  --sql='SELECT ...'
 -```
 -
--Those are GoogleSQL statements. These are the whole of what there is to read, and the names to write in a statement are the names below -- not the model's own names, which follow each column for cross-reference:
+-Those are GoogleSQL statements. These are the whole of what there is to read. On every line below, the name to write in a statement is to the left of the `=`, and the model's own name for the same thing follows it for cross-reference:
 +To read the store directly, run a `SELECT` against it. This skill supplies no canned CLI command for AlloyDB; if a shell is what you have, connect to `my-project/us-central1/my-cluster/my-instance/semantic_skill_demo` via `psql` or the AlloyDB Auth Proxy.
 +
-+Write PostgreSQL statements. These are the whole of what there is to read, and the names to write in a statement are the names below -- not the model's own names, which follow each column for cross-reference:
++Write PostgreSQL statements. These are the whole of what there is to read. On every line below, the name to write in a statement is to the left of the `=`, and the model's own name for the same thing follows it for cross-reference:
  
  ```
--Customer -> Customer
+-Customer = Customer
 -  column customer_id (Integer) = Customer.customerId
-+Customer -> "customer"
++"customer" = Customer
 +  column "customer_id" (Integer) = Customer.customerId
  ...
--Order -> Orders
-+Order -> "purchase_order"
+-Orders = Order
++"purchase_order" = Order
  ...
 -  column total (Decimal) = Order.total. What the customer owes on this order, in dollars.
 +  column "order_total" (Decimal) = Order.total. What the customer owes on this order, in dollars.
  ...
--LineItem -> LineItem
-+LineItem -> "order_line"
+-LineItem = LineItem
++"order_line" = LineItem
  ...
  ```
  
@@ -461,9 +461,9 @@ diff -r /tmp/spanner-skills/commerce/references \
 -- Store: `my-project/my-instance/semantic_skill_demo`
 +- Store: `alloydb:my-project/us-central1/my-cluster/my-instance/semantic_skill_demo`
  - Executor: `sql`
-@@ ... @@
--To perform one of these, run its GoogleSQL below against that store with the call's arguments bound to the named parameters. ...
-+To perform one of these, run its PostgreSQL below against that store with the call's arguments bound to the named parameters. ...
+ 
+-To perform one of these, run its GoogleSQL below against that store. Its named parameters are the call's arguments, ...
++To perform one of these, run its PostgreSQL below against that store. Its named parameters are the call's arguments, ...
  
  ### IssueCredit
  

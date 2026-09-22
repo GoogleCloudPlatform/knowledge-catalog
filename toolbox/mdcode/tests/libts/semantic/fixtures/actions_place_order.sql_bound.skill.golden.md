@@ -50,7 +50,7 @@ Everything above is true of this model wherever it is deployed. This section is 
 - Store: `p/i/d`
 - Executor: `sql`
 
-To perform one of these, run its GoogleSQL below against that store with the call's arguments bound to the named parameters. Run what is written and nothing else: this is what the model says the action is, and a statement composed instead of this one is a write nobody declared and no rule was written against.
+To perform one of these, run its GoogleSQL below against that store. Its named parameters are the call's arguments, and their values are the only part of it that is yours to supply. Run what is written and nothing else: this is what the model says the action is, and a statement composed instead of this one is a write nobody declared and no rule was written against.
 
 ### PlaceOrder
 

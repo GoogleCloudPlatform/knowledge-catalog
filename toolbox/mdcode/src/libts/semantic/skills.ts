@@ -632,12 +632,21 @@ function statementsSection(
   const dialect = dialectFor(runtime.store);
   const several = sqlActions.some(a => a.statements.length > 1);
   const out: string[] = [];
+  // What the parameters mean is said here; how to pass them is not. Which
+  // argument a tool takes values in, and whether it takes them separately at
+  // all, is that tool's contract and is documented by that tool -- a SQL tool
+  // that binds says so itself, and one that doesn't is not made to by a
+  // sentence here. Naming a mechanism this side of the boundary only puts an
+  // instruction in the skill that is false in front of half the tools it will
+  // meet. The invariant is the part that is the model's to state, and it
+  // holds however the values travel.
   out.push(
       `To perform one of these, run its ${dialect.name} below against that ` +
-      `store with the call's arguments bound to the named parameters. Run ` +
-      `what is written and nothing else: this is what the model says the ` +
-      `action is, and a statement composed instead of this one is a write ` +
-      `nobody declared and no rule was written against.`);
+      `store. Its named parameters are the call's arguments, and their ` +
+      `values are the only part of it that is yours to supply. Run what is ` +
+      `written and nothing else: this is what the model says the action is, ` +
+      `and a statement composed instead of this one is a write nobody ` +
+      `declared and no rule was written against.`);
   out.push('');
   if (several) {
     // Said only when it can arise. A list is ordered, and that is all it is:
