@@ -131,6 +131,21 @@ describe('a binding that disagrees with the target', () => {
              .toContain('projects/p/instances/i/databases/d');
        });
 
+  // The case a BigQuery skill's schema map depends on. Every name in that map
+  // is qualified with the store's project and dataset, which is only correct
+  // because an entity cannot be bound to a second dataset: if one could,
+  // every such name would point at a table the entity is not in.
+  test('an entity bound to another dataset of the same project is refused',
+       () => {
+         const store = resolveStore(bound(
+             `${DATASET}/propertyGraphs/g`,
+             '//bigquery.googleapis.com/projects/p/datasets/other/tables/Customer'));
+         expect('error' in store).toBe(true);
+         if (!('error' in store)) return;
+         expect(store.error).toContain("'Customer' to p.other.Customer");
+         expect(store.error).toContain('projects/p/datasets/s');
+       });
+
   test('an entity this profile binds to nothing is not a mis-binding', () => {
     // Declared and unbound is a model that has not been given a table yet.
     // The statements report that themselves, naming the table they could not

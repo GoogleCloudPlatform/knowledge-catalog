@@ -3,40 +3,38 @@
 # The business is a small ecommerce operation: customers, their orders, and the
 # lines that make up an order. One thing can be done to it -- credit a customer
 # against an order -- and the rules below say when that is allowed. The README
-# runs one request against it, the kind a support desk gets every day: a
-# customer was charged for shipping that should have been free.
+# runs four requests against it, the kind a support desk gets every day: a
+# customer was charged for shipping that should have been free, a refund is
+# larger than the order it is against, a credit has been split to duck review.
 #
 # Nothing here says where the data lives, what the columns are called, or what
 # SQL performs the write. Those are physical facts, and they are in
-# commerce.profiles/. There are two profiles -- spanner.yaml and alloydb.yaml --
-# pointing this one model at two different databases, with different table
-# names, a differently named column and a different SQL dialect between them.
-# This file is the same bytes under both, which is the claim the pair exists to
-# make.
+# commerce.profiles/. There are three profiles -- spanner.yaml, bigquery.yaml
+# and alloydb.yaml -- pointing this one model at three different databases, with
+# different table names, a differently named column and two SQL dialects between
+# them. This file is the same bytes under all three, which is the claim the set
+# exists to make.
 #
-# The policy is written in words. A constraint carries a `judgment`, a language
-# model settles it against the attempted call, and `IssueCredit` names the ones
-# that gate it in `guards` -- which is the only thing that gives a constraint
-# effect, since a rule takes effect where something references it.
+# The policy is written in words. A constraint carries a `judgment`, and
+# `IssueCredit` names the ones that gate it in `guards` -- which is the only
+# thing that gives a constraint effect, since a rule takes effect where
+# something references it. Who settles a judgment is not decided here: it is
+# whatever holds the generated skill. In this demo that is the agent itself,
+# which has a way to read the store, so a rule about a number on record is a
+# rule it can settle.
 #
-# One of the judgments compares the call against a row in the database, which
-# a judge can settle only if it can read the database. Running this demo
-# therefore takes a judge that has been given one -- a `store` on the judge the
-# agent hires. Giving a judge your tables belongs to whoever embeds the
-# runtime, so no kcmd flag offers it. No kcmd command line runs an action or
-# hires a judge, so the rules below are settled only by an application that
-# embeds the runtime.
-#
-# What this costs: every gate is a model call, and a model can answer two
+# What this costs: every gate is a judgment call, and a model can answer two
 # identical calls differently. Don't copy the `$25` ceiling below -- a threshold
 # over the call's own arguments belongs in whatever dispatches the call rather
-# than here, and it stays for the contrast with the rule above it, which has to
-# read the store, and because the README transcribes a live run against it.
+# than here. It stays for the contrast with the rule above it, which has to read
+# the store to be settled at all.
 #
-# One rule is missing entirely: that an order's total must equal the sum of its
-# line items is about the state the write LEAVES BEHIND, and a guard is settled
-# before the transaction opens, so no rule stated here reaches it. It belongs
-# in the schema.
+# One rule is NOT here, and its absence is deliberate: that an order's total
+# must equal the sum of its line items is about the state a write leaves behind,
+# and a guard is settled before the write, so no rule stated here could reach
+# it. It is in the schema instead -- an order's total is a view over its lines,
+# so it cannot disagree with them. That is also what lets IssueCredit be a
+# single statement: see commerce.profiles/spanner.yaml.
 
 version: "0.2.0.dev0/google"
 
@@ -125,7 +123,8 @@ semantic_model:
         description: >-
           Credit a customer against one order -- a late delivery, a coupon, a
           shipping charge applied in error. The credit is added as a negative
-          line and the order total is recomputed from the lines.
+          line on the order, and the order's total falls by that much because
+          a total is the sum of its lines.
         # `order` takes its type and its wording from Order.orderId, so the
         # number this call is about is defined once, in the entity, rather
         # than again here. `amount` and `memo` stand alone: they are about
@@ -138,11 +137,17 @@ semantic_model:
         # the SQL under each profile. Nothing here reaches a statement -- the
         # new row's key comes from the INSERT itself. A profile that cannot bind
         # one of these concepts drops the action from its push instead.
+        #
+        # One entry, because the call writes one row. The order's total moves
+        # when this runs, and Order is still not listed: the total is summed
+        # from the lines rather than stored, so nothing writes it. What
+        # `affects` declares is what the call WRITES, and a reader who wants to
+        # know what will look different afterwards is asking a larger question
+        # than this key answers.
         affects:
           - {concept: LineItem, operation: create, fields: [type, amount, memo]}
-          - {concept: Order, operation: modify, fields: [total]}
         # Which rules this call must pass, and the only place a constraint
-        # takes effect. Each one costs at least one model call, and the first
+        # takes effect. Each one costs at least one judgment, and the first
         # also costs a read, because it is about a number that is in the
         # database rather than in the call.
         guards:
@@ -160,17 +165,16 @@ semantic_model:
             total. A rule reads the memo, so a fact left out of it is a fact
             the rule cannot weigh.
 
-    # The rules, settled by a judge reading the attempted call and, where the
-    # rule is about something on record, the record. All four are what
-    # `IssueCredit` guards on, and they carry all three consequences: escalate,
-    # warn and reject.
+    # The rules, settled from the attempted call and, where the rule is about
+    # something on record, the record. All four are what `IssueCredit` guards
+    # on, and they carry all three consequences: escalate, warn and reject.
     constraints:
       - name: CreditWithinOrderTotal
         judgment: >-
           The credit amount requested must not exceed the total of the order
           it is applied to. The `order` argument of this call identifies that
           order, but the order's total is on record rather than stated in the
-          arguments, and nothing puts it in front of you. Read both as dollars.
+          arguments: read it before you decide. Read both as dollars.
         on_violation: escalate
         description: >-
           A credit cannot exceed the total of the order it credits. Lower the

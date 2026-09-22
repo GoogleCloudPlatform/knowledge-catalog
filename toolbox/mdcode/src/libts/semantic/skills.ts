@@ -29,10 +29,19 @@
  * a profile supplies. So every `references/` page is a fact about the model
  * and nothing else, and everything that reads the binding lives in `SKILL.md`:
  * the store, the executor kinds, which actions this deployment cannot run and
- * why, and the command line to try one with, all gathered under "Running an
- * action", plus the snippet under "Finding a record" that reads the store
+ * why, and the statements that perform each one, all gathered under "Running
+ * an action", plus the snippet under "Finding a record" that reads the store
  * directly, which needs the store's kind and its coordinates. Point this at a
  * different profile and those move and the reference pages do not.
+ *
+ * Emitting the statements is what makes the skill sufficient rather than
+ * merely informative. Nothing in this toolchain performs an action: kcmd has
+ * no runtime, and an agent holding this skill has whatever tools its harness
+ * gave it. If the skill described the action and withheld the SQL, an agent
+ * would compose its own -- a write nobody declared, against rules nobody
+ * checked. The statements are the largest thing in `SKILL.md` and a model with
+ * many actions may push the body over budget; `overBudget` says so, and that
+ * is the right trade to notice rather than the wrong one to avoid.
  *
  * Keeping that true takes some discipline: whether an action is RUNNABLE is a
  * binding fact wearing a logical name, and putting `tool.unavailable` on the
@@ -45,6 +54,7 @@ import {ActionTool, modelTools, readableEntities} from './runtime/agent_tools';
 import {dialectFor} from './runtime/dialect';
 import {SemanticRuntime} from './runtime/runtime';
 import {storeLine} from './runtime/store';
+import {leadingDmlVerb} from './sql_identifiers';
 
 /** One file of the generated package, at a path relative to the skill root. */
 export interface SkillFile {
@@ -223,10 +233,18 @@ function skillDocument(
   out.push('## What you can do here');
   out.push('');
   if (actions.length) {
+    // Worded as an obligation with a consequence rather than as advice. Under
+    // a runtime that loads a reference page on demand -- which is what an
+    // Agent Skills runtime is for -- the model decides whether to open it, and
+    // a polite `read the page first` gets skipped often enough to matter: the
+    // rules that gate an action live on that page and nowhere else, so a
+    // skipped read is a guarded write performed without its guards.
     out.push(
         'Each action below has a reference page with the arguments it takes, ' +
-        'the rules that gate it, and what it changes. Read the page for an ' +
-        'action before you call it.');
+        'the rules that gate it, and what it changes. Read an action\'s page ' +
+        'before every call to it: the rules that decide whether the call may ' +
+        'proceed are on that page and nowhere else, so calling without ' +
+        'reading it means writing under rules you have not read.');
     out.push('');
     out.push('| Action | What it does | Reference |');
     out.push('| --- | --- | --- |');
@@ -256,7 +274,7 @@ function skillDocument(
 
   out.push(...readSideSection(runtime, actions));
   out.push(...runningSection(runtime, actions));
-  out.push(...outcomeSection(actions));
+  out.push(...outcomeSection(runtime, actions));
 
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
 }
@@ -335,16 +353,70 @@ function truncate(text: string, max: number): string {
 
 // What a key that matches nothing costs, which is the question an agent has
 // once it is told to go and find one. Every argument is a scalar, so there is
-// no resolve step to get it wrong in: a wrong key reaches the statement. This
-// runtime performs the writes of a `sql` executor itself and refuses one that
-// reports no rows, rolling the transaction back; the kinds that hand the write
-// to another system cannot say what that system does, so they do not say it.
+// no resolve step to get it wrong in: a wrong key reaches the statement.
+//
+// And a statement is all it reaches. Nothing in this toolchain performs the
+// write, so nothing checks the row count on the agent's behalf and refuses.
+// What a wrong key then costs depends on the statement's verb, and the two
+// cases are opposites: an UPDATE or a DELETE keyed to nothing changes nothing
+// and says so in its row count, while an INSERT keyed to nothing lands a row
+// whose reference is dangling and reports that as a row written. Telling an
+// agent whose action inserts to read the row count would point it at the one
+// number that cannot answer the question, so the verb decides which of these
+// is said. The `sql` kind is the only one either can be said of, because the
+// kinds that hand the write to another system cannot say what that system
+// reports.
 const KEY_MATCHES_NOTHING =
-    ' A key that matches no record costs you the call rather than the data: ' +
-    'a statement that writes no rows fails the action and rolls the whole ' +
-    'transaction back, so nothing is half-applied and nothing is silently ' +
-    'skipped. Guessing a key is therefore safe to be wrong about, and not ' +
-    'safe to be right about by accident.';
+    ' A key that matches no record does not announce itself.';
+
+const KEY_MATCHES_NOTHING_UPDATE =
+    ' A statement that updates or deletes by key runs, matches nothing, ' +
+    'writes nothing, and comes back reporting zero rows rather than an ' +
+    'error. Read that count: a write that changed no rows did not happen, ' +
+    'however well the call went, and reporting it as done is a mistake ' +
+    'nothing else will catch.';
+
+const KEY_MATCHES_NOTHING_INSERT =
+    ' A statement that inserts is refused only where the store enforces that ' +
+    'key as a foreign key. Where it does not, the row lands, the call reports ' +
+    'a row written, and what the row refers to does not exist -- so read the ' +
+    'record a key names before you write against it, because no row count ' +
+    'will tell you afterwards.';
+
+/**
+ * What to say about a wrong key under this model, or nothing.
+ *
+ * Read from the leading verb of every statement a `sql` executor declares.
+ * validate.ts already refuses to publish a statement whose first word is not
+ * INSERT, UPDATE or DELETE, so an empty result here means the model binds no
+ * SQL statement rather than one that could not be read -- and a verb that
+ * cannot be read drops the sentence rather than guessing which half of it is
+ * true.
+ */
+function keyRiskSentence(runtime: SemanticRuntime): string {
+  const verbs = new Set<string>();
+  for (const action of runtime.model.actions ?? []) {
+    const executor = action.executor;
+    if (executor?.kind !== 'sql') continue;
+    for (const statement of executor.sql.statements) {
+      const verb = leadingDmlVerb(statement);
+      if (verb) verbs.add(verb);
+    }
+  }
+  const cases: string[] = [];
+  if (verbs.has('UPDATE') || verbs.has('DELETE')) {
+    cases.push(KEY_MATCHES_NOTHING_UPDATE);
+  }
+  if (verbs.has('INSERT')) cases.push(KEY_MATCHES_NOTHING_INSERT);
+  if (!cases.length) return '';
+  return KEY_MATCHES_NOTHING + cases.join('');
+}
+
+// How to read, said as a statement first and a command second. See the comment
+// at its use.
+const READ_WITH_SELECT =
+    'To read the store directly, run a `SELECT` against it. If a shell is ' +
+    'what you have:';
 
 // What this skill does not offer, said once rather than discovered per call.
 //
@@ -361,22 +433,25 @@ function readSideSection(
   const out: string[] = [];
   out.push('## Finding a record');
   out.push('');
-  // The last sentence is a promise about how a write fails, and only the
-  // `sql` kind is executed by this runtime and can be promised. It is dropped
-  // rather than the section with it: the instruction above still tells an
-  // agent never to invent an identifier, and saying where a key comes from is
-  // the answer to that whichever kind performs the write.
-  const performedHere =
-      distinctKinds(runtime.model.actions ?? []).includes('sql');
+  // The last sentences are a claim about how a write fails, and only a `sql`
+  // executor's statement is here to be read. They are dropped rather than the
+  // section with them: the instruction above still tells an agent never to
+  // invent an identifier, and saying where a key comes from is the answer to
+  // that whichever kind performs the write.
   out.push(
       'This skill offers writes, not reads. When you are given a name or a ' +
       'description where an action wants a key, the key has to come from ' +
       'somewhere else: ask the caller, or read the store directly.' +
-      (performedHere ? KEY_MATCHES_NOTHING : ''));
+      keyRiskSentence(runtime));
   out.push('');
+  // Reading is stated as a SELECT against the store, and the CLI below is one
+  // way to send it rather than the way. Whatever holds this skill may already
+  // have a way to run SQL, and a skill cannot know what it is called; a lead
+  // that goes straight to a shell command tells such a holder to shell out
+  // when it has a better tool in hand.
   if (runtime.store?.kind === 'spanner') {
     const s = runtime.store;
-    out.push('To read the store directly:');
+    out.push(READ_WITH_SELECT);
     out.push('');
     out.push('```bash');
     out.push(`gcloud spanner databases execute-sql ${s.database} \\`);
@@ -386,7 +461,7 @@ function readSideSection(
     out.push('');
   } else if (runtime.store?.kind === 'bigquery') {
     const s = runtime.store;
-    out.push('To read the store directly:');
+    out.push(READ_WITH_SELECT);
     out.push('');
     out.push('```bash');
     out.push(`bq query --use_legacy_sql=false --project_id=${
@@ -397,10 +472,11 @@ function readSideSection(
   } else if (runtime.store?.kind === 'alloydb') {
     const s = runtime.store;
     out.push(
-        `This skill supplies no canned CLI command for AlloyDB; connect to ` +
-        `\`${s.project}/${s.location}/${s.cluster}/${s.instance}/${
-            s.database}\` via \`psql\` or the AlloyDB Auth Proxy to run ` +
-        `\`SELECT\` queries.`);
+        `To read the store directly, run a \`SELECT\` against it. This skill ` +
+        `supplies no canned CLI command for AlloyDB; if a shell is what you ` +
+        `have, connect to \`${s.project}/${s.location}/${s.cluster}/${
+            s.instance}/${s.database}\` via \`psql\` or the AlloyDB Auth ` +
+        `Proxy.`);
     out.push('');
   }
   if (runtime.store) {
@@ -422,19 +498,30 @@ function readableSchema(runtime: SemanticRuntime): string[] {
   const readable = readableEntities(runtime, dialect);
   if (!readable.length) return [];
   const out: string[] = [];
-  const hasSnippet = runtime.store?.kind === 'spanner' ||
-      runtime.store?.kind === 'bigquery';
+  const hasSnippet =
+      runtime.store?.kind === 'spanner' || runtime.store?.kind === 'bigquery';
   const lead = hasSnippet ? `Those are ${dialect.name} statements.` :
                             `Write ${dialect.name} statements.`;
+  // "table" is not claimed of the source, only of the column. A profile binds
+  // an entity to whatever the store will answer a SELECT about, and a view is
+  // an ordinary choice -- a field the model describes as derived is a view
+  // column wherever it is honest about it. Calling one a table in the line an
+  // agent reads before writing a statement is a small lie for no gain.
+  // One rule for every line, stated once: write what is left of the `=`. The
+  // entity line used to read `Order -> Orders` while the column lines under it
+  // read `column order_id ... = Order.orderId` -- the name to write first on
+  // one line and second on the next, with nothing saying which. An agent
+  // reading the block top-down picked the wrong side of the arrow and sent
+  // `FROM `Order``, which is the model's name and not a table.
   out.push(
-      `${lead} These tables are the whole of ` +
-      'what there is to read, and the names to write in a statement are the ' +
-      'table and column names below -- not the model\'s own names, which ' +
-      'follow each column for cross-reference:');
+      `${lead} These are the whole of ` +
+      'what there is to read. On every line below, the name to write in a ' +
+      'statement is to the left of the `=`, and the model\'s own name for ' +
+      'the same thing follows it for cross-reference:');
   out.push('');
   out.push('```');
   for (const {entity, table, fields} of readable) {
-    out.push(`${entity.name} -> table ${table}`);
+    out.push(`${table} = ${entity.name}`);
     for (const field of fields) {
       const says = field.description?.trim();
       out.push(`  column ${dialect.quote(field.column)} (${field.type}) = ${
@@ -514,12 +601,79 @@ function runningSection(
     return out;
   }
 
+  out.push(...statementsSection(runtime, actions));
+  return out;
+}
+
+/**
+ * The SQL each runnable `sql` action is, verbatim from the binding profile.
+ *
+ * Without this the skill tells an agent what an action means and leaves it to
+ * invent the write, which is the failure this whole design is against: the
+ * statement a profile author wrote has been checked against the store at push
+ * time, and one an agent composes has not been checked by anybody.
+ *
+ * Verbatim matters. The statements are handed to the store as written --
+ * nothing translates the model's field names into the binding's the way a
+ * metric's expression is translated -- so what is printed here is what has to
+ * run. Only the parameter values are the caller's to supply.
+ */
+function statementsSection(
+    runtime: SemanticRuntime, actions: ActionTool[]): string[] {
+  const sqlActions: Array<{tool: ActionTool, statements: string[]}> = [];
+  for (const tool of actions.filter(t => t.runnable)) {
+    const ex = actionFor(tool, runtime.model)?.executor;
+    if (ex?.kind !== 'sql') continue;
+    const statements = ex.sql.statements.filter(s => s.trim());
+    if (statements.length) sqlActions.push({tool, statements});
+  }
+  if (!sqlActions.length) return [];
+
+  const dialect = dialectFor(runtime.store);
+  const several = sqlActions.some(a => a.statements.length > 1);
+  const out: string[] = [];
+  // What the parameters mean is said here; how to pass them is not. Which
+  // argument a tool takes values in, and whether it takes them separately at
+  // all, is that tool's contract and is documented by that tool -- a SQL tool
+  // that binds says so itself, and one that doesn't is not made to by a
+  // sentence here. Naming a mechanism this side of the boundary only puts an
+  // instruction in the skill that is false in front of half the tools it will
+  // meet. The invariant is the part that is the model's to state, and it
+  // holds however the values travel.
   out.push(
-      'An agent that runs continuously should be handed these actions as ' +
-      'tools by its own framework, which puts the action\'s guards to a ' +
-      'judge before opening a transaction, and refuses rather than writing ' +
-      'unchecked when it cannot settle one the model requires.');
+      `To perform one of these, run its ${dialect.name} below against that ` +
+      `store. Its named parameters are the call's arguments, and their ` +
+      `values are the only part of it that is yours to supply. Run what is ` +
+      `written and nothing else: this is what the model says the action is, ` +
+      `and a statement composed instead of this one is a write nobody ` +
+      `declared and no rule was written against.`);
   out.push('');
+  if (several) {
+    // Said only when it can arise. A list is ordered, and that is all it is:
+    // whether the backend commits several statements as one unit is the
+    // backend's and the caller's business, not something declaring them here
+    // arranged. An action that must be all-or-nothing is written as one
+    // statement -- see the actions guide.
+    out.push(
+        'Where an action lists more than one statement, run them in the ' +
+        'order given. Nothing here makes them one commit: if the store can ' +
+        'run them in a transaction, do that, and if a later one fails say ' +
+        'plainly which earlier ones already landed.');
+    out.push('');
+  }
+  for (const {tool, statements} of sqlActions) {
+    out.push(`### ${tool.actionName}`);
+    out.push('');
+    out.push('```sql');
+    // Exactly as authored, and no terminator added. What is in this block has
+    // to be what reaches the store: a semicolon appended for looks is a
+    // character the author did not write, and some clients refuse one.
+    // Statements are separated by a blank line rather than punctuation,
+    // because they are separate calls.
+    out.push(statements.map(s => s.trim()).join('\n\n'));
+    out.push('```');
+    out.push('');
+  }
   return out;
 }
 
@@ -531,30 +685,59 @@ function runningSection(
  * not about this model. An agent that treats a refusal as a retry, or a
  * warning as nothing, gets them wrong in the same way against every model.
  */
-function outcomeSection(actions: ActionTool[]): string[] {
+function outcomeSection(
+    runtime: SemanticRuntime, actions: ActionTool[]): string[] {
   if (!actions.length) return [];
+  // A row count is the `sql` kind's evidence and nobody else's. Where another
+  // system performs the write, what comes back is whatever that system chose
+  // to report, which may carry no count at all -- and asking an agent for a
+  // number it was never given gets an invented one.
+  const counted = distinctKinds(runtime.model.actions ?? []).includes('sql');
+  const applied = counted ?
+      '- **Applied.** The write landed. Say what changed, and say how many ' +
+          'rows changed.' :
+      '- **Applied.** The write landed. Say what changed, and say what the ' +
+          'system that performed it reported.';
+  const unsure = counted ? 'If you sent a statement and cannot tell whether ' +
+          'it landed' :
+                           'If you made the call and cannot tell whether it ' +
+          'landed';
   return [
-    '## What happens when you call one',
+    '## How a call ends',
     '',
-    'Every rule is settled before the write opens a transaction. So a ' +
-        'refusal leaves the store exactly as it was, and no rule ever sees ' +
-        'the write it gates. There is nothing to undo after a refusal.',
+    'Settle every rule that gates an action before you perform it, not ' +
+        'after. A rule settled afterwards is not a gate: the write has ' +
+        'landed and there is nothing left for the rule to prevent. Refusing ' +
+        'first is what makes a refusal cost nothing.',
     '',
-    'A call comes back in one of three states, and they are not two:',
+    'A call ends in one of these. Do not collapse them into worked and did ' +
+        'not work:',
     '',
-    '- **Applied.** The write landed. Say what changed.',
-    '- **Refused.** The write did not happen, and the reason says why. ' +
+    applied,
+    // The escalate sentence says what does *not* happen, because the gap it
+    // closes is one an agent fills in by itself. Told only that a person has
+    // to decide, a model reports the call as submitted for review -- "I have
+    // added the credit and it will be reviewed", with a projected new total,
+    // after issuing no statement at all. Nothing here queues anything: there
+    // is no pending state to be in, and a caller told their request is
+    // awaiting approval waits for an approval nobody will ever be asked for.
+    '- **Refused.** You did not perform the write, and the reason says why. ' +
         'Repeat the reason plainly. If it says a person has to decide, say ' +
         'so and stop -- you cannot approve it yourself, and rephrasing the ' +
-        'request to get past a rule is the one thing you must not do.',
-    '- **Unknown.** The statements ran and the commit could not report its ' +
-        'outcome. The write may or may not have landed. Do not retry: say ' +
-        'that the outcome is unknown and what to check.',
+        'request to get past a rule is the one thing you must not do. ' +
+        'Needing a decision does not record the request anywhere: nothing ' +
+        'is queued, nobody is notified, and no approval is pending. Say ' +
+        'that the change did not happen and what the caller must do to ' +
+        'have it made, and never report it as submitted or awaiting review.',
+    '- **Applied with warnings.** The change landed and an advisory rule ' +
+        'still went unmet. Report both. Reporting only the success tells the ' +
+        'caller the write met every rule the model states, which is the one ' +
+        'thing it did not.',
     '',
-    'A call can also come back applied **and** carry warnings. That means ' +
-        'the change landed and a rule still went unmet, or went unchecked. ' +
-        'Report both. Reporting only the success tells the caller the write ' +
-        'met every rule the model states, which is the one thing it did not.',
+    `${unsure}, that is a fourth thing and not a failure: say so, and say ` +
+        'what to read to find out. Do not try it again. A retry that succeeds ' +
+        'where the first attempt may also have succeeded leaves two of ' +
+        'whatever the caller asked for one of.',
     '',
   ];
 }
@@ -617,9 +800,14 @@ function referenceDocument(
   out.push('');
   if (tool.parameters.length) {
     const hasDefault = tool.parameters.some(p => p.default !== undefined);
-    out.push(`| Name | Type | Required |${
-        hasDefault ? ' Default |' : ''} What to pass |`);
-    out.push(`| --- | --- | --- |${hasDefault ? ' --- |' : ''} --- |`);
+    // Both extra columns are conditional, because a table with a column that
+    // is empty on every row costs width on a page an agent reads under a
+    // budget and says nothing.
+    const hasFrom = tool.parameters.some(p => p.from);
+    out.push(`| Name | Type | Required |${hasDefault ? ' Default |' : ''}${
+        hasFrom ? ' Identifies |' : ''} What to pass |`);
+    out.push(`| --- | --- | --- |${hasDefault ? ' --- |' : ''}${
+        hasFrom ? ' --- |' : ''} --- |`);
     for (const p of tool.parameters) {
       // Escaped like every other cell: a default is an arbitrary YAML value,
       // and a pipe in one shifts every column after it by one for the rest of
@@ -630,8 +818,16 @@ function referenceDocument(
                   '' :
                   `\`${cell(JSON.stringify(p.default))}\``} |` :
           '';
+      const from = hasFrom ? ` ${p.from ? `\`${cell(p.from)}\`` : ''} |` : '';
       out.push(`| \`${cell(p.name)}\` | ${cell(p.type ?? 'no type')} | ${
-          p.required ? 'yes' : 'no'} |${def} ${cell(p.description)} |`);
+          p.required ? 'yes' : 'no'} |${def}${from} ${cell(p.description)} |`);
+    }
+    if (hasFrom) {
+      out.push('');
+      out.push(
+          'An argument with something in **Identifies** is the key of a ' +
+          'record that has to exist already. Find it; do not invent it. ' +
+          '"Finding a record" in SKILL.md says where to look.');
     }
   } else {
     out.push('This action takes no arguments.');
@@ -680,7 +876,7 @@ function rulesSection(action: Action, model: SemanticModel): string[] {
     out.push(`### ${rule.name}${advisory ? ' (advisory)' : ''}`);
     out.push('');
     out.push(`On violation: \`${rule.onViolation ?? 'unspecified'}\`${
-        advisory ? ' -- this one reports and lets the write through.' : ''}`);
+        violationGloss(rule.onViolation)}`);
     out.push('');
     const judgment = rule.judgment?.trim();
     if (judgment) {
@@ -694,6 +890,30 @@ function rulesSection(action: Action, model: SemanticModel): string[] {
     }
   }
   return out;
+}
+
+// What each `on_violation` word asks of whoever is holding the skill.
+//
+// Glossed for all three, not just `warn`. `warn` was glossed alone because it
+// is the surprising one -- a rule that does not stop the call -- but the other
+// two are only self-evident to a reader who already knows the vocabulary, and
+// the reader this page is written for is a model deciding what to do next. The
+// difference between `escalate` and `reject` is the difference between
+// stopping and stopping permanently, and a page that leaves it to be inferred
+// gets an agent that offers to try again.
+function violationGloss(effect: string|undefined): string {
+  switch (effect) {
+    case 'warn':
+      return ' -- this one reports and lets the write through.';
+    case 'escalate':
+      return ' -- a call that does not satisfy it is for a person to decide. ' +
+          'Stop and say so; do not approve it yourself.';
+    case 'reject':
+      return ' -- a call that does not satisfy it must not be performed at ' +
+          'all. There is nobody to refer it to.';
+    default:
+      return '';
+  }
 }
 
 // What the call reaches, as the model declares it. Coarse on purpose where the

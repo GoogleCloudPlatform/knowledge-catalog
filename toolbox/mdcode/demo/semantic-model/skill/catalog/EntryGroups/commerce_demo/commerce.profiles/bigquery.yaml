@@ -1,0 +1,69 @@
+# The same commerce model, in BigQuery.
+#
+# Read this file beside commerce.profiles/spanner.yaml. The differences are a
+# deployment target, four snake_case names, and a statement that spells its
+# table out in full. Everything the business means is in commerce.yaml and is
+# untouched.
+#
+# What each difference is:
+#
+#   * The deployment target names a DATASET. BigQuery has property-graph DDL,
+#     so `kcmd push` deploys a graph here the way it does on Spanner, and
+#     `--validate-only` dry-runs the action's statement against this dataset
+#     before anything is published.
+#
+#   * The tables are `customer`, `order_header` and `line_item`, and what the
+#     model calls Order is the view `orders`. snake_case is what a warehouse
+#     schema usually looks like; the model does not know.
+#
+#   * The statement names `my-project.semantic_skill_demo.line_item` in full.
+#     BigQuery resolves an unqualified table against a default dataset, and a
+#     statement sent as a bare query -- which is what both the push-time dry
+#     run and an agent's execute-sql tool send -- has none. Spanner needs no
+#     such qualifier because the session already names the database. This is
+#     the kind of fact a binding profile exists to hold.
+#
+# If you are running against a different project or dataset, those names appear
+# in `deployment_target`, in each `source`, and in the statement.
+
+version: "0.2.0.dev0/google"
+
+semantic_model:
+  - name: commerce
+    deployment_target: //bigquery.googleapis.com/projects/my-project/datasets/semantic_skill_demo/propertyGraphs/commerce
+
+    entities:
+      - name: Customer
+        source: //bigquery.googleapis.com/projects/my-project/datasets/semantic_skill_demo/tables/customer
+        fields:
+          - {name: customerId, expression: customer_id}
+          - {name: name, expression: name}
+          - {name: email, expression: email}
+
+      - name: Order
+        source: //bigquery.googleapis.com/projects/my-project/datasets/semantic_skill_demo/tables/orders
+        fields:
+          - {name: orderId, expression: order_id}
+          - {name: customerId, expression: customer_id}
+          - {name: placedOn, expression: placed_on}
+          - {name: total, expression: total}
+          - {name: status, expression: status}
+
+      - name: LineItem
+        source: //bigquery.googleapis.com/projects/my-project/datasets/semantic_skill_demo/tables/line_item
+        fields:
+          - {name: lineItemId, expression: line_item_id}
+          - {name: orderId, expression: order_id}
+          - {name: type, expression: type}
+          - {name: amount, expression: amount}
+          - {name: memo, expression: memo}
+
+    actions:
+      - name: IssueCredit
+        executor:
+          sql:
+            statements:
+              - >-
+                INSERT INTO `my-project.semantic_skill_demo.line_item`
+                (line_item_id, order_id, type, amount, memo)
+                VALUES (GENERATE_UUID(), @order, 'credit', -@amount, @memo)
