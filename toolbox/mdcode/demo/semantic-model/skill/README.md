@@ -995,6 +995,23 @@ anything else that reads the Agent Skills layout — is a better host for this
 skill than `agent.py` is. `agent.py` exists to make it obvious how little the
 host has to know, which is why it's worth reading once and not worth extending.
 
+**`execute_sql` is hand-written, and that's the part worth questioning.** ADK
+ships Spanner and BigQuery toolsets, and MCP Toolbox for Databases ships tools
+for both as well; any of them would supply this tool for free. Three things
+ruled them out here, each checked against the shipped code rather than the
+docs. ADK's Spanner toolset runs every statement inside `database.snapshot()`,
+so it can't issue the `INSERT` this whole page is about. None of the generic
+tools — ADK's two, Toolbox's `spanner-execute-sql` and `bigquery-execute-sql` —
+takes query parameters, so the values would have to be spliced into the
+statement text by the model, which is the one thing the skill tells it not to
+do. And none of them reports how many rows a write changed, which step 7 leans
+on: a statement keyed to an order that isn't there changes nothing and doesn't
+fail. Toolbox's `spanner-sql` does bind parameters and does write, but only for
+statements declared ahead of time in its own YAML — which takes SQL out of the
+model's hands, and step 8's portability argument with it. That's a reasonable
+trade for production and the wrong one for a page about what the model can read
+and write on its own.
+
 **Two backends were run, not three.** Spanner and BigQuery in this codelab, live.
 AlloyDB is generated and not executed.
 
