@@ -119,13 +119,12 @@ describe('robustness', () => {
     expect(warnings.some(w => w.includes('cycle'))).toBe(true);
   });
 
-  test('an unknown parent is warned and excluded from the ancestor set', () => {
-    const {model: r, warnings} = resolveInheritance(model([
+  test('an unknown parent is a hard error', () => {
+    // A typo in `extends` must not silently drop inheritance: an emitter cannot
+    // label with a signature it does not have, so an unknown supertype throws.
+    expect(() => resolveInheritance(model([
       entity('Customer', ['id'], ['Ghost']),
-    ]));
-    expect(entityOf(r, 'Customer').extends).toBeUndefined();
-    expect(warnings.some(w => w.includes('unknown entity \'Ghost\'')))
-        .toBe(true);
+    ]))).toThrow(/extends unknown entity 'Ghost'/);
   });
 });
 

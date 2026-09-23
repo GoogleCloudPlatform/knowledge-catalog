@@ -52,12 +52,30 @@ function entryName(id: string, project = 'dest'): string {
   return `projects/${project}/locations/us/entryGroups/eg/entries/${id}`;
 }
 
-// The same loader-valid model, but its GOOGLE custom_extension carries invalid
-// JSON: the doc parses, yet the emitter (via bigQueryGraphTargets) throws while
-// building the semantic-model aspect. Surgically swap only the `data:` value so
-// the rest of the document stays valid.
-const MALFORMED_EXTENSION =
-    OSSIE.replace(/data: '[^\n]*'/, 'data: \'not valid json\'');
+// A loader-valid VANILLA (0.2.0.dev0) model whose model-level GOOGLE
+// custom_extension carries invalid JSON: the doc parses, yet the emitter (via
+// googleDeploymentTargets) throws while building the semantic-model aspect.
+// Under the extended profile the deployment target is a native key with no JSON
+// to corrupt, so the malformed-carrier case is a vanilla document (which is the
+// version that carries the target in a GOOGLE custom_extension at all).
+const MALFORMED_EXTENSION = `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: 'not valid json'
+    datasets:
+      - name: orders
+        source: demo.sales.orders
+        primary_key: [o_orderkey]
+        fields:
+          - { name: o_orderkey, expression: o_orderkey }
+          - { name: o_totalprice, expression: o_totalprice }
+    metrics:
+      - name: total_revenue
+        expression: SUM(orders.o_totalprice)
+`;
 
 // entryCreateTries: 1 keeps the propagation-retry loop from sleeping in tests.
 const OPTS = {
@@ -160,8 +178,8 @@ describe('deployKnowledgeCatalog: happy path', () => {
     expect(result.created).toBe(3);
     expect(result.updated).toBe(0);
 
-    // Push provisions neither the entry group (created at `init`) nor any type
-    // (the semantic types are built-in): it only writes the three entries.
+    // Push provisions neither the entry group nor any type -- both are created
+    // at `init` -- so it only writes the three entries.
     expect(group).not.toHaveBeenCalled();
     expect(create).toHaveBeenCalledTimes(3);
     expect(update).not.toHaveBeenCalled();
@@ -227,6 +245,38 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
     // UpdateEntryLink has no update mask, so a stale ['aspects'] mask would 400.
     const aspectKeys = updateLink.mock.calls[0][1] ?? [];
     expect(aspectKeys.some((k: string) => k.endsWith('schema-join'))).toBe(true);
+  });
+
+  test('an existing link whose update is not addressable still succeeds',
+       async () => {
+         // The link exists (409), but this catalog surface exposes only create
+         // + lookup for entry links, so the by-name aspect-refresh update comes
+         // back NOT_FOUND. The link is fully present; only the aspect refresh is
+         // unavailable, so the push must not fail on it.
+         const {createLink, updateLink} = stubClient({
+           createLink: () => err(409, 'entry link already exists'),
+           updateLink: err(404, 'entry link not found'),
+         });
+
+         const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+         expect(result.success).toBe(true);
+         expect(result.linked).toBe(1);
+         expect(createLink).toHaveBeenCalledTimes(1);
+         expect(updateLink).toHaveBeenCalledTimes(1);
+       });
+
+  test('a masked PERMISSION_DENIED on the link update also succeeds', async () => {
+    const {updateLink} = stubClient({
+      createLink: () => err(409, 'entry link already exists'),
+      updateLink: err(403, 'permission denied'),
+    });
+
+    const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(true);
+    expect(result.linked).toBe(1);
+    expect(updateLink).toHaveBeenCalledTimes(1);
   });
 
   test('a failed link write fails the push, naming the link', async () => {
@@ -338,15 +388,18 @@ describe('deployKnowledgeCatalog: delete reconciliation', () => {
   // entity 'sales.entities.orders', and the metric 'sales.metrics.total_revenue'.
   const EMITTED = ['sales', 'sales.entities.orders', 'sales.metrics.total_revenue'];
 
-  test('deletes entities/metrics removed from the model, scoped by owner', async () => {
-    // The group also holds two orphans owned by the 'sales' anchor (an entity
-    // and a metric no longer in the model) plus two entries owned by a
-    // different model. Only the two orphans under 'sales' must be deleted.
+  test('deletes entities/metrics/actions removed from the model, scoped by owner',
+       async () => {
+    // The group also holds three orphans owned by the 'sales' anchor (an
+    // entity, a metric and an action no longer in the model) plus two entries
+    // owned by a different model. Only the three orphans under 'sales' must be
+    // deleted.
     const {del, list} = stubClient({
       existing: [
         ...EMITTED,
         'sales.entities.removed',
         'sales.metrics.removed',
+        'sales.actions.Removed',
         'other',
         'other.entities.x',
       ],
@@ -355,10 +408,14 @@ describe('deployKnowledgeCatalog: delete reconciliation', () => {
     const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
     expect(result.success).toBe(true);
-    expect(result.deleted).toBe(2);
+    expect(result.deleted).toBe(3);
     expect(list).toHaveBeenCalledTimes(1);
     const deletedIds = del.mock.calls.map(c => c[3]).sort();
-    expect(deletedIds).toEqual(['sales.entities.removed', 'sales.metrics.removed']);
+    expect(deletedIds).toEqual([
+      'sales.actions.Removed',
+      'sales.entities.removed',
+      'sales.metrics.removed',
+    ]);
   });
 
   test('recognises owned entries when the server names the project by number',

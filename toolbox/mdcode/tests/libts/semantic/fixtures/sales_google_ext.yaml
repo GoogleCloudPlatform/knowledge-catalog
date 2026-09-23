@@ -7,15 +7,13 @@
 # is the fixture that exercises pickDialect's target-dialect-present path rather
 # than the ANSI_SQL fallback the other fixtures rely on.
 
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 
 semantic_model:
   - name: sales_typed
     description: Sales orders with typed fields and a deployment target
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["projects/demo/locations/us/entryGroups/@bigquery/entries/sales_graph"]}'
-    datasets:
+    deployment_target: projects/demo/locations/us/entryGroups/@bigquery/entries/sales_graph
+    entities:
       - name: orders
         source: demo.sales.orders
         primary_key: [o_orderkey]

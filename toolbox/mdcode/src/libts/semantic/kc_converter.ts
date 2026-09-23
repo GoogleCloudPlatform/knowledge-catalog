@@ -54,12 +54,35 @@
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
-import {AiContext, CustomExtension, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
+import {Action, AiContext, Constraint, CustomExtension, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
+import {isActionEntry, readAction} from './kc_actions';
+import {isConstraintEntry, readConstraint} from './kc_constraints';
 import {referencedEntityNames} from './sql_expr_utils';
 
 export interface ReadResult {
   models: SemanticModel[];
   warnings: string[];
+}
+
+// A guard naming a constraint this pull did not recover -- because its entry was
+// absent, or was skipped as unreadable. readAction keeps the name so the
+// author's model is not silently rewritten, which leaves the document one that
+// push will reject. Reporting it here puts the message on the command that
+// produced the document rather than on the next one.
+function warnDanglingGuards(
+    actions: Action[], constraints: Constraint[], modelName: string,
+    warnings: string[]): void {
+  if (!actions.length) return;
+  const recovered = new Set(constraints.map(c => c.name));
+  for (const action of actions) {
+    for (const guard of action.guards ?? []) {
+      if (recovered.has(guard)) continue;
+      warnings.push(
+          `model '${modelName}': action '${action.name}' is guarded by ` +
+          `'${guard}', but no constraint of that name was recovered; the ` +
+          `name is kept, and a push rejects it until the constraint is back`);
+    }
+  }
 }
 
 /**
@@ -84,6 +107,11 @@ export function modelsFromCatalogResources(
       entries.filter(e => semanticType(e) === 'semantic-entity');
   const metricEntries =
       entries.filter(e => semanticType(e) === 'semantic-metric');
+  // Actions have no built-in system type; `kc_actions.ts` owns the custom one
+  // and recognizes an entry carrying it. Constraints are the same, through
+  // `kc_constraints.ts`.
+  const actionEntries = entries.filter(isActionEntry);
+  const constraintEntries = entries.filter(isConstraintEntry);
 
   if (!anchors.length) {
     warnings.push('no semantic-model entry found; nothing to reconstruct');
@@ -127,6 +155,15 @@ export function modelsFromCatalogResources(
     const model: SemanticModel = {name, entities, relationships, metrics};
     const description = anchor.entrySource?.description;
     if (description !== undefined) model.description = description;
+    const actions = childrenOf(anchor.name, actionEntries)
+                        .map(e => readAction(e, warnings))
+                        .filter((a): a is Action => a !== undefined);
+    if (actions.length) model.actions = actions;
+    const constraints = childrenOf(anchor.name, constraintEntries)
+                            .map(e => readConstraint(e, warnings))
+                            .filter((c): c is Constraint => c !== undefined);
+    if (constraints.length) model.constraints = constraints;
+    warnDanglingGuards(actions, constraints, name, warnings);
     // Deployment targets ride back in the same GOOGLE custom_extensions block
     // the author wrote them in (the inverse of the emitter's modelAspectData).
     const targets = readDeploymentTargets(anchor);
@@ -139,7 +176,8 @@ export function modelsFromCatalogResources(
   // Flag children that resolved to no anchor at all (only possible with
   // multiple anchors, where the sole-anchor fallback does not apply).
   if (!soleAnchor) {
-    for (const child of [...entityEntries, ...metricEntries]) {
+    for (const child of [...entityEntries, ...metricEntries, ...actionEntries,
+                         ...constraintEntries]) {
       if (!child.parentEntry || !anchorNames.has(child.parentEntry)) {
         warnings.push(`entry '${
             child.name}' has no resolvable parent semantic-model; omitted`);
@@ -284,6 +322,7 @@ function readMetric(
   if (ai) metric.aiContext = ai;
   return metric;
 }
+
 
 
 // The inverse of columnDataType/columnMetadataType: maps the schema aspect's

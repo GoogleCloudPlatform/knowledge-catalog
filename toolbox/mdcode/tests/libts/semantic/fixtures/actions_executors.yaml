@@ -1,0 +1,90 @@
+# Test fixture -- AI-first semantics format (v0.2.0.dev0/google).
+#
+# Four actions covering every executor kind, so the Knowledge Catalog round
+# trip is exercised on each branch of the tagged union rather than on `mcp`
+# alone. It also covers the two shapes an action can be missing pieces in: one
+# with no parameters at all, and one with neither a description nor an
+# ai_context. `actions` is a native extension key, so this document declares the
+# extended profile.
+#
+# The `sql` kind is the odd one out and is here for that reason: the other three
+# publish two scalar coordinates, while this one publishes a list of statements,
+# so it is the only kind whose aspect field is repeated.
+
+version: "0.2.0.dev0/google"
+
+semantic_model:
+  - name: commerce
+    description: Orders and the write operations over them
+    entities:
+      - name: customer
+        source: samples.tpch.customer
+        primary_key: [c_custkey]
+        fields:
+          - name: c_custkey
+            datatype: Integer
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: c_custkey
+      - name: orders
+        source: samples.tpch.orders
+        primary_key: [o_orderkey]
+        fields:
+          - name: o_orderkey
+            datatype: Integer
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_orderkey
+    actions:
+      # MCP executor, a projected parameter, a standalone scalar, and
+      # instructions.
+      - name: PlaceOrder
+        description: Create an order for a customer
+        executor:
+          mcp:
+            server: //agentregistry.googleapis.com/x/mcpServers/commerce
+            tool: place_order
+        parameters:
+          - {name: buyer, concept: customer, field: c_custkey}
+          - {name: quantity, type: Integer}
+        ai_context:
+          instructions: "Resolve the buyer to a customer before calling."
+      # REST executor, no instructions, a standalone Decimal alongside a
+      # projected parameter.
+      - name: RefundOrder
+        description: Refund a placed order
+        executor:
+          rest:
+            endpoint: https://commerce.example.com/v1/refunds
+            method: POST
+        parameters:
+          - {name: order, concept: orders, field: o_orderkey}
+          - {name: amount, type: Decimal}
+      # gRPC executor with no parameters and no description: everything optional
+      # is absent.
+      - name: CloseBooks
+        executor:
+          grpc:
+            service: commerce.v1.Ledger
+            method: CloseBooks
+      # SQL executor: the write itself rather than a pointer to whoever performs
+      # it. Two statements exercise the ordered list and two of the three verbs,
+      # and the inserted row's key is written by the statement rather than bound
+      # as a parameter.
+      - name: ReplaceOrder
+        description: Supersede an order with a new one
+        executor:
+          sql:
+            statements:
+              - >-
+                INSERT INTO orders (o_orderkey, o_custkey)
+                VALUES (GENERATE_UUID(), @buyer)
+              - DELETE FROM orders WHERE o_orderkey = @supersedes
+        parameters:
+          - {name: buyer, concept: customer, field: c_custkey}
+          - {name: supersedes, type: Integer}
+        affects:
+          - {concept: orders, operation: create}
+          - {concept: orders, operation: delete}

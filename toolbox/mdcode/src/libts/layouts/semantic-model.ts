@@ -91,6 +91,35 @@ export class SemanticModelLayout implements CatalogLayout {
     return docs;
   }
 
+  // The binding-profile documents beside a model: `<model>.profiles/*.yaml`
+  // under the model's EntryGroup dir. Each is a partial `semantic_model`
+  // document carrying physical bindings that `--profile <name>` merges onto
+  // the logical model; `name` is the file basename (the profile name). The
+  // directory is not globbed for model documents (init's `*.yaml` glob does
+  // not descend), so a profile file is never mistaken for a model.
+  profilePaths(model: string): {name: string; path: string}[] {
+    if (!this._entryGroup) return [];
+    const dir = path.join(
+        this._catalogPath, 'EntryGroups', this._entryGroup,
+        `${model}.profiles`);
+    if (!fs.existsSync(dir)) return [];
+    const out: {name: string; path: string}[] = [];
+    for (const entry of fs.readdirSync(dir)) {
+      if (!entry.endsWith('.yaml')) continue;
+      if (SIDECAR_SUFFIXES.some(s => entry.endsWith(s))) continue;
+      out.push(
+          {name: path.basename(entry, '.yaml'), path: path.join(dir, entry)});
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  // The text of each profile document beside a model, keyed by profile name.
+  // This is the seam the push path merges onto the logical model document.
+  profileDocuments(model: string): {name: string; text: string}[] {
+    return this.profilePaths(model).map(
+        ({name, path: p}) => ({name, text: fs.readFileSync(p, 'utf8')}));
+  }
+
   // True when a model document with this handle already exists on disk. `pull`
   // uses it to report which files it would overwrite vs. create.
   hasModel(name: string): boolean {

@@ -753,6 +753,9 @@ describe(
         'sales_bq_graph_target.yaml',
         'star_orders_customer.yaml',
         'tpcds_date_edge.yaml',
+        // Actions and constraints publish under custom types, so this is the
+        // fixture whose pull golden shows them recovered.
+        'actions_place_order.yaml',
       ];
       const kcGoldenPath = (fixture: string) => path.join(
           FIXTURES,

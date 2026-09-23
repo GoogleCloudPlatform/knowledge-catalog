@@ -5,14 +5,12 @@
 # misspelled). Exercises the deploy leg's "declared but unparseable" path: the
 # error must name the bad URI rather than claim no target was declared.
 
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 
 semantic_model:
   - name: sales
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["//bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraph/sales_graph"]}'
-    datasets:
+    deployment_target: //bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraph/sales_graph
+    entities:
       - name: orders
         source: demo.sales.orders
         primary_key: [o_orderkey]

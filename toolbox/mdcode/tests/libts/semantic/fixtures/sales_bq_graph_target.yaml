@@ -5,14 +5,12 @@
 # This is the happy-path document for the deploy leg: loader -> IR -> generator
 # -> BigQuery Graph. The target resolves to `demo.sales.sales_graph`.
 
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 
 semantic_model:
   - name: sales
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["//bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph"]}'
-    datasets:
+    deployment_target: //bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph
+    entities:
       - name: orders
         source: demo.sales.orders
         primary_key: [o_orderkey]

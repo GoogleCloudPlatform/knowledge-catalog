@@ -146,6 +146,34 @@ describe('IR-contract metric cases the loader cannot produce', () => {
         expect(ddl).toContain('MEASURE(COUNT(o_orderkey)) AS order_count');
       });
 
+  test('a key field bound to a computed expression warns at the structural site', () => {
+    // A KEY / SOURCE KEY / REFERENCES site must name a bare column. A key bound
+    // to a computed expression resolves to SQL, not a column, which BigQuery
+    // rejects; the generator must warn statically rather than emit broken DDL.
+    const model = orders();
+    model.entities[0].fields[0].expression = 'CONCAT(orders.a, orders.b)';
+    const {warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(warnings.some(
+               w => w.includes('o_orderkey') &&
+                   w.includes('non-column expression')))
+        .toBe(true);
+  });
+
+  test(
+      'an unbound field (no column) is omitted from the node table with a warning',
+      () => {
+        // Availability pruning normally removes unbound fields; generating DDL
+        // without pruning (e.g. straight from a bindingOptional load) must not
+        // emit the field as a phantom bare column.
+        const model = orders();
+        model.entities[0].fields.push({name: 'notes'});  // no expression/binding
+        const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+        expect(ddl).not.toContain('notes');
+        expect(warnings.some(
+                   w => w.includes('notes') && w.includes('no column')))
+            .toBe(true);
+      });
+
   test(
       'a metric whose declared entity disagrees with its expression is reported',
       () => {
@@ -592,10 +620,16 @@ describe(
 
 describe('abstract (table-less) superclasses are eliminated to labels', () => {
   // An abstract `Party` has no physical table; two concrete subtypes, `Person`
-  // and `Organization`, bind it. resolveInheritance flattens Party's `name`
-  // onto each subtype and expands their `extends` to [Party], so each concrete
-  // node table declares `LABEL Party` with Party's own signature. Party itself
-  // must produce NO node table -- it survives only as that shared label.
+  // and `Organization`, bind it. Party's inherited `id`/`name` are bound on
+  // each subtype's OWN table under DIFFERENT columns (person.p_name vs
+  // org.o_name). resolveInheritance flattens Party's fields onto each subtype
+  // and expands their `extends` to [Party], so each concrete node table
+  // declares `LABEL Party` with that subtype's OWN binding of the inherited
+  // names (`p_name AS name` / `o_name AS name`). BigQuery reconciles a shared
+  // label by property name, not backing column, so the differing columns are
+  // valid; a bare-alias reference (`PROPERTIES(name)`) would not deploy
+  // (verified live). Party itself must produce NO node table -- it survives
+  // only as that shared label.
   function partyModel(): SemanticModel {
     return {
       name: 'party_graph',
@@ -612,14 +646,22 @@ describe('abstract (table-less) superclasses are eliminated to labels', () => {
           dataSource: 'sqlgen-testing.demo.person',
           keys: ['id'],
           extends: ['Party'],
-          fields: [{name: 'id'}, {name: 'ssn'}],
+          fields: [
+            {name: 'id', expression: 'p_id'},
+            {name: 'name', expression: 'p_name'},
+            {name: 'ssn', expression: 'p_ssn'},
+          ],
         },
         {
           name: 'Organization',
           dataSource: 'sqlgen-testing.demo.organization',
           keys: ['id'],
           extends: ['Party'],
-          fields: [{name: 'id'}, {name: 'taxId'}],
+          fields: [
+            {name: 'id', expression: 'o_id'},
+            {name: 'name', expression: 'o_name'},
+            {name: 'taxId', expression: 'o_tax'},
+          ],
         },
       ],
       relationships: [],
@@ -642,9 +684,9 @@ describe('abstract (table-less) superclasses are eliminated to labels', () => {
       () => {
         const {ddl} = generatePropertyGraph(partyModel(), GEN_OPTS);
         // Both Person and Organization declare the shared Party label, each
-        // with a PROPERTIES block that lists Party's flattened `name` (assert
-        // inside the block, so an unrelated `name` substring elsewhere can't
-        // satisfy this).
+        // with a PROPERTIES block listing Party's flattened `id`/`name`
+        // rendered from that subtype's OWN binding (assert inside the block, so
+        // an unrelated substring elsewhere can't satisfy this).
         const partyBlocks =
             [...ddl.matchAll(/LABEL Party\s*\n\s*PROPERTIES\(([\s\S]*?)\)/g)];
         expect(partyBlocks.length).toBe(2);
@@ -652,6 +694,13 @@ describe('abstract (table-less) superclasses are eliminated to labels', () => {
           expect(props).toContain('name');
           expect(props).toContain('id');
         }
+        // The label signature must REDEFINE each inherited property with the
+        // subtype's own column (`<col> AS <name>`), never a bare-alias
+        // reference -- the shape BigQuery accepts across element tables with
+        // differing columns (verified live).
+        const props = partyBlocks.map(m => m[1]);
+        expect(props.some(p => /p_name\s+AS\s+name/.test(p))).toBe(true);
+        expect(props.some(p => /o_name\s+AS\s+name/.test(p))).toBe(true);
       });
 
   test('both concrete node tables are still emitted', () => {
@@ -729,7 +778,7 @@ describe('supertype shared-label constraints (inheritance)', () => {
     expect(ddl).not.toContain('total_people');
     expect(warnings.some(
                w => w.includes(`metric 'total_people'`) &&
-                   w.includes('shared label')))
+                   w.includes('not a leaf type')))
         .toBe(true);
   });
 
@@ -892,4 +941,49 @@ describe('inherited property rendering (shared-label consistency)', () => {
         // exists).
         expect(ddl).toContain('email');
       });
+});
+
+describe('reserved-word names in an M:N association edge are quoted', () => {
+  // The open format has no association-table syntax, so this hand-built IR is
+  // the only path that exercises renderAssociationEdge's identifier quoting: the
+  // edge alias, KEY, SOURCE KEY / DESTINATION KEY columns, and both REFERENCES
+  // labels, each named with a GoogleSQL reserved keyword.
+  const RW_ASSOC: SemanticModel = {
+    name: 'rw_assoc',
+    entities: [
+      {
+        name: 'Order',
+        dataSource: 'proj.ds.orders',
+        keys: ['order'],
+        fields: [{name: 'order', expression: 'Order.order'}],
+      },
+      {
+        name: 'Group',
+        dataSource: 'proj.ds.groups',
+        keys: ['id'],
+        fields: [{name: 'id', expression: 'Group.id'}],
+      },
+    ],
+    relationships: [{
+      name: 'from',
+      source: {entity: 'Order', columns: ['order']},
+      destination: {entity: 'Group', columns: ['id']},
+      association: {
+        dataSource: 'proj.ds.order_group',
+        keys: ['order'],
+        sourceColumns: ['order'],
+        destinationColumns: ['id'],
+        fields: [],
+      },
+    }],
+    metrics: [],
+  };
+
+  test('every reserved identifier position in the edge is backtick-quoted', () => {
+    const {ddl} = generatePropertyGraph(RW_ASSOC, GEN_OPTS);
+    expect(ddl).toContain('`proj.ds.order_group` AS `from`');
+    expect(ddl).toContain('KEY(`order`)');
+    expect(ddl).toContain('SOURCE KEY(`order`) REFERENCES `Order`(`order`)');
+    expect(ddl).toContain('DESTINATION KEY(id) REFERENCES `Group`(id)');
+  });
 });

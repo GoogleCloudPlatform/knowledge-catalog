@@ -28,10 +28,13 @@
 //     are re-emitted, each under a single dialect label.
 //   * comments and key ordering are not preserved.
 // What the loader DOES keep on the IR round-trips here: names, descriptions,
-// `ai_context` (instructions / synonyms / examples), `custom_extensions`
-// (verbatim), keys and unique keys, data sources, field datatypes / labels /
-// dimension flags, expressions, and relationship join columns. See
-// serialize.test.ts.
+// `ai_context` (instructions / synonyms / examples), keys and unique keys, data
+// sources, field datatypes / labels / dimension flags, expressions, and
+// relationship join columns. Output is the extended profile ('/google'), which
+// uses native extension keys and has no `custom_extensions` carrier: a model's
+// GOOGLE deployment target is re-emitted as a native `deployment_target`, and
+// any other vendor extension on the IR is dropped with a warning (its carrier's
+// fate under '/google' is still open). See serialize.test.ts.
 //
 // An `association` (junction-table) relationship has no open-format syntax (the
 // loader cannot produce one), so only its direct foreign-key view (from/to +
@@ -39,12 +42,19 @@
 
 import * as yaml from 'yaml';
 
-import {AiContext, CustomExtension, Entity, Field, Metric, Relationship, SemanticModel,} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, Constraint, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
+import {declaredConceptFields} from './resolve_inheritance';
 
-// The schema version the loader was written against; re-emitted verbatim so a
-// serialized document loads without a version-mismatch warning. Mirrors
-// loader.SUPPORTED_VERSION.
-const SERIALIZED_VERSION = '0.2.0.dev0';
+// The version stamped on every serialized document. Pull emits kcmd's extended
+// profile: it uses native extension keys (`entities`, `deployment_target`)
+// rather than Ossie's `custom_extensions` carrier, so the version MUST be the
+// `/google` variant for the output to load. Mirrors loader.GOOGLE_VERSION.
+const SERIALIZED_VERSION = '0.2.0.dev0/google';
+
+// The vendor tag for Google-specific extension blocks on the IR (kept in sync
+// with loader.GOOGLE_VENDOR). A model-level deployment target rides in one and
+// is re-emitted as the native `deployment_target` key.
+const GOOGLE_VENDOR = 'GOOGLE';
 
 // The dialect label for the IR's target/canonical `expression`. The IR does not
 // record which authored dialect that string came from (the loader picked it
@@ -74,64 +84,147 @@ export interface SerializeResult {
  *
  * Warnings flag IR content that has no loadable representation (an association
  * relationship's junction detail), so the caller can surface the lossy edge.
+ *
+ * `logical` marks the model as a purely logical one (no physical binding), so
+ * the missing-source and missing-expression warnings -- which flag a lossy pull
+ * of a bound model -- are suppressed. An OWL import sets it; `pull` does not.
+ *
+ * `compactFlow` renders leaf collections (scalar sequences, all-scalar maps) in
+ * flow style so the output matches the compact convention the semantic-model
+ * guides author by hand and is byte-for-byte reproducible there. An OWL import
+ * sets it; `pull` does not.
  */
-export function serializeModel(model: SemanticModel): SerializeResult {
+export interface SerializeOptions {
+  logical?: boolean;
+  compactFlow?: boolean;
+}
+
+export function serializeModel(
+    model: SemanticModel, opts: SerializeOptions = {}): SerializeResult {
   const warnings: string[] = [];
-  const text = yaml.stringify(modelDocument(model, warnings));
+  const document = modelDocument(model, warnings, opts.logical);
+  const text =
+      opts.compactFlow ? renderCompact(document) : yaml.stringify(document);
   return {yaml: text, warnings: [...new Set(warnings)]};
+}
+
+// Renders "leaf" collections in flow style so the output matches the compact
+// convention the semantic-model guides author by hand: a sequence whose items
+// are all scalars (`primary_key: [id]`, `from_columns: [fk]`) and a map whose
+// values are all scalars (an inline field `{name, datatype}` or a column-less
+// relationship `{name, from, to}`). Nested structures -- a dataset, an
+// expression's `dialects`, an `ai_context` -- always stay block.
+//
+// A leaf collection is inlined ONLY while it stays short: a map or sequence
+// whose flow form would exceed FLOW_WIDTH_BUDGET (a field carrying a long
+// `description`, say) is left block, so `--compact` never emits an unreadable
+// multi-hundred-character line. `lineWidth: 0` disables the wrapper so an
+// inlined collection is never broken mid-braces -- the width gate, not the
+// wrapper, is what bounds line length. Flow and block parse identically, so
+// this only affects layout.
+const FLOW_WIDTH_BUDGET = 80;
+
+// The rendered width of a scalar node (its stringified value length); 0 for a
+// non-scalar, which never contributes because a collection holding one is not
+// inlined in the first place.
+function scalarWidth(node: unknown): number {
+  return yaml.isScalar(node) ?
+      String((node as yaml.Scalar).value ?? '').length :
+      0;
+}
+
+function renderCompact(document: Record<string, any>): string {
+  const doc = new yaml.Document(document);
+  yaml.visit(doc, {
+    Seq(_, node) {
+      if (!node.items.every(item => yaml.isScalar(item))) return;
+      // `[` + each `item, ` + `]`, approximated for the width gate.
+      const width =
+          node.items.reduce((n, item) => n + scalarWidth(item) + 2, 2);
+      if (width <= FLOW_WIDTH_BUDGET) node.flow = true;
+    },
+    Map(_, node) {
+      const pairs = node.items as yaml.Pair[];
+      if (!pairs.every(pair => yaml.isScalar(pair.value))) return;
+      // `{` + each `key: value, ` + `}`, approximated for the width gate.
+      const width = pairs.reduce(
+          (n, pair) => n + scalarWidth(pair.key) + scalarWidth(pair.value) + 4,
+          2);
+      if (width <= FLOW_WIDTH_BUDGET) node.flow = true;
+    },
+  });
+  return doc.toString({flowCollectionPadding: false, lineWidth: 0});
 }
 
 // Builds the plain document object (version + one model) that yaml.stringify
 // renders. Kept separate so tests can assert the structure without parsing
 // YAML.
 export function modelDocument(
-    model: SemanticModel, warnings: string[] = []): Record<string, any> {
+    model: SemanticModel, warnings: string[] = [],
+    logical = false): Record<string, any> {
   return {
     version: SERIALIZED_VERSION,
-    semantic_model: [modelDoc(model, warnings)],
+    semantic_model: [modelDoc(model, warnings, logical)],
   };
 }
 
-function modelDoc(
-    model: SemanticModel, warnings: string[]): Record<string, any> {
+function modelDoc(model: SemanticModel, warnings: string[], logical: boolean):
+    Record<string, any> {
   // `datasets` is required (min 1) by the loader. A reconstructed model with no
   // entities (e.g. every entity fetch failed during a pull) would serialize to
   // a document the loader rejects; emit the (empty) array but flag it so the
   // lossy edge is visible rather than surfacing later as an opaque load error.
-  const datasets = (model.entities ?? []).map(e => datasetDoc(e, warnings));
+  const datasets =
+      (model.entities ?? []).map(e => datasetDoc(e, warnings, logical));
   if (!datasets.length) {
     warnings.push(
-        `model '${model.name}': no datasets (entities); the document requires ` +
+        `model '${
+            model.name}': no datasets (entities); the document requires ` +
         `at least one and will not load until an entity is present.`);
   }
+  // The extended profile has no `custom_extensions` carrier: the one kcmd
+  // understands -- the GOOGLE deployment target -- is emitted as the native
+  // `deployment_target` key; any other vendor extension has no representation
+  // and is dropped with a warning (see extractDeploymentTarget).
+  const deploymentTarget =
+      extractDeploymentTarget(model.customExtensions, model.name, warnings);
+  const emittedFields = emitted(model);
   return compact({
     name: model.name,
     description: model.description,
     ai_context: aiContextDoc(model.aiContext),
-    custom_extensions: customExtensionsDoc(model.customExtensions),
-    datasets,
+    deployment_target: deploymentTarget,
+    entities: datasets,
     relationships: nonEmpty(
         (model.relationships ?? []).map(r => relationshipDoc(r, warnings))),
     metrics: nonEmpty((model.metrics ?? []).map(m => metricDoc(m, warnings))),
+    // Hoisted out of the map: `emitted` resolves inheritance, which deep-clones
+    // the model, and the answer does not vary by action.
+    actions: nonEmpty(
+        (model.actions ?? []).map(a => actionDoc(a, warnings, emittedFields))),
+    constraints: nonEmpty((model.constraints ?? []).map(c => constraintDoc(c))),
   });
 }
 
 function datasetDoc(
-    entity: Entity, warnings: string[]): Record<string, any> {
+    entity: Entity, warnings: string[], logical: boolean): Record<string, any> {
   // A concrete (non-abstract) entity with no source cannot be reloaded -- the
   // loader requires `source` unless the dataset is abstract -- so surface the
   // gap at write time instead of emitting a document that fails to load. This
   // never fires for a well-formed IR; it catches a lossy pull that dropped a
-  // binding without marking the entity abstract.
-  if (!entity.abstract && !entity.dataSource) {
+  // binding without marking the entity abstract. Suppressed for a logical
+  // model, where a missing source is intended (a binding profile supplies it
+  // later).
+  if (!logical && !entity.abstract && !entity.dataSource) {
     warnings.push(
         `entity '${entity.name}' has no source and is not abstract; the ` +
         `serialized document will not reload until a source is set`);
   }
+  dropExtensions(entity.customExtensions, `entity '${entity.name}'`, warnings);
   return compact({
     name: entity.name,
-    // An abstract entity has no physical table, so its source is empty; omit the
-    // key rather than emit `source: ""` (which the loader reads as a
+    // An abstract entity has no physical table, so its source is empty; omit
+    // the key rather than emit `source: ""` (which the loader reads as a
     // concrete-but-empty reference).
     source: entity.dataSource || undefined,
     // Supertype entities (entity-level inheritance); omitted when none.
@@ -142,19 +235,24 @@ function datasetDoc(
     unique_keys: nonEmpty(entity.uniqueKeys),
     description: entity.description,
     ai_context: aiContextDoc(entity.aiContext),
-    fields: nonEmpty((entity.fields ?? []).map(f => fieldDoc(f, warnings))),
-    custom_extensions: customExtensionsDoc(entity.customExtensions),
+    fields: nonEmpty(
+        (entity.fields ?? []).map(f => fieldDoc(f, warnings, logical))),
   });
 }
 
-function fieldDoc(field: Field, warnings: string[]): Record<string, any> {
+function fieldDoc(
+    field: Field, warnings: string[], logical: boolean): Record<string, any> {
   const expression = expressionDoc(
       field.expression, field.importedExpression, field.importedDialect);
-  if (!expression) {
+  // A logical field intentionally has no expression (a binding profile maps it
+  // to a column later), so the missing-expression warning is suppressed there;
+  // for a bound model it still flags a lossy pull.
+  if (!logical && !expression) {
     warnings.push(
         `field '${field.name}': no expression; the loader requires one per ` +
         `field and the document will not load until it is set.`);
   }
+  dropExtensions(field.customExtensions, `field '${field.name}'`, warnings);
   return compact({
     name: field.name,
     expression,
@@ -163,7 +261,6 @@ function fieldDoc(field: Field, warnings: string[]): Record<string, any> {
     dimension: dimensionDoc(field),
     description: field.description,
     ai_context: aiContextDoc(field.aiContext),
-    custom_extensions: customExtensionsDoc(field.customExtensions),
   });
 }
 
@@ -177,14 +274,172 @@ function metricDoc(metric: Metric, warnings: string[]): Record<string, any> {
         `metric '${metric.name}': no expression; the loader requires one per ` +
         `metric and the document will not load until it is set.`);
   }
+  dropExtensions(metric.customExtensions, `metric '${metric.name}'`, warnings);
   return compact({
     name: metric.name,
     expression,
     datatype: metric.type,
     description: metric.description,
     ai_context: aiContextDoc(metric.aiContext),
-    custom_extensions: customExtensionsDoc(metric.customExtensions),
   });
+}
+
+// The `Concept.field` pairs this document will still resolve on reload. A
+// projection is only worth emitting as a projection if the field it names
+// comes out in the same document -- see `parameterDoc`. It asks the loader's
+// own resolver rather than walking the model here, so the emitter cannot come
+// to a different answer than the load it is writing for. A resolver that
+// throws leaves every projection emitted as authored: the emitter is not the
+// place to discover that a model does not load.
+function emitted(model: SemanticModel): Set<string>|null {
+  let concepts;
+  try {
+    concepts = declaredConceptFields(model);
+  } catch {
+    return null;
+  }
+  const pairs = new Set<string>();
+  for (const [name, concept] of concepts) {
+    // A field carrying no datatype resolves to one on reload, so emitting a
+    // projection at it would suppress the parameter's resolved `type` and
+    // hand back an untyped parameter the loader rejects. Treating the pair as
+    // unresolvable falls the parameter back to that resolved type, which is
+    // the whole point of the fallback, and warns when there is none.
+    for (const [field, def] of concept.fields) {
+      if (def.type !== undefined) pairs.add(`${name}.${field}`);
+    }
+  }
+  return pairs;
+}
+
+// Inverts loader.convertAction. The executor collapses back to the open
+// format's single-key object; parameters emit as their authoring form.
+function actionDoc(
+    action: Action, warnings: string[],
+    resolvable: Set<string>|null): Record<string, any> {
+  dropExtensions(action.customExtensions, `action '${action.name}'`, warnings);
+  return compact({
+    name: action.name,
+    description: action.description,
+    executor: action.executor ? executorDoc(action.executor) : undefined,
+    parameters: nonEmpty(
+        (action.parameters ??
+         []).map(p => parameterDoc(p, resolvable, action.name, warnings))),
+    guards: nonEmpty(action.guards),
+    affects: nonEmpty((action.affects ?? []).map(affectedConceptDoc)),
+    ai_context: aiContextDoc(action.aiContext),
+  });
+}
+
+// One action parameter, back in the form an author writes.
+//
+// A parameter projected from a field emits the projection and NOT the type.
+// The type is the field's, copied in at load; writing it back out would make
+// the document state a type alongside `concept`/`field`, which is the one
+// thing the loader refuses outright -- so emitting it would produce a document
+// this tool cannot read. The reload resolves it again from the same field and
+// arrives at the same answer.
+//
+// Wording is emitted whether the author wrote it or inherited it, because
+// nothing here can tell those apart and the two reload identically: an
+// authored value that matches the field's is the field's. So this is verbose
+// where the author was terse, and exact either way.
+//
+// `name` is likewise always written, even where the author let it default to
+// the field's name. Same trade, same reason.
+// A projection emits as a projection only where the field it names comes out
+// in this same document. Pruning can take the concept away -- an entity no
+// binding reaches is dropped, and the parameter that projected from it is
+// deliberately kept, because it copied what it needed at load time. Emitting
+// `concept`/`field` anyway would write a document that no longer loads: the
+// pair resolves to nothing, and the type that would have rescued it was
+// suppressed precisely because the projection was supposed to supply it. So
+// where the field is gone, the parameter emits as the declared one it has
+// effectively become -- its resolved `type`, and none of the projection.
+function parameterDoc(
+    p: ActionParameter, resolvable: Set<string>|null, action: string,
+    warnings: string[]): Record<string, any> {
+  const projects = p.concept !== undefined &&
+      (resolvable === null || resolvable.has(`${p.concept}.${p.field}`));
+  // The fallback above rests on there BEING a resolved type to fall back to,
+  // and a parameter can reach here without one -- a pull of an aspect written
+  // before the type was recorded, or a model whose inheritance would not
+  // resolve. Both keys then drop and the parameter emits as name and wording
+  // alone, which reloads as a typeless parameter and is rejected by validate.
+  // Nothing here can invent the type, so say so at write time rather than let
+  // it surface as a load error against a document this wrote.
+  if (!projects && p.concept !== undefined && p.type === undefined) {
+    warnings.push(
+        `action '${action}': parameter '${p.name}' projected from '${
+            p.concept}.${p.field}', which this document does not carry, and ` +
+        `no resolved datatype was recorded to write in its place. The ` +
+        `parameter emits with no type and the document will not load until ` +
+        `one is supplied.`);
+  }
+  return compact({
+    name: p.name,
+    type: projects ? undefined : p.type,
+    concept: projects ? p.concept : undefined,
+    field: projects ? p.field : undefined,
+    label: p.label,
+    description: p.description,
+    ai_context: aiContextDoc(p.aiContext),
+    required: p.required,
+    default: p.default,
+  });
+}
+
+// One affected concept back to the open format. An entry that says nothing
+// beyond which
+// concept it touches emits as the bare name, which is the shorthand the author
+// most likely wrote and the form the proposal uses; anything with an operation
+// or fields needs the record.
+//
+// This NORMALIZES rather than reproducing the document byte for byte: an
+// authored `{concept: Order}` with no operation comes back as `Order`. The two
+// mean the same thing, so the emit is a fixed point after one pass, which is
+// what the round-trip tests assert.
+function affectedConceptDoc(affected: AffectedConcept): string|
+    Record<string, any> {
+  if (!affected.operation && !affected.fields?.length) return affected.concept;
+  return compact({
+    concept: affected.concept,
+    operation: affected.operation,
+    fields: nonEmpty(affected.fields),
+  });
+}
+
+// Inverts loader.convertConstraint. The judgment is a logical invariant and
+// round-trips verbatim, since nothing about it is derived. The aspect type's
+// reserved `expression` and `evaluation` fields have no counterpart here: one
+// names a body the model no longer has, and the other was computed from which
+// body a constraint stated, so emitting either would put something the author
+// cannot write into an authored document.
+function constraintDoc(constraint: Constraint): Record<string, any> {
+  // No dropExtensions call: a constraint carries no custom extensions to drop.
+  return compact({
+    name: constraint.name,
+    judgment: constraint.judgment,
+    description: constraint.description,
+    on_violation: constraint.onViolation,
+    severity: constraint.severity,
+    ai_context: aiContextDoc(constraint.aiContext),
+  });
+}
+
+// Collapses the IR's tagged executor union back to the open format's single-key
+// object ({mcp: {...}} / {rest: {...}} / {grpc: {...}}).
+function executorDoc(ex: Executor): Record<string, any> {
+  switch (ex.kind) {
+    case 'mcp':
+      return {mcp: {server: ex.mcp.server, tool: ex.mcp.tool}};
+    case 'rest':
+      return {rest: {endpoint: ex.rest.endpoint, method: ex.rest.method}};
+    case 'grpc':
+      return {grpc: {service: ex.grpc.service, method: ex.grpc.method}};
+    case 'sql':
+      return {sql: {statements: [...ex.sql.statements]}};
+  }
 }
 
 // Inverts loader.convertRelationship: `from`/`to` are the endpoint entities and
@@ -200,6 +455,7 @@ function relationshipDoc(
         `open-format representation and is not serialized; only its foreign-key ` +
         `endpoints are written.`);
   }
+  dropExtensions(rel.customExtensions, `relationship '${rel.name}'`, warnings);
   return compact({
     name: rel.name,
     from: rel.source.entity,
@@ -208,7 +464,6 @@ function relationshipDoc(
     to_columns: nonEmpty(rel.destination.columns),
     description: rel.description,
     ai_context: aiContextDoc(rel.aiContext),
-    custom_extensions: customExtensionsDoc(rel.customExtensions),
   });
 }
 
@@ -216,8 +471,8 @@ function relationshipDoc(
 // array of {dialect, expression}). Emits the target/canonical form under
 // CANONICAL_DIALECT and the imported vendor form under its own dialect, so the
 // loader re-picks each into the same IR field. Returns undefined when neither
-// form is present (the loader requires an expression, but a pathological field
-// with none is dropped rather than fabricated).
+// form is present: a field with no expression is unbound, so it emits no
+// `expression` block rather than a fabricated one.
 function expressionDoc(
     expression: string|undefined, importedExpression: string|undefined,
     importedDialect: string|undefined): Record<string, any>|undefined {
@@ -262,12 +517,56 @@ function aiContextDoc(ai: AiContext|undefined): Record<string, any>|undefined {
   return Object.keys(doc).length ? doc : undefined;
 }
 
-// Emits vendor `custom_extensions` verbatim (`vendorName` -> `vendor_name`),
-// inverting loader.toCustomExtensions. Returns undefined when there are none.
-function customExtensionsDoc(exts: CustomExtension[]|undefined):
-    Record<string, any>[]|undefined {
+// Pulls a model's deployment target out of its GOOGLE custom_extension block
+// and returns it as the value for the native `deployment_target` key (the
+// extended profile's representation; the loader folds the reverse direction).
+// The native key is a single URI, so the first target is emitted; any further
+// targets, and any non-deployment-target vendor extension, have no `/google`
+// representation and are counted as dropped and warned about once.
+function extractDeploymentTarget(
+    exts: CustomExtension[]|undefined, modelName: string,
+    warnings: string[]): string|undefined {
   if (!exts || !exts.length) return undefined;
-  return exts.map(e => ({vendor_name: e.vendorName, data: e.data}));
+  let target: string|undefined;
+  let dropped = 0;
+  for (const ext of exts) {
+    let targets: unknown;
+    if (ext.vendorName === GOOGLE_VENDOR) {
+      try {
+        targets = JSON.parse(ext.data)?.deploymentTargets;
+      } catch {
+        targets = undefined;
+      }
+    }
+    if (Array.isArray(targets) && targets.length) {
+      if (target === undefined && typeof targets[0] === 'string') {
+        target = targets[0];
+      }
+      if (targets.length > 1) dropped += targets.length - 1;
+    } else {
+      dropped += 1;  // a non-GOOGLE block, or a GOOGLE block without targets
+    }
+  }
+  if (dropped) {
+    warnings.push(
+        `model '${modelName}': ${dropped} custom_extension value(s) have no ` +
+        `representation under '${SERIALIZED_VERSION}' and are not serialized`);
+  }
+  return target;
+}
+
+// The extended profile has no `custom_extensions` carrier, so a vendor
+// extension on a non-model element cannot be serialized. Warn (once per
+// element) and drop it. The model-level GOOGLE deployment target is handled
+// separately (extractDeploymentTarget) and is NOT dropped.
+function dropExtensions(
+    exts: CustomExtension[]|undefined, where: string,
+    warnings: string[]): void {
+  if (exts && exts.length) {
+    warnings.push(
+        `${where}: ${exts.length} custom_extension(s) have no representation ` +
+        `under '${SERIALIZED_VERSION}' and are not serialized`);
+  }
 }
 
 // Drops undefined-valued keys so the emitted YAML only shows fields the model

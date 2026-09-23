@@ -42,6 +42,56 @@ export interface ResolveResult {
 }
 
 /**
+ * What a `concept` name may refer to, and the fields it declares.
+ *
+ * One lookup serves every construct that names a concept -- an action's
+ * `affects`, and a derived action parameter's `concept`/`field` pair -- so the
+ * two can never disagree about what `Order` is or which fields it has.
+ *
+ * Entities are indexed FIRST, so a name that is both an entity and a
+ * relationship resolves to the entity. `kind` exists to say `entity 'X'` or
+ * `relationship 'X'` in a message, and to pick which fields count.
+ *
+ * Only a many-to-many relationship has fields of its own: they live on the
+ * junction table backing it (see Association), and an enrollment's grade is as
+ * ordinary a field as an order's total. A plain foreign-key edge declares none.
+ *
+ * Inheritance is resolved, because a subtype's own `fields` omit everything it
+ * inherits. Resolution THROWS on an `extends` naming an entity the model does
+ * not declare; a caller that cannot report that -- the loader, which is
+ * lenient by design -- catches it and works from the unresolved model instead.
+ */
+export interface DeclaredConcept {
+  kind: 'entity'|'relationship';
+  // Keyed by field name, and carrying the field itself: a derived parameter
+  // projects the field's type and its wording, so the definition has to be
+  // here rather than looked up a second time against a list of names.
+  fields: Map<string, Field>;
+}
+
+export function declaredConceptFields(model: SemanticModel):
+    Map<string, DeclaredConcept> {
+  const inherits = (model.entities ?? []).some(e => e.extends?.length);
+  const entities =
+      (inherits ? resolveInheritance(model).model : model).entities ?? [];
+  const concepts = new Map<string, DeclaredConcept>();
+  for (const e of entities) {
+    concepts.set(e.name, {
+      kind: 'entity',
+      fields: new Map((e.fields ?? []).map(f => [f.name, f])),
+    });
+  }
+  for (const r of model.relationships ?? []) {
+    if (concepts.has(r.name)) continue;
+    concepts.set(r.name, {
+      kind: 'relationship',
+      fields: new Map((r.association?.fields ?? []).map(f => [f.name, f])),
+    });
+  }
+  return concepts;
+}
+
+/**
  * Returns a clone of `model` with every entity's `extends` expanded to its full
  * transitive ancestor set and its `fields` flattened to include inherited
  * fields. The input is never mutated. An entity with no `extends` is returned
@@ -137,16 +187,15 @@ function localizeInheritedField(field: Field, ancestor: string): Field {
 // read from the pre-mutation snapshot so resolution is order-independent.
 //
 // A parent edge that points back to `start` is a cycle (warned, skipped so the
-// walk terminates); a parent that is not an entity in the model is warned and
-// excluded (an emitter cannot label with a signature it does not have). A node
-// re-reached through a second path (a diamond) is simply skipped -- it is
-// already included at its nearest distance.
+// walk terminates); a parent that is not an entity in the model is a hard error
+// (an emitter cannot label with a signature it does not have, and a typo must
+// not silently drop inheritance). A node re-reached through a second path (a
+// diamond) is simply skipped -- it is already included at its nearest distance.
 function transitiveAncestors(
     start: string, byName: Map<string, Entity>,
     directParents: Map<string, string[]>, warnings: string[]): string[] {
   const result: string[] = [];
   const seen = new Set<string>([start]);
-  const missingWarned = new Set<string>();
 
   // Queue of (child that declared the edge, parent) so a cycle warning can name
   // the offending child. Seeded with `start`'s direct parents in declared
@@ -163,13 +212,9 @@ function transitiveAncestors(
       continue;
     }
     if (!byName.has(name)) {
-      if (!missingWarned.has(name)) {
-        missingWarned.add(name);
-        warnings.push(
-            `entity '${from}' extends unknown entity '${name}'; it is not ` +
-            `defined in the model, so it is ignored`);
-      }
-      continue;
+      throw new Error(
+          `entity '${from}' extends unknown entity '${name}'; it is not ` +
+          `defined in the model`);
     }
     if (seen.has(name)) continue;  // diamond: already included at its nearest
     seen.add(name);

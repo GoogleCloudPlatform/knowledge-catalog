@@ -1,0 +1,210 @@
+# What the business is, and what one agent is allowed to do to it.
+#
+# The business is a small ecommerce operation: customers, their orders, and the
+# lines that make up an order. One thing can be done to it -- credit a customer
+# against an order -- and the rules below say when that is allowed. The README
+# runs one request against it, the kind a support desk gets every day: a
+# customer was charged for shipping that should have been free.
+#
+# Nothing here says where the data lives, what the columns are called, or what
+# SQL performs the write. Those are physical facts, and they are in
+# commerce.profiles/. There are two profiles -- spanner.yaml and alloydb.yaml --
+# pointing this one model at two different databases, with different table
+# names, a differently named column and a different SQL dialect between them.
+# This file is the same bytes under both, which is the claim the pair exists to
+# make.
+#
+# The policy is written in words. A constraint carries a `judgment`, a language
+# model settles it against the attempted call, and `IssueCredit` names the ones
+# that gate it in `guards` -- which is the only thing that gives a constraint
+# effect, since a rule takes effect where something references it.
+#
+# One of the judgments compares the call against a row in the database, which
+# a judge can settle only if it can read the database. Running this demo
+# therefore takes a judge that has been given one -- a `store` on the judge the
+# agent hires. Giving a judge your tables belongs to whoever embeds the
+# runtime, so no kcmd flag offers it. No kcmd command line runs an action or
+# hires a judge, so the rules below are settled only by an application that
+# embeds the runtime.
+#
+# What this costs: every gate is a model call, and a model can answer two
+# identical calls differently. Don't copy the `$25` ceiling below -- a threshold
+# over the call's own arguments belongs in whatever dispatches the call rather
+# than here, and it stays for the contrast with the rule above it, which has to
+# read the store, and because the README transcribes a live run against it.
+#
+# One rule is missing entirely: that an order's total must equal the sum of its
+# line items is about the state the write LEAVES BEHIND, and a guard is settled
+# before the transaction opens, so no rule stated here reaches it. It belongs
+# in the schema.
+
+version: "0.2.0.dev0/google"
+
+semantic_model:
+  - name: commerce
+    description: Customers, their orders, and the lines that make up an order
+
+    # How this business wants to be acted on. It is here rather than in the
+    # agent's source because it is true of every agent that acts on this model,
+    # including the ones nobody has written yet -- and because a rule an agent
+    # keeps privately is a rule that can be changed without the people who own
+    # the model finding out. Agents come and go; the model stays.
+    #
+    # Only what is specific to this business belongs here. Where a key has to
+    # come from, and what to do when a write is refused, are properties of the
+    # tools rather than of commerce, so the derivation supplies those and this
+    # does not repeat them.
+    ai_context:
+      instructions: >-
+        You are working an internal operations desk for this business, fixing
+        orders on behalf of the people who run it. A request describes an order
+        the way a person does -- a customer's name, a day, what went wrong --
+        so expect to be given a description where the model expects a number,
+        and expect to have to read an order's lines to find out what was
+        actually charged.
+
+    entities:
+      - name: Customer
+        primary_key: [customerId]
+        fields:
+          - {name: customerId, datatype: Integer}
+          - name: name
+            datatype: String
+            description: The customer's display name, e.g. "Morgan Ellis".
+          - {name: email, datatype: String}
+
+      - name: Order
+        description: >-
+          A customer order. Its total is the sum of its line items: items, tax
+          and fees add, credits subtract. A positive total is money owed to the
+          company.
+        primary_key: [orderId]
+        fields:
+          - name: orderId
+            datatype: Integer
+            description: >-
+              The order's number, which is how both the customer and the desk
+              refer to it.
+          - {name: customerId, datatype: Integer}
+          - name: placedOn
+            datatype: Date
+            description: The day the order was placed.
+          - name: total
+            datatype: Decimal
+            description: What the customer owes on this order, in dollars.
+          - {name: status, datatype: String, description: OPEN or CLOSED.}
+
+      - name: LineItem
+        description: >-
+          One line of an order. A charge line is positive; a credit line is
+          negative, so that the order total is always a plain sum.
+        primary_key: [lineItemId]
+        fields:
+          - {name: lineItemId, datatype: String}
+          - {name: orderId, datatype: Integer}
+          - name: type
+            datatype: String
+            description: item, tax, fee, or credit.
+          - {name: amount, datatype: Decimal}
+          - {name: memo, datatype: String}
+
+    relationships:
+      - name: PlacedBy
+        from: Order
+        to: Customer
+        from_columns: [customer_id]
+        to_columns: [customer_id]
+      - name: BelongsTo
+        from: LineItem
+        to: Order
+        from_columns: [order_id]
+        to_columns: [order_id]
+
+    actions:
+      - name: IssueCredit
+        description: >-
+          Credit a customer against one order -- a late delivery, a coupon, a
+          shipping charge applied in error. The credit is added as a negative
+          line and the order total is recomputed from the lines.
+        # `order` takes its type and its wording from Order.orderId, so the
+        # number this call is about is defined once, in the entity, rather
+        # than again here. `amount` and `memo` stand alone: they are about
+        # this call, not about a field of anything.
+        parameters:
+          - {name: order, concept: Order, field: orderId}
+          - {name: amount, type: Decimal}
+          - {name: memo, type: String}
+        # What this call reaches, for a reader of the catalog who does not have
+        # the SQL under each profile. Nothing here reaches a statement -- the
+        # new row's key comes from the INSERT itself. A profile that cannot bind
+        # one of these concepts drops the action from its push instead.
+        affects:
+          - {concept: LineItem, operation: create, fields: [type, amount, memo]}
+          - {concept: Order, operation: modify, fields: [total]}
+        # Which rules this call must pass, and the only place a constraint
+        # takes effect. Each one costs at least one model call, and the first
+        # also costs a read, because it is about a number that is in the
+        # database rather than in the call.
+        guards:
+          - CreditWithinOrderTotal
+          - CreditUnderReviewThreshold
+          - CreditMemoNamesAServiceFailure
+          - CreditIsNotSplitToAvoidReview
+        ai_context:
+          instructions: >-
+            Give the order as its number, the amount in dollars, and a memo
+            saying why: an Order is identified by its key alone. Say in the
+            memo what actually went wrong on the order -- a late delivery, a
+            damaged item, a shipping charge applied in error -- and, if this
+            credit is part of a larger amount owed, say that and give the
+            total. A rule reads the memo, so a fact left out of it is a fact
+            the rule cannot weigh.
+
+    # The rules, settled by a judge reading the attempted call and, where the
+    # rule is about something on record, the record. All four are what
+    # `IssueCredit` guards on, and they carry all three consequences: escalate,
+    # warn and reject.
+    constraints:
+      - name: CreditWithinOrderTotal
+        judgment: >-
+          The credit amount requested must not exceed the total of the order
+          it is applied to. The `order` argument of this call identifies that
+          order, but the order's total is on record rather than stated in the
+          arguments, and nothing puts it in front of you. Read both as dollars.
+        on_violation: escalate
+        description: >-
+          A credit cannot exceed the total of the order it credits. Lower the
+          credit amount, or split it across the orders it actually covers.
+
+      - name: CreditUnderReviewThreshold
+        judgment: >-
+          The credit amount requested must not exceed 25 dollars, which is the
+          self-service ceiling for this desk. Read the amount as dollars.
+        on_violation: escalate
+        description: >-
+          A credit over $25 is above the self-service ceiling. A supervisor
+          decides it.
+
+      - name: CreditMemoNamesAServiceFailure
+        judgment: >-
+          The memo argument of this call must name a specific thing that went
+          wrong on the order: a late delivery, a damaged item, a shipping
+          charge applied in error. A memo saying only that the customer asked,
+          or that the credit is goodwill, or giving no reason at all, names no
+          failure and does not satisfy this rule.
+        on_violation: warn
+        description: >-
+          Say in the credit memo what actually went wrong with the order.
+
+      - name: CreditIsNotSplitToAvoidReview
+        judgment: >-
+          The credit requested must be the whole of what this order is owed,
+          not one piece of a larger amount divided to stay under the 25-dollar
+          self-service ceiling. A memo argument calling the credit a part, a
+          half, an instalment, the first or second of several, or a remainder,
+          or naming a total larger than the amount argument, does not satisfy
+          this rule.
+        on_violation: reject
+        description: >-
+          Raise this as a single credit for the full amount and send it for
+          supervisor review.

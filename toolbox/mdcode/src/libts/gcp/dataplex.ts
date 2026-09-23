@@ -22,6 +22,22 @@ export interface AspectType {
   [key: string]: any;
 }
 
+// A long-running operation. Creating or updating a type is asynchronous: the
+// call returns one of these immediately, `done` flips to true at completion,
+// and `error` is set when the operation failed.
+export interface Operation {
+  name?: string;
+  done?: boolean;
+  error?: { code?: number; message?: string; };
+}
+
+// Renders a finished operation's failure as a message, or returns undefined
+// when it succeeded.
+function operationFailure(op: Operation, what: string): string|undefined {
+  if (!op.error) return undefined;
+  return `${what}: ${op.error.message || `operation failed (${op.error.code})`}`;
+}
+
 export interface Aspect {
   aspectType?: string;
   data?: Record<string, any>;
@@ -85,7 +101,11 @@ interface EntryLinkList {
 export class CatalogClient extends api.ApiClient {
 
   constructor(ctx: context.ApiContext) {
-    super('https://dataplex.googleapis.com', 'v1', ctx);
+    // Defaults to the production Dataplex endpoint. Override via DATAPLEX_ENDPOINT
+    // to target a non-prod host (e.g. an autopush/sandbox EAP), same env-var
+    // knob style as GCP_LOG.
+    super(process.env.DATAPLEX_ENDPOINT || 'https://dataplex.googleapis.com',
+          'v1', ctx);
   }
 
   async getEntryGroup(project: string, location: string,
@@ -236,6 +256,80 @@ export class CatalogClient extends api.ApiClient {
     const res = await this._post<EntryGroup>(resourceName, entryGroup, params);
 
     return res;
+  }
+
+  // Creates a custom aspect type. `aspectType` carries the display name,
+  // description and metadataTemplate; the resource name comes from the id.
+  async createAspectType(project: string, location: string, aspectTypeId: string,
+                         aspectType: Omit<AspectType, 'name'>): Promise<api.ApiResult<Operation>> {
+    const resourceName = `${catalogContainer(project, location)}/aspectTypes`;
+
+    const params: Record<string, any> = { aspectTypeId };
+
+    return await this._post<Operation>(resourceName, aspectType, params);
+  }
+
+  // Patches an existing aspect type. Dataplex rejects a backwards-incompatible
+  // metadataTemplate change, so an update only ever adds fields.
+  async updateAspectType(project: string, location: string, aspectTypeId: string,
+                         aspectType: Omit<AspectType, 'name'>,
+                         updateMask?: string[]): Promise<api.ApiResult<Operation>> {
+    const name = `${catalogContainer(project, location)}/aspectTypes/${aspectTypeId}`;
+
+    const params: Record<string, any> = {};
+    if (updateMask && updateMask.length) {
+      params.updateMask = updateMask.join(',');
+    }
+
+    return await this._patch<Operation>(name, aspectType, params);
+  }
+
+  // Creates a custom entry type.
+  async createEntryType(project: string, location: string, entryTypeId: string,
+                        entryType: Omit<EntryType, 'name'>): Promise<api.ApiResult<Operation>> {
+    const resourceName = `${catalogContainer(project, location)}/entryTypes`;
+
+    const params: Record<string, any> = { entryTypeId };
+
+    return await this._post<Operation>(resourceName, entryType, params);
+  }
+
+  // Fetches a long-running operation by the resource name the call that started
+  // it returned.
+  async getOperation(operationName: string): Promise<api.ApiResult<Operation>> {
+    return await this._get<Operation>(operationName);
+  }
+
+  // Polls a long-running operation until it finishes, and returns a message
+  // describing the failure when it fails or does not finish in time. Creating a
+  // type is asynchronous, so a caller that skips this races the server: an
+  // entry type that names an aspect type the server cannot see yet is rejected
+  // with `The following aspect types do not exist`.
+  async awaitOperation(op: Operation|undefined, what: string,
+                       timeoutMs = 120000): Promise<string|undefined> {
+    // A response that carries no operation name is already the final resource,
+    // which is what a synchronous implementation of the same call returns.
+    if (!op || !op.name) return undefined;
+    if (op.done) return operationFailure(op, what);
+
+    const deadline = Date.now() + timeoutMs;
+    let delayMs = 500;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      delayMs = Math.min(delayMs * 2, 5000);
+
+      const polled = await this.getOperation(op.name);
+      // A client error will not resolve itself, so report it rather than spend
+      // the whole timeout rediscovering it and then blame the timeout. A 5xx or
+      // a throttle is worth another attempt.
+      if (polled.status >= 400 && polled.status < 500 &&
+          polled.status !== 429) {
+        return `${what}: reading ${op.name}: ${polled.message || polled.status}`;
+      }
+      if (polled.status !== 200 || !polled.result) continue;
+      if (polled.result.done) return operationFailure(polled.result, what);
+    }
+    return `${what}: timed out after ${timeoutMs}ms waiting for ${op.name}`;
   }
 
   async createEntryLink(project: string, location: string, entryGroup: string,

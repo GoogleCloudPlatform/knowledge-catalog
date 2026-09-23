@@ -3,7 +3,7 @@
 // This is the Knowledge Catalog leg of `kcmd push` for the semantic-model
 // scope, the counterpart to `deploy_bigquery.ts`. It consumes models already
 // parsed into the semantic IR (see loadSemanticModels, shared with the BigQuery
-// leg so a `--target all` push parses each document once), maps each to catalog
+// leg so a multi-destination push parses each document once), maps each to catalog
 // Entries + Aspects (the pure emitter in knowledge_catalog.ts), and writes them
 // through the Knowledge Catalog client.
 //
@@ -657,7 +657,16 @@ async function writeEntryLink(
     const upd = await cat.updateEntryLink(
         {name: link.name, aspects: link.aspects} as EntryLink,
         Object.keys(link.aspects ?? {}));
-    if (!isOk(upd)) return {error: `entry link '${linkId}': ${errText(upd)}`};
+    // A 409 already proved the link is present, and its entry references and type
+    // are immutable, so this follow-up only refreshes the aspect. Some catalog
+    // surfaces expose only create + lookup for an entry link and cannot address
+    // it by name for an update -- there the link is still fully written and only
+    // the aspect refresh is unavailable, so treat a not-addressable response as a
+    // no-op success rather than failing an otherwise-complete push. (This mirrors
+    // deleteOwnedLinks tolerating a 404 on delete.)
+    if (!isOk(upd) && !isLinkNotAddressable(upd)) {
+      return {error: `entry link '${linkId}': ${errText(upd)}`};
+    }
     return {};
   }
   if (!isOk(res)) return {error: `entry link '${linkId}': ${errText(res)}`};
@@ -680,12 +689,37 @@ async function writeEntry(
   if (isExists(res)) {
     // Idempotent re-push: refresh the existing entry's source + aspects.
     const upd = await cat.updateEntry(
-        entry, ['entry_source', 'aspects'], Object.keys(entry.aspects ?? {}));
+        entry, ['entry_source', 'aspects'], reconciledAspectKeys(entry, opts));
     if (!isOk(upd)) return {error: `entry '${entryId}': ${errText(upd)}`};
     return {updated: true};
   }
   if (!isOk(res)) return {error: `entry '${entryId}': ${errText(res)}`};
   return {};
+}
+
+// The aspects the emitter attaches CONDITIONALLY. `guidelines` (only when an
+// object carries ai_context.instructions) can ride any entry, so it is
+// reconciled everywhere. Every other aspect the emitter writes (semantic-*,
+// schema, semantic-action, semantic-constraint) is unconditional on the entry
+// that carries it, so it is always present on a re-push and never needs
+// explicit clearing.
+const OPTIONAL_ASPECT_TYPES = ['guidelines'] as const;
+
+// The aspect keys to reconcile when updating an existing entry. A Dataplex
+// entries.patch clears an aspect only when its key is named in `aspectKeys` and
+// absent from the request body; a key that is present is upserted, and one the
+// server does not have is a no-op. Passing only the currently-attached keys
+// therefore leaves a *removed* optional aspect (e.g. an entity whose
+// ai_context.instructions were deleted) stranded on the server, where a later
+// `pull` would resurrect it. Always naming the optional aspect keys -- present
+// or not -- makes a re-push converge: a still-present one is refreshed, a
+// removed one is deleted, and one that was never there stays absent.
+function reconciledAspectKeys(entry: Entry, opts: KcDeployOptions): string[] {
+  const proj = opts.systemTypeProject ?? 'dataplex-types';
+  const loc = opts.systemTypeLocation ?? 'global';
+  const keys = new Set(Object.keys(entry.aspects ?? {}));
+  for (const type of OPTIONAL_ASPECT_TYPES) keys.add(`${proj}.${loc}.${type}`);
+  return [...keys];
 }
 
 // entries.create can briefly 404 on a just-created entry group; retry that
@@ -770,6 +804,15 @@ function isOk(res: {status: number}): boolean {
 // need to match the error text.
 function isExists(res: {status: number}): boolean {
   return res.status === 409;
+}
+
+// An entry link that a create reported as already existing (409) but that the
+// by-name UpdateEntryLink then could not address: NOT_FOUND (404) or a masked
+// PERMISSION_DENIED (403). Some catalog surfaces expose only create + lookup for
+// entry links, so the aspect-refresh update is unavailable there even though the
+// link itself is present -- writeEntryLink treats this as a no-op success.
+function isLinkNotAddressable(res: {status: number}): boolean {
+  return res.status === 404 || res.status === 403;
 }
 
 // A transient "not visible yet" error worth retrying, matching the propagation

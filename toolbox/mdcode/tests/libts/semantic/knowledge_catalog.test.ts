@@ -408,6 +408,53 @@ describe('model-level structure', () => {
             'model has no entities; only the semantic-model entry will be generated');
       });
 
+  test(
+      'a Spanner-targeted model records its Spanner URI in the semantic-model aspect',
+      () => {
+        // A model bound to Spanner Graph must not lose its deployment target in
+        // Knowledge Catalog (the aspect used to read only BigQuery targets, so a
+        // Spanner-only model round-tripped as UNBOUND).
+        const spannerUri =
+            '//spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g';
+        const model: SemanticModel = {
+          name: 'm',
+          relationships: [],
+          metrics: [],
+          entities: [{name: 'e', dataSource: 'p.d.t', keys: ['k'], fields: []}],
+          customExtensions: [{
+            vendorName: 'GOOGLE',
+            data: JSON.stringify({deploymentTargets: [spannerUri]}),
+          }],
+        };
+        const {entries} = generateCatalogResources(model, OPTS);
+        const anchor = entries[0];
+        expect(anchor.aspects!['dataplex-types.global.semantic-model'].data)
+            .toEqual({deploymentTargets: [spannerUri]});
+      });
+
+  test(
+      'a model targeting both BigQuery and Spanner records both URIs, BigQuery first',
+      () => {
+        const bqUri =
+            '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+        const spannerUri =
+            '//spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g';
+        const model: SemanticModel = {
+          name: 'm',
+          relationships: [],
+          metrics: [],
+          entities: [{name: 'e', dataSource: 'p.d.t', keys: ['k'], fields: []}],
+          customExtensions: [{
+            vendorName: 'GOOGLE',
+            data: JSON.stringify({deploymentTargets: [spannerUri, bqUri]}),
+          }],
+        };
+        const {entries} = generateCatalogResources(model, OPTS);
+        const anchor = entries[0];
+        expect(anchor.aspects!['dataplex-types.global.semantic-model'].data)
+            .toEqual({deploymentTargets: [bqUri, spannerUri]});
+      });
+
   test('the anchor is emitted first and is the parent of every child', () => {
     const model: SemanticModel = {
       name: 'm',
@@ -540,6 +587,23 @@ describe('relationships map to schema-join entry links', () => {
         .toBe(true);
   });
 
+  test('a column-less (purely logical) edge is skipped and warned, no link',
+       () => {
+         // An OWL import leaves an edge with no join columns. schema-join is a
+         // server CLOSED template, so rather than risk a rejected column-less
+         // aspect the emitter skips the link (the edge publishes once join
+         // columns are added to the model).
+         const model = directFkModel();
+         model.relationships[0].source.columns = [];
+         model.relationships[0].destination.columns = [];
+         const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+         expect(entryLinks.length).toBe(0);
+         expect(warnings.some(
+                    w => w.includes('orders-to-customer') &&
+                        w.includes('no join columns')))
+             .toBe(true);
+       });
+
   test(
       'a relationship name that is not link-id-clean warns it will normalize',
       () => {
@@ -554,6 +618,70 @@ describe('relationships map to schema-join entry links', () => {
                    w => w.includes('Orders_To_Customer') &&
                        w.includes('orders-to-customer')))
             .toBe(true);
+      });
+});
+
+
+describe('a purely logical model (no physical binding) emits cleanly', () => {
+  // A Knowledge-Catalog-only model governs meaning with no binding: every
+  // entity has an empty dataSource and its fields carry no expression. The
+  // emitter must publish it without inventing a bogus physical resource, and a
+  // relationship's join endpoints fall back to the entity name (there is no
+  // table to name).
+  function logicalModel(): SemanticModel {
+    return {
+      name: 'm',
+      metrics: [],
+      entities: [
+        {
+          name: 'orders',
+          dataSource: '',
+          keys: ['o_key'],
+          fields: [{name: 'amount'}]
+        },
+        {
+          name: 'customer',
+          dataSource: '',
+          keys: ['c_key'],
+          fields: [{name: 'name'}]
+        },
+      ],
+      relationships: [{
+        name: 'orders-to-customer',
+        source: {entity: 'orders', columns: ['custkey']},
+        destination: {entity: 'customer', columns: ['c_key']},
+      }],
+    };
+  }
+
+  test('every entity is published (anchor + 2 entities), no warnings', () => {
+    const {entries, warnings} = generateCatalogResources(logicalModel(), OPTS);
+    const kinds = entries.map(e => e.entryType.replace(/.*\//, ''));
+    expect(kinds).toEqual(
+        ['semantic-model', 'semantic-entity', 'semantic-entity']);
+    expect(warnings).toEqual([]);
+  });
+
+  test('a logical entity emits an empty source (no bogus empty element)', () => {
+    const {entries} = generateCatalogResources(logicalModel(), OPTS);
+    const orders = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
+    // No table -> `source.resources` is [], not the old omitted source (which
+    // the semantic-entity template rejects) or a bogus source:{resources:['']}.
+    const data = orders.aspects!['dataplex-types.global.semantic-entity'].data!;
+    expect(data.source).toEqual({resources: []});
+  });
+
+  test(
+      'the schema-join endpoints fall back to the entity name when there is no table',
+      () => {
+        const {entryLinks} = generateCatalogResources(logicalModel(), OPTS);
+        expect(entryLinks.length).toBe(1);
+        const join = entryLinks[0]
+                         .aspects!['dataplex-types.global.schema-join']
+                         .data!.joins[0];
+        // No dataSource to name, so the endpoint `name` is the entity name.
+        expect(join.source).toEqual({name: 'orders', fields: ['custkey']});
+        expect(join.target).toEqual({name: 'customer', fields: ['c_key']});
       });
 });
 

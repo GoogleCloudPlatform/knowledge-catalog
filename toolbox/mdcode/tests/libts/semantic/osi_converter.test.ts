@@ -6,7 +6,7 @@
 // the IR, serialize it, load the serialized text again, and assert the two IRs
 // are identical. That pins IR-level fidelity across every feature the loader
 // produces (datasets, fields, datatypes, dimensions, labels, ai_context,
-// custom_extensions, relationships, metrics, imported expressions) without
+// deployment targets, relationships, metrics, imported expressions) without
 // hard-coding YAML text. Targeted structural tests cover the mapping details a
 // round trip cannot isolate.
 
@@ -29,16 +29,18 @@ function loadFixture(name: string): SemanticModel[] {
 
 describe('loader <-> serialize round trip is IR-stable', () => {
   // Each fixture exercises a different slice of the format: relationships +
-  // ai_context + synonyms + label + dimension; the full tpc-ds corpus with
-  // custom_extensions + unique_keys; explicit datatypes; and imported
-  // (vendor-dialect) expressions.
+  // ai_context + synonyms + label + dimension; a GOOGLE deployment target;
+  // unique_keys; explicit datatypes; and imported (vendor-dialect) expressions.
+  // Fixtures carrying non-GOOGLE `custom_extensions` (tpcds_retail,
+  // lineitem_databricks_ext) are NOT round-tripped here: the '/google'
+  // serializer drops those (see the "lossy edges" test below), so they cannot
+  // survive an IR-stable round trip.
   const fixtures = [
     'star_orders_customer.yaml',
-    'tpcds_retail.yaml',
     'sales_google_ext.yaml',
     'vendor_dialects.yaml',
-    'lineitem_databricks_ext.yaml',
     'sales_bq_graph_target.yaml',
+    'actions_place_order.yaml',
   ];
 
   for (const fixture of fixtures) {
@@ -64,20 +66,20 @@ describe('serialized document structure', () => {
   const sm = doc.semantic_model[0];
 
   test('emits the supported version and a single model', () => {
-    expect(doc.version).toBe('0.2.0.dev0');
+    expect(doc.version).toBe('0.2.0.dev0/google');
     expect(doc.semantic_model).toHaveLength(1);
     expect(sm.name).toBe(model.name);
   });
 
   test('a dataset source is the opaque dataSource string, verbatim', () => {
-    const orders = sm.datasets.find((d: any) => d.name === 'orders');
+    const orders = sm.entities.find((d: any) => d.name === 'orders');
     const entity = model.entities.find(e => e.name === 'orders')!;
     expect(orders.source).toBe(entity.dataSource);
     expect(typeof orders.source).toBe('string');
   });
 
   test('primary_key mirrors the entity keys', () => {
-    const orders = sm.datasets.find((d: any) => d.name === 'orders');
+    const orders = sm.entities.find((d: any) => d.name === 'orders');
     const entity = model.entities.find(e => e.name === 'orders')!;
     expect(orders.primary_key).toEqual(entity.keys);
   });
@@ -88,7 +90,7 @@ describe('serialized document structure', () => {
     const entity = model.entities.find(
         e => e.fields.some(f => f.aiContext?.synonyms?.length))!;
     const field = entity.fields.find(f => f.aiContext?.synonyms?.length)!;
-    const dsDoc = sm.datasets.find((d: any) => d.name === entity.name);
+    const dsDoc = sm.entities.find((d: any) => d.name === entity.name);
     const fieldDoc = dsDoc.fields.find((f: any) => f.name === field.name);
     expect(fieldDoc.ai_context.synonyms).toEqual(field.aiContext!.synonyms);
   });
@@ -128,7 +130,7 @@ describe('expression + datatype + dimension mapping', () => {
       metrics: [],
     };
     const doc = modelDocument(model) as any;
-    const fieldDoc = doc.semantic_model[0].datasets[0].fields[0];
+    const fieldDoc = doc.semantic_model[0].entities[0].fields[0];
     expect(fieldDoc.dimension).toEqual({});
     // And it reloads back to a dimension field.
     const reloaded = loadModels(serializeModel(model).yaml).models[0];
@@ -151,7 +153,7 @@ describe('expression + datatype + dimension mapping', () => {
     };
     const doc = modelDocument(model) as any;
     const dialects =
-        doc.semantic_model[0].datasets[0].fields[0].expression.dialects;
+        doc.semantic_model[0].entities[0].fields[0].expression.dialects;
     const labels = dialects.map((d: any) => d.dialect);
     expect(labels).toContain('SNOWFLAKE');
     // The canonical form is labeled BIGQUERY so the loader re-picks it exactly.
@@ -227,6 +229,27 @@ describe('lossy edges are flagged', () => {
         expect(relDoc.to).toBe('course');
         expect(relDoc.from_columns).toEqual(['id']);
       });
+
+  test('a non-GOOGLE vendor extension is dropped with a warning', () => {
+    // The extended ('/google') profile has no custom_extensions carrier, so a
+    // non-deployment-target vendor extension has no representation and is
+    // dropped with a warning rather than serialized.
+    const model: SemanticModel = {
+      name: 'm',
+      customExtensions: [{vendorName: 'SALESFORCE', data: '{"crm": true}'}],
+      entities: [{
+        name: 'orders',
+        dataSource: 'p.d.t',
+        keys: ['id'],
+        fields: [{name: 'id', expression: 'orders.id'}],
+      }],
+      relationships: [],
+      metrics: [],
+    };
+    const {yaml: text, warnings} = serializeModel(model);
+    expect(warnings.some(w => /no representation under/i.test(w))).toBe(true);
+    expect(text).not.toContain('custom_extensions');
+  });
 });
 
 
@@ -300,7 +323,7 @@ describe('serialize flags loader-invalid reconstructions', () => {
         };
         const doc = modelDocument(model) as any;
         const labels: string[] =
-            doc.semantic_model[0].datasets[0].fields[0].expression.dialects.map(
+            doc.semantic_model[0].entities[0].fields[0].expression.dialects.map(
                 (d: any) => d.dialect);
         // No duplicate dialect label: the imported form is relabeled off
         // BIGQUERY so the loader does not pick between two BIGQUERY entries.
@@ -327,6 +350,10 @@ describe('golden OSI document: each corpus fixture serializes to its exact YAML'
              'sales_bq_graph_target.yaml',
              'star_orders_customer.yaml',
              'tpcds_date_edge.yaml',
+             // The only corpus fixture with actions and constraints, so it is
+             // the only golden showing the custom `semantic-action` and
+             // `semantic-constraint` types.
+             'actions_place_order.yaml',
            ];
            // Same load defaults as the KC e2e/pull goldens, so the OSI golden
            // and the pull golden are directly comparable.
@@ -352,3 +379,65 @@ describe('golden OSI document: each corpus fixture serializes to its exact YAML'
              });
            }
          });
+
+
+describe('a projection is only emitted when it will supply a type', () => {
+  test('a field carrying no datatype falls back and warns', () => {
+    // The field resolves by NAME, so the pair looked emittable and the
+    // parameter's resolved `type` was suppressed in favour of it. On reload
+    // the projection resolves to no type at all, and the document this wrote
+    // fails to load -- against a model that was fine.
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [{
+        name: 'Order',
+        dataSource: 'p.d.o',
+        keys: ['key'],
+        fields: [{name: 'key', expression: 'key'}],
+      }],
+      relationships: [],
+      metrics: [],
+      actions: [{
+        name: 'Close',
+        executor: {kind: 'mcp', mcp: {server: '//x/mcpServers/s', tool: 't'}},
+        parameters: [{name: 'order', concept: 'Order', field: 'key'}],
+      }],
+    };
+    const warnings: string[] = [];
+    const doc = modelDocument(model, warnings) as any;
+    const param = doc.semantic_model[0].actions[0].parameters[0];
+    expect(param.concept).toBeUndefined();
+    expect(warnings.some(
+               w => w.includes('parameter \'order\'') &&
+                   w.includes('no resolved datatype')))
+        .toBe(true);
+  });
+
+  test('a field carrying a datatype still emits as a projection', () => {
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [{
+        name: 'Order',
+        dataSource: 'p.d.o',
+        keys: ['key'],
+        fields: [{name: 'key', type: 'String', expression: 'key'}],
+      }],
+      relationships: [],
+      metrics: [],
+      actions: [{
+        name: 'Close',
+        executor: {kind: 'mcp', mcp: {server: '//x/mcpServers/s', tool: 't'}},
+        parameters: [
+          {name: 'order', concept: 'Order', field: 'key', type: 'String'}
+        ],
+      }],
+    };
+    const warnings: string[] = [];
+    const doc = modelDocument(model, warnings) as any;
+    const param = doc.semantic_model[0].actions[0].parameters[0];
+    expect(param.concept).toBe('Order');
+    expect(param.field).toBe('key');
+    expect(param.datatype).toBeUndefined();
+    expect(warnings.some(w => w.includes('parameter \'order\''))).toBe(false);
+  });
+});

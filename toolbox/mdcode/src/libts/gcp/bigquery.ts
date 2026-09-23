@@ -101,7 +101,15 @@ export class BigQueryClient extends api.ApiClient {
   // referenced tables. With `dryRun` the statement is validated -- name
   // resolution, table existence and access -- but not executed, so it serves as
   // a cheap pre-flight probe over any reference form BigQuery can resolve.
-  async query(project: string, sql: string, location?: string, dryRun?: boolean): Promise<api.ApiResult<QueryResponse>> {
+  //
+  // `namedParameterTypes` maps a `@name` reference to its BigQuery type code
+  // (`INT64`, `STRING`, ...) and is only useful with `dryRun`: a dry run
+  // resolves an unbound `@name` on its own, so the types are not required to
+  // make one pass -- supplying them is what makes BigQuery type-check each
+  // parameter against the column it is used with. The values sent are empty
+  // (`parameterValue: {}`, an unset value), because a dry run never evaluates
+  // them.
+  async query(project: string, sql: string, location?: string, dryRun?: boolean, namedParameterTypes?: Record<string, string>): Promise<api.ApiResult<QueryResponse>> {
     const name = `projects/${project}/queries`;
     const body: Record<string, any> = { query: sql, useLegacySql: false };
     if (location) {
@@ -109,6 +117,15 @@ export class BigQueryClient extends api.ApiClient {
     }
     if (dryRun) {
       body.dryRun = true;
+    }
+    const parameterNames = Object.keys(namedParameterTypes ?? {});
+    if (parameterNames.length) {
+      body.parameterMode = 'NAMED';
+      body.queryParameters = parameterNames.map(name => ({
+        name,
+        parameterType: { type: namedParameterTypes![name] },
+        parameterValue: {},
+      }));
     }
     return await this._post<QueryResponse>(name, body);
   }
