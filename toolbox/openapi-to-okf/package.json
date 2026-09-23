@@ -1,0 +1,20 @@
+{
+  "name": "okf-openapi-to-okf",
+  "version": "0.1.0",
+  "description": "Convert any OpenAPI 3.x description into a conformant OKF v0.1 bundle. Dependency-free Node, no build step.",
+  "type": "module",
+  "bin": {
+    "openapi-to-okf": "./openapi-to-okf.mjs"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "okf",
+    "open-knowledge-format",
+    "openapi",
+    "knowledge-catalog",
+    "producer"
+  ]
+}
