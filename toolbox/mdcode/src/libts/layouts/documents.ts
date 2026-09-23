@@ -64,7 +64,7 @@ export class DocumentsLayout implements CatalogLayout {
     let body = '';
     if (entryPath) {
       const content = await fs.promises.readFile(entryPath, 'utf8');
-      const result = parseMarkdown(content);
+      const result = parseMarkdown(content, entryPath);
       parsed = result.entry;
       body = result.body;
     }
@@ -182,7 +182,7 @@ function deriveParentLocalName(name: string): string | undefined {
   return [...parentDir, INDEX_NAME].join('/');
 }
 
-export function parseMarkdown(content: string): { entry: md.Entry|null; body: string } {
+export function parseMarkdown(content: string, source?: string): { entry: md.Entry|null; body: string } {
   const lines = content.split(/\r?\n/);
   if (lines[0] !== '---') {
     return { entry: null, body: content };
@@ -203,7 +203,14 @@ export function parseMarkdown(content: string): { entry: md.Entry|null; body: st
   entry.resource = entry.resource ?? {}
   entry.resource.displayName = metadata.title;
   entry.resource.description = metadata.description;
-  if (metadata.tags) {
+  if (metadata.tags !== undefined && metadata.tags !== null) {
+    if (!Array.isArray(metadata.tags)) {
+      // A bare string is iterable, so without this the tags would silently
+      // become one label per character.
+      throw new Error(
+        `${source ?? 'frontmatter'}: "tags" must be a list, got ${JSON.stringify(metadata.tags)}`,
+      );
+    }
     entry.resource.labels = entry.resource.labels ?? {};
     for (const tag of metadata.tags) {
       entry.resource.labels[tag] = 'true';
