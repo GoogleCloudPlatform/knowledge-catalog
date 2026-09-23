@@ -134,6 +134,56 @@ def test_cross_links_become_edges(tmp_path: Path):
     assert ("tables/events", "tables/users") in pairs
 
 
+def _make_linked_pair(root: Path, link: str) -> None:
+    """Two concepts, a/a.md -> b/b.md, where the link form is caller-supplied."""
+    _write(
+        root / "a" / "a.md",
+        f"""
+        ---
+        type: Reference
+        title: A
+        description: Source concept.
+        timestamp: '2026-05-28T00:00:00+00:00'
+        ---
+        Links to {link}.
+        """,
+    )
+    _write(
+        root / "b" / "b.md",
+        """
+        ---
+        type: Reference
+        title: B
+        description: Target concept.
+        timestamp: '2026-05-28T00:00:00+00:00'
+        ---
+        Leaf concept.
+        """,
+    )
+
+
+def test_titled_links_become_edges(tmp_path: Path):
+    """CommonMark link titles must not suppress edge extraction (issue #48)."""
+    bundle = tmp_path / "bundle"
+    _make_linked_pair(bundle, '[Bee](../b/b.md "a note")')
+    out = tmp_path / "viz.html"
+    generate_visualization(bundle, out)
+    data = _extract_bundle_data(out.read_text(encoding="utf-8"))
+    pairs = {(e["data"]["source"], e["data"]["target"]) for e in data["edges"]}
+    assert ("a/a", "b/b") in pairs
+
+
+def test_absolute_bundle_relative_links_become_edges(tmp_path: Path):
+    """SPEC-recommended absolute (/-rooted) links must produce edges (issue #48)."""
+    bundle = tmp_path / "bundle"
+    _make_linked_pair(bundle, "[Bee](/b/b.md)")
+    out = tmp_path / "viz.html"
+    generate_visualization(bundle, out)
+    data = _extract_bundle_data(out.read_text(encoding="utf-8"))
+    pairs = {(e["data"]["source"], e["data"]["target"]) for e in data["edges"]}
+    assert ("a/a", "b/b") in pairs
+
+
 def test_missing_link_targets_are_skipped(tmp_path: Path):
     bundle = tmp_path / "bundle"
     _write(
