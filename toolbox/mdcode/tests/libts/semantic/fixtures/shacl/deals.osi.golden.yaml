@@ -1,0 +1,112 @@
+version: 0.2.0.dev0/google
+semantic_model:
+  # A logical deals model (as `kcmd owl import` would write it) that the
+  # shapes in deals.shapes.ttl add rules to.
+  - name: deals
+    entities:
+      - name: Party
+        fields:
+          - name: partyName
+            datatype: String
+      - name: ClientAccount
+        extends:
+          - Party
+        fields:
+          - name: accountCode
+            datatype: String
+      - name: Opportunity
+        fields:
+          - name: opportunityId
+            datatype: String
+          - name: stage
+            datatype: String
+          - name: amountUsdK
+            datatype: Decimal
+      - name: WonOpportunity
+        extends:
+          - Opportunity
+      - name: Contract
+        fields:
+          - name: contractType
+            datatype: String
+    relationships:
+      - name: hasBuyer
+        from: Opportunity
+        to: ClientAccount
+      - name: governedBy
+        from: Opportunity
+        to: Contract
+    constraints:
+      # Hand-written: never touched by a SHACL import.
+      - name: Opportunity_amount_reviewed
+        judgment: Every Opportunity.amountUsdK above 5000 has been reviewed.
+        on_violation: escalate
+      - name: Opportunity_hasBuyer_exactly_1
+        judgment: Each Opportunity has exactly one hasBuyer relationship to a
+          ClientAccount. An Opportunity with no hasBuyer relationship to a
+          ClientAccount, or with more than one, does not satisfy this rule.
+        description: "Every opportunity needs exactly one buyer account. (From SHACL:
+          OpportunityShape, hasBuyer sh:minCount 1 sh:maxCount 1.)"
+        on_violation: reject
+        severity: high
+      - name: Opportunity_governedBy_max_1
+        judgment: Each Opportunity has at most one governedBy relationship to a
+          Contract. An Opportunity with more than one does not satisfy this
+          rule.
+        description: "Link each Opportunity to at most one Contract through governedBy.
+          (From SHACL: OpportunityShape, governedBy sh:maxCount 1.)"
+        on_violation: warn
+        severity: medium
+      - name: Opportunity_opportunityId_required
+        judgment: Every Opportunity has a value for Opportunity.opportunityId. An
+          Opportunity whose Opportunity.opportunityId is null or missing does
+          not satisfy this rule.
+        description: "Set Opportunity.opportunityId on every Opportunity. (From SHACL:
+          OpportunityShape, opportunityId sh:minCount 1.)"
+        on_violation: reject
+        severity: high
+      - name: Opportunity_opportunityId_pattern
+        judgment: Every Opportunity.opportunityId that is set matches the regular
+          expression '^OPP-[0-9]{6}$'. An Opportunity whose
+          Opportunity.opportunityId does not match it does not satisfy this
+          rule.
+        description: "Make Opportunity.opportunityId match '^OPP-[0-9]{6}$'. (From
+          SHACL: OpportunityShape, opportunityId sh:pattern '^OPP-[0-9]{6}$'.)"
+        on_violation: reject
+        severity: high
+      - name: Opportunity_stage_in
+        judgment: Every Opportunity.stage that is set is one of 'Qualify', 'Propose',
+          'Won' or 'Lost'. An Opportunity with any other Opportunity.stage does
+          not satisfy this rule.
+        description: "Set Opportunity.stage to one of 'Qualify', 'Propose', 'Won' or
+          'Lost'. (From SHACL: OpportunityShape, stage sh:in (Qualify Propose
+          Won Lost).)"
+        on_violation: warn
+        severity: low
+      - name: Opportunity_amountUsdK_range
+        judgment: Every Opportunity.amountUsdK that is set is at least 0 and less than
+          1000000. An Opportunity whose Opportunity.amountUsdK is outside that
+          range does not satisfy this rule.
+        description: "Amounts are in USD thousands and never negative. (From SHACL:
+          OpportunityShape, amountUsdK sh:minInclusive 0 sh:maxExclusive
+          1000000.)"
+        on_violation: reject
+        severity: high
+      - name: WonOpportunity_hasBuyer_min_1
+        judgment: Each WonOpportunity has at least one hasBuyer relationship to a
+          ClientAccount. A WonOpportunity with no hasBuyer relationship to a
+          ClientAccount does not satisfy this rule.
+        description: "Link each WonOpportunity to at least one ClientAccount through
+          hasBuyer. (From SHACL: WonOpportunityShape, hasBuyer
+          sh:qualifiedMinCount 1 sh:class ClientAccount.)"
+        on_violation: reject
+        severity: high
+      - name: Contract_contractType_length
+        judgment: Every Contract.contractType that is set is at least 3 and at most 12
+          characters long. A Contract whose Contract.contractType is shorter or
+          longer does not satisfy this rule.
+        description: "Keep Contract.contractType at least 3 and at most 12 characters
+          long. (From SHACL: Contract, contractType sh:minLength 3 sh:maxLength
+          12.)"
+        on_violation: reject
+        severity: high

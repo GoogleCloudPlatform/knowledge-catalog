@@ -1,0 +1,25 @@
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix core: <http://example.com/core#> .
+
+# The shared upper module of a two-module ontology. commercial.ttl imports it
+# by IRI; `kcmd owl import commercial.ttl` finds this file beside it (named
+# after the IRI's last segment) and merges the two into one model.
+
+<http://example.com/core> a owl:Ontology ;
+    rdfs:label   "Core" ;
+    rdfs:comment "Shared upper classes." .
+
+core:Party a owl:Class ;
+    rdfs:comment "A person or organization." ;
+    owl:hasKey ( core:partyId ) .
+
+core:partyId a owl:DatatypeProperty ;
+    rdfs:domain core:Party ;
+    rdfs:range xsd:string .
+
+core:partyName a owl:DatatypeProperty ;
+    rdfs:domain core:Party ;
+    rdfs:range xsd:string ;
+    rdfs:label "name" .

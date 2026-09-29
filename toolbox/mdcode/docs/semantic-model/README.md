@@ -52,6 +52,7 @@ example that carries one model through the whole lifecycle, see the
 | [Model specification](model_spec.md) | the normative format: every YAML construct, what's OSI and what's a kcmd extension |
 | [What push and pull preserve](fidelity.md) | understand why something changed or wasn't recovered |
 | [Importing an OWL ontology](owl-import.md) | start from an OWL ontology instead of hand-authoring |
+| [Importing SHACL shapes](shacl-import.md) | add the rules a SHACL shapes graph states to a model as constraints |
 
 ## Prerequisites
 
@@ -357,3 +358,8 @@ properties → fields. The converted model is **unbound** (no sources, no
 deployment target), so bind each entity's `source`, fill the relationship join
 columns, and add a deployment target before `kcmd push` will deploy it — then it
 rides the normal push / pull above. See [Importing an OWL ontology](owl-import.md).
+
+Have SHACL shapes too? `kcmd shacl import shapes.ttl --into model.yaml` adds the
+rules they state (cardinalities, patterns, allowed values, ranges) to the model
+as native constraints, and re-running it replaces rather than duplicates. See
+[Importing SHACL shapes](shacl-import.md).

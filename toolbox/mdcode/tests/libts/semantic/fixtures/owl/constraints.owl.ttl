@@ -1,0 +1,94 @@
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix kcmd: <https://kcmd.dev/ns#> .
+@prefix ex:   <http://example.com/deals#> .
+
+# Constraint derivation fixture: every OWL axiom kind that becomes a native
+# model-level constraint, plus the ones dropped as structurally guaranteed and
+# the ones warned and skipped.
+
+<http://example.com/deals> a owl:Ontology ;
+    rdfs:comment "Deals, parties and contracts." .
+
+ex:Party a owl:Class ;
+    kcmd:severity "high" .
+ex:ClientAccount a owl:Class ;
+    rdfs:subClassOf ex:Party .
+ex:Supplier a owl:Class ;
+    rdfs:subClassOf ex:Party .
+
+ex:Opportunity a owl:Class ;
+    # exactly one buyer, rejected when broken (annotation on the restriction
+    # node wins over the class/property ones).
+    rdfs:subClassOf [ a owl:Restriction ;
+        owl:onProperty ex:hasBuyer ;
+        owl:qualifiedCardinality "1"^^xsd:nonNegativeInteger ;
+        owl:onClass ex:ClientAccount ;
+        kcmd:onViolation "reject" ] ;
+    # at most one governing contract.
+    rdfs:subClassOf [ a owl:Restriction ;
+        owl:onProperty ex:governedBy ;
+        owl:maxCardinality 1 ] ;
+    # a required field, and a fixed-value field.
+    rdfs:subClassOf [ a owl:Restriction ;
+        owl:onProperty ex:opportunityId ;
+        owl:minCardinality 1 ] ;
+    rdfs:subClassOf [ a owl:Restriction ;
+        owl:onProperty ex:currency ;
+        owl:hasValue "USD" ;
+        rdfs:comment "Amounts are recorded in USD thousands." ] ;
+    # structurally guaranteed -> dropped silently.
+    rdfs:subClassOf [ a owl:Restriction ;
+        owl:onProperty ex:currency ;
+        owl:maxCardinality 1 ] ;
+    rdfs:subClassOf [ a owl:Restriction ;
+        owl:onProperty ex:hasBuyer ;
+        owl:allValuesFrom ex:ClientAccount ] ;
+    # unresolvable -> warned and skipped.
+    rdfs:subClassOf [ a owl:Restriction ;
+        owl:onProperty ex:hasBuyer ;
+        owl:someValuesFrom [ owl:intersectionOf ( ex:ClientAccount ex:Supplier ) ] ] ;
+    rdfs:subClassOf [ a owl:Restriction ;
+        owl:onProperty ex:ghost ;
+        owl:someValuesFrom ex:Party ] ;
+    kcmd:severity "critical" .
+
+ex:WonOpportunity a owl:Class ;
+    rdfs:subClassOf ex:Opportunity ;
+    owl:disjointWith ex:LostOpportunity ;
+    # someValuesFrom on an inherited relationship, and an equivalentClass
+    # restriction on an inherited field.
+    rdfs:subClassOf [ a owl:Restriction ;
+        owl:onProperty ex:governedBy ;
+        owl:someValuesFrom ex:MSA ] ;
+    owl:equivalentClass [ a owl:Restriction ;
+        owl:onProperty ex:opportunityId ;
+        owl:someValuesFrom xsd:string ] .
+ex:LostOpportunity a owl:Class ;
+    rdfs:subClassOf ex:Opportunity .
+
+ex:Contract a owl:Class .
+ex:MSA a owl:Class ; rdfs:subClassOf ex:Contract .
+ex:SOW a owl:Class ; rdfs:subClassOf ex:Contract .
+ex:Amendment a owl:Class ; rdfs:subClassOf ex:Contract .
+
+[] a owl:AllDisjointClasses ;
+   owl:members ( ex:MSA ex:SOW ex:Amendment ) ;
+   kcmd:onViolation "escalate" .
+# Pairwise disjointness already stated by the set above: not restated.
+ex:MSA owl:disjointWith ex:SOW .
+
+ex:opportunityId a owl:DatatypeProperty ;
+    rdfs:domain ex:Opportunity ; rdfs:range xsd:string .
+ex:currency a owl:DatatypeProperty, owl:FunctionalProperty ;
+    rdfs:domain ex:Opportunity ; rdfs:range xsd:string .
+
+ex:hasBuyer a owl:ObjectProperty, owl:FunctionalProperty ;
+    rdfs:domain ex:Opportunity ; rdfs:range ex:ClientAccount ;
+    kcmd:severity "medium" .
+ex:governedBy a owl:ObjectProperty ;
+    rdfs:domain ex:Opportunity ; rdfs:range ex:Contract .
+ex:suppliedBy a owl:ObjectProperty, owl:FunctionalProperty ;
+    rdfs:domain ex:Contract ; rdfs:range ex:Supplier ;
+    kcmd:onViolation "block" .

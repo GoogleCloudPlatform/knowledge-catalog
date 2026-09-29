@@ -21,6 +21,7 @@ EDGE TABLES (
     KEY(order_id)
     SOURCE KEY(order_id) REFERENCES `Order`(order_id)
     DESTINATION KEY(customer_id) REFERENCES Customer(customer_id)
+    NO PROPERTIES
 );
 
 -- availability --

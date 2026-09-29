@@ -556,11 +556,13 @@ EDGE TABLES (
   `$PROJECT.$DATASET.orders` AS placed_by
     KEY(o_orderkey)
     SOURCE KEY(o_orderkey) REFERENCES orders(o_orderkey)
-    DESTINATION KEY(o_custkey) REFERENCES customer(c_custkey),
+    DESTINATION KEY(o_custkey) REFERENCES customer(c_custkey)
+    NO PROPERTIES,
   `$PROJECT.$DATASET.lineitem` AS part_of
     KEY(l_linekey)
     SOURCE KEY(l_linekey) REFERENCES lineitem(l_linekey)
     DESTINATION KEY(l_orderkey) REFERENCES orders(o_orderkey)
+    NO PROPERTIES
 );
 
 Deployed 1 BigQuery Graph(s).
@@ -836,11 +838,13 @@ EDGE TABLES (
   Orders AS placed_by
     KEY(OrderId)
     SOURCE KEY(OrderId) REFERENCES orders(OrderId)
-    DESTINATION KEY(CustomerId) REFERENCES customer(CustomerId),
+    DESTINATION KEY(CustomerId) REFERENCES customer(CustomerId)
+    NO PROPERTIES,
   LineItems AS part_of
     KEY(LineId)
     SOURCE KEY(LineId) REFERENCES lineitem(LineId)
     DESTINATION KEY(OrderId) REFERENCES orders(OrderId)
+    NO PROPERTIES
 );
 
 Deployed 1 Spanner Graph(s).

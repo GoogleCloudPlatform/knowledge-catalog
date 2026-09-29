@@ -56,6 +56,7 @@ semantic_model:
       - name: placedBy
         from: Order
         to: Customer
+        inverse: places
         ai_context:
           instructions: Links an order to the customer who placed it.
       - name: referredBy

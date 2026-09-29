@@ -18,3 +18,5 @@ now split by what you came to do:
   what neither keeps.
 - **[Importing an OWL ontology](semantic-model/owl-import.md)** — convert an OWL
   ontology into a semantic model, then deploy it the normal way.
+- **[Importing SHACL shapes](semantic-model/shacl-import.md)** — add the rules a
+  SHACL shapes graph states to a model as native constraints.

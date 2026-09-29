@@ -472,8 +472,8 @@ describe('publishing says when a blast radius outruns the push', () => {
           keys: ['id'],
           fields: [{name: 'id'}],
         },
-        // No physical table, so no dataSource or keys -- exactly what
-        // the entity loop skips.
+        // No physical table, so no dataSource or keys: published as a
+        // table-less abstract entry.
         {
           name: 'Party',
           abstract: true,
@@ -505,11 +505,11 @@ describe('publishing says when a blast radius outruns the push', () => {
     expect(w.filter(x => x.includes('affects'))).toEqual([]);
   });
 
-  test('an abstract concept is published, with a warning', () => {
+  test('an abstract concept has an entry, so it draws no warning', () => {
+    // Abstract entities publish as table-less semantic-entity entries, so the
+    // catalog holds an entry for the concept the action changes.
     const w = published([{concept: 'Party', operation: 'modify'}]);
-    const about = w.filter(x => x.includes(`affects 'Party'`));
-    expect(about).toHaveLength(1);
-    expect(about[0]).toContain('has no entry for');
+    expect(w.filter(x => x.includes(`affects 'Party'`))).toEqual([]);
   });
 });
 

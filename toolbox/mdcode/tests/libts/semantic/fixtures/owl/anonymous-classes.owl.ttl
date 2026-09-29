@@ -1,0 +1,75 @@
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex:   <http://example.com/deals#> .
+
+# Regression fixture: anonymous class expressions in the form Protégé (and the
+# OWL API's Turtle writer) emits -- blank nodes explicitly TYPED `owl:Class` /
+# `rdfs:Datatype`. Only the four named classes below may become entities; the
+# typed blank nodes must neither appear as entities (formerly named after their
+# parser-generated ids, e.g. `n3-12`) nor count in the import stats.
+
+<http://example.com/deals> a owl:Ontology ;
+  rdfs:label "Deals" .
+
+ex:Party a owl:Class ;
+  rdfs:label "Party" .
+
+ex:Opportunity a owl:Class ;
+  rdfs:label "Opportunity" .
+
+ex:Contract a owl:Class ;
+  rdfs:label "Contract" .
+
+# owl:intersectionOf wrapper: a named class plus a restriction.
+ex:WonOpportunity a owl:Class ;
+  rdfs:label "Won Opportunity" ;
+  rdfs:subClassOf ex:Opportunity ;
+  owl:equivalentClass [
+    a owl:Class ;
+    owl:intersectionOf (
+      ex:Opportunity
+      [ a owl:Restriction ; owl:onProperty ex:governedBy ; owl:someValuesFrom ex:Contract ]
+    )
+  ] .
+
+# owl:unionOf wrapper used as a superclass.
+ex:Opportunity rdfs:subClassOf [
+  a owl:Class ;
+  owl:unionOf ( ex:Party ex:Contract )
+] .
+
+# owl:complementOf wrapper.
+ex:Contract rdfs:subClassOf [
+  a owl:Class ;
+  owl:complementOf ex:Party
+] .
+
+# owl:oneOf enumeration wrapper.
+ex:Party owl:equivalentClass [
+  a owl:Class ;
+  owl:oneOf ( ex:acme ex:globex )
+] .
+
+ex:name a owl:DatatypeProperty ;
+  rdfs:domain ex:Party ;
+  rdfs:range xsd:string .
+
+# A typed anonymous datatype (facet restriction) as a range: the property
+# still imports; the blank datatype is not a term of its own.
+ex:amount a owl:DatatypeProperty ;
+  rdfs:domain ex:Opportunity ;
+  rdfs:range [
+    a rdfs:Datatype ;
+    owl:onDatatype xsd:decimal ;
+    owl:withRestrictions ( [ xsd:minInclusive "0"^^xsd:decimal ] )
+  ] .
+
+ex:hasBuyer a owl:ObjectProperty ;
+  rdfs:domain ex:Opportunity ;
+  rdfs:range ex:Party .
+
+ex:governedBy a owl:ObjectProperty ;
+  rdfs:domain ex:Opportunity ;
+  rdfs:range ex:Contract .

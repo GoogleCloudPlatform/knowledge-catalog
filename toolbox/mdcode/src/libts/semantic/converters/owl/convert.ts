@@ -26,6 +26,12 @@ export interface ConvertResult {
 /**
  * Converts a Turtle (.ttl) OWL ontology to an OSI YAML document.
  *
+ * `turtle` is one document, or several modules of ONE ontology (e.g. a core
+ * module plus the domain modules that import it). Several are merged into a
+ * single model before mapping -- see parse.parseOwl for the merge rules (RDF
+ * merge; the first document's header describes the model; cross-module
+ * references resolve).
+ *
  * `modelName` names the resulting semantic model (the CLI derives it from the
  * source filename). The output is a purely LOGICAL model -- see to_ir.ts and
  * the user guide -- with no physical binding; it loads and pushes to Knowledge
@@ -38,7 +44,7 @@ export interface ConvertResult {
  * reported as warnings, not failures.
  */
 export function convertOwlToOsi(
-    turtle: string, modelName: string,
+    turtle: string|string[], modelName: string,
     opts: {compactFlow?: boolean} = {}): ConvertResult {
   const owl = parseOwl(turtle);
   const {model, warnings: mapWarnings, stats} = owlToIr(owl, modelName);

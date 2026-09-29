@@ -7,7 +7,9 @@
 
 import {describe, expect, test} from 'bun:test';
 
+import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {SemanticModel} from '../../../src/libts/semantic/ir';
+import {fromDocument} from '../../../src/libts/semantic/loader';
 import {mergeProfile, pruneUnavailable} from '../../../src/libts/semantic/resolve_profiles';
 
 const GRAPH =
@@ -588,4 +590,141 @@ describe('an action a binding cannot perform is unavailable', () => {
     const {report} = pruneUnavailable(irModel(), 'operational');
     expect(report.droppedActions).toEqual([]);
   });
+});
+
+
+// An inherited field is bound on the concrete subtype that has a table. This is
+// the shape the OWL importer writes for a hierarchy: the supertype is abstract
+// (no source) and declares the shared fields once; each subclass declares only
+// its own fields plus `extends`.
+function hierarchyDoc(): any {
+  return {
+    version: '0.2.0.dev0/google',
+    semantic_model: [{
+      name: 'docs',
+      entities: [
+        {
+          name: 'Record', abstract: true, primary_key: ['docId'],
+          fields: [{name: 'docId', label: 'Document ID'}],
+        },
+        {
+          name: 'Doc', abstract: true, extends: ['Record'],
+          primary_key: ['docId'],
+          fields: [{name: 'title', description: 'Human title.'}],
+        },
+        {
+          name: 'Opportunity', extends: ['Doc'], primary_key: ['docId'],
+          fields: [{name: 'amount'}],
+        },
+      ],
+    }],
+  };
+}
+
+function hierarchyProfile(fields: any[]): any {
+  return {
+    semantic_model: [{
+      name: 'docs',
+      entities: [{name: 'Opportunity', source: TBL('opportunity'), fields}],
+    }],
+  };
+}
+
+describe('a profile binds an inherited field on the subtype', () => {
+  test('binds a field declared on a (transitive) supertype', () => {
+    const {doc, error} = mergeProfile(
+        hierarchyDoc(),
+        hierarchyProfile([
+          {name: 'docId', expression: 'opp_id'},    // from Record (2 levels)
+          {name: 'title', expression: 'opp_name'},  // from Doc (1 level)
+          {name: 'amount', expression: 'amt'},      // own
+        ]),
+        'bq');
+    expect(error).toBeUndefined();
+    // Materialized on the subtype as the supertype declares it, plus the column.
+    expect(fieldOf(doc, 'Opportunity', 'docId'))
+        .toEqual({name: 'docId', label: 'Document ID', expression: 'opp_id'});
+    expect(fieldOf(doc, 'Opportunity', 'title')).toEqual({
+      name: 'title', description: 'Human title.', expression: 'opp_name',
+    });
+    // The supertypes themselves are untouched and stay unbound.
+    expect(entityOf(doc, 'Doc').fields).toEqual([
+      {name: 'title', description: 'Human title.'},
+    ]);
+    expect(fieldOf(doc, 'Record', 'docId').expression).toBeUndefined();
+  });
+
+  test('the nearest ancestor declaration wins', () => {
+    const logical = hierarchyDoc();
+    // Doc redeclares Record's docId with its own label: Doc is nearer.
+    entityOf(logical, 'Doc').fields.push({name: 'docId', label: 'Doc key'});
+    const {doc, error} = mergeProfile(
+        logical, hierarchyProfile([{name: 'docId', expression: 'opp_id'}]),
+        'bq');
+    expect(error).toBeUndefined();
+    expect(fieldOf(doc, 'Opportunity', 'docId').label).toBe('Doc key');
+  });
+
+  test('an inherited field left unbound is not materialized', () => {
+    const {doc, error} = mergeProfile(
+        hierarchyDoc(), hierarchyProfile([{name: 'amount', expression: 'a'}]),
+        'bq');
+    expect(error).toBeUndefined();
+    expect(entityOf(doc, 'Opportunity').fields.map((f: any) => f.name))
+        .toEqual(['amount']);
+  });
+
+  test('a field neither declared nor inherited is still rejected', () => {
+    const {error} = mergeProfile(
+        hierarchyDoc(), hierarchyProfile([{name: 'ghost', expression: 'g'}]),
+        'bq');
+    expect(error).toMatch(
+        /field 'Opportunity.ghost' is not in the logical model \(neither declared/);
+  });
+
+  test('an inherited field binding is still a bare column', () => {
+    const {error} = mergeProfile(
+        hierarchyDoc(),
+        hierarchyProfile([{name: 'docId', expression: 'CONCAT(a, b)'}]), 'bq');
+    expect(error).toMatch(/bare column reference/);
+  });
+
+  test('a cycle in extends does not hang the lookup', () => {
+    const logical = hierarchyDoc();
+    entityOf(logical, 'Record').extends = ['Opportunity'];
+    const {error} = mergeProfile(
+        logical, hierarchyProfile([{name: 'ghost', expression: 'g'}]), 'bq');
+    expect(error).toMatch(/not in the logical model/);
+  });
+
+  test('the inputs are never mutated', () => {
+    const logical = hierarchyDoc();
+    const profile = hierarchyProfile([{name: 'docId', expression: 'opp_id'}]);
+    const before = JSON.stringify(logical);
+    mergeProfile(logical, profile, 'bq');
+    expect(JSON.stringify(logical)).toBe(before);
+  });
+
+  test('the graph reads the subtype column for the node and supertype labels',
+       () => {
+         const {doc, error} = mergeProfile(
+             hierarchyDoc(),
+             hierarchyProfile([
+               {name: 'docId', expression: 'opp_id'},
+               {name: 'title', expression: 'opp_name'},
+               {name: 'amount', expression: 'amt'},
+             ]),
+             'bq');
+         expect(error).toBeUndefined();
+         const {models} = fromDocument(doc);
+         const {ddl, warnings} = generatePropertyGraph(models[0]);
+         expect(warnings.join('\n')).not.toMatch(/has no column/);
+         expect(ddl).toMatch(/KEY\(opp_id\)/);
+         // The abstract supertypes' shared labels carry the bound properties,
+         // read from the subtype's columns.
+         const flat = ddl.replace(/\s+/g, ' ');
+         expect(flat).toMatch(
+             /LABEL Record PROPERTIES\( opp_id AS docId OPTIONS\(description="Document ID"\) \)/);
+         expect(flat).toMatch(/LABEL Doc PROPERTIES\( opp_name AS title .*opp_id AS docId .*\) LABEL Record/);
+       });
 });

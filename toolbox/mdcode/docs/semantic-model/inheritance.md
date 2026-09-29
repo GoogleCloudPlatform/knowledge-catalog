@@ -329,3 +329,58 @@ expose the identical field set. Each rule and the error it raises is in
 Inheritance deploys the same way to BigQuery Graph and Spanner Graph — the extra
 labels and the flattened fields are identical on both backends. On Spanner the
 model carries no measures, as it does for any model.
+
+## Relationship inheritance
+
+Relationships have a hierarchy of their own, separate from the entity one. A
+general relationship names what several specific edges have in common, so one
+query reaches all of them. `hasCounterparty` links a commercial document to the
+organization on its other side; on an opportunity that organization is the
+buyer, and on an invoice it is the payer:
+
+```yaml
+relationships:
+  - name: hasCounterparty
+    from: CommercialDocument
+    to: Organization
+    abstract: true              # a label over its sub-relationships, not an edge
+  - name: hasBuyer
+    from: Opportunity
+    to: Client
+    extends: [hasCounterparty]
+    from_columns: [buyer_id]
+    to_columns: [org_id]
+  - name: hasPayer
+    from: Invoice
+    to: Organization
+    extends: [hasCounterparty]
+    from_columns: [payer_id]
+    to_columns: [org_id]
+```
+
+Both keys are `/google` extensions (`version: …/google`):
+
+- **`extends: [RelName, …]`** — the parents this relationship specializes. On a
+  graph push each concrete edge table keeps its own `DEFAULT LABEL` (and
+  description) and also carries `LABEL <parent> NO PROPERTIES` for every
+  ancestor, nearest first. `MATCH (d)-[:hasCounterparty]->(o)` then spans the
+  `hasBuyer` and `hasPayer` edge tables. The labels carry no properties, so
+  edge tables over different sources never have to agree on columns.
+- **`abstract: true`** — the relationship is only a label. It keeps `from`/`to`,
+  which document what it connects, but takes no `from_columns`/`to_columns` and
+  deploys no edge table. An abstract relationship nothing extends is warned
+  (it would reach no edges).
+
+The same one rule applies as for entities. A sub-relationship's `from` and `to`
+should be its parent's ends or subtypes of them; the loader warns otherwise.
+Keep the parent abstract. A *concrete* parent works too — it deploys as an edge
+table whose `DEFAULT LABEL` carries `NO PROPERTIES`, with its description
+dropped with a warning — but an edge present both in its table and in a child's
+table then counts twice under the parent label.
+
+Knowledge Catalog publishes each concrete relationship as usual and appends a
+`Specializes: hasCounterparty.` line to its join description; an abstract
+relationship publishes no link. See [Reference → Relationship
+hierarchies](reference.md#relationship-hierarchies) for every rule, and [OWL
+import](owl-import.md#property-hierarchies-rdfssubpropertyof) for how
+`rdfs:subPropertyOf` maps onto it.

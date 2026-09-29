@@ -35,7 +35,8 @@ agree on every structural row and differ only where a Spanner target has no
 | Metric                                                         | `semantic-metric` entry         | name, entity, description, instructions, type⁵ | `MEASURE`⁴                                                           | — dropped (no `MEASURE`)                                             |
 | Relationship (1:1 / 1:N)                                       | `schema-join` link              | ✓ (name normalized⁶)                           | `EDGE TABLE`                                                         | `EDGE TABLE`                                                         |
 | Relationship (M:N / `association`)                             | — not stored                    | —                                              | `EDGE TABLE` (via junction table)                                    | `EDGE TABLE` (via junction table)                                    |
-| Entity `extends`                                               | — not modelled                  | —                                              | `LABEL` clauses + flattened fields                                   | `LABEL` clauses + flattened fields                                   |
+| Entity `extends`                                               | `Specializes:` description paragraph¹⁵ | ✓¹⁵                                     | `LABEL` clauses + flattened fields                                   | `LABEL` clauses + flattened fields                                   |
+| Entity `abstract`                                              | table-less `semantic-entity` entry + `Abstract:` paragraph¹⁵ | ✓¹⁵                 | — no node table (a label on its subtypes)                            | — no node table (a label on its subtypes)                            |
 | Action                                                         | `semantic-action` entry¹²       | ✓¹²                                            | — not deployed¹²                                                     | — not deployed¹²                                                     |
 | Constraint                                                     | `semantic-constraint` entry¹³   | ✓¹³                                            | — not deployed¹³                                                     | — not deployed¹³                                                     |
 | `description` (entity / metric / field / relationship)         | entry description / aspect      | ✓                                              | `OPTIONS(description)`                                               | — dropped                                                            |
@@ -125,6 +126,16 @@ agree on every structural row and differ only where a Spanner target has no
     binding — the one named by `--profile`, else the default binding, which is
     what an `--all-profiles` run always records, the two flags being mutually
     exclusive. See [Binding profiles](profiles.md).
+15. **Class hierarchy on the catalog.** Neither closed entity template has a
+    slot for a supertype, so each entity that `extends` others ends its entry
+    description with a `Specializes: Party, Auditable.` paragraph, and an
+    `abstract` entity — published as a table-less entry (`resources: []`, its
+    own fields, no key) — ends it with `Abstract: no table of its own.`. Pull
+    peels both off, restoring `extends` and `abstract`, so the pulled model
+    loads strictly. A parent the pull did not recover is dropped from `extends`
+    with a warning. Inherited fields are not flattened onto a subtype's entry:
+    each entry lists the fields it declares. A relationship with an abstract
+    endpoint publishes no link (there is no table behind that end).
 
 ## To Knowledge Catalog
 

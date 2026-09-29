@@ -1,0 +1,40 @@
+version: 0.2.0.dev0/google
+semantic_model:
+  - name: commercial
+    description: "Commercial domain: client accounts and the opportunities they buy."
+    entities:
+      - name: ClientAccount
+        extends:
+          - Party
+        description: An organization that buys services.
+      - name: Opportunity
+        primary_key:
+          - opportunityId
+        description: A potential sale to a client account.
+        fields:
+          - name: opportunityId
+            datatype: String
+          - name: amount
+            datatype: Decimal
+            description: Total contract value, in USD thousands.
+      - name: Party
+        primary_key:
+          - partyId
+        description: A person or organization.
+        fields:
+          - name: accountTier
+            datatype: String
+          - name: partyId
+            datatype: String
+          - name: partyName
+            datatype: String
+            label: name
+    relationships:
+      - name: hasBuyer
+        from: Opportunity
+        to: ClientAccount
+        ai_context:
+          instructions: The client account buying the opportunity.
+      - name: ownedBy
+        from: Opportunity
+        to: Party

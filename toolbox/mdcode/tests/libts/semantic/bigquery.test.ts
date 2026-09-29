@@ -730,6 +730,109 @@ describe('abstract (table-less) superclasses are eliminated to labels', () => {
 });
 
 
+describe('an empty label in a hierarchy says NO PROPERTIES', () => {
+  // A LABEL (or DEFAULT LABEL) with no properties clause defaults to
+  // PROPERTIES ARE ALL COLUMNS in BigQuery. Inside a class hierarchy that
+  // re-exposes every column of the table under the label, colliding with the
+  // explicitly rendered definition of the same property under another label
+  // on the same table -- BigQuery rejects it ("Property 'disposition' has more
+  // than one definition in the element table", seen live on
+  // KeyBuyer ⊑ Person ⊑ Party ⊑ BusinessObject with a field-less abstract
+  // BusinessObject). So an empty label must be spelled `NO PROPERTIES`.
+  function chainModel(): SemanticModel {
+    return {
+      name: 'chain',
+      entities: [
+        // Abstract root with NO fields.
+        {
+          name: 'BusinessObject',
+          dataSource: '',
+          keys: [],
+          abstract: true,
+          fields: [],
+        },
+        // Abstract middle whose only field the subtype leaves unbound.
+        {
+          name: 'Party',
+          dataSource: '',
+          keys: [],
+          abstract: true,
+          extends: ['BusinessObject'],
+          fields: [{name: 'legalName'}],
+        },
+        {
+          name: 'KeyBuyer',
+          dataSource: 'proj.ds.key_buyer',
+          keys: ['id'],
+          extends: ['Party'],
+          fields: [
+            {name: 'id', expression: 'kb_id'},
+            {name: 'disposition', expression: 'disposition',
+             description: 'Buying stance'},
+          ],
+        },
+      ],
+      relationships: [],
+      metrics: [],
+    };
+  }
+
+  test('an abstract ancestor with zero fields gets NO PROPERTIES', () => {
+    const {ddl} = generatePropertyGraph(chainModel(), GEN_OPTS);
+    expect(ddl).toMatch(/LABEL BusinessObject\s*\n\s*NO PROPERTIES/);
+  });
+
+  test(
+      'an ancestor whose fields are all unbound in the subtype gets NO ' +
+          'PROPERTIES',
+      () => {
+        // KeyBuyer does not bind Party.legalName, so Party's signature on this
+        // table is empty -- it must not fall back to ALL COLUMNS.
+        const {ddl} = generatePropertyGraph(chainModel(), GEN_OPTS);
+        expect(ddl).toMatch(/LABEL Party\s*\n\s*NO PROPERTIES/);
+      });
+
+  test('every LABEL in the hierarchy states its properties explicitly', () => {
+    const {ddl} = generatePropertyGraph(chainModel(), GEN_OPTS);
+    // Each LABEL line is followed by PROPERTIES(...) or NO PROPERTIES, never
+    // by another LABEL or the end of the element table.
+    for (const m of ddl.matchAll(/LABEL \w+\s*\n\s*(\S+)/g)) {
+      expect(['PROPERTIES(', 'NO']).toContain(
+          m[1].startsWith('PROPERTIES(') ? 'PROPERTIES(' : m[1]);
+    }
+  });
+
+  test('a node in a hierarchy with no bound fields gets NO PROPERTIES', () => {
+    const model = chainModel();
+    // Hand-built IR, unpruned: KeyBuyer declares no fields of its own (its
+    // key column is referenced raw) and inherits only the unbound
+    // Party.legalName, so its own DEFAULT LABEL has nothing to list.
+    model.entities![2].fields = [];
+    const {ddl} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toMatch(/DEFAULT LABEL\s*\n\s*NO PROPERTIES/);
+  });
+
+  test('a KEY-only node outside any hierarchy says NO PROPERTIES (implicit label)', () => {
+    // Left bare, its label would default to ALL COLUMNS and expose every
+    // column of the table, modeled or not (fix/bq-edge-no-properties).
+    const model: SemanticModel = {
+      name: 'flat',
+      entities: [{
+        name: 'Tag',
+        dataSource: 'proj.ds.tag',
+        keys: ['id'],
+        fields: [],
+      }],
+      relationships: [],
+      metrics: [],
+    };
+    const {ddl} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toMatch(/KEY\(id\)\s*\n\s*NO PROPERTIES/);
+    expect(ddl).not.toContain('DEFAULT LABEL');
+  });
+});
+
+
 describe('supertype shared-label constraints (inheritance)', () => {
   // Person is a supertype (Customer extends it), so its label is shared across
   // both element tables. BigQuery forbids OPTIONS on a shared label and forbids

@@ -19,6 +19,7 @@ EDGE TABLES (
     KEY(order_id)
     SOURCE KEY(order_id) REFERENCES `Order`(order_id)
     DESTINATION KEY(group_fk) REFERENCES `Group`(group_id)
+    NO PROPERTIES
 );
 
 -- warnings --

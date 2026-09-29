@@ -9,25 +9,36 @@
 //   owl:Class                     -> dataset (entity), no source (logical)
 //   owl:DatatypeProperty          -> field on each domain class's dataset
 //   owl:ObjectProperty            -> relationship (edge), domain -> range
+//   owl:inverseOf                 -> relationship inverse (one edge, read back)
 //   rdfs:range xsd:*              -> field datatype (see XSD_DATATYPES)
 //   owl:hasKey                    -> dataset primary_key
 //   owl:InverseFunctionalProperty -> dataset unique_keys (or primary_key)
 //   rdfs:subClassOf               -> dataset extends (entity inheritance)
+//   rdfs:subPropertyOf (object)   -> relationship extends; the parent becomes
+//                                    abstract (relationship inheritance)
 //   rdfs:label                    -> field label / synonym (no label slot)
 //   rdfs:comment/skos:definition/dcterms:/dc: -> description
 //   skos:example                  -> ai_context.examples
 //   owl:Ontology header           -> model description / ai_context
+//   owl:Restriction (subClassOf / equivalentClass), owl:FunctionalProperty
+//   (object), owl:disjointWith, owl:AllDisjointClasses
+//                                 -> model constraints (see constraints.ts)
+//   owl:equivalentClass/Property (named) -> ai_context.synonyms
+//   owl:deprecated                -> "DEPRECATED:" description + instruction
+//   owl:Transitive/SymmetricProperty -> relationship ai_context.instructions
+//                                    (see annotations.ts)
 //
 // The importer is IMPORT-ONLY: it maps the constructs above and DROPS every
 // other OWL construct rather than carrying it. Facts with no native OSI home --
-// rdfs:subPropertyOf, owl:inverseOf, owl:equivalentClass / owl:disjointWith /
-// owl:equivalentProperty / owl:propertyDisjointWith, the property
-// characteristics (symmetric, transitive, ...), owl:oneOf,
-// owl:propertyChainAxiom, the owl:AllDisjoint* / owl:AllDifferent set axioms,
-// rdfs:seeAlso / isDefinedBy, and owl:deprecated / versionInfo -- are NOT
-// imported. An earlier version carried them verbatim in a GOOGLE custom
-// extension; that was removed so an imported model is a clean OSI model with no
-// opaque carrier. The user guide's table documents what maps and what drops.
+// rdfs:subPropertyOf between datatype properties,
+// owl:propertyDisjointWith, the remaining
+// property characteristics (reflexive, irreflexive, asymmetric, functional on
+// a datatype property), owl:oneOf, owl:propertyChainAxiom, the
+// owl:AllDisjointProperties / owl:AllDifferent set axioms, rdfs:isDefinedBy,
+// and owl:versionInfo on a term -- are NOT imported. An earlier version carried
+// them verbatim in a GOOGLE custom extension; that was removed so an imported
+// model is a clean OSI model with no opaque carrier. The user guide's table
+// documents what maps and what drops.
 //
 // The result is a purely LOGICAL model: an ontology declares meaning, not
 // physical tables, so entities carry no source, fields no expression, and
@@ -41,6 +52,8 @@
 
 import {AiContext, Entity, Field, Relationship, SemanticModel,} from '../../ir';
 
+import {applyOwlAnnotations} from './annotations';
+import {owlConstraints} from './constraints';
 import {OwlModel, OwlOntology} from './model';
 
 export interface ToIrResult {
@@ -106,7 +119,9 @@ const XSD_DATATYPES: Record<string, Field['type']> = {
   [`${XSD}dateTimeStamp`]: 'DateTimeTz',
 };
 
-function datatypeFor(rangeIri: string|undefined): Field['type'] {
+// Exported for the SHACL importer, which compares a shape's sh:datatype with a
+// field's datatype through this same table (converters/shacl/constraints.ts).
+export function datatypeFor(rangeIri: string|undefined): Field['type'] {
   if (rangeIri && XSD_DATATYPES[rangeIri]) return XSD_DATATYPES[rangeIri];
   return 'Opaque';
 }
@@ -207,6 +222,45 @@ function dedupe(items: string[]): string[] {
 
 function arraysEqual(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+// The local name of an IRI (after the last `#`, else the last `/`), the form
+// every emitted name takes. Cross-references such as rdfs:subPropertyOf are
+// kept as full IRIs by the parser.
+function iriLocalName(iri: string): string {
+  const cut = Math.max(iri.lastIndexOf('#'), iri.lastIndexOf('/'));
+  return cut >= 0 ? iri.slice(cut + 1) : iri;
+}
+
+// A class followed by its transitive `extends` ancestors, nearest first
+// (breadth-first), each once. Unknown names end the walk quietly.
+function entityLineage(
+    cls: string, entitiesByName: Map<string, Entity>): string[] {
+  const out: string[] = [];
+  const queue = [cls];
+  while (queue.length) {
+    const next = queue.shift()!;
+    if (out.includes(next)) continue;
+    out.push(next);
+    queue.push(...(entitiesByName.get(next)?.extends ?? []));
+  }
+  return out;
+}
+
+// The endpoint a superproperty is given when it declares none on that side:
+// the NEAREST common superclass of its subproperties' endpoints -- the most
+// specific class every subproperty edge is guaranteed to start (or end) at.
+// `inRegion: Account -> Region` and `inTerritory: Opportunity -> Territory`
+// under a domain-less `belongsToTerritory` give it the nearest class both
+// Account and Opportunity extend. "Nearest" follows the first endpoint's
+// breadth-first lineage, so a class that is itself one of the endpoints wins
+// when the others descend from it. Undefined when the endpoints share no
+// ancestor (the superproperty is then skipped, as before).
+function inferredEnd(
+    ends: string[], lineage: (cls: string) => string[]): string|undefined {
+  const [first, ...rest] = ends;
+  const others = rest.map(e => new Set(lineage(e)));
+  return lineage(first).find(c => others.every(s => s.has(c)));
 }
 
 // --- Mapping. ---------------------------------------------------------------
@@ -364,15 +418,80 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   // classes. The edge is logical: it carries only its direction (source entity
   // -> destination entity), no join columns. The foreign-key / key columns are
   // added to the model (logical grain, not a binding) before a graph deploy.
+  //
+  // rdfs:subPropertyOf between two object properties of this ontology maps to
+  // relationship inheritance (Relationship.extends). A superproperty commonly
+  // omits an endpoint its subproperties all pin down (e.g. a transitive
+  // `belongsToTerritory` with a range but no domain, specialized by
+  // `inRegion: Account -> Region`); rather than drop such a superproperty --
+  // and lose the label every subproperty would carry -- the missing end is
+  // INFERRED from its subproperties (see inferredEnd).
+  const propByName = new Map(owl.objectProperties.map(p => [p.localName, p]));
+  const superOf = (p: typeof owl.objectProperties[number]): string[] =>
+      dedupe(p.subPropertyOf.map(iriLocalName))
+          .filter(n => n !== p.localName && propByName.has(n));
+  const subsOf = new Map<string, string[]>();
+  for (const p of owl.objectProperties) {
+    for (const s of superOf(p)) {
+      subsOf.set(s, [...(subsOf.get(s) ?? []), p.localName]);
+    }
+  }
+  const lineage = (cls: string): string[] =>
+      entityLineage(cls, entitiesByName);
+  // The declared-or-inferred endpoint of property `name` on one side
+  // ('domains' = source, 'ranges' = destination), memoized; `visiting` breaks
+  // a subPropertyOf cycle.
+  const endMemo = new Map<string, string|undefined>();
+  const visiting = new Set<string>();
+  const endOf = (name: string, side: 'domains'|'ranges'): string|undefined => {
+    const key = `${side}:${name}`;
+    if (endMemo.has(key)) return endMemo.get(key);
+    const p = propByName.get(name)!;
+    let end: string|undefined = p[side][0];
+    if (!end && !visiting.has(name)) {
+      visiting.add(name);
+      const childEnds = (subsOf.get(name) ?? []).map(c => endOf(c, side));
+      visiting.delete(name);
+      if (childEnds.length && childEnds.every(e => e !== undefined)) {
+        end = inferredEnd(childEnds as string[], lineage);
+      }
+    }
+    endMemo.set(key, end);
+    return end;
+  };
+
+  // owl:inverseOf pairs are folded first (see planInverseFolds): the side that
+  // only names the other edge read backwards becomes that edge's `inverse:`
+  // instead of a second relationship, so it is skipped here and attached after.
+  const {folded, inverseFor} = planInverseFolds(owl, warnings);
   const relationships: Relationship[] = [];
   for (const p of owl.objectProperties) {
-    const domain = p.domains[0];
-    const range = p.ranges[0];
+    if (folded.has(p.localName)) continue;
+    const declaredDomain = p.domains[0];
+    const declaredRange = p.ranges[0];
+    const domain = endOf(p.localName, 'domains');
+    const range = endOf(p.localName, 'ranges');
     if (!domain || !range) {
+      const hasSubs = (subsOf.get(p.localName) ?? []).length > 0;
       warnings.push(
           `object property '${p.localName}' is missing an rdfs:domain or ` +
-          `rdfs:range; skipped (a relationship needs both endpoints).`);
+          `rdfs:range; skipped (a relationship needs both endpoints` +
+          (hasSubs ? `, and its subproperties' endpoints share no common ` +
+                   `superclass to infer the missing one from` :
+                     '') +
+          `).`);
       continue;
+    }
+    for (const [side, declared, inferred] of [
+             ['rdfs:domain', declaredDomain, domain],
+             ['rdfs:range', declaredRange, range],
+    ] as const) {
+      if (!declared) {
+        warnings.push(
+            `object property '${p.localName}' declares no ${side}; inferred ` +
+            `'${inferred}' (the nearest common superclass of its ` +
+            `subproperties' endpoints).`);
+      }
     }
     // A relationship maps ONE source to ONE destination. Multiple domains or
     // ranges mean an intersection in OWL, which has no clean single-edge shape,
@@ -417,6 +536,77 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     relationships.push(relationship);
   }
 
+  // Relationship inheritance, once the emitted set is known. `extends` keeps
+  // only superproperties that became relationships (one skipped above cannot
+  // be referenced; the loader would flag a dangling parent), dropping the
+  // rest with a warning -- the rdfs:subClassOf policy for entities. A
+  // superproperty that some emitted relationship extends is marked ABSTRACT:
+  // in OWL it is the umbrella over its subproperties (every `hasBuyer` edge is
+  // a `hasCounterparty` edge), so in a graph it is the shared LABEL on their
+  // edge tables rather than an edge table of its own. Delete `abstract: true`
+  // from the model to bind it as a separate edge as well.
+  const emitted = new Set(relationships.map(r => r.name));
+  for (const r of relationships) {
+    const parents = superOf(propByName.get(r.name)!);
+    const known = parents.filter(n => emitted.has(n));
+    const unknown = parents.filter(n => !emitted.has(n));
+    if (known.length) r.extends = known;
+    if (unknown.length) {
+      warnings.push(
+          `object property '${r.name}' declares rdfs:subPropertyOf ${
+              unknown.map(u => `'${u}'`).join(', ')}, which did not become a ` +
+          `relationship; dropped from its 'extends'.`);
+    }
+  }
+  const extended = new Set(relationships.flatMap(r => r.extends ?? []));
+  for (const r of relationships) {
+    if (extended.has(r.name)) r.abstract = true;
+  }
+
+  // Attach each folded inverse to its (now emitted) forward edge. The inverse
+  // name shares the graph's label namespace with every entity and relationship
+  // (it becomes a second edge table's alias on a graph deploy), so a clash
+  // drops the inverse -- with a warning -- rather than failing the import.
+  // Done before annotations and constraints, which may read `inverse`: a
+  // restriction phrased through the inverse name (`≤1 governedBy.X`) resolves
+  // to the forward edge read backwards (see constraints.ts).
+  let inversesAttached = 0;
+  const taken = new Set([
+    ...entities.map(e => e.name.toLowerCase()),
+    ...relationships.map(r => r.name.toLowerCase()),
+  ]);
+  for (const [forward, inverse] of inverseFor) {
+    const rel = relationships.find(r => r.name === forward);
+    if (!rel) {
+      warnings.push(
+          `object property '${inverse}' is owl:inverseOf '${forward}', which ` +
+          `was not imported as a relationship; '${inverse}' is dropped too ` +
+          `(an inverse only reads an existing edge backwards).`);
+      continue;
+    }
+    if (taken.has(inverse.toLowerCase())) {
+      warnings.push(
+          `object property '${inverse}' (owl:inverseOf '${forward}') ` +
+          `collides with an existing entity or relationship name; the ` +
+          `inverse is dropped (graph labels must be unique).`);
+      continue;
+    }
+    taken.add(inverse.toLowerCase());
+    rel.inverse = inverse;
+    inversesAttached++;
+  }
+
+  // Equivalences, deprecation, and the transitive / symmetric characteristics
+  // land in native ai_context / description slots (see annotations.ts).
+  applyOwlAnnotations(owl, entities, relationships);
+
+  // Axioms that state a rule -- property restrictions, functional object
+  // properties, class disjointness -- become native model-level constraints
+  // (see constraints.ts). Omitted entirely when there are none, so an ontology
+  // with no such axioms imports exactly as before.
+  const constraints =
+      owlConstraints(owl, {entitiesByName, relationships}, warnings);
+
   const model: SemanticModel = {
     name: modelName,
     description: modelDescription(owl),
@@ -425,15 +615,139 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     relationships,
     metrics: [],
   };
+  if (constraints.length) model.constraints = constraints;
   return {
     model,
     warnings,
     stats: {
       classes: entities.length,
       datatypeProperties: datatypePropertiesConverted,
-      objectProperties: relationships.length,
+      // A folded inverse is converted too (as `inverse:` on its forward edge).
+      objectProperties: relationships.length + inversesAttached,
     },
   };
+}
+
+// --- owl:inverseOf folding. --------------------------------------------------
+
+// Plans how owl:inverseOf pairs map onto the native `inverse:` relationship
+// key. `X owl:inverseOf Y` states that X is Y read backwards: the SAME links,
+// traversed from the other end. A semantic-model relationship is directed, and
+// its `inverse:` names exactly that reverse reading (a graph deploy emits a
+// second edge table over the same backing table with SOURCE/DESTINATION
+// swapped), so the pair becomes ONE relationship Y with `inverse: X` -- never
+// two relationships that a deploy would materialize as two unrelated edges.
+//
+// Which side folds (X) into which (Y):
+//   * A side that declares no rdfs:domain / rdfs:range of its own folds into
+//     the side that does -- ontologies commonly declare only `X owl:inverseOf
+//     Y` and let the ends follow from Y.
+//   * When both declare ends, they must be CONSISTENT (X's domain is Y's range
+//     and X's range is Y's domain, for whichever ends X declares); then the
+//     side stating owl:inverseOf folds into its referent (the first in
+//     document order when both state it).
+//   * Contradictory ends are not an inverse pair the model can represent: both
+//     are kept as separate relationships and a warning says why.
+// A property names at most one inverse and a relationship carries at most one
+// `inverse:`; extra owl:inverseOf statements are warned and ignored (first
+// wins). A referent this ontology never declares as a property but that lies
+// in its namespace (`ex:placedBy owl:inverseOf ex:places`, with no
+// `ex:places` declaration) is still the name of the reverse reading, so it
+// becomes the declaring edge's `inverse:` as-is; an external referent is
+// warned and ignored.
+//
+// Returns the folded (not emitted) property names and, per forward edge, the
+// inverse name to attach once the forward relationship has been emitted.
+function planInverseFolds(owl: OwlModel, warnings: string[]):
+    {folded: Set<string>; inverseFor: Map<string, string>} {
+  const byName = new Map(owl.objectProperties.map(p => [p.localName, p]));
+  const order = new Map(owl.objectProperties.map((p, i) => [p.localName, i]));
+  const folded = new Set<string>();
+  const inverseFor = new Map<string, string>();
+  // Each unordered pair is decided once, whichever side states it.
+  const seen = new Set<string>();
+
+  for (const p of owl.objectProperties) {
+    const referents = [...new Set(p.inverseOf.map(iriLocalName))].filter(
+        r => r !== p.localName);
+    if (!referents.length) continue;
+    if (referents.length > 1) {
+      warnings.push(
+          `object property '${p.localName}' is owl:inverseOf more than one ` +
+          `property (${referents.map(r => `'${r}'`).join(', ')}); a ` +
+          `relationship has one inverse, so only '${referents[0]}' is used.`);
+    }
+    const q = byName.get(referents[0]);
+    if (!q) {
+      // The referent is not declared as a property here. Within this
+      // ontology's namespace that is still a name for "p read backwards" (the
+      // ontology coined the term without re-declaring it), so it becomes p's
+      // inverse directly. An external IRI is someone else's term: ignored.
+      const iri = p.inverseOf.find(i => iriLocalName(i) === referents[0]) ?? '';
+      const inNamespace = !owl.baseIri || iri.startsWith(owl.baseIri);
+      if (!inNamespace) {
+        warnings.push(
+            `object property '${p.localName}' is owl:inverseOf '${
+                iri}', which is outside this ontology's namespace; the ` +
+            `inverse is ignored.`);
+      } else if (!folded.has(p.localName) && !inverseFor.has(p.localName)) {
+        inverseFor.set(p.localName, referents[0]);
+      }
+      continue;
+    }
+    const pairKey = [p.localName, q.localName].sort().join('\u0000');
+    if (seen.has(pairKey)) continue;
+    seen.add(pairKey);
+
+    const hasEnds = (x: typeof p) => x.domains.length > 0 || x.ranges.length > 0;
+    // X's declared ends agree with Y's ends swapped.
+    const consistent = (x: typeof p, y: typeof p) =>
+        (!x.domains.length || x.domains[0] === y.ranges[0]) &&
+        (!x.ranges.length || x.ranges[0] === y.domains[0]);
+
+    let x: typeof p;
+    let y: typeof p;
+    if (!hasEnds(p) && hasEnds(q)) {
+      [x, y] = [p, q];
+    } else if (!hasEnds(q) && hasEnds(p)) {
+      [x, y] = [q, p];
+    } else if (!hasEnds(p) && !hasEnds(q)) {
+      // Neither side has ends; the relationship loop warns about both.
+      continue;
+    } else if (consistent(p, q) && consistent(q, p)) {
+      // Both declare consistent ends: the stating side folds into its
+      // referent; when both state it, the later one folds into the earlier.
+      const qStates = q.inverseOf.map(iriLocalName).includes(p.localName);
+      const pFirst = (order.get(p.localName) ?? 0) < (order.get(q.localName) ?? 0);
+      [x, y] = qStates && pFirst ? [q, p] : [p, q];
+    } else {
+      warnings.push(
+          `object properties '${p.localName}' and '${q.localName}' are ` +
+          `declared owl:inverseOf each other but their rdfs:domain / ` +
+          `rdfs:range do not mirror; both are kept as separate relationships ` +
+          `(an inverse reads the same edge backwards, so its ends must be ` +
+          `the forward edge's ends swapped).`);
+      continue;
+    }
+    if (inverseFor.has(y.localName)) {
+      warnings.push(
+          `object property '${x.localName}' is another owl:inverseOf '${
+              y.localName}', which already has the inverse '${
+              inverseFor.get(y.localName)}'; a relationship carries one ` +
+          `inverse, so '${x.localName}' is imported on its own ends, if any.`);
+      continue;
+    }
+    if (folded.has(y.localName) || inverseFor.has(x.localName)) {
+      // Chained pairs (X inverse of Y, Y inverse of Z): keep the first fold.
+      warnings.push(
+          `object property '${x.localName}' takes part in more than one ` +
+          `owl:inverseOf pair; only the first pair is folded.`);
+      continue;
+    }
+    folded.add(x.localName);
+    inverseFor.set(y.localName, x.localName);
+  }
+  return {folded, inverseFor};
 }
 
 // The model description: the ontology header's own description when it has one,

@@ -203,6 +203,9 @@ A relationship is a directed edge between two datasets.
 | `to` | string | required; a declared dataset name |
 | `from_columns` | list of strings | join key on `from` |
 | `to_columns` | list of strings | join key on `to` |
+| `extends` | list of strings | parent relationship names — extension ([§5](#5-extensions)) |
+| `abstract` | boolean | a label with no edge table — extension ([§5](#5-extensions)) |
+| `inverse` | string | `/google` only ([§5](#5-extensions)); the name of this edge read backwards |
 | `description` | string | |
 | `ai_context` | [ai_context](#24-ai_context) | |
 | `custom_extensions` | list | [§6](#6-the-extension-mechanism) |
@@ -210,7 +213,14 @@ A relationship is a directed edge between two datasets.
 `from_columns` and `to_columns` are the edge's join keys. They MUST be given
 together (a bound edge) or both omitted (a logical edge); one without the other is
 rejected. When both are given they MUST have equal length. `from` and `to` MUST
-name datasets declared in the same model.
+name datasets declared in the same model. An abstract relationship MUST NOT
+declare join columns.
+
+`inverse` names the same edge traversed `to` → `from` (OWL `owl:inverseOf`). It is
+not a second relationship: it has no columns, description, or `ai_context` of its
+own. It MUST differ from the relationship's own `name`, and — because a graph
+deploy emits it as an edge label — MUST NOT equal (case-insensitively) any
+dataset name, relationship name, or other inverse in the model.
 
 Ossie **requires** both join-column lists; allowing both to be omitted — a
 logical edge with no join keys — is a `kcmd` **relaxation** ([§4](#4-narrowings-and-relaxations))
@@ -307,6 +317,8 @@ extension, [§5](#5-extensions)), or *rejected* / *not authorable* (excluded).
 | `abstract` | — | added | supertype with no table; `/google` only · [§5](#5-extensions) |
 | relationship `name`, `from`, `to` | defined | same | [§2.2](#22-relationship) |
 | relationship `from_columns` / `to_columns` | required | optional | model before binding; none = logical edge · [§4.2](#42-relaxations-looser-than-ossie) |
+| relationship `extends`, `abstract` | — | added | relationship inheritance (shared edge labels); `/google` only · [§5](#5-extensions) |
+| relationship `inverse` | — | added | the edge read backwards (`owl:inverseOf`); `/google` only · [§2.2](#22-relationship), [§5](#5-extensions) |
 | relationship M:N (`association`) | — | not authorable (reserved) | no M:N syntax yet · [§2.2](#22-relationship) |
 | `metrics`, metric `expression` | required | same; graph-bound stricter | a graph measure binds one node and aggregate · [§4.1](#41-narrowings-stricter-than-ossie) |
 | `expression.dialects` | closed enum | any dialect string | tolerate imported / newer input · [§4.2](#42-relaxations-looser-than-ossie) |
@@ -357,8 +369,8 @@ Each rule and its reason:
   measure.
 
 - **A graph-bound relationship MUST have its join columns bound.** For any graph
-  target, a non-M:N relationship MUST supply both `from_columns` and `to_columns`
-  before deploy. *Why:* the edge table needs both keys.
+  target, a non-M:N, non-abstract relationship MUST supply both `from_columns`
+  and `to_columns` before deploy. *Why:* the edge table needs both keys.
 
 - **Unknown keys are rejected.** Every object is validated closed: an unrecognized
   sibling key is a hard load error, not silently dropped. Combined with the version
@@ -445,6 +457,26 @@ reads the document ([§6](#6-the-extension-mechanism)).
   no physical table (typically an `extends` supertype). An abstract dataset produces
   no node table and MUST NOT declare a `source`. Accepted only under
   `0.2.0.dev0/google`.
+
+- **`extends` and `abstract` on a relationship (extended profile only).**
+  Relationship inheritance: a relationship MAY name parent relationships in
+  `extends` (a list; transitive; a dangling parent or a cycle is warned on load,
+  and a dangling parent is rejected at graph push). A sub-relationship's `from`
+  and `to` SHOULD be its parent's or subtypes of them (warned otherwise). An
+  `abstract: true` relationship keeps `from`/`to`, MUST NOT declare join
+  columns, and produces no edge table; each concrete descendant's edge table
+  carries the ancestor as an extra, property-less label. Accepted only under
+  `0.2.0.dev0/google`. See [Reference → Relationship
+  hierarchies](reference.md#relationship-hierarchies).
+
+- **`inverse` on a relationship (extended profile only).** Names the edge read
+  backwards (`to` → `from`), the native home of OWL `owl:inverseOf`. A BigQuery
+  or Spanner Graph deploy emits it as a second edge table over the same backing
+  table with `SOURCE` / `DESTINATION` swapped (the reversed edge carries no
+  super-relationship labels: those name the forward direction), so a query can
+  traverse either way by name; a Knowledge Catalog push records it as an
+  `Inverse: <name>.` trailer on the link's description. Ossie has no such key;
+  accepted only under `0.2.0.dev0/google`. See [§2.2](#22-relationship).
 
 - **`deployment_target` (extended profile only).** The physical destination — one
   graph in one store — as a first-class model-level (or profile-level) key, accepted

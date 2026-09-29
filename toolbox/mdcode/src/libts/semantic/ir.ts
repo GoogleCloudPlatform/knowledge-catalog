@@ -97,9 +97,8 @@ export interface Entity {
   uniqueKeys?: string[][];
   // Names of supertype entities this entity inherits from -- Apache Ossie's
   // `extends` (see ontology/ontology.md), the target of OWL `rdfs:subClassOf`.
-  // Inheritance is ENTITY-LEVEL ONLY: only entities carry `extends`;
-  // relationships never do (there is no relationship-inheritance field), so OWL
-  // `rdfs:subPropertyOf` has no representation here by design.
+  // Relationships have their own, separate `extends` (Relationship.extends,
+  // the target of OWL `rdfs:subPropertyOf`); the two hierarchies never mix.
   //
   // This is the hierarchy AS DECLARED: it records the fact, it does not itself
   // flatten anything. Resolving `extends` into inherited fields (so an emitter
@@ -243,9 +242,87 @@ export interface Relationship {
   // When present, this edge is a many-to-many backed by a junction table rather
   // than a direct foreign key on the source entity. See Association.
   association?: Association;
+  // Names of super-relationships this relationship specializes -- the
+  // relationship analogue of Entity.extends, and the target of OWL
+  // `rdfs:subPropertyOf` (extended profile only). A `hasBuyer` that extends
+  // `hasCounterparty` IS a `hasCounterparty` edge: in the BigQuery / Spanner
+  // property graph its edge table carries the ancestor's name as an extra
+  // LABEL, so `MATCH ()-[e:hasCounterparty]->()` returns every descendant's
+  // edges. Like Entity.extends this records the hierarchy as declared; the
+  // transitive closure is computed where needed (see relationshipAncestors).
+  extends?: string[];
+  // Marks a conceptual relationship with NO edge table of its own: it exists
+  // only to group its sub-relationships under a shared label (e.g. an abstract
+  // `hasCounterparty` over `hasBuyer` and `hasPayer`). It keeps `source` /
+  // `destination` (the label's endpoint types) but binds no join columns, and
+  // never forms an EDGE TABLE -- it survives only as a LABEL on its concrete
+  // descendants. The relationship counterpart of Entity.abstract.
+  abstract?: boolean;
   description?: string;
   aiContext?: AiContext;
   customExtensions?: CustomExtension[];
+  // The name of the SAME edge read backwards, from `destination` to `source`
+  // (OWL `owl:inverseOf`): `hasBuyer` (Opportunity -> Client) with inverse
+  // `hasOpportunity` (Client -> Opportunity). It is not a second relationship
+  // -- there is one set of edges and one join -- only a second NAME for
+  // traversing it. A graph push emits it as a second edge table over the same
+  // backing table with SOURCE and DESTINATION swapped (see renderEdgeTable), so
+  // `MATCH (c)-[:hasOpportunity]->(o)` works. The name shares the element
+  // namespace: it must differ from every entity, relationship, and other
+  // inverse name. A `/google` extension.
+  inverse?: string;
+}
+
+// The relationships (by name) whose declared `inverse` can be emitted as a
+// second edge table. An inverse name becomes an element alias, and every
+// element table in a graph needs a distinct alias (compared case-
+// insensitively, as graph element names are), so an inverse that repeats an
+// entity, a relationship, or another inverse is omitted with a warning. The
+// loader rejects these for an authored model; this guards IR from elsewhere
+// (e.g. a Knowledge Catalog pull). Shared by the BigQuery and Spanner legs.
+export function inverseEdgeNames(
+    renderable: Relationship[], entities: Entity[],
+    allRelationships: Relationship[], warnings: string[]): Set<string> {
+  const taken = new Set<string>([
+    ...entities.map(e => e.name.toLowerCase()),
+    ...allRelationships.map(r => r.name.toLowerCase()),
+  ]);
+  const usable = new Set<string>();
+  for (const rel of renderable) {
+    if (!rel.inverse) continue;
+    const key = rel.inverse.toLowerCase();
+    if (taken.has(key)) {
+      warnings.push(
+          `relationship '${rel.name}': inverse '${rel.inverse}' repeats the ` +
+          `name of another graph element; the inverse edge is omitted (every ` +
+          `element table needs a distinct name)`);
+      continue;
+    }
+    taken.add(key);
+    usable.add(rel.name);
+  }
+  return usable;
+}
+
+/**
+ * The transitive `extends` ancestors of relationship `name`, nearest first,
+ * de-duplicated, excluding `name` itself. Unknown names and cycles are skipped
+ * silently (the loader already reports them), so this is total on any model.
+ */
+export function relationshipAncestors(
+    relationships: readonly Relationship[], name: string): string[] {
+  const byName = new Map(relationships.map((r) => [r.name, r]));
+  const out: string[] = [];
+  const seen = new Set<string>([name]);
+  const queue = [...(byName.get(name)?.extends ?? [])];
+  while (queue.length > 0) {
+    const next = queue.shift()!;
+    if (seen.has(next) || !byName.has(next)) continue;
+    seen.add(next);
+    out.push(next);
+    queue.push(...(byName.get(next)!.extends ?? []));
+  }
+  return out;
 }
 
 /**

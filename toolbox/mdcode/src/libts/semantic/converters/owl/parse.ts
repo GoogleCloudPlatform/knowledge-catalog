@@ -12,7 +12,7 @@
 
 import {Parser} from 'n3';
 
-import {OwlClass, OwlCommonAnnotations, OwlDatatypeProperty, OwlModel, OwlObjectProperty, OwlOntology,} from './model';
+import {OwlClass, OwlCommonAnnotations, OwlConstraintPolicy, OwlDatatypeProperty, OwlDisjointClassesAxiom, OwlModel, OwlObjectProperty, OwlOntology, OwlRestriction,} from './model';
 
 // RDF/RDFS/OWL/SKOS/Dublin-Core term IRIs we recognize. Only these; anything
 // else is carried by neither the parser nor the model (see the user guide's
@@ -51,6 +51,11 @@ const OWL_REFLEXIVE_PROPERTY = `${OWL}ReflexiveProperty`;
 const OWL_IRREFLEXIVE_PROPERTY = `${OWL}IrreflexiveProperty`;
 const OWL_ASYMMETRIC_PROPERTY = `${OWL}AsymmetricProperty`;
 const OWL_ONTOLOGY = `${OWL}Ontology`;
+// An ontology header's dependency on another ontology, by IRI. Read only by
+// parseOwlHeader, which the multi-file import uses to find the imported
+// ontology's local file; the merge itself never follows an IRI over the
+// network.
+const OWL_IMPORTS = `${OWL}imports`;
 const OWL_HAS_KEY = `${OWL}hasKey`;
 // List-valued constructs whose object is an RDF collection head (a blank node),
 // resolved with the same list walker as owl:hasKey. owl:oneOf enumerates a
@@ -100,6 +105,44 @@ const SKOS_EXAMPLE = `${SKOS}example`;
 
 const DCTERMS_DESCRIPTION = `${DCTERMS}description`;
 const DC_DESCRIPTION = `${DC}description`;
+
+// owl:Restriction vocabulary. A restriction is an anonymous node naming the
+// restricted property (owl:onProperty) plus exactly one of the value /
+// cardinality facets below; for a qualified cardinality, owl:onClass (object
+// property) or owl:onDataRange (datatype property) names the filler.
+const OWL_ON_PROPERTY = `${OWL}onProperty`;
+const OWL_SOME_VALUES_FROM = `${OWL}someValuesFrom`;
+const OWL_ALL_VALUES_FROM = `${OWL}allValuesFrom`;
+const OWL_HAS_VALUE = `${OWL}hasValue`;
+const OWL_ON_CLASS = `${OWL}onClass`;
+const OWL_ON_DATA_RANGE = `${OWL}onDataRange`;
+// A class-expression conjunction. Read only where a restriction may appear (the
+// blank-node object of rdfs:subClassOf / owl:equivalentClass): its restriction
+// conjuncts become restrictions of the class, its named conjuncts superclasses.
+const OWL_INTERSECTION_OF = `${OWL}intersectionOf`;
+// Cardinality predicates -> [kind, qualified]. Checked in this order, so a
+// malformed node carrying several facets resolves deterministically.
+const CARDINALITY_PREDICATES: [string, 'exact'|'min'|'max', boolean][] = [
+  [`${OWL}qualifiedCardinality`, 'exact', true],
+  [`${OWL}cardinality`, 'exact', false],
+  [`${OWL}minQualifiedCardinality`, 'min', true],
+  [`${OWL}minCardinality`, 'min', false],
+  [`${OWL}maxQualifiedCardinality`, 'max', true],
+  [`${OWL}maxCardinality`, 'max', false],
+];
+
+/**
+ * The kcmd annotation vocabulary. OWL (and RDFS) can say WHAT must hold but
+ * not how much a violation matters or what to do about one, and a semantic
+ * model constraint needs both. These two annotation properties supply them on
+ * an ontology term or axiom node:
+ *   kcmd:severity    "critical" | "high" | "medium" | "low"
+ *   kcmd:onViolation "reject" | "escalate" | "warn"
+ * They are ordinary annotation properties, so an OWL reasoner ignores them.
+ */
+export const KCMD_NS = 'https://kcmd.dev/ns#';
+const KCMD_SEVERITY = `${KCMD_NS}severity`;
+const KCMD_ON_VIOLATION = `${KCMD_NS}onViolation`;
 
 // One of the three OWL kinds we route a typed subject to.
 type OwlKind = 'class'|'datatypeProperty'|'objectProperty';
@@ -196,6 +239,11 @@ interface Annotations {
   seeAlso: string[];               // rdfs:seeAlso (IRIs or literals, verbatim)
   isDefinedBy: string[];           // rdfs:isDefinedBy (IRIs, verbatim)
   deprecated: boolean;             // owl:deprecated
+  // Blank-node objects of rdfs:subClassOf / owl:equivalentClass, in document
+  // order; resolved to OwlRestriction when the node is an owl:Restriction.
+  restrictionNodes: {via: 'subClassOf'|'equivalentClass'; node: string}[];
+  severity?: string;               // kcmd:severity
+  onViolation?: string;            // kcmd:onViolation
 }
 
 function emptyAnnotations(): Annotations {
@@ -216,7 +264,8 @@ function emptyAnnotations(): Annotations {
     propertyDisjointWith: [],
     seeAlso: [],
     isDefinedBy: [],
-    deprecated: false
+    deprecated: false,
+    restrictionNodes: [],
   };
 }
 
@@ -228,27 +277,101 @@ function descriptionOf(a: Annotations): string|undefined {
       a.dcDescription;
 }
 
+// The kcmd constraint policy asserted on a term, or undefined when it carries
+// neither annotation (so the model shape stays unchanged for ordinary terms).
+function policyOf(a: {severity?: string; onViolation?: string}):
+    OwlConstraintPolicy|undefined {
+  if (a.severity === undefined && a.onViolation === undefined) return undefined;
+  const p: OwlConstraintPolicy = {};
+  if (a.severity !== undefined) p.severity = a.severity;
+  if (a.onViolation !== undefined) p.onViolation = a.onViolation;
+  return p;
+}
+
 // The per-term carried annotations (rdfs:seeAlso / isDefinedBy, owl:deprecated
 // / versionInfo), shared by classes and both property kinds, projected from the
 // accumulator into the model's common-annotation shape.
 function commonAnnotations(a: Annotations): OwlCommonAnnotations {
-  return {
+  const c: OwlCommonAnnotations = {
     seeAlso: a.seeAlso,
     isDefinedBy: a.isDefinedBy,
     deprecated: a.deprecated,
     versionInfo: a.versionInfo,
   };
+  const policy = policyOf(a);
+  if (policy) c.constraintPolicy = policy;
+  return c;
 }
 
 /**
- * Parses a Turtle document into an OwlModel.
+ * The header facts of one Turtle document that the multi-file import needs
+ * before it merges anything: the ontology's own IRI (the subject of its first
+ * `a owl:Ontology` triple) and the IRIs it names with `owl:imports`, in
+ * document order and deduped. Both are undefined/empty for a document with no
+ * header. See converters/owl/imports.ts, which uses them to match an
+ * `owl:imports` IRI to a local file.
+ */
+export interface OwlDocumentHeader {
+  ontologyIri?: string;
+  imports: string[];
+}
+
+/**
+ * Reads the ontology header of one Turtle document (see OwlDocumentHeader).
+ * Throws on malformed Turtle, like parseOwl.
+ */
+export function parseOwlHeader(turtle: string): OwlDocumentHeader {
+  const quads = new Parser().parse(turtle);
+  let ontologyIri: string|undefined;
+  for (const q of quads) {
+    if (q.predicate.value === RDF_TYPE && q.object.value === OWL_ONTOLOGY &&
+        q.subject.termType === 'NamedNode') {
+      ontologyIri = q.subject.value;
+      break;
+    }
+  }
+  const imports: string[] = [];
+  for (const q of quads) {
+    // Only the header's own imports: an owl:imports on some other subject is
+    // not this document's dependency. With no header, any owl:imports is
+    // honored (a headerless module still states what it needs).
+    if (q.predicate.value !== OWL_IMPORTS) continue;
+    if (ontologyIri !== undefined && q.subject.value !== ontologyIri) continue;
+    if (q.object.termType !== 'NamedNode') continue;
+    if (!imports.includes(q.object.value)) imports.push(q.object.value);
+  }
+  return {ontologyIri, imports};
+}
+
+/**
+ * Parses one Turtle document, or several merged into one ontology, into an
+ * OwlModel.
+ *
+ * Several documents are merged at the TRIPLE level: each is parsed on its own
+ * (so each keeps its own `@prefix` / `@base` scope) and the quads are
+ * concatenated in argument order before any of the passes below run. That is
+ * exactly the RDF merge of the documents, so every rule below applies to the
+ * union unchanged:
+ *   - a term declared in one document and referenced (rdfs:subClassOf,
+ *     rdfs:domain / rdfs:range, owl:hasKey, ...) from another resolves, since
+ *     the typed-subject index is built over every document before any
+ *     reference is read;
+ *   - declaration order is document order across the argument list, so the
+ *     generated model is stable for a stable argument order;
+ *   - the base namespace is the dominant one across ALL documents;
+ *   - the ontology header is the FIRST document's (the root module); a later
+ *     module's header is a dependency's, not the model's.
+ * Blank-node labels are scoped per document (each gets its own prefix), so two
+ * modules that both write `_:r1` never have their restrictions or lists fused.
  *
  * Synchronous: `n3`'s Parser returns the full quad array when called without a
  * callback, which suits a one-shot file import. Throws on malformed Turtle (the
  * parser's own error), which the CLI surfaces.
  */
-export function parseOwl(turtle: string): OwlModel {
-  const quads = new Parser().parse(turtle);
+export function parseOwl(turtle: string|string[]): OwlModel {
+  const documents = typeof turtle === 'string' ? [turtle] : turtle;
+  const quads = documents.flatMap(
+      (doc, i) => new Parser({blankNodePrefix: `d${i}_`}).parse(doc));
 
   // Pass 1: types. An ordered list of typed subjects (first `rdf:type`
   // occurrence wins the position) plus a kind index; the set of
@@ -340,6 +463,17 @@ export function parseOwl(turtle: string): OwlModel {
     }
     const k = KIND_BY_TYPE[type];
     if (!k) continue;
+    // Only NAMED terms become classes/properties. A blank-node subject typed
+    // owl:Class is an anonymous class expression -- the
+    // `owl:equivalentClass [ a owl:Class ; owl:intersectionOf (...) ]` form
+    // Protégé emits, likewise owl:unionOf / owl:complementOf / owl:oneOf
+    // wrappers -- and has no identity to become an entity (its generated id,
+    // e.g. `n3-172`, would otherwise leak out as an entity name). The same
+    // holds for a blank node typed as a property (e.g. an anonymous
+    // `[ owl:inverseOf p ]` property expression). Such nodes stay reachable
+    // through the triples that reference them; they are just not routed to a
+    // kind, so they neither become model terms nor count in the import stats.
+    if (q.subject.termType === 'BlankNode') continue;
     if (!kind.has(subject)) {
       kind.set(subject, k);
       order.push(subject);
@@ -469,6 +603,12 @@ export function parseOwl(turtle: string): OwlModel {
         if (q.object.termType === 'NamedNode' &&
             !TOP_CLASS_IRIS.has(q.object.value))
           a.subClassOf.push(localName(q.object.value));
+        // A blank-node superclass may be an owl:Restriction -- a property
+        // constraint every member satisfies. Recorded here and resolved once
+        // the blank-node facts are known (see resolveRestriction); a blank
+        // node that turns out not to be a restriction is dropped there.
+        else if (q.object.termType === 'BlankNode')
+          a.restrictionNodes.push({via: 'subClassOf', node: q.object.value});
         break;
       case RDFS_SUBPROPERTY_OF:
         // Property hierarchy -> no native OSI home; carried verbatim by the
@@ -485,6 +625,21 @@ export function parseOwl(turtle: string): OwlModel {
         // (out of scope, like a blank-node subClassOf).
         if (q.object.termType === 'NamedNode')
           a.equivalentClass.push(q.object.value);
+        // A bare owl:Restriction as the equivalent class defines membership
+        // by the restriction; every member still satisfies it, so it yields
+        // the same constraint. So does a restriction conjunct of an
+        // owl:intersectionOf (the Protégé defined-class shape); see
+        // expandClassExpression. Any other blank-node expression is dropped
+        // when resolved.
+        else if (q.object.termType === 'BlankNode')
+          a.restrictionNodes.push(
+              {via: 'equivalentClass', node: q.object.value});
+        break;
+      case KCMD_SEVERITY:
+        if (q.object.termType === 'Literal') a.severity = q.object.value;
+        break;
+      case KCMD_ON_VIOLATION:
+        if (q.object.termType === 'Literal') a.onViolation = q.object.value;
         break;
       case OWL_DISJOINT_WITH:
         // Class disjointness -> no native OSI home; carried verbatim. Named
@@ -549,6 +704,123 @@ export function parseOwl(turtle: string): OwlModel {
   const classes: OwlClass[] = [];
   const datatypeProperties: OwlDatatypeProperty[] = [];
   const objectProperties: OwlObjectProperty[] = [];
+
+  // Pass 4: facts about anonymous axiom nodes -- owl:Restriction nodes and the
+  // owl:AllDisjointClasses nodes -- which are not typed terms, so pass 3 did not
+  // collect them. Only the first value per predicate is kept (each facet of a
+  // restriction is single-valued).
+  type Term = (typeof quads)[number]['object'];
+  const nodeFacts = new Map<string, Map<string, Term>>();
+  for (const q of quads) {
+    if (annotated(q.subject.value)) continue;
+    let facts = nodeFacts.get(q.subject.value);
+    if (!facts) {
+      facts = new Map();
+      nodeFacts.set(q.subject.value, facts);
+    }
+    if (!facts.has(q.predicate.value)) facts.set(q.predicate.value, q.object);
+  }
+  const literalOf = (t: Term|undefined): string|undefined =>
+      t?.termType === 'Literal' ? t.value : undefined;
+  const nodePolicy = (facts: Map<string, Term>): OwlConstraintPolicy|undefined =>
+      policyOf({
+        severity: literalOf(facts.get(KCMD_SEVERITY)),
+        onViolation: literalOf(facts.get(KCMD_ON_VIOLATION)),
+      });
+  // Resolves a blank-node class expression to an OwlRestriction, or undefined
+  // when it is not one (no owl:onProperty naming a property, or no recognized
+  // value/cardinality facet). An intersection is expanded by
+  // expandClassExpression below; unions, complements, ... stay out of scope
+  // and are dropped, as before.
+  const resolveRestriction =
+      (ref: {via: 'subClassOf'|'equivalentClass'; node: string}):
+          OwlRestriction|undefined => {
+            const facts = nodeFacts.get(ref.node);
+            const onProperty = facts?.get(OWL_ON_PROPERTY);
+            if (!facts || onProperty?.termType !== 'NamedNode') return undefined;
+            const r: OwlRestriction = {
+              via: ref.via,
+              property: onProperty.value,
+              kind: 'some',
+              qualified: false,
+            };
+            const setFiller = (t: Term|undefined) => {
+              if (t?.termType === 'NamedNode') r.filler = t.value;
+              else if (t?.termType === 'BlankNode') r.anonymousFiller = true;
+            };
+            const some = facts.get(OWL_SOME_VALUES_FROM);
+            const all = facts.get(OWL_ALL_VALUES_FROM);
+            const has = facts.get(OWL_HAS_VALUE);
+            const card = CARDINALITY_PREDICATES.find(([p]) => facts.has(p));
+            if (some) {
+              setFiller(some);
+            } else if (all) {
+              r.kind = 'all';
+              setFiller(all);
+            } else if (has) {
+              r.kind = 'value';
+              r.value = has.termType === 'NamedNode' ? localName(has.value) :
+                                                        has.value;
+            } else if (card) {
+              const [pred, kind, qualified] = card;
+              const n = Number(literalOf(facts.get(pred)));
+              if (!Number.isInteger(n) || n < 0) return undefined;
+              r.kind = kind;
+              r.cardinality = n;
+              if (qualified) {
+                r.qualified = true;
+                setFiller(facts.get(OWL_ON_CLASS) ?? facts.get(OWL_ON_DATA_RANGE));
+              }
+            } else {
+              return undefined;
+            }
+            const comment = literalOf(facts.get(RDFS_COMMENT));
+            if (comment !== undefined) r.comment = comment;
+            const policy = nodePolicy(facts);
+            if (policy) r.policy = policy;
+            return r;
+          };
+  // Blank-node ids, so a list member (resolveList yields bare values) can be
+  // told apart from a named class IRI.
+  const blankIds = new Set(
+      quads.filter(q => q.subject.termType === 'BlankNode')
+          .map(q => q.subject.value));
+  // Expands the blank-node object of a class's rdfs:subClassOf /
+  // owl:equivalentClass into what it says about the class:
+  //   - a bare owl:Restriction -> that restriction;
+  //   - an owl:intersectionOf -> each conjunct: a restriction conjunct becomes
+  //     a restriction of the class (C ≡ D ⊓ ∃p.X entails C ⊑ ∃p.X, so every
+  //     member satisfies it -- the Protégé "defined class" shape), a NAMED
+  //     conjunct a superclass (C ⊑ D), and a nested intersection is flattened.
+  //     Any other conjunct (a union, a complement, an enumeration) states no
+  //     single rule every member obeys and is dropped, as before.
+  // Anything else yields nothing (out of scope, dropped as before).
+  const expandClassExpression =
+      (ref: {via: 'subClassOf'|'equivalentClass'; node: string},
+       seen = new Set<string>()): {restrictions: OwlRestriction[]; named: string[]} => {
+        const out = {restrictions: [] as OwlRestriction[], named: [] as string[]};
+        if (seen.has(ref.node)) return out;  // defensive: a cyclic list
+        seen.add(ref.node);
+        const head = nodeFacts.get(ref.node)?.get(OWL_INTERSECTION_OF);
+        if (!head) {
+          const r = resolveRestriction(ref);
+          if (r) out.restrictions.push(r);
+          return out;
+        }
+        for (const member of resolveList(head.value)) {
+          if (!blankIds.has(member)) {
+            if (!TOP_CLASS_IRIS.has(member)) out.named.push(localName(member));
+            continue;
+          }
+          const inner = expandClassExpression({via: ref.via, node: member}, seen);
+          out.restrictions.push(...inner.restrictions);
+          out.named.push(...inner.named);
+        }
+        if (out.named.length) {
+          for (const r of out.restrictions) r.intersectedWith = [...out.named];
+        }
+        return out;
+      };
   // The ontology's own namespace: the one shared by MOST of its typed terms.
   // Taking the most common namespace (not merely the first typed term's) is
   // robust to a document that also types a handful of foreign-namespace terms
@@ -560,7 +832,18 @@ export function parseOwl(turtle: string): OwlModel {
   for (const iri of order) {
     const a = annotations.get(iri) ?? emptyAnnotations();
     switch (kind.get(iri)) {
-      case 'class':
+      case 'class': {
+        // Blank-node superclass / equivalent-class expressions: restrictions
+        // (bare or inside an intersection) and the named conjuncts of an
+        // intersection, which are superclasses too (C ≡ D ⊓ … entails C ⊑ D;
+        // a self-reference adds nothing). Named conjuncts extend `subClassOf`
+        // in document order, after the explicit ones, de-duplicated.
+        const expanded = a.restrictionNodes.map(ref => expandClassExpression(ref));
+        const self = localName(iri);
+        const subClassOf = [...a.subClassOf];
+        for (const n of expanded.flatMap(e => e.named)) {
+          if (n !== self && !subClassOf.includes(n)) subClassOf.push(n);
+        }
         classes.push({
           localName: localName(iri),
           label: a.label,
@@ -568,7 +851,7 @@ export function parseOwl(turtle: string): OwlModel {
           synonyms: a.synonyms,
           examples: a.examples,
           keys: a.keyListHeads.flatMap(resolveList).map(localName),
-          subClassOf: a.subClassOf,
+          subClassOf,
           equivalentClass: a.equivalentClass,
           disjointWith: a.disjointWith,
           // Full member IRIs of the enumeration set (a carried cross-reference;
@@ -576,9 +859,11 @@ export function parseOwl(turtle: string): OwlModel {
           // members across every oneOf head -- an enumeration is a set, so the
           // mapper dedupes and order does not matter (contrast propertyChain).
           oneOf: a.oneOfListHeads.flatMap(resolveList),
+          restrictions: expanded.flatMap(e => e.restrictions),
           ...commonAnnotations(a),
         });
         break;
+      }
       case 'datatypeProperty':
         datatypeProperties.push({
           localName: localName(iri),
@@ -663,6 +948,24 @@ export function parseOwl(turtle: string): OwlModel {
           .map(resolveList)
           .filter(members => members.length > 0);
 
+  // The owl:AllDisjointClasses axioms again, each with the rdfs:comment and
+  // kcmd policy on its axiom node (for constraint derivation). Same filter as
+  // resolveMembers, so it stays parallel to allDisjointClasses.
+  const disjointClassesAxioms: OwlDisjointClassesAxiom[] = [];
+  for (const n of allDisjointClassesNodes) {
+    const head = membersHead.get(n);
+    if (head === undefined) continue;
+    const members = resolveList(head);
+    if (!members.length) continue;
+    const facts = nodeFacts.get(n) ?? new Map<string, Term>();
+    const axiom: OwlDisjointClassesAxiom = {members};
+    const comment = literalOf(facts.get(RDFS_COMMENT));
+    if (comment !== undefined) axiom.comment = comment;
+    const policy = nodePolicy(facts);
+    if (policy) axiom.policy = policy;
+    disjointClassesAxioms.push(axiom);
+  }
+
   return {
     baseIri,
     ontology,
@@ -670,6 +973,7 @@ export function parseOwl(turtle: string): OwlModel {
     datatypeProperties,
     objectProperties,
     allDisjointClasses: resolveMembers(allDisjointClassesNodes),
+    allDisjointClassesAxioms: disjointClassesAxioms,
     allDisjointProperties: resolveMembers(allDisjointPropertiesNodes),
     allDifferent: resolveMembers(allDifferentNodes),
   };

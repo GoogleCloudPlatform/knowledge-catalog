@@ -20,6 +20,7 @@ EDGE TABLES (
     KEY(o_orderkey)
     SOURCE KEY(o_orderkey) REFERENCES orders(o_orderkey)
     DESTINATION KEY(customer_id) REFERENCES customers(c_custkey)
+    NO PROPERTIES
 );
 
 -- warnings --

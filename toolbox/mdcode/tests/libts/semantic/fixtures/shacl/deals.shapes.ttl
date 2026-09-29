@@ -1,0 +1,79 @@
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sh:   <http://www.w3.org/ns/shacl#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex:   <http://example.com/deals#> .
+@prefix shp:  <http://example.com/shapes#> .
+
+# Shapes over deals.osi.yaml, exercising every mapped SHACL Core term plus the
+# cases the importer warns about and skips.
+
+shp:OpportunityShape a sh:NodeShape ;
+    sh:targetClass ex:Opportunity ;
+    # min = max -> exactly; sh:message becomes the description.
+    sh:property [
+        sh:path ex:hasBuyer ;
+        sh:minCount 1 ; sh:maxCount 1 ;
+        sh:message "Every opportunity needs exactly one buyer account."
+    ] ;
+    # sh:Warning -> medium / warn.
+    sh:property [
+        sh:path ex:governedBy ;
+        sh:maxCount 1 ;
+        sh:severity sh:Warning
+    ] ;
+    # Field: required + pattern; a matching sh:datatype adds nothing.
+    sh:property [
+        sh:path ex:opportunityId ;
+        sh:minCount 1 ;
+        sh:datatype xsd:string ;
+        sh:pattern "^OPP-[0-9]{6}$"
+    ] ;
+    # sh:in; sh:Info -> low / warn; sh:order is presentational.
+    sh:property [
+        sh:path ex:stage ;
+        sh:in ( "Qualify" "Propose" "Won" "Lost" ) ;
+        sh:severity sh:Info ;
+        sh:order 3
+    ] ;
+    # Range; a conflicting sh:datatype is warned (the model's datatype stands).
+    sh:property [
+        sh:path ex:amountUsdK ;
+        sh:datatype xsd:integer ;
+        sh:minInclusive 0 ;
+        sh:maxExclusive 1000000 ;
+        sh:description "Amounts are in USD thousands and never negative."
+    ] ;
+    # Warned: an inverse path, and a path the model does not declare.
+    sh:property [ sh:path [ sh:inversePath ex:hasBuyer ] ; sh:minCount 1 ] ;
+    sh:property [ sh:path ex:probability ; sh:maxCount 1 ] .
+
+# A subtype inherits Opportunity's hasBuyer edge; qualified count; an
+# sh:class that is not an entity is warned.
+shp:WonOpportunityShape a sh:NodeShape ;
+    sh:targetClass ex:WonOpportunity ;
+    sh:property [
+        sh:path ex:hasBuyer ;
+        sh:qualifiedValueShape [ sh:class ex:ClientAccount ] ;
+        sh:qualifiedMinCount 1
+    ] ;
+    sh:property [ sh:path ex:governedBy ; sh:class ex:MasterServicesAgreement ] .
+
+# Implicit class target: the shape IS the class. Length; sh:node is warned.
+ex:Contract a rdfs:Class, sh:NodeShape ;
+    sh:property [
+        sh:path ex:contractType ;
+        sh:minLength 3 ; sh:maxLength 12 ;
+        sh:node shp:CodeShape
+    ] .
+
+# Warned: node targets and node-level sh:closed are not supported.
+shp:AcmeShape a sh:NodeShape ;
+    sh:targetNode ex:acme ;
+    sh:closed true ;
+    sh:property [ sh:path ex:partyName ; sh:minCount 1 ] .
+
+# Deactivated: produces nothing, silently.
+shp:RetiredShape a sh:NodeShape ;
+    sh:targetClass ex:Party ;
+    sh:deactivated true ;
+    sh:property [ sh:path ex:partyName ; sh:minCount 1 ] .

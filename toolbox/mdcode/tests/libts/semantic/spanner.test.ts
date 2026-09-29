@@ -370,3 +370,42 @@ describe('reserved-word names in an M:N association edge are quoted', () => {
     expect(ddl).toContain('DESTINATION KEY(id) REFERENCES `Group`(id)');
   });
 });
+
+
+describe('an empty label in a hierarchy says NO PROPERTIES', () => {
+  // As on the BigQuery leg: a LABEL with no properties clause defaults to ALL
+  // COLUMNS, so an ancestor with nothing to list -- a field-less abstract
+  // root, or one whose fields the subtype leaves unbound -- must be spelled
+  // `NO PROPERTIES`, as must an in-hierarchy node with no properties of its
+  // own.
+  const CHAIN: SemanticModel = {
+    name: 'chain',
+    entities: [
+      {name: 'Root', dataSource: '', keys: [], abstract: true, fields: []},
+      {
+        name: 'Mid',
+        dataSource: '',
+        keys: [],
+        abstract: true,
+        extends: ['Root'],
+        fields: [{name: 'unboundHere'}],
+      },
+      {
+        name: 'Leaf',
+        dataSource: 'leaf',
+        keys: ['id'],
+        extends: ['Mid'],
+        fields: [],
+      },
+    ],
+    relationships: [],
+    metrics: [],
+  };
+
+  test('each empty label is NO PROPERTIES, never the ALL COLUMNS default', () => {
+    const {ddl} = generateSpannerPropertyGraph(CHAIN, {});
+    expect(ddl).toMatch(/DEFAULT LABEL\s*\n\s*NO PROPERTIES/);
+    expect(ddl).toMatch(/LABEL Root\s*\n\s*NO PROPERTIES/);
+    expect(ddl).toMatch(/LABEL Mid\s*\n\s*NO PROPERTIES/);
+  });
+});

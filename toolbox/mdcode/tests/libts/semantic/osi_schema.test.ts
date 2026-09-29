@@ -106,10 +106,13 @@ function onlyLogicalGoldenDeviations(errors: typeof validate.errors): boolean {
           (e.params as {missingProperty?: string}).missingProperty ?? '');
       }
       if (e.keyword === 'additionalProperties') {
+        // `extends`/`abstract` are the dataset supersets (entity inheritance)
+        // and, equally, the relationship supersets (relationship inheritance,
+        // the target of OWL rdfs:subPropertyOf).
         return extraOk.has(
           (e.params as {additionalProperty?: string}).additionalProperty ??
           '') &&
-          /\/datasets\/\d+$/.test(e.instancePath);
+          /\/(datasets|relationships)\/\d+$/.test(e.instancePath);
       }
       return false;
     });
@@ -118,8 +121,9 @@ function onlyLogicalGoldenDeviations(errors: typeof validate.errors): boolean {
 // Released Apache OSI (osi-schema.json) is vanilla `0.2.0.dev0`: it pins the
 // `version` const, requires `datasets`, and knows no native `deployment_target`
 // key. Many fixtures declare the extended `0.2.0.dev0/google` profile, whose
-// surface deltas -- the version suffix, the `entities` alias for `datasets`, and
-// the native `deployment_target` key -- are deliberate supersets, not drift.
+// surface deltas -- the version suffix, the `entities` alias for `datasets`, the
+// native `deployment_target` key, and the relationship `inverse` key -- are
+// deliberate supersets, not drift.
 // Fold those back to the vanilla surface before validating, so the released
 // schema still checks the deep content (dialects, datatypes, field/metric
 // shapes); the remaining deep supersets (`extends`/`abstract`) and the logical
@@ -128,7 +132,8 @@ function onlyLogicalGoldenDeviations(errors: typeof validate.errors): boolean {
 function toSchemaShape(doc: any): any {
   if (!doc || typeof doc !== 'object') return doc;
   const d = structuredClone(doc);
-  if (d.version === '0.2.0.dev0/google') d.version = '0.2.0.dev0';
+  const google = d.version === '0.2.0.dev0/google';
+  if (google) d.version = '0.2.0.dev0';
   for (const m of Array.isArray(d.semantic_model) ? d.semantic_model : []) {
     if (!m || typeof m !== 'object') continue;
     if (m.entities !== undefined && m.datasets === undefined) {
@@ -136,6 +141,13 @@ function toSchemaShape(doc: any): any {
       delete m.entities;
     }
     delete m.deployment_target;
+    // `inverse` is accepted only under /google, so only fold it there: a
+    // vanilla fixture carrying it still fails.
+    if (google && Array.isArray(m.relationships)) {
+      for (const r of m.relationships) {
+        if (r && typeof r === 'object') delete r.inverse;
+      }
+    }
   }
   return d;
 }
@@ -205,11 +217,13 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
         }
         // The OWL import goldens are purely logical models (a pre-OSI superset,
         // like profiles/): they omit source/expression/join-columns and carry
-        // the extends/abstract supersets. Tolerate exactly those deviations on
-        // them, so any other drift still fails.
-        if (rel.endsWith('.osi.golden.yaml') &&
-            onlyLogicalGoldenDeviations(validate.errors)) {
-          return;
+        // the extends/abstract supersets, plus the model-level `constraints`
+        // the importer derives from OWL restrictions / disjointness. Tolerate
+        // exactly those deviations on them, so any other drift still fails.
+        if (rel.endsWith('.osi.golden.yaml')) {
+          const rest =
+            (validate.errors ?? []).filter(e => !onlyExtendedModelBlocks([e]));
+          if (rest.length === 0 || onlyLogicalGoldenDeviations(rest)) return;
         }
         // The hand-authored bound graph fixtures carry only the
         // extends/abstract superset (their sources/expressions are present).
@@ -227,6 +241,15 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
             (rel.endsWith('.pull.golden.yaml') ?
                  onlyExpressionGapAndExtendedBlocks(validate.errors) :
                  onlyExtendedModelBlocks(validate.errors))) {
+          return;
+        }
+        // The SHACL import fixtures are logical models (like the OWL goldens)
+        // that carry model-level `constraints`, the point of a SHACL import.
+        // Tolerate exactly the union of those two deviation classes on them.
+        if (rel.startsWith('shacl/') &&
+            (validate.errors ?? []).every(
+                e => onlyLogicalGoldenDeviations([e]) ||
+                    onlyExtendedModelBlocks([e]))) {
           return;
         }
         const details = (validate.errors ?? [])

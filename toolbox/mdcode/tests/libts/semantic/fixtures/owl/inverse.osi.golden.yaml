@@ -1,0 +1,31 @@
+version: 0.2.0.dev0/google
+semantic_model:
+  - name: inverse
+    description: "Inverse-property fixture: deals, contracts, delivery."
+    entities:
+      - name: Client
+      - name: Opportunity
+      - name: ContractAgreement
+      - name: Engagement
+      - name: Person
+    relationships:
+      - name: contractFor
+        from: ContractAgreement
+        to: Opportunity
+        inverse: governedBy
+        ai_context:
+          instructions: The opportunity a contract agreement governs.
+      - name: hasBuyer
+        from: Opportunity
+        to: Client
+        inverse: hasOpportunity
+      - name: delivers
+        from: Engagement
+        to: Opportunity
+        inverse: deliveredBy
+      - name: worksFor
+        from: Person
+        to: Client
+      - name: employs
+        from: Person
+        to: Client

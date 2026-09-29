@@ -24,7 +24,7 @@
 //
 
 import {spannerTable} from './binding';
-import {Association, Entity, Field, Relationship, SemanticModel} from './ir';
+import {Association, Entity, Field, inverseEdgeNames, Relationship, relationshipAncestors, SemanticModel} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
 import {stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIdentifier, quoteIfReserved} from './sql_identifiers';
@@ -161,18 +161,56 @@ export function generateSpannerPropertyGraph(
           entity, labelByName, ancestorsUsed.has(entity.name), warnings));
 
   const entitiesByName = new Map(validEntities.map(e => [e.name, e]));
-  const edgeTables =
-      relationships
-          .filter(rel => {
-            const dangling = [rel.source.entity, rel.destination.entity].filter(
-                n => skipped.has(n));
-            if (!dangling.length) return true;
-            warnings.push(
-                `relationship '${rel.name}': references skipped entity ` +
-                `${dangling.map(n => `'${n}'`).join(', ')}; edge omitted`);
-            return false;
-          })
-          .map(rel => renderEdgeTable(rel, entitiesByName, warnings));
+  // Relationship inheritance, mirroring the BigQuery leg: an abstract
+  // relationship forms no edge table and survives only as a LABEL on its
+  // concrete descendants' edge tables.
+  const renderedRels = relationships.filter(rel => !rel.abstract).filter(rel => {
+    const dangling = [rel.source.entity, rel.destination.entity].filter(
+        n => skipped.has(n));
+    if (!dangling.length) return true;
+    warnings.push(
+        `relationship '${rel.name}': references skipped entity ` +
+        `${dangling.map(n => `'${n}'`).join(', ')}; edge omitted`);
+    return false;
+  });
+  const relAncestors = new Map(renderedRels.map(
+      rel => [rel.name, relationshipAncestors(relationships, rel.name)]));
+  const sharedRelLabels = new Set([...relAncestors.values()].flat());
+  for (const rel of relationships) {
+    if (rel.abstract && !sharedRelLabels.has(rel.name)) {
+      warnings.push(
+          `abstract relationship '${rel.name}' is not extended by any ` +
+          `concrete relationship; it has no edge table and no descendant to ` +
+          `label, so it produces no graph element`);
+    }
+    if (rel.abstract && rel.inverse) {
+      warnings.push(
+          `abstract relationship '${rel.name}': inverse '${rel.inverse}' is ` +
+          `not emitted (an abstract relationship has no edge table to ` +
+          `reverse)`);
+    }
+  }
+  // A declared inverse is a second edge table over the same backing table,
+  // SOURCE/DESTINATION swapped, carrying no ancestor labels (mirrors the
+  // BigQuery leg).
+  const usableInverses =
+      inverseEdgeNames(renderedRels, entities, relationships, warnings);
+  const edgeTables = renderedRels.flatMap(rel => {
+    const forward = renderEdgeTable(
+        rel, entitiesByName,
+        {
+          ancestors: relAncestors.get(rel.name) ?? [],
+          isSupertype: sharedRelLabels.has(rel.name),
+        },
+        warnings);
+    if (!usableInverses.has(rel.name)) return [forward];
+    return [
+      forward,
+      renderEdgeTable(
+          rel, entitiesByName, {ancestors: [], isSupertype: false}, warnings,
+          true),
+    ];
+  });
 
   const graphName = qualifyGraph(resolved.model, opts);
 
@@ -225,7 +263,10 @@ function renderNodeTable(
   // shape; a node outside any hierarchy keeps the implicit form.
   const hasAncestors = !!(entity.extends && entity.extends.length);
   if (hasAncestors || isSupertype) lines.push(line(2, 'DEFAULT LABEL'));
-  if (properties.length) lines.push(propertiesBlock(properties));
+  // Never omit the clause (see propertiesClause): nothing to list is spelled
+  // `NO PROPERTIES`, not left to default to ALL COLUMNS -- which inside a
+  // hierarchy would also collide with an ancestor LABEL's explicit properties.
+  lines.push(propertiesClause(properties));
 
   // Inheritance: declare one LABEL per transitive ancestor (resolveInheritance
   // expanded `extends` to the full ancestor set), each re-listing that
@@ -254,18 +295,24 @@ function renderNodeTable(
       signature =
           ancestor.fields.map(f => renderFieldProperty(f, ancestor.name));
     }
-    if (signature.length) lines.push(propertiesBlock(signature));
+    // Empty signature: `NO PROPERTIES`, never the ALL COLUMNS default.
+    lines.push(
+        signature.length ? propertiesBlock(signature) :
+                           line(2, 'NO PROPERTIES'));
   }
   return lines.join('\n');
 }
 
 
+// With `reversed`, renders the relationship's declared INVERSE: the same
+// backing table and KEY with SOURCE and DESTINATION swapped and the inverse
+// name as the alias (see the BigQuery leg's renderEdgeTable).
 function renderEdgeTable(
     rel: Relationship, entitiesByName: Map<string, Entity>,
-    warnings: string[]): string {
+    hierarchy: EdgeHierarchy, warnings: string[], reversed = false): string {
   if (rel.association) {
     return renderAssociationEdge(
-        rel, rel.association, entitiesByName, warnings);
+        rel, rel.association, entitiesByName, hierarchy, warnings, reversed);
   }
   // A direct foreign key: the SOURCE entity's own table backs the edge (one
   // edge row per source row). Its FK columns reference the destination's key
@@ -300,18 +347,20 @@ function renderEdgeTable(
   const destRef =
       physicalColumns(destEntity, rel.destination.columns, warnings, relCtx)
           .join(', ');
+  const fromEnd = `KEY(${key}) REFERENCES ${
+      quoteIfReserved(rel.source.entity)}(${key})`;
+  const toEnd = `KEY(${destFk}) REFERENCES ${
+      quoteIfReserved(rel.destination.entity)}(${destRef})`;
   const lines = [
-    line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
+    line(1, `${backing} AS ${quoteIfReserved(reversed ? rel.inverse! : rel.name)}`),
     line(2, `KEY(${key})`),
-    line(
-        2,
-        `SOURCE KEY(${key}) REFERENCES ${quoteIfReserved(rel.source.entity)}(${
-            key})`),
-    line(
-        2,
-        `DESTINATION KEY(${destFk}) REFERENCES ${
-            quoteIfReserved(rel.destination.entity)}(${destRef})`),
+    line(2, `SOURCE ${reversed ? toEnd : fromEnd}`),
+    line(2, `DESTINATION ${reversed ? fromEnd : toEnd}`),
   ];
+  // The source table's columns are the source NODE's properties, not the
+  // edge's; edgeLabelLines says so (`NO PROPERTIES`) rather than default the
+  // edge to ALL COLUMNS (mirrors the BigQuery leg -- see propertiesClause).
+  lines.push(...edgeLabelLines([], hierarchy));
   return lines.join('\n');
 }
 
@@ -319,10 +368,11 @@ function renderEdgeTable(
 // Renders a many-to-many edge backed by an association (junction) table. The
 // edge has its OWN backing table and KEY, each endpoint's SOURCE/DESTINATION
 // KEY names the junction columns referencing that entity's declared key, and
-// the junction's own `fields` become edge PROPERTIES.
+// the junction's own `fields` become edge PROPERTIES. With `reversed`, the
+// inverse edge over the same junction.
 function renderAssociationEdge(
     rel: Relationship, assoc: Association, entitiesByName: Map<string, Entity>,
-    warnings: string[]): string {
+    hierarchy: EdgeHierarchy, warnings: string[], reversed = false): string {
   const backing =
       spannerTable(assoc.dataSource, warnings, `relationship '${rel.name}'`);
   if (!assoc.keys?.length) {
@@ -343,27 +393,59 @@ function renderAssociationEdge(
         .join(', ');
   };
 
+  const fromEnd =
+      `KEY(${assoc.sourceColumns.map(quoteIfReserved).join(', ')}) ` +
+      `REFERENCES ${quoteIfReserved(rel.source.entity)}(${
+          refColumns(rel.source)})`;
+  const toEnd =
+      `KEY(${assoc.destinationColumns.map(quoteIfReserved).join(', ')}) ` +
+      `REFERENCES ${quoteIfReserved(rel.destination.entity)}(${
+          refColumns(rel.destination)})`;
   const lines = [
-    line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
+    line(1, `${backing} AS ${quoteIfReserved(reversed ? rel.inverse! : rel.name)}`),
     line(2, `KEY(${assoc.keys.map(quoteIfReserved).join(', ')})`),
-    line(
-        2,
-        `SOURCE KEY(${assoc.sourceColumns.map(quoteIfReserved).join(', ')}) ` +
-            `REFERENCES ${quoteIfReserved(rel.source.entity)}(${
-                refColumns(rel.source)})`),
-    line(
-        2,
-        `DESTINATION KEY(${
-            assoc.destinationColumns.map(quoteIfReserved).join(', ')}) ` +
-            `REFERENCES ${quoteIfReserved(rel.destination.entity)}(${
-                refColumns(rel.destination)})`),
+    line(2, `SOURCE ${reversed ? toEnd : fromEnd}`),
+    line(2, `DESTINATION ${reversed ? fromEnd : toEnd}`),
   ];
 
   const properties =
       (assoc.fields ?? []).map(f => renderFieldProperty(f, rel.name));
-  if (properties.length) lines.push(propertiesBlock(properties));
+  lines.push(...edgeLabelLines(properties, hierarchy));
 
   return lines.join('\n');
+}
+
+// Where a rendered edge sits in the relationship hierarchy (see
+// Relationship.extends); mirrors the BigQuery leg's EdgeHierarchy.
+interface EdgeHierarchy {
+  ancestors: string[];
+  isSupertype: boolean;
+}
+
+// An edge table's label clauses, mirroring the BigQuery leg's edgeLabelLines
+// minus OPTIONS (Spanner Graph carries none). Outside a relationship hierarchy:
+// the implicit default label with the edge's properties clause -- its
+// PROPERTIES, or `NO PROPERTIES` when it has none (never an omitted clause,
+// which defaults to all columns; see propertiesClause). Inside one: an
+// explicit `DEFAULT LABEL`, then one `LABEL <ancestor> NO PROPERTIES` per
+// transitive super-relationship -- the empty property set being the only one
+// every descendant edge table (with unrelated columns) can declare identically
+// under the shared label. A concrete super-relationship whose own name is
+// shared declares `NO PROPERTIES` on its default label for the same reason.
+function edgeLabelLines(
+    properties: string[], hierarchy: EdgeHierarchy): string[] {
+  const inHierarchy = hierarchy.ancestors.length > 0 || hierarchy.isSupertype;
+  if (!inHierarchy) return [propertiesClause(properties)];
+  const out = [line(2, 'DEFAULT LABEL')];
+  if (hierarchy.isSupertype) {
+    out.push(line(2, 'NO PROPERTIES'));
+  } else {
+    out.push(propertiesClause(properties));
+  }
+  for (const ancestor of hierarchy.ancestors) {
+    out.push(line(2, `LABEL ${quoteIfReserved(ancestor)} NO PROPERTIES`));
+  }
+  return out;
 }
 
 
@@ -440,6 +522,15 @@ const list = (depth: number, lines: string[]): string =>
 
 function propertiesBlock(properties: string[]): string {
   return `${line(2, 'PROPERTIES(')}\n${list(3, properties)}\n${line(2, ')')}`;
+}
+
+// The listed properties, or `NO PROPERTIES` when there are none -- never an
+// omitted clause, which defaults the label to PROPERTIES ARE ALL COLUMNS and
+// leaks every backing-table column onto the element (mirrors the BigQuery
+// leg's propertiesClause).
+function propertiesClause(properties: string[]): string {
+  return properties.length ? propertiesBlock(properties) :
+                             line(2, 'NO PROPERTIES');
 }
 
 function dedupe(items: string[]): string[] {
