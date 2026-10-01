@@ -74,9 +74,13 @@ export interface SemanticModel {
   // as `constraints ?? []`. See Constraint.
   constraints?: Constraint[];
   // Vendor extension blocks carried verbatim (round-trip fidelity), including the
-  // model-level GOOGLE block. A typed deployment-target view is derived by the
-  // consumer that acts on it (e.g. the CLI push), not surfaced on the IR yet.
+  // model-level GOOGLE block.
   customExtensions?: CustomExtension[];
+  version?: '0.2.0.dev0'|'0.2.0.dev0/google';  // the flavor the document declared
+  // Named profiles, each loaded from its own <model>.profile.<name>.yaml file.
+  profiles?: ProfileSpec[];
+  // Named targets from `deployments:`. `kcmd push --deployment` selects one.
+  deployments?: DeploymentSpec[];
 }
 
 /**
@@ -93,6 +97,7 @@ export interface Entity {
   // into its own canonical form, and downstream consumers map it to their
   // target's addressing scheme.
   dataSource: string;
+  authoredSource?: string;  // the source string as typed
   keys: string[];  // grain / primary key
   // Additional uniqueness constraints beyond the primary key; each inner array
   // is one unique column set (maps to the Schema aspect's uniqueConstraints).
@@ -381,6 +386,7 @@ export interface Metric {
   // metric whose join path consumers resolve from the model's relationships
   // (the qualifiers stay inline in the expression).
   entity?: string;
+  authoredEntity?: string;          // an anchor the author wrote, vs one inferred
   description?: string;
   type?: DataType;  // logical datatype of the result (the open format's
                     // `datatype`)
@@ -757,4 +763,39 @@ export interface Constraint {
   // rejects `custom_extensions` outright (ceField in loader.ts), so no document
   // can carry both. Should vanilla Ossie ever gain constraints, add the field
   // back with `...ce` on the schema.
+}
+
+export interface DeploymentSpec {
+  name: string;      // `kcmd push --deployment <name>` selects one
+  // A resource URI or a Knowledge Catalog FQN, verbatim. Three kinds are
+  // valid: a BigQuery graph, a Spanner graph, an AlloyDB database.
+  // `deployment_target.ts` already parses all three. Keep this opaque.
+  target: string;
+  profile?: string;  // absent means the model's inline bindings
+}
+
+export interface ProfileEntityBinding {
+  name: string;
+  source?: string;          // as the profile wrote it
+  primaryKey?: string[];    // physical column names
+  uniqueKeys?: string[][];
+  fields?: Array<Pick<Field, 'name'|'expression'|'dialects'|'stringForm'>>;
+  fieldsExclude?: string[]; // fields this profile deliberately leaves unbound
+}
+
+export interface ProfileRelationshipBinding {
+  name: string;
+  fromColumns: string[];    // pairs positionally with toColumns
+  toColumns: string[];
+}
+
+export interface ProfileSpec {
+  name: string;
+  entities: ProfileEntityBinding[];
+  relationships: ProfileRelationshipBinding[];
+  metricsExclude?: '*'|string[];  // '*' means all of them, now and later
+  // Actions are out of scope for preview. Hold what the loader already
+  // accepts — `loader.ts:288` allows a missing executor and an explicit null,
+  // and an executor may be mcp, rest, grpc or sql. Do not tighten it.
+  actions?: Array<{name: string; executor?: Executor|null}>;
 }
