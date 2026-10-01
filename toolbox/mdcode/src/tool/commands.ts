@@ -19,7 +19,7 @@ import {googleDeploymentTargets} from '../libts/semantic/deployment_target';
 import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
-import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
+import * as pullKc from '../libts/semantic/pull_kc';
 import {AvailabilityReport, DEFAULT_PROFILE, mergeProfileOntoDoc, pruneUnavailable,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {storeLine} from '../libts/semantic/runtime/store';
@@ -36,6 +36,14 @@ export interface InitOptions {
   kb?: string;
   semanticModel?: string;
   pull?: boolean;
+}
+
+
+// Whether Knowledge Catalog push and pull should use the second-generation
+// built-in aspect fields and entry-id layout. Only `KC_V2_ASPECTS=1` enables
+// it; unset, `''`, `'0'`, and `'true'` are all off.
+export function kcV2Aspects(): boolean {
+  return process.env.KC_V2_ASPECTS === '1';
 }
 
 
@@ -1013,6 +1021,7 @@ async function pushKnowledgeCatalog(
     // Override via KC_TYPE_PROJECT to reference them from another project
     // (e.g. `dataplex-autopush-types` on the autopush/sandbox EAP).
     systemTypeProject: process.env.KC_TYPE_PROJECT,
+    v2Aspects: kcV2Aspects(),
   });
 
   for (const w of result.warnings) {
@@ -1073,10 +1082,11 @@ async function pullSemanticModel(
           'Pulling semantic model from Knowledge Catalog...');
 
   const catalog = new dataplex.CatalogClient(ctx);
-  const result = await pullKnowledgeCatalog(catalog, {
+  const result = await pullKc.pullKnowledgeCatalog(catalog, {
     project: source.project,
     location: source.location,
     entryGroup: source.entryGroup,
+    v2Aspects: kcV2Aspects(),
   });
 
   for (const w of result.warnings) {

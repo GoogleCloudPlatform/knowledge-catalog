@@ -80,6 +80,10 @@ export interface KcGenerateOptions {
   // against today's types fails the push with an ASPECT_*_PARSING_FAILURE on
   // the unknown property.
   emitExpressions?: boolean;
+  // Emit the second-generation built-in aspect fields and entry-id layout
+  // (selected via KC_V2_ASPECTS=1). Off by default (absent means false), which
+  // emits the first-generation layout.
+  v2Aspects?: boolean;
 }
 
 export interface KcResources {

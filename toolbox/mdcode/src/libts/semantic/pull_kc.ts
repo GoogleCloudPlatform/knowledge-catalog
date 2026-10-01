@@ -25,9 +25,15 @@ import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID} from './kc_custom_types';
 import {idOf, linkDedupKey, modelsFromCatalogResources} from './kc_converter';
 
 export interface KcPullOptions {
+  // Project that owns the source entry group.
   project: string;
+  // Location (region) of the source entry group, e.g. `global` or `us`.
   location: string;
+  // Id of the source entry group to pull from.
   entryGroup: string;
+  // Read the second-generation built-in aspect fields and entry-id layout
+  // (selected via KC_V2_ASPECTS=1). Off by default (absent means false).
+  v2Aspects?: boolean;
 }
 
 export interface KcPullResult {

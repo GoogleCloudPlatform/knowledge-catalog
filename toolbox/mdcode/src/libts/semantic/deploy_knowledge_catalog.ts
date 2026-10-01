@@ -38,7 +38,7 @@ import {ApiResult} from '../gcp/api';
 import * as context from '../gcp/context';
 import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 
-import {generateCatalogResources, KcResources} from './knowledge_catalog';
+import * as kcEmit from './knowledge_catalog';
 import {LoadedModel} from './loader';
 
 
@@ -62,6 +62,12 @@ export interface KcDeployOptions {
   // Off by default so the push matches the live types; see
   // KcGenerateOptions.emitExpressions.
   emitExpressions?: boolean;
+  // Emit the second-generation built-in aspect fields and entry-id layout
+  // (selected via KC_V2_ASPECTS=1). Off by default (absent means false).
+  // Consumed by `emitModels` when called through `deployKnowledgeCatalog`;
+  // `deployEmittedModels` takes already-emitted resources from an origin with
+  // its own emitter and ignores this field.
+  v2Aspects?: boolean;
   // Compile and report only; never writes to the catalog (a dry run).
   validateOnly?: boolean;
   // Delete models already in the entry group that this push does not re-emit --
@@ -117,7 +123,7 @@ interface Counts {
 }
 
 // One authored model paired with the catalog resources it emitted.
-type EmittedModel = {model: string; resources: KcResources};
+type EmittedModel = {model: string; resources: kcEmit.KcResources};
 
 
 // entries.create propagation retry: a just-created entry group can briefly 404.
@@ -238,15 +244,16 @@ function emitModels(models: LoadedModel[], opts: KcDeployOptions):
   const emitted: EmittedModel[] = [];
   const warnings: string[] = [];
   for (const {document, model} of models) {
-    let resources: KcResources;
+    let resources: kcEmit.KcResources;
     try {
-      resources = generateCatalogResources(model, {
+      resources = kcEmit.generateCatalogResources(model, {
         project: opts.project,
         location: opts.location,
         entryGroup: opts.entryGroup,
         systemTypeProject: opts.systemTypeProject,
         systemTypeLocation: opts.systemTypeLocation,
         emitExpressions: opts.emitExpressions,
+        v2Aspects: opts.v2Aspects,
       });
     } catch (err: any) {
       return {
@@ -485,7 +492,7 @@ async function deleteOwnedLinks(
 // push. A link touching an entry outside this model is never treated as owned,
 // so a shared entry group is safe.
 function reconcileLinks(
-    cat: CatalogClient, opts: KcDeployOptions, resources: KcResources,
+    cat: CatalogClient, opts: KcDeployOptions, resources: kcEmit.KcResources,
     existing: Entry[]): Promise<LinkReconcileOutcome> {
   // An emitter that produced no entries has no anchor and owns nothing. Guarded
   // for the same reason reconcileDeletions guards it: this runs inside
@@ -743,7 +750,7 @@ async function createEntryWithRetry(
 
 // A human-readable summary of what a (dry-run) push would write for one model.
 function planSummary(
-    model: string, resources: KcResources, opts: KcDeployOptions): string[] {
+    model: string, resources: kcEmit.KcResources, opts: KcDeployOptions): string[] {
   const dest = `${opts.project}.${opts.location}.${opts.entryGroup}`;
   const lines = [
     `Knowledge Catalog plan for '${model}' (destination ${dest}):`,
