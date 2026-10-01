@@ -634,7 +634,8 @@ export const NAVIGATION_GUIDE: readonly string[] = [
   '7. Give one final answer, not a list of alternatives, and state the ' +
       'definition and tables you used. When a question allows several ' +
       'readings, answer the most direct one; never answer "it depends". ' +
-      'Add a one-line data caveat only when it changes the number.',
+      'A caveat never carries a second number: if two readings differ, pick ' +
+      'one, give that number only, and name the reading in one sentence.',
   '8. Units and scale are per property on entity pages. State them; never ' +
       'rescale values unless the page says to.',
   '9. Mention a constraint only when it is relevant to the answer and ' +
