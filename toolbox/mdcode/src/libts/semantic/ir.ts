@@ -138,6 +138,17 @@ export interface Dimension {
   isTime?: boolean;
 }
 
+export const ALLOWED_DIALECTS = [
+  'ANSI_SQL', 'BIGQUERY', 'SPANNER', 'MYSQL',
+  'POSTGRES', 'ALLOYDB', 'SNOWFLAKE', 'DATABRICKS',
+] as const;
+export type SqlDialect = (typeof ALLOWED_DIALECTS)[number];
+
+export interface DialectExpression {
+  dialect: SqlDialect;
+  expression: string;
+}
+
 /**
  * A field: a dimension / attribute of an entity or relationship.
  *
@@ -156,6 +167,8 @@ export interface Field {
   expression?: string;             // target/canonical (GoogleSQL-valid) SQL
   importedExpression?: string;     // original vendor SQL, verbatim
   importedDialect?: string;        // dialect of `importedExpression` (e.g. 'SNOWFLAKE')
+  dialects?: DialectExpression[];  // every entry, in the order written
+  stringForm?: boolean;            // true if authored as `expression: "<sql>"`
   // A field with NO physical column under the current binding is UNBOUND:
   // structurally absent, not null. There is no explicit flag -- a field is
   // unbound exactly when it carries no `expression` (and no
@@ -227,6 +240,29 @@ export function isTimeDimension(field: Field): boolean {
 // they never disagree.
 export function fieldBinding(field: Field): string|undefined {
   return field.expression ?? field.importedExpression;
+}
+
+/**
+ * Selects the SQL expression for a target engine from a Field or Metric.
+ *
+ * With a non-empty `dialects` list, returns the entry matching `targetDialect`;
+ * failing that, and where the target is not already `ANSI_SQL`, falls back to
+ * the `ANSI_SQL` entry; failing both, returns `undefined`. With `dialects`
+ * empty or absent, returns `item.expression`.
+ */
+export function expressionForDialect(
+    item: {expression?: string; dialects?: DialectExpression[]},
+    targetDialect: 'BIGQUERY'|'SPANNER'|'ANSI_SQL'): string|undefined {
+  if (item.dialects && item.dialects.length > 0) {
+    const exact = item.dialects.find(d => d.dialect === targetDialect);
+    if (exact) return exact.expression;
+    if (targetDialect !== 'ANSI_SQL') {
+      const ansi = item.dialects.find(d => d.dialect === 'ANSI_SQL');
+      if (ansi) return ansi.expression;
+    }
+    return undefined;
+  }
+  return item.expression;
 }
 
 
@@ -301,6 +337,8 @@ export interface Metric {
                                 // entity-qualified fields
   importedExpression?: string;  // original vendor SQL, verbatim
   importedDialect?: string;     // dialect of `importedExpression`
+  dialects?: DialectExpression[];  // every entry, in the order written
+  stringForm?: boolean;            // true if authored as `expression: "<sql>"`
   // The single entity this metric attaches to -- the node it hangs off -- when
   // its `expression` references exactly one. NOT part of the open format
   // (Ossie's Metric has no such field): the loader DERIVES it by scanning the
