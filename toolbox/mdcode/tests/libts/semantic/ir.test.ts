@@ -7,6 +7,7 @@ import {
   expressionForDialect,
   Field,
   Metric,
+  normalizeDataType,
 } from '../../../src/libts/semantic/ir';
 
 describe('expressionForDialect', () => {
@@ -79,3 +80,104 @@ describe('expressionForDialect', () => {
     expect(expressionForDialect(unbound, 'BIGQUERY')).toBeUndefined();
   });
 });
+
+describe('normalizeDataType', () => {
+  const CANONICAL = [
+    'String',
+    'Integer',
+    'Decimal',
+    'Float',
+    'Boolean',
+    'Date',
+    'Time',
+    'DateTime',
+    'DateTimeTz',
+  ] as const;
+
+  test('0.2.0.dev0 accepts all nine exact-case canonical names', () => {
+    for (const name of CANONICAL) {
+      expect(normalizeDataType(name, '0.2.0.dev0')).toEqual({
+        ok: true,
+        type: name,
+      });
+    }
+  });
+
+  test('0.2.0.dev0 rejects non-canonical casing and unknown types', () => {
+    expect(normalizeDataType('integer', '0.2.0.dev0')).toEqual({ok: false});
+    expect(normalizeDataType('STRING', '0.2.0.dev0')).toEqual({ok: false});
+    expect(normalizeDataType('opaque', '0.2.0.dev0')).toEqual({ok: false});
+    expect(normalizeDataType('VARCHAR', '0.2.0.dev0')).toEqual({ok: false});
+  });
+
+  test('0.2.0.dev0 normalizes Opaque and undefined to type: undefined', () => {
+    expect(normalizeDataType('Opaque', '0.2.0.dev0')).toEqual({
+      ok: true,
+      type: undefined,
+    });
+    expect(normalizeDataType(undefined, '0.2.0.dev0')).toEqual({
+      ok: true,
+      type: undefined,
+    });
+  });
+
+  test('0.2.0.dev0/google accepts any casing and returns the canonical spelling', () => {
+    for (const name of CANONICAL) {
+      expect(normalizeDataType(name, '0.2.0.dev0/google')).toEqual({
+        ok: true,
+        type: name,
+      });
+      expect(normalizeDataType(name.toLowerCase(), '0.2.0.dev0/google'))
+          .toEqual({
+            ok: true,
+            type: name,
+          });
+      expect(normalizeDataType(name.toUpperCase(), '0.2.0.dev0/google'))
+          .toEqual({
+            ok: true,
+            type: name,
+          });
+    }
+    expect(normalizeDataType('datetime', '0.2.0.dev0/google')).toEqual({
+      ok: true,
+      type: 'DateTime',
+    });
+    expect(normalizeDataType('datetimetz', '0.2.0.dev0/google')).toEqual({
+      ok: true,
+      type: 'DateTimeTz',
+    });
+    expect(normalizeDataType('DATETIMETZ', '0.2.0.dev0/google')).toEqual({
+      ok: true,
+      type: 'DateTimeTz',
+    });
+  });
+
+  test('0.2.0.dev0/google normalizes Opaque in any casing and undefined to type: undefined', () => {
+    expect(normalizeDataType('Opaque', '0.2.0.dev0/google')).toEqual({
+      ok: true,
+      type: undefined,
+    });
+    expect(normalizeDataType('opaque', '0.2.0.dev0/google')).toEqual({
+      ok: true,
+      type: undefined,
+    });
+    expect(normalizeDataType('OPAQUE', '0.2.0.dev0/google')).toEqual({
+      ok: true,
+      type: undefined,
+    });
+    expect(normalizeDataType(undefined, '0.2.0.dev0/google')).toEqual({
+      ok: true,
+      type: undefined,
+    });
+  });
+
+  test('0.2.0.dev0/google rejects unknown physical types', () => {
+    expect(normalizeDataType('VARCHAR', '0.2.0.dev0/google')).toEqual({
+      ok: false,
+    });
+    expect(normalizeDataType('INT64', '0.2.0.dev0/google')).toEqual({
+      ok: false,
+    });
+  });
+});
+

@@ -208,6 +208,37 @@ export const DATA_TYPES = [
 
 export type DataType = typeof DATA_TYPES[number];
 
+const CANONICAL_DATA_TYPES = DATA_TYPES.filter(
+    (t): t is Exclude<DataType, 'Opaque'> => t !== 'Opaque');
+
+/**
+ * Normalizes a raw `datatype` string according to the document's flavor.
+ *
+ * In `0.2.0.dev0`, matching is strictly case-sensitive. In `0.2.0.dev0/google`,
+ * matching is case-insensitive and returns the canonical spelling. In both
+ * flavors, an omitted `datatype` and `Opaque` normalize to `type: undefined`.
+ */
+export function normalizeDataType(
+    raw: string|undefined,
+    version: '0.2.0.dev0'|'0.2.0.dev0/google',
+    ): {ok: true; type: Exclude<DataType, 'Opaque'>|undefined}|{ok: false} {
+  if (raw === undefined) {
+    return {ok: true, type: undefined};
+  }
+  const caseInsensitive = version === '0.2.0.dev0/google';
+  const matches = (a: string, b: string) =>
+      caseInsensitive ? a.toLowerCase() === b.toLowerCase() : a === b;
+
+  if (matches(raw, 'Opaque')) {
+    return {ok: true, type: undefined};
+  }
+  const found = CANONICAL_DATA_TYPES.find(t => matches(raw, t));
+  if (found) {
+    return {ok: true, type: found};
+  }
+  return {ok: false};
+}
+
 // The temporal subset of DataType (Date / Time / DateTime / DateTimeTz); a
 // field of one of these types is a time dimension by default (see
 // isTimeDimension).
