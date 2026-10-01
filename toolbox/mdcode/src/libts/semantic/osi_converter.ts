@@ -44,6 +44,7 @@ import * as yaml from 'yaml';
 
 import {Action, ActionParameter, AffectedConcept, AiContext, Constraint, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
 import {declaredConceptFields} from './resolve_inheritance';
+import {glossaryDoc} from './glossary';
 
 // The version stamped on every serialized document. Pull emits kcmd's extended
 // profile: it uses native extension keys (`entities`, `deployment_target`)
@@ -203,6 +204,8 @@ function modelDoc(model: SemanticModel, warnings: string[], logical: boolean):
     actions: nonEmpty(
         (model.actions ?? []).map(a => actionDoc(a, warnings, emittedFields))),
     constraints: nonEmpty((model.constraints ?? []).map(c => constraintDoc(c))),
+    // K9 business glossary, snake_case (see glossary.ts glossaryDoc).
+    glossary: model.glossary ? glossaryDoc(model.glossary) : undefined,
   });
 }
 

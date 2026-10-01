@@ -810,6 +810,50 @@ over the **same** backing table with `SOURCE` / `DESTINATION` swapped, so both
 `Inverse: places.` trailer, which pull reads back (see [Relationship
 inverses](reference.md#relationship-inverses-inverse)).
 
+### SKOS vocabulary (business glossary)
+
+An ontology that ships its business vocabulary as SKOS concepts gets a
+[business glossary](glossary.md) (`glossary:`) on the imported model, ready for
+`kcmd glossary push`. The mapping is deliberately simple:
+
+| SKOS | glossary | notes |
+|---|---|---|
+| `skos:Concept` | term | id from the local name, kebab-cased (`GrossSales` → `gross-sales`); repeats get a numeric suffix |
+| `skos:prefLabel` (else `rdfs:label`) | `display_name` | English, else untagged, else any language |
+| `skos:definition` (else `rdfs:comment`, `dcterms:description`) | `definition` | |
+| `skos:altLabel`, `skos:hiddenLabel` | `synonyms` | English or untagged labels only |
+| `skos:related` | `related` | both directions |
+| `skos:inScheme` / `skos:topConceptOf` | `category` | one category per scheme when there are several; a single scheme describes the glossary itself (its label and definition become the glossary's) |
+| `dcterms:subject`, `rdfs:seeAlso`, `skos:exactMatch`, `skos:closeMatch` naming an imported class / datatype property / metric | `defines` | a class → `{entity}`, a datatype property → `{field: Domain.property}`; a `dcterms:subject` that names nothing imported is warned |
+| a concept that is itself an `owl:Class` or datatype property | `defines` (itself) | |
+| `dcterms:source` | `source` | |
+
+```turtle
+ex:GrossSales a skos:Concept ;
+  skos:prefLabel "Gross Sales"@en ;
+  skos:altLabel "gross revenue"@en ;
+  skos:definition "Order value before returns."@en ;
+  skos:related ex:NetSales ;
+  dcterms:subject ex:total .          # ex:total rdfs:domain ex:Order
+```
+
+becomes
+
+```yaml
+glossary:
+  terms:
+    - id: gross-sales
+      display_name: Gross Sales
+      definition: Order value before returns.
+      synonyms: [gross revenue]
+      related: [net-sales]
+      defines:
+        - field: Order.total
+```
+
+An ontology with no `skos:Concept` gets no `glossary:` block, so existing
+imports are unchanged.
+
 ## 4. Going from ontology to a running graph (binding)
 
 The import gives you a **logical model**: what the domain means, with no physical

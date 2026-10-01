@@ -241,6 +241,36 @@ cli.command(
     });
 
 
+cli.command(
+       'glossary <action>',
+       'Publish each model\'s `glossary` block as a Knowledge Catalog Business Glossary (action: push): the glossary, its categories and terms, `related` links between terms, and `definition` links from the BigQuery tables / columns and semantic entries the terms define. Idempotent; run after `kcmd push`')
+    .option(
+        '--profile [name]',
+        'Resolve table bindings through this binding profile; defaults to default_profile, else the inline bindings')
+    .option('--dry-run', 'Print the REST requests; send nothing')
+    .option(
+        '--prune-glossary',
+        'Delete the terms and categories kcmd published for the model that the spec no longer declares')
+    .option(
+        '--project <project>',
+        'Project that owns the glossary (default: the catalog.yaml source project)')
+    .option('--location <location>', 'Glossary location (default: global)')
+    .option(
+        '--no-semantic-links',
+        'Do not link terms to the semantic entity / metric entries kcmd publishes (BigQuery table links only)')
+    .action(async (action, options) => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.glossary(action, options);
+      } catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+
+      process.exit(exitCode);
+    });
+
+
 cli.command('mcp', 'Run the Model Context Protocol (MCP) server')
     .option('--path <path>', 'Path to the catalog snapshot root directory')
     .action(async (options) => {

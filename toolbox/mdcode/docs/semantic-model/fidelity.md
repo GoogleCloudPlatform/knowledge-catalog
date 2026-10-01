@@ -41,6 +41,7 @@ agree on every structural row and differ only where a Spanner target has no
 | Entity `grain` / `history`                                     | `Grain:` / `History:` paragraphs on the entry description | ✓ (paragraphs peeled off) | into node label `OPTIONS(description)`; the node table stays the all-versions table | — dropped                                    |
 | Action                                                         | `semantic-action` entry¹²       | ✓¹²                                            | — not deployed¹²                                                     | — not deployed¹²                                                     |
 | Constraint                                                     | `semantic-constraint` entry¹³   | ✓¹³                                            | — not deployed¹³                                                     | — not deployed¹³                                                     |
+| Glossary (`glossary:`)                                         | Business Glossary, categories, terms and `related` / `definition` entry links, via `kcmd glossary push`¹⁶ | — not yet¹⁶ | — not deployed¹⁶ | — not deployed¹⁶ |
 | `description` (entity / metric / field / relationship)         | entry description / aspect      | ✓                                              | `OPTIONS(description)`                                               | — dropped                                                            |
 | `ai_context.synonyms`                                          | — not stored                    | —                                              | `OPTIONS(synonyms=[...])`                                            | — dropped                                                            |
 | `ai_context.instructions`                                      | `guidelines` aspect⁷            | ✓⁷                                             | into `OPTIONS(description)`                                          | — dropped                                                            |
@@ -138,6 +139,15 @@ agree on every structural row and differ only where a Spanner target has no
     with a warning. Inherited fields are not flattened onto a subtype's entry:
     each entry lists the fields it declares. A relationship with an abstract
     endpoint publishes no link (there is no table behind that end).
+16. **Business glossary.** `kcmd push` does not publish the `glossary:` block;
+    `kcmd glossary push` does, as a Dataplex Business Glossary with categories
+    and terms. A term's synonyms, formula, related terms, defined elements and
+    source go into trailers on its description, so catalog search finds them.
+    `related` becomes `related` entry links and `defines` becomes `definition`
+    entry links to the BigQuery table (with a `Schema.<column>` path for a
+    field) and to the semantic entry. A reader (`glossaryFromDataplex`) peels
+    the trailers off again, but `kcmd pull` does not call it yet. The OSI
+    export carries the block as is. See [Business glossary](glossary.md).
 
 ## To Knowledge Catalog
 

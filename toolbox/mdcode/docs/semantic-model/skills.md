@@ -453,7 +453,11 @@ an index, and the detail is read on demand.
      the boundary; read the question literally; one final answer with the
      definition and tables used; units and scale are per property on entity
      pages and values are never rescaled unless the page says so; constraints
-     only when relevant and violated.
+     only when relevant and violated. When the model has a
+     [glossary](glossary.md), one more rule: a business term or metric name
+     that is not in the model may be in the Knowledge Catalog glossary
+     `<id>` -- search it (`search_entries`) before concluding the data does
+     not contain it.
    - `GQL in BigQuery`: the syntax models get wrong (graph clause first,
      `MATCH`/`RETURN`, quantified paths `-[:e]->{1,k}`, `GRAPH_TABLE` in SQL,
      property names rather than columns).
@@ -462,6 +466,9 @@ an index, and the detail is read on demand.
      the key, and the subsets listed under their parent.
    - `Metrics`: one row per metric with the node table and graph it is a
      MEASURE on, or `SQL` when it is not one.
+   - `Business terms` (when the model has a `glossary:`): one line per term,
+     `Display Name (synonyms) -> model element or formula`, capped at 60 with
+     "... N more in the Knowledge Catalog glossary `<id>`".
 3. **Detail (`references/`)**, read on demand:
    - `references/entities/<Label>.md`: the labels it carries (own and
      ancestors), description and `ai_context`, key, the row grain and history
@@ -473,7 +480,8 @@ an index, and the detail is read on demand.
      cardinality (`1:1`, `N:1`, `M:N`), inverse edge, ancestor edge labels,
      the physical join, and the relationship's `ai_context.instructions` (where
      OWL transitive/symmetric hints live), supertypes and subtypes, defined
-     subsets, metrics anchored on it, constraints that mention it, and the
+     subsets, metrics anchored on it, the business terms that define the
+     entity or one of its fields, constraints that mention it, and the
      source table with a starter `SELECT`.
    - `references/metrics.md`: each metric's expression, description, anchor and
      synonyms, the graphs it is a MEASURE in, and a ready `GRAPH_EXPAND` query

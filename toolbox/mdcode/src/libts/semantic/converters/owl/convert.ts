@@ -8,6 +8,7 @@
 import {serializeModel} from '../../osi_converter';
 
 import {parseOwl} from './parse';
+import {skosToGlossary} from './skos';
 import {owlToIr} from './to_ir';
 
 export interface ConvertResult {
@@ -48,6 +49,11 @@ export function convertOwlToOsi(
     opts: {compactFlow?: boolean} = {}): ConvertResult {
   const owl = parseOwl(turtle);
   const {model, warnings: mapWarnings, stats} = owlToIr(owl, modelName);
+  // K9: the ontology's SKOS vocabulary, if any, becomes the business glossary
+  // (see skos.ts); `defines` resolve against the entities just mapped.
+  const skosWarnings: string[] = [];
+  const glossary = skosToGlossary(turtle, model, skosWarnings);
+  if (glossary) model.glossary = glossary;
   // An OWL import is always logical (no source/expression), so tell the
   // serializer not to warn about the missing physical binding. `compactFlow`
   // is opt-in (the `owl import --compact` flag): it emits the compact flow
@@ -58,6 +64,6 @@ export function convertOwlToOsi(
   return {
     yaml,
     stats,
-    warnings: [...mapWarnings, ...serializeWarnings],
+    warnings: [...mapWarnings, ...skosWarnings, ...serializeWarnings],
   };
 }

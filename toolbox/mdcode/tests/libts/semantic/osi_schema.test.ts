@@ -167,8 +167,8 @@ function toSchemaShape(doc: any): any {
 // special-casing and this tolerance can be removed.
 // The model-level write-side blocks that are a deliberate superset of released
 // OSI (the Extended-spec proposal): `actions` and the `constraints` that gate
-// them.
-const EXTENDED_MODEL_BLOCKS = new Set(['actions', 'constraints']);
+// them, plus the K9 business `glossary`.
+const EXTENDED_MODEL_BLOCKS = new Set(['actions', 'constraints', 'glossary']);
 
 function onlyExtendedModelBlocks(errors: typeof validate.errors): boolean {
   return !!errors && errors.length > 0 &&

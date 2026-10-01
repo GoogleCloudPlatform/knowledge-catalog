@@ -75,6 +75,63 @@ export interface SemanticModel {
   // model-level GOOGLE block. A typed deployment-target view is derived by the
   // consumer that acts on it (e.g. the CLI push), not surfaced on the IR yet.
   customExtensions?: CustomExtension[];
+  // The model's business glossary: business terms (with definitions,
+  // synonyms and links to the model elements they name) organized in
+  // categories. Published as a Knowledge Catalog (Dataplex) Business Glossary
+  // by `kcmd glossary push`, and listed on agent skills. A `/google` extension;
+  // absent on most models. See glossary.ts.
+  glossary?: Glossary;
+}
+
+/**
+ * A business glossary (spec `glossary`). Ids follow the Dataplex resource-id
+ * rules (lowercase letters, digits and hyphens) so they map 1:1 onto the
+ * published glossary, category and term ids.
+ */
+export interface Glossary {
+  // Defaults to `<model>-glossary` (see glossary.ts glossaryId).
+  id?: string;
+  displayName?: string;
+  description?: string;
+  categories: GlossaryCategory[];
+  terms: GlossaryTerm[];
+}
+
+/** A glossary category: groups terms; may nest under another category. */
+export interface GlossaryCategory {
+  id: string;
+  displayName?: string;
+  description?: string;
+  // The id of the parent category; absent = directly under the glossary.
+  parent?: string;
+}
+
+/** What a business term names in the model (spec `defines` item). */
+export interface GlossaryDefines {
+  kind: 'entity'|'field'|'metric';
+  // An entity name, `Entity.field` (inherited fields count), or a metric name.
+  ref: string;
+}
+
+/** A business term. */
+export interface GlossaryTerm {
+  id: string;
+  displayName?: string;
+  // The business definition, free text.
+  definition?: string;
+  // The id of the category the term sits in; absent = under the glossary.
+  category?: string;
+  // Free-text alternative labels (folded into the published description so
+  // catalog search finds them).
+  synonyms?: string[];
+  // Ids of related terms in the same glossary.
+  related?: string[];
+  // How the term is computed, as a model-name expression. Informational.
+  formula?: string;
+  // The model elements the term is the business name of.
+  defines?: GlossaryDefines[];
+  // Provenance, free text (e.g. the file the term was imported from).
+  source?: string;
 }
 
 /**

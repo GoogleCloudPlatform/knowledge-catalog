@@ -38,6 +38,7 @@
 
 import {generatePropertyGraph} from './bigquery';
 import {bigQueryGraphTargets} from './deployment_target';
+import {entityGlossaryLines, glossaryGuideLine, glossaryId, glossarySkillSection} from './glossary';
 import {Constraint, Entity, EntityDefinition, Field, fieldBinding, inverseEdgeNames, isTimeDimension, Metric, Relationship, relationshipAncestors, SemanticModel} from './ir';
 import {SemanticRuntime} from './runtime/runtime';
 import {cell, collapse, finish, firstLine, paragraph, sentenceEnd, SkillFile, truncate} from './skills_text';
@@ -680,7 +681,7 @@ function skillBody(ctx: Ctx): string[] {
       'holds the same entities with their metadata and glossary.');
   out.push('');
 
-  out.push(...NAVIGATION_GUIDE);
+  out.push(...navigationGuide(a.model));
   out.push(...gqlBasics(graphRefOrPlaceholder(primary)));
 
   out.push('## Entities');
@@ -729,12 +730,35 @@ function skillBody(ctx: Ctx): string[] {
     out.push('');
   }
 
+  // K9 business glossary (glossary.ts): one line per term, capped.
+  const terms = glossarySkillSection(a.model);
+  if (terms) {
+    out.push('## Business terms');
+    out.push('');
+    out.push('Business name (synonyms) -> the model element or formula it ' +
+        'names.');
+    out.push('');
+    out.push(...terms);
+    out.push('');
+  }
+
   out.push('## More');
   out.push('');
   out.push('- `references/entities/<Label>.md`: one page per label above.');
   out.push('- `references/metrics.md`: every metric, with a query.');
   out.push('- `references/patterns.md`: example GQL and SQL over this graph.');
   out.push('');
+  return out;
+}
+
+// NAVIGATION_GUIDE, plus the one glossary rule when the model has a
+// glossary (numbered after the last rule, before the closing blank line).
+function navigationGuide(model: SemanticModel): readonly string[] {
+  if (!model.glossary?.terms.length) return NAVIGATION_GUIDE;
+  const rules = NAVIGATION_GUIDE.filter(l => /^\d+\. /.test(l)).length;
+  const out = [...NAVIGATION_GUIDE];
+  out.splice(out.length - 1, 0,
+      `${rules + 1}. ${glossaryGuideLine(glossaryId(model))}`);
   return out;
 }
 
@@ -871,6 +895,15 @@ function entityPage(ctx: Ctx, label: string): string {
       const how = home ? `MEASURE \`${home.nodeTable}_${metric.name}\` in \`${shortGraph(home.graph)}\`` : 'SQL only';
       out.push(`- \`${metric.name}\`: \`${collapse(metric.expression ?? metric.importedExpression ?? '')}\` (${how}). See \`references/metrics.md\`.`);
     }
+    out.push('');
+  }
+
+  // K9 business terms naming this entity or its fields (glossary.ts).
+  const termLines = entityGlossaryLines(a.model, label);
+  if (termLines.length) {
+    out.push('## Business terms');
+    out.push('');
+    out.push(...termLines);
     out.push('');
   }
 

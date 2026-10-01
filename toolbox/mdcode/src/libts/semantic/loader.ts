@@ -12,7 +12,8 @@
 import * as yaml from 'yaml';
 import * as z from 'zod';
 
-import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, Entity, Executor, Field, Metric, Relationship, relationshipAncestors, SemanticModel, VIOLATION_EFFECTS,} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, Entity, Executor, Field, Glossary, GlossaryCategory, GlossaryDefines, GlossaryTerm, Metric, Relationship, relationshipAncestors, SemanticModel, VIOLATION_EFFECTS,} from './ir';
+import {checkGlossary} from './glossary';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {referencedEntityNames} from './sql_expr_utils';
 import {checkUnitsAndHistory} from './units_history';
@@ -375,6 +376,44 @@ function rejectExpressionBody(
   });
 }
 
+// The business glossary (`glossary`, GOOGLE_VERSION only; see glossary.ts).
+// Ids follow the Dataplex resource-id rules so they publish unchanged. Every
+// object is strict: a mistyped key is an error, not a silently dropped term.
+const GLOSSARY_ID = /^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/;
+const glossaryIdSchema = z.string().regex(
+    GLOSSARY_ID,
+    'glossary ids use lowercase letters, digits and hyphens, start with a ' +
+        'letter, end with a letter or digit, and are at most 63 characters');
+// One `defines` item names exactly one model element.
+const glossaryDefinesSchema = z.union([
+  z.object({entity: z.string()}).strict(),
+  z.object({field: z.string()}).strict(),
+  z.object({metric: z.string()}).strict(),
+]);
+const glossarySchema = z.object({
+  id: glossaryIdSchema.optional(),
+  display_name: z.string().optional(),
+  description: z.string().optional(),
+  categories: z.array(z.object({
+    id: glossaryIdSchema,
+    display_name: z.string().optional(),
+    description: z.string().optional(),
+    parent: z.string().optional(),
+  }).strict()).optional(),
+  terms: z.array(z.object({
+    id: glossaryIdSchema,
+    display_name: z.string().optional(),
+    definition: z.string().optional(),
+    category: z.string().optional(),
+    synonyms: z.array(z.string()).optional(),
+    related: z.array(z.string()).optional(),
+    formula: z.string().optional(),
+    defines: z.array(glossaryDefinesSchema).optional(),
+    source: z.string().optional(),
+  }).strict()).optional(),
+}).strict();
+type GlossaryDoc = z.infer<typeof glossarySchema>;
+
 const modelBase = z.object({
   name: z.string(),
   description: z.string().optional(),
@@ -389,6 +428,7 @@ const modelBase = z.object({
   // Model-level write operations, also GOOGLE_VERSION only (see actionSchema).
   actions: z.array(actionSchema).optional(),
   constraints: z.array(constraintSchema).optional(),
+  glossary: glossarySchema.optional(),
 });
 
 
@@ -649,6 +689,7 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
            deployment_target: z.string().optional(),
            actions: z.array(action).optional(),
            constraints: z.array(constraint).optional(),
+           glossary: glossarySchema.optional(),
          } :
                         {}),
        }).strict();
@@ -998,7 +1039,51 @@ function convertModel(
   for (const msg of [...k7.errors, ...k7.warnings]) {
     warnings.push(`model '${m.name}': ${msg}`);
   }
+  // K9: the business glossary. Unresolved references load with a warning;
+  // validatePushRequirements rejects them (see glossary.ts checkGlossary).
+  if (m.glossary !== undefined) {
+    model.glossary = convertGlossary(m.glossary);
+    const k9 = checkGlossary(model);
+    for (const msg of [...k9.errors, ...k9.warnings]) {
+      warnings.push(`model '${m.name}': ${msg}`);
+    }
+  }
   return model;
+}
+
+// The snake_case `glossary` block -> the camelCase IR (see ir.ts Glossary).
+// Absent optional keys stay absent so a serializer round-trips the block.
+function convertGlossary(g: GlossaryDoc): Glossary {
+  const out: Glossary = {categories: [], terms: []};
+  if (g.id !== undefined) out.id = g.id;
+  if (g.display_name !== undefined) out.displayName = g.display_name;
+  if (g.description !== undefined) out.description = g.description;
+  for (const c of g.categories ?? []) {
+    const cat: GlossaryCategory = {id: c.id};
+    if (c.display_name !== undefined) cat.displayName = c.display_name;
+    if (c.description !== undefined) cat.description = c.description;
+    if (c.parent !== undefined) cat.parent = c.parent;
+    out.categories.push(cat);
+  }
+  for (const t of g.terms ?? []) {
+    const term: GlossaryTerm = {id: t.id};
+    if (t.display_name !== undefined) term.displayName = t.display_name;
+    if (t.definition !== undefined) term.definition = t.definition;
+    if (t.category !== undefined) term.category = t.category;
+    if (t.synonyms?.length) term.synonyms = [...t.synonyms];
+    if (t.related?.length) term.related = [...t.related];
+    if (t.formula !== undefined) term.formula = t.formula;
+    if (t.defines?.length) {
+      term.defines = t.defines.map((d): GlossaryDefines => {
+        if ('entity' in d) return {kind: 'entity', ref: d.entity};
+        if ('field' in d) return {kind: 'field', ref: d.field};
+        return {kind: 'metric', ref: d.metric};
+      });
+    }
+    if (t.source !== undefined) term.source = t.source;
+    out.terms.push(term);
+  }
+  return out;
 }
 
 function convertDataset(

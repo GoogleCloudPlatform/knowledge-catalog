@@ -166,6 +166,28 @@ not run; violations are a report about the data, not a command failure.
 The results are never used as filters: no graph, query, skill or action guard
 reads them. See [Validating constraints against BigQuery](validation.md).
 
+### glossary push
+
+```bash
+kcmd glossary push [--dry-run] [--prune-glossary] [--profile <name>]
+```
+
+Publishes each model's `glossary:` block as a Knowledge Catalog Business
+Glossary: the glossary, its categories and terms, `related` entry links between
+terms, and `definition` entry links from the BigQuery tables / columns (and the
+semantic entity / metric entries) the terms define. Idempotent (409 → PATCH);
+run it after `kcmd push`. `kcmd push` does not publish the glossary. See
+[Business glossary](glossary.md).
+
+| Flag | Effect |
+|------|--------|
+| `--dry-run` | Print every REST request (path, query, body) and the skipped links; send nothing. |
+| `--prune-glossary` | Delete the terms and categories labelled `kcmd-model: <model>` that the spec no longer declares. |
+| `--profile [name]` | Resolve table / column bindings through this binding profile. |
+| `--project <project>` | Project that owns the glossary. Defaults to the `catalog.yaml` source project. |
+| `--location <location>` | Glossary location. Defaults to `global`. |
+| `--no-semantic-links` | Link only the BigQuery tables, not the semantic entries. |
+
 ### owl import
 
 ```bash

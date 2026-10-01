@@ -19,6 +19,8 @@ import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets} from '../libts/semantic/deployment_target';
+import {checkGlossary} from '../libts/semantic/glossary';
+import {publishGlossary} from '../libts/semantic/glossary_publish';
 import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
@@ -1839,3 +1841,126 @@ export async function validate(options: ValidateOptions = {}): Promise<number> {
 }
 
 
+export interface GlossaryOptions {
+  profile?: string|boolean;
+  /** Print the requests; send nothing. */
+  dryRun?: boolean;
+  /** Delete kcmd-managed terms / categories the spec no longer declares. */
+  pruneGlossary?: boolean;
+  /** Glossary project (default: catalog.yaml source project). */
+  project?: string;
+  /** Glossary location (default: global). */
+  location?: string;
+  /** Skip the definition links to the semantic entries kcmd publishes. */
+  semanticLinks?: boolean;
+}
+
+// Publishing each model's `glossary` block as a Knowledge Catalog Business
+// Glossary (K9; see semantic/glossary.ts). Separate from `push` so a glossary
+// can be curated and republished without touching graphs or entries; run it
+// after `push` so the definition links find the semantic entries.
+//
+// Exit code: 1 on a usage / load / publish error; 0 otherwise (links the API
+// refuses on custom entries are reported as skipped, not failures).
+export async function glossary(
+    action: string, options: GlossaryOptions = {}): Promise<number> {
+  if (action !== 'push') {
+    console.error(`Error: unknown glossary action '${action}'; expected 'push'.`);
+    return 1;
+  }
+  const ctx = generatorContext();
+  let snapshot: kcmd.CatalogSnapshot;
+  try {
+    snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+  } catch (err: any) {
+    console.error(`Error: ${err?.message ?? err}`);
+    return 1;
+  }
+  if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {
+    console.error('Error: glossary runs in a semantic-model scope.');
+    return 1;
+  }
+  const layout = snapshot.layout as SemanticModelLayout;
+  const source = snapshot.manifest.source as SemanticModelSource;
+  const named = typeof options.profile === 'string' ? options.profile : undefined;
+  const profile = named ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
+
+  const docs = layout.modelDocuments();
+  if (!docs.length) {
+    console.error('Error: no semantic model documents found.');
+    return 1;
+  }
+  const merged: Array<{name: string; text: string}> = [];
+  for (const doc of docs) {
+    if (profile === DEFAULT_PROFILE) {
+      merged.push({name: doc.name, text: doc.text});
+      continue;
+    }
+    const chosen = layout.profileDocuments(doc.name).find(p => p.name === profile);
+    if (!chosen) {
+      console.error(`Error: unknown binding profile '${profile}' for model '${
+          doc.name}'.`);
+      return 1;
+    }
+    const res = mergeProfileOntoDoc(doc.text, chosen.text, profile);
+    if ('error' in res) {
+      console.error(`Error: [${doc.name}] ${res.error}`);
+      return 1;
+    }
+    for (const w of res.warnings) console.warn(`Warning: [${doc.name}] ${w}`);
+    merged.push({name: doc.name, text: res.text});
+  }
+  const loaded = loadSemanticModels(
+      merged,
+      {defaultProject: source.project ?? ctx.project, bindingOptional: true});
+  if (loaded.error) {
+    console.error(`Error: ${loaded.error}`);
+    return 1;
+  }
+  for (const w of loaded.warnings) console.warn(`Warning: ${w}`);
+  if (!options.dryRun && !ctx.token) {
+    console.error('Error: glossary push needs credentials ' +
+                  '(gcloud auth application-default login); try --dry-run.');
+    return 1;
+  }
+
+  let failed = false;
+  let any = false;
+  for (const {model, document} of loaded.models) {
+    if (!model.glossary) continue;
+    any = true;
+    const check = checkGlossary(model);
+    if (check.errors.length) {
+      for (const e of check.errors) {
+        console.error(`Error: model '${model.name}' (${document}): ${e}`);
+      }
+      failed = true;
+      continue;
+    }
+    const res = await publishGlossary(model, ctx, {
+      project: options.project ?? source.project ?? ctx.project,
+      location: options.location ?? 'global',
+      semantic: options.semanticLinks === false ? undefined : {
+        project: source.project ?? ctx.project,
+        location: source.location,
+        entryGroup: source.entryGroup,
+      },
+      dryRun: options.dryRun,
+      prune: options.pruneGlossary,
+    });
+    const tag = `[${model.name}]`;
+    for (const n of res.created) console.log(`${tag} Created ${n}`);
+    for (const n of res.updated) console.log(`${tag} Updated ${n}`);
+    for (const n of res.existing) console.log(`${tag} Exists ${n}`);
+    for (const n of res.deleted) console.log(`${tag} Deleted ${n}`);
+    if (!options.dryRun) {
+      for (const s of res.skipped) console.warn(`Warning: ${tag} skipped: ${s}`);
+    }
+    for (const e of res.errors) console.error(`Error: ${tag} ${e}`);
+    if (res.errors.length) failed = true;
+    console.log(`${tag} glossary ${res.plan.glossaryName}: ${
+        res.plan.requests.length} requests${options.dryRun ? ' (dry run)' : ''}`);
+  }
+  if (!any) console.log('No model declares a glossary; nothing to publish.');
+  return failed ? 1 : 0;
+}

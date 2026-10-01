@@ -332,6 +332,7 @@ extension, [§5](#5-extensions)), or *rejected* / *not authorable* (excluded).
 | `expression.dialects` | closed enum | any dialect string | tolerate imported / newer input · [§4.2](#42-relaxations-looser-than-ossie) |
 | `actions` | — | added | write operations declared over the ontology; `/google` only · [§5](#5-extensions) |
 | `constraints` | — | added | named invariants over the ontology; `/google` only · [§5](#5-extensions) |
+| `glossary` | — | added | business terms (definitions, synonyms, links to model elements), published as a Knowledge Catalog Business Glossary; `/google` only · [§5](#5-extensions), [glossary.md](glossary.md) |
 | field `expression` (column binding) | required | optional | model before binding; unbound is pruned · [§4.2](#42-relaxations-looser-than-ossie), [§7](#7-the-binding-layer) |
 | `source` (table binding) | required | optional | logical-only models; graph deploy still needs it · [§4.2](#42-relaxations-looser-than-ossie), [§7.1](#71-table-sources) |
 | `ai_context` (`instructions`, `synonyms`, `examples`) | `examples` are strings | same; `examples` any shape | tolerate imports; non-strings dropped · [§2.4](#24-ai_context), [§4.2](#42-relaxations-looser-than-ossie) |
@@ -488,6 +489,22 @@ reads the document ([§6](#6-the-extension-mechanism)).
   graph elements and Knowledge Catalog entries — a pull reads the trailers back
   — and as native keys in OSI output. Query skill pages state them per property
   and tell the agent how to filter current rows.
+
+- **`glossary` on a model (extended profile only).** The model's business
+  glossary: `{id?, display_name?, description?, categories?, terms?}`. A
+  category is `{id, display_name?, description?, parent?}` (nesting up to 3
+  levels); a term is `{id, display_name?, definition?, category?, synonyms?,
+  related?, formula?, defines?, source?}`, where each `defines` item is exactly
+  one of `{entity: Name}`, `{field: Entity.field}` (inherited fields count) or
+  `{metric: name}`. Ids use lowercase letters, digits and hyphens (the
+  Dataplex resource-id rule); the glossary id defaults to `<model>-glossary`.
+  Duplicate ids and unresolved `category` / `parent` / `related` / `defines`
+  are load warnings and push errors (an unresolved `defines` is only a warning
+  when a binding profile pruned fields). The glossary changes no generated
+  SQL and no semantic entry: `kcmd glossary push` publishes it as a Knowledge
+  Catalog Business Glossary with `related` and `definition` entry links, OSI
+  output carries it as a native key, and query skills list its terms. See
+  [Business glossary](glossary.md).
 
 - **`extends` and `abstract` on a relationship (extended profile only).**
   Relationship inheritance: a relationship MAY name parent relationships in

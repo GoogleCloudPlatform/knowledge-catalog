@@ -20,6 +20,7 @@ import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, resolveInheritance} from './resolve_inheritance';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {checkUnitsAndHistory} from './units_history';
+import {checkGlossary} from './glossary';
 
 // Checks every model against the push requirements and returns the collected
 // error messages (empty when all models pass), each tagged with the model's
@@ -207,6 +208,13 @@ export function validatePushRequirements(
     // K7 units / history (units_history.ts): a non-positive scale, or a
     // history key naming no field. Advisory findings stay load warnings.
     for (const msg of checkUnitsAndHistory(
+             model, {fieldsPruned: opts.fieldsPruned}).errors) {
+      errors.push(`model '${model.name}' (${document}): ${msg}`);
+    }
+
+    // K9 business glossary (glossary.ts): duplicate ids, unknown categories /
+    // related terms, unresolved `defines` (warnings when fields are pruned).
+    for (const msg of checkGlossary(
              model, {fieldsPruned: opts.fieldsPruned}).errors) {
       errors.push(`model '${model.name}' (${document}): ${msg}`);
     }
