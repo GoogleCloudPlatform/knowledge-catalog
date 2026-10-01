@@ -131,7 +131,10 @@ export function aiContextAspectValue(ai: AiContext|undefined):
   const out: Record<string, any> = {};
   if (ai.instructions) out.instructions = ai.instructions;
   if (ai.synonyms?.length) out.synonyms = [...ai.synonyms];
-  if (ai.examples?.length) out.examples = [...ai.examples];
+  if (ai.examples?.length) {
+    out.examples =
+        ai.examples.map(e => (typeof e === 'string' ? e : JSON.stringify(e)));
+  }
   return Object.keys(out).length ? out : undefined;
 }
 

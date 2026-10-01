@@ -489,6 +489,30 @@ describe('descriptive metadata: structured synonyms vs folded description', () =
       });
 
   test(
+      'structured examples render as JSON and never [object Object]',
+      () => {
+        const m = model();
+        m.entities[0].fields[1].aiContext = {
+          instructions: 'Use for net revenue',
+          synonyms: ['total', 'value'],
+          examples: [
+            {key1: 'val1', key2: 'val2'},
+            {foo: 'bar', count: 42},
+            'plain string example',
+          ],
+          additionalProperties: {
+            custom_hint: 'prioritize verified orders',
+          },
+        };
+        const {ddl} = generatePropertyGraph(m, GEN_OPTS);
+        expect(ddl).not.toContain('[object Object]');
+        // Inside the BigQuery DDL's double-quoted description literal, JSON
+        // quotes are backslash-escaped.
+        expect(ddl).toContain(
+            'Examples: {\\"key1\\":\\"val1\\",\\"key2\\":\\"val2\\"}; {\\"foo\\":\\"bar\\",\\"count\\":42}; plain string example');
+      });
+
+  test(
       'model-level metadata is not emitted (BigQuery drops statement-level graph OPTIONS)',
       () => {
         const {ddl} = generatePropertyGraph(model(), GEN_OPTS);
