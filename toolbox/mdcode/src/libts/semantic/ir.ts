@@ -132,6 +132,14 @@ export interface Entity {
   // expressions) over the parent lineage's field NAMES; a defined parent's own
   // definition is implied (membership is the conjunction up the chain).
   definition?: EntityDefinition;
+  // What one row / instance represents, free text (e.g. "one row per
+  // opportunity version"). Informational: no emitter changes the table for it;
+  // it rides element descriptions and skill pages (see units_history.ts).
+  grain?: string;
+  // How the backing table keeps history (see EntityHistory). Informational
+  // like `grain`: the node table stays the all-versions table, and readers are
+  // told how to pick current rows (see units_history.ts).
+  history?: EntityHistory;
   description?: string;
   aiContext?: AiContext;
   fields: Field[];       // dimensions / attributes
@@ -144,6 +152,20 @@ export interface EntityDefinition {
   // Optional prose about the definition itself (as opposed to the entity's
   // description), e.g. "Stage 5 (won) per the CRM's stage vocabulary".
   description?: string;
+}
+
+/**
+ * How an entity's table keeps history (spec `history`). Each field reference
+ * is a field NAME on the entity (inherited fields count).
+ */
+export interface EntityHistory {
+  // True when the table holds several versions per business key.
+  versioned: boolean;
+  // A Boolean field that is TRUE on the current version of each record.
+  currentFlag?: string;
+  // The fields bounding each version's validity interval.
+  validFrom?: string;
+  validTo?: string;
 }
 
 /**
@@ -188,6 +210,12 @@ export interface Field {
   label?: string;                  // human display label (distinct from name/description)
   description?: string;
   type?: DataType;                 // logical datatype (the open format's `datatype`)
+  // The unit a value is measured in (e.g. 'USD', 'hours', 'percent', or a
+  // QUDT-style code) and the multiplier the stored value carries (`scale:
+  // 1000` means a stored 5 is 5000 of `unit`). Informational: nothing rescales
+  // values; they ride descriptions and skill pages (see units_history.ts).
+  unit?: string;
+  scale?: number;
   aiContext?: AiContext;
   customExtensions?: CustomExtension[];
 }

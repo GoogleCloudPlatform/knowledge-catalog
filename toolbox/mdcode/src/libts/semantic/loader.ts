@@ -15,6 +15,7 @@ import * as z from 'zod';
 import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, Entity, Executor, Field, Metric, Relationship, relationshipAncestors, SemanticModel, VIOLATION_EFFECTS,} from './ir';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {referencedEntityNames} from './sql_expr_utils';
+import {checkUnitsAndHistory} from './units_history';
 
 export interface LoadOptions {
   dialect?: string;  // preferred expression dialect; default 'BIGQUERY'
@@ -106,6 +107,15 @@ const dimensionSchema = z.object({
   is_time: z.boolean().optional(),
 });
 
+// K7 (see units_history.ts): a dataset's history keeping. Field references are
+// field names; checkUnitsAndHistory verifies they exist.
+const historySchema = z.object({
+                         versioned: z.boolean(),
+                         current_flag: z.string().min(1).optional(),
+                         valid_from: z.string().min(1).optional(),
+                         valid_to: z.string().min(1).optional(),
+                       }).strict();
+
 // The canonical (superset) field shape, for TYPE inference only. The actual
 // validation schemas are rebuilt per-load by buildDocumentSchema, which is
 // strict, gates `custom_extensions` on the version, and applies the
@@ -121,6 +131,9 @@ const fieldBase = z.object({
   description: z.string().optional(),
   label: z.string().optional(),
   dimension: dimensionSchema.optional(),
+  // K7 unit / scale (see Field.unit / Field.scale).
+  unit: z.string().optional(),
+  scale: z.number().optional(),
   ai_context: aiContextSchema.optional(),
   custom_extensions: z.array(customExtensionSchema).optional(),
 });
@@ -152,6 +165,9 @@ const datasetBase = z.object({
     expression: z.string(),
     description: z.string().optional(),
   })]).optional(),
+  // K7 grain / history (see Entity.grain / Entity.history).
+  grain: z.string().optional(),
+  history: historySchema.optional(),
   description: z.string().optional(),
   ai_context: aiContextSchema.optional(),
   fields: z.array(fieldBase).optional(),
@@ -416,6 +432,13 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          dimension: dimensionSchema.optional(),
          ai_context: aiContextSchema.optional(),
          ...ce,
+         // K7 unit / scale: a native extension, like `defined`. A scale must
+         // be a positive multiplier.
+         ...(extended ? {
+           unit: z.string().min(1).optional(),
+           scale: z.number().positive().optional(),
+         } :
+                        {}),
        }).strict();
 
   const dataset =
@@ -442,6 +465,9 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
                           description: z.string().optional(),
                         }).strict(),
                      ]).optional(),
+           // K7 grain / history: native extensions (see units_history.ts).
+           grain: z.string().min(1).optional(),
+           history: historySchema.optional(),
          } :
                         {}),
        })
@@ -966,6 +992,12 @@ function convertModel(
       deploymentTargetExtension(m.deployment_target),
     ];
   }
+  // K7: a history key naming no field (or a non-Boolean current_flag) loads
+  // with a warning; validatePushRequirements rejects the missing field.
+  const k7 = checkUnitsAndHistory(model);
+  for (const msg of [...k7.errors, ...k7.warnings]) {
+    warnings.push(`model '${m.name}': ${msg}`);
+  }
   return model;
 }
 
@@ -1016,6 +1048,17 @@ function convertDataset(
   } else if (ds.abstract) {
     entity.abstract = true;
   }
+  if (ds.grain !== undefined) entity.grain = ds.grain;
+  if (ds.history !== undefined) {
+    const history: Entity['history'] = {versioned: ds.history.versioned};
+    if (ds.history.current_flag !== undefined)
+      history.currentFlag = ds.history.current_flag;
+    if (ds.history.valid_from !== undefined)
+      history.validFrom = ds.history.valid_from;
+    if (ds.history.valid_to !== undefined)
+      history.validTo = ds.history.valid_to;
+    entity.history = history;
+  }
   const description = composeDescription(ds.description);
   if (description) entity.description = description;
   const ai = aiContextOrUndefined(ds.ai_context);
@@ -1050,6 +1093,8 @@ function convertField(
   // whatever depends on it, before generation, so one logical model can serve
   // stores that bind different subsets of columns.
   if (f.datatype) field.type = f.datatype;
+  if (f.unit !== undefined) field.unit = f.unit;
+  if (f.scale !== undefined) field.scale = f.scale;
   if (f.label) field.label = f.label;
   if (f.dimension) {
     field.dimension = {};

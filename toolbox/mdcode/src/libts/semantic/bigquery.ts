@@ -24,6 +24,7 @@ import {AiContext, Association, Entity, Field, fieldBinding, inverseEdgeNames, i
 import {resolveInheritance} from './resolve_inheritance';
 import {referencedEntityNames, rewriteFieldRefs, stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
+import {entityTrailers, unitTrailer} from './units_history';
 
 export interface GenerateOptions {
   project?: string;    // fills the project for the graph name + under-qualified
@@ -767,7 +768,11 @@ function renderNodeTable(
   // bound to another element table"), so a shared supertype label must be
   // options-free; its description/synonyms are dropped (with a warning).
   let labelOpts = optionsClause(
-      elementDescription(entity.description, entity.aiContext),
+      composeText([
+        elementDescription(entity.description, entity.aiContext),
+        // K7: `Grain: …` / `History: …` last, as on the catalog entry.
+        ...entityTrailers(entity),
+      ]),
       entity.aiContext?.synonyms);
   if (isSupertype && labelOpts) {
     warnings.push(
@@ -1271,6 +1276,8 @@ function fieldDescription(field: Field): string|undefined {
     field.description,
     field.aiContext?.instructions,
     examplesLine(field.aiContext?.examples),
+    // K7: `Unit: USD (x1000).` last, as on the catalog entry.
+    unitTrailer(field),
   ]);
 }
 

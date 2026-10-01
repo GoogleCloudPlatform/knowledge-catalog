@@ -286,6 +286,11 @@ export interface OwlDatatypeProperty extends OwlCommonAnnotations {
   // No native OSI home; carried verbatim. Named properties only. Full IRIs.
   // Empty when none.
   propertyDisjointWith: string[];
+  // The unit a value is measured in, from a `qudt:unit` / `qudt:hasUnit` (or
+  // any annotation property whose local name is `unit` / `hasUnit`): an IRI's
+  // local name (`unit:USD` -> 'USD') or a literal's text. First one wins.
+  // Maps to the field's `unit` (K7). Undefined when none.
+  unit?: string;
 }
 
 /**

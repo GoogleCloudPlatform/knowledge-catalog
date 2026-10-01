@@ -203,6 +203,44 @@ cli.command(
     });
 
 
+cli.command(
+       'validate',
+       'Check the data the binding profile binds against the model\'s constraints (imported SHACL / OWL rules, keys, foreign keys): one violation-count query per rule. Writes the queries, runs them, and optionally publishes the results to Knowledge Catalog')
+    .option('--target <target>', 'The engine to check on. Only `bigquery`')
+    .option(
+        '--profile [name]',
+        'Check the tables this binding profile binds; defaults to default_profile, else the inline bindings')
+    .option(
+        '--out <dir>',
+        'Directory for <model>.validation.sql, <model>.validation.json (the manifest) and <model>.results.json. Defaults to `validation`')
+    .option(
+        '--sql-only',
+        'Write the queries and the manifest, and run nothing (also the behaviour when there are no credentials)')
+    .option(
+        '--examples <n>',
+        'Violating keys to sample for each failing check (default 5; 0 skips the examples queries)')
+    .option(
+        '--location <location>',
+        'BigQuery processing location for the query jobs (e.g. US); inferred from the tables when unset')
+    .option(
+        '--publish',
+        'Write the results to Knowledge Catalog: a semantic-constraint-results aspect on each checked entity\'s entry (run `kcmd push` first)')
+    .option(
+        '--no-structural',
+        'Check only the model\'s constraints, not its primary keys, unique keys and foreign keys')
+    .action(async (options) => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.validate(options);
+      } catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+
+      process.exit(exitCode);
+    });
+
+
 cli.command('mcp', 'Run the Model Context Protocol (MCP) server')
     .option('--path <path>', 'Path to the catalog snapshot root directory')
     .action(async (options) => {

@@ -137,6 +137,8 @@ A dataset is one concept in the business.
 | `extends` | list of strings | supertype dataset names — extension ([§2.1.2](#212-inheritance-extends), [§5](#5-extensions)) |
 | `abstract` | boolean | a concept with no table — extension ([§5](#5-extensions)) |
 | `defined` | string or `{expression, description?}` | a subset of its single parent picked out by a condition — extension ([§5](#5-extensions)) |
+| `grain` | string | free text: what one row stands for — extension ([§5](#5-extensions)) |
+| `history` | `{versioned, current_flag?, valid_from?, valid_to?}` | row versioning (SCD-2 style); the three optional keys name fields — extension ([§5](#5-extensions)) |
 | `source` | string | physical table URI; Ossie-native, relaxed to optional ([§7.1](#71-table-sources), [§4](#4-narrowings-and-relaxations)) |
 | `description` | string | |
 | `ai_context` | [ai_context](#24-ai_context) | |
@@ -156,6 +158,8 @@ bound for a graph MUST declare one (see [§4](#4-narrowings-and-relaxations) and
 | `expression` | [expression](#25-expressions) | physical-column binding; a field with none is *unbound* (binding — [§7](#7-the-binding-layer)) |
 | `label` | string | human display label |
 | `dimension` | object | `{ is_time: boolean }` |
+| `unit` | string | unit of measure (`USD`, `hours`, `percent`) — extension ([§5](#5-extensions)) |
+| `scale` | number | multiplier from stored to real value, `> 0` (`1000` = stored in thousands) — extension ([§5](#5-extensions)) |
 | `description` | string | |
 | `ai_context` | [ai_context](#24-ai_context) | |
 | `custom_extensions` | list | [§6](#6-the-extension-mechanism) |
@@ -318,6 +322,7 @@ extension, [§5](#5-extensions)), or *rejected* / *not authorable* (excluded).
 | `extends` | — | added | class inheritance; `/google` only · [§2.1.2](#212-inheritance-extends), [§5](#5-extensions) |
 | `abstract` | — | added | supertype with no table; `/google` only · [§5](#5-extensions) |
 | `defined` | — | added | defined (virtual) entity: a parent's rows picked out by a condition (OWL defined class); `/google` only · [§5](#5-extensions) |
+| field `unit`, `scale`; dataset `grain`, `history` | — | added | units of measure, row grain, row versioning; `/google` only · [§5](#5-extensions) |
 | relationship `name`, `from`, `to` | defined | same | [§2.2](#22-relationship) |
 | relationship `from_columns` / `to_columns` | required | optional | model before binding; none = logical edge · [§4.2](#42-relaxations-looser-than-ossie) |
 | relationship `extends`, `abstract` | — | added | relationship inheritance (shared edge labels); `/google` only · [§5](#5-extensions) |
@@ -467,6 +472,22 @@ reads the document ([§6](#6-the-extension-mechanism)).
   description?}`). It has no `source`, keys or fields of its own; a graph push
   lowers it to a boolean property `is<Name>` on its base. See [Defined
   entities](inheritance.md#defined-entities-a-subtype-picked-out-by-a-condition).
+
+- **Units, grain and history (extended profile only).** A field MAY declare
+  `unit` (free text: `USD`, `hours`, a QUDT unit name) and `scale` (a positive
+  multiplier from the stored value to the real one: `scale: 1000` means a
+  stored `1` is `1000` units). A dataset MAY declare `grain` (free text: what one
+  row stands for) and `history: {versioned, current_flag?, valid_from?,
+  valid_to?}`, whose optional keys name fields of the dataset (own or
+  inherited). `scale <= 0` is a load error; a history key naming no field is a
+  load warning and a push error; a `current_flag` whose known type is not
+  `Boolean`, or a `valid_from`/`valid_to` that is not temporal, is a warning.
+  These keys change no generated SQL: the node table stays the all-versions
+  table. They travel as description trailers (`Unit: USD (x1000).`,
+  `Grain: …`, `History: versioned; current rows where isCurrent.`) on BigQuery
+  graph elements and Knowledge Catalog entries — a pull reads the trailers back
+  — and as native keys in OSI output. Query skill pages state them per property
+  and tell the agent how to filter current rows.
 
 - **`extends` and `abstract` on a relationship (extended profile only).**
   Relationship inheritance: a relationship MAY name parent relationships in

@@ -37,7 +37,9 @@
 // pull fetched -- see `modelsFromCatalogResources`'s `entryLinks` argument).
 // Entity `extends` and `abstract` come back from the `Specializes:` / `Abstract:`
 // paragraphs publish appends to an entity entry's description (see
-// `splitEntityTrailers`).
+// `splitEntityTrailers`). Field `unit` / `scale` and entity `grain` /
+// `history` (K7) come back the same way, from `Unit:` / `Scale:` and
+// `Grain:` / `History:` paragraphs (see units_history.ts).
 // The per-field `semantics` block -- field/metric expressions and the DIMENSION
 // role
 // -- is gated off the catalog by default: the emitter writes it only under
@@ -62,6 +64,7 @@ import {isActionEntry, readAction} from './kc_actions';
 import {isConstraintEntry, readConstraint} from './kc_constraints';
 import {ABSTRACT_MARKER, DEFINED_AS_PREFIX, DEFINITION_NOTE_PREFIX, INVERSE_PREFIX, linkSlug, SPECIALIZES_PREFIX} from './knowledge_catalog';
 import {referencedEntityNames} from './sql_expr_utils';
+import {splitGrainHistoryTrailers, splitUnitTrailer} from './units_history';
 
 export interface ReadResult {
   models: SemanticModel[];
@@ -225,9 +228,11 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
   }
 
   // Publish appends the Specializes paragraph then the Abstract marker (or the
-  // definition trailers) to the entity description
-  // (knowledge_catalog.entityDescription); peel them off.
-  const defined = splitDefinitionTrailer(entry.entrySource?.description);
+  // definition trailers), then the K7 Grain / History paragraphs, to the entity
+  // description (knowledge_catalog.entityDescription); peel them off in
+  // reverse.
+  const k7 = splitGrainHistoryTrailers(entry.entrySource?.description);
+  const defined = splitDefinitionTrailer(k7.rest);
   const trailers = splitEntityTrailers(defined.rest);
   const dataSource = dataSourceFromResource(semantic?.source?.resources?.[0]);
   // An abstract entity has no table by design, so an empty source is expected;
@@ -259,6 +264,8 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
   if (trailers.parents.length) entity.extends = trailers.parents;
   if (trailers.abstract) entity.abstract = true;
   if (defined.definition) entity.definition = defined.definition;
+  if (k7.grain !== undefined) entity.grain = k7.grain;
+  if (k7.history !== undefined) entity.history = k7.history;
   const ai = readAiContext(entry);
   if (ai) entity.aiContext = ai;
   return entity;
@@ -362,7 +369,11 @@ function readField(fd: any, entityName: string, warnings: string[]): Field|
   const type = irDataType(fd?.dataType, fd?.metadataType);
   if (type !== undefined) field.type = type;
   if (sem.role === 'DIMENSION') field.dimension = {};
-  if (fd?.description !== undefined) field.description = fd.description;
+  // K7: the emitter appends `Unit: …` / `Scale: …` to the description.
+  const unit = splitUnitTrailer(fd?.description);
+  if (unit.rest !== undefined) field.description = unit.rest;
+  if (unit.unit !== undefined) field.unit = unit.unit;
+  if (unit.scale !== undefined) field.scale = unit.scale;
   // The display label rides in the schema field's `annotations` map (the
   // inverse of the emitter's `annotations: {label}`).
   const label = fd?.annotations?.label;

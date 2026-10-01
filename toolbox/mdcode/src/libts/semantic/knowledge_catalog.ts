@@ -60,6 +60,7 @@ import {googleDeploymentTargets} from './deployment_target';
 import {AiContext, DataType, Entity, Metric, Relationship, SemanticModel} from './ir';
 import {actionEntries, actionOwnedPrefix} from './kc_actions';
 import {constraintEntries, constraintOwnedPrefix} from './kc_constraints';
+import {entityTrailers, withUnitTrailer} from './units_history';
 
 // Where the `semantic-*` and `schema` system types live: built-in types in
 // project `dataplex-types`, location `global`. Callers may override to reference
@@ -498,6 +499,9 @@ function entityDescription(entity: Entity): string|undefined {
     entity.definition ?
         `${DEFINED_AS_PREFIX}${oneParagraph(entity.definition.expression)}` :
         undefined,
+    // K7: `Grain: …` then `History: …`, last of all, so pull peels them first
+    // (see units_history.splitGrainHistoryTrailers).
+    ...entityTrailers(entity),
   ].filter((p): p is string => !!p);
   return parts.length ? parts.join('\n\n') : undefined;
 }
@@ -567,7 +571,9 @@ function schemaAspectData(
                        // dropping the type. Authored `String` maps to STRING.
                        dataType: columnDataType(f.type ?? 'Opaque'),
                        metadataType: columnMetadataType(f.type ?? 'Opaque'),
-                       description: f.description,
+                       // K7: unit / scale ride as a trailing `Unit: …`
+                       // paragraph (kc_converter peels it back off).
+                       description: withUnitTrailer(f.description, f),
                        // A field's display label rides in the schema field's
                        // `annotations` map (the template's free-form
                        // string->string map) -- the one slot for metadata the

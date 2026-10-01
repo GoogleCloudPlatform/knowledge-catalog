@@ -209,7 +209,9 @@ Dropped silently: presentational terms (`sh:order`, `sh:group`,
 `sh:defaultValue`), `sh:name` (a display label with no slot on a constraint),
 and deactivated shapes.
 
-The constraints are **judged** rules, like every model constraint: `kcmd` does
-not run SHACL validation against the bound data. An agent or an action guard
-reads the judgment; to evaluate the rule over stored data, write the check (for
-example as SQL) outside the model.
+The constraints are **judged** rules, like every model constraint: an agent or
+an action guard reads the judgment, and nothing at write or query time filters
+on the bound data. To measure the stored data against the imported rules, run
+`kcmd validate --target bigquery`, which compiles each rule (from its
+provenance note) to a violation-count query -- see
+[Validating constraints against BigQuery](validation.md).

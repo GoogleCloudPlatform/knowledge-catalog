@@ -43,6 +43,7 @@ import {SemanticRuntime} from './runtime/runtime';
 import {cell, collapse, finish, firstLine, paragraph, sentenceEnd, SkillFile, truncate} from './skills_text';
 import {quoteIfReserved} from './sql_identifiers';
 import {stripQualifier} from './sql_expr_utils';
+import {grainHistoryLines, unitNote} from './units_history';
 
 /**
  * Slugs under `references/` the query pages occupy. `mode: 'both'` reserves
@@ -450,12 +451,12 @@ function aiNotes(ai: {instructions?: string; synonyms?: string[]; examples?: str
 }
 
 // Field keys rendered by name below, or not metadata at all. Anything else a
-// field carries -- e.g. a `unit` added by later IR work -- is rendered
-// generically as `key: value`, so new metadata reaches the page without a
-// change here.
+// field carries is rendered generically as `key: value`, so new metadata
+// reaches the page without a change here.
 const KNOWN_FIELD_KEYS = new Set([
   'name', 'expression', 'importedExpression', 'importedDialect', 'dimension',
-  'label', 'description', 'type', 'aiContext', 'customExtensions',
+  'label', 'description', 'type', 'aiContext', 'customExtensions', 'unit',
+  'scale',
 ]);
 
 function fieldNotes(field: Field): string {
@@ -463,10 +464,13 @@ function fieldNotes(field: Field): string {
   if (field.label) parts.push(`"${collapse(field.label)}".`);
   if (field.description) parts.push(sentenceEnd(collapse(field.description)));
   if (isTimeDimension(field)) parts.push('Time dimension.');
+  // K7 unit / scale (units_history.ts).
+  const unit = unitNote(field);
+  if (unit) parts.push(unit);
   for (const [key, value] of Object.entries(field).sort(([x], [y]) => x < y ? -1 : 1)) {
     if (KNOWN_FIELD_KEYS.has(key) || value === undefined || value === null) continue;
     if (['string', 'number', 'boolean'].includes(typeof value)) {
-      parts.push(`${key === 'unit' ? 'Unit' : key}: ${collapse(String(value))}.`);
+      parts.push(`${key}: ${collapse(String(value))}.`);
     }
   }
   parts.push(...aiNotes(field.aiContext));
@@ -628,7 +632,8 @@ export const NAVIGATION_GUIDE: readonly string[] = [
       'status conditions it did not ask for.',
   '7. Give one final answer, not a list of alternatives, and state the ' +
       'definition and tables you used.',
-  '8. State units as the model declares them; never rescale silently.',
+  '8. Units and scale are per property on entity pages. State them; never ' +
+      'rescale values unless the page says to.',
   '9. Mention a constraint only when it is relevant to the answer and ' +
       'reports violations.',
   '',
@@ -778,6 +783,11 @@ function entityPage(ctx: Ctx, label: string): string {
   if (isNode) {
     out.push(`Key: ${(e.keys ?? []).map(tick).join(', ')}. Source table: ${tableRef(e.dataSource)}.`);
     out.push('');
+  }
+  // K7 grain / history (units_history.ts).
+  const grainHistory = grainHistoryLines(e, name => columnOf(e, name));
+  if (grainHistory.length) {
+    out.push(...grainHistory.flatMap(l => [l, '']));
   }
 
   // Properties.

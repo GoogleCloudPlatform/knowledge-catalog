@@ -257,6 +257,7 @@ interface Annotations {
   severity?: string;               // kcmd:severity
   onViolation?: string;            // kcmd:onViolation
   encodedBy?: string;              // <ns>:encodedBy (local name)
+  unit?: string;                   // qudt:unit / qudt:hasUnit / *:unit (K7)
 }
 
 function emptyAnnotations(): Annotations {
@@ -722,6 +723,18 @@ export function parseOwl(turtle: string|string[]): OwlModel {
         if (localName(q.predicate.value) === 'encodedBy' &&
             q.object.termType === 'NamedNode' && a.encodedBy === undefined)
           a.encodedBy = localName(q.object.value);
+        // `<datatypeProperty> qudt:unit unit:USD` (or qudt:hasUnit, or an
+        // ontology's own `unit` annotation property, IRI or literal) -- the
+        // unit a value is measured in (K7). Matched by local name, like
+        // encodedBy; first one wins.
+        else if (['unit', 'hasUnit'].includes(localName(q.predicate.value)) &&
+                 a.unit === undefined) {
+          if (q.object.termType === 'NamedNode') {
+            a.unit = localName(q.object.value);
+          } else if (q.object.termType === 'Literal' && q.object.value.trim()) {
+            a.unit = q.object.value.trim();
+          }
+        }
         break;
     }
   }
@@ -1071,6 +1084,7 @@ export function parseOwl(turtle: string|string[]): OwlModel {
           equivalentProperty: a.equivalentProperty,
           propertyDisjointWith: a.propertyDisjointWith,
           ...commonAnnotations(a),
+          ...(a.unit !== undefined ? {unit: a.unit} : {}),
         });
         break;
       case 'objectProperty':

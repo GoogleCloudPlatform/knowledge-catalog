@@ -30,6 +30,8 @@ import {generateSkill, SKILL_MODES, SkillMode, SkillPackage} from '../libts/sema
 import type {SemanticModel} from '../libts/semantic/ir';
 import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryActionStatements, validateBigQueryDataSources, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
+import * as bqValidation from '../libts/semantic/validate_bigquery';
+import {resolveStore} from '../libts/semantic/runtime/store';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
@@ -1656,4 +1658,184 @@ function stalePages(dir: string, keep: Set<string>): string[] {
   }
   return out;
 }
+
+
+export interface ValidateOptions {
+  /** The engine to validate against. Only `bigquery` today. */
+  target?: string;
+  profile?: string|boolean;
+  /** Write the results to Knowledge Catalog as an aspect on entity entries. */
+  publish?: boolean;
+  /** Write the .sql file and manifest and stop; run nothing. */
+  sqlOnly?: boolean;
+  /** Directory the .sql / .json files are written to. Defaults to `validation`. */
+  out?: string;
+  /** Violating keys to sample per failing check. Defaults to 5. */
+  examples?: string|number;
+  /** BigQuery processing location (e.g. US). */
+  location?: string;
+  /** Also check primary keys, unique keys and foreign keys (default true). */
+  structural?: boolean;
+}
+
+// Checking the model's constraints against the data its binding profile binds.
+//
+// Every imported constraint (SHACL / OWL provenance) becomes one violation-
+// count query and one examples query over the bound BigQuery tables; the
+// model's keys and foreign keys add structural checks. The queries are always
+// written to `--out` (a .sql file and a JSON manifest); unless `--sql-only` --
+// or there are no credentials -- they are then run (dry run first) and a table
+// of results printed, and with `--publish` written to Knowledge Catalog.
+//
+// The model is loaded AS AUTHORED (profile merged, inheritance unresolved) --
+// not through createSemanticRuntimes, whose resolved models no longer carry the
+// defined-entity shape the planner lowers itself.
+//
+// Exit code: 1 when a check could not run (or on a usage / load error); 0
+// otherwise, including when checks find violations -- the results are a
+// report about the data, not a verdict on the command.
+export async function validate(options: ValidateOptions = {}): Promise<number> {
+  if (options.target !== 'bigquery') {
+    console.error(`Error: --target must be 'bigquery'${
+        options.target ? `; got '${options.target}'` : ''}.`);
+    return 1;
+  }
+  if (options.publish && options.sqlOnly) {
+    console.error('Error: --publish and --sql-only cannot be combined.');
+    return 1;
+  }
+  const examples = options.examples === undefined ? 5 : Number(options.examples);
+  if (!Number.isInteger(examples) || examples < 0) {
+    console.error(`Error: --examples must be a whole number >= 0; got '${
+        options.examples}'.`);
+    return 1;
+  }
+  const outDir = options.out ?? 'validation';
+  const ctx = generatorContext();
+
+  let snapshot: kcmd.CatalogSnapshot;
+  try {
+    snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+  } catch (err: any) {
+    console.error(`Error: ${err?.message ?? err}`);
+    return 1;
+  }
+  if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {
+    console.error('Error: validate runs in a semantic-model scope.');
+    return 1;
+  }
+  const layout = snapshot.layout as SemanticModelLayout;
+  const source = snapshot.manifest.source as SemanticModelSource;
+  const named = typeof options.profile === 'string' ? options.profile : undefined;
+  const profile = named ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
+
+  const docs = layout.modelDocuments();
+  if (!docs.length) {
+    console.error('Error: no semantic model documents found.');
+    return 1;
+  }
+  const merged: Array<{name: string; text: string}> = [];
+  for (const doc of docs) {
+    if (profile === DEFAULT_PROFILE) {
+      merged.push({name: doc.name, text: doc.text});
+      continue;
+    }
+    const available = layout.profileDocuments(doc.name);
+    const chosen = available.find(p => p.name === profile);
+    if (!chosen) {
+      console.error(`Error: unknown binding profile '${profile}' for model '${
+          doc.name}'.`);
+      return 1;
+    }
+    const res = mergeProfileOntoDoc(doc.text, chosen.text, profile);
+    if ('error' in res) {
+      console.error(`Error: [${doc.name}] ${res.error}`);
+      return 1;
+    }
+    for (const w of res.warnings) console.warn(`Warning: [${doc.name}] ${w}`);
+    merged.push({name: doc.name, text: res.text});
+  }
+  const loaded = loadSemanticModels(
+      merged,
+      {defaultProject: source.project ?? ctx.project, bindingOptional: true});
+  if (loaded.error) {
+    console.error(`Error: ${loaded.error}`);
+    return 1;
+  }
+  for (const w of loaded.warnings) console.warn(`Warning: ${w}`);
+
+  const credentials = !!ctx.token;
+  const run = !options.sqlOnly && credentials;
+  if (options.publish && !credentials) {
+    console.error('Error: --publish needs credentials ' +
+                  '(gcloud auth application-default login).');
+    return 1;
+  }
+  if (!options.sqlOnly && !credentials) {
+    console.warn('Warning: no credentials; writing the queries only (as --sql-only).');
+  }
+
+  let failed = false;
+  for (const {model} of loaded.models) {
+    const store = resolveStore(model);
+    if (!('error' in store) && store.kind !== 'bigquery') {
+      console.error(`Error: [${model.name}] profile '${profile}' targets ${
+          store.kind}, not BigQuery.`);
+      failed = true;
+      continue;
+    }
+    const plan = bqValidation.planBigQueryValidation(
+        model, {examples, structural: options.structural !== false});
+    for (const w of plan.warnings) console.warn(`Warning: [${model.name}] ${w}`);
+    const skipped = bqValidation.unsupportedWarning(plan);
+    if (skipped) console.warn(`Warning: ${skipped}`);
+
+    const meta = {profile, generatedAt: new Date().toISOString()};
+    const base = path.join(outDir, model.name.replace(/[^A-Za-z0-9_.-]/g, '_'));
+    try {
+      fs.mkdirSync(outDir, {recursive: true});
+      fs.writeFileSync(`${base}.validation.sql`,
+                       bqValidation.renderValidationSql(plan, meta));
+      fs.writeFileSync(
+          `${base}.validation.json`,
+          JSON.stringify(bqValidation.validationManifest(plan, meta), null, 2) +
+              '\n');
+    } catch (e) {
+      console.error(`Error: [${model.name}] could not write under ${outDir}: ${
+          e instanceof Error ? e.message : String(e)}`);
+      failed = true;
+      continue;
+    }
+    console.log(`Wrote ${base}.validation.sql and ${base}.validation.json (${
+        plan.checks.length} checks, ${plan.unsupported.length} skipped).`);
+    if (!run || !plan.checks.length) continue;
+
+    const results = await bqValidation.runBigQueryValidation(
+        plan, ctx, {location: options.location, examples});
+    console.log(`\n[${model.name}] profile '${profile}'`);
+    console.log(bqValidation.formatResultsTable(results));
+    const checkedAt = new Date().toISOString();
+    fs.writeFileSync(
+        `${base}.results.json`,
+        JSON.stringify({model: model.name, profile, checkedAt, results}, null, 2) +
+            '\n');
+    console.log(`Wrote ${base}.results.json`);
+    if (results.some(r => r.status === 'error')) failed = true;
+
+    if (options.publish) {
+      const dest = {
+        project: source.project,
+        location: source.location,
+        entryGroup: source.entryGroup,
+      };
+      const published = await bqValidation.publishConstraintResults(
+          results, ctx, dest, {model: model.name, profile, checkedAt});
+      for (const name of published.published) console.log(`Published ${name}`);
+      for (const e of published.errors) console.error(`Error: [${model.name}] ${e}`);
+      if (published.errors.length) failed = true;
+    }
+  }
+  return failed ? 1 : 0;
+}
+
 

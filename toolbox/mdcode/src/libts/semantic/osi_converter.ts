@@ -243,6 +243,15 @@ function datasetDoc(
         undefined,
     primary_key: nonEmpty(entity.keys),
     unique_keys: nonEmpty(entity.uniqueKeys),
+    // K7 grain / history: native keys of the extended profile.
+    grain: entity.grain,
+    history: entity.history ? compact({
+      versioned: entity.history.versioned,
+      current_flag: entity.history.currentFlag,
+      valid_from: entity.history.validFrom,
+      valid_to: entity.history.validTo,
+    }) :
+                              undefined,
     description: entity.description,
     ai_context: aiContextDoc(entity.aiContext),
     fields: nonEmpty(
@@ -267,6 +276,9 @@ function fieldDoc(
     name: field.name,
     expression,
     datatype: field.type,
+    // K7 unit / scale: native keys of the extended profile.
+    unit: field.unit,
+    scale: field.scale,
     label: field.label,
     dimension: dimensionDoc(field),
     description: field.description,

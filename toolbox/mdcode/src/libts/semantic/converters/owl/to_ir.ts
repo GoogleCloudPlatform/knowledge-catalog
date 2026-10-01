@@ -19,6 +19,7 @@
 //   rdfs:label                    -> field label / synonym (no label slot)
 //   rdfs:comment/skos:definition/dcterms:/dc: -> description
 //   skos:example                  -> ai_context.examples
+//   qudt:unit / qudt:hasUnit      -> field unit (or any `unit` annotation)
 //   owl:Ontology header           -> model description / ai_context
 //   owl:Restriction (subClassOf / equivalentClass), owl:FunctionalProperty
 //   (object), owl:disjointWith, owl:AllDisjointClasses
@@ -367,6 +368,8 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
         description: p.comment,
         aiContext: fieldAiContext(p.synonyms, p.localName, p.examples),
       };
+      // qudt:unit / qudt:hasUnit / a `unit` annotation -> the field's unit.
+      if (p.unit !== undefined) field.unit = p.unit;
       entity.fields.push(field);
       produced = true;
       // An inverse-functional property uniquely identifies its subject -> a

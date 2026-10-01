@@ -296,6 +296,7 @@ appears nowhere above.
 | extra `rdfs:label` / `skos:altLabel` / `prefLabel` / `hiddenLabel` | `ai_context.synonyms` | genuinely alternate names; feed NL search |
 | `skos:example` | `ai_context.examples` | sample questions / values |
 | `rdfs:comment`, `skos:definition`, `dcterms:`/`dc:description` | `description` | first present wins, in that order; on an object property (which has no `description` slot) the comment rides in `ai_context.instructions` |
+| `qudt:unit`, `qudt:hasUnit`, or any annotation whose local name is `unit` / `hasUnit`, on a datatype property | field `unit` | matched by the predicate's local name; an IRI object gives its local name (`unit:USD` → `USD`), a literal its trimmed text; first one wins. No `scale` is inferred |
 | term IRIs, `@prefix` | dropped (base IRI named in `description` **only when the header has no comment of its own**) | a term's identity is its local name; the source namespace is not otherwise carried |
 
 A datatype property whose domain is not a class, or an object property missing an

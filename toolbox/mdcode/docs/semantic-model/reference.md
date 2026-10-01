@@ -130,6 +130,42 @@ rarely what was meant. Two models in one scope whose names normalize to one
 skill name are refused rather than one overwriting the other. See
 [Generating an Agent Skill](skills.md).
 
+### validate
+
+```bash
+kcmd validate --target bigquery [--profile bigquery] [--location US]
+```
+
+Checks the data the selected binding profile binds against the model's
+constraints. Every constraint imported from SHACL or OWL (recognized by its
+`(From SHACL: …)` / `(From OWL: …)` provenance note) becomes one
+violation-count query (`violations`, `total`) and one examples query over the
+bound BigQuery tables; the model's primary keys, unique keys and foreign keys add
+structural checks. A constraint with no deterministic form -- a hand-written
+judgment, a rule on an unbound field -- is listed in one warning with the
+reason, never guessed at.
+
+The queries are always written to `--out` as `<model>.validation.sql` and a
+JSON manifest `<model>.validation.json`. Unless `--sql-only` is given (or there
+are no credentials), each query is then dry-run, run, and a table of
+constraint / violations / total / status (`pass`, `fail`, `error`) is printed
+and saved as `<model>.results.json`. The exit code is 1 only when a check could
+not run; violations are a report about the data, not a command failure.
+
+| Flag | Effect |
+|------|--------|
+| `--target <target>` | Required. Only `bigquery`. |
+| `--profile [name]` | Check the tables this binding profile binds. Defaults to `default_profile`, else the inline bindings. Its deployment target must be BigQuery. |
+| `--out <dir>` | Where the `.sql`, manifest and results are written. Defaults to `validation`. |
+| `--sql-only` | Write the queries and manifest; run nothing. |
+| `--examples <n>` | Violating keys sampled per failing check. Default 5; `0` skips the examples queries. |
+| `--location <location>` | BigQuery processing location for the query jobs. |
+| `--publish` | Write the results to Knowledge Catalog as a `semantic-constraint-results` aspect on each checked entity's entry (the entries `kcmd push` publishes). Not combinable with `--sql-only`. |
+| `--no-structural` | Check only the constraints, not keys and foreign keys. |
+
+The results are never used as filters: no graph, query, skill or action guard
+reads them. See [Validating constraints against BigQuery](validation.md).
+
 ### owl import
 
 ```bash

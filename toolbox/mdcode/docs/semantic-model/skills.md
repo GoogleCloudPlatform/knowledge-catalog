@@ -451,8 +451,9 @@ an index, and the detail is read on demand.
      (an abstract label matches every subtype); `GRAPH_EXPAND` + `AGG` for
      governed metrics; SQL otherwise; the model is the preferred source but not
      the boundary; read the question literally; one final answer with the
-     definition and tables used; units as declared; constraints only when
-     relevant and violated.
+     definition and tables used; units and scale are per property on entity
+     pages and values are never rescaled unless the page says so; constraints
+     only when relevant and violated.
    - `GQL in BigQuery`: the syntax models get wrong (graph clause first,
      `MATCH`/`RETURN`, quantified paths `-[:e]->{1,k}`, `GRAPH_TABLE` in SQL,
      property names rather than columns).
@@ -463,9 +464,12 @@ an index, and the detail is read on demand.
      MEASURE on, or `SQL` when it is not one.
 3. **Detail (`references/`)**, read on demand:
    - `references/entities/<Label>.md`: the labels it carries (own and
-     ancestors), description and `ai_context`, key, properties (type, physical
-     column, label, description, synonyms, time dimension, and any other field
-     metadata such as a unit), relationships as `(A)-[:rel]->(B)` with
+     ancestors), description and `ai_context`, key, the row grain and history
+     guidance (when `grain` / `history` are declared: what one row is, and for
+     a versioned entity how to keep current rows -- `WHERE n.<flag> = TRUE` --
+     since the node table holds every version), properties (type, physical
+     column, label, description, synonyms, time dimension, unit and scale, and
+     any other field metadata), relationships as `(A)-[:rel]->(B)` with
      cardinality (`1:1`, `N:1`, `M:N`), inverse edge, ancestor edge labels,
      the physical join, and the relationship's `ai_context.instructions` (where
      OWL transitive/symmetric hints live), supertypes and subtypes, defined

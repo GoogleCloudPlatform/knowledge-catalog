@@ -132,10 +132,11 @@ export class BigQueryClient extends api.ApiClient {
 
   // Fetches the status/results of a running query job. Used to poll until the
   // job reports `jobComplete`, since jobs.query can return before a slow DDL
-  // statement has finished executing.
-  async getQueryResults(project: string, jobId: string, location?: string): Promise<api.ApiResult<QueryResponse>> {
+  // statement has finished executing. `maxResults` defaults to 0 (status only);
+  // a positive value also returns up to that many result rows.
+  async getQueryResults(project: string, jobId: string, location?: string, maxResults = 0): Promise<api.ApiResult<QueryResponse>> {
     const name = `projects/${project}/queries/${jobId}`;
-    const params: Record<string, any> = { maxResults: 0, timeoutMs: 10000 };
+    const params: Record<string, any> = { maxResults, timeoutMs: 10000 };
     if (location) {
       params.location = location;
     }
