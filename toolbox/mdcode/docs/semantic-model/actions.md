@@ -316,19 +316,28 @@ what gates it and what it changes stay in the model, exactly as
 `statements` is a list because one business action is often more than one write.
 The transfer above debits one account, credits another, and records the
 transfer row itself, and a transfer that did only the first would lose money.
-Running the statements in the order you wrote them inside one transaction
-commits them together at the end, so writes that only make sense together never
-apply by halves.
+The list is ordered, and whatever runs it runs them in the order you wrote them.
+
+**Whether they commit as one unit is the backend's business, and this key does
+not promise it.** Spanner and AlloyDB have multi-statement transactions;
+BigQuery executes DML but is a warehouse, and a runner that sends each statement
+separately leaves a half-applied action behind if the second one fails. So an
+action you need atomic on any store is an action you should write as one
+statement — which is usually a schema question rather than a SQL one. The
+transfer above needs two `UPDATE`s because each account stores a balance; a
+schema that derives a balance from its ledger entries needs one `INSERT`, and
+then there is nothing to keep in step. `demo/semantic-model/skill/` does exactly
+that, and says so at length in its `schema.spanner.sql`.
 
 Carrying the write buys you two things:
 
 - **Your blast radius is checkable.** A reader can compare `affects` against the
   statements instead of taking it on trust.
 - **A guard becomes a real gate.** An MCP, REST or gRPC call commits inside a
-  system your caller doesn't control, so a write it performed can't be rolled
-  back if the rest of the action fails. Because a `sql` action declares its
-  statements up front, the agent or tool framework running it can settle its
-  guards before opening a transaction, so a refusal leaves the store untouched.
+  system your caller doesn't control, so a write it performed can't be undone if
+  the rest of the action fails. Because a `sql` action declares its statements up
+  front, the agent or tool framework running it can settle its guards before it
+  sends the first one, so a refusal leaves the store untouched.
 
 ### Statements use your database names
 

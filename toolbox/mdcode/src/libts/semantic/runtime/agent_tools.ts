@@ -34,6 +34,18 @@ export interface ToolParameter {
    * The default value substituted when the caller omits the argument, if any.
    */
   default?: unknown;
+  /**
+   * Where the value has to already exist, for a parameter projected from a
+   * field: `Order.orderId`, meaning this argument is the key of a record the
+   * store already holds. Absent for a parameter declared with a bare `type`,
+   * which is about the call rather than about a field of anything.
+   *
+   * Worth carrying through rather than collapsing into the description. "Never
+   * invent an identifier" is the instruction every one of these skills opens
+   * with, and it is only actionable against an argument the agent knows is an
+   * identifier -- which is exactly what a projection says and a type does not.
+   */
+  from?: string;
 }
 
 
@@ -161,6 +173,12 @@ function toolParameter(param: ActionParameter): ToolParameter {
     required: isParameterRequired(param),
   };
   if (param.default !== undefined) out.default = param.default;
+  // `concept` and `field` are both or neither -- the loader rejects one
+  // without the other -- so testing one would be enough. Both are tested
+  // anyway, because a reader of this line should not have to go and find that
+  // out to know the string below cannot come out `Order.undefined`.
+  if (param.concept && param.field)
+    out.from = `${param.concept}.${param.field}`;
   return out;
 }
 
@@ -307,8 +325,44 @@ function boundFields(entity: Entity): BoundField[] {
  */
 export interface ReadableEntity {
   entity: Entity;
+  /**
+   * What a statement has to write to name this table -- quoted for the
+   * dialect, and qualified as far as the store requires. See `statementTable`.
+   */
   table: string;
   fields: BoundField[];
+}
+
+
+/**
+ * The table reference to put in front of a reader who will send a bare query.
+ *
+ * Spanner and AlloyDB resolve an unqualified name against the database the
+ * connection is already on, so the name alone is the whole reference. BigQuery
+ * does not: it resolves an unqualified name against a default dataset, and a
+ * statement sent as a bare query -- which is what a skill's holder sends, and
+ * what `kcmd push` sends for its pre-flight -- has none. So a BigQuery
+ * reference is qualified here, in the one pair of backticks BigQuery wants
+ * around a dotted path whose project may contain a hyphen.
+ *
+ * Which is the same reason a BigQuery profile writes its action statements out
+ * in full. The two have to agree: a skill that says "the names to write in a
+ * statement are the names below" and then lists names no statement can resolve
+ * is worse than one that lists nothing, because the reader believes it.
+ */
+function statementTable(
+    entity: Entity, runtime: SemanticRuntime, dialect: SqlDialect,
+    warnings: string[]): string {
+  const bare = boundTable(entity.dataSource, warnings, entity.name, id => id);
+  if (runtime.store?.kind !== 'bigquery') return dialect.quote(bare);
+  // The store's own project and dataset, and not the entity's, because
+  // `resolveStore` has already refused any model that binds an entity outside
+  // its deployment target -- a statement addresses a table by name alone, so
+  // a stray binding would send the write to the target's table of that name.
+  // The two therefore cannot differ here, and reading the entity's source
+  // again would only suggest to a later reader that they can.
+  const {project, dataset} = runtime.store;
+  return `\`${project}.${dataset}.${bare}\``;
 }
 
 
@@ -324,8 +378,7 @@ export function readableEntities(
     const fields = boundFields(entity);
     if (!fields.length) continue;
     const warnings: string[] = [];
-    const table =
-        boundTable(entity.dataSource, warnings, entity.name, dialect.quote);
+    const table = statementTable(entity, runtime, dialect, warnings);
     if (warnings.length) continue;
     readable.push({entity, table, fields});
   }

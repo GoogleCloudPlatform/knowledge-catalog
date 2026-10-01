@@ -6,10 +6,12 @@ Create an order for a customer
 
 ## Arguments
 
-| Name | Type | Required | What to pass |
-| --- | --- | --- | --- |
-| `customer` | integer | yes | The customer's account number. |
-| `quantity` | integer | yes | The quantity, as a whole number. |
+| Name | Type | Required | Identifies | What to pass |
+| --- | --- | --- | --- | --- |
+| `customer` | integer | yes | `customer.c_custkey` | The customer's account number. |
+| `quantity` | integer | yes |  | The quantity, as a whole number. |
+
+An argument with something in **Identifies** is the key of a record that has to exist already. Find it; do not invent it. "Finding a record" in SKILL.md says where to look.
 
 ## How to call it
 
@@ -21,7 +23,7 @@ Each is settled before anything is written, from the attempted call and, where t
 
 ### OrderWithinCustomerCredit
 
-On violation: `reject`
+On violation: `reject` -- a call that does not satisfy it must not be performed at all. There is nobody to refer it to.
 
 > The resulting orders.o_totalprice must not exceed the credit this customer has on record. That figure is not stated in the arguments, so read it before answering.
 
