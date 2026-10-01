@@ -160,6 +160,13 @@ function errorText(res: {status: number; message?: string}): string {
   }
 }
 
+// A create that hit an existing resource. Glossaries and entry links answer
+// 409; glossary terms answer 400 "... already exists".
+function isConflict(res: {status: number; message?: string}): boolean {
+  return res.status === 409 ||
+      (res.status === 400 && /already exists/i.test(res.message ?? ''));
+}
+
 // Sends one request; returns an error string or undefined.
 async function send(
     dp: CatalogClient, r: GlossaryRequest,
@@ -173,7 +180,7 @@ async function send(
     result.created.push(r.name);
     return undefined;
   }
-  if (res.status !== 409) return errorText(res);
+  if (!isConflict(res)) return errorText(res);
   if (r.onConflict === 'exists') {
     result.existing.push(r.name);
     return undefined;
