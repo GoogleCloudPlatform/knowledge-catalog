@@ -24,6 +24,7 @@
 //
 
 import {spannerTable} from './binding';
+import {lowerDefinedEntities} from './defined_entities';
 import {Association, Entity, Field, inverseEdgeNames, Relationship, relationshipAncestors, SemanticModel} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
 import {stripQualifier} from './sql_expr_utils';
@@ -52,6 +53,11 @@ export interface GenerateResult {
 export function generateSpannerPropertyGraph(
     model: SemanticModel, opts: GenerateOptions = {}): GenerateResult {
   const warnings: string[] = [];
+
+  // A defined (virtual) entity forms no node table: it becomes the boolean
+  // membership property `is<Name>` on its base, as on the BigQuery leg (see
+  // defined_entities.ts). A model without one is returned as-is.
+  model = lowerDefinedEntities(model, warnings);
 
   // Resolve entity-level inheritance (`extends`) before generating, exactly as
   // the BigQuery leg does: this flattens each subclass's inherited fields down

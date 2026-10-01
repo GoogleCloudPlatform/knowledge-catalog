@@ -9,8 +9,10 @@
 // `Opportunity ⊑ ≤1 governedBy.ContractAgreement` -- and those rules map onto
 // the SAME native constraint shape as any other relationship rule, described
 // against the forward edge read backwards. Likewise a defined class
-// `C ≡ D ⊓ ∃p.X` yields a constraint on C from its restriction conjunct, and
-// its named conjunct D becomes a supertype (`extends`).
+// `C ≡ D ⊓ ∃p.X` whose restriction traverses a relationship (so it cannot
+// compile to a defined entity, see owl_defined_classes.test.ts) yields a
+// constraint on C from its restriction conjunct, and its named conjunct D
+// becomes a supertype (`extends`).
 
 import {describe, expect, test} from 'bun:test';
 
@@ -153,12 +155,22 @@ describe('restrictions inside owl:intersectionOf', () => {
         owl:intersectionOf ( ex:Engagement [ a owl:Restriction ;
             owl:onProperty ex:hasHealthCheck ;
             owl:someValuesFrom ex:QAHealthCheck ] ) ] .`;
+  // ∃hasHealthCheck traverses a relationship, so the definition cannot become
+  // a one-row membership predicate (a defined entity); the class keeps the
+  // subclass + constraint import, and says why.
+  const FALLBACK =
+      `class 'QAAssuredEngagement': its owl:equivalentClass definition was ` +
+      `not compiled to a defined entity (unsupported: a restriction on ` +
+      `object property 'hasHealthCheck', which traverses a relationship and ` +
+      `has no encodedBy code column on 'Engagement'); imported as a subclass ` +
+      `with constraints instead.`;
 
   test('Engagement ⊓ ∃hasHealthCheck.QAHealthCheck → constraint + extends', () => {
     const {model, constraints, warnings} = convert(QA);
-    expect(warnings).toEqual([]);
+    expect(warnings).toEqual([FALLBACK]);
     expect(entity(model, 'QAAssuredEngagement').extends)
         .toEqual(['Engagement']);
+    expect(entity(model, 'QAAssuredEngagement').definition).toBeUndefined();
     const c = byName(constraints,
                      'QAAssuredEngagement_hasHealthCheck_some_QAHealthCheck');
     expect(c?.description)
@@ -199,7 +211,7 @@ describe('restrictions inside owl:intersectionOf', () => {
                 [ a owl:Restriction ; owl:onProperty ex:hasHealthCheck ;
                   owl:someValuesFrom ex:QAHealthCheck ] ) ]
             [ a owl:Class ; owl:unionOf ( ex:Opportunity ex:Engagement ) ] ) ] .`);
-    expect(warnings).toEqual([]);
+    expect(warnings).toEqual([FALLBACK]);
     expect(entity(model, 'QAAssuredEngagement').extends)
         .toEqual(['Engagement']);
     expect(constraints.map(c => c.name)).toEqual([

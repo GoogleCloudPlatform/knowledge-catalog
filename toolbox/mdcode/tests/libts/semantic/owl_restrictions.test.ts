@@ -77,7 +77,9 @@ describe('the constraints fixture', () => {
 
   test('loads, and every judgment passes constraint validation', () => {
     const {model} = convert(readFixture('constraints.owl.ttl'));
-    expect(model.constraints?.length).toBe(9);
+    // 8: WonOpportunity's equivalentClass restriction is its definition (a
+    // defined entity, see owl_defined_classes.test.ts), not a constraint.
+    expect(model.constraints?.length).toBe(8);
     expect(validatePushRequirements(
                [{document: 'constraints', model}], {targetOptional: true}))
         .toEqual([]);

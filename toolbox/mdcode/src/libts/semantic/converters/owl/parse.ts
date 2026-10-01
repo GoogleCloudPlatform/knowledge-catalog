@@ -12,7 +12,7 @@
 
 import {Parser} from 'n3';
 
-import {OwlClass, OwlCommonAnnotations, OwlConstraintPolicy, OwlDatatypeProperty, OwlDisjointClassesAxiom, OwlModel, OwlObjectProperty, OwlOntology, OwlRestriction,} from './model';
+import {OwlClass, OwlClassExpr, OwlCommonAnnotations, OwlConstraintPolicy, OwlDataRange, OwlDatatypeProperty, OwlDisjointClassesAxiom, OwlLiteral, OwlModel, OwlObjectProperty, OwlOntology, OwlRestriction,} from './model';
 
 // RDF/RDFS/OWL/SKOS/Dublin-Core term IRIs we recognize. Only these; anything
 // else is carried by neither the parser nor the model (see the user guide's
@@ -143,6 +143,18 @@ const CARDINALITY_PREDICATES: [string, 'exact'|'min'|'max', boolean][] = [
 export const KCMD_NS = 'https://kcmd.dev/ns#';
 const KCMD_SEVERITY = `${KCMD_NS}severity`;
 const KCMD_ON_VIOLATION = `${KCMD_NS}onViolation`;
+// The stored code of a vocabulary individual (see OwlModel.individualCodes).
+const KCMD_CODE = `${KCMD_NS}code`;
+const SKOS_NOTATION = `${SKOS}notation`;
+
+// Class-expression and data-range vocabulary read by the owl:equivalentClass
+// definition parser (see parseClassExpr).
+const OWL_UNION_OF = `${OWL}unionOf`;
+const OWL_COMPLEMENT_OF = `${OWL}complementOf`;
+const OWL_ON_DATATYPE = `${OWL}onDatatype`;
+const OWL_WITH_RESTRICTIONS = `${OWL}withRestrictions`;
+const RDFS_DATATYPE = `${RDFS}Datatype`;
+const RDFS_LITERAL = `${RDFS}Literal`;
 
 // One of the three OWL kinds we route a typed subject to.
 type OwlKind = 'class'|'datatypeProperty'|'objectProperty';
@@ -244,6 +256,7 @@ interface Annotations {
   restrictionNodes: {via: 'subClassOf'|'equivalentClass'; node: string}[];
   severity?: string;               // kcmd:severity
   onViolation?: string;            // kcmd:onViolation
+  encodedBy?: string;              // <ns>:encodedBy (local name)
 }
 
 function emptyAnnotations(): Annotations {
@@ -493,10 +506,15 @@ export function parseOwl(turtle: string|string[]): OwlModel {
   // owl:distinctMembers on an owl:AllDisjoint* node is ignored rather than
   // carried.
   const membersHead = new Map<string, string>();
+  // The rdf:first TERM of each list node (not just its value), so a class
+  // definition can tell a literal member (`owl:oneOf ("Diamond" ...)`, a data
+  // enumeration) from an IRI or blank-node one.
+  const listFirstTerm = new Map<string, (typeof quads)[number]['object']>();
   for (const q of quads) {
-    if (q.predicate.value === RDF_FIRST)
+    if (q.predicate.value === RDF_FIRST) {
       listFirst.set(q.subject.value, q.object.value);
-    else if (q.predicate.value === RDF_REST)
+      listFirstTerm.set(q.subject.value, q.object);
+    } else if (q.predicate.value === RDF_REST)
       listRest.set(q.subject.value, q.object.value);
     else if (q.predicate.value === OWL_MEMBERS)
       membersHead.set(q.subject.value, q.object.value);
@@ -697,6 +715,13 @@ export function parseOwl(turtle: string|string[]): OwlModel {
           a.deprecated = true;
         break;
       default:
+        // `<objectProperty> <ns>:encodedBy <datatypeProperty>` -- the edge's
+        // value is stored as a code column (see OwlObjectProperty.encodedBy).
+        // Matched by local name so kcmd:encodedBy and an ontology's own
+        // annotation property both work; first one wins.
+        if (localName(q.predicate.value) === 'encodedBy' &&
+            q.object.termType === 'NamedNode' && a.encodedBy === undefined)
+          a.encodedBy = localName(q.object.value);
         break;
     }
   }
@@ -821,6 +846,162 @@ export function parseOwl(turtle: string|string[]): OwlModel {
         }
         return out;
       };
+  // The literal behind a term, as written.
+  const owlLiteral = (t: Term): OwlLiteral => {
+    const lit: OwlLiteral = {value: t.value};
+    if (t.termType === 'Literal') {
+      if (t.language) {
+        lit.language = t.language;
+      } else {
+        lit.datatype = t.datatype?.value ?? XSD_STRING;
+      }
+    }
+    return lit;
+  };
+  // The members of an RDF collection as terms (see listFirstTerm).
+  const resolveListTerms = (head: string): Term[] => {
+    const out: Term[] = [];
+    const seen = new Set<string>();
+    let node: string|undefined = head;
+    while (node && node !== RDF_NIL && !seen.has(node)) {
+      seen.add(node);
+      const value = listFirstTerm.get(node);
+      if (value === undefined) break;
+      out.push(value);
+      node = listRest.get(node);
+    }
+    return out;
+  };
+  // A restriction filler / qualified-cardinality range: a data range when it
+  // is a datatype (named in the XSD namespace or rdfs:Literal, or an
+  // anonymous rdfs:Datatype node), otherwise a class expression.
+  const parseFiller = (t: Term, seen: Set<string>): OwlClassExpr|OwlDataRange => {
+    if (t.termType === 'NamedNode') {
+      return t.value.startsWith(XSD) || t.value === RDFS_LITERAL ?
+          {kind: 'datatype', iri: t.value} :
+          {kind: 'named', iri: t.value};
+    }
+    const facts = nodeFacts.get(t.value);
+    const onDatatype = facts?.get(OWL_ON_DATATYPE);
+    if (facts && onDatatype?.termType === 'NamedNode') {
+      const head = facts.get(OWL_WITH_RESTRICTIONS);
+      const facets: {facet: string; value: OwlLiteral}[] = [];
+      for (const member of head ? resolveListTerms(head.value) : []) {
+        for (const [facet, value] of nodeFacts.get(member.value) ?? []) {
+          if (facet.startsWith(XSD) && value.termType === 'Literal')
+            facets.push({facet, value: owlLiteral(value)});
+        }
+      }
+      return {kind: 'facets', datatype: onDatatype.value, facets};
+    }
+    const oneOf = facts?.get(OWL_ONE_OF);
+    if (oneOf) {
+      const members = resolveListTerms(oneOf.value);
+      if (members.length && members.every(m => m.termType === 'Literal')) {
+        return {kind: 'dataOneOf', values: members.map(owlLiteral)};
+      }
+    }
+    if (facts?.get(RDF_TYPE)?.value === RDFS_DATATYPE) {
+      return {kind: 'unsupported', construct: 'an rdfs:Datatype expression'};
+    }
+    return parseClassExpr(t, seen);
+  };
+  // An owl:equivalentClass object as a full class expression (see
+  // OwlClassExpr). Structural only -- the mapper decides what compiles.
+  const parseClassExpr = (t: Term, seen = new Set<string>()): OwlClassExpr => {
+    if (t.termType === 'NamedNode') return {kind: 'named', iri: t.value};
+    if (t.termType !== 'BlankNode') {
+      return {kind: 'unsupported', construct: `a ${t.termType} class term`};
+    }
+    if (seen.has(t.value)) {
+      return {kind: 'unsupported', construct: 'a cyclic class expression'};
+    }
+    const inner = new Set(seen).add(t.value);
+    const facts = nodeFacts.get(t.value);
+    if (!facts) return {kind: 'unsupported', construct: 'an empty class node'};
+    const and = facts.get(OWL_INTERSECTION_OF);
+    const or = facts.get(OWL_UNION_OF);
+    const not = facts.get(OWL_COMPLEMENT_OF);
+    const oneOf = facts.get(OWL_ONE_OF);
+    const onProperty = facts.get(OWL_ON_PROPERTY);
+    if (and || or) {
+      return {
+        kind: and ? 'and' : 'or',
+        operands: resolveListTerms((and ?? or)!.value)
+                      .map(m => parseClassExpr(m, inner)),
+      };
+    }
+    if (not) return {kind: 'not', operand: parseClassExpr(not, inner)};
+    if (oneOf) {
+      const members = resolveListTerms(oneOf.value);
+      if (members.every(m => m.termType === 'NamedNode')) {
+        return {kind: 'oneOf', members: members.map(m => m.value)};
+      }
+      return {kind: 'unsupported', construct: 'an owl:oneOf of literals'};
+    }
+    if (onProperty) {
+      if (onProperty.termType !== 'NamedNode') {
+        return {
+          kind: 'unsupported',
+          construct: 'a restriction on an anonymous (inverse) property',
+        };
+      }
+      const some = facts.get(OWL_SOME_VALUES_FROM);
+      const all = facts.get(OWL_ALL_VALUES_FROM);
+      const has = facts.get(OWL_HAS_VALUE);
+      const card = CARDINALITY_PREDICATES.find(([p]) => facts.has(p));
+      const base = {kind: 'restriction' as const, property: onProperty.value};
+      if (some) {
+        return {...base, restriction: 'some', filler: parseFiller(some, inner)};
+      }
+      if (all) {
+        return {...base, restriction: 'all', filler: parseFiller(all, inner)};
+      }
+      if (has) {
+        return {
+          ...base,
+          restriction: 'value',
+          value: has.termType === 'Literal' ? {literal: owlLiteral(has)} :
+                                              {iri: has.value},
+        };
+      }
+      if (card) {
+        const [pred, kind, qualified] = card;
+        const n = Number(literalOf(facts.get(pred)));
+        if (!Number.isInteger(n) || n < 0) {
+          return {kind: 'unsupported', construct: 'a malformed cardinality'};
+        }
+        const range = qualified ?
+            (facts.get(OWL_ON_CLASS) ?? facts.get(OWL_ON_DATA_RANGE)) :
+            undefined;
+        return {
+          ...base,
+          restriction: kind,
+          cardinality: n,
+          ...(range ? {filler: parseFiller(range, inner)} : {}),
+        };
+      }
+      return {kind: 'unsupported', construct: 'a restriction with no facet'};
+    }
+    return {kind: 'unsupported', construct: 'an anonymous class expression'};
+  };
+  // The code each named individual is stored as (see OwlModel.individualCodes):
+  // kcmd:code, else skos:notation, else any `…#code` annotation.
+  const individualCodes: Record<string, string> = {};
+  for (const [subject, facts] of nodeFacts) {
+    if (blankIds.has(subject)) continue;
+    let code = literalOf(facts.get(KCMD_CODE)) ??
+        literalOf(facts.get(SKOS_NOTATION));
+    if (code === undefined) {
+      for (const [p, v] of facts) {
+        if (localName(p) === 'code' && v.termType === 'Literal') {
+          code = v.value;
+          break;
+        }
+      }
+    }
+    if (code !== undefined) individualCodes[subject] = code;
+  }
   // The ontology's own namespace: the one shared by MOST of its typed terms.
   // Taking the most common namespace (not merely the first typed term's) is
   // robust to a document that also types a handful of foreign-namespace terms
@@ -862,6 +1043,17 @@ export function parseOwl(turtle: string|string[]): OwlModel {
           restrictions: expanded.flatMap(e => e.restrictions),
           ...commonAnnotations(a),
         });
+        // The full owl:equivalentClass expressions, for defined-entity
+        // compilation (see OwlClass.definitions). A bare enumeration of
+        // individuals is a vocabulary, not a definition over data.
+        const definitions =
+            a.restrictionNodes.filter(ref => ref.via === 'equivalentClass')
+                .map(ref => parseClassExpr({
+                  termType: 'BlankNode',
+                  value: ref.node,
+                } as Term))
+                .filter(d => d.kind !== 'oneOf');
+        if (definitions.length) classes[classes.length - 1].definitions = definitions;
         break;
       }
       case 'datatypeProperty':
@@ -913,6 +1105,7 @@ export function parseOwl(turtle: string|string[]): OwlModel {
           irreflexive: irreflexive.has(iri),
           asymmetric: asymmetric.has(iri),
           ...commonAnnotations(a),
+          ...(a.encodedBy !== undefined ? {encodedBy: a.encodedBy} : {}),
         });
         break;
       default:
@@ -976,6 +1169,7 @@ export function parseOwl(turtle: string|string[]): OwlModel {
     allDisjointClassesAxioms: disjointClassesAxioms,
     allDisjointProperties: resolveMembers(allDisjointPropertiesNodes),
     allDifferent: resolveMembers(allDifferentNodes),
+    ...(Object.keys(individualCodes).length ? {individualCodes} : {}),
   };
 }
 

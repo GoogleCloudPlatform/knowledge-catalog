@@ -136,6 +136,7 @@ A dataset is one concept in the business.
 | `unique_keys` | list of lists of strings | additional unique column-sets |
 | `extends` | list of strings | supertype dataset names — extension ([§2.1.2](#212-inheritance-extends), [§5](#5-extensions)) |
 | `abstract` | boolean | a concept with no table — extension ([§5](#5-extensions)) |
+| `defined` | string or `{expression, description?}` | a subset of its single parent picked out by a condition — extension ([§5](#5-extensions)) |
 | `source` | string | physical table URI; Ossie-native, relaxed to optional ([§7.1](#71-table-sources), [§4](#4-narrowings-and-relaxations)) |
 | `description` | string | |
 | `ai_context` | [ai_context](#24-ai_context) | |
@@ -143,7 +144,8 @@ A dataset is one concept in the business.
 
 An abstract dataset MUST NOT declare a `source`; a non-abstract dataset in a model
 bound for a graph MUST declare one (see [§4](#4-narrowings-and-relaxations) and
-[§7](#7-the-binding-layer)).
+[§7](#7-the-binding-layer)). A defined dataset MUST NOT declare a `source`,
+`primary_key` or `unique_keys`.
 
 #### 2.1.1. Field
 
@@ -315,6 +317,7 @@ extension, [§5](#5-extensions)), or *rejected* / *not authorable* (excluded).
 | `primary_key`, `unique_keys` | defined | same | [§2.1](#21-dataset-entity) |
 | `extends` | — | added | class inheritance; `/google` only · [§2.1.2](#212-inheritance-extends), [§5](#5-extensions) |
 | `abstract` | — | added | supertype with no table; `/google` only · [§5](#5-extensions) |
+| `defined` | — | added | defined (virtual) entity: a parent's rows picked out by a condition (OWL defined class); `/google` only · [§5](#5-extensions) |
 | relationship `name`, `from`, `to` | defined | same | [§2.2](#22-relationship) |
 | relationship `from_columns` / `to_columns` | required | optional | model before binding; none = logical edge · [§4.2](#42-relaxations-looser-than-ossie) |
 | relationship `extends`, `abstract` | — | added | relationship inheritance (shared edge labels); `/google` only · [§5](#5-extensions) |
@@ -457,6 +460,13 @@ reads the document ([§6](#6-the-extension-mechanism)).
   no physical table (typically an `extends` supertype). An abstract dataset produces
   no node table and MUST NOT declare a `source`. Accepted only under
   `0.2.0.dev0/google`.
+
+- **`defined` on a dataset (extended profile only).** A defined (virtual) entity:
+  a subset of its single `extends` parent picked out by a boolean SQL condition
+  over field names (`defined: "salesStage = '5_won'"`, or `{expression,
+  description?}`). It has no `source`, keys or fields of its own; a graph push
+  lowers it to a boolean property `is<Name>` on its base. See [Defined
+  entities](inheritance.md#defined-entities-a-subtype-picked-out-by-a-condition).
 
 - **`extends` and `abstract` on a relationship (extended profile only).**
   Relationship inheritance: a relationship MAY name parent relationships in

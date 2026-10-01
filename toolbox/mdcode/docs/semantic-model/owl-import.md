@@ -281,6 +281,7 @@ appears nowhere above.
 | `rdfs:subPropertyOf` (object property → object property) | relationship `extends[]`; the parent gets `abstract: true` | the super-property becomes an **abstract relationship** (a shared edge label, no edge table); a super-property missing `rdfs:domain`/`rdfs:range` takes the nearest common superclass of its sub-properties' ends (see [Property hierarchies](#property-hierarchies-rdfssubpropertyof)) |
 | `owl:Restriction` via `rdfs:subClassOf` / `owl:equivalentClass` (cardinality, `someValuesFrom`, `allValuesFrom`, `hasValue`) | model `constraints[]` | a judged rule about the class's relationship (or a relationship's inverse name, read backwards) or field, e.g. `Opportunity_hasBuyer_exactly_1`, `Opportunity_governedBy_max_1`; see [Rules (restrictions, functional properties, disjointness)](#rules-restrictions-functional-properties-disjointness) |
 | `owl:intersectionOf` on a class's `owl:equivalentClass` / `rdfs:subClassOf` | `extends[]` + model `constraints[]` | `C ≡ D ⊓ ∃p.X`: named conjunct `D` → `extends`, restriction conjunct → a constraint on `C`; union / complement conjuncts dropped |
+| `owl:equivalentClass` class expression decidable on one row of the base | dataset `defined` + `extends: [parent]` | `WonOpportunity ≡ Opportunity ⊓ inStage value Stage_Won` → `defined: {expression: "LOWER(salesStage) = '5_won'"}` (string codes match case-insensitively); see [Defined classes](#defined-classes-owlequivalentclass) |
 | `owl:FunctionalProperty` on an object property | model `constraints[]` | `<Domain>_<prop>_functional` — at most one edge per source; on a datatype property it is dropped (a field already holds one value) |
 | `owl:disjointWith`, `owl:AllDisjointClasses` | model `constraints[]` | `A_disjoint_B`, `A_B_C_disjoint` — no instance is more than one of the classes |
 | `owl:equivalentClass` / `owl:equivalentProperty` (named term) | `ai_context.synonyms` | the equivalent term's local name and its in-document `rdfs:label`, so NL search resolves either vocabulary to this term; not added when equal to the term's own name (or a field's `label`). See [Semantic annotations](#semantic-annotations-equivalence-deprecation-transitivity) |
@@ -568,7 +569,9 @@ Details:
   own source is dropped, and a `FunctionalProperty` on `Y` is not treated as
   covering an inverse max 1 (it bounds the other direction).
 - **Intersections.** A defined class `C ≡ D ⊓ ∃p.X` (`owl:equivalentClass [ a
-  owl:Class ; owl:intersectionOf ( ex:D [ a owl:Restriction ; … ] ) ]`) is read
+  owl:Class ; owl:intersectionOf ( ex:D [ a owl:Restriction ; … ] ) ]`) whose
+  definition one row of `D` can decide becomes a defined entity instead (see
+  [Defined classes](#defined-classes-owlequivalentclass)); otherwise it is read
   conjunct by conjunct: each restriction conjunct becomes a constraint on `C`
   exactly as if stated alone, and each named conjunct `D` is added to `C`'s
   `extends` (deduped against its `rdfs:subClassOf`), since every `C` is a `D`.
@@ -621,6 +624,87 @@ Details:
 
   Names are sanitized to letters, digits and `_`, and made unique with a `_2`
   suffix when needed.
+
+### Defined classes (`owl:equivalentClass`)
+
+A vocabulary code compared on a string column matches case-insensitively
+(`LOWER(salesStage) = '5_won'`): codes are identifiers, and source systems
+often store variants such as `5_Won`, which an exact match would silently drop
+from the class.
+
+An `owl:equivalentClass` class expression states necessary **and sufficient**
+conditions. When one row of an existing entity can decide them, the class
+becomes a [defined entity](inheritance.md#defined-entities-a-subtype-picked-out-by-a-condition):
+`defined.expression` is the test in SQL over field names, and `extends` is its
+single parent. That entity is the class's **base**, its nearest superclass
+that is not itself defined.
+
+```turtle
+com:Stage_Won a owl:NamedIndividual , com:SalesStage ; core:code "5_won" .
+com:inStage a owl:ObjectProperty ; rdfs:domain com:Opportunity ;
+    rdfs:range com:SalesStage ; core:encodedBy com:salesStage .
+
+com:WonOpportunity a owl:Class ; rdfs:subClassOf com:ClosedOpportunity ;
+    owl:equivalentClass [ a owl:Class ; owl:intersectionOf ( com:Opportunity
+        [ a owl:Restriction ; owl:onProperty com:inStage ;
+          owl:hasValue com:Stage_Won ] ) ] .
+```
+
+```yaml
+- name: WonOpportunity
+  extends: [ClosedOpportunity]
+  defined:
+    expression: LOWER(salesStage) = '5_won'
+```
+
+The compilation follows the ontology prototype's reference compiler:
+
+| Class expression | SQL |
+|---|---|
+| a named class on the base's lineage | `TRUE` (dropped from a conjunction) |
+| another defined class over the same base | its definition, expanded inline |
+| `intersectionOf` / `unionOf` / `complementOf` | `AND` / `OR` / `NOT (…)` |
+| `p hasValue "lit"` (datatype property) | `p = 'lit'` (typed by the literal / field) |
+| `p hasValue :ind` (object property with `encodedBy` column `c`) | `c = '<code of :ind>'` |
+| `p some` / `min 1` / `exactly 1` (range or `owl:Thing`) on an `encodedBy` property | `c IS NOT NULL` |
+| `p some ({:a :b})` on an `encodedBy` property | `c IN ('<code a>', '<code b>')` |
+| `p some [xsd:decimal minInclusive 1000]` (also `min/maxExclusive`, `maxInclusive`, `pattern`, `length`, `minLength`, `maxLength`) | `p >= 1000` (`REGEXP_CONTAINS`, `CHAR_LENGTH`) |
+| `p some [ owl:oneOf ("A" "B") ]` (data enumeration) | `p IN ('A', 'B')` |
+| `p some xsd:string` / `min 1` / `exactly 1` (datatype property) | `p IS NOT NULL` |
+| `p only R` | `(p IS NULL OR R)` |
+| `p max 0` / `exactly 0` | `p IS NULL` |
+
+- **Codes.** An individual's code is its `kcmd:code`, else `skos:notation`, else
+  any `…code` property (the prototype's `core:code`). An individual with no
+  code compiles to its local name, with a warning. `encodedBy` is read from any
+  property with that local name (`core:encodedBy`, `kcmd:encodedBy`) and names
+  the field that stores the code.
+- **Hierarchy.** The parent is the most specific superclass that is the base or
+  a defined class over the same base, so `Won ⊑ Closed ⊑ Opportunity` keeps
+  `WonOpportunity extends ClosedOpportunity`. Other superclasses are dropped
+  with a warning. A non-defined subclass of a defined class is re-pointed at its
+  base, with a warning.
+- **Not restated as rules.** A compiled class's `owl:equivalentClass`
+  restrictions are its definition, so they do not also become constraints.
+  Its `rdfs:subClassOf` restrictions and disjointness still do.
+- **String comparisons are exact.** The prototype lower-cases both sides; the
+  importer compares as written.
+- **Fallback.** Anything that needs a join (above all a restriction that
+  traverses a relationship with no `encodedBy` column, e.g. `hasBuyer some
+  StrategicAccount`) keeps the [intersection](#rules-restrictions-functional-properties-disjointness)
+  import: `extends` plus constraints. It is warned with the reason:
+
+  ```
+  class 'PriorityOpportunity': its owl:equivalentClass definition was not
+  compiled to a defined entity (unsupported: a restriction on object property
+  'hasBuyer', which traverses a relationship and has no encodedBy code column
+  on 'Opportunity'); imported as a subclass with constraints instead.
+  ```
+
+  The same fallback applies to a class with its own fields or key (it is a
+  table-backed subtype), a class with no superclass, and a definition that
+  reduces to `TRUE` or `FALSE`. A top-level `owl:oneOf` of individuals (a
+  closed vocabulary such as `SalesStage`) is not a definition.
 
 ### Semantic annotations (equivalence, deprecation, transitivity)
 
@@ -882,7 +966,11 @@ converter targets:
   constraint and a named conjunct becomes `extends` (see
   [Intersections](#rules-restrictions-functional-properties-disjointness)). A
   union / complement conjunct inside it is dropped, as are typed
-  `[ a rdfs:Datatype ; ... ]` ranges.
+  `[ a rdfs:Datatype ; ... ]` ranges. The exception is an
+  `owl:equivalentClass` definition one row of the base can decide: its whole
+  expression (unions, complements, enumerations and datatype facets included)
+  compiles to a defined entity, and individuals are read only for their codes
+  (see [Defined classes](#defined-classes-owlequivalentclass)).
 - OWL serializations other than Turtle (`.ttl`), and the reverse direction —
   semantic model → OWL export. Import is one-way.
 - Remote `owl:imports`. An import is followed only to a local file (see

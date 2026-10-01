@@ -471,6 +471,22 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
     }
   }
 
+  // A defined entity (see Entity.definition) is a subset of its parent's rows,
+  // so it falls with an unavailable parent -- transitively, for a chain of
+  // defined entities.
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const e of clone.entities ?? []) {
+      if (!e.definition || unavailableEntities.has(e.name)) continue;
+      const parent = (e.extends ?? []).find(p => unavailableEntities.has(p));
+      if (parent === undefined) continue;
+      unavailableEntities.add(e.name);
+      report.droppedEntities.push(
+          {name: e.name, reason: `parent entity ${parent} is unavailable`});
+      changed = true;
+    }
+  }
+
   // Drop unavailable entities whole, then drop unbound fields from the entities
   // that remain. (A bound field whose value is null still emits a column --
   // unbound is not null.)

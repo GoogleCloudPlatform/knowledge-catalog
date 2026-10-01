@@ -19,6 +19,8 @@ semantic_model:
       - name: WonOpportunity
         extends:
           - Opportunity
+        defined:
+          expression: opportunityId IS NOT NULL
       - name: LostOpportunity
         extends:
           - Opportunity
@@ -82,13 +84,6 @@ semantic_model:
           not satisfy this rule.
         description: "Link each WonOpportunity to at least one MSA through governedBy.
           (From OWL: WonOpportunity SubClassOf governedBy some MSA.)"
-        on_violation: warn
-      - name: WonOpportunity_opportunityId_required
-        judgment: Every WonOpportunity has a value for WonOpportunity.opportunityId. A
-          WonOpportunity whose WonOpportunity.opportunityId is null or missing
-          does not satisfy this rule.
-        description: "Set WonOpportunity.opportunityId on every WonOpportunity. (From
-          OWL: WonOpportunity EquivalentTo opportunityId some string.)"
         on_violation: warn
       - name: Contract_suppliedBy_functional
         judgment: Each Contract has at most one suppliedBy relationship. A Contract with

@@ -92,7 +92,8 @@ function onlyExtendsExtension(errors: typeof validate.errors): boolean {
 // released schema requires (dataset `source` and field `expression`, supplied
 // by a binding profile later; relationship `from_columns`/`to_columns`, added
 // to the model later) and also carry the `extends`/`abstract` dataset
-// supersets. Tolerate EXACTLY those
+// supersets, plus `defined` (a defined entity, from an OWL
+// owl:equivalentClass definition). Tolerate EXACTLY those
 // omissions and extra properties on these goldens and nothing else, so real
 // drift (a bad enum, a misspelled key, an unexpected shape) still fails.
 function onlyLogicalGoldenDeviations(errors: typeof validate.errors): boolean {
@@ -106,12 +107,14 @@ function onlyLogicalGoldenDeviations(errors: typeof validate.errors): boolean {
           (e.params as {missingProperty?: string}).missingProperty ?? '');
       }
       if (e.keyword === 'additionalProperties') {
+        const extra =
+            (e.params as {additionalProperty?: string}).additionalProperty ?? '';
+        // `defined` is a dataset-only superset.
+        if (extra === 'defined') return /\/datasets\/\d+$/.test(e.instancePath);
         // `extends`/`abstract` are the dataset supersets (entity inheritance)
         // and, equally, the relationship supersets (relationship inheritance,
         // the target of OWL rdfs:subPropertyOf).
-        return extraOk.has(
-          (e.params as {additionalProperty?: string}).additionalProperty ??
-          '') &&
+        return extraOk.has(extra) &&
           /\/(datasets|relationships)\/\d+$/.test(e.instancePath);
       }
       return false;

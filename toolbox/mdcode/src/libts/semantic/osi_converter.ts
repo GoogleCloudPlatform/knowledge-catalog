@@ -215,7 +215,7 @@ function datasetDoc(
   // binding without marking the entity abstract. Suppressed for a logical
   // model, where a missing source is intended (a binding profile supplies it
   // later).
-  if (!logical && !entity.abstract && !entity.dataSource) {
+  if (!logical && !entity.abstract && !entity.definition && !entity.dataSource) {
     warnings.push(
         `entity '${entity.name}' has no source and is not abstract; the ` +
         `serialized document will not reload until a source is set`);
@@ -231,6 +231,16 @@ function datasetDoc(
     extends: nonEmpty(entity.extends),
     // Conceptual (table-less) marker; omitted when false/absent.
     abstract: entity.abstract || undefined,
+    // Defined (virtual) entity: its membership predicate over the parent. The
+    // object form is always written so a definition note has a place to go.
+    defined: entity.definition ?
+        (entity.definition.description !== undefined ?
+             {
+               expression: entity.definition.expression,
+               description: entity.definition.description,
+             } :
+             {expression: entity.definition.expression}) :
+        undefined,
     primary_key: nonEmpty(entity.keys),
     unique_keys: nonEmpty(entity.uniqueKeys),
     description: entity.description,

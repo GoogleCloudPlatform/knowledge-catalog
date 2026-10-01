@@ -54,6 +54,7 @@ import {AiContext, Entity, Field, Relationship, SemanticModel,} from '../../ir';
 
 import {applyOwlAnnotations} from './annotations';
 import {owlConstraints} from './constraints';
+import {compileOwlDefinitions} from './definitions';
 import {OwlModel, OwlOntology} from './model';
 
 export interface ToIrResult {
@@ -600,12 +601,30 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   // land in native ai_context / description slots (see annotations.ts).
   applyOwlAnnotations(owl, entities, relationships);
 
+  // Defined classes (owl:equivalentClass with conditions decidable on one row
+  // of a superclass) become defined entities carrying their membership
+  // predicate (see definitions.ts). A compiled class's equivalentClass
+  // restrictions ARE its definition, so they are not also derived as
+  // constraints below; its rdfs:subClassOf restrictions still are.
+  const {compiled} =
+      compileOwlDefinitions(owl, {entitiesByName, relationships}, warnings);
+  const constraintSource: OwlModel = compiled.size ? {
+    ...owl,
+    classes: owl.classes.map(
+        c => compiled.has(c.localName) ? {
+          ...c,
+          restrictions: c.restrictions.filter(r => r.via !== 'equivalentClass'),
+        } :
+                                         c),
+  } :
+                                                     owl;
+
   // Axioms that state a rule -- property restrictions, functional object
   // properties, class disjointness -- become native model-level constraints
   // (see constraints.ts). Omitted entirely when there are none, so an ontology
   // with no such axioms imports exactly as before.
-  const constraints =
-      owlConstraints(owl, {entitiesByName, relationships}, warnings);
+  const constraints = owlConstraints(
+      constraintSource, {entitiesByName, relationships}, warnings);
 
   const model: SemanticModel = {
     name: modelName,

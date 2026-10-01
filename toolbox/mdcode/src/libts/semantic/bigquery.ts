@@ -19,9 +19,10 @@
 // See: https://docs.cloud.google.com/bigquery/docs/graph-measures
 //
 
+import {lowerDefinedEntities} from './defined_entities';
 import {AiContext, Association, Entity, Field, fieldBinding, inverseEdgeNames, isTimeDimension, Metric, Relationship, relationshipAncestors, SemanticModel,} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
-import {referencedEntityNames, stripQualifier} from './sql_expr_utils';
+import {referencedEntityNames, rewriteFieldRefs, stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
 
 export interface GenerateOptions {
@@ -61,6 +62,11 @@ const SUPPORTED_AGGREGATES = ['SUM', 'AVG', 'COUNT', 'MIN', 'MAX'];
 export function generatePropertyGraph(
     model: SemanticModel, opts: GenerateOptions = {}): GenerateResult {
   const warnings: string[] = [];
+
+  // A defined (virtual) entity forms no node table: it becomes the boolean
+  // membership property `is<Name>` on its base (see defined_entities.ts). A
+  // model without one is returned as-is, so its output is unchanged.
+  model = lowerDefinedEntities(model, warnings);
 
   // Resolve entity-level inheritance (`extends`) before generating: this
   // flattens each subclass's inherited fields down and expands `extends` to the
@@ -544,78 +550,8 @@ function exposeOperand(
   return name;
 }
 
-// Rewrites every identifier in `expr` that names a bound field into that
-// field's expression (its physical column, or the SQL a profile bound it to),
-// parenthesized unless it is a bare identifier so operator precedence holds
-// (`a * b` with b bound to `x + y` becomes `a * (x + y)`). Token-aware: string
-// literals ('…' / "…", with backslash escapes) are copied verbatim; a
-// function name (an identifier followed by `(`) and a qualified member (an
-// identifier after `.`, e.g. `t.col` or `s.field`) are left alone; a
-// backtick-quoted identifier is rewritten when its content names a field. The
-// rewrite is a single pass, so a field bound to another field's name is not
-// rewritten twice. An identifier that names no bound field (a raw column, a
-// keyword) is untouched.
-function rewriteFieldRefs(expr: string, fieldExprs: Map<string, string>):
-    string {
-  if (!fieldExprs.size) return expr;
-  const sub = (field: string): string|undefined => {
-    const bound = fieldExprs.get(field);
-    if (bound === undefined) return undefined;
-    return isSimpleIdentifier(bound) || /^`[^`]+`$/.test(bound) ? bound :
-                                                                   `(${bound})`;
-  };
-  let out = '';
-  let i = 0;
-  while (i < expr.length) {
-    const c = expr[i];
-    // String literal: copy through the closing quote.
-    if (c === '\'' || c === '"') {
-      let j = i + 1;
-      while (j < expr.length && expr[j] !== c) j += expr[j] === '\\' ? 2 : 1;
-      out += expr.slice(i, j + 1);
-      i = j + 1;
-      continue;
-    }
-    const prev = out.trimEnd().slice(-1);
-    // Backtick-quoted identifier.
-    if (c === '`') {
-      const j = expr.indexOf('`', i + 1);
-      const end = j < 0 ? expr.length : j + 1;
-      const tok = expr.slice(i, end);
-      const inner = tok.slice(1, j < 0 ? undefined : -1);
-      const repl = prev !== '.' && !followedByParen(expr, end) ?
-          sub(inner) :
-          undefined;
-      out += repl ?? tok;
-      i = end;
-      continue;
-    }
-    if (/[A-Za-z_]/.test(c)) {
-      let j = i + 1;
-      while (j < expr.length && /[A-Za-z0-9_]/.test(expr[j])) j++;
-      const tok = expr.slice(i, j);
-      // A digit run before the identifier (`1e5`) is a number, not a name.
-      const inNumber = /[0-9]/.test(out.slice(-1));
-      const repl = !inNumber && prev !== '.' && !followedByParen(expr, j) ?
-          sub(tok) :
-          undefined;
-      out += repl ?? tok;
-      i = j;
-      continue;
-    }
-    out += c;
-    i++;
-  }
-  return out;
-}
-
-// True if the next non-space character at or after `from` is `(` -- i.e. the
-// token just read is a function name.
-function followedByParen(expr: string, from: number): boolean {
-  let k = from;
-  while (k < expr.length && /\s/.test(expr[k])) k++;
-  return expr[k] === '(';
-}
+// rewriteFieldRefs (bound field names -> their physical expressions) lives in
+// sql_expr_utils, shared with defined-entity lowering (defined_entities.ts).
 
 // Extracts the function name and operand from a single-aggregate expression, or
 // returns null when the body is not exactly one supported aggregate wrapping

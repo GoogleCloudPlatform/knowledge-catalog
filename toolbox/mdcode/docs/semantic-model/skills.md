@@ -65,7 +65,10 @@ All flags are optional:
 | `--out <dir>` | `skills` | Parent directory where `<skill-name>/` is written (`<out>/<skill-name>/SKILL.md` and `<out>/<skill-name>/references/*.md`). |
 | `--profile <name>` | `default_profile` from `catalog.yaml` | Binding profile from `<model>.profiles/<name>.yaml` used to resolve the physical store, table/column mappings, and action executors. |
 | `--name <name>` | Derived from `model.name` | Override the generated skill name (and directory name `<out>/<name>`). Must match `^[a-z0-9]+(-[a-z0-9]+)*$` (lowercase letters, digits, and single hyphens between words, starting and ending with a letter or a digit, max 64 characters). |
-| `--force` | `false` | Overwrite an existing `<out>/<skill-name>/` directory and remove any stale `.md` files in `<out>/<skill-name>/references/` left over from renamed or deleted actions. Without `--force`, an existing target directory is refused with `Error: <dir> already exists. Pass --force to rewrite it.` |
+| `--force` | `false` | Overwrite an existing `<out>/<skill-name>/` directory and remove any stale `.md` files in `<out>/<skill-name>/references/` (and `references/entities/`) left over from renamed or deleted actions or entities. Without `--force`, an existing target directory is refused with `Error: <dir> already exists. Pass --force to rewrite it.` |
+| `--mode <act\|query\|both>` | `act` | `act` writes the action router described on this page. `query` writes the read side: an index for answering questions over the BigQuery property graph (see [Query mode](#query-mode-answering-questions)). `both` writes one skill with the two. |
+| `--extra-scope <dir>` | none | Query/both only. Another catalog scope (a directory with `catalog.yaml`) whose BigQuery graph the skill should also point at, typically a metrics slice small enough for `GRAPH_EXPAND`. Read under that scope's own `default_profile`. Repeatable. |
+| `--location <loc>` | none | Query/both only. The BigQuery location to state in the skill; the model does not record it. |
 
 If `--name` is not valid, `kcmd skills-generate` refuses before writing any
 file:
@@ -412,12 +415,137 @@ diff /tmp/spanner-skills/commerce/references/issue-credit.md \
  - Executor: `sql`
 ```
 
+## Query mode: answering questions
+
+`--mode query` writes the READ side of the same model: a skill that lets an
+agent answer business questions over the BigQuery property graph compiled from
+the model (GQL `GRAPH g MATCH ...`, `GRAPH_TABLE` inside SQL, and
+`GRAPH_EXPAND` + `AGG(measure)` for governed metrics), with plain SQL over the
+source tables for everything else and Knowledge Catalog for discovery.
+
+```bash
+cd model
+kcmd skills-generate --mode query --profile bigquery \
+  --extra-scope metrics --location US --out .gemini/skills --force
+```
+
+`--profile` must be a profile whose `deployment_target` is a BigQuery graph
+(`//bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>`);
+without one the skill names the graph as a placeholder and warns.
+
+### Progressive disclosure for reads
+
+The budgets are the same as for the act router, and so is the idea: the body is
+an index, and the detail is read on demand.
+
+1. **Discovery (frontmatter)**: `description` names the business data the model
+   covers (its most connected entities and its metrics) and says to activate
+   the skill for questions that read or analyse that data.
+2. **Index (`SKILL.md` body)**:
+   - `Where the data is`: the property graph (`project.dataset.graph`) from the
+     profile's deployment target, any `--extra-scope` graphs with their node
+     table and measure counts, the semantic dataset, the location, and the
+     Knowledge Catalog entry group.
+   - `How to answer`: a short, model-agnostic guide (under 300 words, written
+     once in code): GQL for relationships, paths, hierarchies and parent types
+     (an abstract label matches every subtype); `GRAPH_EXPAND` + `AGG` for
+     governed metrics; SQL otherwise; the model is the preferred source but not
+     the boundary; read the question literally; one final answer with the
+     definition and tables used; units as declared; constraints only when
+     relevant and violated.
+   - `GQL in BigQuery`: the syntax models get wrong (graph clause first,
+     `MATCH`/`RETURN`, quantified paths `-[:e]->{1,k}`, `GRAPH_TABLE` in SQL,
+     property names rather than columns).
+   - `Entities`: one row per graph label -- concrete node tables and abstract
+     labels -- ranked by number of relationships, with a truncated description,
+     the key, and the subsets listed under their parent.
+   - `Metrics`: one row per metric with the node table and graph it is a
+     MEASURE on, or `SQL` when it is not one.
+3. **Detail (`references/`)**, read on demand:
+   - `references/entities/<Label>.md`: the labels it carries (own and
+     ancestors), description and `ai_context`, key, properties (type, physical
+     column, label, description, synonyms, time dimension, and any other field
+     metadata such as a unit), relationships as `(A)-[:rel]->(B)` with
+     cardinality (`1:1`, `N:1`, `M:N`), inverse edge, ancestor edge labels,
+     the physical join, and the relationship's `ai_context.instructions` (where
+     OWL transitive/symmetric hints live), supertypes and subtypes, defined
+     subsets, metrics anchored on it, constraints that mention it, and the
+     source table with a starter `SELECT`.
+   - `references/metrics.md`: each metric's expression, description, anchor and
+     synonyms, the graphs it is a MEASURE in, and a ready `GRAPH_EXPAND` query
+     sliced by a dimension; a metric that is not a MEASURE gets an equivalent
+     SQL query over the source tables, with the generator's reason.
+   - `references/patterns.md`: 6-10 example queries generated from the model,
+     never hand-written per domain: a polymorphic `MATCH` on the most used
+     abstract label, one- and two-hop traversals along real edges, an aggregate
+     over a traversal, a quantified path on a relationship whose `ai_context`
+     says it is transitive, an inverse edge, a `GRAPH_EXPAND` metric by a
+     dimension, `GRAPH_TABLE` inside SQL, and plain SQL over the source tables.
+
+### What the index is read from
+
+The skill describes the graph `kcmd push` would build, so it reads the model the
+way the BigQuery generator does:
+
+- A concrete, keyed entity is a node table. An abstract entity is a label only
+  if some node table descends from it.
+- A **defined entity** (`definition:`; a subset of one parent with a membership
+  expression) has no label. It is listed on its base's page as
+  `isWonOpportunity -- <expression>; use only when the question uses this
+  concept`, because the graph compiles it to that boolean property.
+- An abstract entity with no concrete descendant forms no graph element. It is
+  listed on its parent's page as a narrower concept with its description, so
+  an agent can express it as a filter when, and only when, the question uses
+  it.
+- Which metrics are MEASUREs, and on which node table, is taken from running
+  the BigQuery DDL generator read-only, so the skill never promises a measure
+  the graph lacks. `GRAPH_EXPAND` accepts at most 10 node tables; when the
+  primary graph is larger, a metric's query points at an `--extra-scope` graph
+  that carries the same measure (and falls back to SQL when none does).
+
+Output is sorted throughout, so regenerating an unchanged model is
+byte-identical. The same budget warnings apply as in act mode.
+
+### Example output
+
+```text
+Wrote .gemini/skills/ps-commercial/SKILL.md
+Wrote .gemini/skills/ps-commercial/references/entities/ClientAccount.md
+...
+Wrote .gemini/skills/ps-commercial/references/metrics.md
+Wrote .gemini/skills/ps-commercial/references/patterns.md
+```
+
+An index row and an entity page excerpt:
+
+```markdown
+| [Opportunity](references/entities/Opportunity.md) | node | A potential sale to a client account, tracked from identification to won or lost. | `opportunityId` | 12 | ActivePipeline, ClosedOpportunity, HighValueOpportunity, LostOpportunity, MegaDeal, PriorityOpportunity, WonOpportunity |
+```
+
+```markdown
+- `(Opportunity)-[:hasBuyer]->(ClientAccount)` -- N:1; inverse `(ClientAccount)-[:hasOpportunity]->(Opportunity)`; also labelled `hasCounterparty`; SQL join Opportunity.account_id = ClientAccount.account_id.
+  Synonyms: buyer, client of. The client account buying an opportunity.
+```
+
+### Both
+
+`--mode both` writes one skill: the query index first, then the act router
+(`What you can do here`, `Running an action`, ...). The act side's table and
+column listing is replaced by a pointer to the entity pages, which carry the
+same facts, so the body stays inside its budget. Action pages are
+`references/<action>.md` as in act mode (the slugs `metrics` and `patterns` are
+reserved for the query pages). On a model with no actions, `both` writes the
+query skill and warns.
+
 ## What it doesn't generate yet
 
-- **No metrics or relationships in the skill.** `SKILL.md` emits the entity
-  table and column map for looking up keys (`Finding a record`) and
-  `references/<action>.md` emits the write actions. Declared `metrics` and
-  `relationships` are not emitted into the skill package.
+- **Act mode emits no metrics or relationships.** In `--mode act`, `SKILL.md`
+  emits the entity table and column map for looking up keys (`Finding a
+  record`) and `references/<action>.md` emits the write actions. Metrics and
+  relationships are emitted by `--mode query` (or `both`).
+- **Query mode does not record the BigQuery location** -- the model has no field
+  for it; pass `--location`. The metrics slice graph is a separate catalog
+  scope, so it is only pointed at when passed as `--extra-scope`.
 - **No plugin manifest or MCP server bundle.** When an action uses an `mcp`,
   `rest`, or `grpc` executor, `SKILL.md` prints its target coordinates
   (`MCP tool <tool> on <server>`, `HTTP <METHOD> <endpoint>`,

@@ -330,6 +330,95 @@ Inheritance deploys the same way to BigQuery Graph and Spanner Graph — the ext
 labels and the flattened fields are identical on both backends. On Spanner the
 model carries no measures, as it does for any model.
 
+## Defined entities: a subtype picked out by a condition
+
+Some subtypes are not stored anywhere on their own. A won opportunity is a row of
+the opportunity table whose stage is `5_won`; in OWL it is a *defined class*,
+`WonOpportunity ≡ Opportunity ⊓ (salesStage = '5_won')`. Declare it as a
+**defined entity**: one parent, a membership condition, and nothing else.
+
+```yaml
+version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    entities:
+      - name: Opportunity
+        source: proj.sales.opportunity
+        primary_key: [id]
+        fields:
+          - name: id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
+          - name: salesStage
+            expression: {dialects: [{dialect: ANSI_SQL, expression: sales_stage}]}
+          - name: totalContractValue
+            expression: {dialects: [{dialect: ANSI_SQL, expression: tcv}]}
+      - name: WonOpportunity
+        description: An opportunity in the Won stage.
+        extends: [Opportunity]
+        defined: "salesStage = '5_won'"
+      - name: HighValueOpportunity
+        extends: [Opportunity]
+        defined:
+          expression: totalContractValue >= 1000
+          description: USD thousands, so at least USD 1M.   # optional note
+      - name: MegaDeal
+        extends: [HighValueOpportunity]   # a defined entity may refine another
+        defined: totalContractValue >= 20000
+```
+
+`defined` is a `/google` extension. It takes a bare string or `{expression,
+description?}`. The expression is a boolean SQL expression (BigQuery dialect)
+over the **field names** of the entity's lineage, not over columns. It may
+qualify a name with the entity itself or an ancestor (`MegaDeal.totalContractValue`).
+It reads one row, so it cannot reach another entity. A defined entity:
+
+- **extends exactly one parent.** The parent may itself be defined. The nearest
+  non-defined ancestor is its **base**, the entity whose rows it selects.
+  Membership is the conjunction of every definition up to the base: MegaDeal is
+  `(totalContractValue >= 1000) AND (totalContractValue >= 20000)` over
+  Opportunity.
+- **has no `source`, `primary_key`, `unique_keys` or fields of its own.** It
+  shares its base's rows, identity and fields. The loader rejects a source or
+  key. `abstract: true` is redundant and is ignored with a warning.
+- **cannot be a supertype.** A table-backed entity may not extend a defined one.
+  Extend its base instead.
+
+**On a graph push** (BigQuery and Spanner) a defined entity forms no node table
+and no label. It becomes a boolean property `is<Name>` on its base, computed
+from the base's own bindings and made two-valued:
+
+```sql
+COALESCE(sales_stage = '5_won', FALSE) AS isWonOpportunity
+```
+
+So `MATCH (o:Opportunity) WHERE o.isWonOpportunity` answers "won
+opportunities". The property's description states the condition. On an
+abstract base each concrete descendant binds the property from its own columns.
+A descendant that does not bind a referenced field gets `CAST(NULL AS BOOL)`,
+with a warning. A relationship endpoint on a defined entity is re-pointed at its
+base, and a metric attached to one is dropped (a MEASURE cannot filter rows),
+both with a warning.
+
+**Push validation** rejects:
+
+- a missing, multiple or unknown parent, or a parent cycle;
+- a source, keys or fields on a defined entity;
+- a reference to a field the base does not have (with a hint for a case
+  mismatch), or to another entity;
+- a table-backed entity that extends a defined one;
+- an `is<Name>` that collides with a field of the base or its descendants, or
+  with another defined entity's property.
+
+**Knowledge Catalog** publishes a defined entity as a semantic-entity entry like
+an abstract one: no source resources and no key. Its definition rides the entry
+description as fixed trailing paragraphs (`Definition note: …` when there is a
+note, then `Defined as: <expression>`), after `Specializes: <parent>.`. Pull
+peels them back off, so push → pull → push is a fixed point. A binding profile
+that makes the base unavailable drops its defined entities too.
+
+OWL import compiles `owl:equivalentClass` definitions into defined entities; see
+[OWL import → Defined classes](owl-import.md#defined-classes-owlequivalentclass).
+
 ## Relationship inheritance
 
 Relationships have a hierarchy of their own, separate from the entity one. A

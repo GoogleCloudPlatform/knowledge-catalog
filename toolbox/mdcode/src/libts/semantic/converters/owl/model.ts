@@ -186,7 +186,66 @@ export interface OwlClass extends OwlCommonAnnotations {
   // object of owl:equivalentClass), in document order. The mapper turns each
   // into a model-level constraint. Empty when none.
   restrictions: OwlRestriction[];
+  // The class expressions this class is declared EQUIVALENT to (blank-node
+  // objects of owl:equivalentClass), parsed in full -- intersections, unions,
+  // complements, restrictions and their data ranges -- for the mapper to
+  // compile into a defined entity's membership predicate (see definitions.ts).
+  // A pure top-level owl:oneOf (an enumeration of individuals: a vocabulary,
+  // not a data class) is not a definition and is left out. Absent when none.
+  definitions?: OwlClassExpr[];
 }
+
+/** An RDF literal, as written: lexical form plus datatype / language tag. */
+export interface OwlLiteral {
+  value: string;
+  // Full datatype IRI (xsd:string when untyped). Absent for a language-tagged
+  // literal.
+  datatype?: string;
+  language?: string;
+}
+
+/** A data range: the filler of a restriction on a datatype property. */
+export type OwlDataRange =
+    // A named datatype (xsd:decimal, rdfs:Literal, ...).
+    {kind: 'datatype'; iri: string}|
+    // A datatype restricted by facets: `xsd:decimal[>= 1000]`.
+    {
+      kind: 'facets';
+      datatype: string;
+      // Facet IRIs (xsd:minInclusive, ...) with their values, in list order.
+      facets: {facet: string; value: OwlLiteral}[];
+    }|
+    // An enumeration of literal values: `owl:oneOf ("Diamond" "Tier 1")`.
+    {kind: 'dataOneOf'; values: OwlLiteral[]};
+
+/**
+ * An OWL class expression, as the parser found it under owl:equivalentClass.
+ * Purely structural: whether a construct can become SQL is the mapper's call.
+ */
+export type OwlClassExpr =
+    // A named class (full IRI).
+    {kind: 'named'; iri: string}|
+    // owl:intersectionOf / owl:unionOf.
+    {kind: 'and' | 'or'; operands: OwlClassExpr[]}|
+    // owl:complementOf.
+    {kind: 'not'; operand: OwlClassExpr}|
+    // owl:oneOf over individuals (full IRIs).
+    {kind: 'oneOf'; members: string[]}|
+    // owl:Restriction.
+    {
+      kind: 'restriction';
+      // Full IRI of owl:onProperty.
+      property: string;
+      restriction: 'some'|'all'|'value'|'exact'|'min'|'max';
+      cardinality?: number;
+      // someValuesFrom / allValuesFrom, or onClass / onDataRange of a
+      // qualified cardinality: a class expression or a data range.
+      filler?: OwlClassExpr|OwlDataRange;
+      // owl:hasValue: an individual (full IRI) or a literal.
+      value?: {iri: string}|{literal: OwlLiteral};
+    }|
+    // Anything else, named by `construct` for the fallback warning.
+    {kind: 'unsupported'; construct: string};
 
 /**
  * An `owl:DatatypeProperty` -- becomes a field on its domain class's dataset.
@@ -296,6 +355,14 @@ export interface OwlObjectProperty extends OwlCommonAnnotations {
   // owl:AsymmetricProperty -- `a rel b` rules out `b rel a`. Carried verbatim;
   // no native OSI home.
   asymmetric: boolean;
+  // Local name of the datatype property that ENCODES this object property's
+  // value as a code column on the subject (`com:inStage core:encodedBy
+  // com:salesStage`): the edge to a vocabulary individual is stored as that
+  // individual's code. Read from any annotation whose local name is
+  // `encodedBy` (kcmd:encodedBy, or an ontology's own). Lets a definition
+  // such as `inStage hasValue Stage_Won` compile to `salesStage = '5_won'`.
+  // Absent when not annotated.
+  encodedBy?: string;
 }
 
 /**
@@ -356,4 +423,10 @@ export interface OwlModel {
   // kept, exactly like owl:oneOf. Both the OWL 2 `owl:members` and the legacy
   // OWL 1 `owl:distinctMembers` spelling of the list are accepted.
   allDifferent: string[][];
+  // The code each named individual is stored as, keyed by full individual IRI
+  // (`com:Stage_Won core:code "5_won"` -> Stage_Won IRI -> "5_won"). Read from
+  // kcmd:code, else skos:notation, else any annotation whose local name is
+  // `code`. Used with OwlObjectProperty.encodedBy to compile a hasValue on an
+  // individual into a comparison on the code column. Absent when none.
+  individualCodes?: Record<string, string>;
 }

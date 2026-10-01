@@ -119,10 +119,31 @@ export interface Entity {
   // asserts "intentionally has no table". Overloading one for the other would
   // silently drop an entity someone merely forgot to bind.
   abstract?: boolean;
+  // Marks a DEFINED (virtual) entity: a subset of exactly one parent entity
+  // (its sole `extends` entry) characterized by a membership predicate rather
+  // than a table of its own -- the OWL defined class
+  // `WonOpportunity ≡ Opportunity ⊓ (salesStage = '5_won')`. Like an abstract
+  // entity it has no `dataSource`, no `keys` and no fields of its own; unlike
+  // one it is never a supertype, it is a filter over its parent. Emitters lower
+  // it onto the nearest non-defined ancestor (the "base") as a boolean
+  // membership property `is<Name>` (see defined_entities.ts).
+  //
+  // `expression` is a boolean SQL expression (BigQuery dialect, like metric
+  // expressions) over the parent lineage's field NAMES; a defined parent's own
+  // definition is implied (membership is the conjunction up the chain).
+  definition?: EntityDefinition;
   description?: string;
   aiContext?: AiContext;
   fields: Field[];       // dimensions / attributes
   customExtensions?: CustomExtension[];
+}
+
+/** The membership predicate of a defined entity (see Entity.definition). */
+export interface EntityDefinition {
+  expression: string;
+  // Optional prose about the definition itself (as opposed to the entity's
+  // description), e.g. "Stage 5 (won) per the CRM's stage vocabulary".
+  description?: string;
 }
 
 /**

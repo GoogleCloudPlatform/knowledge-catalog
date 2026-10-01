@@ -11,6 +11,7 @@
 import {BigQueryClient} from '../gcp/bigquery';
 import {SpannerClient} from '../gcp/spanner';
 
+import {validateDefinedEntities} from './defined_entities';
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
@@ -193,6 +194,14 @@ export function validatePushRequirements(
 
     // Constraints are logical invariants, target-independent like actions.
     errors.push(...validateConstraints(model, document, !!opts.fieldsPruned));
+
+    // Defined (virtual) entities: one parent, no table, a definition that
+    // reads only the parent lineage's fields. Target-independent -- the
+    // catalog publishes the definition and the graph legs lower it.
+    for (const msg of validateDefinedEntities(
+             model, {fieldsPruned: opts.fieldsPruned})) {
+      errors.push(`model '${model.name}' (${document}): ${msg}`);
+    }
   }
   return errors;
 }

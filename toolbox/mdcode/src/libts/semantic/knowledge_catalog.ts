@@ -167,8 +167,10 @@ export function generateCatalogResources(
       continue;
     entityEntryName.set(entity.name, names.entry(entityId));
     if (entity.abstract) abstractEntities.add(entity.name);
-    // An abstract entity has no key by design (no table, no rows to identify).
-    if (!entity.abstract && (!entity.keys || !entity.keys.length)) {
+    // An abstract entity has no key by design (no table, no rows to identify);
+    // a defined one shares its parent's.
+    if (!entity.abstract && !entity.definition &&
+        (!entity.keys || !entity.keys.length)) {
       warnings.push(
           `entity '${entity.name}': no keys declared in the source model`);
     }
@@ -453,8 +455,35 @@ function joinDescription(rel: Relationship): string|undefined {
 // recovers them exactly.
 export const ABSTRACT_MARKER = 'Abstract: no table of its own.';
 
-// The description, then the Specializes paragraph, then the Abstract marker --
-// a fixed order, so pull peels them off from the end in reverse.
+// A defined (virtual) entity's membership predicate (Entity.definition) has no
+// slot either: semantic-entity carries only `source.resources`, schema only
+// columns and keys, and the model's custom aspect types (semantic-action /
+// semantic-constraint) belong to entries of their own kind. So it rides the
+// same trailer convention, after the Abstract marker (the two never co-occur):
+//
+//   <authored description>
+//
+//   Specializes: Opportunity.
+//
+//   Definition note: Stage 5 per the CRM vocabulary.     (optional)
+//
+//   Defined as: salesStage = '5_won'
+//
+// Each trailer is one paragraph: line breaks inside the expression or note are
+// folded to single spaces (SQL whitespace is insignificant) so the blank-line
+// paragraph split on pull cannot cut one in two. The expression is written
+// verbatim otherwise -- no trailing period, which would change its meaning.
+export const DEFINED_AS_PREFIX = 'Defined as: ';
+export const DEFINITION_NOTE_PREFIX = 'Definition note: ';
+
+// Folds line breaks (and the indentation around them) to one space.
+export function oneParagraph(text: string): string {
+  return text.trim().replace(/\s*\n\s*/g, ' ');
+}
+
+// The description, then the Specializes paragraph, then the Abstract marker or
+// the definition trailers -- a fixed order, so pull peels them off from the end
+// in reverse.
 function entityDescription(entity: Entity): string|undefined {
   const parts = [
     entity.description,
@@ -462,6 +491,13 @@ function entityDescription(entity: Entity): string|undefined {
         `${SPECIALIZES_PREFIX}${entity.extends.join(', ')}.` :
         undefined,
     entity.abstract ? ABSTRACT_MARKER : undefined,
+    entity.definition?.description?.trim() ?
+        `${DEFINITION_NOTE_PREFIX}${
+            oneParagraph(entity.definition.description)}` :
+        undefined,
+    entity.definition ?
+        `${DEFINED_AS_PREFIX}${oneParagraph(entity.definition.expression)}` :
+        undefined,
   ].filter((p): p is string => !!p);
   return parts.length ? parts.join('\n\n') : undefined;
 }

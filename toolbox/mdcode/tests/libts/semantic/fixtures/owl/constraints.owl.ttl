@@ -58,7 +58,8 @@ ex:WonOpportunity a owl:Class ;
     rdfs:subClassOf ex:Opportunity ;
     owl:disjointWith ex:LostOpportunity ;
     # someValuesFrom on an inherited relationship, and an equivalentClass
-    # restriction on an inherited field.
+    # restriction on an inherited field (decidable on one Opportunity row, so
+    # it becomes WonOpportunity's definition rather than a constraint).
     rdfs:subClassOf [ a owl:Restriction ;
         owl:onProperty ex:governedBy ;
         owl:someValuesFrom ex:MSA ] ;

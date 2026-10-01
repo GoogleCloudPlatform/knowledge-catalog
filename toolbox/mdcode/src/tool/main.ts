@@ -168,7 +168,7 @@ cli.command(
 
 cli.command(
        'skills-generate',
-       'Write each model in the scope out as an Agent Skill: a SKILL.md an agent loads, with one reference file per action')
+       'Write each model in the scope out as an Agent Skill: a SKILL.md an agent loads, with reference files it reads on demand (one per action, or per entity in query mode)')
     .option(
         '--out <dir>',
         'Directory to write the skill directories under; each skill takes a directory of its own, named after the skill. Defaults to `skills`')
@@ -179,8 +179,17 @@ cli.command(
         '--profile [name]',
         'Read the model under this binding profile, which is what the skill\'s one deployment-specific section describes; defaults to default_profile, else the inline bindings')
     .option(
+        '--mode <mode>',
+        'act (default): a router over the model\'s actions. query: an index for answering questions over the BigQuery property graph (GQL, GRAPH_EXPAND metrics, SQL). both: one skill with the two')
+    .option(
+        '--extra-scope <dir>',
+        'Query mode: another catalog scope (a directory with catalog.yaml) whose BigQuery graph the skill should also point at, e.g. a metrics slice for GRAPH_EXPAND. Repeatable')
+    .option(
+        '--location <location>',
+        'Query mode: the BigQuery location to name in the skill (the model does not record it)')
+    .option(
         '--force',
-        'Replace a skill that is already there, including deleting a reference file for an action the model no longer declares')
+        'Replace a skill that is already there, including deleting a reference file the model no longer produces')
     .action(async (options) => {
       let exitCode = 1;
       try {

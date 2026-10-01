@@ -145,6 +145,13 @@ const datasetBase = z.object({
   // descendants. Distinct from an unbound `source` placeholder, which must fail
   // loudly rather than be silently treated as table-less.
   abstract: z.boolean().optional(),
+  // Marks a defined (virtual) entity (see Entity.definition): a membership
+  // predicate over its single parent, as a bare expression string or
+  // `{expression, description?}`.
+  defined: z.union([z.string(), z.object({
+    expression: z.string(),
+    description: z.string().optional(),
+  })]).optional(),
   description: z.string().optional(),
   ai_context: aiContextSchema.optional(),
   fields: z.array(fieldBase).optional(),
@@ -426,16 +433,27 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          ...(extended ? {
            extends: z.array(z.string()).optional(),
            abstract: z.boolean().optional(),
+           // A defined (virtual) entity: a membership predicate over its
+           // single parent (see Entity.definition). Native extension.
+           defined: z.union([
+                       z.string().min(1),
+                       z.object({
+                          expression: z.string().min(1),
+                          description: z.string().optional(),
+                        }).strict(),
+                     ]).optional(),
          } :
                         {}),
        })
           .strict()
           .superRefine((ds: any, ctx) => {
             const abstract = ds.abstract === true;
+            const defined = ds.defined !== undefined;
             // A concrete (non-abstract) dataset must name its backing table;
             // only an abstract one may omit `source`. Relaxed under
-            // bindingOptional.
-            if (!bindingOptional && !abstract && ds.source === undefined) {
+            // bindingOptional. A defined entity never has a table.
+            if (!bindingOptional && !abstract && !defined &&
+                ds.source === undefined) {
               ctx.addIssue({
                 code: z.ZodIssueCode.custom,
                 path: ['source'],
@@ -446,8 +464,8 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
             }
             // The converse is always contradictory: an abstract dataset has no
             // physical table, so a `source` on it would be silently ignored.
-            // Reject it always.
-            if (abstract && ds.source !== undefined) {
+            // Reject it always. (A defined one gets its own message below.)
+            if (abstract && !defined && ds.source !== undefined) {
               ctx.addIssue({
                 code: z.ZodIssueCode.custom,
                 path: ['source'],
@@ -455,6 +473,20 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
                     `dataset '${ds.name}': an abstract dataset has no table; ` +
                     `remove 'source', or drop 'abstract: true' to bind it to that table`,
               });
+            }
+            // A defined entity is a filter over its parent's rows: it has no
+            // table and no identity of its own (it shares the parent's).
+            if (defined) {
+              for (const key of ['source', 'primary_key', 'unique_keys']) {
+                if (ds[key] === undefined) continue;
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  path: [key],
+                  message: `dataset '${ds.name}': a defined dataset is a ` +
+                      `subset of its parent and has no ${key} of its own; ` +
+                      `remove '${key}', or drop 'defined' to bind it to a table`,
+                });
+              }
             }
             // A field with no `expression` is unbound -- there is no separate
             // flag. A graph leg does not reject it: the availability pass
@@ -948,7 +980,16 @@ function convertDataset(
       parseSource(ds.source, opts, warnings, ctxLabel) :
       '';
   const keys = ds.primary_key ?? [];
-  if (!keys.length && !ds.abstract) {
+  // A defined entity shares its parent's identity, so it has no key of its own.
+  let definition: Entity['definition'];
+  if (typeof ds.defined === 'string') {
+    definition = {expression: ds.defined};
+  } else if (ds.defined !== undefined) {
+    definition = {expression: ds.defined.expression};
+    if (ds.defined.description !== undefined)
+      definition.description = ds.defined.description;
+  }
+  if (!keys.length && !ds.abstract && !definition) {
     warnings.push(`${
         ctxLabel}: no primary_key; the entity's KEY will be empty (invalid for graph generation)`);
   }
@@ -961,7 +1002,20 @@ function convertDataset(
   if (ds.unique_keys && ds.unique_keys.length)
     entity.uniqueKeys = ds.unique_keys;
   if (ds.extends && ds.extends.length) entity.extends = ds.extends;
-  if (ds.abstract) entity.abstract = true;
+  if (definition) {
+    entity.definition = definition;
+    // `abstract` on a defined entity is redundant (it has no table either way)
+    // but contradictory in meaning: an abstract entity is a supertype whose
+    // label rides its descendants, a defined one is a filter over its parent.
+    // Tolerated (tools that mark every keyless dataset abstract still load) and
+    // dropped so the entity keeps exactly one reading.
+    if (ds.abstract) {
+      warnings.push(`${
+          ctxLabel}: 'abstract: true' is ignored on a defined dataset (it is a subset of its parent, not a supertype)`);
+    }
+  } else if (ds.abstract) {
+    entity.abstract = true;
+  }
   const description = composeDescription(ds.description);
   if (description) entity.description = description;
   const ai = aiContextOrUndefined(ds.ai_context);

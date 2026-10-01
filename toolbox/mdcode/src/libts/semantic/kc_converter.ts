@@ -60,7 +60,7 @@ import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 import {Action, AiContext, Constraint, CustomExtension, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
 import {isActionEntry, readAction} from './kc_actions';
 import {isConstraintEntry, readConstraint} from './kc_constraints';
-import {ABSTRACT_MARKER, INVERSE_PREFIX, linkSlug, SPECIALIZES_PREFIX} from './knowledge_catalog';
+import {ABSTRACT_MARKER, DEFINED_AS_PREFIX, DEFINITION_NOTE_PREFIX, INVERSE_PREFIX, linkSlug, SPECIALIZES_PREFIX} from './knowledge_catalog';
 import {referencedEntityNames} from './sql_expr_utils';
 
 export interface ReadResult {
@@ -224,12 +224,15 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
         name}': no semantic-entity aspect data (fetch with the aspect type)`);
   }
 
-  // Publish appends the Specializes paragraph then the Abstract marker to the
-  // entity description (knowledge_catalog.entityDescription); peel them off.
-  const trailers = splitEntityTrailers(entry.entrySource?.description);
+  // Publish appends the Specializes paragraph then the Abstract marker (or the
+  // definition trailers) to the entity description
+  // (knowledge_catalog.entityDescription); peel them off.
+  const defined = splitDefinitionTrailer(entry.entrySource?.description);
+  const trailers = splitEntityTrailers(defined.rest);
   const dataSource = dataSourceFromResource(semantic?.source?.resources?.[0]);
-  // An abstract entity has no table by design, so an empty source is expected.
-  if (!dataSource && !trailers.abstract) {
+  // An abstract entity has no table by design, so an empty source is expected;
+  // so does a defined one (a subset of its parent's rows).
+  if (!dataSource && !trailers.abstract && !defined.definition) {
     warnings.push(
         `entity '${name}': no backing data source in the semantic-entity ` +
         `aspect; 'source' will be empty and the entity may not load`);
@@ -255,9 +258,36 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
   }
   if (trailers.parents.length) entity.extends = trailers.parents;
   if (trailers.abstract) entity.abstract = true;
+  if (defined.definition) entity.definition = defined.definition;
   const ai = readAiContext(entry);
   if (ai) entity.aiContext = ai;
   return entity;
+}
+
+// Peels a defined entity's trailers -- an optional `Definition note: …`
+// paragraph followed by the final `Defined as: <expression>` paragraph (see
+// knowledge_catalog.entityDescription) -- off a pulled entity description,
+// returning the definition and the remaining text for splitEntityTrailers. A
+// description without the `Defined as:` paragraph comes back untouched.
+export function splitDefinitionTrailer(text: string|undefined): {
+  rest: string|undefined;
+  definition?: {expression: string; description?: string};
+} {
+  if (text === undefined) return {rest: undefined};
+  let paragraphs = text.split('\n\n');
+  const last = paragraphs[paragraphs.length - 1];
+  if (!last.startsWith(DEFINED_AS_PREFIX)) return {rest: text};
+  const expression = last.slice(DEFINED_AS_PREFIX.length).trim();
+  if (!expression) return {rest: text};
+  paragraphs = paragraphs.slice(0, -1);
+  const definition: {expression: string; description?: string} = {expression};
+  const note = paragraphs[paragraphs.length - 1];
+  if (note !== undefined && note.startsWith(DEFINITION_NOTE_PREFIX)) {
+    definition.description = note.slice(DEFINITION_NOTE_PREFIX.length).trim();
+    paragraphs = paragraphs.slice(0, -1);
+  }
+  const rest = paragraphs.join('\n\n');
+  return {rest: rest === '' ? undefined : rest, definition};
 }
 
 // Splits a pulled entity description into the authored description, the
