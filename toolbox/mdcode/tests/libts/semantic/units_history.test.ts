@@ -352,6 +352,12 @@ describe('OWL import', () => {
         rdfs:range xsd:decimal ; qudt:hasUnit unit:HR .
     ex:margin a owl:DatatypeProperty ; rdfs:domain ex:Opportunity ;
         rdfs:range xsd:decimal ; ex:unit "percent" .
+    ex:unitOfMeasure a owl:AnnotationProperty .
+    ex:USD a owl:NamedIndividual .
+    ex:cost a owl:DatatypeProperty ; rdfs:domain ex:Opportunity ;
+        rdfs:range xsd:decimal ; ex:unitOfMeasure ex:USD .
+    ex:weight a owl:DatatypeProperty ; rdfs:domain ex:Opportunity ;
+        rdfs:range xsd:decimal ; <https://schema.org/unitCode> "KGM" .
   `;
 
   test('the parser reads qudt:unit, qudt:hasUnit and a plain unit annotation', () => {
@@ -362,6 +368,14 @@ describe('OWL import', () => {
     expect(unitOf('effort')).toBe('HR');
     expect(unitOf('margin')).toBe('percent');
     expect(unitOf('id')).toBeUndefined();
+  });
+
+  test('the parser also reads unitOfMeasure and schema:unitCode', () => {
+    const owl = parseOwl(TTL);
+    const unitOf = (n: string) =>
+        owl.datatypeProperties.find(p => p.localName === n)!.unit;
+    expect(unitOf('cost')).toBe('USD');
+    expect(unitOf('weight')).toBe('KGM');
   });
 
   test('the unit maps to fields[].unit and reloads', () => {

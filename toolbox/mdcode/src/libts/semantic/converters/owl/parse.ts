@@ -30,6 +30,10 @@ const XSD_STRING = `${XSD}string`;
 // `false`/`0` restate the default and are not carried (see the OWL_DEPRECATED
 // case).
 const XSD_BOOLEAN_TRUE = new Set(['true', '1']);
+// Annotation predicates (by local name) that carry a datatype property's unit
+// (K7): qudt:unit, qudt:hasUnit / om:hasUnit, schema:unitCode, and the common
+// home-grown `unit` / `unitOfMeasure`.
+const UNIT_PREDICATES = new Set(['unit', 'hasUnit', 'unitCode', 'unitOfMeasure']);
 
 const RDF_TYPE = `${RDF}type`;
 // RDF collection (list) terms, used to walk an owl:hasKey list.
@@ -723,11 +727,11 @@ export function parseOwl(turtle: string|string[]): OwlModel {
         if (localName(q.predicate.value) === 'encodedBy' &&
             q.object.termType === 'NamedNode' && a.encodedBy === undefined)
           a.encodedBy = localName(q.object.value);
-        // `<datatypeProperty> qudt:unit unit:USD` (or qudt:hasUnit, or an
-        // ontology's own `unit` annotation property, IRI or literal) -- the
-        // unit a value is measured in (K7). Matched by local name, like
-        // encodedBy; first one wins.
-        else if (['unit', 'hasUnit'].includes(localName(q.predicate.value)) &&
+        // `<datatypeProperty> qudt:unit unit:USD` (or qudt:hasUnit, om:hasUnit,
+        // schema:unitCode, or an ontology's own `unit` / `unitOfMeasure`
+        // annotation property, IRI or literal) -- the unit a value is measured
+        // in (K7). Matched by local name, like encodedBy; first one wins.
+        else if (UNIT_PREDICATES.has(localName(q.predicate.value)) &&
                  a.unit === undefined) {
           if (q.object.termType === 'NamedNode') {
             a.unit = localName(q.object.value);
