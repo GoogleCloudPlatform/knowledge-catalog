@@ -58,14 +58,9 @@ import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
 import {googleDeploymentTargets} from './deployment_target';
 import {AiContext, DataType, Entity, Metric, Relationship, SemanticModel} from './ir';
-import {actionEntries, actionOwnedPrefix} from './kc_actions';
-import {constraintEntries, constraintOwnedPrefix} from './kc_constraints';
-
-// Where the `semantic-*` and `schema` system types live: built-in types in
-// project `dataplex-types`, location `global`. Callers may override to reference
-// them from a staging project.
-const DEFAULT_TYPE_PROJECT = 'dataplex-types';
-const DEFAULT_TYPE_LOCATION = 'global';
+import {actionEntries} from './kc_actions';
+import {constraintEntries} from './kc_constraints';
+import {linkSlug, Namer, ownedEntryIdPrefixes} from './kc_ids';
 
 export interface KcGenerateOptions {
   project: string;     // project the entries are created in (destination)
@@ -246,14 +241,7 @@ export function generateCatalogResources(
     entries,
     entryLinks,
     warnings: [...new Set(warnings)],
-    // Ossie ids are dotted: `<model>.entities.<name>` / `<model>.metrics.<name>`
-    // / `<model>.actions.<name>` / `<model>.constraints.<name>`.
-    ownedPrefixes: [
-      `${modelId}.entities.`,
-      `${modelId}.metrics.`,
-      actionOwnedPrefix(modelId),
-      constraintOwnedPrefix(modelId),
-    ],
+    ownedPrefixes: ownedEntryIdPrefixes(model.name),
   };
 }
 
@@ -576,59 +564,6 @@ function resourcePath(dataSource: string): string {
 // Naming and small helpers.
 // ---------------------------------------------------------------------------
 
-// Builds the fully-qualified resource names for a destination. Kept in one
-// place so entry/type name construction is consistent and the emitter body
-// reads as pure mapping.
-class Namer {
-  private readonly typeProj: string;
-  private readonly typeLoc: string;
-  constructor(private readonly opts: KcGenerateOptions) {
-    this.typeProj = opts.systemTypeProject ?? DEFAULT_TYPE_PROJECT;
-    this.typeLoc = opts.systemTypeLocation ?? DEFAULT_TYPE_LOCATION;
-  }
-
-  // Full resource name of a system type. `kind` selects the collection.
-  typeName(kind: 'entry'|'aspect'|'entryLink', name: string): string {
-    return `projects/${this.typeProj}/locations/${this.typeLoc}/${kind}Types/${
-        name}`;
-  }
-
-  // Aspect-map key: the `project.location.type` reference form the client keys
-  // an entry's aspects by (see dataplex._nameToTypeRef / _fixEntry).
-  aspectRef(name: string): string {
-    return `${this.typeProj}.${this.typeLoc}.${name}`;
-  }
-
-  entry(entryId: string): string {
-    return `${this.container()}/entries/${entryId}`;
-  }
-
-  entryLink(linkId: string): string {
-    return `${this.container()}/entryLinks/${linkId}`;
-  }
-
-  private container(): string {
-    return `projects/${this.opts.project}/locations/${
-        this.opts.location}/entryGroups/${this.opts.entryGroup}`;
-  }
-
-  modelId(model: SemanticModel): string {
-    return slug(model.name);
-  }
-  entityId(model: SemanticModel, entity: Entity): string {
-    return `${slug(model.name)}.entities.${slug(entity.name)}`;
-  }
-  metricId(model: SemanticModel, metric: Metric): string {
-    return `${slug(model.name)}.metrics.${slug(metric.name)}`;
-  }
-  // Entry link ids are more restricted than entry ids: lowercase letters,
-  // numbers and hyphens only, starting with a letter (see linkSlug).
-  linkId(model: SemanticModel, rel: Relationship): string {
-    return linkSlug(`${model.name}-${rel.name}`);
-  }
-}
-
-
 // Wraps aspect data (keyed by bare type id) as the client's aspect map: each
 // key is the `project.location.type` reference form, each value the
 // fully-qualified aspectType plus its data.
@@ -689,28 +624,6 @@ function claim(
   }
   seen.add(id);
   return true;
-}
-
-// Entry IDs allow letters, numbers, underscores, hyphens, and periods; map
-// anything else to an underscore so a model/entity name with spaces or other
-// characters still yields a valid, stable ID.
-function slug(s: string): string {
-  return s.replace(/[^A-Za-z0-9_.-]/g, '_');
-}
-
-// Entry link ids allow only lowercase letters, numbers and hyphens, must start
-// with a letter, must end with a letter or number, and are capped at 63 chars.
-// Lowercase, map any other character to a hyphen, collapse runs, then trim
-// leading non-letters and edge hyphens so the id satisfies the API contract.
-function linkSlug(s: string): string {
-  let out = s.toLowerCase()
-                .replace(/[^a-z0-9-]+/g, '-')
-                .replace(/-+/g, '-')
-                .replace(/^[^a-z]+/, '')
-                .replace(/^-+|-+$/g, '')
-                .slice(0, 63)
-                .replace(/-+$/, '');
-  return out || 'link';
 }
 
 function unquote(part: string): string {
