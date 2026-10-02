@@ -40,7 +40,9 @@ whether the catalog leg runs.
 | `--all-profiles` | Deploy the graph for every defined binding profile (plus the inline bindings when the document itself declares a target), instead of a single one. The Knowledge Catalog leg still records one canonical view — the default binding. Mutually exclusive with `--profile` and `--no-profile`. |
 | `--no-profile` | Deploy the graph for no binding profile: publish only the logical model to Knowledge Catalog, leaving any deployed graph untouched. |
 | `--no-kc` | Skip the Knowledge Catalog metadata push and deploy only the graph the selected profile targets. Knowledge Catalog is pushed by default. A push that deploys no graph (a logical model, or `--no-profile`) can only reach Knowledge Catalog, so `--no-kc` on it is an error, as is `--no-profile --no-kc` (nothing left to deploy). |
+| `--no-metric-graphs` | Deploy each BigQuery graph alone, without the `GRAPH_EXPAND` metric graphs and fallback metric views deployed next to it by default (proposed; see [Metric graphs for `GRAPH_EXPAND`](#metric-graphs-for-graph_expand-proposed)). The main graph is the same either way. |
 | `--validate-only` | Run every validation check and report pass/fail, but write nothing. |
+| `--dry-run` | The same as `--validate-only`. The push still prints its plan, including the metric graphs and views it would create. |
 | `--print` | Print each destination's generated artifact (BigQuery or Spanner Graph SQL DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
 | `--force-remove` | Delete models in the entry group that this push no longer includes (see [Updating and removing models](README.md#updating-and-removing-models)). |
 | `--emit-expressions` | Also write the SQL-expression fields (per-field `schema.semantics` and `semantic-metric.expression`) to Knowledge Catalog. Off by default: the published system-type templates do not carry them yet. Knowledge Catalog push only. |
@@ -123,6 +125,7 @@ against.
 | `--name <name>` | Name the skill, and so its directory. Defaults to the model's own name. Rejected when the scope holds more than one model, because a name names one skill. |
 | `--profile [name]` | Read the model under this binding profile. Defaults to `default_profile`, else the model's inline bindings. It is what the one deployment-specific section describes. |
 | `--force` | Replace a skill already at that path. A reference page for an action the model no longer declares is deleted and reported; a file outside `references/` is left alone. |
+| `--no-metric-graphs` | Query mode (`--mode query` or `both`; the other query-mode flags are in [Generating an Agent Skill](skills.md#flags)). Read metrics on the main graph's own measures rather than on the metric graphs and views a push deploys next to it (proposed). Use it for a graph pushed with `--no-metric-graphs`. |
 
 Before anything is written, a warning is printed when no action in a model is
 runnable under the selected profile, because a skill that can run nothing is
@@ -229,11 +232,16 @@ becomes one part of that graph:
 | Action | *nothing* | an action reaches Knowledge Catalog only (see below); the BigQuery push deploys none and warns once |
 | Constraint | *nothing* | a constraint reaches Knowledge Catalog only (see below); the BigQuery push deploys none and warns once |
 
+Next to that graph, a push also deploys the model's metrics as small
+`GRAPH_EXPAND`-ready metric graphs, plus a view for any metric none can hold
+(proposed; see [Metric graphs for `GRAPH_EXPAND`](#metric-graphs-for-graph_expand-proposed)).
+
 `push` reads the target dataset's location (`bigquery.datasets.get`) so the
 statement runs in the right region; without that permission it falls back to
-BigQuery's own location inference and warns. Under `--validate-only` no graph
-DDL is executed and nothing is written (the live source-table checks still run —
-see [Validation](#validation)); add `--print` to see the generated DDL.
+BigQuery's own location inference and warns. Under `--validate-only` (or
+`--dry-run`) no graph DDL is executed and nothing is written (the live
+source-table checks still run — see [Validation](#validation)); add `--print`
+to see the generated DDL.
 
 **How a metric becomes a `MEASURE`.** A graph measure aggregates a node
 property, so the aggregate's operand is exposed as one first. An operand that
@@ -253,6 +261,64 @@ whose operands resolve to the same SQL share one derived property.
 For which of your descriptive metadata (`description`, `ai_context`, field
 labels, …) lands in the graph and which is dropped, see
 [What push and pull preserve](fidelity.md#to-bigquery).
+
+### Metric graphs for `GRAPH_EXPAND` (proposed)
+
+> [!NOTE]
+> A proposed kcmd enhancement. It changes what a push deploys, not the model
+> spec; `--no-metric-graphs` turns it off.
+
+`GRAPH_EXPAND` reads a graph's measures without an Enterprise reservation, but
+only from a tree: at most 10 node tables, one root, every other node reached by
+exactly one path. A main graph rarely is one. So after each BigQuery graph, in
+the same project, dataset and location, `push` creates:
+
+| Statement | Name | One per |
+|---|---|---|
+| `CREATE OR REPLACE PROPERTY GRAPH` | `<graph>__<fact_in_snake_case>_metrics` | fact entity (the entity a metric aggregates), unless the main graph already serves `GRAPH_EXPAND` for every metric of that fact |
+| `CREATE OR REPLACE VIEW` | `<graph>__<fact_in_snake_case>_metrics_view` | fact entity with a metric no metric graph can hold |
+
+The statements run in that order: the main graph, its metric graphs, then its
+views. A metric graph is a tree rooted at the fact. It reaches the entities the
+fact's metrics read, then further many-to-one dimensions breadth-first, up to
+10 node tables. It carries only that fact's metrics, a composite metric as one
+`MEASURE` per aggregate. A view has one row per fact record, with columns named
+`<Entity>_<field>`. The main graph is the same with or without them. The rules
+are in
+[What push and pull preserve](fidelity.md#metric-graphs-for-graph_expand-proposed),
+and how the query skill reads them in
+[Agent skills](skills.md#metrics-and-metric-graphs-proposed).
+
+The push prints the plan, one line per metric graph and view. A dry run prints
+it too, headed `Metric graphs (dry run; nothing created):`, and `--print` adds
+each statement's DDL after the main graph's:
+
+```text
+Metric graphs:
+  [retail -> g] metric graph p.d.g__customer_metrics: root Customer, 2 node table(s) (Region via inRegion), labels Party; metrics customer_count
+  [retail -> g] metric graph p.d.g__sale_metrics: root Sale, 5 node table(s) (Product via ofProduct, Customer via soldTo, Category via inCategory, Region via inRegion), labels Party; metrics avg_price, revenue, units, win_rate; left out: purchases (inverse of soldTo)
+  [retail -> g] metric graph p.d.g__sale_return_metrics: root SaleReturn, 6 node table(s) (Sale via returnOf, Product via ofProduct, Customer via soldTo, Category via inCategory, Region via inRegion), labels Party; metrics refund_total; left out: purchases (inverse of soldTo), returns (inverse of returnOf)
+  [retail -> g] metric view p.d.g__sale_metrics_view: one row per Sale, 18 column(s); metrics amount_stddev
+Deployed 4 BigQuery Graph(s) and 1 metric view(s).
+```
+
+Each metric that falls back to a view, or gets neither a graph nor a view, is
+also a warning:
+
+```text
+Warning: [retail -> g] metric 'amount_stddev' cannot be a graph MEASURE (STDDEV cannot be a MEASURE (a measure is one of SUM, AVG, COUNT, MIN, MAX)); it falls back to the SQL view p.d.g__sale_metrics_view
+```
+
+A failing statement stops the push with
+`Failed to deploy metric graph '<name>': <error>` or
+`Failed to create metric view '<name>': <error>`, followed by how many graphs
+and views this run had already replaced: `CREATE OR REPLACE` is not rolled
+back.
+
+Metric graphs and views are derived, not authored: Knowledge Catalog does not
+record them and `pull` does not read them. A push replaces them but never drops
+one, so a metric graph or view for a fact that no longer has metrics stays
+until you drop it.
 
 ### Only modeled properties are exposed
 
@@ -847,6 +913,10 @@ such a model is present), and for the validation pre-flight:
   it writes nothing
 * `bigquery.datasets.get` on the target dataset (region detection; optional —
   push degrades gracefully without it)
+* `bigquery.tables.create` and `bigquery.tables.update` on the target dataset —
+  only when a metric falls back to a view (proposed metric graphs; see
+  [Metric graphs for `GRAPH_EXPAND`](#metric-graphs-for-graph_expand-proposed)),
+  to run its `CREATE OR REPLACE VIEW`
 
 **Spanner** — for a Spanner-targeting model (the Spanner leg runs whenever such a
 model is present), on the database the target names:
