@@ -7,8 +7,8 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import {SemanticModel} from '../../../src/libts/semantic/ir';
-import {mergeProfile, pruneUnavailable} from '../../../src/libts/semantic/resolve_profiles';
+import {ProfileSpec, SemanticModel} from '../../../src/libts/semantic/ir';
+import {loadProfileFile, mergeProfile, pruneUnavailable, validateProfileCompleteness, validateProfileConsistency} from '../../../src/libts/semantic/resolve_profiles';
 
 const GRAPH =
     '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/commerce';
@@ -704,5 +704,251 @@ describe('mergeProfile reads a profile file', () => {
     logical.semantic_model.push({name: 'other', entities: []});
     expect(mergeProfile(logical, prodProfile(), 'prod').error)
         .toMatch(/binds one model/);
+  });
+});
+
+
+describe('loadProfileFile', () => {
+  const TEXT = `name: prod
+entities:
+  - name: orders
+    source: //bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders
+    primary_key: [o_id]
+    unique_keys: [[o_ref]]
+    fields:
+      - name: amount
+        expression: net_amount
+      - name: region
+        expression:
+          dialects:
+            - {dialect: BIGQUERY, expression: region_code}
+    fields_exclude: [legacy_code]
+relationships:
+  - name: orders_to_customers
+    from_columns: [cust_id]
+    to_columns: [id]
+metrics_exclude: [legacy_total]
+`;
+
+  test('reads the section 2 example into a ProfileSpec with every part set', () => {
+    const p = loadProfileFile(TEXT, 'prod');
+    expect(p.name).toBe('prod');
+    const orders = p.entities[0];
+    expect(orders.source).toBe(
+        '//bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders');
+    expect(orders.primaryKey).toEqual(['o_id']);
+    expect(orders.uniqueKeys).toEqual([['o_ref']]);
+    expect(orders.fields![0]).toEqual({
+      name: 'amount', expression: 'net_amount', stringForm: true,
+      dialects: [{dialect: 'ANSI_SQL', expression: 'net_amount'}],
+    });
+    expect(orders.fields![1]).toEqual({
+      name: 'region', expression: 'region_code', stringForm: false,
+      dialects: [{dialect: 'BIGQUERY', expression: 'region_code'}],
+    });
+    expect(orders.fieldsExclude).toEqual(['legacy_code']);
+    expect(p.relationships).toEqual(
+        [{name: 'orders_to_customers', fromColumns: ['cust_id'], toColumns: ['id']}]);
+    expect(p.metricsExclude).toEqual(['legacy_total']);
+  });
+
+  test('metrics_exclude "*" reads back as "*"', () => {
+    expect(loadProfileFile('name: prod\nmetrics_exclude: "*"\n', 'prod').metricsExclude)
+        .toBe('*');
+  });
+
+  test('a logical key, "*" in a list, a wrong name and the old wrapper are rejected', () => {
+    expect(() => loadProfileFile(
+               'name: prod\nentities:\n  - {name: orders, description: x}\n', 'prod'))
+        .toThrow(/which a profile may not set/);
+    expect(() => loadProfileFile('name: prod\nmetrics_exclude: ["*"]\n', 'prod'))
+        .toThrow(/on its own/);
+    expect(() => loadProfileFile('name: staging\n', 'prod')).toThrow(/does not match/);
+    expect(() => loadProfileFile('semantic_model: []\n', 'prod'))
+        .toThrow(/not a profile file/);
+  });
+});
+
+
+describe('validateProfileCompleteness', () => {
+  // A logical model whose Customer.lifetimeValue is unbound in the model file.
+  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  function profile(over: Partial<ProfileSpec> = {}): ProfileSpec {
+    return {
+      name: 'prod',
+      entities: [
+        {name: 'Customer', source: BQ('customer'), fields: [{name: 'lifetimeValue', expression: 'ltv'}]},
+        {name: 'Order', source: BQ('orders')},
+      ],
+      relationships: [],
+      ...over,
+    };
+  }
+
+  test('a complete profile passes', () => {
+    expect(validateProfileCompleteness(irModel(), profile())).toEqual([]);
+  });
+
+  test('unknown entity, field, relationship and metric names are reported', () => {
+    const errors = validateProfileCompleteness(irModel(), profile({
+      entities: [...profile().entities, {name: 'Ghost', source: BQ('g')}],
+      relationships: [{name: 'Nope', fromColumns: ['a'], toColumns: ['b']}],
+      metricsExclude: ['missing'],
+    }));
+    expect(errors.join('\n')).toContain("entity 'Ghost' is not in the model");
+    expect(errors.join('\n')).toContain("relationship 'Nope' is not in the model");
+    expect(errors.join('\n')).toContain("metric 'missing' in 'metrics_exclude'");
+    const fieldErr = validateProfileCompleteness(irModel(), profile({
+      entities: [{...profile().entities[0], fieldsExclude: ['ghost']}, profile().entities[1]],
+    }));
+    expect(fieldErr.join('\n')).toContain("field 'Customer.ghost' is not in the model");
+  });
+
+  test('a concrete entity with no source is reported', () => {
+    const errors = validateProfileCompleteness(irModel(), profile({
+      entities: [profile().entities[0]],
+    }));
+    expect(errors.join('\n')).toContain("entity 'Order' has no source");
+  });
+
+  test('BigQuery datasets are one database; two Spanner databases are not', () => {
+    const twoDatasets = profile({
+      entities: [
+        {...profile().entities[0], source: '//bigquery.googleapis.com/projects/p/datasets/raw/tables/customer'},
+        {name: 'Order', source: 'bigquery:p.curated.orders'},
+      ],
+    });
+    expect(validateProfileCompleteness(irModel(), twoDatasets)).toEqual([]);
+    const SP = (db: string, t: string) =>
+        `//spanner.googleapis.com/projects/p/instances/i/databases/${db}/tables/${t}`;
+    const twoSpanner = profile({
+      entities: [
+        {...profile().entities[0], source: SP('a', 'Customer')},
+        {name: 'Order', source: SP('b', 'Orders')},
+      ],
+    });
+    expect(validateProfileCompleteness(irModel(), twoSpanner).join('\n'))
+        .toContain('more than one database');
+    const mixed = profile({
+      entities: [
+        {...profile().entities[0], source: BQ('customer')},
+        {name: 'Order', source: SP('a', 'Orders')},
+      ],
+    });
+    expect(validateProfileCompleteness(irModel(), mixed).join('\n'))
+        .toContain('more than one database');
+  });
+
+  test('a restated key of another width is rejected; leaving it out inherits', () => {
+    const wide = profile({
+      entities: [{...profile().entities[0], primaryKey: ['a', 'b']}, profile().entities[1]],
+    });
+    expect(validateProfileCompleteness(irModel(), wide).join('\n'))
+        .toContain("restates its primary key with 2 column(s)");
+    const same = profile({
+      entities: [{...profile().entities[0], primaryKey: ['c_id']}, profile().entities[1]],
+    });
+    expect(validateProfileCompleteness(irModel(), same)).toEqual([]);
+  });
+
+  test('a relationship with no, uneven or non-column join columns is reported', () => {
+    const m = irModel();
+    m.relationships[0].source.columns = [];
+    expect(validateProfileCompleteness(m, profile()).join('\n'))
+        .toContain("relationship 'PlacedBy' has no join columns");
+    expect(validateProfileCompleteness(irModel(), profile({
+      relationships: [{name: 'PlacedBy', fromColumns: ['a', 'b'], toColumns: ['c']}],
+    })).join('\n')).toContain('joins 2 column(s) to 1');
+    expect(validateProfileCompleteness(irModel(), profile({
+      relationships: [{name: 'PlacedBy', fromColumns: ['LOWER(a)'], toColumns: ['c']}],
+    })).join('\n')).toContain('is not a physical column name');
+  });
+
+  test('a field the model file leaves unbound must be bound or excluded', () => {
+    const errors = validateProfileCompleteness(irModel(), profile({
+      entities: [{name: 'Customer', source: BQ('customer')}, profile().entities[1]],
+    }));
+    expect(errors.join('\n')).toContain(
+        "field 'Customer.lifetimeValue' has no binding in the model file");
+  });
+
+  test('a field depending on an excluded one must be excluded or rebound, transitively', () => {
+    const m = irModel();
+    const customer = m.entities[0];
+    customer.fields.push({name: 'doubled', expression: 'Customer.name * 2'});
+    customer.fields.push({name: 'quadrupled', expression: 'Customer.doubled * 2'});
+    const errors = validateProfileCompleteness(m, profile({
+      entities: [{...profile().entities[0], fieldsExclude: ['name']}, profile().entities[1]],
+      metricsExclude: '*',
+    }));
+    expect(errors.join('\n')).toContain(
+        "field 'Customer.doubled' depends on 'Customer.name'");
+    expect(errors.join('\n')).toContain(
+        "field 'Customer.quadrupled' depends on 'Customer.name'");
+    const rebound = validateProfileCompleteness(m, profile({
+      entities: [{
+        ...profile().entities[0], fieldsExclude: ['name'],
+        fields: [
+          {name: 'lifetimeValue', expression: 'ltv'},
+          {name: 'doubled', expression: 'raw_doubled'},
+        ],
+      }, profile().entities[1]],
+      metricsExclude: '*',
+    }));
+    expect(rebound).toEqual([]);
+  });
+
+  test('a metric reaching an excluded field is named with the field', () => {
+    const errors = validateProfileCompleteness(irModel(), profile({
+      entities: [{name: 'Customer', source: BQ('customer'), fieldsExclude: ['lifetimeValue']},
+                 profile().entities[1]],
+    }));
+    expect(errors).toEqual([
+      "profile 'prod': metric 'avg_lifetime_value' reaches " +
+      "'Customer.lifetimeValue', which this profile excludes; add " +
+      "'avg_lifetime_value' to 'metrics_exclude'",
+    ]);
+    expect(validateProfileCompleteness(irModel(), profile({
+      entities: [{name: 'Customer', source: BQ('customer'), fieldsExclude: ['lifetimeValue']},
+                 profile().entities[1]],
+      metricsExclude: ['avg_lifetime_value'],
+    }))).toEqual([]);
+  });
+});
+
+
+describe('validateProfileConsistency', () => {
+  const p = (name: string, extra: Partial<ProfileSpec> = {}): ProfileSpec =>
+      ({name, entities: [], relationships: [], ...extra});
+
+  test('with no key in the model file, profiles must agree on one shape or none', () => {
+    const m = irModel();
+    m.entities[1].keys = [];
+    const disagree = validateProfileConsistency(m, [
+      p('a', {entities: [{name: 'Order', primaryKey: ['id']}]}),
+      p('b'),
+    ]);
+    expect(disagree.join('\n')).toContain("entity 'Order' has no key in the model file");
+    expect(validateProfileConsistency(m, [
+      p('a', {entities: [{name: 'Order', primaryKey: ['id']}]}),
+      p('b', {entities: [{name: 'Order', primaryKey: ['oid']}]}),
+    ])).toEqual([]);
+  });
+
+  test('cardinality may not vary by profile', () => {
+    // PlacedBy's to_columns cover Customer's primary key in the model file;
+    // profile b points them at another column.
+    const errors = validateProfileConsistency(irModel(), [
+      p('a'),
+      p('b', {relationships: [{name: 'PlacedBy', fromColumns: ['o_c'], toColumns: ['email']}]}),
+    ]);
+    expect(errors.join('\n')).toContain(
+        "relationship 'PlacedBy' has a different cardinality");
+    expect(validateProfileConsistency(irModel(), [
+      p('b', {
+        relationships: [{name: 'PlacedBy', fromColumns: ['o_c'], toColumns: ['c_id']}],
+        entities: [{name: 'Customer', primaryKey: ['c_id']}],
+      }),
+    ])).toEqual([]);
   });
 });

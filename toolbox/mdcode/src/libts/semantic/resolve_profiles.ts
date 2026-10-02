@@ -25,7 +25,8 @@
 
 import * as yaml from 'yaml';
 
-import {Action, isFieldBound, Metric, Relationship, SemanticModel} from './ir';
+import {Action, DialectExpression, Entity, Field, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
+import {resolveInheritance} from './resolve_inheritance';
 import {blankStringLiterals, escapeRegExp, referencedEntityNames,} from './sql_expr_utils';
 
 // The implicit profile: the inline bindings already in the model document (the
@@ -564,4 +565,457 @@ export function mergeProfileOntoDoc(
   const merged = mergeProfile(logicalDoc, profileDoc, profileName);
   if (merged.error) return {error: merged.error};
   return {text: yaml.stringify(merged.doc), warnings: merged.warnings};
+}
+
+
+/**
+ * Reads a profile file -- the top-level profile object `mergeProfile` also
+ * accepts -- into the IR's `ProfileSpec`. Throws on anything a profile may not
+ * say: an unknown key at any level, `"*"` inside a `metrics_exclude` list, or a
+ * `name` other than `profileName`. A field expression is converted as the
+ * loader converts a model field's: the short form becomes a one-entry
+ * `ANSI_SQL` list with `stringForm` set, and the `dialects:` form is kept as
+ * written. Actions are out of scope for the preview, so their executors are not
+ * read here; they still reach the model through `mergeProfile`.
+ */
+export function loadProfileFile(text: string, profileName: string): ProfileSpec {
+  const where = `profile '${profileName}'`;
+  let doc: any;
+  try {
+    doc = yaml.parse(text);
+  } catch (err: any) {
+    throw new Error(`${where} does not parse: ${err?.message ?? err}`);
+  }
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc) ||
+      doc.semantic_model !== undefined) {
+    throw new Error(`${where} is not a profile file`);
+  }
+  requireKeys(doc, PROFILE_FILE_KEYS, where);
+  if (doc.name !== profileName) {
+    throw new Error(
+        `${where} declares name '${doc.name ?? ''}', which does not match`);
+  }
+  const spec: ProfileSpec = {
+    name: profileName,
+    entities: listOf(doc.entities, `${where} 'entities'`).map(e => {
+      const at = `${where}: entity '${e.name}'`;
+      requireKeys(e, PROFILE_ENTITY_KEYS, at);
+      const binding: ProfileEntityBinding = {name: e.name};
+      if (e.source !== undefined) binding.source = e.source;
+      if (e.primary_key !== undefined) binding.primaryKey = e.primary_key;
+      if (e.unique_keys !== undefined) binding.uniqueKeys = e.unique_keys;
+      if (e.fields !== undefined) {
+        binding.fields = listOf(e.fields, `${at} 'fields'`).map(f => {
+          requireKeys(f, PROFILE_FIELD_KEYS, `${at}: field '${f.name}'`);
+          return {name: f.name, ...profileExpression(f.expression)};
+        });
+      }
+      if (e.fields_exclude !== undefined) {
+        binding.fieldsExclude = listOf(e.fields_exclude, `${at} 'fields_exclude'`);
+      }
+      return binding;
+    }),
+    relationships: listOf(doc.relationships, `${where} 'relationships'`)
+                       .map((r): ProfileRelationshipBinding => {
+                         requireKeys(
+                             r, PROFILE_RELATIONSHIP_KEYS,
+                             `${where}: relationship '${r.name}'`);
+                         // A side the profile does not restate is empty, and
+                         // keeps the model file's columns.
+                         return {
+                           name: r.name,
+                           fromColumns: r.from_columns ?? [],
+                           toColumns: r.to_columns ?? [],
+                         };
+                       }),
+  };
+  if (doc.metrics_exclude !== undefined) {
+    const ex = doc.metrics_exclude;
+    if (ex !== '*' &&
+        !(Array.isArray(ex) && ex.every((n: unknown) => typeof n === 'string'))) {
+      throw new Error(
+          `${where}: 'metrics_exclude' must be "*" or a list of metric names`);
+    }
+    if (Array.isArray(ex) && ex.includes('*')) {
+      throw new Error(
+          `${where}: 'metrics_exclude' takes "*" on its own, not inside a list`);
+    }
+    spec.metricsExclude = ex;
+  }
+  return spec;
+}
+
+function requireKeys(obj: any, allowed: Set<string>, where: string): void {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    throw new Error(`${where} is not a mapping`);
+  }
+  for (const k of Object.keys(obj)) {
+    if (!allowed.has(k)) {
+      throw new Error(
+          `${where} sets '${k}', which a profile may not set; a profile ` +
+          `carries only physical bindings, and the logical model owns ` +
+          `everything else`);
+    }
+  }
+}
+
+function listOf(value: unknown, where: string): any[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`${where} must be a list`);
+  return value;
+}
+
+// The IR form of a profile field's expression, as the loader builds a model
+// field's. The engine-specific entry wins over ANSI_SQL for `expression`.
+function profileExpression(expr: unknown):
+    Pick<Field, 'expression'|'dialects'|'stringForm'> {
+  if (expr === undefined) return {};
+  if (typeof expr === 'string') {
+    return {
+      expression: expr,
+      dialects: [{dialect: 'ANSI_SQL', expression: expr}],
+      stringForm: true,
+    };
+  }
+  const dialects = (expr as any)?.dialects;
+  if (!Array.isArray(dialects)) {
+    throw new Error('a field expression must be a string or a dialects list');
+  }
+  const list: DialectExpression[] = dialects.map(
+      (d: any) => ({dialect: d.dialect as SqlDialect, expression: d.expression}));
+  const pick = list.find(d => d.dialect === 'BIGQUERY') ??
+      list.find(d => d.dialect === 'ANSI_SQL');
+  return {
+    ...(pick ? {expression: pick.expression} : {}),
+    dialects: list,
+    stringForm: false,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Whether a profile can be deployed.
+// ---------------------------------------------------------------------------
+
+function isBound(f: Pick<Field, 'expression'|'dialects'|'importedExpression'>):
+    boolean {
+  return f.expression !== undefined || !!f.dialects?.length ||
+      f.importedExpression !== undefined;
+}
+
+// The system a single query can reach, for the one-database rule: all of
+// BigQuery is one; each Spanner database and each AlloyDB database is its own.
+// Another system is identified by everything but the table. Undefined for a
+// source in no recognisable form, which the loader reports.
+function databaseOf(source: string): string|undefined {
+  if (/^bigquery:/.test(source) || source.startsWith('//bigquery.googleapis.com/')) {
+    return 'bigquery';
+  }
+  let m = source.match(
+      /^\/\/spanner\.googleapis\.com\/projects\/([^/]+)\/instances\/([^/]+)\/databases\/([^/]+)\//);
+  if (m) return `spanner/${m[1]}/${m[2]}/${m[3]}`;
+  m = source.match(/^spanner:([^.]+)\.[^.]+\.([^.]+)\.([^.]+)\./);
+  if (m) return `spanner/${m[1]}/${m[2]}/${m[3]}`;
+  m = source.match(
+      /^\/\/alloydb\.googleapis\.com\/projects\/([^/]+)\/locations\/([^/]+)\/clusters\/([^/]+)\/instances\/[^/]+\/databases\/([^/]+)\//);
+  if (m) return `alloydb/${m[1]}/${m[2]}/${m[3]}/${m[4]}`;
+  m = source.match(/^alloydb:([^.]+)\.([^.]+)\.([^.]+)\.([^.]+)\./);
+  if (m) return `alloydb/${m[1]}/${m[2]}/${m[3]}/${m[4]}`;
+  m = source.match(/^([a-z_]+:.*)\.[^.]+$/);
+  return m ? m[1] : undefined;
+}
+
+// A key or join column is a physical column: a backtick-quoted name passes
+// whatever it contains, and an unquoted one may not contain whitespace,
+// parentheses, a dot or a SQL operator.
+function isColumnName(c: unknown): boolean {
+  return typeof c === 'string' &&
+      (/^`[^`]+`$/.test(c) || /^[^\s().+\-*/%=<>!|&^~,`]+$/.test(c));
+}
+
+// Whether `expr` references `<entity>.<field>`, outside string literals.
+function referencesField(expr: string, entity: string, field: string): boolean {
+  const re = new RegExp(`(?<![\\w\`.])\`?${escapeRegExp(entity)}\`?\\.\`?${
+      escapeRegExp(field)}\`?(?![\\w])`);
+  return re.test(blankStringLiterals(expr));
+}
+
+function expressionTexts(f: Pick<Field, 'expression'|'dialects'|'importedExpression'>):
+    string[] {
+  const out = (f.dialects ?? []).map(d => d.expression);
+  if (f.expression !== undefined) out.push(f.expression);
+  if (f.importedExpression !== undefined) out.push(f.importedExpression);
+  return out;
+}
+
+/**
+ * Returns one message per reason `profile` cannot be deployed against
+ * `baseModel`, or an empty list. Checks a single profile: nothing unknown,
+ * every concrete entity bound and all in one database, key shapes matching the
+ * model file's where it states keys, every relationship bound, every field the
+ * model file leaves unbound accounted for, and exclusions closed under
+ * dependency, metrics included. Rules that compare profiles with each other
+ * are in validateProfileConsistency.
+ */
+export function validateProfileCompleteness(
+    baseModel: SemanticModel, profile: ProfileSpec): string[] {
+  const errors: string[] = [];
+  const at = `profile '${profile.name}'`;
+  const entities = baseModel.entities ?? [];
+  const byName = new Map(entities.map(e => [e.name, e]));
+  // Declared plus inherited fields. Resolution throws on a broken hierarchy,
+  // which push reports elsewhere; this check then falls back to declared fields.
+  let resolved: Entity[] = entities;
+  if (entities.some(e => e.extends?.length)) {
+    try {
+      resolved = resolveInheritance(baseModel).model.entities ?? entities;
+    } catch {
+      resolved = entities;
+    }
+  }
+  const fieldsOf =
+      new Map(resolved.map(e => [e.name, new Map(e.fields.map(f => [f.name, f]))]));
+  const bindingOf = new Map(profile.entities.map(e => [e.name, e]));
+
+  // Nothing unknown.
+  for (const pe of profile.entities) {
+    const e = byName.get(pe.name);
+    if (!e) {
+      errors.push(`${at}: entity '${pe.name}' is not in the model`);
+      continue;
+    }
+    if (e.abstract) {
+      errors.push(`${at}: entity '${pe.name}' is abstract, so a profile cannot bind it`);
+      continue;
+    }
+    const known = fieldsOf.get(pe.name)!;
+    for (const name of [...(pe.fields ?? []).map(f => f.name), ...(pe.fieldsExclude ?? [])]) {
+      if (!known.has(name)) {
+        errors.push(`${at}: field '${pe.name}.${name}' is not in the model`);
+      }
+    }
+  }
+  const relByName = new Map((baseModel.relationships ?? []).map(r => [r.name, r]));
+  for (const pr of profile.relationships) {
+    if (!relByName.has(pr.name)) {
+      errors.push(`${at}: relationship '${pr.name}' is not in the model`);
+    }
+  }
+  const metricNames = new Set((baseModel.metrics ?? []).map(m => m.name));
+  if (Array.isArray(profile.metricsExclude)) {
+    for (const name of profile.metricsExclude) {
+      if (!metricNames.has(name)) {
+        errors.push(`${at}: metric '${name}' in 'metrics_exclude' is not in the model`);
+      }
+    }
+  }
+
+  // Every concrete entity bound, all in one database.
+  const databases = new Map<string, string>();
+  for (const e of entities) {
+    if (e.abstract) continue;
+    const pe = bindingOf.get(e.name);
+    if (!pe?.source) {
+      errors.push(`${at}: entity '${e.name}' has no source in this profile`);
+      continue;
+    }
+    const db = databaseOf(pe.source);
+    if (db && !databases.has(db)) databases.set(db, e.name);
+  }
+  if (databases.size > 1) {
+    const named = [...databases.values()].map(n => `'${n}'`).join(', ');
+    errors.push(
+        `${at} binds entities in more than one database (${named}); a ` +
+        `profile reads from one system a single query can reach`);
+  }
+
+  // Key shapes against the model file's, where it states keys.
+  for (const e of entities) {
+    const pe = bindingOf.get(e.name);
+    if (!pe || e.abstract) continue;
+    const inlineHasKey = e.keys.length > 0 || !!e.uniqueKeys?.length;
+    if (!inlineHasKey) continue;
+    if (pe.primaryKey !== undefined && pe.primaryKey.length !== e.keys.length) {
+      errors.push(
+          `${at}: entity '${e.name}' restates its primary key with ${
+              pe.primaryKey.length} column(s); the model file's has ${
+              e.keys.length}`);
+    }
+    if (pe.uniqueKeys !== undefined &&
+        shapeOf(pe.uniqueKeys) !== shapeOf(e.uniqueKeys ?? [])) {
+      errors.push(
+          `${at}: entity '${e.name}' restates its unique keys as ${
+              shapeOf(pe.uniqueKeys)}; the model file's are ${
+              shapeOf(e.uniqueKeys ?? [])}`);
+    }
+  }
+
+  // Every relationship bound.
+  for (const r of baseModel.relationships ?? []) {
+    if (r.association) continue;
+    const pr = profile.relationships.find(x => x.name === r.name);
+    const from = pr?.fromColumns.length ? pr.fromColumns : r.source.columns;
+    const to = pr?.toColumns.length ? pr.toColumns : r.destination.columns;
+    if (!from.length || !to.length) {
+      errors.push(`${at}: relationship '${r.name}' has no join columns`);
+    } else if (from.length !== to.length) {
+      errors.push(
+          `${at}: relationship '${r.name}' joins ${from.length} column(s) to ${
+              to.length}`);
+    } else {
+      const bad = [...from, ...to].filter(c => !isColumnName(c));
+      if (bad.length) {
+        errors.push(
+            `${at}: relationship '${r.name}' join column ${
+                bad.map(c => `'${c}'`).join(', ')} is not a physical column name`);
+      }
+    }
+  }
+
+  // Every field the model file leaves unbound is accounted for, and exclusions
+  // are closed under dependency.
+  const excluded = new Set<string>();
+  for (const e of entities) {
+    if (e.abstract) continue;
+    const pe = bindingOf.get(e.name);
+    const rebound = new Set((pe?.fields ?? []).map(f => f.name));
+    for (const name of pe?.fieldsExclude ?? []) excluded.add(`${e.name}.${name}`);
+    for (const f of fieldsOf.get(e.name)?.values() ?? []) {
+      if (!isBound(f) && !rebound.has(f.name) &&
+          !(pe?.fieldsExclude ?? []).includes(f.name)) {
+        errors.push(
+            `${at}: field '${e.name}.${f.name}' has no binding in the model ` +
+            `file; bind it in 'fields' or leave it out in 'fields_exclude'`);
+      }
+    }
+  }
+  const effective = (entity: string, field: Field) => {
+    const pf = bindingOf.get(entity)?.fields?.find(f => f.name === field.name);
+    return pf && isBound(pf) ? pf : field;
+  };
+  const dangling = new Map<string, string>();  // field -> excluded field it reaches
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const e of entities) {
+      if (e.abstract) continue;
+      for (const f of fieldsOf.get(e.name)?.values() ?? []) {
+        const key = `${e.name}.${f.name}`;
+        if (excluded.has(key) || dangling.has(key)) continue;
+        const texts = expressionTexts(effective(e.name, f));
+        for (const target of [...excluded, ...dangling.keys()]) {
+          const [te, tf] = target.split('.');
+          if (texts.some(t => referencesField(t, te, tf))) {
+            dangling.set(key, dangling.get(target) ?? target);
+            grew = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+  for (const [field, reached] of dangling) {
+    errors.push(
+        `${at}: field '${field}' depends on '${reached}', which this ` +
+        `profile excludes; exclude '${field}' too, or rebind it`);
+  }
+  if (profile.metricsExclude !== '*') {
+    const metricExcluded = new Set(profile.metricsExclude ?? []);
+    for (const m of baseModel.metrics ?? []) {
+      if (metricExcluded.has(m.name)) continue;
+      const texts = expressionTexts(m as Field);
+      const reached = [...excluded, ...dangling.keys()].filter(target => {
+        const [te, tf] = target.split('.');
+        return texts.some(t => referencesField(t, te, tf));
+      });
+      if (reached.length) {
+        errors.push(
+            `${at}: metric '${m.name}' reaches ${
+                reached.map(r => `'${r}'`).join(', ')}, which this profile ` +
+            `excludes; add '${m.name}' to 'metrics_exclude'`);
+      }
+    }
+  }
+  return errors;
+}
+
+/**
+ * Returns one message per way `profiles` disagree with each other about the
+ * model, or an empty list:
+ *   - where the model file states no key for an entity, either every profile
+ *     states keys of one shape, or none does;
+ *   - whether a relationship's `to_columns` cover the target's primary key, its
+ *     k-th unique key, or neither, is the same in the model file and in every
+ *     profile, because cardinality is a property of the model.
+ */
+export function validateProfileConsistency(
+    baseModel: SemanticModel, profiles: ProfileSpec[]): string[] {
+  const errors: string[] = [];
+  const entities = baseModel.entities ?? [];
+  const bindingIn = (p: ProfileSpec, entity: string) =>
+      p.entities.find(e => e.name === entity);
+
+  for (const e of entities) {
+    if (e.abstract || e.keys.length || e.uniqueKeys?.length) continue;
+    const shapes = new Map<string, string[]>();
+    for (const p of profiles) {
+      const pe = bindingIn(p, e.name);
+      const shape = pe && (pe.primaryKey?.length || pe.uniqueKeys?.length) ?
+          `primary key of ${pe.primaryKey?.length ?? 0}, unique keys ${
+              shapeOf(pe.uniqueKeys ?? [])}` :
+          'no keys';
+      shapes.set(shape, [...(shapes.get(shape) ?? []), p.name]);
+    }
+    if (shapes.size > 1) {
+      const detail = [...shapes].map(([s, ps]) => `${ps.join(', ')}: ${s}`).join('; ');
+      errors.push(
+          `entity '${e.name}' has no key in the model file, and its profiles ` +
+          `disagree on one (${detail}); every profile states keys of one ` +
+          `shape, or none does`);
+    }
+  }
+
+  const byName = new Map(entities.map(e => [e.name, e]));
+  for (const r of baseModel.relationships ?? []) {
+    if (r.association) continue;
+    const target = byName.get(r.destination.entity);
+    if (!target) continue;
+    const answers = new Map<string, string[]>();
+    const record = (who: string, to: string[], pk: string[], uks: string[][]) => {
+      const a = coverage(to, pk, uks);
+      answers.set(a, [...(answers.get(a) ?? []), who]);
+    };
+    record('the model file', r.destination.columns, target.keys, target.uniqueKeys ?? []);
+    for (const p of profiles) {
+      const pr = p.relationships.find(x => x.name === r.name);
+      const pe = bindingIn(p, target.name);
+      record(
+          `profile '${p.name}'`,
+          pr?.toColumns.length ? pr.toColumns : r.destination.columns,
+          pe?.primaryKey ?? target.keys, pe?.uniqueKeys ?? target.uniqueKeys ?? []);
+    }
+    if (answers.size > 1) {
+      const detail = [...answers].map(([a, who]) => `${who.join(', ')}: ${a}`).join('; ');
+      errors.push(
+          `relationship '${r.name}' has a different cardinality under ` +
+          `different bindings (${detail}); which key its 'to_columns' cover ` +
+          `must be the same everywhere`);
+    }
+  }
+  return errors;
+}
+
+// "[2, 1]": how many unique keys, and how wide each is.
+function shapeOf(keys: string[][]): string {
+  return `[${keys.map(k => k.length).join(', ')}]`;
+}
+
+// Which key of the target `to` covers: its primary key, its k-th unique key
+// (from 1), or neither. Columns compare as sets.
+function coverage(to: string[], pk: string[], uks: string[][]): string {
+  const same = (a: string[], b: string[]) =>
+      a.length > 0 && a.length === b.length && a.every(c => b.includes(c));
+  if (same(to, pk)) return 'the primary key';
+  const k = uks.findIndex(u => same(to, u));
+  return k >= 0 ? `unique key ${k + 1}` : 'no key';
 }
