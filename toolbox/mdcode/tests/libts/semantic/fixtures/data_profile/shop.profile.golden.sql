@@ -218,17 +218,9 @@ stats AS (
     COUNT(*) AS total,
     COUNTIF(`segment` IS NOT NULL) AS non_null,
     COUNTIF(`segment` IS NOT NULL AND CAST(`segment` AS STRING) NOT IN ('retail', 'wholesale', 'online')) AS outside_rows,
-    COUNT(DISTINCT IF(`segment` IS NOT NULL AND CAST(`segment` AS STRING) NOT IN ('retail', 'wholesale', 'online'), CAST(`segment` AS STRING), NULL)) AS outside_values
+    COUNT(DISTINCT IF(`segment` IS NOT NULL AND CAST(`segment` AS STRING) NOT IN ('retail', 'wholesale', 'online'), CAST(`segment` AS STRING), NULL)) AS outside_values,
+    TO_JSON_STRING(ARRAY_AGG(DISTINCT IF(CAST(`segment` AS STRING) IN ('retail', 'wholesale', 'online'), CAST(`segment` AS STRING), NULL) IGNORE NULLS)) AS used_values
   FROM focus
-),
-unused AS (
-  SELECT TO_JSON_STRING(ARRAY_AGG(kcmd_value ORDER BY kcmd_value)) AS unused_values
-  FROM UNNEST(['retail', 'wholesale', 'online']) AS kcmd_value
-  WHERE kcmd_value NOT IN (
-    SELECT DISTINCT CAST(`segment` AS STRING)
-    FROM focus
-    WHERE `segment` IS NOT NULL
-  )
 ),
 outside AS (
   SELECT TO_JSON_STRING(ARRAY_AGG(STRUCT(kcmd_value AS value, kcmd_n AS count) ORDER BY kcmd_n DESC, kcmd_value LIMIT 5)) AS top_outside
@@ -240,7 +232,7 @@ outside AS (
   )
 )
 SELECT *
-FROM stats CROSS JOIN unused CROSS JOIN outside;
+FROM stats CROSS JOIN outside;
 
 -- [Customer_credit_limit_unit] unitMagnitude: Customer.credit_limit is in USD.
 SELECT

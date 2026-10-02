@@ -55,7 +55,7 @@ Customer_segment_in:
   non_null: '990'
   outside_rows: '25'
   outside_values: '2'
-  unused_values: '["online"]'
+  used_values: '["retail","wholesale"]'
   top_outside: '[{"value":"Retail","count":20},{"value":"corporate","count":5}]'
 Customer_credit_limit_unit:
   total: '1000'

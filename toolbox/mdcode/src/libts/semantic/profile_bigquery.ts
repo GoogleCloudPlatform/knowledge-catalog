@@ -374,7 +374,12 @@ function relationshipSql(rel: Relationship, binder: Binder, examples: number): s
   return oneRow(ctes, rows);
 }
 
-// 3. One field against its declared values.
+// 3. One field against its declared values. The declared values are inlined
+// as literals and the rows are read only in FROM clauses: the declared values
+// that occur are collected in the same scan instead of an `IN (SELECT ...)`
+// subquery, which BigQuery cannot de-correlate when the bound table is a view
+// computing the field with its own correlated lookup (a code matched against
+// a vocabulary table, say).
 function enumSql(
     entity: string, field: string, values: string[], binder: Binder,
     examples: number): string {
@@ -388,13 +393,11 @@ function enumSql(
           `COUNTIF(${f} IS NOT NULL) AS non_null`,
           `COUNTIF(${outside}) AS outside_rows`,
           `COUNT(DISTINCT IF(${outside}, ${str(field)}, NULL)) AS outside_values`,
+          `TO_JSON_STRING(ARRAY_AGG(DISTINCT IF(${str(field)} IN (${list}), ${
+              str(field)}, NULL) IGNORE NULLS)) AS used_values`,
         ])}\nFROM focus`),
-    cte('unused',
-        `SELECT TO_JSON_STRING(ARRAY_AGG(kcmd_value ORDER BY kcmd_value)) AS unused_values\nFROM UNNEST([${
-            list}]) AS kcmd_value\nWHERE kcmd_value NOT IN (\n${
-            indent(`SELECT DISTINCT ${str(field)}\nFROM focus\nWHERE ${f} IS NOT NULL`)}\n)`),
   ];
-  const rows = ['stats', 'unused'];
+  const rows = ['stats'];
   if (examples > 0) {
     ctes.push(topCte('outside', 'top_outside', str(field), 'focus', outside, examples));
     rows.push('outside');
@@ -1046,7 +1049,8 @@ function judgeEnum(c: Extract<ProfileCheck, {kind: 'enumCoverage'}>, row: QueryR
   const nonNull = int(row, 'non_null');
   const outsideRows = int(row, 'outside_rows');
   const top = valueCounts(row, 'top_outside');
-  const unused = jsonArray(row, 'unused_values').map(String);
+  const used = new Set(jsonArray(row, 'used_values').map(String));
+  const unused = c.values.filter(v => !used.has(v));
   const evidence: Record<string, unknown> = {
     declaredValues: c.values.length,
     total: int(row, 'total'),

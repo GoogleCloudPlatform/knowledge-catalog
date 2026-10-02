@@ -359,6 +359,26 @@ describe('planning', () => {
     expect(sql).not.toContain('top_');
     expect(sql).toContain('EXTRACT(MONTH FROM kcmd_time) - 1, 1) AS kcmd_window');
   });
+
+  // BigQuery rejects a query whose expression subquery (`x IN (SELECT ...)`,
+  // `EXISTS (...)`, a scalar or ARRAY subquery) reads a bound view that
+  // computes a field with its own correlated lookup -- a code matched against
+  // a vocabulary table, say: the view cannot be de-correlated there. So every
+  // query reads rows only as a CTE, a derived table or a join.
+  test('queries read rows only in FROM clauses: no expression subquery', () => {
+    for (const plan of [shopPlan(), shopPlan({examples: 0})]) {
+      for (const sql of distinctQueries(plan)) {
+        const opener = [...sql.matchAll(/(\S+)\s*\(\s*SELECT\b/g)].map(m => m[1].toUpperCase());
+        expect(opener.filter(t => !['AS', 'FROM', 'JOIN'].includes(t))).toEqual([]);
+      }
+    }
+    // The declared values that occur are collected in the one scan, against
+    // the declared values inlined as literals.
+    const sql = shopPlan().checks.find(c => c.id === 'Customer_segment_in')!.sql;
+    expect(sql).toContain(
+        'TO_JSON_STRING(ARRAY_AGG(DISTINCT IF(CAST(`segment` AS STRING) IN (\'retail\', ' +
+        '\'wholesale\', \'online\'), CAST(`segment` AS STRING), NULL) IGNORE NULLS)) AS used_values');
+  });
 });
 
 
@@ -472,11 +492,14 @@ describe('evaluation', () => {
   test('value sets: nothing set is unverified; unused declared values are listed', () => {
     const row = {
       total: '4', non_null: '0', outside_rows: '0', outside_values: '0',
-      unused_values: '["online","retail","wholesale"]', top_outside: null,
+      used_values: 'null', top_outside: null,
     };
-    expect(settle(plan, 'Customer_segment_in', row).status).toBe('unverified');
+    expect(settle(plan, 'Customer_segment_in', row)).toMatchObject({
+      status: 'unverified',
+      evidence: {unusedValues: ['retail', 'wholesale', 'online'], unusedCount: 3},
+    });
     expect(settle(plan, 'Customer_segment_in',
-                  {...row, non_null: '4', unused_values: '["online"]'}))
+                  {...row, non_null: '4', used_values: '["wholesale","retail"]'}))
         .toMatchObject({
           status: 'verified',
           summary: 'all 4 value(s) are in the declared set; 1 declared value(s) never occur',
