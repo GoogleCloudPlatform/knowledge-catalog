@@ -17,6 +17,11 @@ kcmd validate --target bigquery --profile bigquery --location US
 kcmd validate --target bigquery --profile bigquery --location US --publish
 ```
 
+To check the model's claims rather than its rules, see [Profiling the data
+against BigQuery](profiling.md) (`kcmd profile`, proposed). It checks that
+keys identify rows, that relationships keep their cardinality and reach a row,
+and that a unit's scale holds across fields and over time.
+
 ## What gets checked
 
 A model constraint is a judged rule: its body is a sentence (see

@@ -410,11 +410,13 @@ function parseOwl(axiom: string, index: ModelIndex): ParsedConstraint {
 // Binding: which rows of which tables are instances of a class.
 // ---------------------------------------------------------------------------
 
-class Unsupported extends Error {}
+// The binding helpers below are shared with the data profiler
+// (profile_bigquery.ts), so both read a class's rows the same way.
+export class Unsupported extends Error {}
 
 // One table that holds instances of a class, with the row filters (a defined
 // entity's membership predicate) that select them.
-interface Branch {
+export interface Branch {
   entity: Entity;
   filters: string[];
 }
@@ -424,7 +426,7 @@ interface Branch {
 // entities lowered to a boolean membership property on their base, then
 // inheritance resolved, so a field reads the same column here as it does as a
 // graph property.
-class Binder {
+export class Binder {
   readonly tables: Map<string, Entity>;
   readonly loweredRelationships: Relationship[];
   private readonly defined: Map<string, {base: string}>;
@@ -537,7 +539,7 @@ class Binder {
   }
 }
 
-function table(e: Entity): string {
+export function table(e: Entity): string {
   const src = e.dataSource.trim();
   return /\s/.test(src) ? `(${src})` : `\`${src}\``;
 }
@@ -548,7 +550,7 @@ function table(e: Entity): string {
 // ---------------------------------------------------------------------------
 
 // A logical column name in generated SQL: always backticked.
-function q(name: string): string {
+export function q(name: string): string {
   return `\`${name}\``;
 }
 // A GoogleSQL string literal.
@@ -556,21 +558,21 @@ export function sqlString(s: string): string {
   return `'${
       s.replace(/\\/g, '\\\\').replace(/'/g, `\\'`).replace(/\n/g, '\\n')}'`;
 }
-function str(field: string): string {
+export function str(field: string): string {
   return `CAST(${q(field)} AS STRING)`;
 }
-function indent(sql: string): string {
+export function indent(sql: string): string {
   return sql.split('\n').map(l => `  ${l}`).join('\n');
 }
-function cte(name: string, sql: string): string {
+export function cte(name: string, sql: string): string {
   return `${name} AS (\n${indent(sql)}\n)`;
 }
-function keyExpr(keys: string[]): string {
+export function keyExpr(keys: string[]): string {
   return keys.length === 1 ?
       str(keys[0]) :
       `TO_JSON_STRING([${keys.map(str).join(', ')}])`;
 }
-function allSet(fields: string[], alias = ''): string {
+export function allSet(fields: string[], alias = ''): string {
   return fields.map(f => `${alias}${q(f)} IS NOT NULL`).join(' AND ');
 }
 
@@ -698,14 +700,14 @@ function constraintParts(
 }
 
 // Joins `left.cols[i] = right.kcmd_j<i>`.
-function joinOn(left: string, cols: string[], right: string): string {
+export function joinOn(left: string, cols: string[], right: string): string {
   return cols.map((c, i) => `${left}.${q(c)} = ${right}.kcmd_j${i}`)
       .join(' AND ');
 }
-function projectJ(cols: string[], alias = ''): string {
+export function projectJ(cols: string[], alias = ''): string {
   return cols.map((c, i) => `${alias}${q(c)} AS kcmd_j${i}`).join(', ');
 }
-function groupJ(cols: string[]): string {
+export function groupJ(cols: string[]): string {
   return cols.map((_, i) => `kcmd_j${i}`).join(', ');
 }
 
@@ -851,7 +853,7 @@ function keyParts(e: Entity, cols: string[], primary: boolean): QueryParts {
   };
 }
 
-function columnOf(e: Entity, field: string): string {
+export function columnOf(e: Entity, field: string): string {
   const f = e.fields.find(x => x.name === field);
   const expr = f && fieldBinding(f);
   if (!expr) {
@@ -1338,7 +1340,7 @@ export interface RunOptions {
   now?: () => Date;
 }
 
-function errorText(message: string|undefined, status: number): string {
+export function errorText(message: string|undefined, status: number): string {
   if (!message) return String(status);
   try {
     const parsed = JSON.parse(message);

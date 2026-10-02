@@ -81,6 +81,9 @@ cli.command('push', 'Push catalog entries')
     .option(
         '--all-profiles',
         'Deploy the graph for every defined binding profile (plus the inline bindings when the document declares a target); Knowledge Catalog still records the default binding; mutually exclusive with --profile and --no-profile; semantic-model push only')
+    .option(
+        '--strict-profile',
+        'Before each BigQuery graph deploy, profile the bound data as `kcmd profile` does and stop if the data contradicts any statement (proposed); read-only, so it also runs under --validate-only; semantic-model push only')
     .action(async (options) => {
       let exitCode = 1;
       try {
@@ -232,6 +235,57 @@ cli.command(
       let exitCode = 1;
       try {
         exitCode = await commands.validate(options);
+      } catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+
+      process.exit(exitCode);
+    });
+
+
+cli.command(
+       'profile',
+       'Check the model\'s claims against the data the binding profile binds (proposed): keys identify rows, relationships keep their cardinality and reach a row, fields take their declared values, a unit\'s magnitudes agree across fields, a series keeps one scale over time, required fields are set. Each claim becomes a statement -- verified, unverified or contradicted -- with its evidence. Writes the queries, runs them (read-only), and optionally publishes the statements to Knowledge Catalog')
+    .option('--target <target>', 'The engine to profile on. Only `bigquery`, the default')
+    .option(
+        '--profile [name]',
+        'Profile the tables this binding profile binds; defaults to default_profile, else the inline bindings')
+    .option(
+        '--out <dir>',
+        'Directory for profile.sql (the queries), profile.json (each statement\'s status and evidence) and profile.md (a summary table). Defaults to `profiling`')
+    .option(
+        '--sql-only',
+        'Write profile.sql and run nothing (also the behaviour when there are no credentials)')
+    .option(
+        '--location <location>',
+        'BigQuery processing location for the query jobs (e.g. US); inferred from the tables when unset')
+    .option(
+        '--project <project>',
+        'Project the query jobs run and bill in; defaults to the gcloud project')
+    .option('--label <key:value>', 'Label every query job; repeatable')
+    .option('--strict', 'Exit 1 when the data contradicts any statement')
+    .option(
+        '--publish',
+        'Write the statements to Knowledge Catalog: a semantic-profile-results aspect on each profiled entity\'s entry (run `kcmd push` first)')
+    .option('--dry-run', 'With --publish: print the Knowledge Catalog requests; send nothing')
+    .option(
+        '--examples <n>',
+        'Offending values to list per statement: repeated keys, orphaned foreign keys, values outside a declared set (default 5; 0 lists none)')
+    .option(
+        '--magnitude-orders <x>',
+        'Units: how many orders of magnitude a field\'s median may sit from the median of the other fields with its unit and scale before it is flagged (default 2)')
+    .option('--window-months <n>', 'Scale over time: the window length in months (default 3)')
+    .option(
+        '--shift-factor <x>',
+        'Scale over time: the ratio between neighbouring windows\' medians that counts as a break (default 50)')
+    .option(
+        '--min-window-rows <n>',
+        'Scale over time: the non-zero values a window needs to be compared at all (default 30)')
+    .action(async (options) => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.profile(options);
       } catch (err: any) {
         console.error('Error:', err.message || err);
         exitCode = 1;

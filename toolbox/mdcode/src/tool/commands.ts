@@ -33,6 +33,7 @@ import type {SemanticModel} from '../libts/semantic/ir';
 import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryActionStatements, validateBigQueryDataSources, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import * as bqValidation from '../libts/semantic/validate_bigquery';
+import * as bqProfile from '../libts/semantic/profile_bigquery';
 import {resolveStore} from '../libts/semantic/runtime/store';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
@@ -112,6 +113,12 @@ export interface PushOptions {
   // Mutually exclusive with profile and with --no-profile. Semantic-model push
   // only.
   allProfiles?: boolean;
+  // Proposed. Before each BigQuery graph deploy, profile the data the binding
+  // profile binds (the statements `kcmd profile` reports) and stop when the
+  // data contradicts any of them; unverified statements never block. The
+  // queries are read-only, so the gate runs under --validate-only too.
+  // `--strict-profile`. BigQuery graph leg only; semantic-model push only.
+  strictProfile?: boolean;
 }
 
 
@@ -342,6 +349,11 @@ export async function push(options: PushOptions): Promise<number> {
     if (selectionError) {
       console.error(`Error: ${selectionError.error}`);
       return 1;
+    }
+    if (options.strictProfile && !graphEnabled) {
+      console.warn(
+          'Warning: --strict-profile gates the graph deploy, and --no-profile ' +
+          'deploys none; ignoring it.');
     }
 
     const layoutDocs = layout.modelDocuments();
@@ -613,6 +625,13 @@ export async function push(options: PushOptions): Promise<number> {
           for (const e of dmlErrors) console.error(`Error: ${e}`);
           return 1;
         }
+        // The third, opt-in pre-flight reads the most data, so it goes last:
+        // with --strict-profile, data that contradicts the model stops the
+        // deploy.
+        if (options.strictProfile &&
+            !(await profileGate(prepared.bqModels, ctx, profileName))) {
+          return 1;
+        }
         const code = await pushBigQuery(prepared.bqModels, ctx, options);
         if (code !== 0) return code;
         deployedGraphs += prepared.bqModels.length;
@@ -629,6 +648,10 @@ export async function push(options: PushOptions): Promise<number> {
         if (dmlErrors.length) {
           for (const e of dmlErrors) console.error(`Error: ${e}`);
           return 1;
+        }
+        if (options.strictProfile) {
+          console.warn(`Warning: --strict-profile profiles BigQuery data only; ` +
+                       `the Spanner graph of profile '${profileName}' is not profiled.`);
         }
         const code = await pushSpanner(prepared.spannerModels, ctx, options);
         if (code !== 0) return code;
@@ -718,6 +741,7 @@ export async function push(options: PushOptions): Promise<number> {
     [!!options.print, '--print'],
     [!!options.emitExpressions, '--emit-expressions'],
     [!!options.forceRemove, '--force-remove'],
+    [!!options.strictProfile, '--strict-profile'],
   ];
   for (const [set, flag] of semanticOnlyFlags) {
     if (set) {
@@ -1838,6 +1862,275 @@ export async function validate(options: ValidateOptions = {}): Promise<number> {
     }
   }
   return failed ? 1 : 0;
+}
+
+
+export interface ProfileOptions {
+  /** The engine to profile on. Only `bigquery`, the default. */
+  target?: string;
+  profile?: string|boolean;
+  /** Directory for profile.sql, profile.json and profile.md. Defaults to `profiling`. */
+  out?: string;
+  /** Write profile.sql and stop; run nothing. */
+  sqlOnly?: boolean;
+  /** BigQuery processing location (e.g. US). */
+  location?: string;
+  /** Project the query jobs run (and bill) in. Defaults to the gcloud project. */
+  project?: string;
+  /** BigQuery job labels as `key:value`; repeatable. */
+  label?: string|string[];
+  /** Exit 1 when the data contradicts any statement. */
+  strict?: boolean;
+  /** Write the statements to Knowledge Catalog as an aspect on entity entries. */
+  publish?: boolean;
+  /** With --publish: print the Knowledge Catalog requests; send nothing. */
+  dryRun?: boolean;
+  // Tuning: profile_bigquery.ts's ProfilePlanOptions, as the CLI parser hands
+  // them over (defaults in PROFILE_DEFAULTS).
+  examples?: string|number;
+  windowMonths?: string|number;
+  shiftFactor?: string|number;
+  magnitudeOrders?: string|number;
+  minWindowRows?: string|number;
+}
+
+// Each model document merged with binding profile `profile` and loaded AS
+// AUTHORED (inheritance unresolved, bindings optional) -- as validate loads
+// them, and as the planners lower them. Null after reporting an error.
+function loadAuthoredModels(
+    layout: SemanticModelLayout, source: SemanticModelSource, profile: string,
+    ctx: context.ApiContext): LoadedModel[]|null {
+  const docs = layout.modelDocuments();
+  if (!docs.length) {
+    console.error('Error: no semantic model documents found.');
+    return null;
+  }
+  const merged: Array<{name: string; text: string}> = [];
+  for (const doc of docs) {
+    if (profile === DEFAULT_PROFILE) {
+      merged.push({name: doc.name, text: doc.text});
+      continue;
+    }
+    const chosen = layout.profileDocuments(doc.name).find(p => p.name === profile);
+    if (!chosen) {
+      console.error(`Error: unknown binding profile '${profile}' for model '${doc.name}'.`);
+      return null;
+    }
+    const res = mergeProfileOntoDoc(doc.text, chosen.text, profile);
+    if ('error' in res) {
+      console.error(`Error: [${doc.name}] ${res.error}`);
+      return null;
+    }
+    for (const w of res.warnings) console.warn(`Warning: [${doc.name}] ${w}`);
+    merged.push({name: doc.name, text: res.text});
+  }
+  const loaded = loadSemanticModels(
+      merged, {defaultProject: source.project ?? ctx.project, bindingOptional: true});
+  if (loaded.error) {
+    console.error(`Error: ${loaded.error}`);
+    return null;
+  }
+  for (const w of loaded.warnings) console.warn(`Warning: ${w}`);
+  return loaded.models;
+}
+
+// Checking the model's CLAIMS against the data its binding profile binds
+// (proposed; see docs/semantic-model/profiling.md). Where validate counts
+// violations of the model's rules, profile states what the model claims -- a
+// key identifies one row, a relationship is many-to-one, a field takes its
+// declared values, a unit's magnitudes agree across fields, a series keeps
+// one scale over time, a required field is set -- and settles each statement
+// as verified, unverified or contradicted, with the evidence.
+//
+// The read-only queries are always written to `--out`/profile.sql; unless
+// `--sql-only` -- or there are no credentials -- they are then run, a table
+// printed per model and profile.json / profile.md written, and with
+// `--publish` the statements go to Knowledge Catalog as an aspect on the
+// entity entries (`--dry-run` prints those requests instead).
+//
+// Exit code: 1 on a usage / load error, when a query could not run, or when
+// publishing failed; with `--strict`, also when the data contradicts any
+// statement. Otherwise 0: the statuses are a report about the data.
+export async function profile(options: ProfileOptions = {}): Promise<number> {
+  const target = options.target ?? 'bigquery';
+  if (target !== 'bigquery') {
+    console.error(`Error: --target must be 'bigquery'; got '${target}'.`);
+    return 1;
+  }
+  if (options.publish && options.sqlOnly) {
+    console.error('Error: --publish and --sql-only cannot be combined.');
+    return 1;
+  }
+  if (options.dryRun && !options.publish) {
+    console.warn('Warning: --dry-run only applies to --publish; ignoring it.');
+  }
+  const planOptions = bqProfile.parseProfileOptions({
+    examples: options.examples,
+    windowMonths: options.windowMonths,
+    shiftFactor: options.shiftFactor,
+    magnitudeOrders: options.magnitudeOrders,
+    minWindowRows: options.minWindowRows,
+  });
+  if ('error' in planOptions) {
+    console.error(`Error: ${planOptions.error}.`);
+    return 1;
+  }
+  const labels = bqProfile.parseJobLabels(options.label);
+  if ('error' in labels) {
+    console.error(`Error: ${labels.error}.`);
+    return 1;
+  }
+  const outDir = options.out ?? 'profiling';
+  const ctx = generatorContext();
+
+  let snapshot: kcmd.CatalogSnapshot;
+  try {
+    snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+  } catch (err: any) {
+    console.error(`Error: ${err?.message ?? err}`);
+    return 1;
+  }
+  if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {
+    console.error('Error: profile runs in a semantic-model scope.');
+    return 1;
+  }
+  const layout = snapshot.layout as SemanticModelLayout;
+  const source = snapshot.manifest.source as SemanticModelSource;
+  const named = typeof options.profile === 'string' ? options.profile : undefined;
+  const profileName = named ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
+  const models = loadAuthoredModels(layout, source, profileName, ctx);
+  if (!models) return 1;
+
+  const credentials = !!ctx.token;
+  const run = !options.sqlOnly && credentials;
+  if (options.publish && !credentials) {
+    console.error('Error: --publish needs credentials ' +
+                  '(gcloud auth application-default login).');
+    return 1;
+  }
+  if (!options.sqlOnly && !credentials) {
+    console.warn('Warning: no credentials; writing the queries only (as --sql-only).');
+  }
+  const jobProject = options.project ?? ctx.project;
+  if (run && !jobProject) {
+    console.error('Error: no project to run the query jobs in; pass --project.');
+    return 1;
+  }
+
+  // Every model is planned first, so profile.sql is written whatever happens
+  // after.
+  let failed = false;
+  const plans: bqProfile.ProfilePlan[] = [];
+  for (const {model} of models) {
+    const store = resolveStore(model);
+    if (!('error' in store) && store.kind !== 'bigquery') {
+      console.error(`Error: [${model.name}] profile '${profileName}' targets ${
+          store.kind}, not BigQuery.`);
+      failed = true;
+      continue;
+    }
+    const plan = bqProfile.planBigQueryProfile(model, planOptions);
+    for (const w of plan.warnings) console.warn(`Warning: [${model.name}] ${w}`);
+    console.log(`[${model.name}] ${plan.checks.length} statement(s) in ${
+        bqProfile.distinctQueries(plan).length} query(ies)${
+        plan.skipped.length ?
+            `; ${plan.skipped.length} claim(s) not profiled (listed in profile.sql)` :
+            ''}.`);
+    plans.push(plan);
+  }
+  const sqlFile = path.join(outDir, 'profile.sql');
+  try {
+    fs.mkdirSync(outDir, {recursive: true});
+    fs.writeFileSync(
+        sqlFile, plans.map(p => bqProfile.renderProfileSql(p, {profile: profileName})).join('\n'));
+  } catch (e) {
+    console.error(`Error: could not write under ${outDir}: ${
+        e instanceof Error ? e.message : String(e)}`);
+    return 1;
+  }
+  console.log(`Wrote ${sqlFile}.`);
+  if (!run || !plans.length) return failed ? 1 : 0;
+
+  const checkedAt = new Date().toISOString();
+  const reports: bqProfile.ProfileReport[] = [];
+  let contradicted = 0;
+  for (const plan of plans) {
+    const outcomes = await bqProfile.runBigQueryProfile(
+        plan, ctx, {project: jobProject, location: options.location, labels: labels.labels});
+    const findings = bqProfile.evaluateProfile(plan, outcomes);
+    console.log(`\n[${plan.model}] profile '${profileName}'`);
+    console.log(bqProfile.formatProfileTable(findings));
+    if (findings.some(f => f.error)) failed = true;
+    contradicted += findings.filter(f => f.status === 'contradicted').length;
+    reports.push(bqProfile.profileReport(plan, findings, {profile: profileName, checkedAt}));
+  }
+  const jsonFile = path.join(outDir, 'profile.json');
+  const mdFile = path.join(outDir, 'profile.md');
+  try {
+    fs.writeFileSync(
+        jsonFile,
+        JSON.stringify({profile: profileName, checkedAt, models: reports}, null, 2) + '\n');
+    fs.writeFileSync(mdFile, bqProfile.renderProfileMarkdown(reports));
+  } catch (e) {
+    console.error(`Error: could not write under ${outDir}: ${
+        e instanceof Error ? e.message : String(e)}`);
+    return 1;
+  }
+  console.log(`\nWrote ${jsonFile} and ${mdFile}.`);
+
+  if (options.publish) {
+    const dest = {
+      project: source.project,
+      location: source.location,
+      entryGroup: source.entryGroup,
+    };
+    for (const r of reports) {
+      const published = await bqProfile.publishProfileResults(
+          r.statements, ctx, dest, {model: r.model, profile: profileName, checkedAt},
+          {dryRun: !!options.dryRun});
+      for (const name of published.published) console.log(`Published ${name}`);
+      if (options.dryRun) {
+        console.log(`Dry run: ${published.planned.length} entry update(s) for '${
+            r.model}' printed, none sent.`);
+      }
+      for (const e of published.errors) console.error(`Error: [${r.model}] ${e}`);
+      if (published.errors.length) failed = true;
+    }
+  }
+  if (options.strict && contradicted) {
+    console.error(`Error: --strict: the data contradicts ${contradicted} statement(s).`);
+    return 1;
+  }
+  return failed ? 1 : 0;
+}
+
+// `kcmd push --strict-profile` (proposed): profiles each model a BigQuery
+// graph is about to be deployed for -- the statements `kcmd profile` reports,
+// with its defaults -- and returns false, after listing them, when the data
+// contradicts any. Unverified statements (a failed query included) never
+// block: the gate stops data known to disagree with the model, not data it
+// could not settle.
+export async function profileGate(
+    models: LoadedModel[], ctx: context.ApiContext, profileName: string): Promise<boolean> {
+  let ok = true;
+  for (const {model} of models) {
+    const plan = bqProfile.planBigQueryProfile(model);
+    const findings =
+        bqProfile.evaluateProfile(plan, await bqProfile.runBigQueryProfile(plan, ctx));
+    const counts = bqProfile.countStatuses(findings);
+    const contradicted = findings.filter(f => f.status === 'contradicted');
+    if (!contradicted.length) {
+      console.log(`Profile gate: [${model.name}] ${counts.verified} verified, ${
+          counts.unverified} unverified, none contradicted.`);
+      continue;
+    }
+    ok = false;
+    console.error(`Error: [${model.name}] the data bound by profile '${
+        profileName}' contradicts ${contradicted.length} statement(s); not deploying ` +
+                  `(details: kcmd profile --profile ${profileName}):`);
+    console.error(bqProfile.formatProfileTable(contradicted));
+  }
+  return ok;
 }
 
 
