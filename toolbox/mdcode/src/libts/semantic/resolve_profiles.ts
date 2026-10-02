@@ -25,7 +25,7 @@
 
 import * as yaml from 'yaml';
 
-import {Action, fieldBinding, Metric, Relationship, SemanticModel} from './ir';
+import {Action, isFieldBound, Metric, Relationship, SemanticModel} from './ir';
 import {blankStringLiterals, escapeRegExp, referencedEntityNames,} from './sql_expr_utils';
 
 // The implicit profile: the inline bindings already in the model document (the
@@ -369,8 +369,8 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
     droppedActions: [],
   };
 
-  // A field is bound when fieldBinding resolves it to a column; otherwise it is
-  // unbound (structurally absent under this profile). fieldBinding is the shared
+  // A field is bound when isFieldBound says so; otherwise it is unbound
+  // (structurally absent under this profile). isFieldBound is the shared
   // predicate the generator also uses, so a field awaiting transpilation (its
   // column carried on the imported expression) counts as bound, not dropped.
   const unbound = new Set<string>();
@@ -382,7 +382,7 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
     // and its field names remain to define the shared label's signature.
     if (e.abstract) continue;
     for (const f of e.fields ?? []) {
-      if (fieldBinding(f) === undefined) unbound.add(`${e.name}.${f.name}`);
+      if (!isFieldBound(f)) unbound.add(`${e.name}.${f.name}`);
     }
   }
   report.unboundFields = [...unbound];
@@ -416,7 +416,7 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
     // Keep an abstract entity's fields intact: they are column-less by design
     // and name the shared label's property set for the emitter (see above).
     if (e.abstract) continue;
-    e.fields = (e.fields ?? []).filter(f => fieldBinding(f) !== undefined);
+    e.fields = (e.fields ?? []).filter(isFieldBound);
   }
 
   // A relationship is available only when both endpoint entities are available

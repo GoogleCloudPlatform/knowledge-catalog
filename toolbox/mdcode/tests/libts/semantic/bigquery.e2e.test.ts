@@ -31,6 +31,7 @@ import * as yaml from 'yaml';
 import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {loadModels, loadSemanticModels, LoadOptions} from '../../../src/libts/semantic/loader';
 import {mergeProfile, pruneUnavailable} from '../../../src/libts/semantic/resolve_profiles';
+import {validatePushRequirements} from '../../../src/libts/semantic/validate';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
@@ -104,6 +105,23 @@ describe(
       }
     });
 
+
+// A golden captures what the generator emits, and the generator runs only on a
+// model push validation has accepted. A fixture that validation rejects would
+// pin output no real push produces, so every golden fixture must pass. The
+// deployment target is optional here: most fixtures exercise generation and
+// declare none.
+describe('every golden fixture passes push validation', () => {
+  for (const fixture of CORPUS) {
+    test(fixture, () => {
+      const {models} = loadFixture(fixture);
+      expect(validatePushRequirements(
+                 models.map(model => ({document: fixture, model})),
+                 {targetOptional: true}))
+          .toEqual([]);
+    });
+  }
+});
 
 describe('dialect selection is surfaced by risk when the target dialect is absent', () => {
   test(

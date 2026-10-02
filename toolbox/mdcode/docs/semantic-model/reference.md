@@ -179,7 +179,6 @@ subtypes.
 entities:
   - name: Party
     abstract: true             # no table; becomes a label on every subtype
-    primary_key: [id]
     fields:
       - { name: id,   datatype: Integer }
       - { name: name, datatype: String }
@@ -188,26 +187,34 @@ entities:
     primary_key: [id]          # each subclass keeps its OWN key; keys do not inherit
     source: proj.ds.customer
     fields:
-      - { name: id,   datatype: Integer, expression: c_custkey }
-      - { name: name, datatype: String,  expression: c_name }   # the inherited field, bound to this table's column
-      - { name: tier, datatype: String,  expression: c_tier }
+      - { name: id,   expression: c_custkey }
+      - { name: name, expression: c_name }                      # the inherited field, bound to this table's column
+      - { name: tier, datatype: String, expression: c_tier }
   - name: Supplier
     extends: [Party]
     primary_key: [id]
     source: proj.ds.supplier
     fields:
-      - { name: id,     datatype: Integer, expression: s_suppkey }
-      - { name: name,   datatype: String,  expression: s_name }
+      - { name: id,     expression: s_suppkey }
+      - { name: name,   expression: s_name }
       - { name: rating, datatype: Integer, expression: s_rating }
 ```
 
 **The supertype's fields flatten down** onto each subclass. A supertype
 contributes its field names to every subclass, ordered own fields first then
-inherited, and a nearer definition wins on a name clash. An abstract supertype
-binds no columns of its own, so each subtype supplies the column for every
-inherited name on its own table — `id` and `name` above are bound on both the
-customer and the supplier. A concrete supertype's bound fields flatten straight
-down, and a subtype need not repeat them.
+inherited. An abstract supertype binds no columns of its own, so each subtype
+supplies the column for every inherited name on its own table — `id` and `name`
+above are bound on both the customer and the supplier. A concrete supertype's
+bound fields flatten straight down, and a subtype need not repeat them.
+
+A subtype redeclares an inherited field only to bind it. The redeclaration
+names the field and gives it a column of the subtype's table. The datatype,
+label, dimension, description, `ai_context` and `custom_extensions` come from
+the ancestor that declares the field, and push rejects a redeclaration that
+restates any of them. A redeclaration with nothing but the name is allowed and
+changes nothing. A subtype that does not bind an inherited field takes the
+binding of the nearest ancestor that does. Under a concrete supertype the graph
+keeps the supertype's binding either way, as the boundaries below describe.
 
 **A shared label is reconciled by property name rather than by backing column**
 (verified live). Every table that carries `LABEL Party` must expose the same property
@@ -236,8 +243,11 @@ The boundaries:
 - **Fields flow down; edges and keys do not.** A subclass gains its supertypes'
   fields but **not** their relationships or their key: an edge stays bound to the
   exact node table it was declared on, and each subclass keeps its own `KEY` (a
-  node table is identified by its own grain, never its supertype's). If
-  `Person —livesIn→ City`, a `Customer` node does not get a `livesIn` edge.
+  node table is identified by its own grain, never its supertype's). An edge
+  declared on a supertype would join only the supertype's own rows and miss
+  every subtype, so push rejects a relationship that connects an abstract
+  entity or one that another entity extends. Declare such an edge on each
+  concrete leaf, for example `Customer —livesIn→ City`.
 - **The subclass's `source` must physically expose every inherited column.** The
   flattened `name` above is read from `proj.ds.customer`, so that table (or a view
   over it) must include the column that `Customer`'s `name` field binds. A
@@ -247,20 +257,22 @@ The boundaries:
   label is bound by every subclass table, and BigQuery forbids a label carried by
   more than one element table from carrying an `OPTIONS` clause or a `MEASURE`. So
   a supertype's own `description`/synonyms are dropped from its label (with a
-  warning), and a metric that targets a supertype is skipped (with a warning) —
-  attach metrics to a leaf class instead. Subclass and leaf labels are
-  unaffected.
+  warning). For the same reason push rejects a metric that belongs to an
+  abstract entity or to one that another entity extends. Attach metrics to a
+  leaf class instead. Subclass and leaf labels are unaffected.
 - **Each inherited property has one definition under the shared label.** For an
   abstract supertype, the subtype supplies that definition — it binds the
   inherited field to its own column, as `name` is bound above, and that binding is
   used. A concrete supertype already defines the property on its own table, so a
   subtype that declares the same-named field with a different column or expression
   cannot override it: the supertype's definition wins and the subtype's is dropped
-  (with a warning). Redeclaring it identically is a harmless no-op.
+  (with a warning). Redeclaring it with the same column is a harmless no-op.
 
 An entity marked **`abstract: true`** is a conceptual class with no physical
-table: it has no `source` and no key, produces **no node table**, and survives
-only as a `LABEL` on its concrete descendants. Its field names still flatten
+table: it has no `source`, no key and no field expressions, produces **no node
+table**, and survives only as a `LABEL` on its concrete descendants. Push
+rejects an abstract entity that declares a `source`, a `primary_key`, a
+`unique_keys` entry or a field expression. Its field names still flatten
 down, and each concrete subtype supplies the column for each of those names, so
 the shared label's signature is present on every subtype table. An abstract
 entity that no concrete entity extends has nothing to attach to and is dropped
@@ -277,14 +289,20 @@ must still expose columns that render to the supertype's property signature, so
 each subtype table has to carry the supertype's columns under the same names. The
 supertype's own rows and its subtypes' rows are distinct nodes: a real thing
 present in both the supertype table and a subtype table is matched twice under the
-supertype label. Prefer an abstract supertype unless each real thing lives in
-exactly one table under the hierarchy.
+supertype label. Because other entities extend it, a concrete supertype cannot
+be a relationship endpoint or own a metric. Prefer an abstract supertype unless
+each real thing lives in exactly one table under the hierarchy.
 
 **Multiple supertypes and diamonds.** `extends` takes a list, so a subclass may
 extend several supertypes and carry every one's label. The push expands `extends`
 to the full transitive ancestor set, de-duplicated. A diamond — two supertypes
 that share a grandparent — lists that grandparent's label once, so
-`MATCH (:Grandparent)` matches the leaf a single time. Depth and breadth do not
+`MATCH (:Grandparent)` matches the leaf a single time. A field may be declared
+or rebound on only one side of a diamond. When two supertypes that do not extend
+each other both declare or rebind the same field, push rejects the model,
+because nothing says which definition wins. A field that reaches the leaf by two
+paths from a single declaration on the shared grandparent is fine. `extends` may
+not form a cycle, and push rejects one. Depth and breadth do not
 change the rules: each concrete table binds every inherited property to its own
 column, and these shapes deploy on both BigQuery Graph and Spanner Graph
 (verified live for a diamond and for a three-level hierarchy with several
@@ -441,6 +459,14 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   BigQuery-only: Spanner Graph has no `MEASURE`, so a Spanner target drops its
   metrics by design and imposes no such requirement. Defined in
   [model spec §4.1](model_spec.md#41-narrowings-stricter-than-ossie). *(static)*
+* Every class hierarchy follows the inheritance rules. `extends` forms no cycle,
+  and no field is declared by two supertypes that do not extend each other. A
+  subtype redeclares an inherited field by name alone or to bind it. An
+  abstract entity declares no source, key or field expression. Relationships
+  and metrics attach only to concrete leaf entities. The rules and their
+  reasons are in [Class hierarchies](#class-hierarchies-extends--labels).
+  These checks run on every push, including a `--no-profile` push to
+  Knowledge Catalog alone. *(static)*
 * **Every action is well-formed.** Each action parameter must settle on one
   scalar datatype: projected from a field it names with `concept` and `field`,
   or stated as its own `type`. Naming an entity as a `type`, or restating a

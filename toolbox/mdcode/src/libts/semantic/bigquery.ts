@@ -19,7 +19,7 @@
 // See: https://docs.cloud.google.com/bigquery/docs/graph-measures
 //
 
-import {AiContext, Association, Entity, Field, fieldBinding, isTimeDimension, Metric, Relationship, SemanticModel,} from './ir';
+import {AiContext, Association, Entity, Field, fieldBinding, isFieldBound, isTimeDimension, Metric, Relationship, SemanticModel,} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
 import {referencedEntityNames, stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
@@ -366,7 +366,9 @@ function placeMetric(
   // shared with every subtype table, and BigQuery forbids a MEASURE on a label
   // carried by more than one element table (verified live: "defined as MEASURE,
   // but there are other declarations with the same name"). Drop it with a
-  // warning rather than emit DDL BigQuery rejects.
+  // warning rather than emit DDL BigQuery rejects. Push validation rejects such
+  // a metric before generation; this guard covers a caller that generates DDL
+  // without validating first.
   if (ancestorsUsed.has(entityName)) {
     warnings.push(
         `metric '${metric.name}' targets entity '${entityName}', which is not ` +
@@ -657,14 +659,14 @@ function renderNodeTable(
   // measures, then the measures themselves (which reference those operand
   // properties).
   // Defense in depth: availability pruning normally strips every unbound field
-  // (it has no column) before generation, and fieldBinding is the shared
-  // "is bound" oracle both it and this generator consult so the two never
+  // (it has no column) before generation, and isFieldBound is the shared
+  // "is bound" test both it and this generator consult so the two never
   // disagree. But a caller that generates DDL straight from a bindingOptional
   // load without pruning could still reach here with an unbound (e.g. purely
   // logical) field. Skip it with a warning rather than emit `<name>` as a
   // phantom bare column the source table does not have.
   const boundFields = entity.fields.filter(f => {
-    if (fieldBinding(f) !== undefined) return true;
+    if (isFieldBound(f)) return true;
     warnings.push(
         `entity '${entity.name}': field '${f.name}' has no column under this ` +
         `binding; omitted from the node table (bind it, or govern the logical ` +

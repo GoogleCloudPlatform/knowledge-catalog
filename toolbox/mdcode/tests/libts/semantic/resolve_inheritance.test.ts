@@ -233,8 +233,54 @@ describe('a field inherited from more than one ancestor', () => {
       entity('account', ['id']),
       entity('vip', ['tier'], ['customer', 'account']),
     ]))).toThrow(
-        "entity 'vip' inherits field 'id' from multiple ancestors " +
-        "('customer' and 'account')");
+        "entity 'vip' inherits field 'id' from 'customer' and from 'account', " +
+        "and neither extends the other, so nothing says which wins; declare " +
+        "or rebind 'id' on only one of them");
+  });
+
+  test('a diamond where one branch rebinds resolves to that binding', () => {
+    const {model: r} = resolveInheritance(model([
+      entity('party', [], undefined,
+             {fields: [{name: 'id', expression: 'id', type: 'String'}]}),
+      entity('customer', [], ['party'],
+             {fields: [{name: 'id', expression: 'cust_id'}]}),
+      entity('account', ['balance'], ['party']),
+      entity('vip', ['perks'], ['customer', 'account']),
+    ]));
+    const id = entityOf(r, 'vip').fields.find(f => f.name === 'id')!;
+    expect(id.expression).toBe('cust_id');
+    expect(id.type).toBe('String');
+  });
+
+  test('a diamond where both branches rebind is rejected, even if the entity rebinds too', () => {
+    for (const vipFields of [['perks'], ['id']]) {
+      expect(() => resolveInheritance(model([
+        entity('party', [], undefined,
+               {fields: [{name: 'id', expression: 'id', type: 'String'}]}),
+        entity('customer', [], ['party'],
+               {fields: [{name: 'id', expression: 'cust_id'}]}),
+        entity('account', [], ['party'],
+               {fields: [{name: 'id', expression: 'acct_id'}]}),
+        entity('vip', vipFields, ['customer', 'account']),
+      ]))).toThrow(/declare or rebind 'id' on only one of them/);
+    }
+  });
+
+  test('a name-only redeclaration on a branch does not make a diamond ambiguous', () => {
+    // account's line sets nothing, so customer's rebinding is the only one.
+    // With both branches name-only, party's binding reaches vip unchanged.
+    for (const customerId of [{name: 'id', expression: 'cust_id'}, {name: 'id'}]) {
+      const {model: r} = resolveInheritance(model([
+        entity('party', [], undefined,
+               {fields: [{name: 'id', expression: 'id', type: 'String'}]}),
+        entity('customer', [], ['party'], {fields: [customerId]}),
+        entity('account', [], ['party'], {fields: [{name: 'id'}]}),
+        entity('vip', ['perks'], ['customer', 'account']),
+      ]));
+      const id = entityOf(r, 'vip').fields.find(f => f.name === 'id')!;
+      expect(id.expression).toBe(customerId.expression ?? 'id');
+      expect(id.type).toBe('String');
+    }
   });
 
   test('a diamond reaching one declaration by two paths is fine', () => {
@@ -281,6 +327,28 @@ describe('a field inherited from more than one ancestor', () => {
 });
 
 
+describe('a redeclaration that carries no SQL', () => {
+  test('a lone stringForm, importedDialect or dialect list keeps the parent\'s binding', () => {
+    const extras: Array<Partial<Field>> = [
+      {stringForm: true}, {importedDialect: 'SNOWFLAKE'},
+      {dialects: [{dialect: 'BIGQUERY', expression: 'vip_name'}]},
+    ];
+    for (const extra of extras) {
+      const {model: r} = resolveInheritance(model([
+        entity('customer', [], undefined,
+               {fields: [{name: 'name', expression: 'c_name', type: 'String'}]}),
+        entity('vip', [], ['customer'], {fields: [{name: 'name', ...extra}]}),
+      ]));
+      const f = entityOf(r, 'vip').fields.find(x => x.name === 'name')!;
+      expect(f.expression).toBe('c_name');
+      expect(f.stringForm).toBeUndefined();
+      expect(f.importedDialect).toBeUndefined();
+      expect(f.dialects).toBeUndefined();
+    }
+  });
+});
+
+
 describe('a subtype rebinding an inherited field', () => {
   const parentName: Field = {
     name: 'name',
@@ -311,19 +379,20 @@ describe('a subtype rebinding an inherited field', () => {
         [{vendorName: 'ACME', data: '{"owner":"crm"}'}]);
   });
 
-  test('a rebinding with a dialect list drops the parent\'s expression', () => {
+  test('a rebinding replaces the parent\'s whole binding, dialect list included', () => {
     const {model: r} = resolveInheritance(model([
-      entity('customer', [], undefined, {fields: [parentName]}),
-      entity('vip_customer', [], ['customer'], {
+      entity('customer', [], undefined, {
         fields: [{
-          name: 'name',
-          dialects: [{dialect: 'BIGQUERY', expression: 'c_name'}],
+          ...parentName,
+          dialects: [{dialect: 'BIGQUERY', expression: 'name'}],
         }],
       }),
+      entity('vip_customer', [], ['customer'],
+             {fields: [{name: 'name', expression: 'c_name'}]}),
     ]));
     const merged = entityOf(r, 'vip_customer').fields.find(f => f.name === 'name')!;
-    expect(merged.expression).toBeUndefined();
-    expect(merged.dialects).toEqual([{dialect: 'BIGQUERY', expression: 'c_name'}]);
+    expect(merged.expression).toBe('c_name');
+    expect(merged.dialects).toBeUndefined();
     expect(merged.type).toBe('String');
   });
 

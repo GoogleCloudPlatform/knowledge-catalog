@@ -922,8 +922,9 @@ Rewrite the logical model to add three things: an abstract `party` that declares
 the shared `name` field, an `extends: [party]` on `customer`, and a new
 `supplier` entity that also extends `party`. `party` is `abstract`, so it has no
 `source` and no key and produces no node table; it survives in the graph only as
-a label on its subtypes. Each subtype keeps its own `name` field, and the two
-line up under the shared label by that name:
+a label on its subtypes. Each subtype redeclares `name` by name alone, so the
+profile can bind it to that subtype's own column. The datatype comes from
+`party`, and the two subtypes line up under the shared label by that name:
 
 ```bash
 cat > catalog/EntryGroups/$DATASET/sales.yaml <<'YAML'
@@ -947,13 +948,13 @@ semantic_model:
         primary_key: [customer_id]
         fields:
           - { name: customer_id, datatype: Integer }
-          - { name: name,        datatype: String }
+          - { name: name }             # inherited from party; the profile binds it
       - name: supplier
         extends: [party]
         primary_key: [supplier_id]
         fields:
           - { name: supplier_id, datatype: Integer }
-          - { name: name,        datatype: String }
+          - { name: name }
       - name: lineitem
         primary_key: [line_id]
         fields:

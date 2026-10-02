@@ -34,8 +34,21 @@
 // with neither extending the other, since nothing says which definition wins.
 // A diamond is not that case: two paths reaching ONE declaration resolve to it.
 
-import {Entity, Field, SemanticModel} from './ir';
+import {Entity, Field, FIELD_BINDING_KEYS, FIELD_DEFINITION_KEYS, isFieldBound, SemanticModel} from './ir';
 import {stripQualifier} from './sql_expr_utils';
+
+/**
+ * Why inheritance cannot be resolved. `unknown-parent` can be a pruning
+ * artefact, since a profile can drop a supertype whole; a cycle or an
+ * ambiguously inherited field cannot, because pruning only removes things.
+ */
+export class InheritanceError extends Error {
+  constructor(
+      readonly kind: 'unknown-parent'|'cycle'|'ambiguous-field',
+      message: string) {
+    super(message);
+  }
+}
 
 export interface ResolveResult {
   model: SemanticModel;
@@ -129,10 +142,18 @@ export function resolveInheritance(model: SemanticModel): ResolveResult {
   for (const entity of entities) {
     const ancestors = ancestorsOf.get(entity.name) ?? [];
 
-    // Which ancestors declare each inherited field name, nearest-first.
+    // Which ancestors declare each inherited field name, nearest-first. An
+    // ancestor that redeclares a field it inherits and sets nothing on it
+    // changes nothing, so it is not a declarer. Counting it would make a
+    // diamond ambiguous over a line that has no effect.
     const declarers = new Map<string, string[]>();
     for (const anc of ancestors) {
       for (const f of ownFields.get(anc) ?? []) {
+        if (setsNothing(f) &&
+            (ancestorsOf.get(anc) ?? [])
+                .some(a => ownFields.get(a)?.some(g => g.name === f.name))) {
+          continue;
+        }
         const list = declarers.get(f.name) ?? [];
         if (!list.includes(anc)) list.push(anc);
         declarers.set(f.name, list);
@@ -209,26 +230,22 @@ function localizeInheritedField(field: Field, ancestor: string): Field {
   return clone;
 }
 
-// The properties of a field that say how it is bound to a column. A subtype
-// that redeclares an inherited field may set only these; everything else is
-// the field's definition and comes from the ancestor (see
-// validatePushRequirements).
-const BINDING_KEYS = [
-  'expression', 'dialects', 'stringForm', 'importedExpression',
-  'importedDialect',
-] as const;
-
 // `over` laid onto `base`: every property `over` sets wins, and every one it
-// leaves unset comes from `base`. When `over` sets any binding, `base`'s
-// binding is dropped whole, so an expression and a dialect list from two
-// different declarations never end up on one field.
+// leaves unset comes from `base`. When `over` carries SQL, `base`'s binding is
+// dropped whole, so an expression and a dialect list from two different
+// declarations never end up on one field. When it carries none, its binding
+// properties (a lone `stringForm` or `importedDialect`) are ignored and
+// `base`'s binding stands.
 function mergeBinding(base: Field, over: Field): Field {
   const merged: Field = structuredClone(base);
-  if (BINDING_KEYS.some(k => over[k] !== undefined)) {
-    for (const k of BINDING_KEYS) delete merged[k];
+  const bound = isFieldBound(over);
+  if (bound) {
+    for (const k of FIELD_BINDING_KEYS) delete merged[k];
   }
+  const binding = new Set<string>(FIELD_BINDING_KEYS);
   for (const [k, v] of Object.entries(over)) {
-    if (v !== undefined) (merged as any)[k] = structuredClone(v);
+    if (v === undefined || (!bound && binding.has(k))) continue;
+    (merged as any)[k] = structuredClone(v);
   }
   return merged;
 }
@@ -254,6 +271,13 @@ function mergeChain(
   return merged!;
 }
 
+// Whether a field declaration carries neither a binding nor any part of a
+// definition. Redeclaring an inherited field this way is a no-op.
+function setsNothing(field: Field): boolean {
+  return !isFieldBound(field) &&
+      FIELD_DEFINITION_KEYS.every(k => field[k] === undefined);
+}
+
 // Throws unless every ancestor in `declaring` lies on one line of descent, so
 // that one declaration plainly overrides another. Two ancestors that each
 // declare the field, with neither extending the other, leave its definition
@@ -267,9 +291,11 @@ function requireOneChain(
       const related = (ancestorsOf.get(a) ?? []).includes(b) ||
           (ancestorsOf.get(b) ?? []).includes(a);
       if (!related) {
-        throw new Error(
-            `entity '${entity}' inherits field '${field}' from multiple ` +
-            `ancestors ('${a}' and '${b}')`);
+        throw new InheritanceError(
+            'ambiguous-field',
+            `entity '${entity}' inherits field '${field}' from '${a}' and ` +
+                `from '${b}', and neither extends the other, so nothing says ` +
+                `which wins; declare or rebind '${field}' on only one of them`);
       }
     }
   }
@@ -302,14 +328,16 @@ function transitiveAncestors(
   while (queue.length) {
     const {from, name} = queue.shift()!;
     if (name === start) {
-      throw new Error(
+      throw new InheritanceError(
+          'cycle',
           `entity '${from}' extends '${name}', which is already a supertype ` +
-          `on this chain; 'extends' must not form a cycle`);
+              `on this chain; 'extends' must not form a cycle`);
     }
     if (!byName.has(name)) {
-      throw new Error(
+      throw new InheritanceError(
+          'unknown-parent',
           `entity '${from}' extends unknown entity '${name}'; it is not ` +
-          `defined in the model`);
+              `defined in the model`);
     }
     if (seen.has(name)) continue;  // diamond: already included at its nearest
     seen.add(name);

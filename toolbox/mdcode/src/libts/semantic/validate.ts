@@ -13,10 +13,10 @@ import {SpannerClient} from '../gcp/spanner';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
-import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
+import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {LoadedModel} from './loader';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
-import {DeclaredConcept, declaredConceptFields, resolveInheritance} from './resolve_inheritance';
+import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 
 // Checks every model against the push requirements and returns the collected
@@ -144,24 +144,19 @@ export function validatePushRequirements(
     // means publishing a broken model in silence: the loader accepts such a
     // model, and a Knowledge-Catalog-only push reaches no graph leg that would
     // resolve inheritance and catch it. So the failure is reported here, once
-    // per model, and the checks below stay quiet about it. A profile push that
-    // pruned fields is exempt for the same reason those checks are -- pruning
-    // can remove a supertype whole, and the dangling `extends` it leaves is the
-    // pruner's doing rather than the author's.
-    if (!opts.fieldsPruned) {
-      const failure = inheritanceFailure(model);
-      if (failure) {
-        errors.push(
-            `model '${model.name}' (${document}): ${failure} Checks that ` +
-            `need the resolved model are skipped until this is fixed.`);
-      }
+    // per model, and the checks below stay quiet about it.
+    // A profile push that pruned fields is exempt for an unknown parent only:
+    // pruning can remove a supertype whole, and the dangling `extends` it
+    // leaves is the pruner's doing. It cannot create a cycle or an
+    // ambiguously inherited field, since it only removes things, so those are
+    // reported either way.
+    const failure = inheritanceFailure(model);
+    if (failure && !(opts.fieldsPruned && failure.kind === 'unknown-parent')) {
+      errors.push(
+          `model '${model.name}' (${document}): ${failure.message} Checks ` +
+          `that need the resolved model are skipped until this is fixed.`);
     }
 
-    // Run on every push, pruned or not. A graph push validates the model its
-    // profile leaves after pruning, and a graph is exactly where an edge to a
-    // non-leaf entity loses rows. Pruning only removes things, so it never
-    // makes a model break these rules; the rebinding check, which resolves
-    // inheritance, stands down when resolution fails.
     errors.push(...inheritanceRuleErrors(model, document));
 
     // An action reaches Knowledge Catalog only, so its checks are
@@ -730,33 +725,32 @@ function ifResolvable<T>(build: () => T): T|undefined {
 // Reported rather than thrown, and reported once for the model rather than once
 // per check that needed it. A model declaring no inheritance cannot fail, and
 // resolving clones, so it is not asked.
-function inheritanceFailure(model: SemanticModel): string|undefined {
+function inheritanceFailure(model: SemanticModel):
+    {kind: InheritanceError['kind']|'other'; message: string}|undefined {
   if (!(model.entities ?? []).some(e => e.extends?.length)) return undefined;
   try {
     resolveInheritance(model);
     return undefined;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    return message.endsWith('.') ? message : `${message}.`;
+    return {
+      kind: e instanceof InheritanceError ? e.kind : 'other',
+      message: message.endsWith('.') ? message : `${message}.`,
+    };
   }
 }
 
-// The authored names of the properties that define a field rather than bind it.
-// A subtype that redeclares an inherited field may set none of them.
-const FIELD_DEFINITION_KEYS: Array<[keyof Field, string]> = [
-  ['type', 'datatype'], ['label', 'label'], ['dimension', 'dimension'],
-  ['description', 'description'], ['aiContext', 'ai_context'],
-  ['customExtensions', 'custom_extensions'],
-];
-
-function isBound(field: Field): boolean {
-  return field.expression !== undefined || !!field.dialects?.length ||
-      field.importedExpression !== undefined;
-}
+// The authored name of each property that defines a field rather than binds
+// it, for messages.
+const AUTHORED_NAME: Partial<Record<keyof Field, string>> = {
+  type: 'datatype',
+  aiContext: 'ai_context',
+  customExtensions: 'custom_extensions',
+};
 
 // The rules inheritance puts on a model beyond resolving it:
-//   - a subtype may redeclare an inherited field only to rebind it, so it sets
-//     a binding and none of the field's definition;
+//   - a subtype may redeclare an inherited field to rebind it, or with nothing
+//     set at all, and never with any of the field's definition;
 //   - an abstract entity has no table, so it declares no source, no key and no
 //     bound field;
 //   - a relationship endpoint, and the entity a metric belongs to, is a
@@ -787,18 +781,13 @@ function inheritanceRuleErrors(
       for (const field of entity.fields) {
         if (!inherited.has(field.name)) continue;
         const defined =
-            FIELD_DEFINITION_KEYS.filter(([k]) => field[k] !== undefined)
-                .map(([, authored]) => `'${authored}'`);
+            FIELD_DEFINITION_KEYS.filter(k => field[k] !== undefined)
+                .map(k => `'${AUTHORED_NAME[k] ?? k}'`);
         if (defined.length) {
           errors.push(
               `${where(entity.name)}: field '${field.name}' is inherited, so ` +
               `it may only be rebound to a column; remove ${
                   defined.join(', ')}, which an ancestor defines.`);
-        } else if (!isBound(field)) {
-          errors.push(
-              `${where(entity.name)}: field '${field.name}' redeclares an ` +
-              `inherited field without binding it; give it an expression, or ` +
-              `remove it.`);
         }
       }
     }
@@ -817,7 +806,7 @@ function inheritanceRuleErrors(
           `declare a primary key or unique keys.`);
     }
     for (const field of entity.fields) {
-      if (isBound(field)) {
+      if (isFieldBound(field)) {
         errors.push(
             `${where(entity.name)} is abstract, so its field '${
                 field.name}' cannot carry an expression; bind it on each ` +

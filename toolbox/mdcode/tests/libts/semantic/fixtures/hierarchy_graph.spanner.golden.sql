@@ -69,9 +69,9 @@ NODE TABLES (
     )
 )
 EDGE TABLES (
-  person AS livesIn
+  customer AS livesIn
     KEY(id)
-    SOURCE KEY(id) REFERENCES Person(id)
+    SOURCE KEY(id) REFERENCES Customer(id)
     DESTINATION KEY(city_id) REFERENCES City(id)
 );
 

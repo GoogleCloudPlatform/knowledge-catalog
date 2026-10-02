@@ -4,7 +4,8 @@
 import {describe, expect, test} from 'bun:test';
 
 import {Action, CustomExtension, Entity, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
-import {LoadedModel} from '../../../src/libts/semantic/loader';
+import {LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
+import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
 import {validateBigQueryActionStatements, validateBigQueryDataSources, validatePushRequirements, validateSpannerActionStatements} from '../../../src/libts/semantic/validate';
 import {BigQueryClientMock, mockSchema, SpannerClientMock} from '../mocks';
 
@@ -729,12 +730,94 @@ describe('inheritance rules', () => {
     }
   });
 
-  test('a subtype redeclaring an inherited field with no binding is rejected', () => {
-    const errors = check({
-      entities: [customer, ent('vip', {extends: ['customer'], fields: [{name: 'name'}]})],
+  test('a subtype redeclaring an inherited field with nothing set passes', () => {
+    for (const f of [{name: 'name'}, {name: 'name', stringForm: true},
+                     {name: 'name', importedDialect: 'SNOWFLAKE'}]) {
+      expect(check({
+        entities: [customer, ent('vip', {extends: ['customer'], fields: [f]})],
+      })).toEqual([]);
+    }
+  });
+
+  test('name-only redeclarations on both sides of a diamond pass', () => {
+    const party = ent('party', {
+      abstract: true, dataSource: undefined, keys: [],
+      fields: [{name: 'id', type: 'String'}],
     });
-    expect(errors.join('\n')).toContain(
-        "field 'name' redeclares an inherited field without binding it");
+    const side = (name: string) => ent(name, {
+      abstract: true, dataSource: undefined, keys: [], extends: ['party'],
+      fields: [{name: 'id'}],
+    });
+    expect(check({
+      entities: [
+        party, side('customer'), side('account'),
+        ent('vip', {extends: ['customer', 'account'], keys: ['id'],
+                    fields: [{name: 'id', expression: 'vip_id'}]}),
+      ],
+    })).toEqual([]);
+  });
+
+  test('a profile binds a field the logical model redeclares by name alone', () => {
+    const logical = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    entities:
+      - name: party
+        abstract: true
+        fields:
+          - { name: name, datatype: String }
+      - name: customer
+        extends: [party]
+        primary_key: [id]
+        fields:
+          - { name: id, datatype: Integer }
+          - { name: name }
+`;
+    const profile = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    entities:
+      - name: customer
+        source: p.d.customer
+        fields:
+          - { name: id, expression: c_custkey }
+          - { name: name, expression: c_name }
+`;
+    const docs = (text: string, bindingOptional: boolean) =>
+        loadModels(text, {bindingOptional})
+            .models.map(m => loaded(m, 'sales.yaml'));
+    // The catalog leg validates the logical model unpruned.
+    expect(validatePushRequirements(docs(logical, true), {targetOptional: true}))
+        .toEqual([]);
+    const merged = mergeProfileOntoDoc(logical, profile, 'analytical');
+    if ('error' in merged) throw new Error(merged.error);
+    expect(validatePushRequirements(
+               docs(merged.text, false), {targetOptional: true}))
+        .toEqual([]);
+  });
+
+  test('a cycle or an ambiguous field is still reported on a pruned model', () => {
+    const cyclic = model({
+      entities: [ent('a', {extends: ['b']}), ent('b', {extends: ['a']})],
+    });
+    const ambiguous = model({
+      entities: [
+        ent('x', {fields: [{name: 'id', expression: 'id'}]}),
+        ent('y', {fields: [{name: 'id', expression: 'id'}]}),
+        ent('z', {extends: ['x', 'y']}),
+      ],
+    });
+    for (const [m, want] of [[cyclic, /must not form a cycle/],
+                             [ambiguous, /declare or rebind 'id'/]] as const) {
+      const errors = validatePushRequirements(
+          [loaded(m)], {targetOptional: true, fieldsPruned: true});
+      expect(errors.join('\n')).toMatch(want);
+    }
+    // An unknown parent is still excused on a pruned model.
+    expect(validatePushRequirements(
+               [loaded(model({entities: [ent('a', {extends: ['gone']})]}))],
+               {targetOptional: true, fieldsPruned: true}))
+        .toEqual([]);
   });
 
   test('an abstract entity is rejected for a source, keys or a bound field', () => {
