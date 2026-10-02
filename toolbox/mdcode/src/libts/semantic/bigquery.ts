@@ -37,6 +37,11 @@ export interface GenerateOptions {
 export interface GenerateResult {
   ddl: string;         // CREATE OR REPLACE PROPERTY GRAPH ...
   warnings: string[];  // skipped metrics, unresolved table refs, etc.
+  // The metrics emitted as MEASUREs, each with the node table (entity) whose
+  // label carries it -- what a GRAPH_EXPAND reader selects as
+  // AGG(<nodeTable>_<metric>). A metric absent here was skipped (see
+  // warnings). Read by the metric-slice planner (metric_slices.ts).
+  measures: Array<{metric: string; nodeTable: string}>;
 }
 
 // Aggregate functions BigQuery accepts inside MEASURE(...). This is the
@@ -183,10 +188,11 @@ export function generatePropertyGraph(
   const entityByName = new Map(entities.map(e => [e.name, e]));
   const metricsByEntity = new Map<string, string[]>();
   const loweringByEntity = new Map<string, MeasureLowering>();
+  const measures: GenerateResult['measures'] = [];
   for (const metric of metrics) {
     placeMetric(
         metric, resolved.model, entityByName, skipped, ancestorsUsed,
-        metricsByEntity, loweringByEntity, warnings);
+        metricsByEntity, loweringByEntity, warnings, measures);
   }
 
   // A subclass's `LABEL <ancestor>` block lists that ancestor's own (flattened)
@@ -291,7 +297,7 @@ export function generatePropertyGraph(
   // Knowledge Catalog's model entry instead (see knowledge_catalog.ts);
   // element-level metadata rides on labels, properties, and measures here.
 
-  return {ddl: blocks.join('\n') + ';\n', warnings: dedupe(warnings)};
+  return {ddl: blocks.join('\n') + ';\n', warnings: dedupe(warnings), measures};
 }
 
 
@@ -349,7 +355,8 @@ function placeMetric(
     metric: Metric, model: SemanticModel, entityByName: Map<string, Entity>,
     skipped: Set<string>, ancestorsUsed: Set<string>,
     metricsByEntity: Map<string, string[]>,
-    loweringByEntity: Map<string, MeasureLowering>, warnings: string[]): void {
+    loweringByEntity: Map<string, MeasureLowering>, warnings: string[],
+    measures: GenerateResult['measures']): void {
   // The IR keeps at most two expression forms; a measure is emitted from the
   // target/canonical `expression`, falling back to the imported vendor SQL when
   // that is all the model carries (a transpile pass may fill `expression`
@@ -500,6 +507,7 @@ function placeMetric(
   const lines = metricsByEntity.get(entityName) ?? [];
   lines.push(opts ? `${measure} ${opts}` : measure);
   metricsByEntity.set(entityName, lines);
+  measures.push({metric: metric.name, nodeTable: entityName});
 }
 
 // Ensures `operandExpr` is exposed as a node property and returns its property

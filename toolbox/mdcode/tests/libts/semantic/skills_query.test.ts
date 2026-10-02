@@ -192,8 +192,9 @@ function rt(model: SemanticModel): SemanticRuntime {
 
 function generate(
     model: SemanticModel, mode: 'act'|'query'|'both' = 'query',
-    extraModels: SemanticModel[] = []) {
-  const out = generateSkill({runtime: rt(model), mode, query: {extraModels, location: 'US'}});
+    extraModels: SemanticModel[] = [], metricGraphs?: boolean) {
+  const out = generateSkill(
+      {runtime: rt(model), mode, query: {extraModels, location: 'US', metricGraphs}});
   if ('error' in out) throw new Error(out.error);
   return {...out, files: Object.fromEntries(out.files.map(x => [x.path, x.text]))};
 }
@@ -269,8 +270,15 @@ describe('query mode: structure', () => {
     expect(rows.find(r => r.includes('[Order]'))).toContain('`isBigOrder`');
     // A defined entity is not a label, so it has no row and no page.
     expect(rows.some(r => r.includes('[BigOrder]'))).toBe(false);
-    expect(b).toContain('| `total_amount` |');
-    expect(b).toMatch(/\| `paid_ratio` \| .* \| SQL \|/);
+    expect(b).toMatch(/\| `total_amount` \| .* \| `Order` in `g__order_metrics` \|/);
+    // A composite (a COUNTIF over a count) is read on the metric graph too.
+    expect(b).toMatch(/\| `paid_ratio` \| .* \| `Order` in `g__order_metrics` \|/);
+  });
+
+  test('the coordinates list the metric graphs next to the main graph', () => {
+    const b = body(files['SKILL.md']);
+    expect(b).toContain('- Metric graphs for `GRAPH_EXPAND`, one per fact entity');
+    expect(b).toContain('  - `p.d.g__order_metrics`: root `Order`, node tables `Order`, `Customer`.');
   });
 });
 
@@ -318,19 +326,109 @@ describe('query mode: entity pages', () => {
 describe('query mode: metrics', () => {
   const {files} = generate(fixture());
   const metrics = files['references/metrics.md'];
+  const section = (page: string, name: string) =>
+      page.split(`## ${name}\n`)[1].split('\n## ')[0];
 
-  test('a MEASURE gets a GRAPH_EXPAND query', () => {
-    expect(metrics).toContain('## total_amount');
-    expect(metrics).toContain('AGG(Order_total_amount)');
-    expect(metrics).toContain('FROM GRAPH_EXPAND("p.d.g")');
+  test('a MEASURE gets a GRAPH_EXPAND query on its fact\'s metric graph', () => {
+    const s = section(metrics, 'total_amount');
+    expect(s).toContain('- Graph: `p.d.g__order_metrics`, the metric graph for `Order` ' +
+        '(2 node tables: `Order`, `Customer`)');
+    expect(s).toContain('- MEASURE in: `p.d.g` (on `Order`), `p.d.g__order_metrics` (on `Order`)');
+    expect(s).toContain([
+      '```sql',
+      'SELECT Customer_partyName AS partyName,',
+      '       AGG(Order_total_amount) AS total_amount',
+      'FROM GRAPH_EXPAND("p.d.g__order_metrics")',
+      'GROUP BY partyName',
+      'ORDER BY total_amount DESC',
+      '```',
+    ].join('\n'));
+    expect(metrics).not.toContain('GRAPH_EXPAND("p.d.g")');
   });
 
-  test('a metric that is not a MEASURE gets SQL instead', () => {
-    const section = metrics.split('## paid_ratio')[1].split('\n## ')[0];
-    expect(section).toContain('Not a graph MEASURE');
-    expect(section).toContain('FROM `p.d.orders` AS Order');
-    expect(section).toContain("COUNTIF(Order.status = 'paid')");
-    expect(section).not.toContain('GRAPH_EXPAND("');
+  test('a composite metric is its single-aggregate MEASUREs and a SAFE_DIVIDE', () => {
+    expect(section(metrics, 'paid_ratio')).toBe([
+      '',
+      'Share of orders that are paid.',
+      '',
+      '- Expression: `SAFE_DIVIDE(COUNTIF(Order.status = \'paid\'), COUNT(Order.orderId))`',
+      '- Anchor: `Order`',
+      '- Graph: `p.d.g__order_metrics`, the metric graph for `Order` (2 node tables: `Order`, `Customer`)',
+      '- MEASUREs: `Order_paid_ratio__agg1` = `SUM(CASE WHEN Order.status = \'paid\' THEN 1 ELSE 0 END)` ' +
+          '(`COUNTIF(Order.status = \'paid\')` as a CASE); `Order_paid_ratio__agg2` = `COUNT(Order.orderId)`',
+      '- Composition: `SAFE_DIVIDE(AGG(Order_paid_ratio__agg1), AGG(Order_paid_ratio__agg2))`',
+      '',
+      '```sql',
+      'SELECT Customer_partyName AS partyName,',
+      '       SAFE_DIVIDE(AGG(Order_paid_ratio__agg1), AGG(Order_paid_ratio__agg2)) AS paid_ratio',
+      'FROM GRAPH_EXPAND("p.d.g__order_metrics")',
+      'GROUP BY partyName',
+      'ORDER BY paid_ratio DESC',
+      '```',
+      '',
+    ].join('\n'));
+    expect(metrics).toContain('select its composition as given, e.g. `SAFE_DIVIDE(AGG(n), AGG(d))`');
+  });
+
+  // A ratio with a multiplier whose condition is a defined entity's
+  // membership; a metric reading two entities inside one aggregate (a view);
+  // one whose entities share no many-to-one root -- Order and Product are
+  // linked only many-to-many -- (SQL only).
+  function variant(): SemanticModel {
+    const m = fixture();
+    m.metrics.push(
+        {
+          name: 'big_share',
+          expression: '100 * COUNTIF(Order.amount >= 1000) / COUNT(Order.orderId)',
+          entity: 'Order',
+        },
+        {name: 'gold_amount', expression: "SUM(IF(Customer.tier = 'gold', Order.amount, 0))"},
+        {name: 'cross_ratio', expression: 'SUM(Order.amount) / COUNT(Product.productId)'});
+    return m;
+  }
+  const page = generate(variant()).files['references/metrics.md'];
+
+  test('a COUNTIF of a defined entity sums its membership property, keeping the multiplier', () => {
+    const s = section(page, 'big_share');
+    expect(s).toContain('`Order_big_share__agg1` = `SUM(CAST(Order.isBigOrder AS INT64))` ' +
+        '(`COUNTIF(Order.amount >= 1000)` as the membership property `isBigOrder`)');
+    expect(s).toContain(
+        '       100 * SAFE_DIVIDE(AGG(Order_big_share__agg1), AGG(Order_big_share__agg2)) AS big_share');
+  });
+
+  test('a metric no graph can hold is read on the fallback view', () => {
+    const s = section(page, 'gold_amount');
+    expect(s).toContain('Not a graph MEASURE (SUM(IF(Customer.tier = \'gold\', Order.amount, 0)) ' +
+        'reads several entities (Customer, Order); a MEASURE reads one table). Read it on the ' +
+        'generated view `p.d.g__order_metrics_view`, one row per `Order` record:');
+    expect(s).toContain([
+      'SELECT Customer_partyName AS partyName,',
+      '       SUM(IF(Customer_tier = \'gold\', Order_amount, 0)) AS gold_amount',
+      'FROM `p.d.g__order_metrics_view`',
+    ].join('\n'));
+    expect(page).toContain('A metric no graph can hold is read from a generated view');
+  });
+
+  test('a metric with no many-to-one root gets SQL over the source tables', () => {
+    const s = section(page, 'cross_ratio');
+    expect(s).toContain('Not a graph MEASURE (its aggregates read Order, Product, and no one ' +
+        'of them reaches the others through many-to-one relationships). Compute it in SQL:');
+    expect(s).toContain('FROM `p.d.orders` AS Order');
+    expect(s).not.toContain('GRAPH_EXPAND(');
+  });
+
+  test('--no-metric-graphs reads the main graph\'s own MEASUREs, as before', () => {
+    const off = generate(fixture(), 'query', [], false).files;
+    const page = off['references/metrics.md'];
+    expect(page).toContain('FROM GRAPH_EXPAND("p.d.g")');
+    expect(page).not.toContain('__order_metrics');
+    const s = section(page, 'paid_ratio');
+    expect(s).toContain('Not a graph MEASURE');
+    expect(s).toContain('FROM `p.d.orders` AS Order');
+    expect(s).toContain("COUNTIF(Order.status = 'paid')");
+    expect(s).not.toContain('GRAPH_EXPAND("');
+    expect(body(off['SKILL.md'])).toMatch(/\| `paid_ratio` \| .* \| SQL \|/);
+    expect(body(off['SKILL.md'])).not.toContain('Metric graphs');
   });
 });
 
@@ -346,7 +444,10 @@ describe('query mode: generated patterns', () => {
     expect(patterns).toContain('MATCH (n:Party)');
     expect(patterns).toContain('-[:partOf]->{1,5}');
     expect(patterns).toContain('GROUP BY');
-    expect(patterns).toContain('GRAPH_EXPAND("p.d.g")');
+    expect(patterns).toContain('GRAPH_EXPAND("p.d.g__order_metrics")');
+    expect(patterns).toContain('## Composite metric: paid_ratio');
+    expect(patterns).toContain(
+        'SAFE_DIVIDE(AGG(Order_paid_ratio__agg1), AGG(Order_paid_ratio__agg2)) AS paid_ratio');
     expect(patterns).toContain('FROM GRAPH_TABLE(');
     expect(patterns).toMatch(/MATCH \(a:\w+\)-\[:\w+\]->\(b:\w+\)-\[:\w+\]->\(c:\w+\)/);
   });
