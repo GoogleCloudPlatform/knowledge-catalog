@@ -13,7 +13,7 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import {ACTION_TYPE_ID, aiContextAspectValue, CONSTRAINT_TYPE_ID, CUSTOM_TYPES} from '../../../src/libts/semantic/kc_custom_types';
+import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID, CUSTOM_TYPES} from '../../../src/libts/semantic/kc_custom_types';
 
 function template(id: string): any {
   const found = CUSTOM_TYPES.find(t => t.id === id);
@@ -80,21 +80,5 @@ describe('the semantic-constraint aspect template', () => {
     // became the only one. It stays at index 1 as a reserved field.
     expect(indices(template(CONSTRAINT_TYPE_ID).recordFields))
         .toMatchObject({expression: 1, onViolation: 3});
-  });
-});
-
-describe('aiContextAspectValue', () => {
-  test('writes a structured example as its JSON text and a string example unchanged', () => {
-    expect(aiContextAspectValue({
-      examples: [
-        {key1: 'val1', key2: 'val2'},
-        'plain string example',
-      ],
-    })).toEqual({
-      examples: [
-        '{"key1":"val1","key2":"val2"}',
-        'plain string example',
-      ],
-    });
   });
 });

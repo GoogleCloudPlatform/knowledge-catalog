@@ -1077,11 +1077,9 @@ function fieldDescription(field: Field): string|undefined {
   ]);
 }
 
-function examplesLine(examples?: unknown[]): string|undefined {
-  if (!examples?.length) return undefined;
-  const parts =
-      examples.map(e => (typeof e === 'string' ? e : JSON.stringify(e)));
-  return `Examples: ${parts.join('; ')}`;
+function examplesLine(examples?: string[]): string|undefined {
+  return examples && examples.length ? `Examples: ${examples.join('; ')}` :
+                                       undefined;
 }
 
 // Joins the non-empty parts into one description, separated by blank lines so

@@ -22,7 +22,7 @@ export interface AiContext {
   // Alternate names for the annotated object.
   synonyms?: string[];
   // Example questions / usages illustrating the annotated object.
-  examples?: unknown[];
+  examples?: string[];
   // Unrecognised keys on `ai_context`, preserved verbatim for round-trip.
   additionalProperties?: Record<string, unknown>;
 }
