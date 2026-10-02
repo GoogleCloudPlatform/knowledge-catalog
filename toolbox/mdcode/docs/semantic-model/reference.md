@@ -166,6 +166,42 @@ not run; violations are a report about the data, not a command failure.
 The results are never used as filters: no graph, query, skill or action guard
 reads them. See [Validating constraints against BigQuery](validation.md).
 
+### test (proposed)
+
+```bash
+kcmd test --target bigquery [--profile bigquery] [--location US] [--out contract-tests]
+```
+
+Runs contract tests generated from the model against the deployed BigQuery
+graph, read-only, and reports pass / fail. `validate` measures the data; `test`
+checks that the graph does what the model says:
+
+- **`defined-membership`**: for each defined entity, the base rows where the
+  graph property `is<Class>` holds are exactly the rows its definition selects.
+- **`transitive-closure`**: for each relationship the model marks transitive, a
+  quantified path `-[:p]->{1,k}` returns exactly the pairs a recursive SQL
+  closure over its join columns returns.
+- **`validation-query`**: every query `validate` plans for the model executes.
+
+The tests are written to `--out` as `<model>.contract.sql` and the manifest
+`<model>.contract.json`; a run adds `<model>.contract-results.json`. Every
+statement is a query, so a run creates and modifies nothing. An element a
+generator cannot test is listed with the reason. A graph test that BigQuery
+refuses for lack of an Enterprise reservation is reported `skipped` (`needs
+Enterprise reservation`), not failed. The exit code is 1 when a test fails or
+errors.
+
+| Flag | Effect |
+|------|--------|
+| `--target <target>` | Required. Only `bigquery`. |
+| `--profile [name]` | Test the graph and tables this binding profile binds. Defaults to `default_profile`, else the inline bindings. |
+| `--out <dir>` | Where the `.sql`, manifest and results are written. Defaults to `contract-tests`. |
+| `--sql-only` | Write the tests and the manifest; run nothing (also the behaviour without credentials). |
+| `--location <location>` | BigQuery processing location for the query jobs. |
+| `--path-bound <k>` | The `k` of the quantified paths the `transitive-closure` tests compare. Default 10. |
+
+See [Contract tests](validation.md#contract-tests-kcmd-test-proposed).
+
 ### glossary push
 
 ```bash
@@ -210,6 +246,39 @@ header describes the model.
 | `--name <model>` | Name the model. Defaults to the first file's stem (`sales.owl.ttl` → `sales`). |
 | `--out <path>` | Write the document to this path instead of the semantic-model layout dir. |
 | `--compact` | Emit the compact flow YAML layout instead of the default block layout. |
+| `--prune-unbound [binding]` | Proposed. Keep only the entities the binding gives a `source`, their ancestors and the defined entities over them; remove the rest with the relationships, constraints and glossary links that refer to it, and print what was removed. The value is a binding profile or a model document with inline bindings; the bare flag reads the model's profiles in the scope's layout, else `<model>.profiles/` beside `--out`. Fails, writing nothing, when the binding binds no entity. See [Pruning to what is bound](owl-import.md#5-pruning-to-what-is-bound-proposed). |
+| `--coverage <path>` | Proposed. Write the coverage report here instead of to `coverage.json` beside the written model. |
+| `--no-coverage` | Proposed. Print no coverage summary and write no coverage report. |
+
+Every import prints a coverage summary: each construct it read, counted as
+`compiled`, `hinted` or `dropped`. It writes the full report, with the reason
+for each hint and drop, to `coverage.json` (see [Coverage
+report](owl-import.md#6-coverage-report-proposed)).
+
+### shacl import
+
+```bash
+kcmd shacl import <shapes.ttl> [<shapes.ttl> ...] (--into <model.yaml> | --model <name>)
+```
+
+Adds the rules a SHACL shapes graph states to an existing model as native
+constraints, editing the document in place; re-importing replaces the
+constraints generated earlier from the same shapes (see [Importing SHACL shapes
+as constraints](shacl-import.md)).
+
+| Flag | Effect |
+|------|--------|
+| `--into <model.yaml>` | The model document to add the constraints to. Defaults to the `--model` model in the semantic-model layout. |
+| `--model <name>` | The model receiving the constraints. Required without `--into`, or when the document declares several models. |
+| `--out <path>` | Write the updated document here instead of back to its source. |
+| `--coverage <path>` | Proposed. Write the coverage report here instead of to `coverage.json` beside the written document. |
+| `--no-coverage` | Proposed. Print no coverage summary and write no coverage report. |
+
+Like `owl import`, every import prints a coverage summary and writes
+`coverage.json`, listing each shape and constraint component with its outcome
+(see [Coverage report](shacl-import.md#3-coverage-report-proposed)). When the
+SHACL import writes the model the OWL import wrote, both reports of that model
+sit side by side in one file.
 
 ## What gets created in BigQuery
 

@@ -135,3 +135,125 @@ reported, not created.
 > The results describe stored data at one point in time. Nothing uses them as a
 > filter: the property graph, queries, skills and action guards read the model,
 > never these counts.
+
+## Contract tests (`kcmd test`, proposed)
+
+`validate` measures the data. `kcmd test --target bigquery` checks the
+**graph**: that what the BigQuery leg deployed does what the model says. Every
+test is generated from the model and the selected binding profile, nothing is
+written per model, and every statement is a query, so a run creates and
+modifies nothing.
+
+```bash
+# Write the tests only (no credentials needed).
+kcmd test --target bigquery --profile bigquery --sql-only --out contract-tests
+
+# Run them read-only (dry run first) and print pass / fail.
+kcmd test --target bigquery --profile bigquery --location US
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--target bigquery` | Required; the only engine. |
+| `--profile [name]` | The binding profile whose graph and tables are tested; defaults to `default_profile`, else the inline bindings. |
+| `--out <dir>` | Where the files go (default `contract-tests`). |
+| `--location <location>` | BigQuery processing location for the query jobs; inferred when unset. |
+| `--sql-only` | Write the tests and the manifest and run nothing (also what happens without credentials). |
+| `--path-bound <k>` | The `k` of the quantified paths `-[:p]->{1,k}` (default 10, the bound the OWL importer's transitivity hint names). |
+
+### What is tested
+
+| Kind | Generated for | Passes when |
+|------|---------------|-------------|
+| `defined-membership` (K1) | every defined entity (`definition:`) | the base's rows where the graph property `is<Class>` holds (`MATCH (n:Base) WHERE n.isClass`) are exactly the rows the definition's expression selects over the base's bound tables, compared on the base's key. The reference side is the SQL `validate` uses for the class. |
+| `transitive-closure` | every relationship the model marks transitive (its `ai_context.instructions` call it transitive, as the OWL importer writes for `owl:TransitiveProperty`) | the pairs `(a:S)-[:p]->{1,k}(b:S)` returns are exactly the pairs a `WITH RECURSIVE` closure over the bound join columns returns, up to `k` hops |
+| `validation-query` (K4) | every check `validate` plans | the count query runs and the examples query compiles |
+
+A comparison is one statement that returns `actual_rows`, `expected_rows`,
+`missing`, `extra` and up to five examples of each difference. Both sides are
+reduced to distinct rows: the contract is about which rows come back, not how
+many times.
+
+### What is not tested
+
+An element a generator recognises but cannot test is listed with the reason:
+in the console report, at the end of the `.sql` file, and in the manifest's
+`skipped[]`. Examples:
+
+- a defined entity whose parent chain does not resolve;
+- a transitive relationship that is abstract, whose endpoints differ, whose
+  edge label sub-relationships share, that is backed by an association table,
+  or that declares no join columns;
+- a constraint `validate` has no query for;
+- any graph test when the model declares no BigQuery graph target.
+
+### Enterprise reservation
+
+The membership and closure tests read the graph with `GRAPH_TABLE` and are
+flagged `graphQuery`. BigQuery may refuse a graph query because the project has
+no Enterprise reservation; such an error names the Enterprise edition or a
+reservation. In that case the test is reported `skipped` with the reason `needs
+Enterprise reservation`, keeping BigQuery's error, and is not counted as failed.
+The same error on a plain SQL test is an `error`.
+
+### Outputs and exit code
+
+`--out` receives, per model:
+
+- `<model>.contract.sql` -- every test's statement under a comment naming it,
+  then the elements not tested. Running the file writes nothing.
+- `<model>.contract.json` -- the manifest: `model`, `profile`, `generatedAt`,
+  `graph`, `tests[]`, `skipped[]` and `warnings[]`. Each test has:
+  - `id` (`<kind>:<subject>`), `kind`, `subject` and `description`;
+  - `comparison` (`sameRows` | `executes`) and `graphQuery`;
+  - `sql`, plus `compileOnly`, `actualSql` / `expectedSql` and
+    `resultColumns` where they apply.
+- `<model>.contract-results.json` (after a run) -- one record per test:
+  - `status` (`pass` | `fail` | `error` | `skipped`), with `reason` and `error`;
+  - for a comparison: `actualRows`, `expectedRows`, `missing`, `extra` and
+    their examples;
+  - for an executed statement: the first row's `values`;
+  - `checkedAt`.
+
+Each statement is dry-run first, then the test runs. The command exits 1 when a
+test fails or errors and 0 otherwise. This differs from `validate`: there,
+violations describe the data, while a failing contract test means the graph
+does not do what the model says.
+
+### Adding a family of tests
+
+The families are `ContractTestGenerator`s listed in `CONTRACT_TEST_GENERATORS`
+(`src/libts/semantic/contract_tests.ts`). Adding a family means adding a
+generator to that list; the planner, the runner, the report, the manifest and
+the CLI need no change. A generator:
+
+1. has a stable `kind` (the test-id prefix and the report's grouping) and a
+   one-sentence `summary`;
+2. reads only the `ContractContext` and never names a model element. The
+   context holds:
+   - the merged model and the graph's name;
+   - the `Binder`, which resolves an entity to its bound rows the same way
+     `validate` and the graph leg do;
+   - the `GraphShape`: node tables, edge tables and shared edge labels;
+   - `pathBound`;
+3. builds its tests with the exported helpers:
+   - `graphTableSql` for the graph side;
+   - `sameRowsSql` (with `cte`, `rowKey`, `q`) for a comparison;
+   - or a bare statement with `comparison: 'executes'`;
+4. sets `graphQuery: true` on a statement that reads the graph with
+   `GRAPH_TABLE`, so that a reservation refusal reports the test as skipped;
+5. returns a skip with a reason for every element it recognises but cannot
+   test;
+6. has a golden unit test of its generated SQL. The runner takes an injectable
+   query function, so a run can be unit-tested too (see
+   `tests/libts/semantic/contract_tests.test.ts`).
+
+Two families have marked places in the list:
+
+- **`derived-edge` (K2).** The actual side reads the derived edge label. The
+  expected side follows the edge's explicit multi-hop path. The comparison is
+  over source and destination keys.
+- **`metric-slice` (K6).** The actual side is `GRAPH_EXPAND` with `AGG`. The
+  expected side is the reference SQL aggregate. The comparison is over the
+  dimension columns and the rounded measure. `GRAPH_EXPAND` runs on demand, so
+  `graphQuery` is false.

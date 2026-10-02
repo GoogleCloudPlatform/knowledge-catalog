@@ -16,6 +16,9 @@ $ kcmd owl import ontology/*.ttl --name deals --out deals.yaml
 $ kcmd shacl import shapes/deals.shapes.ttl --into deals.yaml
 read 5 shapes; 8 constraints for model 'deals'
 wrote deals.yaml
+coverage (shacl import of model 'deals'):
+  ...
+wrote coverage.json
 ```
 
 | Flag | Meaning |
@@ -23,6 +26,8 @@ wrote deals.yaml
 | `--into <model.yaml>` | The model document to add the constraints to. Without it, the model named by `--model` is read from, and written back to, the scope's semantic-model layout. |
 | `--model <name>` | The model receiving the constraints. Required without `--into`, and with `--into` only when the document declares several models. |
 | `--out <path>` | Write the updated document here instead of back to its source. |
+| `--coverage <path>` | Proposed. Write the [coverage report](#3-coverage-report-proposed) here instead of to `coverage.json` beside the written document. |
+| `--no-coverage` | Proposed. Print no coverage summary and write no coverage report. |
 
 Several shapes files are read as one shapes graph. The document is **edited in
 place**: comments, layout, keys, and every other constraint are left as they
@@ -184,6 +189,127 @@ A blank-node node shape has no stable name, so its provenance key is the
 classes it targets (`[anonymous shape for Opportunity]`); give shapes IRIs to
 keep their constraints apart.
 
+## 3. Coverage report (proposed)
+
+The warnings explain single gaps. The coverage report shows the whole import:
+every import prints a summary per construct and writes the full report to
+`coverage.json` beside the document it wrote. `--coverage <path>` writes the
+report elsewhere; `--no-coverage` skips both the summary and the file. The
+report lists **every** shape and constraint component the import read, each
+with one outcome:
+
+| Outcome | For a shape or constraint component |
+|---|---|
+| `compiled` | A constraint states it: the constraint's provenance note quotes the term. Or the model already guarantees it, so no constraint is needed: `sh:maxCount` of one or more on a field, `sh:class` equal to the relationship's destination, `sh:minCount 0`, an `sh:datatype` that agrees with the field. |
+| `hinted` | Not used by this import: a SHACL rule either becomes a constraint or is not carried. The [OWL import](owl-import.md#6-coverage-report-proposed) uses it. |
+| `dropped` | Not carried. The reason is the import's own warning when it raised one, else a short statement such as `not supported` or `its property shape was not carried`. |
+
+The [mapping table](#mapping) calls a term that needs no constraint
+*dropped* (an `sh:maxCount` on a field, an agreeing `sh:datatype`): no
+constraint is written for it. The report counts it as compiled, with the
+target `model structure`, because the model already holds the rule.
+
+Take a model whose `Order` has the fields `orderId`, `status` and `total` and
+the relationship `placedBy` (but no `discount`), and these shapes:
+
+```turtle
+shp:OrderShape a sh:NodeShape ;
+    sh:targetClass ex:Order ;
+    sh:property [ sh:path ex:placedBy ; sh:minCount 1 ; sh:maxCount 1 ;
+                  sh:message "Every order has exactly one customer." ] ;
+    sh:property [ sh:path ex:orderId ; sh:minCount 1 ; sh:datatype xsd:string ;
+                  sh:pattern "^O-[0-9]+$" ; sh:name "order id" ] ;
+    sh:property [ sh:path ex:status ; sh:in ( "open" "shipped" ) ;
+                  sh:severity sh:Warning ] ;
+    sh:property [ sh:path ex:total ; sh:minInclusive 0 ;
+                  sh:node shp:MoneyShape ] ;
+    sh:property [ sh:path ex:discount ; sh:maxCount 1 ] .
+
+shp:VipShape a sh:NodeShape ;
+    sh:targetNode ex:alice ;
+    sh:property [ sh:path ex:customerId ; sh:minCount 1 ] .
+
+shp:RetiredShape a sh:NodeShape ;
+    sh:targetClass ex:Customer ;
+    sh:deactivated true ;
+    sh:property [ sh:path ex:customerId ; sh:minCount 1 ] .
+```
+
+After its three warnings (`sh:node` on a field, the unknown `discount`, the
+`sh:targetNode`), the import prints:
+
+```console
+read 3 shapes; 5 constraints for model 'shop'
+wrote shop.yaml
+coverage (shacl import of model 'shop'):
+  construct         compiled  hinted  dropped
+  sh:NodeShape             1       0        2
+  sh:PropertyShape         4       0        3
+  sh:minCount              2       0        0
+  sh:maxCount              1       0        1
+  sh:message               1       0        0
+  sh:datatype              1       0        0
+  sh:pattern               1       0        0
+  sh:name                  0       0        1
+  sh:in                    1       0        0
+  sh:severity              1       0        0
+  sh:minInclusive          1       0        0
+  sh:node                  0       0        1
+  sh:targetNode            0       0        1
+  total                   14       0        9
+wrote coverage.json
+```
+
+Each counted occurrence is one entry in the report. Four of them:
+
+```json
+[
+  {"construct": "sh:pattern", "subject": "OrderShape / orderId on Order",
+   "outcome": "compiled", "target": "constraint Order_orderId_pattern"},
+  {"construct": "sh:datatype", "subject": "OrderShape / orderId on Order",
+   "outcome": "compiled", "target": "model structure",
+   "reason": "already guaranteed by the model structure; no constraint needed"},
+  {"construct": "sh:name", "subject": "OrderShape / orderId on Order",
+   "outcome": "dropped",
+   "reason": "a property shape display name has no slot in the model"},
+  {"construct": "sh:NodeShape", "subject": "RetiredShape",
+   "outcome": "dropped", "reason": "sh:deactivated true"}
+]
+```
+
+How each occurrence gets its outcome:
+
+- **A node shape** is compiled when at least one of its property shapes is
+  carried, and dropped otherwise. A node shape with no `sh:targetClass` (and
+  not itself a class), or with `sh:deactivated true`, is dropped. Each of its
+  property shapes is then listed as dropped after it, without its terms.
+- **A property shape** is listed once per target class
+  (`OrderShape / total on Order`). It is dropped, with each of its terms, when
+  the import skips it as a whole: the target is not an entity, the path names
+  no field or relationship of it, or the shape is deactivated. It is also
+  dropped when none of its terms is carried. Otherwise it is compiled, and the
+  reason counts the terms that were dropped.
+- **`sh:message`** (else `sh:description`) and **`sh:severity`** ride on the
+  constraints their property shape produced. When the shape produced none,
+  because the model already guarantees each of its rules, they are dropped with
+  `no constraint was derived to carry it`.
+- **`sh:name`** is always dropped: a constraint has no slot for a display name.
+- Targets other than `sh:targetClass`, node-level terms (`sh:closed`, `sh:or`,
+  ...) and unsupported property terms are dropped. The presentational terms
+  `sh:order`, `sh:group` and `sh:defaultValue` are not listed.
+
+> [!NOTE]
+> "Guaranteed by the model structure" is a statement about the model, not
+> about the stored rows. An `Order` row whose customer key matches no
+> `Customer` still breaks `sh:class Customer` on `placedBy`; the structural
+> `references` check of `kcmd validate` counts such rows. Nothing checks the
+> stored values against an `sh:datatype` that agrees with the field.
+
+`coverage.json` is shared with `kcmd owl import`; its format is described in
+[What an import keeps](fidelity.md#what-an-import-keeps-proposed). A SHACL
+import replaces only the `shacl` report of its model, so importing an ontology
+and then its shapes leaves one file holding both reports.
+
 ## Limitations
 
 Warned and skipped (never carried):
@@ -205,9 +331,11 @@ Warned and skipped (never carried):
 - Any other SHACL term on a property shape (e.g. `sh:uniqueLang`,
   `sh:hasValue`, `sh:languageIn`, SPARQL-based constraints).
 
-Dropped silently: presentational terms (`sh:order`, `sh:group`,
+Dropped without a warning: presentational terms (`sh:order`, `sh:group`,
 `sh:defaultValue`), `sh:name` (a display label with no slot on a constraint),
-and deactivated shapes.
+and deactivated shapes. The [coverage report](#3-coverage-report-proposed)
+still lists `sh:name` and each deactivated shape as dropped; it does not list
+the presentational terms.
 
 The constraints are **judged** rules, like every model constraint: an agent or
 an action guard reads the judgment, and nothing at write or query time filters
