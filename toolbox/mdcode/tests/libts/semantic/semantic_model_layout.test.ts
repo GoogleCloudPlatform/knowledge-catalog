@@ -132,3 +132,126 @@ describe('SemanticModelLayout profile discovery', () => {
     expect(l.modelDocuments().map(d => d.name)).toEqual(['commerce']);
   });
 });
+
+
+describe('SemanticModelLayout sibling profile files', () => {
+  const GOOGLE = 'version: 0.2.0.dev0/google\n';
+  function groupDir(): string {
+    const dir = path.join(catalogPath, 'EntryGroups', 'eg');
+    fs.mkdirSync(dir, {recursive: true});
+    return dir;
+  }
+  function write(file: string, text: string): void {
+    fs.writeFileSync(path.join(groupDir(), file), text);
+  }
+
+  test('modelDocuments returns the model and not its profile files', async () => {
+    write('retail.yaml', GOOGLE);
+    write('retail.profile.prod.yaml', 'name: prod\n');
+    write('retail.profile.yaml', 'name: x\n');
+    const l = await layout('eg');
+    expect(l.modelDocuments().map(d => d.name)).toEqual(['retail']);
+  });
+
+  test('profileDocuments finds sibling files by name, sorted', async () => {
+    write('retail.yaml', GOOGLE);
+    write('retail.profile.staging.yaml', 'name: staging\n');
+    write('retail.profile.prod.yaml', 'name: prod\n');
+    write('other.profile.prod.yaml', 'name: prod\n');
+    const l = await layout('eg');
+    const docs = l.profileDocuments('retail');
+    expect(docs.map(d => d.name)).toEqual(['prod', 'staging']);
+    expect(docs[0].text).toBe('name: prod\n');
+  });
+
+  test('the legacy directory is read only when no sibling file exists', async () => {
+    write('retail.yaml', GOOGLE);
+    fs.mkdirSync(path.join(groupDir(), 'retail.profiles'));
+    fs.writeFileSync(path.join(groupDir(), 'retail.profiles', 'old.yaml'), '# old\n');
+    let l = await layout('eg');
+    expect(l.profileDocuments('retail').map(d => d.name)).toEqual(['old']);
+
+    write('retail.profile.prod.yaml', 'name: prod\n');
+    l = await layout('eg');
+    expect(l.profileDocuments('retail').map(d => d.name)).toEqual(['prod']);
+  });
+
+  test('a name that does not match the filename suffix is an error', async () => {
+    write('retail.yaml', GOOGLE);
+    write('retail.profile.prod.yaml', 'name: staging\n');
+    const l = await layout('eg');
+    expect(() => l.profileDocuments('retail')).toThrow(
+        "Profile file 'retail.profile.prod.yaml' declares name 'staging', " +
+        "which does not match filename suffix 'prod'.");
+  });
+
+  test('default is reserved, in the filename or in name:', async () => {
+    write('retail.yaml', GOOGLE);
+    write('retail.profile.default.yaml', 'name: default\n');
+    let l = await layout('eg');
+    expect(() => l.profileDocuments('retail')).toThrow(
+        "Profile name 'default' is reserved for the inline bindings in " +
+        "'retail.yaml'; remove 'retail.profile.default.yaml'.");
+
+    fs.rmSync(path.join(groupDir(), 'retail.profile.default.yaml'));
+    write('retail.profile.prod.yaml', 'name: default\n');
+    l = await layout('eg');
+    expect(() => l.profileDocuments('retail')).toThrow(/reserved/);
+  });
+
+  test('a missing name, an unparseable file and DEFAULT in any case are errors', async () => {
+    write('retail.yaml', GOOGLE);
+    write('retail.profile.prod.yaml', 'entities: []\n');
+    let l = await layout('eg');
+    expect(() => l.profileDocuments('retail'))
+        .toThrow("Profile file 'retail.profile.prod.yaml' declares no name");
+
+    write('retail.profile.prod.yaml', 'name: prod\nentities: [\n');
+    l = await layout('eg');
+    expect(() => l.profileDocuments('retail')).toThrow(/does not parse/);
+
+    fs.rmSync(path.join(groupDir(), 'retail.profile.prod.yaml'));
+    write('retail.profile.DEFAULT.yaml', 'name: DEFAULT\n');
+    l = await layout('eg');
+    expect(() => l.profileDocuments('retail')).toThrow(/reserved/);
+  });
+
+  test('a sibling profile beside a vanilla model is an error', async () => {
+    write('retail.yaml', 'version: 0.2.0.dev0\n');
+    write('retail.profile.prod.yaml', 'name: prod\n');
+    const l = await layout('eg');
+    expect(() => l.profileDocuments('retail')).toThrow(/Google-flavor only/);
+  });
+
+  test('orphanProfilePaths lists profile files with no model', async () => {
+    write('retail.yaml', GOOGLE);
+    write('retail.profile.prod.yaml', 'name: prod\n');
+    write('gone.profile.prod.yaml', 'name: prod\n');
+    const l = await layout('eg');
+    expect(l.orphanProfilePaths()).toEqual(
+        [path.join(groupDir(), 'gone.profile.prod.yaml')]);
+  });
+
+  test('legacyProfileDirs lists <model>.profiles directories', async () => {
+    write('retail.yaml', GOOGLE);
+    fs.mkdirSync(path.join(groupDir(), 'retail.profiles'));
+    const l = await layout('eg');
+    expect(l.legacyProfileDirs()).toEqual(
+        [path.join(groupDir(), 'retail.profiles')]);
+  });
+
+  test('profilePath, writeProfileDocument and removeProfileDocument', async () => {
+    write('retail.yaml', GOOGLE);
+    const l = await layout('eg');
+    const p = l.profilePath('retail', 'prod');
+    expect(p).toBe(path.join(groupDir(), 'retail.profile.prod.yaml'));
+
+    l.writeProfileDocument('retail', 'prod', 'name: prod\n');
+    expect(fs.readFileSync(p, 'utf8')).toBe('name: prod\n');
+    expect(l.profileDocuments('retail').map(d => d.name)).toEqual(['prod']);
+
+    l.removeProfileDocument('retail', 'prod');
+    expect(fs.existsSync(p)).toBe(false);
+    l.removeProfileDocument('retail', 'prod');  // a no-op the second time
+  });
+});
