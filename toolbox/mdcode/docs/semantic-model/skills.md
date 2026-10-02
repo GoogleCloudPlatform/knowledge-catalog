@@ -474,11 +474,13 @@ an index, and the detail is read on demand.
      ancestors), description and `ai_context`, key, the row grain and history
      guidance (when `grain` / `history` are declared: what one row is, and for
      a versioned entity how to keep current rows -- `WHERE n.<flag> = TRUE` --
-     since the node table holds every version), properties (type, physical
+     since the node table holds every version), for a vocabulary (proposed) a
+     `## Members` section (see below), properties (type, physical
      column, label, description, synonyms, time dimension, unit and scale, and
      any other field metadata), relationships as `(A)-[:rel]->(B)` with
      cardinality (`1:1`, `N:1`, `M:N`), inverse edge, ancestor edge labels,
-     the physical join, and the relationship's `ai_context.instructions` (where
+     the physical join (or `derived` and the chain, for a derived
+     relationship; see below), and the relationship's `ai_context.instructions` (where
      OWL transitive/symmetric hints live), supertypes and subtypes, defined
      subsets, metrics anchored on it, the business terms that define the
      entity or one of its fields, constraints that mention it, and the
@@ -514,6 +516,31 @@ way the BigQuery generator does:
   the graph lacks. `GRAPH_EXPAND` accepts at most 10 node tables; when the
   primary graph is larger, a metric's query points at an `--extra-scope` graph
   that carries the same measure (and falls back to SQL when none does).
+- A **vocabulary** (`members:`, proposed) whose view the push generates is read
+  bound to that view (`vocab_<entity>` next to the primary graph, or the source
+  that names it). Its page's source table and starter `SELECT` therefore name
+  the view the graph reads. The page gets a `## Members` section: a line saying
+  how many members it has, which property holds the code, and that edges match
+  the code case-insensitively, then one bullet per member in order:
+
+  ```markdown
+  - `OPEN` — Open: Placed, not yet shipped.
+  - `SHIPPED` — Shipped (also: Dispatched)
+  - `VOID`
+  ```
+
+  The label is omitted when it equals the code. A relationship into a
+  vocabulary gives its SQL fallback join as
+  `LOWER(Order.status_key) = LOWER(OrderStatus.code)`, with a non-text foreign
+  key cast to `STRING` first, as the graph's edge view does.
+- A **derived relationship** (`via:`, proposed) is listed like any edge, as
+  `M:N` (a chain can pair many with many), with `derived` in place of the
+  physical join. A second line names its chain:
+
+  ```markdown
+  - `(Customer)-[:belongsTo]->(Club)` -- M:N; derived.
+    Derived: not stored; it is the chain ^memberOf, inClub (Customer -> Membership -> Club), keeping only pairs where Membership.status = 'active' (`^` = walked backwards). Traverse it like any edge.
+  ```
 
 Output is sorted throughout, so regenerating an unchanged model is
 byte-identical. The same budget warnings apply as in act mode.

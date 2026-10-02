@@ -139,6 +139,7 @@ A dataset is one concept in the business.
 | `defined` | string or `{expression, description?}` | a subset of its single parent picked out by a condition — extension ([§5](#5-extensions)) |
 | `grain` | string | free text: what one row stands for — extension ([§5](#5-extensions)) |
 | `history` | `{versioned, current_flag?, valid_from?, valid_to?}` | row versioning (SCD-2 style); the three optional keys name fields — extension ([§5](#5-extensions)) |
+| `members` | list of `{code, label?, synonyms?, definition?, order?, iri?}` | **proposed**: a vocabulary — the concept's rows are these members — extension ([§5](#5-extensions)) |
 | `source` | string | physical table URI; Ossie-native, relaxed to optional ([§7.1](#71-table-sources), [§4](#4-narrowings-and-relaxations)) |
 | `description` | string | |
 | `ai_context` | [ai_context](#24-ai_context) | |
@@ -147,7 +148,9 @@ A dataset is one concept in the business.
 An abstract dataset MUST NOT declare a `source`; a non-abstract dataset in a model
 bound for a graph MUST declare one (see [§4](#4-narrowings-and-relaxations) and
 [§7](#7-the-binding-layer)). A defined dataset MUST NOT declare a `source`,
-`primary_key` or `unique_keys`.
+`primary_key` or `unique_keys`. A vocabulary (a dataset with `members`,
+proposed) MAY omit `source` and `primary_key`: a BigQuery push generates its
+table from the members and keys it by the code ([§5](#5-extensions)).
 
 #### 2.1.1. Field
 
@@ -212,6 +215,8 @@ A relationship is a directed edge between two datasets.
 | `extends` | list of strings | parent relationship names — extension ([§5](#5-extensions)) |
 | `abstract` | boolean | a label with no edge table — extension ([§5](#5-extensions)) |
 | `inverse` | string | `/google` only ([§5](#5-extensions)); the name of this edge read backwards |
+| `via` | list of strings | **proposed**: a derived relationship — the chain of relationships it composes, `^name` walked backwards — extension ([§5](#5-extensions)) |
+| `filter` | string | **proposed**: a boolean SQL condition over the chain's `Entity.field`s, read only with `via` — extension ([§5](#5-extensions)) |
 | `description` | string | |
 | `ai_context` | [ai_context](#24-ai_context) | |
 | `custom_extensions` | list | [§6](#6-the-extension-mechanism) |
@@ -220,7 +225,9 @@ A relationship is a directed edge between two datasets.
 together (a bound edge) or both omitted (a logical edge); one without the other is
 rejected. When both are given they MUST have equal length. `from` and `to` MUST
 name datasets declared in the same model. An abstract relationship MUST NOT
-declare join columns.
+declare join columns. Nor may a derived relationship (one with `via`,
+proposed), which MUST NOT be `abstract` either: its pairs are whatever its
+chain reaches ([§5](#5-extensions)).
 
 `inverse` names the same edge traversed `to` → `from` (OWL `owl:inverseOf`). It is
 not a second relationship: it has no columns, description, or `ai_context` of its
@@ -323,10 +330,12 @@ extension, [§5](#5-extensions)), or *rejected* / *not authorable* (excluded).
 | `abstract` | — | added | supertype with no table; `/google` only · [§5](#5-extensions) |
 | `defined` | — | added | defined (virtual) entity: a parent's rows picked out by a condition (OWL defined class); `/google` only · [§5](#5-extensions) |
 | field `unit`, `scale`; dataset `grain`, `history` | — | added | units of measure, row grain, row versioning; `/google` only · [§5](#5-extensions) |
+| dataset `members` (proposed) | — | added | a vocabulary: a closed list of coded members (OWL enumeration / named individuals); `/google` only · [§5](#5-extensions) |
 | relationship `name`, `from`, `to` | defined | same | [§2.2](#22-relationship) |
 | relationship `from_columns` / `to_columns` | required | optional | model before binding; none = logical edge · [§4.2](#42-relaxations-looser-than-ossie) |
 | relationship `extends`, `abstract` | — | added | relationship inheritance (shared edge labels); `/google` only · [§5](#5-extensions) |
 | relationship `inverse` | — | added | the edge read backwards (`owl:inverseOf`); `/google` only · [§2.2](#22-relationship), [§5](#5-extensions) |
+| relationship `via`, `filter` (proposed) | — | added | a derived relationship: the composition of a chain of relationships (`owl:propertyChainAxiom`); `/google` only · [§2.2](#22-relationship), [§5](#5-extensions) |
 | relationship M:N (`association`) | — | not authorable (reserved) | no M:N syntax yet · [§2.2](#22-relationship) |
 | `metrics`, metric `expression` | required | same; graph-bound stricter | a graph measure binds one node and aggregate · [§4.1](#41-narrowings-stricter-than-ossie) |
 | `expression.dialects` | closed enum | any dialect string | tolerate imported / newer input · [§4.2](#42-relaxations-looser-than-ossie) |
@@ -489,6 +498,113 @@ reads the document ([§6](#6-the-extension-mechanism)).
   graph elements and Knowledge Catalog entries — a pull reads the trailers back
   — and as native keys in OSI output. Query skill pages state them per property
   and tell the agent how to filter current rows.
+
+- **Vocabularies: `members` on a dataset (extended profile only; proposed).**
+  A dataset MAY list its rows as `members`, which makes it a *vocabulary*: a
+  closed list of coded values (an order-status list, a lifecycle-stage list,
+  the named individuals of an OWL enumeration). A member is `{code, label?,
+  synonyms?, definition?, order?, iri?}`: `code` is required and unique within
+  the dataset compared case-insensitively, and `order` is an integer sort
+  position. `members: []` declares an empty vocabulary. `members` on an
+  abstract or defined dataset, or a repeated code, is a load error. A
+  vocabulary MAY omit `source` and `primary_key`.
+
+  ```yaml
+  entities:
+    - name: OrderStatus
+      primary_key: [statusCode]
+      fields:
+        - {name: statusCode, datatype: String}
+        - {name: label, datatype: String}
+        - {name: sortOrder, datatype: Integer}
+      members:
+        - {code: OPEN, label: Open, order: 1}
+        - {code: SHIPPED, label: Shipped, order: 2, definition: Left the warehouse.}
+        - {code: VOID, label: Cancelled, order: 3, synonyms: [voided]}
+  ```
+
+  *BigQuery.* A push generates the vocabulary's table when the dataset has no
+  `source`, or when its source's table name is the conventional
+  `vocab_<snake_case(name)>` (`vocab_order_status`); kcmd then owns that view
+  and re-creates it on every push. It is one `CREATE OR REPLACE VIEW` per
+  vocabulary, run before the graph DDL, created at the named source or next to
+  the graph, with the fixed columns `code STRING`, `label STRING` (the code
+  when a member has no label), `sort_order INT64`, `definition STRING` and
+  `iri STRING`:
+
+  ```sql
+  SELECT * FROM UNNEST([
+    STRUCT('OPEN' AS code, 'Open' AS label, 1 AS sort_order, CAST(NULL AS STRING) AS definition, CAST(NULL AS STRING) AS iri),
+    ...])
+  ```
+
+  The node table reads the view. A field left unbound binds by name: a single
+  key field reads `code`, and a field whose snake-case name is a view column
+  reads it (`sortOrder` reads `sort_order`, and so does `order`). A vocabulary
+  with no key is keyed by a `code` field, added when no field reads `code`; one
+  with no fields exposes all five columns. A vocabulary whose source names any
+  other table keeps that table, and its members are then documentation only:
+  kcmd never replaces a table it does not own. A foreign-key relationship into
+  a vocabulary matches the code **case-insensitively**, the lowering choice a
+  defined entity already makes for code comparisons. A graph edge joins on
+  column equality, so the edge is backed by a generated view
+  `edge_<snake_case(relationship)>` pairing each source row with the member
+  whose code matches (`LOWER(fk) = LOWER(code)`; a non-text foreign key is cast
+  to `STRING` first). *Spanner Graph* has no generated views, so a vocabulary
+  with no source is a push error there. *Knowledge Catalog:* the members ride
+  the entity description as its last paragraph (`Members: "OPEN" — "Open";
+  "SHIPPED" — "Shipped"; "VOID" — "Cancelled".`), and a pull reads them back
+  (codes and labels only). OSI output carries `members` natively, and query
+  skill pages list them (`code — label`). Publishing members as Business
+  Glossary terms is a follow-up.
+
+- **Derived relationships: `via` and `filter` on a relationship (extended
+  profile only; proposed).** A relationship MAY declare `via: [step, step, …]`
+  with at least two steps. It is then the composition of those relationships
+  walked in order, which is OWL's `owl:propertyChainAxiom`. A step names a
+  relationship, or `^name` to walk one backwards (SPARQL's inverse path). A
+  relationship's declared `inverse` name also works as a backwards step. A
+  step that is itself derived is expanded in place. The optional `filter` is a
+  boolean SQL condition over `Entity.field` references to entities on the
+  chain, and it keeps only the pairs whose path satisfies it.
+
+  ```yaml
+  relationships:
+    - {name: memberOf, from: Membership, to: Customer, from_columns: [customerId], to_columns: [customerId]}
+    - {name: inClub, from: Membership, to: Club, from_columns: [clubId], to_columns: [clubId]}
+    - name: belongsTo              # Customer -> Membership -> Club
+      from: Customer
+      to: Club
+      via: [^memberOf, inClub]
+      filter: Membership.status = 'active'
+  ```
+
+  These are load errors:
+  - a derived relationship that declares join columns or is `abstract`;
+  - a step that names the relationship itself.
+
+  These are load warnings:
+  - an unknown, abstract or cyclic step;
+  - consecutive steps that do not meet at the same entity (or a subtype or
+    supertype of it);
+  - a `from` or `to` that does not match the chain's ends;
+  - a `filter` without `via`, which is ignored.
+
+  *BigQuery.* A push generates a view `edge_<snake_case(name)>` that follows
+  the chain and selects the distinct pairs of source key and destination key
+  (`source_<column>`, `target_<column>`); the edge table reads that view. It
+  is created before the graph, after the vocabulary views. A hop into a
+  vocabulary matches codes case-insensitively. Some chains cannot be
+  materialized, and the edge is then omitted with a warning:
+  - a step through a junction (M:N) or a logical, column-less edge;
+  - an endpoint with no table;
+  - a step that is itself derived with a `filter` of its own.
+
+  A binding profile that drops a step drops the derived relationship too.
+  *Spanner Graph:* a push error. *Knowledge Catalog:* a schema join pairing the
+  two endpoints' keys, whose description ends with `Derived via: ^memberOf,
+  inClub.` (and `Derived filter: …`), read back on pull. OSI output carries
+  `via` and `filter` natively, and query skill pages state the chain.
 
 - **`glossary` on a model (extended profile only).** The model's business
   glossary: `{id?, display_name?, description?, categories?, terms?}`. A

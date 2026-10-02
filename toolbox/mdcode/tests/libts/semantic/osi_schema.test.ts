@@ -145,10 +145,21 @@ function toSchemaShape(doc: any): any {
     }
     delete m.deployment_target;
     // `inverse` is accepted only under /google, so only fold it there: a
-    // vanilla fixture carrying it still fails.
+    // vanilla fixture carrying it still fails. The proposed K2 `via`/`filter`
+    // (derived relationships) and K3 `members` (vocabularies) are /google-only
+    // keys too.
     if (google && Array.isArray(m.relationships)) {
       for (const r of m.relationships) {
-        if (r && typeof r === 'object') delete r.inverse;
+        if (r && typeof r === 'object') {
+          delete r.inverse;
+          delete r.via;
+          delete r.filter;
+        }
+      }
+    }
+    if (google && Array.isArray(m.datasets)) {
+      for (const ds of m.datasets) {
+        if (ds && typeof ds === 'object') delete ds.members;
       }
     }
   }

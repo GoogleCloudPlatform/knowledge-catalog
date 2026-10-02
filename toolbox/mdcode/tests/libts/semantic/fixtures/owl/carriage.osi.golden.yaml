@@ -23,6 +23,11 @@ semantic_model:
       - name: Robot
         description: A machine, never a person.
       - name: LifeStage
+        members:
+          - code: Infant
+            iri: http://example.com/people#Infant
+          - code: Adult
+            iri: http://example.com/people#Adult
     relationships:
       - name: ancestorOf
         from: Person
@@ -49,6 +54,9 @@ semantic_model:
       - name: uncleOf
         from: Person
         to: Person
+        via:
+          - ancestorOf
+          - relatedTo
     constraints:
       - name: Person_Robot_LifeStage_disjoint
         judgment: No instance is more than one of Person, Robot and LifeStage. An

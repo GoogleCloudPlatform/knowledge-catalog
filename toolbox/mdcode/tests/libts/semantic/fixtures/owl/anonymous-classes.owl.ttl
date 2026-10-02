@@ -46,7 +46,8 @@ ex:Contract rdfs:subClassOf [
   owl:complementOf ex:Party
 ] .
 
-# owl:oneOf enumeration wrapper.
+# owl:oneOf enumeration wrapper: Party imports as a vocabulary of these two
+# members (K3); the wrapper itself is no term.
 ex:Party owl:equivalentClass [
   a owl:Class ;
   owl:oneOf ( ex:acme ex:globex )

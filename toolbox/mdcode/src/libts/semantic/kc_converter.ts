@@ -65,6 +65,8 @@ import {isConstraintEntry, readConstraint} from './kc_constraints';
 import {ABSTRACT_MARKER, DEFINED_AS_PREFIX, DEFINITION_NOTE_PREFIX, INVERSE_PREFIX, linkSlug, SPECIALIZES_PREFIX} from './knowledge_catalog';
 import {referencedEntityNames} from './sql_expr_utils';
 import {splitGrainHistoryTrailers, splitUnitTrailer} from './units_history';
+import {splitDerivedTrailers} from './derived_relationships';
+import {splitMembersTrailer} from './vocabulary';
 
 export interface ReadResult {
   models: SemanticModel[];
@@ -228,16 +230,18 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
   }
 
   // Publish appends the Specializes paragraph then the Abstract marker (or the
-  // definition trailers), then the K7 Grain / History paragraphs, to the entity
-  // description (knowledge_catalog.entityDescription); peel them off in
-  // reverse.
-  const k7 = splitGrainHistoryTrailers(entry.entrySource?.description);
+  // definition trailers), then the K7 Grain / History paragraphs, then the K3
+  // Members paragraph, to the entity description
+  // (knowledge_catalog.entityDescription); peel them off in reverse.
+  const k3 = splitMembersTrailer(entry.entrySource?.description);
+  const k7 = splitGrainHistoryTrailers(k3.rest);
   const defined = splitDefinitionTrailer(k7.rest);
   const trailers = splitEntityTrailers(defined.rest);
   const dataSource = dataSourceFromResource(semantic?.source?.resources?.[0]);
   // An abstract entity has no table by design, so an empty source is expected;
-  // so does a defined one (a subset of its parent's rows).
-  if (!dataSource && !trailers.abstract && !defined.definition) {
+  // so does a defined one (a subset of its parent's rows), and a vocabulary
+  // (its rows are its members).
+  if (!dataSource && !trailers.abstract && !defined.definition && !k3.members) {
     warnings.push(
         `entity '${name}': no backing data source in the semantic-entity ` +
         `aspect; 'source' will be empty and the entity may not load`);
@@ -266,6 +270,7 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
   if (defined.definition) entity.definition = defined.definition;
   if (k7.grain !== undefined) entity.grain = k7.grain;
   if (k7.history !== undefined) entity.history = k7.history;
+  if (k3.members !== undefined) entity.members = k3.members;
   const ai = readAiContext(entry);
   if (ai) entity.aiContext = ai;
   return entity;
@@ -602,8 +607,19 @@ function readRelationships(
           {entity: destination.name, columns: asArray(join.target?.fields)},
     };
     if (join.description !== undefined) {
-      // Publish appends Specializes then Inverse; peel them off in reverse.
-      const inv = splitInverse(join.description);
+      // Publish appends Specializes, then Inverse, then (K2) the Derived
+      // paragraphs; peel them off in reverse.
+      const k2 = splitDerivedTrailers(join.description);
+      if (k2.via) {
+        // A derived join publishes its endpoints' keys as `fields` (see
+        // knowledge_catalog.schemaJoinAspectData); its pairs come from the
+        // chain, so it binds no columns of its own.
+        rel.via = k2.via;
+        if (k2.filter !== undefined) rel.filter = k2.filter;
+        rel.source.columns = [];
+        rel.destination.columns = [];
+      }
+      const inv = k2.rest !== undefined ? splitInverse(k2.rest) : {};
       if (inv.inverse !== undefined) rel.inverse = inv.inverse;
       if (inv.description !== undefined) {
         const {description, parents} = splitSpecializes(inv.description);
@@ -643,6 +659,21 @@ function readRelationships(
     } else {
       delete rel.extends;
     }
+  }
+  // K2: a chain step names a relationship (or its inverse) as authored, while
+  // pull recovers relationship names in link-slug form; resolve each step the
+  // way `extends` parents are, so the pulled chain still follows. A step that
+  // resolves to nothing is kept as published (the loader then warns).
+  const inverseNames = new Set(
+      out.flatMap(r => r.inverse !== undefined ? [r.inverse] : []));
+  for (const rel of out) {
+    if (!rel.via) continue;
+    rel.via = rel.via.map(step => {
+      const name = step.relationship;
+      if (pulledNames.has(name) || inverseNames.has(name)) return step;
+      const slug = linkSlug(name);
+      return pulledNames.has(slug) ? {...step, relationship: slug} : step;
+    });
   }
   return out;
 }

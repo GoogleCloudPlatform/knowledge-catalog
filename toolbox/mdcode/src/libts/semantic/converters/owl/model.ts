@@ -26,7 +26,10 @@
 // namespace (see to_ir.refValue). Property restrictions (owl:Restriction
 // reached through rdfs:subClassOf / owl:equivalentClass) are staged as
 // OwlRestriction for the mapper's constraint derivation (constraints.ts).
-// Richer OWL still absent (SHACL, class expressions, individuals); see the
+// Named individuals that are instances of the ontology's classes are staged
+// as OwlIndividual (K3, proposed: a vocabulary's members), and property chains
+// keep their inverse steps (K2, proposed: a derived relationship's `via`).
+// Richer OWL still absent (SHACL, general class expressions); see the
 // "What is not covered yet" note in the guide.
 
 /**
@@ -140,6 +143,15 @@ export interface OwlClass extends OwlCommonAnnotations {
   // The term's local name (the part after the namespace `#`/`/`), used as the
   // OSI entity name, e.g. `Customer`.
   localName: string;
+  // The term's full IRI. Lets the mapper tell this class's individuals
+  // (OwlIndividual.types) from those of a same-named class in another
+  // namespace. Absent only in hand-built models.
+  iri?: string;
+  // The class-level boolean annotation whose predicate local name is
+  // `vocabulary` (`core:vocabulary true`, kcmd:vocabulary, ...): true marks the
+  // class a closed vocabulary even without an owl:oneOf, false keeps it a data
+  // class even when it has named individuals. Absent when not annotated.
+  vocabulary?: boolean;
   // rdfs:label, if present. A display name; carried to the entity only when it
   // adds information over `localName` (see to_ir.ts).
   label?: string;
@@ -171,15 +183,14 @@ export interface OwlClass extends OwlCommonAnnotations {
   // none.
   disjointWith: string[];
   // Referent IRIs of the members of an `owl:oneOf` enumeration (the class is
-  // defined by listing its members). An enumeration is an unordered SET, so the
-  // members are deduped and -- in the non-standard case of a class carrying
-  // more than one oneOf axiom -- unioned; unlike a property chain, neither
-  // order nor repetition is meaningful. No native OSI home -- the members are
-  // usually individuals, which the converter does not model -- so the
-  // enumeration is carried verbatim as a custom extension, keeping the member
-  // names. Full IRIs
-  // -- the mapper shortens an in-namespace one to its local name. Empty when
-  // the class is not an enumeration.
+  // defined by listing its members), written either directly on the class or
+  // as its `owl:equivalentClass [ owl:oneOf (...) ]` (the same statement). An
+  // enumeration is an unordered SET, so the members are deduped and -- in the
+  // non-standard case of a class carrying more than one oneOf axiom --
+  // unioned; unlike a property chain, neither order nor repetition is
+  // meaningful. The mapper turns them into the vocabulary's members (K3,
+  // proposed), with each individual's facts from OwlModel.individuals. Full
+  // IRIs, in list order. Empty when the class is not an enumeration.
   oneOf: string[];
   // The property restrictions the class is declared to satisfy (blank-node
   // `owl:Restriction` objects of rdfs:subClassOf, or a bare restriction as the
@@ -331,17 +342,17 @@ export interface OwlObjectProperty extends OwlCommonAnnotations {
   // Empty when none.
   propertyDisjointWith: string[];
   // One entry per `owl:propertyChainAxiom` on this property, each the ordered
-  // list of properties it composes (e.g. hasParent then hasBrother ==
-  // hasUncle). OWL 2 allows a property to carry MORE THAN ONE chain axiom (e.g.
-  // uncleOf as fatherOf/brotherOf and as motherOf/brotherOf), so the chains are
-  // kept separate -- flattening them into one list would fuse the axiom
-  // boundaries and be indistinguishable from a single longer chain. No native
-  // OSI home, so each is carried verbatim. Within a chain, order is significant
-  // AND repetition is meaningful (a chain may name the same property twice,
-  // e.g. hasParent/hasParent for a grandparent), so it is neither reordered nor
-  // deduped. Full IRIs -- the mapper shortens an in-namespace one to its local
-  // name. Empty when the property is not a chain.
-  propertyChain: string[][];
+  // list of steps it composes (e.g. hasParent then hasBrother == hasUncle). OWL
+  // 2 allows a property to carry MORE THAN ONE chain axiom (e.g. uncleOf as
+  // fatherOf/brotherOf and as motherOf/brotherOf), so the chains are kept
+  // separate -- flattening them into one list would fuse the axiom boundaries
+  // and be indistinguishable from a single longer chain. Within a chain, order
+  // is significant AND repetition is meaningful (a chain may name the same
+  // property twice, e.g. hasParent/hasParent for a grandparent), so it is
+  // neither reordered nor deduped. The mapper turns a chain into a derived
+  // relationship's `via` (K2, proposed). Empty when the property is not a
+  // chain.
+  propertyChain: OwlChainStep[][];
   // owl:SymmetricProperty -- the edge holds both ways (`a rel b` implies
   // `b rel a`). Carried verbatim; no native OSI home.
   symmetric: boolean;
@@ -368,6 +379,50 @@ export interface OwlObjectProperty extends OwlCommonAnnotations {
   // such as `inStage hasValue Stage_Won` compile to `salesStage = '5_won'`.
   // Absent when not annotated.
   encodedBy?: string;
+}
+
+/**
+ * One step of an `owl:propertyChainAxiom`: a named object property, or an
+ * anonymous `[ owl:inverseOf p ]` property expression (p walked backwards).
+ */
+export interface OwlChainStep {
+  // Full IRI of the property the step follows. Empty when `unsupported`.
+  property: string;
+  // True for an `[ owl:inverseOf p ]` step.
+  inverse?: boolean;
+  // Set when the step is an anonymous property expression other than a plain
+  // inverse of a named property; names the construct for the mapper's
+  // warning (the chain is then not imported).
+  unsupported?: string;
+}
+
+/**
+ * A named individual that is a direct instance (`rdf:type`) of one of the
+ * ontology's classes, or is declared `owl:NamedIndividual` -- the members of a
+ * closed vocabulary (K3, proposed; see vocabularies.ts).
+ */
+export interface OwlIndividual {
+  // Full IRI.
+  iri: string;
+  localName: string;
+  // Full IRIs of the ontology classes it is asserted (rdf:type) to be a direct
+  // instance of, in document order. Empty for a bare owl:NamedIndividual.
+  types: string[];
+  // True when it is declared `owl:NamedIndividual`.
+  named: boolean;
+  // The first rdfs:label, else the first skos:prefLabel. Undefined when none.
+  label?: string;
+  // Every other label: further rdfs:label / skos:prefLabel values, then
+  // skos:altLabel / skos:hiddenLabel, in document order.
+  synonyms: string[];
+  // skos:definition, else rdfs:comment, else dcterms:/dc:description.
+  definition?: string;
+  // The stored code (see OwlModel.individualCodes). Undefined when none.
+  code?: string;
+  // The lexical form of the first literal of an annotation whose local name is
+  // `sortOrder` or `order` (`core:sortOrder 3`), as written; the mapper keeps
+  // it when it is an integer. Undefined when none.
+  order?: string;
 }
 
 /**
@@ -434,4 +489,8 @@ export interface OwlModel {
   // `code`. Used with OwlObjectProperty.encodedBy to compile a hasValue on an
   // individual into a comparison on the code column. Absent when none.
   individualCodes?: Record<string, string>;
+  // The named individuals that are instances of this ontology's classes or are
+  // declared owl:NamedIndividual, in document order (see OwlIndividual). A
+  // term that is itself a class or property is not listed. Absent when none.
+  individuals?: OwlIndividual[];
 }

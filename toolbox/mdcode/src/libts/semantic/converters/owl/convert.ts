@@ -9,7 +9,7 @@ import {serializeModel} from '../../osi_converter';
 
 import {parseOwl} from './parse';
 import {skosToGlossary} from './skos';
-import {owlToIr} from './to_ir';
+import {ImportStats, owlToIr} from './to_ir';
 
 export interface ConvertResult {
   // The OSI document text, ready to write as `<model>.yaml`.
@@ -17,8 +17,7 @@ export interface ConvertResult {
   // Counts for the CLI's one-line summary -- what was actually converted, not
   // the source-triple counts (see ToIrResult.stats), so a skipped element is
   // not reported as "converted".
-  stats:
-      {classes: number; datatypeProperties: number; objectProperties: number};
+  stats: ImportStats;
   // Notes about OWL content that could not be mapped (from the mapper) and IR
   // content with no loadable representation (from the serializer). Non-fatal.
   warnings: string[];

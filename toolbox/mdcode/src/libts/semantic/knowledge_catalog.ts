@@ -61,6 +61,8 @@ import {AiContext, DataType, Entity, Metric, Relationship, SemanticModel} from '
 import {actionEntries, actionOwnedPrefix} from './kc_actions';
 import {constraintEntries, constraintOwnedPrefix} from './kc_constraints';
 import {entityTrailers, withUnitTrailer} from './units_history';
+import {derivedTrailers} from './derived_relationships';
+import {membersTrailer} from './vocabulary';
 
 // Where the `semantic-*` and `schema` system types live: built-in types in
 // project `dataplex-types`, location `global`. Callers may override to reference
@@ -317,7 +319,22 @@ function relationshipLink(
   // the link until the edge is bound. Add the relationship's from_columns /
   // to_columns to the model and it publishes; the edge still lives in the model
   // (and, once bound, the BigQuery/Spanner graph).
-  if (!rel.source.columns.length || !rel.destination.columns.length) {
+  //
+  // K2: a derived relationship (`via`) binds no join columns by design; its
+  // schema-join pairs the two endpoints' keys instead (see
+  // schemaJoinAspectData), so it needs both endpoints keyed.
+  const derived = !!rel.via?.length;
+  if (derived) {
+    const unkeyed = [rel.source.entity, rel.destination.entity].find(
+        n => !(entityByName(model, n)?.keys ?? []).length);
+    if (unkeyed !== undefined) {
+      warnings.push(
+          `relationship '${rel.name}': derived, and endpoint entity '${
+              unkeyed}' has no primary key to pair, so it is not published ` +
+          `to Knowledge Catalog yet.`);
+      return undefined;
+    }
+  } else if (!rel.source.columns.length || !rel.destination.columns.length) {
     warnings.push(
         `relationship '${rel.name}': no join columns, so it is not published ` +
         `to Knowledge Catalog yet; add its from_columns and to_columns to the ` +
@@ -370,26 +387,32 @@ function relationshipLink(
 // edge -- so `fields` is always present. The `name` still falls back to the
 // entity name when the model is logical-only for KC (columns set but no
 // dataSource binding), matching the entity-not-found fallback.
+//
+// K2: a derived relationship (`via`) has no foreign key; its join pairs the two
+// endpoints' primary keys, is typed JOIN, and its description carries the
+// chain it is derived through (see derived_relationships.derivedTrailers), so
+// a reader does not mistake it for a direct column equality.
 function schemaJoinAspectData(
     model: SemanticModel, rel: Relationship): Record<string, any> {
   const srcEntity = entityByName(model, rel.source.entity);
   const dstEntity = entityByName(model, rel.destination.entity);
+  const derived = !!rel.via?.length;
   return {
     joins: [compact({
       source: compact({
         name: srcEntity && srcEntity.dataSource ?
             srcEntity.dataSource :
             rel.source.entity,
-        fields: rel.source.columns,
+        fields: derived ? srcEntity?.keys ?? [] : rel.source.columns,
       }),
       target: compact({
         name: dstEntity && dstEntity.dataSource ?
             dstEntity.dataSource :
             rel.destination.entity,
-        fields: rel.destination.columns,
+        fields: derived ? dstEntity?.keys ?? [] : rel.destination.columns,
       }),
       description: joinDescription(rel),
-      type: 'FOREIGN_KEY',
+      type: derived ? 'JOIN' : 'FOREIGN_KEY',
       inferenceSource: 'USER',
     })],
     userManaged: true,
@@ -424,12 +447,14 @@ function inverseLine(rel: Relationship): string|undefined {
   return rel.inverse ? `${INVERSE_PREFIX}${rel.inverse}.` : undefined;
 }
 
-// The description, then the Specializes paragraph, then the Inverse paragraph
-// -- a fixed order, so pull peels them off from the end in reverse (Inverse
-// first, then Specializes).
+// The description, then the Specializes paragraph, then the Inverse paragraph,
+// then (K2) the Derived paragraphs -- a fixed order, so pull peels them off
+// from the end in reverse (Derived first, then Inverse, then Specializes).
 function joinDescription(rel: Relationship): string|undefined {
-  const parts = [rel.description, specializesLine(rel), inverseLine(rel)]
-                    .filter((p): p is string => !!p);
+  const parts = [
+    rel.description, specializesLine(rel), inverseLine(rel),
+    ...derivedTrailers(rel),
+  ].filter((p): p is string => !!p);
   return parts.length ? parts.join('\n\n') : undefined;
 }
 
@@ -499,9 +524,12 @@ function entityDescription(entity: Entity): string|undefined {
     entity.definition ?
         `${DEFINED_AS_PREFIX}${oneParagraph(entity.definition.expression)}` :
         undefined,
-    // K7: `Grain: …` then `History: …`, last of all, so pull peels them first
-    // (see units_history.splitGrainHistoryTrailers).
+    // K7: `Grain: …` then `History: …`, so pull peels them right after the
+    // K3 members (see units_history.splitGrainHistoryTrailers).
     ...entityTrailers(entity),
+    // K3: a vocabulary's `Members: …` paragraph, last of all, so pull peels
+    // it first (see vocabulary.splitMembersTrailer).
+    membersTrailer(entity),
   ].filter((p): p is string => !!p);
   return parts.length ? parts.join('\n\n') : undefined;
 }

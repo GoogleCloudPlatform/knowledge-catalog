@@ -28,13 +28,20 @@
 //   owl:deprecated                -> "DEPRECATED:" description + instruction
 //   owl:Transitive/SymmetricProperty -> relationship ai_context.instructions
 //                                    (see annotations.ts)
+//   owl:oneOf / owl:NamedIndividual instances / `<ns>:vocabulary true`
+//                                 -> dataset members (K3, proposed; see
+//                                    vocabularies.ts)
+//   owl:propertyChainAxiom        -> relationship via (K2, proposed; see
+//                                    chains.ts)
+//   <ns>:encodedBy (object prop.) -> the edge's join columns: the code
+//                                    field -> the destination's key
 //
 // The importer is IMPORT-ONLY: it maps the constructs above and DROPS every
 // other OWL construct rather than carrying it. Facts with no native OSI home --
 // rdfs:subPropertyOf between datatype properties,
 // owl:propertyDisjointWith, the remaining
 // property characteristics (reflexive, irreflexive, asymmetric, functional on
-// a datatype property), owl:oneOf, owl:propertyChainAxiom, the
+// a datatype property), the
 // owl:AllDisjointProperties / owl:AllDifferent set axioms, rdfs:isDefinedBy,
 // and owl:versionInfo on a term -- are NOT imported. An earlier version carried
 // them verbatim in a GOOGLE custom extension; that was removed so an imported
@@ -43,20 +50,24 @@
 //
 // The result is a purely LOGICAL model: an ontology declares meaning, not
 // physical tables, so entities carry no source, fields no expression, and
-// relationships no join columns -- only the logical shape (entities, fields,
-// keys, and edges by direction). `kcmd push` publishes it as-is.
+// relationships no join columns unless the ontology states them (encodedBy)
+// -- only the logical shape (entities, fields, keys, and edges by direction).
+// `kcmd push` publishes it as-is.
 // A BigQuery or Spanner Graph deploy needs each edge's join columns added to
 // the model (logical grain the model owns) plus a physical binding (sources,
 // field columns) and a deployment target; that binding is a separate step (a
 // binding profile, see the user guide, "Going from ontology to a running
 // graph").
 
-import {AiContext, Entity, Field, Relationship, SemanticModel,} from '../../ir';
+import {checkDerivedRelationships, formatChain, resolveChain} from '../../derived_relationships';
+import {AiContext, Entity, Field, Relationship, RelationshipStep, SemanticModel,} from '../../ir';
 
 import {applyOwlAnnotations} from './annotations';
+import {canonicalSteps, chainSteps} from './chains';
 import {owlConstraints} from './constraints';
 import {compileOwlDefinitions} from './definitions';
-import {OwlModel, OwlOntology} from './model';
+import {OwlModel, OwlObjectProperty, OwlOntology} from './model';
+import {applyOwlVocabularies} from './vocabularies';
 
 export interface ToIrResult {
   model: SemanticModel;
@@ -68,8 +79,19 @@ export interface ToIrResult {
   // skipped class/property is excluded, and a multi-domain datatype property
   // still counts once. The CLI reports these, so "converted N ..." is honest
   // even when some elements were warned and skipped.
-  stats:
-      {classes: number; datatypeProperties: number; objectProperties: number};
+  stats: ImportStats;
+}
+
+/** What an OWL import converted (see ToIrResult.stats). */
+export interface ImportStats {
+  classes: number;
+  datatypeProperties: number;
+  objectProperties: number;
+  // Of the classes, those imported as vocabularies (K3); of the object
+  // properties, those imported as derived relationships (K2). Present only
+  // when non-zero.
+  vocabularies?: number;
+  derivedRelationships?: number;
 }
 
 // --- Datatype mapping. ------------------------------------------------------
@@ -468,14 +490,42 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   // only names the other edge read backwards becomes that edge's `inverse:`
   // instead of a second relationship, so it is skipped here and attached after.
   const {folded, inverseFor} = planInverseFolds(owl, warnings);
+
+  // owl:propertyChainAxiom -> `via` (K2, proposed; see chains.ts). A step
+  // naming a folded inverse is rewritten onto its forward edge walked the
+  // other way, so the chain never depends on the inverse name surviving. A
+  // chain property may leave its ends to the chain: it is DEFERRED until the
+  // stored edges exist (see resolveDeferredChains).
+  const forwardOf = new Map([...inverseFor].map(([f, i]) => [i, f]));
+  const chainOf = new Map<string, RelationshipStep[]>();
+  for (const p of owl.objectProperties) {
+    const planned = chainSteps(p);
+    warnings.push(...planned.warnings);
+    if (!planned.steps) continue;
+    if (folded.has(p.localName)) {
+      warnings.push(
+          `object property '${p.localName}' declares an ` +
+          `owl:propertyChainAxiom but is imported as the inverse of '${
+              forwardOf.get(p.localName)}'; its chain is not imported.`);
+      continue;
+    }
+    chainOf.set(p.localName, canonicalSteps(planned.steps, forwardOf));
+  }
+  const deferred: Array<typeof owl.objectProperties[number]> = [];
+
   const relationships: Relationship[] = [];
   for (const p of owl.objectProperties) {
     if (folded.has(p.localName)) continue;
+    const via = chainOf.get(p.localName);
     const declaredDomain = p.domains[0];
     const declaredRange = p.ranges[0];
     const domain = endOf(p.localName, 'domains');
     const range = endOf(p.localName, 'ranges');
     if (!domain || !range) {
+      if (via) {
+        deferred.push(p);
+        continue;
+      }
       const hasSubs = (subsOf.get(p.localName) ?? []).length > 0;
       warnings.push(
           `object property '${p.localName}' is missing an rdfs:domain or ` +
@@ -537,7 +587,17 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
       aiContext: relationshipAiContext(
           p.label, p.localName, p.synonyms, p.comment, p.examples),
     };
+    if (via) relationship.via = via;
     relationships.push(relationship);
+  }
+  if (resolveDeferredChains(
+          deferred, chainOf, endOf, classNames, relationships, warnings)) {
+    // Back into document order (a stable sort: nothing else moves).
+    const order = new Map<string, number>();
+    owl.objectProperties.forEach((p, i) => {
+      if (!order.has(p.localName)) order.set(p.localName, i);
+    });
+    relationships.sort((a, b) => order.get(a.name)! - order.get(b.name)!);
   }
 
   // Relationship inheritance, once the emitted set is known. `extends` keeps
@@ -564,7 +624,17 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   }
   const extended = new Set(relationships.flatMap(r => r.extends ?? []));
   for (const r of relationships) {
-    if (extended.has(r.name)) r.abstract = true;
+    if (!extended.has(r.name)) continue;
+    if (r.via?.length) {
+      // A derived relationship has edges of its own (its chain's pairs), so
+      // it stays concrete; its subproperties still carry its label.
+      warnings.push(
+          `object property '${r.name}' is a superproperty but derives from ` +
+          `its owl:propertyChainAxiom; kept as a derived (not abstract) ` +
+          `relationship.`);
+      continue;
+    }
+    r.abstract = true;
   }
 
   // Attach each folded inverse to its (now emitted) forward edge. The inverse
@@ -600,6 +670,15 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     inversesAttached++;
   }
 
+  // `<objectProperty> <ns>:encodedBy <datatypeProperty>` -> the edge's join
+  // columns (see joinEncodedEdges).
+  joinEncodedEdges(owl, entitiesByName, relationships, lineage, warnings);
+
+  // A derived relationship's chain gets the loader's static checks now (steps
+  // resolve, consecutive steps meet, the ends match), so the import already
+  // says when a chain cannot be followed.
+  checkDerivedRelationships(entities, relationships, warnings);
+
   // Equivalences, deprecation, and the transitive / symmetric characteristics
   // land in native ai_context / description slots (see annotations.ts).
   applyOwlAnnotations(owl, entities, relationships);
@@ -622,6 +701,12 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   } :
                                                      owl;
 
+  // Enumerations, `vocabulary true` classes and classes with named
+  // individuals become vocabularies carrying their members (K3, proposed; see
+  // vocabularies.ts). After the definitions: a defined entity keeps its
+  // definition.
+  const vocabularies = applyOwlVocabularies(owl, entitiesByName, warnings);
+
   // Axioms that state a rule -- property restrictions, functional object
   // properties, class disjointness -- become native model-level constraints
   // (see constraints.ts). Omitted entirely when there are none, so an ontology
@@ -638,6 +723,7 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     metrics: [],
   };
   if (constraints.length) model.constraints = constraints;
+  const derived = relationships.filter(r => r.via?.length).length;
   return {
     model,
     warnings,
@@ -646,8 +732,154 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
       datatypeProperties: datatypePropertiesConverted,
       // A folded inverse is converted too (as `inverse:` on its forward edge).
       objectProperties: relationships.length + inversesAttached,
+      // Of the classes, the vocabularies (K3); of the object properties, the
+      // derived relationships (K2). Only when there are any, so the summary
+      // of an ontology with neither reads as before.
+      ...(vocabularies ? {vocabularies} : {}),
+      ...(derived ? {derivedRelationships: derived} : {}),
     },
   };
+}
+
+// --- Property chains with undeclared ends (K2). -------------------------------
+
+// A relationship that carries only a chain, to resolve that chain.
+function chainOnly(name: string, via: RelationshipStep[]): Relationship {
+  return {
+    name,
+    source: {entity: '', columns: []},
+    destination: {entity: '', columns: []},
+    via,
+  };
+}
+
+// Emits each DEFERRED chain property -- one missing an rdfs:domain or
+// rdfs:range, see owlToIr -- with the ends its chain reaches: the entity the
+// first step leaves from, the entity the last step arrives at (a declared or
+// subproperty-inferred end wins). A chain may run through another deferred
+// property, so resolution repeats until a round resolves nothing; whatever is
+// left (an unknown step, a cycle) is skipped with a warning. Appends to
+// `relationships` and returns how many it added.
+function resolveDeferredChains(
+    deferred: readonly OwlObjectProperty[],
+    chainOf: ReadonlyMap<string, RelationshipStep[]>,
+    endOf: (name: string, side: 'domains'|'ranges') => string | undefined,
+    classNames: ReadonlySet<string>, relationships: Relationship[],
+    warnings: string[]): number {
+  let pending = [...deferred];
+  let added = 0;
+  while (pending.length) {
+    const unresolved: OwlObjectProperty[] = [];
+    for (const p of pending) {
+      const via = chainOf.get(p.localName)!;
+      const res = resolveChain(chainOnly(p.localName, via), relationships);
+      if (res.error !== undefined) {
+        unresolved.push(p);
+        continue;
+      }
+      const ctx = `object property '${p.localName}'`;
+      const reached = {
+        domains: res.hops[0].from,
+        ranges: res.hops[res.hops.length - 1].to,
+      };
+      const [domain, range] = (['domains', 'ranges'] as const).map(side => {
+        const axiom = side === 'domains' ? 'rdfs:domain' : 'rdfs:range';
+        const own = endOf(p.localName, side);
+        if (own !== undefined) {
+          if (!p[side].length) {
+            warnings.push(
+                `${ctx} declares no ${axiom}; inferred '${own}' (the nearest ` +
+                `common superclass of its subproperties' endpoints).`);
+          }
+          return own;
+        }
+        warnings.push(`${ctx} declares no ${axiom}; inferred '${
+            reached[side]}', where its owl:propertyChainAxiom ${
+            side === 'domains' ? 'starts' : 'ends'}.`);
+        return reached[side];
+      });
+      if (!classNames.has(domain) || !classNames.has(range)) {
+        warnings.push(
+            `${ctx} references a non-class endpoint (domain '${domain}', ` +
+            `range '${range}'); skipped.`);
+        continue;
+      }
+      if (relationships.some(r => r.name === p.localName)) {
+        warnings.push(
+            `${ctx} duplicates an existing relationship name; skipped ` +
+            `(relationship names must be unique).`);
+        continue;
+      }
+      relationships.push({
+        name: p.localName,
+        source: {entity: domain, columns: []},
+        destination: {entity: range, columns: []},
+        aiContext: relationshipAiContext(
+            p.label, p.localName, p.synonyms, p.comment, p.examples),
+        via,
+      });
+      added++;
+    }
+    if (unresolved.length === pending.length) {
+      for (const p of unresolved) {
+        const via = chainOf.get(p.localName)!;
+        const res = resolveChain(chainOnly(p.localName, via), relationships);
+        warnings.push(
+            `object property '${p.localName}' is missing an rdfs:domain or ` +
+            `rdfs:range, and its owl:propertyChainAxiom [${
+                formatChain(via)}] cannot supply them (${res.error}); ` +
+            `skipped.`);
+      }
+      break;
+    }
+    pending = unresolved;
+  }
+  return added;
+}
+
+// --- encodedBy join columns. -------------------------------------------------
+
+// `<objectProperty> <ns>:encodedBy <datatypeProperty>` states that the edge is
+// stored as a code field on its source holding the destination's code (its
+// key), so the edge joins that field to the destination's key -- the join
+// columns a binding step would otherwise add. Matched by local name, like
+// every kcmd annotation (see parse.ts). It needs the field on the source (or
+// a class the source extends) and a single-column key on the destination;
+// otherwise the edge stays logical, with a warning. Abstract and derived edges
+// carry no join columns and are left alone.
+function joinEncodedEdges(
+    owl: OwlModel, entitiesByName: ReadonlyMap<string, Entity>,
+    relationships: readonly Relationship[],
+    lineage: (cls: string) => string[], warnings: string[]): void {
+  const encodedBy = new Map<string, string>();
+  for (const p of owl.objectProperties) {
+    if (p.encodedBy !== undefined && !encodedBy.has(p.localName)) {
+      encodedBy.set(p.localName, p.encodedBy);
+    }
+  }
+  for (const r of relationships) {
+    const code = encodedBy.get(r.name);
+    if (code === undefined || r.abstract || r.via?.length) continue;
+    const ctx = `object property '${r.name}' is encodedBy '${code}'`;
+    const onSource = lineage(r.source.entity)
+                         .some(
+                             n => entitiesByName.get(n)?.fields.some(
+                                 f => f.name === code));
+    if (!onSource) {
+      warnings.push(`${ctx}, which is not a field of '${
+          r.source.entity}'; the edge keeps no join columns.`);
+      continue;
+    }
+    const keys = entitiesByName.get(r.destination.entity)?.keys ?? [];
+    if (keys.length !== 1) {
+      warnings.push(`${ctx}, but '${r.destination.entity}' has ${
+          keys.length ? 'a composite' : 'no'} primary key to match it to; the ` +
+                    `edge keeps no join columns.`);
+      continue;
+    }
+    r.source.columns = [code];
+    r.destination.columns = [keys[0]];
+  }
 }
 
 // --- owl:inverseOf folding. --------------------------------------------------

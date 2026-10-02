@@ -12,8 +12,11 @@
 #     ai_context.instructions steering line (legalName)
 #   - owl:TransitiveProperty / owl:SymmetricProperty -> relationship
 #     ai_context.instructions query hints (ancestorOf / relatedTo)
+#   - owl:oneOf -> the class's vocabulary `members` (LifeStage; K3, proposed)
+#   - owl:propertyChainAxiom -> the relationship's `via` chain (uncleOf; K2,
+#     proposed)
 #   - everything else here -- owl:disjointWith, rdfs:subPropertyOf,
-#     owl:inverseOf, owl:propertyDisjointWith, owl:propertyChainAxiom, owl:oneOf,
+#     owl:inverseOf, owl:propertyDisjointWith,
 #     the reflexive / irreflexive / asymmetric / functional characteristics,
 #     rdfs:seeAlso (other than a deprecation replacement), rdfs:isDefinedBy,
 #     owl:versionInfo on a term, and the set-level owl:AllDisjointClasses /
@@ -42,9 +45,9 @@ ex:Person a owl:Class ;
 ex:Robot a owl:Class ;
     rdfs:comment "A machine, never a person." .
 
-# LifeStage is an ENUMERATION: it is exactly these members (owl:oneOf). The
-# members are individuals (which the converter does not model), so the list is
-# carried verbatim, keeping the in-namespace member names in list order.
+# LifeStage is an ENUMERATION: it is exactly these members (owl:oneOf). It
+# imports as a vocabulary whose members, in list order, are coded by their
+# local names (no code / label annotations here).
 ex:LifeStage a owl:Class ;
     owl:oneOf ( ex:Infant ex:Adult ) .
 
@@ -84,7 +87,9 @@ ex:relatedTo a owl:ObjectProperty, owl:SymmetricProperty, owl:ReflexiveProperty 
     owl:equivalentProperty foaf:knows .
 
 # uncleOf is the COMPOSITION ancestorOf then relatedTo (owl:propertyChainAxiom):
-# an ordered chain of in-namespace properties, kept in order and never deduped.
+# an ordered chain of in-namespace properties, imported in order as `via`.
+# relatedTo is ancestorOf's superproperty, hence abstract (a label, no edges of
+# its own), so the import warns that this chain cannot be followed as is.
 ex:uncleOf a owl:ObjectProperty ;
     rdfs:domain ex:Person ; rdfs:range ex:Person ;
     owl:propertyChainAxiom ( ex:ancestorOf ex:relatedTo ) .

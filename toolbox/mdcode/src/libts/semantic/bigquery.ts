@@ -20,11 +20,14 @@
 //
 
 import {lowerDefinedEntities} from './defined_entities';
+import {lowerDerivedRelationships} from './derived_relationships';
+import {GeneratedView} from './generated_views';
 import {AiContext, Association, Entity, Field, fieldBinding, inverseEdgeNames, isTimeDimension, Metric, Relationship, relationshipAncestors, SemanticModel,} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
 import {referencedEntityNames, rewriteFieldRefs, stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
 import {entityTrailers, unitTrailer} from './units_history';
+import {lowerVocabularies} from './vocabulary';
 
 export interface GenerateOptions {
   project?: string;    // fills the project for the graph name + under-qualified
@@ -37,6 +40,10 @@ export interface GenerateOptions {
 export interface GenerateResult {
   ddl: string;         // CREATE OR REPLACE PROPERTY GRAPH ...
   warnings: string[];  // skipped metrics, unresolved table refs, etc.
+  // K2 / K3 (proposed): views the graph reads that this leg generates
+  // (vocabularies, edges into them, derived edges), in dependency order. They
+  // must exist before `ddl` runs (see deploy_bigquery.ts). Absent when none.
+  views?: GeneratedView[];
 }
 
 // Aggregate functions BigQuery accepts inside MEASURE(...). This is the
@@ -77,11 +84,24 @@ export function generatePropertyGraph(
   const resolved = resolveInheritance(model);
   warnings.push(...resolved.warnings);
 
+  // K3 / K2 (proposed): a vocabulary (members) and a derived relationship
+  // (via) have no table in the model. Each is lowered onto a view this leg
+  // generates next to the graph -- `vocab_<entity>` for a vocabulary's node
+  // table, `edge_<relationship>` for an edge into a vocabulary (code matched
+  // case-insensitively) or a derived edge's materialized pairs -- and the
+  // graph reads the lowered model. A model with neither is returned as-is,
+  // with no views, so its output is unchanged.
+  const location = graphLocation(resolved.model, opts);
+  const vocab = lowerVocabularies(resolved.model, location, warnings);
+  const derived = lowerDerivedRelationships(vocab.model, location, warnings);
+  const views = [...vocab.views, ...derived.views];
+  const lowered = derived.model;
+
   // The IR requires entities/relationships/metrics, but be defensive against a
   // hand-built or partially-deserialized model rather than throwing on `.map`.
-  const entities = resolved.model.entities ?? [];
-  const relationships = resolved.model.relationships ?? [];
-  const metrics = resolved.model.metrics ?? [];
+  const entities = lowered.entities ?? [];
+  const relationships = lowered.relationships ?? [];
+  const metrics = lowered.metrics ?? [];
 
   // Knowledge Catalog is the only system an action or a constraint reaches
   // (kc_actions.ts, kc_constraints.ts), so this leg emits nothing for either.
@@ -185,7 +205,7 @@ export function generatePropertyGraph(
   const loweringByEntity = new Map<string, MeasureLowering>();
   for (const metric of metrics) {
     placeMetric(
-        metric, resolved.model, entityByName, skipped, ancestorsUsed,
+        metric, lowered, entityByName, skipped, ancestorsUsed,
         metricsByEntity, loweringByEntity, warnings);
   }
 
@@ -291,7 +311,11 @@ export function generatePropertyGraph(
   // Knowledge Catalog's model entry instead (see knowledge_catalog.ts);
   // element-level metadata rides on labels, properties, and measures here.
 
-  return {ddl: blocks.join('\n') + ';\n', warnings: dedupe(warnings)};
+  return {
+    ddl: blocks.join('\n') + ';\n',
+    warnings: dedupe(warnings),
+    ...(views.length ? {views} : {}),
+  };
 }
 
 
@@ -1190,6 +1214,15 @@ function qualifyTable(
 // from opts and then from the first entity's qualified dataSource.
 function qualifyGraph(model: SemanticModel, opts: GenerateOptions): string {
   const name = opts.graphName ?? model.name;
+  const {project, dataset} = graphLocation(model, opts);
+  const parts = [project, dataset, name].filter((p): p is string => !!p);
+  return `\`${parts.join('.')}\``;
+}
+
+// The project and dataset the graph is created in (and, K2/K3, its generated
+// views): opts first, then the first entity's qualified dataSource.
+function graphLocation(model: SemanticModel, opts: GenerateOptions):
+    {project?: string; dataset?: string} {
   let project = opts.project;
   let dataset = opts.dataset;
 
@@ -1213,9 +1246,7 @@ function qualifyGraph(model: SemanticModel, opts: GenerateOptions): string {
   // as `dataset.name`), so drop a lone project rather than emit a malformed
   // reference.
   if (project && !dataset) project = undefined;
-
-  const parts = [project, dataset, name].filter((p): p is string => !!p);
-  return `\`${parts.join('.')}\``;
+  return {project, dataset};
 }
 
 

@@ -1271,6 +1271,20 @@ export async function owl(
     return 1;
   }
 
+  // K3/K2 (proposed): how many of those became vocabularies / derived
+  // relationships, only when there are any.
+  const {vocabularies = 0, derivedRelationships = 0} = result.stats;
+  const refined = [
+    ...(vocabularies ?
+            [`${vocabularies} ${
+                plural(vocabularies, 'vocabulary', 'vocabularies')}`] :
+            []),
+    ...(derivedRelationships ?
+            [`${derivedRelationships} derived ${
+                plural(
+                    derivedRelationships, 'relationship', 'relationships')}`] :
+            []),
+  ];
   console.log(
       `converted ${classes} ${plural(classes, 'class', 'classes')}, ` +
       `${objectProperties} ` +
@@ -1279,7 +1293,8 @@ export async function owl(
       `${
           plural(
               datatypeProperties, 'datatype property',
-              'datatype properties')}`);
+              'datatype properties')}` +
+      (refined.length ? ` (${refined.join(', ')})` : ''));
 
   // Sink: an explicit --out path writes directly; otherwise the semantic-model
   // layout places the document under the scope's entry group so `kcmd push`

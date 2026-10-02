@@ -4,6 +4,11 @@ semantic_model:
     description: Imported from OWL ontology http://example.com/deals#
     entities:
       - name: Party
+        members:
+          - code: acme
+            iri: http://example.com/deals#acme
+          - code: globex
+            iri: http://example.com/deals#globex
         fields:
           - name: name
             datatype: String

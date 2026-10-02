@@ -45,6 +45,8 @@ import {cell, collapse, finish, firstLine, paragraph, sentenceEnd, SkillFile, tr
 import {quoteIfReserved} from './sql_identifiers';
 import {stripQualifier} from './sql_expr_utils';
 import {grainHistoryLines, unitNote} from './units_history';
+import {bindVocabularies, isVocabulary, vocabularyColumnIsText, vocabularySkillLines} from './vocabulary';
+import {derivedSkillLine} from './derived_relationships';
 
 /**
  * Slugs under `references/` the query pages occupy. `mode: 'both'` reserves
@@ -394,7 +396,7 @@ function columnOf(entity: Entity|undefined, name: string): string {
 }
 
 function cardinality(rel: Relationship, model: Analysis): string {
-  if (rel.association) return 'M:N';
+  if (rel.association || rel.via?.length) return 'M:N';
   if (rel.abstract) return 'label';
   const src = model.byName.get(rel.source.entity);
   const keys = [...(src?.keys ?? [])].sort().join(',');
@@ -485,7 +487,7 @@ function fieldNotes(field: Field): string {
 
 export function queryParts(
     runtime: SemanticRuntime, opts: QuerySkillOptions): QueryParts {
-  const model = runtime.model;
+  const model = vocabulariesBound(runtime.model);
   const a = analyse(model);
   const warnings: string[] = [];
 
@@ -543,6 +545,24 @@ export function queryParts(
     body: skillBody(ctx),
     files,
     warnings,
+  };
+}
+
+// K3 (vocabulary.ts): the model with each vocabulary whose view the BigQuery
+// leg generates bound to that view, next to the primary graph -- the node
+// table the deployed graph has. A model without a vocabulary is returned as-is.
+function vocabulariesBound(model: SemanticModel): SemanticModel {
+  if (!(model.entities ?? []).some(isVocabulary)) return model;
+  let target: {project?: string; dataset?: string} = {};
+  try {
+    const t = bigQueryGraphTargets(model).targets[0];
+    if (t) target = {project: t.project, dataset: t.dataset};
+  } catch {
+    // graphInfo reports a malformed target.
+  }
+  return {
+    ...model,
+    entities: bindVocabularies(model.entities ?? [], target, []).entities,
   };
 }
 
@@ -816,6 +836,14 @@ function entityPage(ctx: Ctx, label: string): string {
   if (grainHistory.length) {
     out.push(...grainHistory.flatMap(l => [l, '']));
   }
+  // K3 vocabulary members (vocabulary.ts).
+  const memberLines = vocabularySkillLines(e);
+  if (memberLines.length) {
+    out.push('## Members');
+    out.push('');
+    out.push(...memberLines);
+    out.push('');
+  }
 
   // Properties.
   out.push('## Properties');
@@ -1024,9 +1052,12 @@ function relationshipLines(
     bits.push(`inherited from ${tick(r.source.entity === label ? label :
                                      [src, dst].find(x => x !== label) ?? src)}`);
   }
-  if (!r.abstract) bits.push(joinText(a, r));
+  if (!r.abstract) bits.push(r.via?.length ? 'derived' : joinText(a, r));
   const head = `- \`${edge(r.name, src, dst)}\` -- ${bits.join('; ')}.`;
   const lines = [head];
+  // K2: what a derived edge is computed from (derived_relationships.ts).
+  const derived = derivedSkillLine(r, all);
+  if (derived) lines.push(`  ${derived}`);
   const text = [r.description ? sentenceEnd(collapse(r.description)) : '',
                 ...aiNotes(r.aiContext)].filter(x => x).join(' ');
   if (text) lines.push(`  ${text}`);
@@ -1034,6 +1065,9 @@ function relationshipLines(
 }
 
 // The join a relationship stands for, in physical columns, for SQL fallback.
+// A join into a vocabulary (K3, vocabulary.ts) compares text codes
+// case-insensitively, as the graph's edge does (vocabularyJoinCondition): a
+// non-text foreign key is cast to STRING first.
 function joinText(a: Analysis, r: Relationship): string {
   const src = a.byName.get(r.source.entity);
   const dst = a.byName.get(r.destination.entity);
@@ -1045,9 +1079,21 @@ function joinText(a: Analysis, r: Relationship): string {
     const right = as.destinationColumns.map((c, i) => `j.${c} = ${r.destination.entity}.${columnOf(dst, dk[i] ?? c)}`);
     return `SQL via junction ${tableRef(as.dataSource)} AS j: ${[...left, ...right].join(' AND ')}`;
   }
-  const pairs = r.source.columns.map(
-      (c, i) => `${r.source.entity}.${columnOf(src, c)} = ${r.destination.entity}.${
-          columnOf(dst, r.destination.columns[i] ?? c)}`);
+  const vocabulary = dst && isVocabulary(dst) ? dst : undefined;
+  const text = (e: Entity|undefined, name: string) => {
+    const type = fieldNamed(e, name)?.type;
+    return type === undefined || type === 'String';
+  };
+  const pairs = r.source.columns.map((c, i) => {
+    const to = r.destination.columns[i] ?? c;
+    const left = `${r.source.entity}.${columnOf(src, c)}`;
+    const right = `${r.destination.entity}.${columnOf(dst, to)}`;
+    if (!vocabulary || !vocabularyColumnIsText(vocabulary, to)) {
+      return `${left} = ${right}`;
+    }
+    return text(src, c) ? `LOWER(${left}) = LOWER(${right})` :
+                          `LOWER(CAST(${left} AS STRING)) = LOWER(${right})`;
+  });
   return `SQL join ${pairs.join(' AND ')}`;
 }
 
