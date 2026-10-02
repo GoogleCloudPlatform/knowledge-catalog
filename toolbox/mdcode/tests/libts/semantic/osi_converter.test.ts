@@ -52,8 +52,14 @@ describe('loader <-> serialize round trip is IR-stable', () => {
         const {yaml: text} = serializeModel(model);
         const reloaded = loadModels(text).models;
         expect(reloaded).toHaveLength(1);
-        // IR-level equality: every field the loader keeps must match exactly.
-        expect(reloaded[0]).toEqual(model);
+        // The serializer always writes the Google flavor, so a vanilla fixture
+        // reloads as '0.2.0.dev0/google'. Set `version` aside until the
+        // serializer writes `model.version` back out, and pin what it writes.
+        const {version: reloadedVersion, ...reloadedRest} = reloaded[0];
+        const {version: _originalVersion, ...originalRest} = model;
+        expect(reloadedVersion).toBe('0.2.0.dev0/google');
+        // IR-level equality: every other field the loader keeps must match.
+        expect(reloadedRest).toEqual(originalRest);
       }
     });
   }

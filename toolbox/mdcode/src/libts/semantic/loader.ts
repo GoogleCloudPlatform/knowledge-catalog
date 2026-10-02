@@ -12,7 +12,7 @@
 import * as yaml from 'yaml';
 import * as z from 'zod';
 
-import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, Entity, Executor, Field, Metric, Relationship, SemanticModel, VIOLATION_EFFECTS,} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, Entity, Executor, Field, Metric, normalizeDataType, Relationship, SemanticModel, VIOLATION_EFFECTS,} from './ir';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {referencedEntityNames} from './sql_expr_utils';
 
@@ -47,12 +47,19 @@ const FALLBACK_DIALECT = 'ANSI_SQL';
 //     (`entities` alias, `extends`, `abstract`, `deployment_target`) are not
 //     accepted.
 //   - GOOGLE_VERSION: kcmd's extended profile. The native extension keys are
-//     first-class; Ossie's `custom_extensions` field is not accepted (its
-//     content is expressed natively instead).
+//     first-class. Ossie's `custom_extensions` carrier is accepted for
+//     third-party vendors only; a GOOGLE block is rejected, since everything
+//     it would carry is a native key here.
 // Both parse into the same IR, so a downstream leg never sees the difference.
 const OSSIE_VERSION = '0.2.0.dev0';
 const GOOGLE_VERSION = '0.2.0.dev0/google';
-const ACCEPTED_VERSIONS = [OSSIE_VERSION, GOOGLE_VERSION];
+// The declared flavor, as stored on the IR (SemanticModel.version).
+type FormatVersion = NonNullable<SemanticModel['version']>;
+const ACCEPTED_VERSIONS: readonly FormatVersion[] = [OSSIE_VERSION, GOOGLE_VERSION];
+
+function isFormatVersion(v: string): v is FormatVersion {
+  return (ACCEPTED_VERSIONS as readonly string[]).includes(v);
+}
 
 
 
@@ -79,16 +86,95 @@ const expressionSchema = z.union([
 
 // The format's AI-first annotation. It appears at every level (model, dataset,
 // field, relationship, metric) and is either a bare instructions string or a
-// structured object. `examples` shapes vary across producers, so it is accepted
-// leniently and only string examples are carried into the IR description.
-const aiContextSchema = z.union([
+// structured object (Mapping Addendum 4).
+//
+// Three members are CLOSED, as in Ossie's schema: `instructions` is a string,
+// and `synonyms` and `examples` are lists of strings (a non-string example is
+// rejected, not dropped). Any other member is a CUSTOM member: opaque, any
+// value, carried verbatim into AiContext.additionalProperties. Member names are
+// case-sensitive, so `Synonyms` is a custom member, not a misspelled synonym.
+// The flavors write custom members differently:
+//   - Google: inside a `custom` mapping. Every other unknown key stays an error,
+//     so a misspelled `synonyms` is still caught.
+//   - Vanilla: as siblings of the three, as Ossie's open object allows. A
+//     sibling named `custom` is a custom member like any other.
+// The bare-string shorthand stands for `instructions` and has no custom
+// members. Both object forms parse to the same shape (AiContextObjectDoc), so
+// nothing downstream needs to know the flavor.
+const AI_CONTEXT_MEMBERS = ['instructions', 'synonyms', 'examples'] as const;
+const aiContextMembers = {
+  instructions: z.string().optional(),
+  synonyms: z.array(z.string()).optional(),
+  examples: z.array(z.string()).optional(),
+};
+
+interface AiContextObjectDoc {
+  instructions?: string;
+  synonyms?: string[];
+  examples?: string[];
+  additionalProperties?: Record<string, unknown>;
+}
+
+// Keeps the closed members and attaches `custom` members only when there are
+// any, so an object with none parses to exactly the closed shape.
+function aiContextObject(
+    closed: {instructions?: string, synonyms?: string[], examples?: string[]},
+    custom: Record<string, unknown>): AiContextObjectDoc {
+  const out: AiContextObjectDoc = {};
+  if (closed.instructions !== undefined) out.instructions = closed.instructions;
+  if (closed.synonyms !== undefined) out.synonyms = closed.synonyms;
+  if (closed.examples !== undefined) out.examples = closed.examples;
+  if (Object.keys(custom).length) out.additionalProperties = custom;
+  return out;
+}
+
+const googleAiContextSchema = z.union([
   z.string(),
   z.object({
-    instructions: z.string().optional(),
-    synonyms: z.array(z.string()).optional(),
-    examples: z.array(z.any()).optional(),
+     ...aiContextMembers,
+     custom: z.record(z.string(), z.unknown(), {
+                error: `ai_context 'custom' must be a mapping of custom ` +
+                    `member names to values`,
+              }).optional(),
+   })
+      .strict()
+      .superRefine((ai, ctx) => {
+        // A closed member written inside `custom` is one vanilla could not
+        // express, and almost always a misplaced line; name where it goes.
+        for (const member of AI_CONTEXT_MEMBERS) {
+          if (ai.custom && Object.hasOwn(ai.custom, member)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['custom', member],
+              message: `ai_context 'custom' cannot hold '${member}'; it is ` +
+                  `a standard member, so write it beside 'custom', not ` +
+                  `inside it.`,
+            });
+          }
+        }
+      })
+      .transform(({custom, ...closed}) => aiContextObject(closed, custom ?? {})),
+]);
+
+const vanillaAiContextSchema = z.union([
+  z.string(),
+  z.object(aiContextMembers).passthrough().transform(ai => {
+    const custom: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(ai)) {
+      if (!(AI_CONTEXT_MEMBERS as readonly string[]).includes(key)) {
+        custom[key] = value;
+      }
+    }
+    return aiContextObject(ai, custom);
   }),
 ]);
+
+// The schema for one flavor. Actions, parameters and constraints exist only in
+// the Google flavor, so they always take the Google form (aiContextSchema).
+function aiContextSchemaFor(extended: boolean) {
+  return extended ? googleAiContextSchema : vanillaAiContextSchema;
+}
+const aiContextSchema = googleAiContextSchema;
 
 // A vendor-scoped extension block: opaque `data` (a JSON string) tagged by
 // `vendor_name`. The spec allows these at every level (model, dataset, field,
@@ -99,16 +185,16 @@ const aiContextSchema = z.union([
 const customExtensionSchema = z.object({
   vendor_name: z.string(),
   data: z.string(),
-});
+}).strict();
 
 // A field's dimension metadata; only the time flag is read today.
 const dimensionSchema = z.object({
   is_time: z.boolean().optional(),
-});
+}).strict();
 
 // The canonical (superset) field shape, for TYPE inference only. The actual
 // validation schemas are rebuilt per-load by buildDocumentSchema, which is
-// strict, gates `custom_extensions` on the version, and applies the
+// strict, gates the native extension keys on the version, and applies the
 // source-completeness refinement. A field is BOUND when it names a physical
 // column via `expression`; a field with no `expression` is UNBOUND (no column
 // under this binding). A field is never required to be bound -- an unbound
@@ -116,8 +202,9 @@ const dimensionSchema = z.object({
 const fieldBase = z.object({
   name: z.string(),
   expression: expressionSchema.optional(),
-  datatype: z.enum(DATA_TYPES).optional(),  // closed, case-sensitive
-                                            // vocabulary; see DATA_TYPES
+  // A plain string here; whether it is valid, and its canonical spelling,
+  // depend on the flavor and are decided in convertField (normalizeDataType).
+  datatype: z.string().optional(),
   description: z.string().optional(),
   label: z.string().optional(),
   dimension: dimensionSchema.optional(),
@@ -184,9 +271,13 @@ const relationshipSchema = z.object({
 
 const metricSchema = z.object({
   name: z.string(),
+  // The entity the metric belongs to, as the author wrote it. Google flavor
+  // only (buildDocumentSchema rejects it in vanilla).
+  entity: z.string().optional(),
   expression: expressionSchema,
-  datatype: z.enum(DATA_TYPES).optional(),  // closed, case-sensitive
-                                            // vocabulary; see DATA_TYPES
+  // A plain string; validated and canonicalized in convertMetric
+  // (normalizeDataType).
+  datatype: z.string().optional(),
   description: z.string().optional(),
   ai_context: aiContextSchema.optional(),
   custom_extensions: z.array(customExtensionSchema).optional(),
@@ -361,24 +452,21 @@ const modelBase = z.object({
 });
 
 
-// The vendor-scoped `custom_extensions` field, present in the validation schema
-// ONLY under vanilla Ossie. Under the extended profile the same information is
-// carried by native keys, so a `custom_extensions` field is rejected as unknown
-// (§6; agreed with Dmitri). Spread into each object shape below.
-function ceField(extended: boolean) {
-  return extended ?
-      {} :
-      {custom_extensions: z.array(customExtensionSchema).optional()};
-}
+// The vendor-scoped `custom_extensions` field, accepted in BOTH flavors at the
+// five levels the format defines it on: model, dataset, field, relationship and
+// metric. Which vendor blocks are legal where is a flavor rule, checked
+// separately. Actions and constraints are extended-profile constructs with no
+// `custom_extensions` encoding, so they do not take it.
+const customExtensionsKey = {custom_extensions: z.array(customExtensionSchema).optional()};
 
 // Builds the document schema for one (bindingOptional, extended) combination.
 // Every object is `.strict()`, so an unknown key is a hard error rather than
 // silently dropped. Two axes shape it:
 //   - `extended` selects the version's extension surface: under the extended
-//     profile the native keys (`extends`, `abstract`, `deployment_target`) are
-//     accepted and `custom_extensions` is rejected; under vanilla Ossie the
-//     reverse. (`entities` is folded to `datasets` before validation, so it is
-//     never a schema key -- see normalizeDocumentSugars.)
+//     profile the native keys (`extends`, `abstract`, `deployment_target`,
+//     metric `entity`) are accepted; under vanilla Ossie they are not.
+//     (`entities` is folded to `datasets` before validation, so it is never a
+//     schema key -- see normalizeDocumentSugars.)
 //   - `bindingOptional` relaxes the source rule: when false (any push with a
 //     graph leg) each concrete dataset must name a `source`; when true (a
 //     Knowledge-Catalog-only push) it is optional, so a purely logical model
@@ -388,19 +476,21 @@ function ceField(extended: boolean) {
 //     prunes it before generation -- so it is not a load error under either
 //     `bindingOptional`.
 function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
-  const ce = ceField(extended);
+  // The five data levels take this flavor's ai_context; actions and
+  // constraints are Google-only and keep the Google form.
+  const aiContext = aiContextSchemaFor(extended);
 
   const field =
       z.object({
          name: z.string(),
          expression: expressionSchema.optional(),
-         datatype: z.enum(DATA_TYPES).optional(),  // closed, case-sensitive
-                                                   // vocabulary; see DATA_TYPES
+         // Validated per flavor in convertField (normalizeDataType).
+         datatype: z.string().optional(),
          description: z.string().optional(),
          label: z.string().optional(),
          dimension: dimensionSchema.optional(),
-         ai_context: aiContextSchema.optional(),
-         ...ce,
+         ai_context: aiContext.optional(),
+         ...customExtensionsKey,
        }).strict();
 
   const dataset =
@@ -410,9 +500,9 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          primary_key: z.array(z.string()).optional(),
          unique_keys: z.array(z.array(z.string())).optional(),
          description: z.string().optional(),
-         ai_context: aiContextSchema.optional(),
+         ai_context: aiContext.optional(),
          fields: z.array(field).optional(),
-         ...ce,
+         ...customExtensionsKey,
          // Inheritance is a native extension: only the extended profile accepts
          // it.
          ...(extended ? {
@@ -424,10 +514,12 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
           .strict()
           .superRefine((ds: any, ctx) => {
             const abstract = ds.abstract === true;
-            // A concrete (non-abstract) dataset must name its backing table;
-            // only an abstract one may omit `source`. Relaxed under
-            // bindingOptional.
-            if (!bindingOptional && !abstract && ds.source === undefined) {
+            // In the Google flavor, a concrete (non-abstract) dataset must name
+            // its backing table; only an abstract one may omit `source`. Relaxed
+            // under bindingOptional. Vanilla has no `abstract` and requires
+            // `source` unconditionally (see requireVanillaBindings).
+            if (extended && !bindingOptional && !abstract &&
+                ds.source === undefined) {
               ctx.addIssue({
                 code: z.ZodIssueCode.custom,
                 path: ['source'],
@@ -465,8 +557,8 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          from_columns: z.array(z.string()).min(1).optional(),
          to_columns: z.array(z.string()).min(1).optional(),
          description: z.string().optional(),
-         ai_context: aiContextSchema.optional(),
-         ...ce,
+         ai_context: aiContext.optional(),
+         ...customExtensionsKey,
        })
           .strict()
           .superRefine((r, ctx) => {
@@ -487,12 +579,29 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
       z.object({
          name: z.string(),
          expression: expressionSchema,
-         datatype: z.enum(DATA_TYPES).optional(),  // closed, case-sensitive
-                                                   // vocabulary; see DATA_TYPES
+         // Validated per flavor in convertMetric (normalizeDataType).
+         datatype: z.string().optional(),
          description: z.string().optional(),
-         ai_context: aiContextSchema.optional(),
-         ...ce,
-       }).strict();
+         ai_context: aiContext.optional(),
+         ...customExtensionsKey,
+         // An authored anchor is a native extension: extended profile only.
+         // Vanilla still declares the key so the refinement below can reject it
+         // with a message that names the fix, not a bare "unrecognized key".
+         entity: extended ? z.string().optional() : z.unknown().optional(),
+       })
+          .strict()
+          .superRefine((mt, ctx) => {
+            if (extended || mt.entity === undefined) return;
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['entity'],
+              message: `metric '${mt.name}': 'entity' is a ` +
+                  `'${GOOGLE_VERSION}' extension. A '${OSSIE_VERSION}' ` +
+                  `metric takes its entity from its expression: qualify a ` +
+                  `column with it (e.g. 'COUNT(orders.id)'), or set the ` +
+                  `document version to '${GOOGLE_VERSION}'.`,
+            });
+          });
 
   // The same shape the superset uses, closed to unknown keys. Restating it
   // here is what let the two disagree: a key added to one and not the other
@@ -509,7 +618,6 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
                     guards: z.array(z.string()).optional(),
                     affects: z.array(affectedConceptSchema).optional(),
                     ai_context: aiContextSchema.optional(),
-                    ...ce,
                   }).strict();
 
   // `judgment` is optional here and required in fact, so validateConstraints
@@ -528,7 +636,6 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
                         // CONSTRAINT_SEVERITIES.
                         severity: z.enum(CONSTRAINT_SEVERITIES).optional(),
                         ai_context: aiContextSchema.optional(),
-                        ...ce,
                       })
                          .strict()
                          .superRefine(rejectExpressionBody);
@@ -536,11 +643,11 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
   const model = z.object({
          name: z.string(),
          description: z.string().optional(),
-         ai_context: aiContextSchema.optional(),
+         ai_context: aiContext.optional(),
          datasets: z.array(dataset).min(1),
          relationships: z.array(relationship).optional(),
          metrics: z.array(metric).optional(),
-         ...ce,
+         ...customExtensionsKey,
                    // Native extension keys: extended profile only. `actions`
                    // and `constraints` are among them because vanilla Ossie has
                    // neither construct and no `custom_extensions` encoding for
@@ -557,7 +664,18 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
   return z
       .object({
         version: z.string(),
-        semantic_model: z.array(model).min(1),
+        // The format allows exactly one model per document.
+        semantic_model:
+            z.array(model).min(1).superRefine((models, ctx) => {
+              if (models.length > 1) {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  path: [1],
+                  message: `a document declares one model; split '${
+                      models[1].name}' into its own file`,
+                });
+              }
+            }),
       })
       .strict();
 }
@@ -602,8 +720,9 @@ type DocumentDoc = {
 type AiContextDoc = z.infer<typeof aiContextSchema>;
 
 // The AI-first `ai_context` normalized to the IR's common shape: a bare string
-// is read as `instructions`; a structured object keeps its parts. `examples` is
-// filtered to strings (producers vary; non-string examples are dropped).
+// is read as `instructions`; a structured object keeps its parts, custom
+// members included. `examples` needs no filtering: the schema already rejected
+// any non-string example.
 function normalizeAiContext(ai: AiContextDoc|undefined): AiContext {
   if (ai === undefined) return {};
   if (typeof ai === 'string') return {instructions: ai};
@@ -611,19 +730,22 @@ function normalizeAiContext(ai: AiContextDoc|undefined): AiContext {
   if (ai.instructions) out.instructions = ai.instructions;
   if (ai.synonyms && ai.synonyms.length)
     out.synonyms = [...new Set(ai.synonyms)];
-  if (ai.examples && ai.examples.length) {
-    const strings =
-        ai.examples.filter((e): e is string => typeof e === 'string');
-    if (strings.length) out.examples = strings;
+  if (ai.examples && ai.examples.length) out.examples = ai.examples;
+  if (ai.additionalProperties) {
+    out.additionalProperties = ai.additionalProperties;
   }
   return out;
 }
 
 // Normalizes `ai_context` and returns it only when it carries something, so the
-// IR omits empty aiContext objects.
+// IR omits empty aiContext objects. Custom members count: an `ai_context` that
+// carries only those is not blank.
 function aiContextOrUndefined(ai: AiContextDoc|undefined): AiContext|undefined {
   const ctx = normalizeAiContext(ai);
-  return (ctx.instructions || ctx.synonyms || ctx.examples) ? ctx : undefined;
+  return (ctx.instructions || ctx.synonyms || ctx.examples ||
+          ctx.additionalProperties) ?
+      ctx :
+      undefined;
 }
 
 // Preserves vendor `custom_extensions` verbatim on the IR (`vendor_name` ->
@@ -698,14 +820,98 @@ function normalizeModelSugars(m: any, extended: boolean): void {
 // Builds the GOOGLE custom-extension block that carries a model's
 // `deployment_target` URI on the IR (the form the deploy leg reads). The native
 // `deployment_target:` key (extended profile only) is folded into one after
-// validation (see convertModel); the extended profile does not accept a
-// `custom_extensions` carrier, so there is never a pre-existing GOOGLE block to
+// validation (see convertModel). The extended profile rejects any authored
+// GOOGLE block (see rejectGoogleBlock), so there is never a pre-existing one to
 // reconcile with.
 function deploymentTargetExtension(target: string): CustomExtension {
   return {
     vendorName: GOOGLE_VENDOR,
     data: JSON.stringify({deploymentTargets: [target]}),
   };
+}
+
+// The levels a `custom_extensions` block may sit on.
+type ExtensionLevel = 'model'|'dataset'|'field'|'relationship'|'metric';
+
+// True when a block list names the GOOGLE vendor. `vendor_name` is a free-form,
+// case-sensitive string (Mapping Addendum 3), so only an exact `GOOGLE`
+// matches: a `Google` block names some other vendor and is carried like any
+// third-party block.
+function hasGoogleBlock(exts: CustomExtensionDoc[]|undefined): boolean {
+  return !!exts?.some(e => e.vendor_name === GOOGLE_VENDOR);
+}
+
+// Rejects a GOOGLE `custom_extensions` block where the flavor gives it no
+// meaning. In the Google flavor that is everywhere: each thing a GOOGLE block
+// would carry is a native key there. In vanilla it is only a field, the one
+// level the format defines no GOOGLE payload for. Third-party blocks are
+// accepted at every level in both flavors.
+function rejectGoogleBlock(
+    exts: CustomExtensionDoc[]|undefined, version: FormatVersion,
+    level: ExtensionLevel, ctx: string): void {
+  if (!hasGoogleBlock(exts)) return;
+  if (version === GOOGLE_VERSION) {
+    throw new Error(
+        `Semantic model load error: ${ctx}: a '${GOOGLE_VENDOR}' ` +
+        `custom_extensions block is not accepted in a '${GOOGLE_VERSION}' ` +
+        `document. Everything it would carry is a native key in this ` +
+        `flavor; write it as one.`);
+  }
+  if (level === 'field') {
+    throw new Error(
+        `Semantic model load error: ${ctx}: a '${OSSIE_VERSION}' document ` +
+        `cannot carry a '${GOOGLE_VENDOR}' custom_extensions block on a ` +
+        `field; the format defines a ${GOOGLE_VENDOR} payload only on a ` +
+        `model, dataset, relationship or metric.`);
+  }
+}
+
+// Ossie's Relationship has no `description` key and its objects are closed, so
+// a vanilla document that writes one is no longer valid Ossie. The description
+// is still expressible there, inside a GOOGLE block; say so, with the notation.
+function rejectVanillaRelationshipDescription(
+    r: RelationshipDoc, version: FormatVersion): void {
+  if (version !== OSSIE_VERSION || r.description === undefined) return;
+  throw new Error(
+      `Semantic model load error: relationship '${r.name}': a ` +
+      `'${OSSIE_VERSION}' document cannot carry a plain 'description' on a ` +
+      `relationship, since Ossie's Relationship has no such key. The ` +
+      `description is still available; carry it in a ${GOOGLE_VENDOR} ` +
+      `block on the relationship:\n` +
+      `  custom_extensions:\n` +
+      `    - vendor_name: ${GOOGLE_VENDOR}\n` +
+      `      data: '{"description": "..."}'\n` +
+      `or set the document version to '${GOOGLE_VERSION}'.`);
+}
+
+// Ossie's schema requires a dataset's `source`, a field's `expression`, and a
+// relationship's `from_columns` and `to_columns`. The Model Spec relaxes all
+// three in the Google flavor only, so a vanilla document must bind all three,
+// with or without `GOOGLE` blocks. `bindingOptional` does not relax this: it
+// decides what a push needs, not what the document must say to be valid Ossie.
+function requireVanillaBindings(m: ModelDoc): void {
+  const missing = (kind: string, name: string, key: string): never => {
+    throw new Error(
+        `Semantic model load error: ${kind} '${name}': a ${OSSIE_VERSION} ` +
+        `document requires '${key}'. Only ${GOOGLE_VERSION} lets a ${kind} ` +
+        `leave it to a profile.`);
+  };
+  for (const ds of m.datasets) {
+    if (ds.source === undefined) missing('dataset', ds.name, 'source');
+    for (const f of ds.fields ?? []) {
+      if (f.expression === undefined) {
+        missing('field', `${ds.name}.${f.name}`, 'expression');
+      }
+    }
+  }
+  for (const r of m.relationships ?? []) {
+    if (r.from_columns === undefined) {
+      missing('relationship', r.name, 'from_columns');
+    }
+    if (r.to_columns === undefined) {
+      missing('relationship', r.name, 'to_columns');
+    }
+  }
 }
 
 /**
@@ -715,7 +921,11 @@ function deploymentTargetExtension(target: string): CustomExtension {
 export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
   let doc: unknown;
   try {
-    doc = yaml.parse(text);
+    // `resolveKnownTags: false` keeps YAML-only tags (`!!timestamp`,
+    // `!!binary`) as the text written instead of turning them into Date or
+    // Uint8Array, and reads `!!set` as a mapping with null values, so custom
+    // `ai_context` members with no JSON counterpart stay text.
+    doc = yaml.parse(text, {resolveKnownTags: false, logLevel: 'error'});
   } catch (err: any) {
     throw new Error(`Semantic model load error: could not parse input: ${
         err?.message ?? err}`);
@@ -742,8 +952,8 @@ export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
   const warnings: string[] = [];
   const parsed = result.data as DocumentDoc;
 
-  const models =
-      parsed.semantic_model.map(m => convertModel(m, opts, warnings));
+  const models = parsed.semantic_model.map(
+      m => convertModel(m, version, opts, warnings));
   return {models, warnings: [...new Set(warnings)]};
 }
 
@@ -751,7 +961,7 @@ export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
 // of the accepted values: the version selects which extension surface is legal,
 // so it cannot be guessed, and a missing or unrecognized version is a hard load
 // error rather than a warning (agreed with Dmitri).
-function readVersion(doc: unknown): string {
+function readVersion(doc: unknown): FormatVersion {
   const version =
       (doc && typeof doc === 'object') ? (doc as any).version : undefined;
   if (typeof version !== 'string' || version.length === 0) {
@@ -760,7 +970,7 @@ function readVersion(doc: unknown): string {
         `'${OSSIE_VERSION}' (vanilla Ossie) or '${GOOGLE_VERSION}' (the ` +
         `extended profile) at the top level.`);
   }
-  if (!ACCEPTED_VERSIONS.includes(version)) {
+  if (!isFormatVersion(version)) {
     throw new Error(
         `Semantic model load error: unknown version ` +
         `'${version}'; expected '${OSSIE_VERSION}' or '${GOOGLE_VERSION}'.`);
@@ -787,25 +997,30 @@ function rejectDuplicateNames(
 }
 
 function convertModel(
-    m: ModelDoc, opts: LoadOptions, warnings: string[]): SemanticModel {
+    m: ModelDoc, version: FormatVersion, opts: LoadOptions,
+    warnings: string[]): SemanticModel {
   const dialect = opts.dialect ?? DEFAULT_DIALECT;
 
-  const entities =
-      m.datasets.map(ds => convertDataset(ds, opts, warnings, dialect));
+  rejectGoogleBlock(m.custom_extensions, version, 'model', `model '${m.name}'`);
+  if (version === OSSIE_VERSION) {
+    requireVanillaBindings(m);
+  }
+
+  const entities = m.datasets.map(
+      ds => convertDataset(ds, version, opts, warnings, dialect));
   rejectDuplicateNames(
       entities.map(e => e.name), 'dataset name', `model '${m.name}'`);
 
   const entityNames = entities.map(e => e.name);
   const entityNameSet = new Set(entityNames);
 
-  const relationships =
-      (m.relationships ?? []).map(r => convertRelationship(r, entityNameSet));
+  const relationships = (m.relationships ?? []).map(
+      r => convertRelationship(r, version, entityNameSet));
   rejectDuplicateNames(
       relationships.map(r => r.name), 'relationship name', `model '${m.name}'`);
 
-  const metrics =
-      (m.metrics ??
-       []).map(mt => convertMetric(mt, entityNames, warnings, dialect));
+  const metrics = (m.metrics ?? []).map(
+      mt => convertMetric(mt, version, entityNames, warnings, dialect));
   rejectDuplicateNames(
       metrics.map(mt => mt.name), 'metric name', `model '${m.name}'`);
 
@@ -853,16 +1068,19 @@ function convertModel(
 
   const description = composeDescription(m.description);
 
-  const model: SemanticModel = {name: m.name, entities, relationships, metrics};
+  // `version` records the flavor the document was written in, so a consumer
+  // (e.g. a pull) can return the model in that same flavor.
+  const model: SemanticModel =
+      {name: m.name, version, entities, relationships, metrics};
   if (actions.length) model.actions = actions;
   if (constraints.length) model.constraints = constraints;
   if (description) model.description = description;
   const ai = aiContextOrUndefined(m.ai_context);
   if (ai) model.aiContext = ai;
-  // Custom extensions ride vanilla Ossie's `custom_extensions` carrier or,
-  // under the extended profile, come from folding the native
-  // `deployment_target` key into a GOOGLE block (the two are mutually exclusive
-  // by version).
+  // Authored custom extensions are carried verbatim. Under the extended
+  // profile the native `deployment_target` key is folded into a GOOGLE block
+  // appended after them; no authored GOOGLE block can collide with it, since
+  // that flavor rejects one (see rejectGoogleBlock).
   const ce = toCustomExtensions(m.custom_extensions);
   if (ce) model.customExtensions = ce;
   if (m.deployment_target !== undefined) {
@@ -875,8 +1093,8 @@ function convertModel(
 }
 
 function convertDataset(
-    ds: DatasetDoc, opts: LoadOptions, warnings: string[],
-    dialect: string): Entity {
+    ds: DatasetDoc, version: FormatVersion, opts: LoadOptions,
+    warnings: string[], dialect: string): Entity {
   const ctxLabel = `dataset '${ds.name}'`;
   // An abstract entity has no physical table, so it carries no source (empty
   // dataSource) and no key -- both are meaningless for a class never
@@ -889,8 +1107,8 @@ function convertDataset(
     warnings.push(`${
         ctxLabel}: no primary_key; the entity's KEY will be empty (invalid for graph generation)`);
   }
-  const fields =
-      (ds.fields ?? []).map(f => convertField(f, ds.name, warnings, dialect));
+  const fields = (ds.fields ?? []).map(
+      f => convertField(f, ds.name, version, warnings, dialect));
   rejectDuplicateNames(
       fields.map(f => f.name), 'field name', `dataset '${ds.name}'`);
 
@@ -903,14 +1121,36 @@ function convertDataset(
   if (description) entity.description = description;
   const ai = aiContextOrUndefined(ds.ai_context);
   if (ai) entity.aiContext = ai;
+  rejectGoogleBlock(ds.custom_extensions, version, 'dataset', ctxLabel);
   const ce = toCustomExtensions(ds.custom_extensions);
   if (ce) entity.customExtensions = ce;
   return entity;
 }
 
+// Resolves an authored `datatype` against the document's flavor: vanilla takes
+// only the canonical spelling, the Google flavor any casing. An omitted
+// datatype and `Opaque` both mean "no type" and come back undefined. A value
+// the flavor does not accept is a load error naming the flavor in force, since
+// the same string can be valid in one flavor and not the other.
+function resolveDataType(
+    raw: string|undefined, version: FormatVersion,
+    ctx: string): Exclude<DataType, 'Opaque'>|undefined {
+  const result = normalizeDataType(raw, version);
+  if (!result.ok) {
+    const accepted = version === GOOGLE_VERSION ?
+        'any casing of' :
+        'exactly one of';
+    throw new Error(
+        `Semantic model load error: ${ctx}: datatype '${raw}' is not valid ` +
+        `in a '${version}' document; expected ${accepted} ` +
+        `${DATA_TYPES.join(', ')}.`);
+  }
+  return result.type;
+}
+
 function convertField(
-    f: FieldDoc, entityName: string, warnings: string[],
-    dialect: string): Field {
+    f: FieldDoc, entityName: string, version: FormatVersion,
+    warnings: string[], dialect: string): Field {
   // `label`, `dimension`, and AI-first annotations are carried structurally on
   // the IR (not folded into `description`) so an emitter can route each to its
   // own destination and a 1P round-trip stays lossless.
@@ -932,7 +1172,9 @@ function convertField(
   // the availability pass (pruneUnavailable) drops each unbound field, and
   // whatever depends on it, before generation, so one logical model can serve
   // stores that bind different subsets of columns.
-  if (f.datatype) field.type = f.datatype;
+  const type =
+      resolveDataType(f.datatype, version, `field '${entityName}.${f.name}'`);
+  if (type) field.type = type;
   if (f.label) field.label = f.label;
   if (f.dimension) {
     field.dimension = {};
@@ -942,6 +1184,8 @@ function convertField(
   if (description) field.description = description;
   const ai = aiContextOrUndefined(f.ai_context);
   if (ai) field.aiContext = ai;
+  rejectGoogleBlock(
+      f.custom_extensions, version, 'field', `field '${entityName}.${f.name}'`);
   const ce = toCustomExtensions(f.custom_extensions);
   if (ce) field.customExtensions = ce;
   return field;
@@ -958,8 +1202,10 @@ function convertField(
 // column arity) is a hard error, not a warning: the resulting edge would be
 // structurally invalid.
 function convertRelationship(
-    r: RelationshipDoc, entityNames: Set<string>): Relationship {
+    r: RelationshipDoc, version: FormatVersion,
+    entityNames: Set<string>): Relationship {
   const ctx = `relationship '${r.name}'`;
+  rejectVanillaRelationshipDescription(r, version);
   if (!entityNames.has(r.from)) {
     throw new Error(
         `${ctx}: 'from' dataset '${r.from}' is not defined in the model`);
@@ -987,39 +1233,59 @@ function convertRelationship(
   if (description) relationship.description = description;
   const ai = aiContextOrUndefined(r.ai_context);
   if (ai) relationship.aiContext = ai;
+  rejectGoogleBlock(r.custom_extensions, version, 'relationship', ctx);
   const ce = toCustomExtensions(r.custom_extensions);
   if (ce) relationship.customExtensions = ce;
   return relationship;
 }
 
 function convertMetric(
-    mt: MetricDoc, entityNames: string[], warnings: string[],
-    dialect: string): Metric {
+    mt: MetricDoc, version: FormatVersion, entityNames: string[],
+    warnings: string[], dialect: string): Metric {
   const ctx = `metric '${mt.name}'`;
   const picked = pickDialect(mt.expression, dialect, ctx, warnings);
   // Infer referenced entities from whichever expression form we have; the
   // imported form still carries the same entity qualifiers.
   const exprForRefs = picked.expression ?? picked.importedExpression ?? '';
   const referenced = referencedEntityNames(exprForRefs, entityNames);
-  if (!referenced.length) {
+  // An authored anchor (Google flavor only) says which entity the metric
+  // belongs to, so an expression naming none -- `COUNT(*)` -- is not a problem
+  // and is not warned about.
+  if (mt.entity === undefined && !referenced.length) {
     warnings.push(`${
         ctx}: expression references no known entity; it may not be placeable downstream`);
   }
   const metric: Metric = {name: mt.name};
-  // Attach only when the reference is unambiguous; a cross-entity metric is
-  // left unattached (its qualifiers stay inline in the expression for
-  // consumers).
-  if (referenced.length === 1) metric.entity = referenced[0];
+  if (mt.entity !== undefined) {
+    // Like a relationship endpoint, an anchor must name a dataset the model
+    // declares; a dangling one would attach the metric to nothing downstream.
+    if (!entityNames.includes(mt.entity)) {
+      throw new Error(
+          `Semantic model load error: ${ctx}: 'entity' names '${mt.entity}', ` +
+          `which is not a dataset in this model.`);
+    }
+    // What the author wrote wins over inference. `authoredEntity` records that
+    // it was written, so a pull can write it back rather than re-infer it.
+    metric.authoredEntity = mt.entity;
+    metric.entity = mt.entity;
+  } else if (referenced.length === 1) {
+    // Attach only when the reference is unambiguous; a cross-entity metric is
+    // left unattached (its qualifiers stay inline in the expression for
+    // consumers).
+    metric.entity = referenced[0];
+  }
   if (picked.expression !== undefined) metric.expression = picked.expression;
   if (picked.importedExpression !== undefined) {
     metric.importedExpression = picked.importedExpression;
     metric.importedDialect = picked.importedDialect;
   }
-  if (mt.datatype) metric.type = mt.datatype;
+  const type = resolveDataType(mt.datatype, version, ctx);
+  if (type) metric.type = type;
   const description = composeDescription(mt.description);
   if (description) metric.description = description;
   const ai = aiContextOrUndefined(mt.ai_context);
   if (ai) metric.aiContext = ai;
+  rejectGoogleBlock(mt.custom_extensions, version, 'metric', ctx);
   const ce = toCustomExtensions(mt.custom_extensions);
   if (ce) metric.customExtensions = ce;
   return metric;

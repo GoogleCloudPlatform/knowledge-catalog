@@ -836,6 +836,10 @@ describe(
 function stripToKcFloor(model: SemanticModel): SemanticModel {
   const m = structuredClone(model);
 
+  // The flavor the document declared (`version`) has nowhere to live in the
+  // current catalog aspects, so it does not survive a round trip through them.
+  delete m.version;
+
   // ai_context rides back through the built-in `guidelines` aspect, but only
   // `instructions` -- synonyms/examples are not persisted. Reduce every
   // entry-backed object's ai_context to instructions-only (dropping the block
