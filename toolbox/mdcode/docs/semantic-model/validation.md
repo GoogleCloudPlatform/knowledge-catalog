@@ -166,13 +166,42 @@ kcmd test --target bigquery --profile bigquery --location US
 | Kind | Generated for | Passes when |
 |------|---------------|-------------|
 | `defined-membership` (K1) | every defined entity (`definition:`) | the base's rows where the graph property `is<Class>` holds (`MATCH (n:Base) WHERE n.isClass`) are exactly the rows the definition's expression selects over the base's bound tables, compared on the base's key. The reference side is the SQL `validate` uses for the class. |
-| `transitive-closure` | every relationship the model marks transitive (its `ai_context.instructions` call it transitive, as the OWL importer writes for `owl:TransitiveProperty`) | the pairs `(a:S)-[:p]->{1,k}(b:S)` returns are exactly the pairs a `WITH RECURSIVE` closure over the bound join columns returns, up to `k` hops |
+| `transitive-closure` | every relationship the model marks transitive (its `ai_context.instructions` call it transitive, as the OWL importer writes for `owl:TransitiveProperty`), abstract ones included | the pairs `(a)-[:p]->{1,k}(b)` returns are exactly the pairs a `WITH RECURSIVE` closure returns, up to `k` hops, over the bound join columns of every edge table labelled `p`: the relationship's own and each sub-relationship's (see below) |
 | `validation-query` (K4) | every check `validate` plans | the count query runs and the examples query compiles |
 
 A comparison is one statement that returns `actual_rows`, `expected_rows`,
 `missing`, `extra` and up to five examples of each difference. Both sides are
 reduced to distinct rows: the contract is about which rows come back, not how
 many times.
+
+#### Transitive closure over a relationship hierarchy
+
+A sub-relationship's edge table also carries the labels of its ancestors, so a
+path over `p` follows the edges of `p` and of every sub-relationship of `p`.
+The closure test reads the same edges. Take an org chart where `within` is
+abstract and marked transitive, and three sub-relationships extend it:
+`inTeam` (Employee to Team), `teamOf` (Team to Division) and `subDivisionOf`
+(Division to Division). The test for `within` works like this:
+
+- **Reference side.** `WITH RECURSIVE` walks the union of the three edge
+  tables, read from their bound join columns.
+- **Graph side.** One quantified path per pair of node tables that some path
+  joins: `(a:Employee)-[:within]->{1,k}(b:Team)`,
+  `(a:Employee)-[:within]->{1,k}(b:Division)`,
+  `(a:Team)-[:within]->{1,k}(b:Division)` and
+  `(a:Division)-[:within]->{1,k}(b:Division)`.
+- **Node ids.** Nodes compare as `<node table>:<key>`, since a path crosses
+  node tables whose keys can collide. Each node table is read on its own.
+  Suppose a subtype with a table of its own, such as `Subsidiary` extending
+  `Division`, is also an endpoint. Its label is then excluded from the
+  parent's (`(a:Division&!Subsidiary)`), so each node is counted under its own
+  table.
+- **What push leaves out.** Push drops an edge table when an endpoint's key
+  or a join column is unbound under the profile. Such an edge table is
+  absent from the graph, so it is left out of both sides.
+
+A relationship with no sub-relationships is the one-table case,
+`(a:Department)-[:partOf]->{1,k}(b:Department)`.
 
 ### What is not tested
 
@@ -181,9 +210,12 @@ in the console report, at the end of the `.sql` file, and in the manifest's
 `skipped[]`. Examples:
 
 - a defined entity whose parent chain does not resolve;
-- a transitive relationship that is abstract, whose endpoints differ, whose
-  edge label sub-relationships share, that is backed by an association table,
-  or that declares no join columns;
+- a transitive relationship that cannot be tested, because:
+  - no edge table in the graph carries its label;
+  - its edges never chain, so no edge starts at a node table where another
+    ends and no path goes past one hop;
+  - one of its edge tables is backed by an association table, or declares no
+    join columns;
 - a constraint `validate` has no query for;
 - any graph test when the model declares no BigQuery graph target.
 
@@ -234,7 +266,9 @@ the CLI need no change. A generator:
    - the merged model and the graph's name;
    - the `Binder`, which resolves an entity to its bound rows the same way
      `validate` and the graph leg do;
-   - the `GraphShape`: node tables, edge tables and shared edge labels;
+   - the `GraphShape` of the graph as push deploys it (what the binding
+     leaves unbound pruned): node tables, edge tables, each edge table's
+     labels, and the shared edge labels;
    - `pathBound`;
 3. builds its tests with the exported helpers:
    - `graphTableSql` for the graph side;

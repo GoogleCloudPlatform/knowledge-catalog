@@ -537,7 +537,7 @@ export class Binder {
   }
 }
 
-function table(e: Entity): string {
+export function table(e: Entity): string {
   const src = e.dataSource.trim();
   return /\s/.test(src) ? `(${src})` : `\`${src}\``;
 }

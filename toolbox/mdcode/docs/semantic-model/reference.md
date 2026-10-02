@@ -180,7 +180,9 @@ checks that the graph does what the model says:
   graph property `is<Class>` holds are exactly the rows its definition selects.
 - **`transitive-closure`**: for each relationship the model marks transitive, a
   quantified path `-[:p]->{1,k}` returns exactly the pairs a recursive SQL
-  closure over its join columns returns.
+  closure returns. The closure runs over the join columns of every edge
+  labelled `p`: the relationship's own edges and those of each
+  sub-relationship. An abstract relationship is therefore tested too.
 - **`validation-query`**: every query `validate` plans for the model executes.
 
 The tests are written to `--out` as `<model>.contract.sql` and the manifest

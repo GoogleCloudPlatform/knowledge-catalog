@@ -166,7 +166,7 @@ SELECT
   ARRAY_TO_STRING(ARRAY(SELECT IFNULL(k, 'NULL') FROM extra ORDER BY k LIMIT 5), ' | ') AS extra_examples`;
 
 const PART_OF_SQL = `WITH RECURSIVE edges AS (
-  SELECT CAST(s.\`departmentId\` AS STRING) AS src, CAST(d.\`departmentId\` AS STRING) AS dst
+  SELECT CONCAT('Department:', CAST(s.\`departmentId\` AS STRING)) AS src, CONCAT('Department:', CAST(d.\`departmentId\` AS STRING)) AS dst
   FROM (
     SELECT dept_id AS \`departmentId\`, parent_dept_id AS \`parentId\`
     FROM \`p.d.department\`
@@ -186,7 +186,7 @@ closure AS (
   WHERE c.hops < 10
 ),
 actual AS (
-  SELECT CAST(\`src_departmentId\` AS STRING) AS src, CAST(\`dst_departmentId\` AS STRING) AS dst
+  SELECT CONCAT('Department:', CAST(\`src_departmentId\` AS STRING)) AS src, CONCAT('Department:', CAST(\`dst_departmentId\` AS STRING)) AS dst
   FROM (
     SELECT *
     FROM GRAPH_TABLE(
@@ -316,7 +316,7 @@ describe('contract tests: generation from the model', () => {
     ]);
   });
 
-  test('a relationship whose label sub-relationships share is not tested', () => {
+  test('sub-relationships that carry the label are part of the closure', () => {
     const model = fixture();
     model.relationships.push({
       name: 'subUnitOf',
@@ -325,10 +325,15 @@ describe('contract tests: generation from the model', () => {
       destination: {entity: 'Department', columns: ['departmentId']},
     });
     const plan = planContractTests(model, {kinds: ['transitive-closure']});
-    expect(plan.tests).toEqual([]);
-    expect(plan.skipped.find(s => s.subject === 'partOf')?.reason)
-        .toBe('sub-relationships carry its edge label, so a path over the ' +
-              'label also follows their edges');
+    const t = byId(plan, 'transitive-closure:partOf');
+    expect(t.description)
+        .toBe('the path (a:Department)-[:partOf]->{1,10}(b:Department) returns ' +
+              'exactly the pairs of the transitive closure of \'partOf\' over ' +
+              'the edge tables partOf, subUnitOf up to 10 hops');
+    // Both edge tables feed the closure, de-duplicated before the walk.
+    expect(t.expectedSql)
+        .toStartWith('WITH RECURSIVE edges AS (\n  SELECT DISTINCT src, dst\n  FROM (\n');
+    expect(t.expectedSql!.split('\n    UNION ALL\n').length).toBe(2);
   });
 
   test('generation is deterministic and does not mutate the model', () => {
@@ -338,6 +343,253 @@ describe('contract tests: generation from the model', () => {
     const b = planContractTests(model);
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
     expect(JSON.stringify(model)).toBe(before);
+  });
+});
+
+// An org chart: an employee is in a team, a team in a division, a division in
+// a parent division. `within` is abstract and marked transitive; each of its
+// three sub-relationships joins two of three node tables and carries the
+// `within` label.
+function orgFixture(): SemanticModel {
+  return {
+    name: 'org',
+    entities: [
+      {name: 'OrgMember', abstract: true, dataSource: '', keys: [], fields: []},
+      {name: 'OrgUnit', abstract: true, dataSource: '', keys: [], fields: []},
+      {
+        name: 'Employee',
+        extends: ['OrgMember'],
+        dataSource: 'p.d.employee',
+        keys: ['employeeId'],
+        fields: [f('employeeId', 'employee_id'), f('teamId', 'team_id')],
+      },
+      {
+        name: 'Team',
+        extends: ['OrgMember', 'OrgUnit'],
+        dataSource: 'p.d.team',
+        keys: ['teamId'],
+        fields: [f('teamId', 'team_id'), f('divisionId', 'division_id')],
+      },
+      {
+        name: 'Division',
+        extends: ['OrgMember', 'OrgUnit'],
+        dataSource: 'p.d.division',
+        keys: ['divisionId'],
+        fields: [f('divisionId', 'division_id'), f('parentId', 'parent_division_id')],
+      },
+    ],
+    relationships: [
+      {
+        name: 'within',
+        abstract: true,
+        source: {entity: 'OrgMember', columns: []},
+        destination: {entity: 'OrgUnit', columns: []},
+        aiContext: {instructions: 'within is transitive.'},
+      },
+      {
+        name: 'inTeam',
+        extends: ['within'],
+        source: {entity: 'Employee', columns: ['teamId']},
+        destination: {entity: 'Team', columns: ['teamId']},
+      },
+      {
+        name: 'teamOf',
+        extends: ['within'],
+        source: {entity: 'Team', columns: ['divisionId']},
+        destination: {entity: 'Division', columns: ['divisionId']},
+      },
+      {
+        name: 'subDivisionOf',
+        extends: ['within'],
+        source: {entity: 'Division', columns: ['parentId']},
+        destination: {entity: 'Division', columns: ['divisionId']},
+      },
+    ],
+    metrics: [],
+    customExtensions: [target('g')],
+  };
+}
+
+// The comparison every closure statement ends with (see PART_OF_SQL).
+const CLOSURE_TAIL = PART_OF_SQL.slice(PART_OF_SQL.indexOf('\nexpected AS ('));
+
+const WITHIN_SQL = `WITH RECURSIVE edges AS (
+  SELECT DISTINCT src, dst
+  FROM (
+    SELECT CONCAT('Employee:', CAST(s.\`employeeId\` AS STRING)) AS src, CONCAT('Team:', CAST(d.\`teamId\` AS STRING)) AS dst
+    FROM (
+      SELECT employee_id AS \`employeeId\`, team_id AS \`teamId\`
+      FROM \`p.d.employee\`
+    ) AS s
+    JOIN (
+      SELECT team_id AS \`teamId\`
+      FROM \`p.d.team\`
+    ) AS d ON s.\`teamId\` = d.\`teamId\`
+    UNION ALL
+    SELECT CONCAT('Team:', CAST(s.\`teamId\` AS STRING)) AS src, CONCAT('Division:', CAST(d.\`divisionId\` AS STRING)) AS dst
+    FROM (
+      SELECT team_id AS \`teamId\`, division_id AS \`divisionId\`
+      FROM \`p.d.team\`
+    ) AS s
+    JOIN (
+      SELECT division_id AS \`divisionId\`
+      FROM \`p.d.division\`
+    ) AS d ON s.\`divisionId\` = d.\`divisionId\`
+    UNION ALL
+    SELECT CONCAT('Division:', CAST(s.\`divisionId\` AS STRING)) AS src, CONCAT('Division:', CAST(d.\`divisionId\` AS STRING)) AS dst
+    FROM (
+      SELECT division_id AS \`divisionId\`, parent_division_id AS \`parentId\`
+      FROM \`p.d.division\`
+    ) AS s
+    JOIN (
+      SELECT division_id AS \`divisionId\`
+      FROM \`p.d.division\`
+    ) AS d ON s.\`parentId\` = d.\`divisionId\`
+  )
+),
+closure AS (
+  SELECT src, dst, 1 AS hops
+  FROM edges
+  UNION ALL
+  SELECT c.src, e.dst, c.hops + 1
+  FROM closure AS c
+  JOIN edges AS e ON e.src = c.dst
+  WHERE c.hops < 10
+),
+actual AS (
+  SELECT CONCAT('Employee:', CAST(\`src_employeeId\` AS STRING)) AS src, CONCAT('Team:', CAST(\`dst_teamId\` AS STRING)) AS dst
+  FROM (
+    SELECT *
+    FROM GRAPH_TABLE(
+      \`p.d.g\`
+      MATCH (a:\`Employee\`)-[:\`within\`]->{1,10}(b:\`Team\`)
+      COLUMNS (a.\`employeeId\` AS \`src_employeeId\`, b.\`teamId\` AS \`dst_teamId\`)
+    )
+  )
+  UNION ALL
+  SELECT CONCAT('Employee:', CAST(\`src_employeeId\` AS STRING)) AS src, CONCAT('Division:', CAST(\`dst_divisionId\` AS STRING)) AS dst
+  FROM (
+    SELECT *
+    FROM GRAPH_TABLE(
+      \`p.d.g\`
+      MATCH (a:\`Employee\`)-[:\`within\`]->{1,10}(b:\`Division\`)
+      COLUMNS (a.\`employeeId\` AS \`src_employeeId\`, b.\`divisionId\` AS \`dst_divisionId\`)
+    )
+  )
+  UNION ALL
+  SELECT CONCAT('Team:', CAST(\`src_teamId\` AS STRING)) AS src, CONCAT('Division:', CAST(\`dst_divisionId\` AS STRING)) AS dst
+  FROM (
+    SELECT *
+    FROM GRAPH_TABLE(
+      \`p.d.g\`
+      MATCH (a:\`Team\`)-[:\`within\`]->{1,10}(b:\`Division\`)
+      COLUMNS (a.\`teamId\` AS \`src_teamId\`, b.\`divisionId\` AS \`dst_divisionId\`)
+    )
+  )
+  UNION ALL
+  SELECT CONCAT('Division:', CAST(\`src_divisionId\` AS STRING)) AS src, CONCAT('Division:', CAST(\`dst_divisionId\` AS STRING)) AS dst
+  FROM (
+    SELECT *
+    FROM GRAPH_TABLE(
+      \`p.d.g\`
+      MATCH (a:\`Division\`)-[:\`within\`]->{1,10}(b:\`Division\`)
+      COLUMNS (a.\`divisionId\` AS \`src_divisionId\`, b.\`divisionId\` AS \`dst_divisionId\`)
+    )
+  )
+),${CLOSURE_TAIL}`;
+
+function matches(sql: string|undefined): string[] {
+  return [...(sql ?? '').matchAll(/MATCH (.*)/g)].map(m => m[1]);
+}
+
+describe('contract tests: transitive closure over a relationship hierarchy', () => {
+  test('an abstract relationship is tested over its sub-relationships\' edges (golden)', () => {
+    const plan = planContractTests(orgFixture(), {kinds: ['transitive-closure']});
+    expect(plan.skipped).toEqual([]);
+    const t = byId(plan, 'transitive-closure:within');
+    expect(t.graphQuery).toBe(true);
+    expect(t.description)
+        .toBe('the path (a)-[:within]->{1,10}(b) returns exactly the pairs of ' +
+              'the transitive closure of \'within\' over the edge tables inTeam, ' +
+              'teamOf, subDivisionOf up to 10 hops');
+    expect(t.sql).toBe(WITHIN_SQL);
+  });
+
+  test('one quantified path per pair of node tables a path can join', () => {
+    const t = byId(planContractTests(orgFixture(), {pathBound: 1}),
+                   'transitive-closure:within');
+    // With k = 1 no path goes past one edge: Employee no longer reaches Division.
+    expect(matches(t.actualSql)).toEqual([
+      '(a:`Employee`)-[:`within`]->{1,1}(b:`Team`)',
+      '(a:`Team`)-[:`within`]->{1,1}(b:`Division`)',
+      '(a:`Division`)-[:`within`]->{1,1}(b:`Division`)',
+    ]);
+  });
+
+  test('a subtype\'s node table is read under its own label only', () => {
+    const model = orgFixture();
+    model.entities.push({
+      name: 'Subsidiary',
+      extends: ['Division'],
+      dataSource: 'p.d.subsidiary',
+      keys: ['divisionId'],
+      fields: [f('divisionId', 'division_id'), f('parentId', 'parent_division_id')],
+    });
+    model.relationships.push({
+      name: 'subsidiaryOf',
+      extends: ['within'],
+      source: {entity: 'Subsidiary', columns: ['parentId']},
+      destination: {entity: 'Division', columns: ['divisionId']},
+    });
+    const t = byId(planContractTests(model), 'transitive-closure:within');
+    expect(matches(t.actualSql)).toEqual([
+      '(a:`Employee`)-[:`within`]->{1,10}(b:`Team`)',
+      '(a:`Employee`)-[:`within`]->{1,10}(b:`Division`&!`Subsidiary`)',
+      '(a:`Team`)-[:`within`]->{1,10}(b:`Division`&!`Subsidiary`)',
+      '(a:`Division`&!`Subsidiary`)-[:`within`]->{1,10}(b:`Division`&!`Subsidiary`)',
+      '(a:`Subsidiary`)-[:`within`]->{1,10}(b:`Division`&!`Subsidiary`)',
+    ]);
+    // A Division row is read from the division table alone, not unioned with
+    // the subsidiary table: only the subsidiaryOf edges read that one.
+    expect(t.expectedSql!.split('FROM `p.d.subsidiary`').length - 1).toBe(1);
+  });
+
+  test('an edge table push drops for an unbound join column is left out', () => {
+    const model = orgFixture();
+    model.entities.find(e => e.name === 'Team')!.fields =
+        [f('teamId', 'team_id'), {name: 'divisionId', type: 'String'}];
+    const t = byId(planContractTests(model), 'transitive-closure:within');
+    expect(t.description).toContain('over the edge tables inTeam, subDivisionOf up to');
+    expect(matches(t.actualSql)).toEqual([
+      '(a:`Employee`)-[:`within`]->{1,10}(b:`Team`)',
+      '(a:`Division`)-[:`within`]->{1,10}(b:`Division`)',
+    ]);
+  });
+
+  test('what cannot be tested says why', () => {
+    const reasons = (model: SemanticModel) =>
+        planContractTests(model, {kinds: ['transitive-closure']})
+            .skipped.map(s => s.reason);
+    const bare = orgFixture();
+    bare.relationships = bare.relationships.filter(r => r.name === 'within');
+    expect(reasons(bare))
+        .toEqual(['it is abstract and no edge table in the graph carries its label']);
+    const flat = orgFixture();
+    flat.relationships =
+        flat.relationships.filter(r => r.name === 'within' || r.name === 'inTeam');
+    expect(reasons(flat)).toEqual([
+      'no edge labelled \'within\' starts at a node table where another one ' +
+          'ends, so a path cannot continue past one hop',
+    ]);
+    const junction = orgFixture();
+    junction.relationships.find(r => r.name === 'inTeam')!.association = {
+      dataSource: 'p.d.team_member',
+      keys: ['employee_id', 'team_id'],
+      sourceColumns: ['employee_id'],
+      destinationColumns: ['team_id'],
+    };
+    expect(reasons(junction))
+        .toEqual(['sub-relationship \'inTeam\' is backed by an association table']);
   });
 });
 

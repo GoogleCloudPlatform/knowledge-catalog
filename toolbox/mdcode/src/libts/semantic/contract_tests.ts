@@ -9,7 +9,8 @@
 //     table(s);
 //   - transitive-closure: a quantified path `-[:p]->{1,k}` over a relationship
 //     the model marks transitive returns exactly the pairs a recursive SQL CTE
-//     over the bound join columns returns;
+//     over the bound join columns of every edge labelled p returns -- its own
+//     and its sub-relationships', so an abstract one is tested too;
 //   - validation-query (K4): every query `kcmd validate` generates executes.
 //
 // Every test is generated from the model alone; nothing is written per model.
@@ -35,8 +36,9 @@ import * as context from '../gcp/context';
 
 import {isDefinedEntity, membershipPropertyName, resolveDefinedEntities} from './defined_entities';
 import {bigQueryGraphTargets} from './deployment_target';
-import {Relationship, relationshipAncestors, SemanticModel} from './ir';
-import {Binder, planBigQueryValidation, runQuery, Unsupported} from './validate_bigquery';
+import {Entity, Relationship, relationshipAncestors, SemanticModel} from './ir';
+import {pruneUnavailable} from './resolve_profiles';
+import {Binder, planBigQueryValidation, runQuery, sqlString, table as boundTable, Unsupported} from './validate_bigquery';
 
 
 // ---------------------------------------------------------------------------
@@ -98,12 +100,20 @@ export interface ContractPlan {
   warnings: string[];
 }
 
-/** The element tables the BigQuery graph leg builds for the model. */
+/**
+ * The element tables the BigQuery graph leg builds for the model as push
+ * deploys it: what the binding leaves unbound is pruned first.
+ */
 export interface GraphShape {
   /** Entities that form a node table: concrete and keyed. */
   nodeTables: Set<string>;
   /** Concrete relationships between two node tables: one edge table each. */
   edges: Relationship[];
+  /**
+   * Each edge table's labels: its own name, then every ancestor relationship
+   * it also carries. A path over a label follows every edge table listing it.
+   */
+  edgeLabels: Map<string, string[]>;
   /** Relationship names some edge table carries as an extra (ancestor) label. */
   sharedEdgeLabels: Set<string>;
 }
@@ -249,18 +259,32 @@ export function sameRowsSql(spec: SameRows): string {
 
 // The element tables generatePropertyGraph emits, read off the same lowered,
 // inheritance-resolved model the Binder holds: a node table per concrete keyed
-// entity, an edge table per concrete relationship between two of them.
-export function graphShape(binder: Binder): GraphShape {
+// entity, an edge table per concrete relationship between two of them, each
+// edge labelled with its name and its ancestors' (bigquery.ts). `deployed` is
+// the model as push deploys it -- pruned of what the binding leaves unbound
+// (pruneUnavailable) -- and limits both to the entities and relationships it
+// keeps.
+export function graphShape(binder: Binder, deployed?: SemanticModel): GraphShape {
+  const keptEntities = deployed && new Set((deployed.entities ?? []).map(e => e.name));
+  const keptRelationships =
+      deployed && new Set((deployed.relationships ?? []).map(r => r.name));
   const nodeTables = new Set<string>();
   for (const e of binder.tables.values()) {
-    if (!e.abstract && e.keys?.length) nodeTables.add(e.name);
+    if (!e.abstract && e.keys?.length && (!keptEntities || keptEntities.has(e.name))) {
+      nodeTables.add(e.name);
+    }
   }
-  const edges = binder.loweredRelationships.filter(
+  const present = binder.loweredRelationships.filter(
+      r => !keptRelationships || keptRelationships.has(r.name));
+  const edges = present.filter(
       r => !r.abstract && nodeTables.has(r.source.entity) &&
           nodeTables.has(r.destination.entity));
-  const sharedEdgeLabels = new Set(edges.flatMap(
-      r => relationshipAncestors(binder.loweredRelationships, r.name)));
-  return {nodeTables, edges, sharedEdgeLabels};
+  const edgeLabels = new Map(edges.map(
+      (r): [string, string[]] =>
+          [r.name, [r.name, ...relationshipAncestors(present, r.name)]]));
+  const sharedEdgeLabels =
+      new Set([...edgeLabels.values()].flatMap(labels => labels.slice(1)));
+  return {nodeTables, edges, edgeLabels, sharedEdgeLabels};
 }
 
 function unsupportedReason(err: unknown): string {
@@ -325,42 +349,49 @@ function isTransitive(r: Relationship): boolean {
   return /\btransitive\b/i.test(r.aiContext?.instructions ?? '');
 }
 
-/** A bounded quantified path returns the pairs a recursive CTE returns. */
+/**
+ * A bounded quantified path returns the pairs a recursive CTE returns.
+ *
+ * A path over label p follows every edge table that carries p: the
+ * relationship's own, when the graph has one, and each sub-relationship's,
+ * which carries p as an ancestor label. So a relationship that is abstract, or
+ * whose sub-relationships join other node tables, is tested over the union of
+ * those edges. Nodes compare as `<node table>:<key>`, since a path may cross
+ * node tables whose keys collide.
+ */
 export const transitiveClosureTests: ContractTestGenerator = {
   kind: 'transitive-closure',
   summary: 'A quantified path `-[:p]->{1,k}` over a relationship the model ' +
       'marks transitive returns exactly the pairs a recursive SQL CTE over ' +
-      'its bound join columns returns.',
+      'the bound join columns of every edge labelled p (its own and its ' +
+      'sub-relationships\') returns.',
   generate(ctx: ContractContext): GeneratedTests {
     const out: GeneratedTests = {tests: [], skipped: []};
-    const k = ctx.pathBound;
     for (const r of ctx.binder.loweredRelationships) {
       if (!isTransitive(r)) continue;
       const skip = (reason: string) =>
           out.skipped.push({subject: r.name, reason});
-      const S = r.source.entity;
-      const T = r.destination.entity;
+      const members = ctx.shape.edges.filter(
+          e => ctx.shape.edgeLabels.get(e.name)?.includes(r.name));
+      const chains = members.some(
+          m => members.some(n => n.source.entity === m.destination.entity));
       if (!ctx.graph) {
         skip(NO_GRAPH);
-      } else if (r.abstract) {
-        skip('it is abstract: it has no edge table of its own');
-      } else if (!ctx.shape.edges.includes(r)) {
-        skip(`its endpoints are not both node tables, so the graph has no '${
-            r.name}' edge table`);
-      } else if (S !== T) {
-        skip(`its endpoints differ ('${S}' -> '${T}'), so a path of '${
-            r.name}' edges cannot continue past one hop`);
-      } else if (ctx.shape.sharedEdgeLabels.has(r.name)) {
-        skip('sub-relationships carry its edge label, so a path over the ' +
-             'label also follows their edges');
-      } else if (r.association) {
-        skip('it is backed by an association table');
-      } else if (!r.source.columns.length ||
-                 r.source.columns.length !== r.destination.columns.length) {
-        skip('it declares no matching join columns');
+      } else if (!members.length) {
+        skip(r.abstract ?
+                 'it is abstract and no edge table in the graph carries its label' :
+                 `the graph has no edge table labelled '${r.name}': an endpoint ` +
+                     'is not a node table, or the binding leaves it unbound');
+      } else if (!chains) {
+        skip(members.length === 1 && members[0] === r ?
+                 `its endpoints differ ('${r.source.entity}' -> '${
+                     r.destination.entity}'), so a path of '${
+                     r.name}' edges cannot continue past one hop` :
+                 `no edge labelled '${r.name}' starts at a node table where ` +
+                     'another one ends, so a path cannot continue past one hop');
       } else {
         try {
-          out.tests.push(closureTest(ctx, r, k));
+          out.tests.push(closureTest(ctx, r, members));
         } catch (err) {
           skip(unsupportedReason(err));
         }
@@ -371,17 +402,16 @@ export const transitiveClosureTests: ContractTestGenerator = {
 };
 
 function closureTest(
-    ctx: ContractContext, r: Relationship, k: number): ContractTestDraft {
-  const S = r.source.entity;
-  const keys = ctx.binder.keys(S);
-  const F = r.source.columns;
-  const D = r.destination.columns;
-  const from = ctx.binder.rows(S, [...keys, ...F]);
-  const to = ctx.binder.rows(S, [...keys, ...D]);
-  const edges = `SELECT ${rowKey(keys, 's.')} AS src, ${
-      rowKey(keys, 'd.')} AS dst\nFROM (\n${indent(from)}\n) AS s\nJOIN (\n${
-      indent(to)}\n) AS d ON ${
-      F.map((c, i) => `s.${q(c)} = d.${q(D[i])}`).join(' AND ')}`;
+    ctx: ContractContext, r: Relationship,
+    members: Relationship[]): ContractTestDraft {
+  const k = ctx.pathBound;
+  const own = members.length === 1 && members[0] === r;
+  const parts = members.map(
+      m => edgeRowsSql(ctx, m, m === r ? 'it' : `sub-relationship '${m.name}'`));
+  // Two edge tables can hold the same pair; the closure walks distinct edges.
+  const edges = parts.length === 1 ?
+      parts[0] :
+      `SELECT DISTINCT src, dst\nFROM (\n${indent(parts.join('\nUNION ALL\n'))}\n)`;
   const closure = [
     'SELECT src, dst, 1 AS hops',
     'FROM edges',
@@ -392,20 +422,22 @@ function closureTest(
     `WHERE c.hops < ${k}`,
   ].join('\n');
   const expected = 'SELECT DISTINCT src, dst\nFROM closure';
-  const src = keys.map(c => `src_${c}`);
-  const dst = keys.map(c => `dst_${c}`);
-  const path = graphTableSql(
-      ctx.graph!, `(a:${q(S)})-[:${q(r.name)}]->{1,${k}}(b:${q(S)})`, [
-        ...keys.map((c, i) => `a.${q(c)} AS ${q(src[i])}`),
-        ...keys.map((c, i) => `b.${q(c)} AS ${q(dst[i])}`),
-      ]);
-  const actual = `SELECT ${rowKey(src)} AS src, ${rowKey(dst)} AS dst\nFROM (\n${
-      indent(path)}\n)`;
+  const endpoints =
+      new Set(members.flatMap(m => [m.source.entity, m.destination.entity]));
+  const pairs = reachablePairs(members, k);
+  const actual = pairs.map(([from, to]) => pathRowsSql(ctx, r.name, from, to, endpoints))
+                     .join('\nUNION ALL\n');
+  const path = pairs.length === 1 ?
+      `(a:${pairs[0][0]})-[:${r.name}]->{1,${k}}(b:${pairs[0][1]})` :
+      `(a)-[:${r.name}]->{1,${k}}(b)`;
   return {
     subject: r.name,
-    description: `the path (a:${S})-[:${r.name}]->{1,${k}}(b:${
-        S}) returns exactly the pairs of the transitive closure of '${
-        r.name}' up to ${k} hops`,
+    description: `the path ${path} returns exactly the pairs of the ` +
+        `transitive closure of '${r.name}'${
+                     own ? '' :
+                           ` over the edge tables ${
+                               members.map(m => m.name).join(', ')}`} up to ${
+                     k} hops`,
     comparison: 'sameRows',
     graphQuery: true,
     sql: sameRowsSql({
@@ -419,6 +451,117 @@ function closureTest(
     expectedSql: `WITH RECURSIVE ${cte('edges', edges)},\n${
         cte('closure', closure)}\n${expected}`,
   };
+}
+
+// The edges of one edge table, as node ids `src` and `dst`. A foreign-key edge
+// table is its source entity's own table: each row is an edge to the
+// destination row(s) whose referenced columns equal its join columns. Inner
+// joins, as a MATCH returns no edge whose endpoint node is missing.
+function edgeRowsSql(ctx: ContractContext, m: Relationship, who: string): string {
+  if (m.association) {
+    throw new Unsupported(`${who} is backed by an association table`);
+  }
+  const F = m.source.columns;
+  const D = m.destination.columns;
+  if (!F.length || F.length !== D.length) {
+    throw new Unsupported(`${who} declares no matching join columns`);
+  }
+  const S = m.source.entity;
+  const T = m.destination.entity;
+  const sk = nodeTable(ctx, S).keys;
+  const tk = nodeTable(ctx, T).keys;
+  return `SELECT ${nodeId(S, sk, 's.')} AS src, ${nodeId(T, tk, 'd.')} AS dst\n` +
+      `FROM (\n${indent(ownRows(ctx, S, [...sk, ...F]))}\n) AS s\n` +
+      `JOIN (\n${indent(ownRows(ctx, T, [...tk, ...D]))}\n) AS d ON ${
+             F.map((c, i) => `s.${q(c)} = d.${q(D[i])}`).join(' AND ')}`;
+}
+
+// The graph side for one (source node table, destination node table) pair:
+// the bounded quantified path between them, as node ids.
+function pathRowsSql(
+    ctx: ContractContext, label: string, from: string, to: string,
+    endpoints: Set<string>): string {
+  const fk = nodeTable(ctx, from).keys;
+  const tk = nodeTable(ctx, to).keys;
+  const src = fk.map(c => `src_${c}`);
+  const dst = tk.map(c => `dst_${c}`);
+  const path = graphTableSql(
+      ctx.graph!,
+      `(a:${nodeLabel(ctx, from, endpoints)})-[:${q(label)}]->{1,${
+          ctx.pathBound}}(b:${nodeLabel(ctx, to, endpoints)})`,
+      [
+        ...fk.map((c, i) => `a.${q(c)} AS ${q(src[i])}`),
+        ...tk.map((c, i) => `b.${q(c)} AS ${q(dst[i])}`),
+      ]);
+  return `SELECT ${nodeId(from, src)} AS src, ${nodeId(to, dst)} AS dst\nFROM (\n${
+      indent(path)}\n)`;
+}
+
+// A label expression matching one node table. An entity's label is also on
+// its subtypes' node tables; the subtypes among the path's endpoints are
+// excluded (`&!Sub`), so each node is read under its own table.
+function nodeLabel(
+    ctx: ContractContext, name: string, endpoints: Set<string>): string {
+  const subtypes = [...endpoints].filter(
+      x => x !== name && (ctx.binder.tables.get(x)?.extends ?? []).includes(name));
+  return [q(name), ...subtypes.map(x => `!${q(x)}`)].join('&');
+}
+
+// The (source, destination) node-table pairs some path of 1..k edges joins,
+// in a stable order: sources as the edges first name them, then breadth-first.
+function reachablePairs(
+    members: Relationship[], k: number): Array<[string, string]> {
+  const next = new Map<string, string[]>();
+  for (const m of members) {
+    const targets = next.get(m.source.entity) ?? [];
+    if (!targets.includes(m.destination.entity)) {
+      targets.push(m.destination.entity);
+    }
+    next.set(m.source.entity, targets);
+  }
+  const pairs: Array<[string, string]> = [];
+  for (const from of next.keys()) {
+    const seen = new Set<string>();
+    let frontier = [from];
+    for (let hop = 1; hop <= k && frontier.length; hop++) {
+      const reached: string[] = [];
+      for (const node of frontier) {
+        for (const to of next.get(node) ?? []) {
+          if (seen.has(to)) continue;
+          seen.add(to);
+          reached.push(to);
+          pairs.push([from, to]);
+        }
+      }
+      frontier = reached;
+    }
+  }
+  return pairs;
+}
+
+// A node table's entity: one with a bound table and key.
+function nodeTable(ctx: ContractContext, name: string): Entity {
+  const e = ctx.binder.tables.get(name);
+  if (!e || !ctx.binder.isTableBacked(e)) {
+    throw new Unsupported(
+        `entity '${name}' has no bound table and key under this binding`);
+  }
+  return e;
+}
+
+// The rows of one node table: the entity's own table. A subtype with a table
+// of its own is a node table of its own, so -- unlike Binder.rows -- its rows
+// are not included.
+function ownRows(ctx: ContractContext, name: string, fields: string[]): string {
+  const e = nodeTable(ctx, name);
+  const columns =
+      [...new Set(fields)].map(f => `${ctx.binder.column(e, f)} AS ${q(f)}`);
+  return `SELECT ${columns.join(', ')}\nFROM ${boundTable(e)}`;
+}
+
+// A node's id across node tables: `<node table>:<key>`.
+function nodeId(table: string, keys: string[], alias = ''): string {
+  return `CONCAT(${sqlString(`${table}:`)}, ${rowKey(keys, alias)})`;
 }
 
 /** K4: every query `kcmd validate` generates for the model executes. */
@@ -502,7 +645,9 @@ export function planContractTests(
     model,
     graph,
     binder,
-    shape: graphShape(binder),
+    // What push deploys: the same model pruned of what the binding leaves
+    // unbound (the profile name only labels pruneUnavailable's report).
+    shape: graphShape(binder, pruneUnavailable(model, '').model),
     pathBound: options.pathBound ?? DEFAULT_PATH_BOUND,
   };
   const tests: ContractTest[] = [];
