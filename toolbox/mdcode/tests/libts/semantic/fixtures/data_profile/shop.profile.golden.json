@@ -1,0 +1,501 @@
+[
+  {
+    "id": "Customer_primary_key",
+    "kind": "primaryKey",
+    "entity": "Customer",
+    "field": "customer_id",
+    "statement": "customer_id identifies each Customer: never null, never repeated.",
+    "origin": "model",
+    "status": "verified",
+    "summary": "1000 row(s), 1000 distinct key(s)",
+    "evidence": {
+      "total": 1000,
+      "nullKeys": 0,
+      "distinctKeys": 1000,
+      "duplicateRows": 0
+    }
+  },
+  {
+    "id": "Customer_unique_email",
+    "kind": "uniqueKey",
+    "entity": "Customer",
+    "field": "email",
+    "statement": "No two Customer rows share email.",
+    "origin": "model",
+    "status": "contradicted",
+    "summary": "8 row(s) (0.8%) repeat another row's key, e.g. 'shared@example.com' x6, 'info@example.com' x4",
+    "evidence": {
+      "total": 1000,
+      "nullKeys": 12,
+      "distinctKeys": 980,
+      "duplicateRows": 8,
+      "repeatedKeys": [
+        {
+          "value": "shared@example.com",
+          "count": 6
+        },
+        {
+          "value": "info@example.com",
+          "count": 4
+        }
+      ]
+    }
+  },
+  {
+    "id": "Order_primary_key",
+    "kind": "primaryKey",
+    "entity": "Order",
+    "field": "order_id",
+    "statement": "order_id identifies each Order: never null, never repeated.",
+    "origin": "model",
+    "status": "verified",
+    "summary": "5000 row(s), 5000 distinct key(s)",
+    "evidence": {
+      "total": 5000,
+      "nullKeys": 0,
+      "distinctKeys": 5000,
+      "duplicateRows": 0
+    }
+  },
+  {
+    "id": "Invoice_primary_key",
+    "kind": "primaryKey",
+    "entity": "Invoice",
+    "field": "invoice_id, revision",
+    "statement": "(invoice_id, revision) identifies each Invoice: never null, never repeated.",
+    "origin": "model",
+    "status": "verified",
+    "summary": "5200 row(s), 5200 distinct key(s)",
+    "evidence": {
+      "total": 5200,
+      "nullKeys": 0,
+      "distinctKeys": 5200,
+      "duplicateRows": 0
+    }
+  },
+  {
+    "id": "placedBy_cardinality",
+    "kind": "cardinality",
+    "entity": "Order",
+    "field": "placedBy",
+    "statement": "Each Order has at most one Customer through placedBy (many-to-one).",
+    "origin": "OWL",
+    "constraint": "placedBy_functional",
+    "status": "verified",
+    "summary": "4990 linked row(s), each reaching at most one Customer (observed many-to-one)",
+    "evidence": {
+      "declared": "many-to-one",
+      "observed": "many-to-one",
+      "target": "Customer",
+      "total": 5000,
+      "fkRows": 4990,
+      "fanoutRows": 0,
+      "maxTargetsPerRow": 1,
+      "maxRowsPerTarget": 37
+    }
+  },
+  {
+    "id": "placedBy_orphans",
+    "kind": "orphans",
+    "entity": "Order",
+    "field": "placedBy",
+    "statement": "Every Order.customer_id that is set matches a row of Customer (placedBy).",
+    "origin": "model",
+    "status": "contradicted",
+    "summary": "14 of 4990 foreign-key value(s) (0.28%) match no Customer; 3 distinct, e.g. 'C-0999' x9, 'C-0998' x3, 'C-0997' x2",
+    "evidence": {
+      "target": "Customer",
+      "fkRows": 4990,
+      "orphanRows": 14,
+      "orphanRate": 0.002806,
+      "orphanValues": 3,
+      "topOrphans": [
+        {
+          "value": "C-0999",
+          "count": 9
+        },
+        {
+          "value": "C-0998",
+          "count": 3
+        },
+        {
+          "value": "C-0997",
+          "count": 2
+        }
+      ]
+    }
+  },
+  {
+    "id": "billedFor_cardinality",
+    "kind": "cardinality",
+    "entity": "Invoice",
+    "field": "billedFor",
+    "statement": "Each Invoice has at most one Order through billedFor, and each Order at most one Invoice (one-to-one).",
+    "origin": "OWL",
+    "constraint": "Order_billedBy_max",
+    "status": "contradicted",
+    "summary": "a row of Order is reached by up to 3 Invoice rows",
+    "evidence": {
+      "declared": "one-to-one",
+      "observed": "many-to-one",
+      "target": "Order",
+      "total": 5200,
+      "fkRows": 5200,
+      "fanoutRows": 0,
+      "maxTargetsPerRow": 1,
+      "maxRowsPerTarget": 3
+    }
+  },
+  {
+    "id": "billedFor_orphans",
+    "kind": "orphans",
+    "entity": "Invoice",
+    "field": "billedFor",
+    "statement": "Every Invoice.order_id that is set matches a row of Order (billedFor).",
+    "origin": "model",
+    "status": "verified",
+    "summary": "all 5200 foreign-key value(s) match a row of Order",
+    "evidence": {
+      "target": "Order",
+      "fkRows": 5200,
+      "orphanRows": 0,
+      "orphanRate": 0,
+      "orphanValues": 0
+    }
+  },
+  {
+    "id": "Customer_segment_in",
+    "kind": "enumCoverage",
+    "entity": "Customer",
+    "field": "segment",
+    "statement": "Every Customer.segment that is set is one of 'retail', 'wholesale' or 'online'.",
+    "origin": "SHACL",
+    "constraint": "Customer_segment_in",
+    "status": "contradicted",
+    "summary": "25 of 990 value(s) (2.53%) are outside the declared set, e.g. 'Retail' x20, 'corporate' x5",
+    "evidence": {
+      "declaredValues": 3,
+      "total": 1000,
+      "nonNull": 990,
+      "outsideRows": 25,
+      "outsideRate": 0.025253,
+      "outsideValues": 2,
+      "topOutside": [
+        {
+          "value": "Retail",
+          "count": 20
+        },
+        {
+          "value": "corporate",
+          "count": 5
+        }
+      ],
+      "unusedValues": [
+        "online"
+      ],
+      "unusedCount": 1
+    }
+  },
+  {
+    "id": "Customer_credit_limit_unit",
+    "kind": "unitMagnitude",
+    "entity": "Customer",
+    "field": "credit_limit",
+    "statement": "Customer.credit_limit is in USD.",
+    "origin": "model",
+    "status": "verified",
+    "summary": "median |value| 5000, within x41.67 of the median of 3 other USD field(s) (120)",
+    "evidence": {
+      "unit": "USD",
+      "values": 950,
+      "median": 5000,
+      "peers": 3,
+      "peerMedian": 120,
+      "ordersOfMagnitude": 1.62,
+      "peerFields": [
+        "Order.total",
+        "Invoice.amount",
+        "Invoice.tax"
+      ]
+    }
+  },
+  {
+    "id": "Order_total_unit",
+    "kind": "unitMagnitude",
+    "entity": "Order",
+    "field": "total",
+    "statement": "Order.total is in USD.",
+    "origin": "model",
+    "status": "verified",
+    "summary": "median |value| 120, within x1.083 of the median of 3 other USD field(s) (130)",
+    "evidence": {
+      "unit": "USD",
+      "values": 5000,
+      "median": 120,
+      "peers": 3,
+      "peerMedian": 130,
+      "ordersOfMagnitude": -0.03,
+      "peerFields": [
+        "Customer.credit_limit",
+        "Invoice.amount",
+        "Invoice.tax"
+      ]
+    }
+  },
+  {
+    "id": "Order_discount_unit",
+    "kind": "unitMagnitude",
+    "entity": "Order",
+    "field": "discount",
+    "statement": "Order.discount is in USD (x0.01).",
+    "origin": "model",
+    "status": "unverified",
+    "summary": "no other field of the model in USD (x0.01) to compare with",
+    "evidence": {
+      "unit": "USD",
+      "scale": 0.01,
+      "values": 800,
+      "median": 1500,
+      "peers": 0
+    }
+  },
+  {
+    "id": "Invoice_amount_unit",
+    "kind": "unitMagnitude",
+    "entity": "Invoice",
+    "field": "amount",
+    "statement": "Invoice.amount is in USD.",
+    "origin": "model",
+    "status": "verified",
+    "summary": "median |value| 130, within x1.083 of the median of 3 other USD field(s) (120)",
+    "evidence": {
+      "unit": "USD",
+      "values": 5200,
+      "median": 130,
+      "peers": 3,
+      "peerMedian": 120,
+      "ordersOfMagnitude": 0.03,
+      "peerFields": [
+        "Customer.credit_limit",
+        "Order.total",
+        "Invoice.tax"
+      ]
+    }
+  },
+  {
+    "id": "Invoice_tax_unit",
+    "kind": "unitMagnitude",
+    "entity": "Invoice",
+    "field": "tax",
+    "statement": "Invoice.tax is in USD.",
+    "origin": "model",
+    "status": "unverified",
+    "summary": "median |value| 0.12 is x1083 below the median of 3 other USD field(s) (130): possible scale mismatch",
+    "evidence": {
+      "unit": "USD",
+      "values": 5100,
+      "median": 0.12,
+      "peers": 3,
+      "peerMedian": 130,
+      "ordersOfMagnitude": -3.03,
+      "peerFields": [
+        "Customer.credit_limit",
+        "Order.total",
+        "Invoice.amount"
+      ]
+    }
+  },
+  {
+    "id": "Customer_credit_limit_regime",
+    "kind": "regimeShift",
+    "entity": "Customer",
+    "field": "credit_limit",
+    "statement": "Customer.credit_limit keeps one scale over time (by Customer.signup_date).",
+    "origin": "model",
+    "status": "verified",
+    "summary": "3 windows of 3 months; neighbouring medians stay within x1.041",
+    "evidence": {
+      "timeField": "signup_date",
+      "timeFieldFrom": "first date field",
+      "windowMonths": 3,
+      "windows": 3,
+      "span": {
+        "from": "2020-01",
+        "to": "2020-10"
+      },
+      "maxRatio": 1.04
+    }
+  },
+  {
+    "id": "Order_total_regime",
+    "kind": "regimeShift",
+    "entity": "Order",
+    "field": "total",
+    "statement": "Order.total keeps one scale over time (by Order.order_date).",
+    "origin": "model",
+    "status": "verified",
+    "summary": "the median changes x100.8 from 12200 (2020-10) to 121 (2021-01), as the declared regime says: recorded in cents until 2020-12, in dollars since 2021-01.",
+    "evidence": {
+      "timeField": "order_date",
+      "timeFieldFrom": "grain",
+      "windowMonths": 3,
+      "windows": 6,
+      "span": {
+        "from": "2020-01",
+        "to": "2021-04"
+      },
+      "maxRatio": 100.83,
+      "shifts": [
+        {
+          "from": "2020-10",
+          "to": "2021-01",
+          "before": 12200,
+          "after": 121,
+          "ratio": 100.83
+        }
+      ],
+      "regime": "recorded in cents until 2020-12, in dollars since 2021-01."
+    }
+  },
+  {
+    "id": "Order_discount_regime",
+    "kind": "regimeShift",
+    "entity": "Order",
+    "field": "discount",
+    "statement": "Order.discount keeps one scale over time (by Order.order_date).",
+    "origin": "model",
+    "status": "unverified",
+    "summary": "fewer than two 3-month windows with at least 30 non-zero values",
+    "evidence": {
+      "timeField": "order_date",
+      "timeFieldFrom": "grain",
+      "windowMonths": 3,
+      "windows": 1,
+      "span": {
+        "from": "2020-10",
+        "to": "2020-10"
+      },
+      "maxRatio": 1
+    }
+  },
+  {
+    "id": "Order_quantity_regime",
+    "kind": "regimeShift",
+    "entity": "Order",
+    "field": "quantity",
+    "statement": "Order.quantity keeps one scale over time (by Order.order_date).",
+    "origin": "model",
+    "status": "verified",
+    "summary": "6 windows of 3 months; neighbouring medians stay within x1.333",
+    "evidence": {
+      "timeField": "order_date",
+      "timeFieldFrom": "grain",
+      "windowMonths": 3,
+      "windows": 6,
+      "span": {
+        "from": "2020-01",
+        "to": "2021-04"
+      },
+      "maxRatio": 1.33
+    }
+  },
+  {
+    "id": "Invoice_amount_regime",
+    "kind": "regimeShift",
+    "entity": "Invoice",
+    "field": "amount",
+    "statement": "Invoice.amount keeps one scale over time (by Invoice.issued_on).",
+    "origin": "model",
+    "status": "contradicted",
+    "summary": "the median jumps x97.71 from 12800 (2020-04) to 131 (2020-07); no regime is declared",
+    "evidence": {
+      "timeField": "issued_on",
+      "timeFieldFrom": "history.valid_from",
+      "windowMonths": 3,
+      "windows": 4,
+      "span": {
+        "from": "2020-01",
+        "to": "2020-10"
+      },
+      "maxRatio": 97.71,
+      "shifts": [
+        {
+          "from": "2020-04",
+          "to": "2020-07",
+          "before": 12800,
+          "after": 131,
+          "ratio": 97.71
+        }
+      ]
+    }
+  },
+  {
+    "id": "Invoice_tax_regime",
+    "kind": "regimeShift",
+    "entity": "Invoice",
+    "field": "tax",
+    "statement": "Invoice.tax keeps one scale over time (by Invoice.issued_on).",
+    "origin": "model",
+    "status": "verified",
+    "summary": "4 windows of 3 months; neighbouring medians stay within x1.083",
+    "evidence": {
+      "timeField": "issued_on",
+      "timeFieldFrom": "history.valid_from",
+      "windowMonths": 3,
+      "windows": 4,
+      "span": {
+        "from": "2020-01",
+        "to": "2020-10"
+      },
+      "maxRatio": 1.08
+    }
+  },
+  {
+    "id": "VipCustomer_email_required",
+    "kind": "requiredNulls",
+    "entity": "VipCustomer",
+    "field": "email",
+    "statement": "Every VipCustomer has a value for VipCustomer.email.",
+    "origin": "SHACL",
+    "constraint": "VipCustomer_email_required",
+    "status": "verified",
+    "summary": "all 120 row(s) have a value",
+    "evidence": {
+      "total": 120,
+      "nulls": 0,
+      "nullRate": 0
+    }
+  },
+  {
+    "id": "Order_status_required",
+    "kind": "requiredNulls",
+    "entity": "Order",
+    "field": "status",
+    "statement": "Every Order has a value for Order.status.",
+    "origin": "SHACL",
+    "constraint": "Order_status_required",
+    "status": "verified",
+    "summary": "all 5000 row(s) have a value",
+    "evidence": {
+      "total": 5000,
+      "nulls": 0,
+      "nullRate": 0
+    }
+  },
+  {
+    "id": "Order_order_date_some",
+    "kind": "requiredNulls",
+    "entity": "Order",
+    "field": "order_date",
+    "statement": "Every Order has a value for Order.order_date.",
+    "origin": "OWL",
+    "constraint": "Order_order_date_some",
+    "status": "contradicted",
+    "summary": "7 of 5000 row(s) (0.14%) have no value",
+    "evidence": {
+      "total": 5000,
+      "nulls": 7,
+      "nullRate": 0.0014
+    }
+  }
+]

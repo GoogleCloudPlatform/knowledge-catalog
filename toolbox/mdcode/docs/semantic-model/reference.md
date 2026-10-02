@@ -46,6 +46,7 @@ whether the catalog leg runs.
 | `--print` | Print each destination's generated artifact (BigQuery or Spanner Graph SQL DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
 | `--force-remove` | Delete models in the entry group that this push no longer includes (see [Updating and removing models](README.md#updating-and-removing-models)). |
 | `--emit-expressions` | Also write the SQL-expression fields (per-field `schema.semantics` and `semantic-metric.expression`) to Knowledge Catalog. Off by default: the published system-type templates do not carry them yet. Knowledge Catalog push only. |
+| `--strict-profile` | Proposed. Before each BigQuery graph deploy, profile the bound data as [`kcmd profile`](#profile) does, and stop when the data contradicts any statement. Unverified statements never block. The queries only read, so this also runs under `--validate-only`. A Spanner graph is not profiled. See [Gating a push](profiling.md#gating-a-push-proposed). |
 
 The graph leg deploys first and fails fast, so a rejected model never
 half-deploys.
@@ -206,6 +207,57 @@ errors.
 | `--path-bound <k>` | The `k` of the quantified paths the `transitive-closure` tests compare. Default 10. |
 
 See [Contract tests](validation.md#contract-tests-kcmd-test-proposed).
+
+### profile
+
+```bash
+kcmd profile [--profile bigquery] [--location US] [--strict] [--publish [--dry-run]]
+```
+
+Proposed. Checks the model's claims against the data the selected binding
+profile binds, and reports each claim as a statement that is `verified`,
+`unverified` or `contradicted`, with its evidence. The claims are:
+- keys identify rows;
+- direct foreign-key relationships are many-to-one (or one-to-one) and reach a
+  row;
+- `sh:in` fields take only the declared values;
+- a `unit`'s magnitudes agree across the model's fields;
+- numeric series keep one scale over time, unless a `Regime:` note declares
+  the change;
+- required fields are set.
+
+Each statement comes from one read-only query over the bound BigQuery tables.
+A claim that cannot be queried, such as one on an unbound field, is listed
+with the reason.
+
+The queries are always written to `--out` as `profile.sql`. Unless
+`--sql-only` is given, or there are no credentials, they are then run. A table
+is printed for each model, and `profile.json` and `profile.md` are written.
+
+The exit code is 1 when a query could not run or publishing failed, and also,
+with `--strict`, when any statement is contradicted. Otherwise it is 0: the
+statuses are a report about the data.
+
+| Flag | Effect |
+|------|--------|
+| `--target <target>` | Only `bigquery`, the default. |
+| `--profile [name]` | Profile the tables this binding profile binds. Defaults to `default_profile`, else the inline bindings. Its deployment target must be BigQuery. |
+| `--out <dir>` | Where `profile.sql`, `profile.json` and `profile.md` are written. Defaults to `profiling`. |
+| `--sql-only` | Write `profile.sql`; run nothing. This is also what happens without credentials. |
+| `--location <location>` | BigQuery processing location for the query jobs. |
+| `--project <project>` | Project the query jobs run and bill in. Defaults to the gcloud project. |
+| `--label <key:value>` | Label every query job. Repeatable. Keys and values use lowercase letters, digits, `_` and `-`. |
+| `--strict` | Exit 1 when the data contradicts any statement. |
+| `--publish` | Write the statements to Knowledge Catalog as a `semantic-profile-results` aspect on each profiled entity's entry (the entries `kcmd push` publishes). Not combinable with `--sql-only`. |
+| `--dry-run` | With `--publish`: print the Knowledge Catalog requests; send nothing. |
+| `--examples <n>` | Offending values to list for each statement: repeated keys, orphaned foreign keys, values outside a declared set. Default 5; `0` lists none. |
+| `--magnitude-orders <x>` | Units: how many orders of magnitude a field's median may sit from the median of the other fields with its unit and scale before it is flagged. Default 2. |
+| `--window-months <n>` | Scale over time: the window length in months. Default 3. |
+| `--shift-factor <x>` | Scale over time: the ratio between neighbouring windows' medians that counts as a break. Must be greater than 1. Default 50. |
+| `--min-window-rows <n>` | Scale over time: the non-zero values a window needs before it is compared. Default 30. |
+
+Like `validate`'s results, the statuses are never used as filters. See
+[Profiling the data against BigQuery](profiling.md).
 
 ### glossary push
 

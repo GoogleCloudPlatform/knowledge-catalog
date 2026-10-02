@@ -1,0 +1,180 @@
+# Test fixture -- AI-first semantics format (v0.2.0.dev0), for the data
+# profile (`kcmd profile`, src/libts/semantic/profile_bigquery.ts).
+#
+# A small shop: customers place orders, invoices bill orders. Every kind of
+# profile statement has a claim here, and so does every reason a claim cannot
+# be profiled (listed as skipped, never dropped):
+#   - keys: each table's primary key (Invoice's is composite: it keeps every
+#     revision, K7 history) and a unique key on Customer; Supplier has a key
+#     but no table;
+#   - relationships: placedBy (many-to-one, restated by an OWL
+#     FunctionalProperty) and billedFor (one-to-one through an OWL `max 1` on
+#     the inverse); suppliedBy has no join columns;
+#   - value sets: a SHACL sh:in on Customer.segment;
+#   - units: USD fields on three tables, one stored in cents (scale 0.01) and
+#     one unbound under this binding;
+#   - regimes: the time field comes from history.valid_from (Invoice), the
+#     grain (Order) and the first date field (Customer); Order.total declares
+#     its regime with the proposed `Regime:` note;
+#   - required fields: SHACL minCount 1 and an OWL `some`, one on a defined
+#     entity (rows filtered by its membership predicate), one on an unbound
+#     field.
+# Rules that are validate's to count (a pattern, a judged rule with no
+# provenance) make no profile statement.
+#
+# Not a standalone OSI document (the data_profile/ subtree is exempt from
+# osi_schema.test.ts): it carries the proposed supersets the profiler reads
+# and leaves parts unbound on purpose. The simulated query rows are in
+# shop.results.yaml.
+
+version: "0.2.0.dev0/google"
+
+semantic_model:
+  - name: shop
+    description: Customers, their orders and the invoices that bill them
+    entities:
+      - name: Customer
+        source: shop.customers
+        primary_key: [customer_id]
+        unique_keys: [[email]]
+        fields:
+          - name: customer_id
+            expression: customer_id
+            datatype: String
+          - name: email
+            expression: email
+            datatype: String
+          - name: segment
+            expression: segment
+            datatype: String
+          - name: credit_limit
+            expression: credit_limit
+            datatype: Decimal
+            unit: USD
+          - name: signup_date
+            expression: signup_date
+            datatype: Date
+      - name: VipCustomer
+        extends: [Customer]
+        defined: "credit_limit >= 10000"
+      - name: Order
+        source: shop.orders
+        primary_key: [order_id]
+        grain: one row per order, dated by order_date
+        fields:
+          - name: order_id
+            expression: order_id
+            datatype: String
+          - name: customer_id
+            expression: customer_id
+            datatype: String
+          - name: status
+            expression: status
+            datatype: String
+          - name: ship_date
+            expression: ship_date
+            datatype: Date
+          - name: order_date
+            expression: order_date
+            datatype: Date
+          - name: total
+            expression: total
+            datatype: Decimal
+            unit: USD
+            description: |-
+              Order total.
+              Regime: recorded in cents until 2020-12, in dollars since 2021-01.
+          - name: discount
+            expression: discount_cents
+            datatype: Integer
+            unit: USD
+            scale: 0.01
+          - name: quantity
+            expression: quantity
+            datatype: Integer
+          - name: shipping_cost
+            datatype: Decimal
+            unit: USD
+      - name: Invoice
+        source: shop.invoices
+        primary_key: [invoice_id, revision]
+        history:
+          versioned: true
+          current_flag: is_current
+          valid_from: issued_on
+        fields:
+          - name: invoice_id
+            expression: invoice_id
+            datatype: String
+          - name: revision
+            expression: revision
+            datatype: Integer
+          - name: order_id
+            expression: order_id
+            datatype: String
+          - name: is_current
+            expression: is_current
+            datatype: Boolean
+          - name: due_on
+            expression: due_on
+            datatype: Date
+          - name: issued_on
+            expression: issued_on
+            datatype: Date
+          - name: amount
+            expression: amount
+            datatype: Decimal
+            unit: USD
+          - name: tax
+            expression: tax
+            datatype: Decimal
+            unit: USD
+      - name: Supplier
+        primary_key: [supplier_id]
+        fields:
+          - name: supplier_id
+            datatype: String
+    relationships:
+      - name: placedBy
+        from: Order
+        to: Customer
+        from_columns: [customer_id]
+        to_columns: [customer_id]
+        inverse: places
+      - name: billedFor
+        from: Invoice
+        to: Order
+        from_columns: [order_id]
+        to_columns: [order_id]
+        inverse: billedBy
+      - name: suppliedBy
+        from: Order
+        to: Supplier
+    constraints:
+      - name: Customer_segment_in
+        judgment: Every Customer.segment is one of 'retail', 'wholesale' or 'online'.
+        description: "Generated. (From SHACL: CustomerShape, segment sh:in (retail wholesale online).)"
+      - name: Customer_email_pattern
+        judgment: Every Customer.email contains one '@'.
+        description: "Generated. (From SHACL: CustomerShape, email sh:pattern '^[^@]+@[^@]+$'.)"
+      - name: VipCustomer_email_required
+        judgment: Every VipCustomer has a Customer.email.
+        description: "Generated. (From SHACL: VipCustomerShape, email sh:minCount 1.)"
+      - name: Order_status_required
+        judgment: Every Order has an Order.status.
+        description: "Generated. (From SHACL: OrderShape, status sh:minCount 1.)"
+      - name: Order_order_date_some
+        judgment: Every Order has an Order.order_date.
+        description: "Generated. (From OWL: Order SubClassOf order_date some date.)"
+      - name: Order_shipping_cost_required
+        judgment: Every Order has an Order.shipping_cost.
+        description: "Generated. (From SHACL: OrderShape, shipping_cost sh:minCount 1.)"
+      - name: placedBy_functional
+        judgment: Every Order is placed by at most one Customer.
+        description: "Generated. (From OWL: placedBy is a FunctionalProperty.)"
+      - name: Order_billedBy_max
+        judgment: Every Order is billed by at most one Invoice.
+        description: "Generated. (From OWL: Order SubClassOf billedBy max 1 Invoice.)"
+      - name: Order_total_reviewed
+        judgment: Every Order.total above 10000 has been reviewed.
+        on_violation: escalate

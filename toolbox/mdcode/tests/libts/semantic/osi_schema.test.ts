@@ -30,8 +30,12 @@ function yamlFixtures(dir: string): string[] {
     // `expression`, and a profile carries a `deployment_target` sugar
     // -- so it is not a standalone OSI document. The loader, merge, and
     // profile-golden tests validate it instead.
+    // The data_profile/ subtree holds the data-profile (`kcmd profile`)
+    // inputs: a model carrying the proposed supersets the profiler reads, with
+    // parts left unbound on purpose, and simulated query rows, which are no
+    // OSI document at all. profile_bigquery.test.ts loads them instead.
     if (ent.isDirectory()) {
-      if (ent.name === 'profiles') continue;
+      if (ent.name === 'profiles' || ent.name === 'data_profile') continue;
       out.push(...yamlFixtures(p));
     } else if (ent.name.endsWith('.yaml') || ent.name.endsWith('.yml')) {
       out.push(p);

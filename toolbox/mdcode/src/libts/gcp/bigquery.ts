@@ -109,7 +109,11 @@ export class BigQueryClient extends api.ApiClient {
   // parameter against the column it is used with. The values sent are empty
   // (`parameterValue: {}`, an unset value), because a dry run never evaluates
   // them.
-  async query(project: string, sql: string, location?: string, dryRun?: boolean, namedParameterTypes?: Record<string, string>): Promise<api.ApiResult<QueryResponse>> {
+  //
+  // `labels` (optional) are attached to the query job (QueryRequest.labels),
+  // so a caller can attribute its jobs; keys and values follow BigQuery's
+  // label rules (lowercase letters, digits, `_` and `-`).
+  async query(project: string, sql: string, location?: string, dryRun?: boolean, namedParameterTypes?: Record<string, string>, labels?: Record<string, string>): Promise<api.ApiResult<QueryResponse>> {
     const name = `projects/${project}/queries`;
     const body: Record<string, any> = { query: sql, useLegacySql: false };
     if (location) {
@@ -126,6 +130,9 @@ export class BigQueryClient extends api.ApiClient {
         parameterType: { type: namedParameterTypes![name] },
         parameterValue: {},
       }));
+    }
+    if (labels && Object.keys(labels).length) {
+      body.labels = { ...labels };
     }
     return await this._post<QueryResponse>(name, body);
   }

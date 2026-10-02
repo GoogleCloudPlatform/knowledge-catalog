@@ -1,0 +1,88 @@
+# Simulated query rows for shop.yaml (the data-profile golden tests).
+#
+# One row per query, under the id of the FIRST statement that query settles
+# (several statements share a query; see the [id] lines of
+# shop.profile.golden.sql). Cells are as BigQuery returns them: a string, or
+# null; JSON columns hold the JSON text.
+#
+# The rows are chosen so every status shows up for a reason a reader can
+# check by hand: a unique key with repeats, orphaned foreign keys, a
+# one-to-one edge reached twice (the invoices keep every revision), values
+# outside a declared set, a field three orders of magnitude below its unit
+# peers, a declared and an undeclared scale break, and a required field
+# with nulls.
+
+Customer_primary_key:
+  total: '1000'
+  null_keys: '0'
+  distinct_keys: '1000'
+  top_repeated: null
+Customer_unique_email:
+  total: '1000'
+  null_keys: '12'
+  distinct_keys: '980'
+  top_repeated: '[{"value":"shared@example.com","count":6},{"value":"info@example.com","count":4}]'
+Order_primary_key:
+  total: '5000'
+  null_keys: '0'
+  distinct_keys: '5000'
+  top_repeated: null
+Invoice_primary_key:
+  total: '5200'
+  null_keys: '0'
+  distinct_keys: '5200'
+  top_repeated: null
+placedBy_cardinality:
+  total: '5000'
+  fk_rows: '4990'
+  orphan_rows: '14'
+  orphan_values: '3'
+  fanout_rows: '0'
+  max_targets: '1'
+  max_sources: '37'
+  top_orphans: '[{"value":"C-0999","count":9},{"value":"C-0998","count":3},{"value":"C-0997","count":2}]'
+billedFor_cardinality:
+  total: '5200'
+  fk_rows: '5200'
+  orphan_rows: '0'
+  orphan_values: '0'
+  fanout_rows: '0'
+  max_targets: '1'
+  max_sources: '3'
+  top_orphans: null
+Customer_segment_in:
+  total: '1000'
+  non_null: '990'
+  outside_rows: '25'
+  outside_values: '2'
+  used_values: '["retail","wholesale"]'
+  top_outside: '[{"value":"Retail","count":20},{"value":"corporate","count":5}]'
+Customer_credit_limit_unit:
+  total: '1000'
+  values_0: '950'
+  median_0: '5000'
+Order_total_unit:
+  total: '5000'
+  values_0: '5000'
+  median_0: '120'
+  values_1: '800'
+  median_1: '1500'
+Invoice_amount_unit:
+  total: '5200'
+  values_0: '5200'
+  median_0: '130'
+  values_1: '5100'
+  median_1: '0.12'
+Customer_credit_limit_regime:
+  series: '[{"w":8080,"n0":200,"m0":5000},{"w":8081,"n0":210,"m0":5100},{"w":8082,"n0":15,"m0":400},{"w":8083,"n0":190,"m0":4900}]'
+Order_total_regime:
+  series: '[{"w":8080,"n0":600,"m0":11800,"n1":20,"m1":1400,"n2":600,"m2":3},{"w":8081,"n0":620,"m0":12100,"n1":25,"m1":1500,"n2":620,"m2":3},{"w":8082,"n0":640,"m0":11950,"n1":10,"m1":1600,"n2":640,"m2":4},{"w":8083,"n0":650,"m0":12200,"n1":31,"m1":1550,"n2":650,"m2":3},{"w":8084,"n0":700,"m0":121,"n1":12,"m1":1450,"n2":700,"m2":3},{"w":8085,"n0":710,"m0":119,"n1":8,"m1":1500,"n2":710,"m2":4}]'
+Invoice_amount_regime:
+  series: '[{"w":8080,"n0":500,"m0":13000,"n1":500,"m1":0.12},{"w":8081,"n0":520,"m0":12800,"n1":520,"m1":0.13},{"w":8082,"n0":560,"m0":131,"n1":560,"m1":0.12},{"w":8083,"n0":590,"m0":129,"n1":590,"m1":0.12}]'
+VipCustomer_email_required:
+  total: '120'
+  nulls_0: '0'
+Order_status_required:
+  total: '5000'
+  nulls_0: '0'
+  nulls_1: '7'

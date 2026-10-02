@@ -606,6 +606,17 @@ reads the document ([§6](#6-the-extension-mechanism)).
   inClub.` (and `Derived filter: …`), read back on pull. OSI output carries
   `via` and `filter` natively, and query skill pages state the chain.
 
+- **The `Regime:` note (proposed; read only by `kcmd profile`).** A line
+  starting `Regime:` in a field's `description` or `ai_context.instructions`
+  declares a known change of scale or meaning over time (`Regime: recorded in
+  cents until 2020-12, in dollars since 2021-01.`). On a dataset, the line
+  covers the fields it names, or every field when it names none. It is a
+  text convention, not a key, so it is valid under vanilla Ossie and
+  `0.2.0.dev0/google` alike, and it changes no generated SQL and no entry.
+  `kcmd profile` reports a scale break that a regime explains as verified
+  rather than contradicted. See [Declaring a
+  regime](profiling.md#declaring-a-regime-the-regime-note-proposed).
+
 - **`glossary` on a model (extended profile only).** The model's business
   glossary: `{id?, display_name?, description?, categories?, terms?}`. A
   category is `{id, display_name?, description?, parent?}` (nesting up to 3
