@@ -686,40 +686,6 @@ describe('a purely logical model (no physical binding) emits cleanly', () => {
 });
 
 
-describe('abstract entities are skipped for Knowledge Catalog', () => {
-  // The KC leg does not model inheritance (that is BigQuery-only today), and an
-  // abstract entity has no physical table, so it must not be published as an
-  // entry with an empty linked resource. It is skipped with a warning; its
-  // concrete subtype is published normally.
-  function withAbstract(): SemanticModel {
-    return {
-      name: 'm',
-      entities: [
-        {name: 'Party', dataSource: '', keys: [], abstract: true,
-         fields: [{name: 'id', expression: 'id'}]},
-        {name: 'Person', dataSource: 'p.d.person', keys: ['id'],
-         extends: ['Party'], fields: [{name: 'id', expression: 'id'}]},
-      ],
-      relationships: [],
-      metrics: [],
-    };
-  }
-
-  test('an abstract entity produces no entry and warns', () => {
-    const {entries, warnings} = generateCatalogResources(withAbstract(), OPTS);
-    const names = entries.map(e => e.entrySource!.displayName ?? '');
-    expect(names).not.toContain('Party');
-    expect(warnings.some(
-               w => w.includes(`entity 'Party' is abstract`) &&
-                   w.includes('skipped for Knowledge Catalog')))
-        .toBe(true);
-  });
-
-  test('the concrete subtype is still published', () => {
-    const {entries} = generateCatalogResources(withAbstract(), OPTS);
-    const person =
-        entries.find(e => e.entryType.endsWith('/semantic-entity'));
-    expect(person).toBeDefined();
-    expect(person!.entrySource!.displayName).toBe('Person');
-  });
-});
+// Abstract entities and entity `extends` on Knowledge Catalog (published as
+// table-less entries with Specializes / Abstract description trailers, and
+// restored on pull) are specified in kc_abstract_entities.test.ts.

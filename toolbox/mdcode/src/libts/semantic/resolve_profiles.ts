@@ -170,7 +170,7 @@ function mergeModel(lm: any, pm: any, profileName: string): string|undefined {
       return `profile '${profileName}': entity '${
           pe.name}' is not in the logical model`;
     }
-    const err = mergeEntity(le, pe, profileName);
+    const err = mergeEntity(le, pe, profileName, lByName);
     if (err) return err;
   }
   return undefined;
@@ -202,7 +202,32 @@ function mergeAction(la: any, pa: any, profileName: string): string|undefined {
   return undefined;
 }
 
-function mergeEntity(le: any, pe: any, profileName: string): string|undefined {
+// Overlays one entity's bindings. `entitiesByName` indexes the logical model's
+// entities so a field the entity INHERITS (see below) can be found on its
+// supertype.
+//
+// Binding an inherited field. Inheritance (`extends`) declares a field once, on
+// the supertype, and every subtype has it -- the OWL importer writes an
+// imported hierarchy exactly that way, and resolveInheritance flattens it down
+// at load. But the COLUMN that holds it is per subtype: `Opportunity.docId` and
+// `Contract.docId` are different columns of different tables, and an abstract
+// supertype has no table at all. So a profile binds an inherited field on the
+// concrete subtype, by the subtype's name, exactly as it binds an own field. A
+// field the entity neither declares nor inherits is still an unknown name.
+//
+// The merge materializes the binding as a declaration on the subtype: the
+// supertype's field declaration (nearest ancestor first, the precedence
+// resolveInheritance applies) is copied onto the subtype WITHOUT its
+// expression, then bound from the profile. The copy is the same logical field
+// -- same name, type, dimension, description -- so nothing the model means
+// changes; it only gains the subtype's column. Because an own field wins over
+// an inherited one in flattening, the subtype's graph node reads that column,
+// and so does the supertype's shared LABEL rendered on the subtype's table
+// (that label's properties are taken from the subtype's bound fields). Left
+// unbound, the field stays inherited and unbound, and is reported as before.
+function mergeEntity(
+    le: any, pe: any, profileName: string,
+    entitiesByName: Map<string, any>): string|undefined {
   for (const k of Object.keys(pe)) {
     if (!PROFILE_ENTITY_KEYS.has(k)) {
       return declError(profileName, `entity '${pe.name}'`, k);
@@ -218,13 +243,52 @@ function mergeEntity(le: any, pe: any, profileName: string): string|undefined {
   const lByName = indexByName(le.fields ?? []);
   for (const pf of pe.fields) {
     if (!pf || typeof pf !== 'object') continue;
-    const lf = lByName.get(pf.name);
+    let lf = lByName.get(pf.name);
     if (!lf) {
-      return `profile '${profileName}': field '${pe.name}.${
-          pf.name}' is not in the logical model`;
+      const inherited = findInheritedField(le, pf.name, entitiesByName);
+      if (!inherited) {
+        return `profile '${profileName}': field '${pe.name}.${
+            pf.name}' is not in the logical model (neither declared on ` +
+            `'${pe.name}' nor inherited through 'extends')`;
+      }
+      lf = structuredClone(inherited);
+      delete lf.expression;
+      if (!Array.isArray(le.fields)) le.fields = [];
+      le.fields.push(lf);
+      lByName.set(pf.name, lf);
     }
     const err = mergeField(lf, pf, pe.name, profileName);
     if (err) return err;
+  }
+  return undefined;
+}
+
+// Finds the declaration of field `fieldName` that entity `le` inherits through
+// `extends`, walking its supertypes breadth-first so the NEAREST declaring
+// ancestor wins (the precedence resolveInheritance uses when it flattens). A
+// cycle or an `extends` naming an unknown entity is tolerated here -- the
+// loader reports those -- so the walk just visits each entity once. Returns
+// undefined when no ancestor declares the field.
+function findInheritedField(
+    le: any, fieldName: string,
+    entitiesByName: Map<string, any>): any|undefined {
+  const parentsOf = (e: any): string[] => Array.isArray(e?.extends) ?
+      e.extends.filter((p: unknown) => typeof p === 'string') :
+      typeof e?.extends === 'string' ? [e.extends] : [];
+  const seen = new Set<string>([le.name]);
+  let frontier = parentsOf(le);
+  while (frontier.length) {
+    const next: string[] = [];
+    for (const name of frontier) {
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const anc = entitiesByName.get(name);
+      if (!anc) continue;
+      const f = indexByName(anc.fields ?? []).get(fieldName);
+      if (f) return f;
+      next.push(...parentsOf(anc));
+    }
+    frontier = next;
   }
   return undefined;
 }

@@ -4,11 +4,12 @@
 #   - a multi-parent subclass (Manager rdfs:subClassOf Person, Employee), whose
 #     parents are recorded in document order;
 #   - a subclass of a blank-node axiom (owl:Restriction), which is NOT a named
-#     class and so is ignored (only named superclasses become `extends`);
+#     class and so never becomes `extends` (only named superclasses do); the
+#     restriction itself becomes a model constraint (Manager_employeeId_required);
 #   - a datatype property with rdfs:subPropertyOf (property inheritance: no
-#     native OSI home, carried verbatim as a field custom extension);
-#   - an object property with rdfs:subPropertyOf (relationship inheritance: no
-#     native OSI home, carried verbatim as a relationship custom extension).
+#     native OSI home, so it is dropped);
+#   - an object property with rdfs:subPropertyOf (relationship inheritance:
+#     mapped to the relationship's `extends`, the parent marked abstract).
 # Class inheritance is recorded as the entity's `extends`; it is NOT flattened
 # (fields are not copied down) -- see the user guide.
 
@@ -37,8 +38,8 @@ ex:loyaltyTier a owl:DatatypeProperty ;
     rdfs:domain ex:Customer ; rdfs:range xsd:string .
 
 # Multi-parent subclass -> extends: [Person, Employee], in document order. Also
-# subClassOf a blank-node owl:Restriction, which is not a named class and is
-# ignored.
+# subClassOf a blank-node owl:Restriction, which is not a named class (so not an
+# `extends` parent) and becomes a constraint instead.
 ex:Manager a owl:Class ;
     rdfs:subClassOf ex:Person ;
     rdfs:subClassOf ex:Employee ;
@@ -48,15 +49,15 @@ ex:Manager a owl:Class ;
     rdfs:comment "An employee who manages others." .
 
 # A datatype property with rdfs:subPropertyOf: property inheritance has no native
-# OSI home, so the subPropertyOf link is carried verbatim as a field custom
-# extension; the field is imported onto Employee.
+# OSI home (a field has no `extends`), so the subPropertyOf link is dropped; the
+# field is imported onto Employee.
 ex:legalName a owl:DatatypeProperty ;
     rdfs:domain ex:Employee ; rdfs:range xsd:string ;
     rdfs:subPropertyOf ex:fullName .
 
-# An object property with rdfs:subPropertyOf: relationship inheritance has no
-# native OSI home, so the subPropertyOf link is carried verbatim as a
-# relationship custom extension; the relationship is imported.
+# An object property with rdfs:subPropertyOf another object property of the
+# ontology: relationship inheritance, mapped natively -- managedBy gets
+# `extends: [worksWith]`, and worksWith (the umbrella) becomes abstract.
 ex:managedBy a owl:ObjectProperty ;
     rdfs:domain ex:Employee ; rdfs:range ex:Manager ;
     rdfs:subPropertyOf ex:worksWith .

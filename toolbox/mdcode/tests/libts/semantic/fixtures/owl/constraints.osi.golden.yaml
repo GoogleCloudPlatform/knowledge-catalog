@@ -1,0 +1,110 @@
+version: 0.2.0.dev0/google
+semantic_model:
+  - name: deals
+    description: Deals, parties and contracts.
+    entities:
+      - name: Party
+      - name: ClientAccount
+        extends:
+          - Party
+      - name: Supplier
+        extends:
+          - Party
+      - name: Opportunity
+        fields:
+          - name: opportunityId
+            datatype: String
+          - name: currency
+            datatype: String
+      - name: WonOpportunity
+        extends:
+          - Opportunity
+      - name: LostOpportunity
+        extends:
+          - Opportunity
+      - name: Contract
+      - name: MSA
+        extends:
+          - Contract
+      - name: SOW
+        extends:
+          - Contract
+      - name: Amendment
+        extends:
+          - Contract
+    relationships:
+      - name: hasBuyer
+        from: Opportunity
+        to: ClientAccount
+      - name: governedBy
+        from: Opportunity
+        to: Contract
+      - name: suppliedBy
+        from: Contract
+        to: Supplier
+    constraints:
+      - name: Opportunity_hasBuyer_exactly_1
+        judgment: Each Opportunity has exactly one hasBuyer relationship to a
+          ClientAccount. An Opportunity with no hasBuyer relationship to a
+          ClientAccount, or with more than one, does not satisfy this rule.
+        description: "Link each Opportunity to exactly one ClientAccount through
+          hasBuyer. (From OWL: Opportunity SubClassOf hasBuyer exactly 1
+          ClientAccount.)"
+        on_violation: reject
+        severity: critical
+      - name: Opportunity_governedBy_max_1
+        judgment: Each Opportunity has at most one governedBy relationship to a
+          Contract. An Opportunity with more than one does not satisfy this
+          rule.
+        description: "Link each Opportunity to at most one Contract through governedBy.
+          (From OWL: Opportunity SubClassOf governedBy max 1.)"
+        on_violation: warn
+        severity: critical
+      - name: Opportunity_opportunityId_required
+        judgment: Every Opportunity has a value for Opportunity.opportunityId. An
+          Opportunity whose Opportunity.opportunityId is null or missing does
+          not satisfy this rule.
+        description: "Set Opportunity.opportunityId on every Opportunity. (From OWL:
+          Opportunity SubClassOf opportunityId min 1.)"
+        on_violation: warn
+        severity: critical
+      - name: Opportunity_currency_value_USD
+        judgment: Every Opportunity has Opportunity.currency equal to 'USD'. An
+          Opportunity with any other Opportunity.currency does not satisfy this
+          rule.
+        description: "Amounts are recorded in USD thousands. (From OWL: Opportunity
+          SubClassOf currency value 'USD'.)"
+        on_violation: warn
+        severity: critical
+      - name: WonOpportunity_governedBy_some_MSA
+        judgment: Each WonOpportunity has at least one governedBy relationship to an
+          MSA. A WonOpportunity with no governedBy relationship to an MSA does
+          not satisfy this rule.
+        description: "Link each WonOpportunity to at least one MSA through governedBy.
+          (From OWL: WonOpportunity SubClassOf governedBy some MSA.)"
+        on_violation: warn
+      - name: WonOpportunity_opportunityId_required
+        judgment: Every WonOpportunity has a value for WonOpportunity.opportunityId. A
+          WonOpportunity whose WonOpportunity.opportunityId is null or missing
+          does not satisfy this rule.
+        description: "Set WonOpportunity.opportunityId on every WonOpportunity. (From
+          OWL: WonOpportunity EquivalentTo opportunityId some string.)"
+        on_violation: warn
+      - name: Contract_suppliedBy_functional
+        judgment: Each Contract has at most one suppliedBy relationship. A Contract with
+          more than one does not satisfy this rule.
+        description: "Link each Contract to at most one Supplier through suppliedBy.
+          (From OWL: suppliedBy is a FunctionalProperty.)"
+        on_violation: warn
+      - name: WonOpportunity_disjoint_LostOpportunity
+        judgment: No WonOpportunity is also a LostOpportunity. An instance that is both
+          a WonOpportunity and a LostOpportunity does not satisfy this rule.
+        description: "Classify it as a WonOpportunity or a LostOpportunity, not both.
+          (From OWL: WonOpportunity DisjointWith LostOpportunity.)"
+        on_violation: warn
+      - name: MSA_SOW_Amendment_disjoint
+        judgment: No instance is more than one of MSA, SOW and Amendment. An instance
+          classified as two or more of them does not satisfy this rule.
+        description: "Classify it as at most one of MSA, SOW and Amendment. (From OWL:
+          DisjointClasses(MSA SOW Amendment).)"
+        on_violation: escalate

@@ -130,6 +130,29 @@ rarely what was meant. Two models in one scope whose names normalize to one
 skill name are refused rather than one overwriting the other. See
 [Generating an Agent Skill](skills.md).
 
+### owl import
+
+```bash
+kcmd owl import <file.ttl> [<file.ttl> ...]
+```
+
+Converts a Turtle OWL ontology into one semantic-model document (see
+[Importing an OWL ontology](owl-import.md)). Several files are the modules of
+**one** ontology: they are merged (an RDF merge — cross-file `rdfs:subClassOf`,
+`rdfs:domain` and `rdfs:range` references resolve) into a single model. An
+`owl:imports` in any of them is followed to a **local** file only: one already
+given on the command line, or one beside the importing file named after the
+imported IRI's last segment (`…/ontology/core` → `core.ttl`) whose own
+`owl:Ontology` IRI matches. An import that resolves to no such file is warned
+and skipped — nothing is fetched over the network. The first file's ontology
+header describes the model.
+
+| Flag | Effect |
+|------|--------|
+| `--name <model>` | Name the model. Defaults to the first file's stem (`sales.owl.ttl` → `sales`). |
+| `--out <path>` | Write the document to this path instead of the semantic-model layout dir. |
+| `--compact` | Emit the compact flow YAML layout instead of the default block layout. |
+
 ## What gets created in BigQuery
 
 `push` executes a single `CREATE OR REPLACE PROPERTY GRAPH` per deployment
@@ -141,8 +164,10 @@ becomes one part of that graph:
 | Model | `PROPERTY GRAPH` | named by the deployment-target URI |
 | Entity | `NODE TABLE` | backed by the entity's `source` table, keyed by its primary key |
 | Relationship | `EDGE TABLE` | connects the two entities' node tables |
+| Relationship `inverse` | a second `EDGE TABLE` over the same backing table | `SOURCE`/`DESTINATION` swapped, labeled with the inverse name (see [Relationship inverses](#relationship-inverses-inverse)) |
 | Metric | `MEASURE` on a node table | must resolve to a single entity (otherwise the push is rejected — see [Validation](#validation)) and reduce to one supported aggregate over one operand (otherwise that metric is skipped with a warning) |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | the subclass also matches its supertypes; the supertypes' fields flatten down (see [Class hierarchies](#class-hierarchies-extends--labels)) |
+| Relationship `extends` / `abstract` | extra `LABEL … NO PROPERTIES` clauses on the sub-relationship's edge table; no edge table for an abstract relationship | a match on the parent label spans every descendant edge table (see [Relationship hierarchies](#relationship-hierarchies)) |
 | Action | *nothing* | an action reaches Knowledge Catalog only (see below); the BigQuery push deploys none and warns once |
 | Constraint | *nothing* | a constraint reaches Knowledge Catalog only (see below); the BigQuery push deploys none and warns once |
 
@@ -152,9 +177,49 @@ BigQuery's own location inference and warns. Under `--validate-only` no graph
 DDL is executed and nothing is written (the live source-table checks still run —
 see [Validation](#validation)); add `--print` to see the generated DDL.
 
+**How a metric becomes a `MEASURE`.** A graph measure aggregates a node
+property, so the aggregate's operand is exposed as one first. An operand that
+is a single field aggregates that field's property directly
+(`MEASURE(SUM(amount))`), even when a profile bound the field to a differently
+named column. Any other operand is added as a derived property,
+`<expr> AS <metric>_input`, and the measure aggregates that. A property
+expression is evaluated against the table's physical columns, not the other
+properties, so each field named in a compound operand is first replaced by the
+column (or SQL) it is bound to, parenthesized when it is not a bare column:
+`SUM(Opportunity.totalContractValue * Opportunity.probabilityOfWin)` under a
+profile that binds `total_contract_value` and `probability_of_win` becomes
+`total_contract_value * probability_of_win AS weighted_pipeline_input`. String
+literals, function names, and qualified names are left untouched. Two metrics
+whose operands resolve to the same SQL share one derived property.
+
 For which of your descriptive metadata (`description`, `ai_context`, field
 labels, …) lands in the graph and which is dropped, see
 [What push and pull preserve](fidelity.md#to-bigquery).
+
+### Only modeled properties are exposed
+
+Every node and edge table lists exactly the properties the model declares, and
+one with nothing to list says `NO PROPERTIES`. The push never leaves the
+properties clause out: a label without one defaults to `PROPERTIES ARE ALL
+COLUMNS`, which would expose every column of the backing table — modeled or
+not — on the element. That matters most for a relationship. A foreign-key edge
+is backed by its source entity's table, whose columns are that node's
+properties, not the edge's, so the edge is emitted as:
+
+```sql
+`proj.ds.opportunity` AS hasBuyer
+  KEY(opportunity_id)
+  SOURCE KEY(opportunity_id) REFERENCES Opportunity(opportunity_id)
+  DESTINATION KEY(client_id) REFERENCES Client(client_id)
+  OPTIONS(description="…")
+  NO PROPERTIES
+```
+
+Left to ALL COLUMNS, a physical column such as `won_amount` would appear on the
+edge and collide with a metric of the same name on a node (BigQuery rejects it:
+"Property 'won_amount' is defined as MEASURE, but there are other declarations
+with the same name"). The same rule covers a node that declares only its key
+and an M:N junction edge with no fields of its own. (Verified live.)
 
 ### Class hierarchies (`extends` → labels)
 
@@ -257,6 +322,18 @@ The boundaries:
   subtype that declares the same-named field with a different column or expression
   cannot override it: the supertype's definition wins and the subtype's is dropped
   (with a warning). Redeclaring it identically is a harmless no-op.
+- **An empty label says `NO PROPERTIES`.** A label written with no properties
+  clause means `PROPERTIES ARE ALL COLUMNS`. In a hierarchy that would expose
+  every column of the table again under the label. Those copies clash with the
+  properties the push renders explicitly on the same table, and BigQuery rejects
+  the graph with `Property '<name>' has more than one definition in the element
+  table`. So inside a hierarchy the push writes `NO PROPERTIES` for any label
+  with nothing to list, on both backends. That covers an abstract root with no
+  fields (a `BusinessObject` label on every node, for example), a supertype
+  whose fields the subtype leaves unbound, and a subtype with no bound fields of
+  its own. The labels still work for `MATCH (:BusinessObject)`. The same rule
+  applies outside hierarchies (see [Only modeled properties are
+  exposed](#only-modeled-properties-are-exposed)).
 
 An entity marked **`abstract: true`** is a conceptual class with no physical
 table: it has no `source` and no key, produces **no node table**, and survives
@@ -266,10 +343,10 @@ the shared label's signature is present on every subtype table. An abstract
 entity that no concrete entity extends has nothing to attach to and is dropped
 with a warning. `abstract` is an explicit marker: a non-abstract entity with no
 `source` is treated as a binding error and fails the push, never
-silently dropped as if it were table-less. The Knowledge Catalog leg does not
-model inheritance today, so an abstract entity has no physical resource to
-catalog and is skipped there (with a warning); its concrete subtypes are
-published normally.
+silently dropped as if it were table-less. On Knowledge Catalog an abstract
+entity is published as a table-less `semantic-entity` entry, and each subtype's
+entry names its supertypes (see [Class hierarchies on the
+catalog](#class-hierarchies-on-the-catalog)).
 
 A supertype **may** instead be concrete — carry its own `source` and key. It then
 becomes both its own node table and a label on its subtypes. Every subtype table
@@ -290,6 +367,99 @@ column, and these shapes deploy on both BigQuery Graph and Spanner Graph
 (verified live for a diamond and for a three-level hierarchy with several
 concrete leaves).
 
+### Relationship hierarchies
+
+A relationship may `extends: [Rel, …]` other relationships, and a relationship
+may be `abstract: true` (both `/google` extensions; see [Relationship
+inheritance](inheritance.md#relationship-inheritance)). Edge labels are resolved
+like node labels:
+
+- **An abstract relationship emits no `EDGE TABLE`.** It keeps `from`/`to` but
+  must not declare `from_columns`/`to_columns` (the loader rejects it), and push
+  does not require join columns of it. One that nothing extends is warned.
+- **A concrete edge in a hierarchy** is emitted as `DEFAULT LABEL`, then its
+  `OPTIONS` (BigQuery), then its properties clause (`NO PROPERTIES` for a
+  foreign-key edge), then `LABEL <ancestor> NO
+  PROPERTIES` for every transitive ancestor, nearest first, de-duplicated.
+  Ancestor labels carry no properties, so edge tables over different source
+  tables share the label without agreeing on columns — `MATCH
+  ()-[:Ancestor]->()` spans all of them.
+- **A concrete relationship that others extend** is emitted with `DEFAULT
+  LABEL` and `NO PROPERTIES`, the only property signature compatible with its
+  children's; its `OPTIONS` are dropped with a warning (BigQuery rejects
+  `OPTIONS` on a label that other tables also define). An edge present in its
+  table and a child's table is matched twice under its label.
+- **Edges outside any hierarchy are unchanged** — no `LABEL` clause.
+- **The loader warns** on a dangling parent, a cyclic `extends` chain, and a
+  child whose `from`/`to` is neither the parent's end nor a subtype of it (per
+  entity `extends`). Push rejects a dangling parent unless the model was pruned
+  by a profile.
+- **Knowledge Catalog.** An abstract relationship publishes no `schema-join`
+  link (warned). A concrete one appends `Specializes: <parent>, ….` to its join
+  description — the only free text in the closed `schema-join` template. On
+  pull that line is stripped and each parent that resolves to a pulled
+  relationship becomes `extends` again (under its pulled, link-slugged name). A
+  parent with no link of its own — every abstract parent — cannot be recovered
+  and is dropped with a warning, so an abstract relationship does not
+  round-trip through the catalog.
+
+### Relationship inverses (`inverse`)
+
+A relationship is directed, but a question often reads it the other way — "the
+opportunities of this client" over `hasBuyer` (Opportunity → Client). Name that
+reading with `inverse:` (`/google` profile) rather than declaring a second
+relationship; it is the native home of OWL `owl:inverseOf` (see [Inverse
+properties](owl-import.md#inverse-properties-owlinverseof)):
+
+```yaml
+relationships:
+  - name: hasBuyer
+    from: Opportunity
+    to: Client
+    from_columns: [client_id]
+    to_columns: [client_id]
+    inverse: hasOpportunity      # Client -[hasOpportunity]-> Opportunity
+```
+
+The push emits the inverse as a **second edge table over the same backing
+table**, with `SOURCE` and `DESTINATION` swapped and the inverse name as its
+label. There is one set of rows and one join; only the direction label differs:
+
+```sql
+`proj.ds.opportunity` AS hasBuyer
+  KEY(opportunity_id)
+  SOURCE KEY(opportunity_id) REFERENCES Opportunity(opportunity_id)
+  DESTINATION KEY(client_id) REFERENCES Client(client_id)
+  NO PROPERTIES,
+`proj.ds.opportunity` AS hasOpportunity
+  KEY(opportunity_id)
+  SOURCE KEY(client_id) REFERENCES Client(client_id)
+  DESTINATION KEY(opportunity_id) REFERENCES Opportunity(opportunity_id)
+  NO PROPERTIES
+```
+
+so both `MATCH (o)-[:hasBuyer]->(c)` and `MATCH (c)-[:hasOpportunity]->(o)`
+resolve. (BigQuery accepts two edge tables over one backing table — the DDL
+above deploys, verified live.) The rules:
+
+- **One name, no second definition.** The inverse carries no columns,
+  description, or synonyms of its own; the relationship's `OPTIONS` stay on the
+  forward label only, and an M:N inverse shares the junction's properties.
+- **Unique across the graph.** The inverse becomes an element alias, so it must
+  differ (case-insensitively) from every entity, relationship, and other
+  inverse name, and from its own relationship's name; the loader rejects a
+  clash. An IR that reaches the push some other way (a Knowledge Catalog pull)
+  has the clashing inverse omitted with a warning instead.
+- **Spanner Graph** emits the same pair of edge tables.
+- **Hierarchies.** The reversed edge carries only its own label: the
+  relationship's ancestor labels name the forward direction, so they are not
+  repeated on it. An abstract relationship emits no edge table, so its
+  `inverse` is not emitted either (warned).
+- **Knowledge Catalog** has no inverse slot on a `schema-join` link, so the
+  push appends an `Inverse: <name>.` trailer to the link's description, and
+  pull strips it back into `inverse:` (a description that ends that way is read
+  as an inverse).
+
 ## What gets created in Spanner
 
 When the deployment target is a Spanner Graph URI, `push` executes the same
@@ -301,6 +471,7 @@ differs from BigQuery Graph in four ways:
 | Model | `PROPERTY GRAPH` | named by the URI's `propertyGraphs/<g>` segment, **bare** (no backticked `project.dataset.` prefix) |
 | Entity | `NODE TABLE` | backed by the entity's `source` reduced to its final segment (`proj.ds.Orders` → `Orders`), a table in the target database |
 | Relationship | `EDGE TABLE` | connects the two entities' node tables |
+| Relationship `inverse` | a second `EDGE TABLE` over the same table | `SOURCE`/`DESTINATION` swapped, as on BigQuery (see [Relationship inverses](#relationship-inverses-inverse)) |
 | Metric | — dropped | Spanner Graph has no `MEASURE`, so every model-level metric is skipped with a warning; the graph structure still deploys |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | same label-and-flatten handling as BigQuery (see [Class hierarchies](#class-hierarchies-extends--labels)) |
 
@@ -318,6 +489,11 @@ differs from BigQuery Graph in four ways:
   `updateDatabaseDdl` long-running operation, polled to completion (BigQuery runs
   its DDL through `jobs.query`). No region detection is needed — the DDL runs in
   the database the target names.
+
+The rule that [only modeled properties are
+exposed](#only-modeled-properties-are-exposed) applies unchanged: an element
+table with nothing to list says `NO PROPERTIES` rather than default to all
+columns (not yet verified live on Spanner).
 
 Under `--validate-only` nothing is applied; add `--print` to see the generated
 Spanner DDL. Unlike the BigQuery leg, a Spanner-targeting model's source tables
@@ -395,6 +571,40 @@ fallback to drop to now that the word is required: the pull warns that the
 constraint will not push, and loading the pulled model names the constraint and
 says the word is missing. That is the outcome to want when the catalog no
 longer says how a breach routes.
+
+### Class hierarchies on the catalog
+
+An **abstract** entity (a table-less supertype) is published like any unbound
+logical entity: a `semantic-entity` entry with an empty `source.resources`, its
+own fields in the `schema` aspect, and no `primaryKey`. The supertype is then a
+catalog entry an agent can find and read — its description, fields and
+guidelines — and an action or constraint that names it points at a published
+concept.
+
+Neither entity template has a slot for a supertype or for "no table", so both
+ride the entry description as fixed trailing paragraphs — readable to a person
+or an agent browsing the catalog, and parseable by `pull`:
+
+```text
+A buying party.
+
+Specializes: Party.
+```
+
+```text
+Anyone we do business with.
+
+Abstract: no table of its own.
+```
+
+`pull` peels them off and restores `extends` and `abstract`, so the pulled model
+loads strictly (an abstract entity needs no `source`; a non-abstract one does).
+The `Abstract:` marker is what tells the two apart — an unbound logical entity
+publishes the same empty `resources`. A parent that the pull did not recover is
+dropped from `extends` with a warning. Two limits: inherited fields are not
+flattened onto a subtype's entry (each entry lists the fields it declares), and
+a relationship with an abstract endpoint publishes no `schema-join` link, since
+there are no columns behind that end.
 
 Push to Knowledge Catalog is lossy — the catalog holds metadata, not a full copy
 of your model. For exactly what is stored, what is gated behind

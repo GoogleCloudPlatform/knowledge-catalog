@@ -460,6 +460,12 @@ function relationshipDoc(
     name: rel.name,
     from: rel.source.entity,
     to: rel.destination.entity,
+    // Super-relationships (relationship inheritance); omitted when none.
+    extends: nonEmpty(rel.extends),
+    // Conceptual (edge-table-less) marker; omitted when false/absent.
+    abstract: rel.abstract || undefined,
+    // The edge read backwards (owl:inverseOf); omitted when none.
+    inverse: rel.inverse,
     from_columns: nonEmpty(rel.source.columns),
     to_columns: nonEmpty(rel.destination.columns),
     description: rel.description,

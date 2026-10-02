@@ -1,37 +1,27 @@
-# An ontology exercising every OWL construct that has no native OSI home and so
-# rides along verbatim as a GOOGLE custom extension (see the user guide's
-# "Constructs carried as custom extensions (not yet native)"). It covers both
-# WHERE each construct attaches and HOW cross-references are namespaced.
+# An ontology exercising the OWL constructs beyond the core schema subset
+# (classes, datatype/object properties, keys, subclassing). The file keeps its
+# historical name: an earlier importer carried these constructs verbatim as
+# GOOGLE custom extensions; that carriage was removed, so today each construct
+# either maps onto a NATIVE semantic-model construct or is dropped:
 #
-# Attachment level:
-#   - owl:equivalentClass / owl:disjointWith on a class -> entity extension
-#   - rdfs:subPropertyOf / owl:equivalentProperty / owl:FunctionalProperty and
-#     the rdfs:seeAlso / owl:deprecated / owl:versionInfo annotations on a
-#     datatype property -> field extension
-#   - rdfs:subPropertyOf / owl:inverseOf / owl:propertyDisjointWith /
-#     owl:propertyChainAxiom and the reflexive / irreflexive / symmetric /
-#     transitive / asymmetric characteristics on an object property ->
-#     relationship extension
-#   - owl:oneOf on a class (an enumeration) -> entity extension
-#   - owl:AllDisjointClasses / owl:AllDisjointProperties / owl:AllDifferent,
-#     each asserted on an ANONYMOUS node about a SET of terms (belonging to no
-#     single class/property) -> model extension
+#   - owl:equivalentClass / owl:equivalentProperty -> ai_context.synonyms (the
+#     equivalent term's local name, unless it equals the term's own name --
+#     Person's foaf:Person adds nothing; relatedTo gains `knows`; legalName
+#     gains `name`)
+#   - owl:deprecated -> a `DEPRECATED` description prefix plus an
+#     ai_context.instructions steering line (legalName)
+#   - owl:TransitiveProperty / owl:SymmetricProperty -> relationship
+#     ai_context.instructions query hints (ancestorOf / relatedTo)
+#   - everything else here -- owl:disjointWith, rdfs:subPropertyOf,
+#     owl:inverseOf, owl:propertyDisjointWith, owl:propertyChainAxiom, owl:oneOf,
+#     the reflexive / irreflexive / asymmetric / functional characteristics,
+#     rdfs:seeAlso (other than a deprecation replacement), rdfs:isDefinedBy,
+#     owl:versionInfo on a term, and the set-level owl:AllDisjointClasses /
+#     owl:AllDisjointProperties / owl:AllDifferent axioms -- is dropped here
+#     (other enhancements map some of them; see docs/semantic-model/owl-import.md).
 #
-# Namespace handling: this ontology's base namespace is
-# http://example.com/people# (ex:); it also references the external FOAF and
-# schema.org vocabularies. A cross-reference is carried as the FULL IRI when it
-# points OUTSIDE this ontology and shortened to a local name when it points at
-# an ex: term (the base IRI rides on the model as owl:baseIri so the short form
-# is reversible):
-#   - owl:equivalentClass foaf:Person       -> full IRI    (cross-namespace)
-#   - owl:disjointWith ex:Robot             -> "Robot"     (in-namespace)
-#   - owl:equivalentProperty foaf:name      -> full IRI    (cross-namespace)
-#   - rdfs:subPropertyOf ex:relatedTo       -> "relatedTo" (in-namespace)
-#
-# Each construct is carried under the GOOGLE vendor with the source construct AS
-# the key (prefixed with its vocabulary), the value mirroring it faithfully.
-# Carriage is inert on push and lossless on the OSI-document round-trip; it does
-# not change the graph.
+# The inline comments below describe each construct as asserted; the
+# "carried" wording in them is historical.
 
 @prefix owl:  <http://www.w3.org/2002/07/owl#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .

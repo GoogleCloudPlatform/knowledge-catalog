@@ -1,0 +1,50 @@
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex:   <http://example.com/deals#> .
+
+# owl:inverseOf -> relationship `inverse` (see planInverseFolds in to_ir.ts).
+# One case per fold rule:
+#   - governedBy     declares no ends of its own     -> contractFor.inverse
+#   - hasOpportunity declares mirrored ends          -> hasBuyer.inverse
+#   - deliveredBy    is never declared (in-namespace) -> delivers.inverse
+#   - employs        declares ends that do NOT mirror worksFor -> both kept,
+#                    one warning
+
+<http://example.com/deals> a owl:Ontology ;
+    rdfs:comment "Inverse-property fixture: deals, contracts, delivery." .
+
+ex:Client a owl:Class .
+ex:Opportunity a owl:Class .
+ex:ContractAgreement a owl:Class .
+ex:Engagement a owl:Class .
+ex:Person a owl:Class .
+
+ex:contractFor a owl:ObjectProperty ;
+    rdfs:domain ex:ContractAgreement ;
+    rdfs:range ex:Opportunity ;
+    rdfs:comment "The opportunity a contract agreement governs." .
+ex:governedBy a owl:ObjectProperty ;
+    owl:inverseOf ex:contractFor ;
+    rdfs:comment "Dropped: the inverse is a name, not a second edge." .
+
+ex:hasBuyer a owl:ObjectProperty ;
+    rdfs:domain ex:Opportunity ;
+    rdfs:range ex:Client .
+ex:hasOpportunity a owl:ObjectProperty ;
+    rdfs:domain ex:Client ;
+    rdfs:range ex:Opportunity ;
+    owl:inverseOf ex:hasBuyer .
+
+ex:delivers a owl:ObjectProperty ;
+    rdfs:domain ex:Engagement ;
+    rdfs:range ex:Opportunity ;
+    owl:inverseOf ex:deliveredBy .
+
+ex:worksFor a owl:ObjectProperty ;
+    rdfs:domain ex:Person ;
+    rdfs:range ex:Client .
+ex:employs a owl:ObjectProperty ;
+    rdfs:domain ex:Person ;
+    rdfs:range ex:Client ;
+    owl:inverseOf ex:worksFor .

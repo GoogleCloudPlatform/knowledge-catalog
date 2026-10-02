@@ -12,7 +12,7 @@
 import * as yaml from 'yaml';
 import * as z from 'zod';
 
-import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, Entity, Executor, Field, Metric, Relationship, SemanticModel, VIOLATION_EFFECTS,} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, Entity, Executor, Field, Metric, Relationship, relationshipAncestors, SemanticModel, VIOLATION_EFFECTS,} from './ir';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {referencedEntityNames} from './sql_expr_utils';
 
@@ -137,8 +137,8 @@ const datasetBase = z.object({
   source: z.string().optional(),
   primary_key: z.array(z.string()).optional(),
   unique_keys: z.array(z.array(z.string())).optional(),
-  // Supertype entity names (Ossie `extends`) -- entity-level inheritance. Only
-  // datasets carry it; relationships have no `extends`.
+  // Supertype entity names (Ossie `extends`) -- entity-level inheritance.
+  // Relationships carry their own, separate `extends` (see below).
   extends: z.array(z.string()).optional(),
   // Marks a conceptual entity with no physical table (see Entity.abstract): it
   // forms no node table and survives only as a label on its concrete
@@ -168,6 +168,14 @@ const relationshipSchema = z.object({
                               to_columns: z.array(z.string()).min(1).optional(),
                               description: z.string().optional(),
                               ai_context: aiContextSchema.optional(),
+                              // Relationship inheritance (extended profile
+                              // only; see Relationship.extends/abstract).
+                              extends: z.array(z.string()).optional(),
+                              abstract: z.boolean().optional(),
+                              // The edge's name read backwards (to -> from);
+                              // extended profile only (see
+                              // buildDocumentSchema).
+                              inverse: z.string().min(1).optional(),
                               custom_extensions:
                                   z.array(customExtensionSchema).optional(),
                             }).superRefine((r, ctx) => {
@@ -466,10 +474,21 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          to_columns: z.array(z.string()).min(1).optional(),
          description: z.string().optional(),
          ai_context: aiContextSchema.optional(),
+         // The edge read backwards (OWL owl:inverseOf) is a native extension:
+         // only the extended profile accepts it.
+         ...(extended ? {inverse: z.string().min(1).optional()} : {}),
          ...ce,
+         // Relationship inheritance is a native extension, like entity
+         // inheritance: only the extended profile accepts it. See
+         // Relationship.extends / Relationship.abstract.
+         ...(extended ? {
+           extends: z.array(z.string()).optional(),
+           abstract: z.boolean().optional(),
+         } :
+                        {}),
        })
           .strict()
-          .superRefine((r, ctx) => {
+          .superRefine((r: any, ctx) => {
             if ((r.from_columns === undefined) !==
                 (r.to_columns === undefined)) {
               ctx.addIssue({
@@ -479,6 +498,28 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
                         r.name}': from_columns and to_columns must be given ` +
                     `together (both bind the edge) or both omitted (a logical edge); one ` +
                     `without the other is a half-bound join.`,
+              });
+            }
+            // An abstract relationship is never an edge table of its own, so
+            // join columns on it would be silently ignored: reject them, the
+            // same contradiction an abstract dataset with a `source` is.
+            if (r.abstract === true && r.from_columns !== undefined) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: `relationship '${
+                             r.name}': an abstract relationship has no edge ` +
+                    `table, so it binds no join columns; remove ` +
+                    `from_columns/to_columns, or drop 'abstract: true'.`,
+              });
+            }
+            const inverse = (r as {inverse?: string}).inverse;
+            if (inverse !== undefined && inverse === r.name) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['inverse'],
+                message: `relationship '${r.name}': 'inverse' names the ` +
+                    `relationship itself; an inverse is the edge read the ` +
+                    `other way and needs its own name`,
               });
             }
           });
@@ -802,6 +843,28 @@ function convertModel(
       (m.relationships ?? []).map(r => convertRelationship(r, entityNameSet));
   rejectDuplicateNames(
       relationships.map(r => r.name), 'relationship name', `model '${m.name}'`);
+  warnRelationshipInheritance(entities, relationships, warnings);
+  // An inverse name is a second graph element name for the same edge (its
+  // own edge table and label on a push), so it shares the element namespace:
+  // it must differ from every dataset, relationship, and other inverse. A
+  // repeat would make the generated graph ambiguous -- a hard error, as for a
+  // duplicate name. Compared case-insensitively, as graph element names are.
+  // Only the inverse names are checked, so a model with no inverse loads
+  // exactly as before.
+  const elementNames =
+      new Set([...entityNames, ...relationships.map(r => r.name)].map(
+          n => n.toLowerCase()));
+  for (const r of relationships) {
+    if (!r.inverse) continue;
+    const key = r.inverse.toLowerCase();
+    if (elementNames.has(key)) {
+      throw new Error(
+          `model '${m.name}': relationship '${r.name}' has inverse '${
+              r.inverse}', which repeats the name of a dataset, relationship, ` +
+          `or another inverse; graph element names must be unique.`);
+    }
+    elementNames.add(key);
+  }
 
   const metrics =
       (m.metrics ??
@@ -983,13 +1046,79 @@ function convertRelationship(
     source: {entity: r.from, columns: fromColumns},
     destination: {entity: r.to, columns: toColumns},
   };
+  // Relationship inheritance is carried as declared, exactly like a dataset's
+  // `extends`: an `extends` naming no relationship (or a cycle) is accepted
+  // here and reported once by validate, not thrown from the loader.
+  if (r.extends && r.extends.length) relationship.extends = r.extends;
+  if (r.abstract) relationship.abstract = true;
   const description = composeDescription(r.description);
   if (description) relationship.description = description;
   const ai = aiContextOrUndefined(r.ai_context);
   if (ai) relationship.aiContext = ai;
+  if (r.inverse !== undefined) relationship.inverse = r.inverse;
   const ce = toCustomExtensions(r.custom_extensions);
   if (ce) relationship.customExtensions = ce;
   return relationship;
+}
+
+// Lint pass over relationship inheritance, run once the model's relationships
+// are known. Everything here is a WARNING, never a throw: the loader is lenient
+// about hierarchy exactly as it is for dataset `extends` (validate turns a
+// dangling parent into a push error). Three things are flagged:
+//   - an `extends` naming no relationship in the model (dangling);
+//   - a cycle (`a extends b`, `b extends a`) -- harmless to the emitters, whose
+//     ancestor walk (relationshipAncestors) stops at a revisit, but certainly
+//     not what the author meant;
+//   - a sub-relationship whose endpoint is not its parent's endpoint or a
+//     subtype of it. `hasBuyer: Opportunity -> Client` specializes
+//     `hasCounterparty: BusinessObject -> Party` only because Opportunity IS a
+//     BusinessObject and Client IS a Party; an edge outside the parent's
+//     endpoint types would put edges under the parent's label that its
+//     declared domain/range says cannot exist.
+function warnRelationshipInheritance(
+    entities: Entity[], relationships: Relationship[],
+    warnings: string[]): void {
+  const byName = new Map(relationships.map(r => [r.name, r]));
+  const entityByName = new Map(entities.map(e => [e.name, e]));
+  // The entity itself plus every transitive `extends` ancestor.
+  const lineage = (name: string): Set<string> => {
+    const out = new Set<string>();
+    const queue = [name];
+    while (queue.length) {
+      const n = queue.shift()!;
+      if (out.has(n)) continue;
+      out.add(n);
+      queue.push(...(entityByName.get(n)?.extends ?? []));
+    }
+    return out;
+  };
+  for (const r of relationships) {
+    const ctx = `relationship '${r.name}'`;
+    for (const p of r.extends ?? []) {
+      const parent = byName.get(p);
+      if (!parent) {
+        warnings.push(`${ctx}: extends '${
+            p}', which is not a relationship in the model`);
+        continue;
+      }
+      if (!lineage(r.source.entity).has(parent.source.entity)) {
+        warnings.push(`${ctx}: source '${r.source.entity}' is not '${
+            parent.source.entity}' or a subtype of it, so its edges do not ` +
+                      `fit the '${p}' label it extends`);
+      }
+      if (!lineage(r.destination.entity).has(parent.destination.entity)) {
+        warnings.push(`${ctx}: destination '${
+            r.destination.entity}' is not '${
+            parent.destination.entity}' or a subtype of it, so its edges do ` +
+                      `not fit the '${p}' label it extends`);
+      }
+    }
+    if (relationshipAncestors(relationships, r.name).some(
+            a => (byName.get(a)?.extends ?? []).includes(r.name))) {
+      warnings.push(`${ctx}: its 'extends' chain is cyclic (it is its own ` +
+                    `ancestor); break the cycle`);
+    }
+  }
 }
 
 function convertMetric(

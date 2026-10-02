@@ -538,3 +538,135 @@ describe('binding profiles resolve physical columns and availability', () => {
     expect(report.droppedMetrics.map(d => d.name)).toEqual(['total_discount']);
   });
 });
+
+
+describe(
+    'a compound measure operand reads physical columns, not field aliases',
+    () => {
+      // The live failure: a profile renames two columns, and a metric
+      // aggregates their product. The synthesized operand property is
+      // evaluated against the table's columns, so `totalContractValue *
+      // probabilityOfWin AS weighted_pipeline_input` was rejected with
+      // "Unrecognized name: totalContractValue; Did you mean
+      // total_contract_value?". Each field reference must be rewritten to its
+      // bound column first.
+      const LOGICAL = `
+version: "0.2.0.dev0/google"
+semantic_model:
+  - name: deals
+    entities:
+      - name: Opportunity
+        primary_key: [opportunityId]
+        fields:
+          - { name: opportunityId }
+          - { name: totalContractValue }
+          - { name: probabilityOfWin }
+    metrics:
+      - name: weighted_pipeline
+        expression: SUM(Opportunity.totalContractValue * Opportunity.probabilityOfWin)
+      - name: total_contract_value_sum
+        expression: SUM(Opportunity.totalContractValue)
+`;
+      const PROFILE = `
+version: "0.2.0.dev0/google"
+semantic_model:
+  - name: deals
+    deployment_target: //bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/deals
+    entities:
+      - name: Opportunity
+        source: //bigquery.googleapis.com/projects/acme/datasets/sales/tables/opportunity
+        fields:
+          - { name: opportunityId, expression: opportunity_id }
+          - { name: totalContractValue, expression: total_contract_value }
+          - { name: probabilityOfWin, expression: probability_of_win }
+`;
+
+      function buildInline(logical: string, profile: string) {
+        const merged =
+            mergeProfile(yaml.parse(logical), yaml.parse(profile), 'p');
+        if (merged.error) throw new Error(merged.error);
+        const loaded = loadSemanticModels(
+            [{name: 'deals', text: yaml.stringify(merged.doc)}],
+            {defaultProject: 'acme', defaultDataset: 'sales'});
+        if (loaded.error) throw new Error(loaded.error);
+        const {model} = pruneUnavailable(loaded.models[0].model, 'p');
+        return generatePropertyGraph(model, {project: 'acme', dataset: 'sales'});
+      }
+
+      test('a profile rename plus a compound operand deploys columns', () => {
+        const {ddl, warnings} = buildInline(LOGICAL, PROFILE);
+        expect(ddl).toContain(
+            'total_contract_value * probability_of_win AS ' +
+            'weighted_pipeline_input');
+        expect(ddl).toContain(
+            'MEASURE(SUM(weighted_pipeline_input)) AS weighted_pipeline');
+        expect(ddl).not.toContain('totalContractValue * probabilityOfWin');
+        // The single-field fast path is unchanged: the measure aggregates the
+        // exposed field property by name.
+        expect(ddl).toContain(
+            'MEASURE(SUM(totalContractValue)) AS total_contract_value_sum');
+        expect(warnings).toEqual([]);
+      });
+
+      // IR-level cases for the token-aware rewrite.
+      function opp(fields: Array<{name: string; expression: string}>,
+                   metrics: Array<{name: string; expression: string}>) {
+        return generatePropertyGraph(
+            {
+              name: 'g',
+              entities: [{
+                name: 'Opportunity',
+                dataSource: 'acme.sales.opportunity',
+                keys: ['id'],
+                fields: [{name: 'id', expression: 'opp_id'}, ...fields],
+              }],
+              relationships: [],
+              metrics,
+            } as any,
+            {project: 'acme', dataset: 'sales'});
+      }
+
+      test(
+          'a bound SQL expression is parenthesized so precedence holds', () => {
+            const {ddl} = opp(
+                [
+                  {name: 'tcv', expression: 'total_contract_value'},
+                  {name: 'net', expression: 'gross - discount'},
+                ],
+                [{name: 'm', expression: 'SUM(Opportunity.tcv * Opportunity.net)'}]);
+            expect(ddl).toContain('total_contract_value * (gross - discount) AS m_input');
+          });
+
+      test(
+          'string literals, function names and raw columns are left alone',
+          () => {
+            const {ddl} = opp(
+                [
+                  {name: 'stage', expression: 'stage_code'},
+                  {name: 'tcv', expression: 'total_contract_value'},
+                  // A field named like a function: only a call is skipped.
+                  {name: 'coalesce', expression: 'coalesce_col'},
+                ],
+                [{
+                  name: 'won_value',
+                  expression:
+                      "SUM(IF(Opportunity.stage = 'stage', COALESCE(Opportunity.tcv, 0), raw_col))",
+                }]);
+            expect(ddl).toContain(
+                "IF(stage_code = 'stage', COALESCE(total_contract_value, 0), raw_col) AS won_value_input");
+          });
+
+      test(
+          'two metrics whose operands rewrite to the same SQL share one property',
+          () => {
+            const {ddl} = opp(
+                [{name: 'tcv', expression: 'total_contract_value'}],
+                [
+                  {name: 'double_tcv', expression: 'SUM(Opportunity.tcv * 2)'},
+                  {name: 'avg_double_tcv', expression: 'AVG(Opportunity.tcv * 2)'},
+                ]);
+            expect(ddl.match(/total_contract_value \* 2 AS/g)?.length).toBe(1);
+            expect(ddl).toContain(
+                'MEASURE(AVG(double_tcv_input)) AS avg_double_tcv');
+          });
+    });

@@ -1,0 +1,46 @@
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix core: <http://example.com/core#> .
+@prefix com:  <http://example.com/commercial#> .
+
+# The root module: it imports core by IRI and refers to core terms across the
+# file boundary -- a subclass of core:Party, a datatype property whose domain
+# is core:Party, and an edge whose range is core:Party.
+
+<http://example.com/commercial> a owl:Ontology ;
+    rdfs:label   "Commercial" ;
+    rdfs:comment "Commercial domain: client accounts and the opportunities they buy." ;
+    owl:imports  <http://example.com/core> .
+
+com:ClientAccount a owl:Class ;
+    rdfs:subClassOf core:Party ;
+    rdfs:comment "An organization that buys services." .
+
+com:Opportunity a owl:Class ;
+    rdfs:comment "A potential sale to a client account." ;
+    owl:hasKey ( com:opportunityId ) .
+
+com:opportunityId a owl:DatatypeProperty ;
+    rdfs:domain com:Opportunity ;
+    rdfs:range xsd:string .
+
+com:amount a owl:DatatypeProperty ;
+    rdfs:domain com:Opportunity ;
+    rdfs:range xsd:decimal ;
+    rdfs:comment "Total contract value, in USD thousands." .
+
+# Cross-file domain: a commercial property that hangs off a core class.
+com:accountTier a owl:DatatypeProperty ;
+    rdfs:domain core:Party ;
+    rdfs:range xsd:string .
+
+com:hasBuyer a owl:ObjectProperty ;
+    rdfs:domain com:Opportunity ;
+    rdfs:range com:ClientAccount ;
+    rdfs:comment "The client account buying the opportunity." .
+
+# Cross-file range.
+com:ownedBy a owl:ObjectProperty ;
+    rdfs:domain com:Opportunity ;
+    rdfs:range core:Party .

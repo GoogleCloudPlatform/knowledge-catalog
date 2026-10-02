@@ -117,18 +117,46 @@ cli.command(
 
 
 cli.command(
-       'owl <action> <file>',
-       'OWL ontology tools (action: import a .ttl ontology into an OSI model)')
+       'owl <action> [...files]',
+       'OWL ontology tools (action: import one or more .ttl files of one ontology into an OSI model; local owl:imports are followed)')
     .option(
         '--out <path>',
         'Write the generated OSI document to this path instead of the semantic-model layout dir')
     .option(
+        '--name <model>',
+        'Name the generated model; defaults to the first file\'s stem (sales.owl.ttl -> sales)')
+    .option(
         '--compact',
         'Emit compact flow YAML (primary_key: [id], inline field/relationship maps) instead of the default block layout')
-    .action(async (action, file, options) => {
+    .action(async (action, files, options) => {
       let exitCode = 1;
       try {
-        exitCode = await commands.owl(action, file, options);
+        exitCode = await commands.owl(action, files, options);
+      } catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+
+      process.exit(exitCode);
+    });
+
+
+cli.command(
+       'shacl <action> [...files]',
+       'SHACL shape tools (action: import .ttl shapes into an existing model as constraints)')
+    .option(
+        '--into <path>',
+        'The model document to add the constraints to (default: the --model model in the semantic-model layout)')
+    .option(
+        '--model <name>',
+        'The model receiving the constraints (required without --into, or when the document declares several)')
+    .option(
+        '--out <path>',
+        'Write the updated document to this path instead of back to its source')
+    .action(async (action, files, options) => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.shacl(action, files, options);
       } catch (err: any) {
         console.error('Error:', err.message || err);
         exitCode = 1;

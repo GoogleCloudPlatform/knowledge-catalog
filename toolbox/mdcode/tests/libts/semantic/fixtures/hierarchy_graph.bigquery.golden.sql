@@ -74,6 +74,7 @@ EDGE TABLES (
     KEY(id)
     SOURCE KEY(id) REFERENCES Person(id)
     DESTINATION KEY(city_id) REFERENCES City(id)
+    NO PROPERTIES
 );
 
 -- warnings --

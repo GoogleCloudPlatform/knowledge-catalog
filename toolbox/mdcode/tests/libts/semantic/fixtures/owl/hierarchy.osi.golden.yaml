@@ -31,6 +31,16 @@ semantic_model:
       - name: managedBy
         from: Employee
         to: Manager
+        extends:
+          - worksWith
       - name: worksWith
         from: Employee
         to: Employee
+        abstract: true
+    constraints:
+      - name: Manager_employeeId_required
+        judgment: Every Manager has a value for Manager.employeeId. A Manager whose
+          Manager.employeeId is null or missing does not satisfy this rule.
+        description: "Set Manager.employeeId on every Manager. (From OWL: Manager
+          SubClassOf employeeId min 1.)"
+        on_violation: warn

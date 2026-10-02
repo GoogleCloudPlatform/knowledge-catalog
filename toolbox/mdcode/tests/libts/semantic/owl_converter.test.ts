@@ -159,8 +159,9 @@ describe('sales-advanced is the user-guide unified advanced example', () => {
 
   test('maps cleanly (hierarchy + carriage never warn)', () => {
     const {stats, warnings} = convertOwlToOsi(ttl, 'sales');
+    // 2 relationships + placedBy's inverse `places` (owl:inverseOf).
     expect(stats).toEqual(
-        {classes: 3, datatypeProperties: 9, objectProperties: 2});
+        {classes: 3, datatypeProperties: 9, objectProperties: 3});
     expect(warnings).toEqual([]);
   });
 
@@ -310,24 +311,38 @@ describe('class hierarchies map rdfs:subClassOf to entity extends', () => {
   });
 
   test(
-      'property inheritance (rdfs:subPropertyOf) is dropped, not carried', () => {
-        // Only entity-level inheritance (rdfs:subClassOf -> extends) is native.
-        // A datatype/object property's rdfs:subPropertyOf has no native OSI
-        // home, so the importer drops it -- the field and relationship still
-        // map, with no custom extension and no warning.
+      'datatype subPropertyOf is dropped; object subPropertyOf maps to ' +
+          'relationship extends',
+      () => {
+        // A datatype property's rdfs:subPropertyOf has no native OSI home (a
+        // field has no `extends`), so the importer drops it -- the field still
+        // maps, with no custom extension and no warning. An object property's
+        // maps to relationship inheritance: the sub-relationship `extends` the
+        // super-relationship, which becomes abstract (the shared label).
         const {warnings} = convertOwlToOsi(ttl, 'hierarchy');
         expect(warnings).toEqual([]);
-        const model = load(convertOwlToOsi(ttl, 'hierarchy').yaml).models[0];
+        const loaded = load(convertOwlToOsi(ttl, 'hierarchy').yaml);
+        // managedBy (Employee -> Manager) fits worksWith (Employee ->
+        // Employee) because Manager extends Employee: no endpoint warning.
+        expect(loaded.warnings.filter(w => w.startsWith('relationship')))
+            .toEqual([]);
+        const model = loaded.models[0];
 
         // The field survives but carries no superproperty fact.
         const employee = model.entities.find(e => e.name === 'Employee')!;
         const legalName = employee.fields.find(f => f.name === 'legalName')!;
         expect(legalName.customExtensions).toBeUndefined();
 
-        // The relationship survives but carries no superproperty fact.
+        // The relationship carries the superproperty natively.
         const managedBy =
             model.relationships.find(r => r.name === 'managedBy')!;
         expect(managedBy.customExtensions).toBeUndefined();
+        expect(managedBy.extends).toEqual(['worksWith']);
+        expect(managedBy.abstract).toBeUndefined();
+        const worksWith =
+            model.relationships.find(r => r.name === 'worksWith')!;
+        expect(worksWith.abstract).toBe(true);
+        expect(worksWith.extends).toBeUndefined();
       });
 
   test('an extends parent that is not a class is dropped with a warning', () => {
@@ -672,6 +687,43 @@ describe('converted counts and provenance', () => {
       });
 });
 
+// Protégé (and the OWL API's Turtle writer) types every anonymous class
+// expression explicitly: `owl:equivalentClass [ a owl:Class ;
+// owl:intersectionOf (...) ]`, likewise owl:unionOf / owl:complementOf /
+// owl:oneOf wrappers and `[ a rdfs:Datatype ; owl:onDatatype ... ]` ranges.
+// Such a blank node has no identity, so it must not become an entity (named
+// after its parser-generated id, e.g. `n3-12`) nor count in the stats.
+describe('typed anonymous class expressions are not imported as terms', () => {
+  const ttl = readFixture('anonymous-classes.owl.ttl');
+
+  test('produces exactly the documented OSI (golden)', () => {
+    const {yaml} = convertOwlToOsi(ttl, 'deals');
+    expect(yaml).toEqual(readFixture('anonymous-classes.osi.golden.yaml'));
+  });
+
+  test('only the named classes become entities and count in stats', () => {
+    const {yaml, stats} = convertOwlToOsi(ttl, 'deals');
+    expect(yaml).not.toMatch(/name: n3-/);
+    expect(stats.classes).toBe(4);
+    expect(load(yaml).models[0].entities.map((e) => e.name)).toEqual([
+      'Party', 'Opportunity', 'Contract', 'WonOpportunity'
+    ]);
+  });
+
+  test('a blank node typed as a property is not a property either', () => {
+    const src = `${PREFIXES}
+      ex:A a owl:Class . ex:B a owl:Class .
+      ex:p a owl:ObjectProperty ; rdfs:domain ex:A ; rdfs:range ex:B .
+      [ a owl:ObjectProperty ; owl:inverseOf ex:p ] .
+      [ a owl:DatatypeProperty ; rdfs:domain ex:A ; rdfs:range xsd:string ] .
+    `;
+    const {yaml, stats} = convertOwlToOsi(src, 'x');
+    expect(stats).toEqual(
+        {classes: 2, datatypeProperties: 0, objectProperties: 1});
+    expect(yaml).not.toMatch(/n3-/);
+  });
+});
+
 
 describe('ai_context enrichment', () => {
   // skos:example on a term -> ai_context.examples.
@@ -907,11 +959,93 @@ describe('the carriage fixture imports only its native constructs', () => {
     expect(yaml).toEqual(readFixture('carriage.osi.golden.yaml'));
     // Dropping a non-native construct is never a warning.
     expect(warnings).toEqual([]);
-    expect(stats).toEqual({classes: 3, datatypeProperties: 3, objectProperties: 3});
+    // ancestorOf's owl:inverseOf ex:descendantOf maps to `inverse:` (counted).
+    expect(stats).toEqual({classes: 3, datatypeProperties: 3, objectProperties: 4});
     // Stays schema-valid and loadable (a logical model, under bindingOptional).
     expect(() => load(yaml)).not.toThrow();
     // No custom_extensions carrier anywhere in the output.
     expect(yaml).not.toContain('custom_extensions');
+  });
+});
+
+
+// owl:inverseOf -> the relationship `inverse` key: an inverse pair is ONE
+// edge read two ways, so it becomes one relationship naming the reverse
+// reading, never two relationships (see planInverseFolds in to_ir.ts).
+describe('owl:inverseOf folds into a relationship inverse', () => {
+  const ttl = readFixture('inverse.owl.ttl');
+
+  test('produces exactly the documented OSI (golden)', () => {
+    const {yaml} = convertOwlToOsi(ttl, 'inverse');
+    expect(yaml).toEqual(readFixture('inverse.osi.golden.yaml'));
+    expect(() => load(yaml)).not.toThrow();
+  });
+
+  test('each fold rule, and the one mismatched pair warned', () => {
+    const {warnings, stats} = convertOwlToOsi(ttl, 'inverse');
+    const rels = load(convertOwlToOsi(ttl, 'inverse').yaml).models[0]
+                     .relationships;
+    const byName = new Map(rels.map(r => [r.name, r]));
+    // An end-less inverse folds into the side with ends.
+    expect(byName.get('contractFor')!.inverse).toBe('governedBy');
+    expect(byName.has('governedBy')).toBe(false);
+    // Both declare mirrored ends: the stating side folds into its referent.
+    expect(byName.get('hasBuyer')!.inverse).toBe('hasOpportunity');
+    expect(byName.has('hasOpportunity')).toBe(false);
+    // An undeclared in-namespace referent is the inverse name as-is.
+    expect(byName.get('delivers')!.inverse).toBe('deliveredBy');
+    // Ends that do not mirror: both kept, no inverse, one warning.
+    expect(byName.get('worksFor')!.inverse).toBeUndefined();
+    expect(byName.get('employs')!.inverse).toBeUndefined();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/'employs' and 'worksFor'.*do not mirror/);
+    // 5 relationships + 3 inverses attached.
+    expect(stats.objectProperties).toBe(8);
+  });
+
+  test('an inverse whose forward edge was skipped is dropped with it', () => {
+    const {yaml, warnings} = convertOwlToOsi(
+        `${PREFIXES}
+      ex:A a owl:Class .
+      ex:fwd a owl:ObjectProperty ; rdfs:domain ex:A .
+      ex:back a owl:ObjectProperty ; owl:inverseOf ex:fwd .`,
+        'x');
+    expect(load(yaml).models[0].relationships).toEqual([]);
+    expect(warnings.join('\n')).toMatch(/'fwd' is missing an rdfs:domain/);
+    expect(warnings.join('\n')).toMatch(/'back' is owl:inverseOf 'fwd'.*dropped/);
+  });
+
+  test('an inverse name clashing with a class is dropped, warned', () => {
+    const rel = convertOwlToOsi(
+        `${PREFIXES}
+      ex:A a owl:Class . ex:B a owl:Class .
+      ex:fwd a owl:ObjectProperty ; rdfs:domain ex:A ; rdfs:range ex:B ;
+          owl:inverseOf ex:b .`,
+        'x');
+    expect(rel.warnings.join('\n')).toMatch(/'b'.*collides/);
+    expect(load(rel.yaml).models[0].relationships[0].inverse).toBeUndefined();
+  });
+
+  test('an external referent is ignored, warned', () => {
+    const {yaml, warnings} = convertOwlToOsi(
+        `${PREFIXES}
+      ex:A a owl:Class . ex:B a owl:Class .
+      ex:fwd a owl:ObjectProperty ; rdfs:domain ex:A ; rdfs:range ex:B ;
+          owl:inverseOf foaf:knows .`,
+        'x');
+    expect(warnings.join('\n')).toMatch(/outside this ontology's namespace/);
+    expect(load(yaml).models[0].relationships[0].inverse).toBeUndefined();
+  });
+
+  test('extra owl:inverseOf statements: first wins, rest warned', () => {
+    const {yaml, warnings} = convertOwlToOsi(
+        `${PREFIXES}
+      ex:A a owl:Class . ex:B a owl:Class .
+      ex:fwd a owl:ObjectProperty ; rdfs:domain ex:A ; rdfs:range ex:B ;
+          owl:inverseOf ex:back1, ex:back2 .`,
+        'x');
+    expect(warnings.join('\n')).toMatch(/more than one property/);
+    expect(load(yaml).models[0].relationships[0].inverse).toBe('back1');
   });
 });
 
@@ -950,7 +1084,8 @@ describe('non-native OWL constructs are dropped (import-only)', () => {
   });
 
   test('relationship-level constructs are dropped from the relationship', () => {
-    // inverseOf, characteristics, subPropertyOf, propertyDisjointWith.
+    // Characteristics, subPropertyOf, propertyDisjointWith. (owl:inverseOf is
+    // NOT dropped: it maps to the native `inverse` key.)
     const ttl = `${PREFIXES}
       ex:A a owl:Class . ex:B a owl:Class .
       ex:rel a owl:ObjectProperty, owl:SymmetricProperty, owl:TransitiveProperty ;
@@ -959,6 +1094,7 @@ describe('non-native OWL constructs are dropped (import-only)', () => {
           owl:propertyDisjointWith ex:other .`;
     const rel = loadOwl(ttl).relationships[0];
     expect(rel.customExtensions).toBeUndefined();
+    expect(rel.inverse).toBe('invRel');
   });
 
   test('set-level axioms are dropped from the model', () => {
@@ -1021,5 +1157,84 @@ describe('the owl import handler wires --compact through to the serializer', () 
     // Layout differs, content does not.
     expect(compact).not.toEqual(block);
     expect(yaml.parse(compact)).toEqual(yaml.parse(block));
+  });
+});
+
+
+describe('rdfs:subPropertyOf maps to relationship inheritance', () => {
+  const ttl = readFixture('subproperty.owl.ttl');
+
+  test('produces exactly the documented OSI (golden)', () => {
+    const {yaml} = convertOwlToOsi(ttl, 'subproperty');
+    expect(yaml).toEqual(readFixture('subproperty.osi.golden.yaml'));
+  });
+
+  test('a subproperty extends its superproperty; the superproperty is abstract',
+       () => {
+         const model = load(convertOwlToOsi(ttl, 'subproperty').yaml).models[0];
+         const byName =
+             Object.fromEntries(model.relationships.map(r => [r.name, r]));
+         expect(byName['hasBuyer'].extends).toEqual(['hasCounterparty']);
+         expect(byName['hasPayer'].extends).toEqual(['hasCounterparty']);
+         expect(byName['hasCounterparty'].abstract).toBe(true);
+         // A leaf subproperty is concrete (an edge of its own).
+         expect(byName['hasBuyer'].abstract).toBeUndefined();
+       });
+
+  test(
+      'a missing superproperty end is inferred as the nearest common ' +
+          'superclass of its subproperties\' ends',
+      () => {
+        const {yaml, warnings} = convertOwlToOsi(ttl, 'subproperty');
+        const model = load(yaml).models[0];
+        const territory =
+            model.relationships.find(r => r.name === 'belongsToTerritory')!;
+        // inRegion's MarketUnit and inMarket's Opportunity meet at
+        // BusinessObject; the declared range is kept as-is.
+        expect(territory.source.entity).toBe('BusinessObject');
+        expect(territory.destination.entity).toBe('OrgUnit');
+        expect(territory.abstract).toBe(true);
+        expect(warnings).toContain(
+            `object property 'belongsToTerritory' declares no rdfs:domain; ` +
+            `inferred 'BusinessObject' (the nearest common superclass of its ` +
+            `subproperties' endpoints).`);
+      });
+
+  test(
+      'with no common superclass the superproperty is skipped and its ' +
+          'subproperties drop the dangling extends',
+      () => {
+        const {yaml, warnings} = convertOwlToOsi(ttl, 'subproperty');
+        const model = load(yaml).models[0];
+        const names = model.relationships.map(r => r.name);
+        expect(names).not.toContain('touches');
+        expect(names).toContain('partyTouches');
+        expect(names).toContain('dealTouches');
+        const party = model.relationships.find(r => r.name === 'partyTouches')!;
+        expect(party.extends).toBeUndefined();
+        expect(warnings.some(
+                   w => w.includes(`'touches' is missing`) &&
+                       w.includes('share no common superclass')))
+            .toBe(true);
+        expect(warnings.some(
+                   w => w.includes(`'partyTouches' declares rdfs:subPropertyOf`) &&
+                       w.includes('dropped')))
+            .toBe(true);
+      });
+
+  test('the imported hierarchy reloads with no relationship warnings', () => {
+    // Each sub-relationship's endpoints are its parent's or subtypes of them,
+    // so the loader's endpoint-compatibility lint stays quiet.
+    const {warnings} = load(convertOwlToOsi(ttl, 'subproperty').yaml);
+    expect(warnings.filter(w => w.startsWith('relationship'))).toEqual([]);
+  });
+
+  test('a superproperty outside the ontology is ignored', () => {
+    const model = loadOwl(`${PREFIXES}
+      ex:A a owl:Class . ex:B a owl:Class .
+      ex:knowsB a owl:ObjectProperty ; rdfs:subPropertyOf foaf:knows ;
+        rdfs:domain ex:A ; rdfs:range ex:B .`);
+    expect(model.relationships[0].extends).toBeUndefined();
+    expect(model.relationships[0].abstract).toBeUndefined();
   });
 });

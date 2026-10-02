@@ -153,25 +153,26 @@ export function generateCatalogResources(
   // can resolve its endpoints to the entries the link references. Only entities
   // actually emitted (not skipped for a duplicate id) are recorded.
   const entityEntryName = new Map<string, string>();
+  // Abstract entities that were published: an edge naming one as an endpoint
+  // has no table behind that end, so relationshipLink skips it.
+  const abstractEntities = new Set<string>();
   for (const entity of entities) {
-    // An abstract entity is a conceptual (table-less) supertype: it has no
-    // physical resource to catalog. The Knowledge Catalog leg does not model
-    // inheritance (that is BigQuery-only today, via resolveInheritance), so
-    // rather than publish a malformed entry -- an empty linked resource and no
-    // key -- skip it with a warning. Its concrete subtypes are published
-    // normally, and any edge naming it as an endpoint is dropped downstream
-    // (its name never enters `entityEntryName`).
-    if (entity.abstract) {
-      warnings.push(
-          `entity '${entity.name}' is abstract (no physical table); skipped ` +
-          `for Knowledge Catalog (KC does not yet model class hierarchies)`);
-      continue;
-    }
+    // An abstract entity is a conceptual (table-less) supertype. It is
+    // published like any logical-only entity -- the same built-in
+    // semantic-entity + schema pair, with an empty `source.resources` and no
+    // primaryKey -- so the supertype (Party, CommercialDocument) is a
+    // discoverable catalog entry carrying its description, its own fields and
+    // its guidelines, and actions / constraints naming it resolve to a
+    // published concept. What the closed templates cannot say -- that it is
+    // abstract, and which entities it specializes -- rides in the entry
+    // description as fixed trailing paragraphs (see entityDescription).
     const entityId = names.entityId(model, entity);
     if (!claim(seen, entityId, 'entry', `entity '${entity.name}'`, warnings))
       continue;
     entityEntryName.set(entity.name, names.entry(entityId));
-    if (!entity.keys || !entity.keys.length) {
+    if (entity.abstract) abstractEntities.add(entity.name);
+    // An abstract entity has no key by design (no table, no rows to identify).
+    if (!entity.abstract && (!entity.keys || !entity.keys.length)) {
       warnings.push(
           `entity '${entity.name}': no keys declared in the source model`);
     }
@@ -179,7 +180,7 @@ export function generateCatalogResources(
       name: names.entry(entityId),
       entryType: names.typeName('entry', 'semantic-entity'),
       parentEntry: modelEntryName,
-      entrySource: source(entity.name, entity.description),
+      entrySource: source(entity.name, entityDescription(entity)),
       // required_aspects: semantic-entity AND the built-in schema; plus the
       // built-in guidelines aspect when the entity carries ai_context
       // instructions.
@@ -217,8 +218,9 @@ export function generateCatalogResources(
     anchor: modelEntryName,
     claim: (id: string, label: string) =>
         claim(seen, id, 'entry', label, warnings),
-    // Populated by the entity loop above, so it excludes the abstract and
-    // unavailable entities that loop skipped.
+    // Populated by the entity loop above, so it includes abstract entities
+    // (published as table-less entries) and excludes only those skipped for
+    // a duplicate id.
     publishedEntities: new Set(entityEntryName.keys()),
   }, warnings));
 
@@ -238,7 +240,8 @@ export function generateCatalogResources(
   const seenLinks = new Set<string>();
   for (const rel of relationships) {
     const link = relationshipLink(
-        names, model, rel, entityEntryName, seenLinks, warnings);
+        names, model, rel, entityEntryName, abstractEntities, seenLinks,
+        warnings);
     if (link) entryLinks.push(link);
   }
 
@@ -262,19 +265,32 @@ export function generateCatalogResources(
 // cannot be published. Skipped, each with a warning: a many-to-many
 // (association) edge -- a junction is two joins, which the single source/target
 // schema-join does not model; an edge whose endpoint entity was not emitted
-// (e.g. skipped for a duplicate id); and a column-less (purely logical) edge,
-// whose join columns must be added to the model before it can publish. The
-// BigQuery property graph still carries the association and (once bound) direct
-// edges.
+// (e.g. skipped for a duplicate id) or is abstract (no table behind that end);
+// and a column-less (purely logical) edge, whose join columns must be added to
+// the model before it can publish. The BigQuery property graph still carries
+// the association and (once bound) direct edges.
 function relationshipLink(
     names: Namer, model: SemanticModel, rel: Relationship,
-    entityEntryName: Map<string, string>, seenLinks: Set<string>,
-    warnings: string[]): EntryLink|undefined {
+    entityEntryName: Map<string, string>, abstractEntities: Set<string>,
+    seenLinks: Set<string>, warnings: string[]): EntryLink|undefined {
   if (rel.association) {
     warnings.push(
         `relationship '${rel.name}': many-to-many (association) edges are not ` +
         `published to Knowledge Catalog yet; the edge lives in the BigQuery ` +
         `property graph.`);
+    return undefined;
+  }
+  // An abstract relationship (relationship inheritance) binds no join by
+  // design -- it is a label over its sub-relationships, not an edge -- so it
+  // has no schema-join to publish. Its name still reaches Knowledge Catalog on
+  // each concrete descendant's join description (see specializesLine). Checked
+  // before the endpoints: an abstract relationship typically spans abstract
+  // entities (which publish no entry), and "abstract" is the real reason.
+  if (rel.abstract) {
+    warnings.push(
+        `relationship '${rel.name}' is abstract (a super-relationship with no ` +
+        `join of its own), so it publishes no schema-join link; its ` +
+        `sub-relationships name it in their join descriptions.`);
     return undefined;
   }
   const src = entityEntryName.get(rel.source.entity);
@@ -284,6 +300,16 @@ function relationshipLink(
     warnings.push(
         `relationship '${rel.name}': endpoint entity '${missing}' is not a ` +
         `published entity; the relationship link is skipped.`);
+    return undefined;
+  }
+  // An abstract endpoint is published, but as a table-less entry: a join has
+  // no columns to pair on that side, so there is no schema-join to write.
+  const abstractEnd = [rel.source.entity, rel.destination.entity].find(
+      e => abstractEntities.has(e));
+  if (abstractEnd !== undefined) {
+    warnings.push(
+        `relationship '${rel.name}': endpoint entity '${abstractEnd}' is ` +
+        `abstract (no table), so the relationship link is skipped.`);
     return undefined;
   }
   // A purely logical edge (an OWL import) carries no join columns. schema-join
@@ -363,12 +389,85 @@ function schemaJoinAspectData(
             rel.destination.entity,
         fields: rel.destination.columns,
       }),
-      description: rel.description,
+      description: joinDescription(rel),
       type: 'FOREIGN_KEY',
       inferenceSource: 'USER',
     })],
     userManaged: true,
   };
+}
+
+// The line that records relationship inheritance on a schema-join. The
+// closed schema-join template has no slot for a super-relationship, and its
+// `description` is the only free-text field, so a relationship that
+// `extends` others publishes `Specializes: <parent>[, <parent>...].` as a
+// trailing paragraph of the description. That keeps the hierarchy visible to a
+// human or an agent reading the catalog ("hasBuyer specializes
+// hasCounterparty"), and gives pull a fixed, parseable shape to restore
+// `extends` from (see kc_converter.splitSpecializes). Parent names are written
+// verbatim, not link-slugged, so pull recovers them exactly.
+export const SPECIALIZES_PREFIX = 'Specializes: ';
+
+function specializesLine(rel: Relationship): string|undefined {
+  if (!rel.extends?.length) return undefined;
+  return `${SPECIALIZES_PREFIX}${rel.extends.join(', ')}.`;
+}
+
+// The line a relationship's declared inverse adds to its join description, for
+// the same reason: no slot for a second name in the closed template, so the
+// inverse rides as a trailing `Inverse: <name>.` paragraph -- readable by a
+// person browsing the catalog, and parsed back into `inverse` on pull (see
+// kc_converter splitInverse). One schema-join link still stands for the one
+// edge; the inverse is a name, not a second link.
+export const INVERSE_PREFIX = 'Inverse: ';
+
+function inverseLine(rel: Relationship): string|undefined {
+  return rel.inverse ? `${INVERSE_PREFIX}${rel.inverse}.` : undefined;
+}
+
+// The description, then the Specializes paragraph, then the Inverse paragraph
+// -- a fixed order, so pull peels them off from the end in reverse (Inverse
+// first, then Specializes).
+function joinDescription(rel: Relationship): string|undefined {
+  const parts = [rel.description, specializesLine(rel), inverseLine(rel)]
+                    .filter((p): p is string => !!p);
+  return parts.length ? parts.join('\n\n') : undefined;
+}
+
+// Entity inheritance and abstractness on the entity entry. Neither the
+// semantic-entity nor the schema template (both CLOSED) has a slot for a
+// supertype or for "no table of its own", and the entry description is the one
+// free-text field, so both ride there as fixed trailing paragraphs -- the same
+// convention a relationship uses on its join (SPECIALIZES_PREFIX above):
+//
+//   <authored description>
+//
+//   Specializes: Party, Auditable.
+//
+//   Abstract: no table of its own.
+//
+// That keeps the hierarchy readable to a person or an agent browsing the
+// catalog ("Customer specializes Party"; "Party is abstract"), and gives pull a
+// fixed, parseable shape to restore `extends` and `abstract` from (see
+// kc_converter.splitEntityTrailers). `abstract` cannot be inferred from an
+// empty `source.resources` alone: an unbound logical entity (an OWL import)
+// publishes the same empty list. Restoring `abstract` is what lets a strict
+// load of the pulled model accept a source-less abstract entity (a non-abstract
+// one without a source is rejected). Parent names are written verbatim so pull
+// recovers them exactly.
+export const ABSTRACT_MARKER = 'Abstract: no table of its own.';
+
+// The description, then the Specializes paragraph, then the Abstract marker --
+// a fixed order, so pull peels them off from the end in reverse.
+function entityDescription(entity: Entity): string|undefined {
+  const parts = [
+    entity.description,
+    entity.extends?.length ?
+        `${SPECIALIZES_PREFIX}${entity.extends.join(', ')}.` :
+        undefined,
+    entity.abstract ? ABSTRACT_MARKER : undefined,
+  ].filter((p): p is string => !!p);
+  return parts.length ? parts.join('\n\n') : undefined;
 }
 
 function entityByName(model: SemanticModel, name: string): Entity|undefined {
@@ -702,7 +801,7 @@ function slug(s: string): string {
 // with a letter, must end with a letter or number, and are capped at 63 chars.
 // Lowercase, map any other character to a hyphen, collapse runs, then trim
 // leading non-letters and edge hyphens so the id satisfies the API contract.
-function linkSlug(s: string): string {
+export function linkSlug(s: string): string {
   let out = s.toLowerCase()
                 .replace(/[^a-z0-9-]+/g, '-')
                 .replace(/-+/g, '-')

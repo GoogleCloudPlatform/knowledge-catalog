@@ -12,6 +12,8 @@ import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
+import {collectOwlSources} from '../libts/semantic/converters/owl/imports';
+import {importShacl} from '../libts/semantic/converters/shacl/import';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
@@ -1185,44 +1187,77 @@ export interface OwlImportOptions {
   // layout dir. When omitted, the model lands in the scope's model layout so
   // the next `kcmd push` picks it up.
   out?: string;
+  // Name the generated model. When omitted the name is the FIRST file's stem
+  // (`sales.owl.ttl` -> `sales`), which is what a single-file import has
+  // always done; a multi-module ontology usually wants a name of its own.
+  name?: string;
 }
 
 // Recognized OWL source extensions, stripped to derive the model name from the
 // filename: `sales.owl.ttl` -> `sales`.
 const OWL_EXTENSIONS = /\.owl\.ttl$|\.ttl$|\.owl$/i;
 
-// Handles `kcmd owl <action> <file>`. The only action is `import`: convert a
-// Turtle OWL ontology into an OSI model document that then rides the normal
-// `kcmd push` / `kcmd pull`. The converted model is purely LOGICAL (see the OWL
-// converter): `kcmd push` publishes it as-is; a BigQuery or Spanner
-// Graph deploy needs each relationship's join columns added to the model (a
-// logical fact the model owns) plus a binding profile (sources, field columns)
-// and a deployment target. Returns a process exit code.
+// Handles `kcmd owl <action> <file...>`. The only action is `import`: convert
+// a Turtle OWL ontology -- one file, or several modules of one ontology, plus
+// the local files their `owl:imports` name (see converters/owl/imports.ts) --
+// into ONE OSI model document that then rides the normal `kcmd push` / `kcmd
+// pull`. The converted model is purely LOGICAL (see the OWL converter): `kcmd
+// push` publishes it as-is; a BigQuery or Spanner Graph deploy needs each
+// relationship's join columns added to the model (a logical fact the model
+// owns) plus a binding profile (sources, field columns) and a deployment
+// target. Returns a process exit code.
 export async function owl(
-    action: string, file: string, options: OwlImportOptions): Promise<number> {
+    action: string, fileOrFiles: string|string[],
+    options: OwlImportOptions): Promise<number> {
   if (action !== 'import') {
     console.error(
         `Error: unknown owl action '${action}'; the only action is 'import' ` +
-        `(usage: kcmd owl import <file.ttl>).`);
+        `(usage: kcmd owl import <file.ttl...>).`);
     return 1;
   }
 
-  if (!fs.existsSync(file)) {
-    console.error(`Error: file not found: ${file}`);
+  const files = (Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles])
+                    .filter(f => f !== undefined && f !== '');
+  if (!files.length) {
+    console.error(
+        `Error: no ontology file given (usage: kcmd owl import <file.ttl...>).`);
     return 1;
   }
+  for (const file of files) {
+    if (!fs.existsSync(file)) {
+      console.error(`Error: file not found: ${file}`);
+      return 1;
+    }
+  }
 
-  const turtle = fs.readFileSync(file, 'utf8');
-  const modelName = path.basename(file).replace(OWL_EXTENSIONS, '');
+  // String(): cac parses a numeric-looking value as a number.
+  const modelName = options.name !== undefined ?
+      String(options.name) :
+      path.basename(files[0]).replace(OWL_EXTENSIONS, '');
   if (!modelName) {
-    console.error(`Error: could not derive a model name from '${file}'.`);
+    console.error(`Error: could not derive a model name from '${
+        files[0]}'; pass --name <model>.`);
     return 1;
   }
 
-  // convertOwlToOsi throws only on malformed Turtle; main.ts's try/catch
-  // reports it.
-  const result =
-      convertOwlToOsi(turtle, modelName, {compactFlow: options.compact});
+  // The named files plus every local owl:imports they reach, merged in that
+  // order. collectOwlSources and convertOwlToOsi throw only on malformed
+  // Turtle; main.ts's try/catch reports it.
+  const collected = collectOwlSources(files);
+  for (const w of collected.warnings) {
+    console.warn(`Warning: ${w}`);
+  }
+  const named = new Set(files.map(f => path.resolve(f)));
+  for (const s of collected.sources) {
+    if (!named.has(path.resolve(s.path))) {
+      console.log(`following owl:imports: ${s.path}`);
+    }
+  }
+  const turtle = collected.sources.map(s => s.text);
+  const file = files.join(', ');
+  const result = convertOwlToOsi(
+      turtle.length === 1 ? turtle[0] : turtle, modelName,
+      {compactFlow: options.compact});
   for (const w of result.warnings) {
     console.warn(`Warning: ${w}`);
   }
@@ -1280,6 +1315,117 @@ export async function owl(
 // Selects the singular or plural form based on `n` (English count agreement).
 function plural(n: number, one: string, many: string): string {
   return n === 1 ? one : many;
+}
+
+
+export interface ShaclImportCommandOptions {
+  // The model document to add the constraints to. When omitted, the model
+  // named by --model is read from (and written back to) the scope's
+  // semantic-model layout, where `kcmd owl import` puts it.
+  into?: string;
+  // Which model receives the constraints: required without --into, and with
+  // --into only when the document declares several models.
+  model?: string;
+  // Write the updated document here instead of back to its source.
+  out?: string;
+}
+
+// Handles `kcmd shacl <action> <shapes.ttl...>`. The only action is `import`:
+// read a SHACL shapes graph (one or more Turtle files) and merge the rules it
+// states into an EXISTING model as native `constraints` (see
+// converters/shacl). Re-running replaces the constraints generated earlier
+// from the same shapes, so the import is idempotent. Returns a process exit
+// code.
+export async function shacl(
+    action: string, fileOrFiles: string|string[],
+    options: ShaclImportCommandOptions): Promise<number> {
+  const usage =
+      'usage: kcmd shacl import <shapes.ttl...> [--into <model.yaml>] ' +
+      '[--model <name>] [--out <path>]';
+  if (action !== 'import') {
+    console.error(`Error: unknown shacl action '${
+        action}'; the only action is 'import' (${usage}).`);
+    return 1;
+  }
+  const files = (Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles])
+                    .filter(f => f !== undefined && f !== '');
+  if (!files.length) {
+    console.error(`Error: no shapes file given (${usage}).`);
+    return 1;
+  }
+  for (const file of files) {
+    if (!fs.existsSync(file)) {
+      console.error(`Error: file not found: ${file}`);
+      return 1;
+    }
+  }
+  // String(): cac parses a numeric-looking value as a number.
+  const modelName =
+      options.model !== undefined ? String(options.model) : undefined;
+
+  // Source: an explicit --into document, or the named model in the layout.
+  let sourcePath: string;
+  let writeBack: (yaml: string) => void;
+  if (options.into) {
+    if (!fs.existsSync(options.into)) {
+      console.error(`Error: file not found: ${options.into}`);
+      return 1;
+    }
+    sourcePath = options.into;
+    writeBack = yaml => fs.writeFileSync(sourcePath, yaml);
+  } else {
+    if (modelName === undefined) {
+      console.error(
+          `Error: say which model receives the constraints: --into ` +
+          `<model.yaml>, or --model <name> for a model in this scope's ` +
+          `semantic-model layout.`);
+      return 1;
+    }
+    const ctx = context.ApiContext.default();
+    const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+    if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {
+      console.error(
+          `Error: this catalog is not a semantic-model scope, so there is no ` +
+          `model layout to read from. Pass --into <model.yaml>.`);
+      return 1;
+    }
+    const layout = snapshot.layout as SemanticModelLayout;
+    sourcePath = layout.modelPath(modelName);
+    if (!fs.existsSync(sourcePath)) {
+      console.error(`Error: no model '${modelName}' in this scope (${
+          sourcePath} does not exist).`);
+      return 1;
+    }
+    writeBack = yaml => layout.writeModelDocument(modelName, yaml);
+  }
+
+  const shapes = files.map(f => fs.readFileSync(f, 'utf8'));
+  // importShacl throws on malformed Turtle, an unloadable model document, or
+  // an ambiguous model; main.ts's try/catch reports it.
+  const result = importShacl(
+      shapes.length === 1 ? shapes[0] : shapes,
+      fs.readFileSync(sourcePath, 'utf8'), {model: modelName});
+  for (const w of result.warnings) {
+    console.warn(`Warning: ${w}`);
+  }
+  const n = result.added.length;
+  console.log(
+      `read ${result.shapes} ${plural(result.shapes, 'shape', 'shapes')}; ` +
+      `${n} ${plural(n, 'constraint', 'constraints')} for model '${
+          result.model}'` +
+      (result.replaced ? ` (replacing ${result.replaced} from an earlier ` +
+                             `import)` :
+                         ''));
+
+  if (options.out) {
+    fs.mkdirSync(path.dirname(path.resolve(options.out)), {recursive: true});
+    fs.writeFileSync(options.out, result.yaml);
+    console.log(`wrote ${options.out}`);
+  } else {
+    writeBack(result.yaml);
+    console.log(`wrote ${sourcePath}`);
+  }
+  return 0;
 }
 
 

@@ -127,12 +127,38 @@ export function validatePushRequirements(
         // renders it from `rel.association`. Only a plain FK edge needs direct
         // join columns.
         if (rel.association) continue;
+        // An abstract relationship never forms an edge table -- it survives
+        // only as a LABEL on its concrete descendants' edge tables -- so it
+        // has no join to bind.
+        if (rel.abstract) continue;
         if (!rel.source.columns.length || !rel.destination.columns.length) {
           errors.push(
               `relationship '${rel.name}' in model '${model.name}' (${
                   document}) targets a graph but has no join columns; add its ` +
               `from_columns and to_columns to the relationship in the model ` +
               `before a BigQuery or Spanner Graph deploy.`);
+        }
+      }
+    }
+
+    // A relationship `extends` naming no relationship in the model is the
+    // relationship analogue of a dangling entity `extends`, and is reported
+    // the same way: a hard error on every push, KC-only included, because the
+    // label it promises (`MATCH ()-[:Parent]->()`) would silently match
+    // nothing. The loader accepts it and only warns. A profile push that
+    // pruned the model is exempt, as for entities: pruning may drop a parent
+    // whose own endpoints went unbound.
+    if (!opts.fieldsPruned) {
+      const relNames = new Set((model.relationships ?? []).map(r => r.name));
+      for (const rel of model.relationships ?? []) {
+        for (const parent of rel.extends ?? []) {
+          if (!relNames.has(parent)) {
+            errors.push(
+                `relationship '${rel.name}' in model '${model.name}' (${
+                    document}) extends '${parent}', which is not a ` +
+                `relationship in the model; declare it (it may be ` +
+                `'abstract: true') or remove it from 'extends'.`);
+          }
         }
       }
     }

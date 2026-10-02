@@ -1,0 +1,74 @@
+version: 0.2.0.dev0/google
+semantic_model:
+  - name: subproperty
+    description: Imported from OWL ontology http://example.com/deals#
+    entities:
+      - name: BusinessObject
+      - name: CommercialDocument
+        extends:
+          - BusinessObject
+      - name: Opportunity
+        extends:
+          - CommercialDocument
+      - name: Invoice
+        extends:
+          - CommercialDocument
+      - name: OrgUnit
+        extends:
+          - BusinessObject
+      - name: MarketUnit
+        extends:
+          - OrgUnit
+      - name: Region
+        extends:
+          - OrgUnit
+      - name: Party
+      - name: Organization
+        extends:
+          - Party
+      - name: Client
+        extends:
+          - Organization
+    relationships:
+      - name: hasCounterparty
+        from: CommercialDocument
+        to: Organization
+        abstract: true
+        ai_context:
+          instructions: The organization on the other side of a commercial document.
+      - name: hasBuyer
+        from: Opportunity
+        to: Client
+        extends:
+          - hasCounterparty
+      - name: hasPayer
+        from: Invoice
+        to: Organization
+        extends:
+          - hasCounterparty
+      - name: belongsToTerritory
+        from: BusinessObject
+        to: OrgUnit
+        abstract: true
+        ai_context:
+          instructions: "belongsToTerritory is transitive: if a belongsToTerritory b and b
+            belongsToTerritory c, then a belongsToTerritory c, but only the
+            direct edges are stored. To follow it, match a quantified path, e.g.
+            MATCH (a:BusinessObject)-[:belongsToTerritory]->{1,10}(b:OrgUnit)
+            (raise the upper bound for deeper chains)."
+      - name: inRegion
+        from: MarketUnit
+        to: Region
+        extends:
+          - belongsToTerritory
+      - name: inMarket
+        from: Opportunity
+        to: MarketUnit
+        extends:
+          - belongsToTerritory
+      - name: partyTouches
+        from: Party
+        to: BusinessObject
+      - name: dealTouches
+        from: Opportunity
+        to: BusinessObject

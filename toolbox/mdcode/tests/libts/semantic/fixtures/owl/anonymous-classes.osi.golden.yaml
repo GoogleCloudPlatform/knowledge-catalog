@@ -1,0 +1,33 @@
+version: 0.2.0.dev0/google
+semantic_model:
+  - name: deals
+    description: Imported from OWL ontology http://example.com/deals#
+    entities:
+      - name: Party
+        fields:
+          - name: name
+            datatype: String
+      - name: Opportunity
+        fields:
+          - name: amount
+            datatype: Opaque
+      - name: Contract
+      - name: WonOpportunity
+        extends:
+          - Opportunity
+    relationships:
+      - name: hasBuyer
+        from: Opportunity
+        to: Party
+      - name: governedBy
+        from: Opportunity
+        to: Contract
+    constraints:
+      - name: WonOpportunity_governedBy_some_Contract
+        judgment: Each WonOpportunity has at least one governedBy relationship to a
+          Contract. A WonOpportunity with no governedBy relationship to a
+          Contract does not satisfy this rule.
+        description: "Link each WonOpportunity to at least one Contract through
+          governedBy. (From OWL: WonOpportunity EquivalentTo Opportunity and
+          (governedBy some Contract).)"
+        on_violation: warn

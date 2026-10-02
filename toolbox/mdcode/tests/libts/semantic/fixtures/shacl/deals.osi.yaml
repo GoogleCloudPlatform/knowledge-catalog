@@ -1,0 +1,43 @@
+version: 0.2.0.dev0/google
+semantic_model:
+  # A logical deals model (as `kcmd owl import` would write it) that the
+  # shapes in deals.shapes.ttl add rules to.
+  - name: deals
+    entities:
+      - name: Party
+        fields:
+          - name: partyName
+            datatype: String
+      - name: ClientAccount
+        extends:
+          - Party
+        fields:
+          - name: accountCode
+            datatype: String
+      - name: Opportunity
+        fields:
+          - name: opportunityId
+            datatype: String
+          - name: stage
+            datatype: String
+          - name: amountUsdK
+            datatype: Decimal
+      - name: WonOpportunity
+        extends:
+          - Opportunity
+      - name: Contract
+        fields:
+          - name: contractType
+            datatype: String
+    relationships:
+      - name: hasBuyer
+        from: Opportunity
+        to: ClientAccount
+      - name: governedBy
+        from: Opportunity
+        to: Contract
+    constraints:
+      # Hand-written: never touched by a SHACL import.
+      - name: Opportunity_amount_reviewed
+        judgment: Every Opportunity.amountUsdK above 5000 has been reviewed.
+        on_violation: escalate

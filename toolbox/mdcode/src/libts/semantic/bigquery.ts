@@ -19,7 +19,7 @@
 // See: https://docs.cloud.google.com/bigquery/docs/graph-measures
 //
 
-import {AiContext, Association, Entity, Field, fieldBinding, isTimeDimension, Metric, Relationship, SemanticModel,} from './ir';
+import {AiContext, Association, Entity, Field, fieldBinding, inverseEdgeNames, isTimeDimension, Metric, Relationship, relationshipAncestors, SemanticModel,} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
 import {referencedEntityNames, stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
@@ -202,20 +202,70 @@ export function generatePropertyGraph(
           ancestorsUsed.has(entity.name), opts, warnings));
 
   const entitiesByName = new Map(validEntities.map(e => [e.name, e]));
-  const edgeTables =
-      relationships
-          .filter(rel => {
-            // An edge REFERENCES both endpoint nodes; if either was skipped the
-            // edge cannot resolve, so drop it too.
-            const dangling = [rel.source.entity, rel.destination.entity].filter(
-                n => skipped.has(n));
-            if (!dangling.length) return true;
-            warnings.push(
-                `relationship '${rel.name}': references skipped entity ` +
-                `${dangling.map(n => `'${n}'`).join(', ')}; edge omitted`);
-            return false;
-          })
-          .map(rel => renderEdgeTable(rel, entitiesByName, opts, warnings));
+  // Relationship inheritance: an ABSTRACT relationship forms no edge table (it
+  // binds no join) -- it survives only as a LABEL on its concrete descendants'
+  // edge tables, exactly as an abstract entity survives as a node label. It is
+  // dropped silently here, before the dangling-endpoint check, because its
+  // endpoints are often abstract entities (which are also node-less by design).
+  const concreteRels = relationships.filter(rel => !rel.abstract);
+  const renderedRels = concreteRels.filter(rel => {
+    // An edge REFERENCES both endpoint nodes; if either was skipped the
+    // edge cannot resolve, so drop it too.
+    const dangling = [rel.source.entity, rel.destination.entity].filter(
+        n => skipped.has(n));
+    if (!dangling.length) return true;
+    warnings.push(
+        `relationship '${rel.name}': references skipped entity ` +
+        `${dangling.map(n => `'${n}'`).join(', ')}; edge omitted`);
+    return false;
+  });
+  // Each rendered edge's transitive super-relationships, and the set of names
+  // that some rendered edge carries as an ancestor LABEL (a concrete
+  // relationship in that set is a "shared" label, see edgeLabelLines).
+  const relAncestors = new Map(renderedRels.map(
+      rel => [rel.name, relationshipAncestors(relationships, rel.name)]));
+  const sharedRelLabels = new Set([...relAncestors.values()].flat());
+  // Mirror of the abstract-entity orphan check: an abstract relationship no
+  // rendered edge descends from produces no graph element at all.
+  for (const rel of relationships) {
+    if (rel.abstract && !sharedRelLabels.has(rel.name)) {
+      warnings.push(
+          `abstract relationship '${rel.name}' is not extended by any ` +
+          `concrete relationship; it has no edge table and no descendant to ` +
+          `label, so it produces no graph element`);
+    }
+    // An abstract relationship has no edge table to read backwards, so its
+    // inverse has nothing to reverse.
+    if (rel.abstract && rel.inverse) {
+      warnings.push(
+          `abstract relationship '${rel.name}': inverse '${rel.inverse}' is ` +
+          `not emitted (an abstract relationship has no edge table to ` +
+          `reverse)`);
+    }
+  }
+  // A relationship's declared inverse is a second edge table over the same
+  // backing table, SOURCE/DESTINATION swapped (see renderEdgeTable). The
+  // reversed edge carries NO ancestor labels: a super-relationship names the
+  // forward direction (hasCounterparty: document -> party), and the reversed
+  // edge points the other way, so labeling it hasCounterparty would be wrong.
+  const usableInverses =
+      inverseEdgeNames(renderedRels, entities, relationships, warnings);
+  const edgeTables = renderedRels.flatMap(rel => {
+    const forward = renderEdgeTable(
+        rel, entitiesByName,
+        {
+          ancestors: relAncestors.get(rel.name) ?? [],
+          isSupertype: sharedRelLabels.has(rel.name),
+        },
+        opts, warnings);
+    if (!usableInverses.has(rel.name)) return [forward];
+    return [
+      forward,
+      renderEdgeTable(
+          rel, entitiesByName, {ancestors: [], isSupertype: false}, opts,
+          warnings, true),
+    ];
+  });
 
   const graphName = qualifyGraph(resolved.model, opts);
 
@@ -251,6 +301,8 @@ interface MeasureLowering {
   fieldNames: Set<string>;      // declared field names (each an exposed property)
   byLocalExpr: Map<string, string>;  // existing field local-expression -> its
                                      // property name
+  fieldExprs: Map<string, string>;  // bound field name -> its local expression
+                                    // (the physical column / SQL it reads)
   operandToName:
       Map<string, string>;  // operand expression -> the property exposing it
 }
@@ -262,12 +314,14 @@ function newLowering(entity: Entity): MeasureLowering {
   const taken = new Set<string>();
   const fieldNames = new Set<string>();
   const byLocalExpr = new Map<string, string>();
+  const fieldExprs = new Map<string, string>();
   for (const f of entity.fields) {
     taken.add(f.name);
     fieldNames.add(f.name);
     const expr = fieldExpression(f);
     if (expr === undefined) continue;
     const local = stripQualifier(expr, entity.name);
+    fieldExprs.set(f.name, local);
     if (!byLocalExpr.has(local)) byLocalExpr.set(local, f.name);
   }
   return {
@@ -275,6 +329,7 @@ function newLowering(entity: Entity): MeasureLowering {
     taken,
     fieldNames,
     byLocalExpr,
+    fieldExprs,
     operandToName: new Map()
   };
 }
@@ -461,18 +516,105 @@ function exposeOperand(
   // to be exposed under its own name, which BigQuery requires.)
   if (lowering.fieldNames.has(operandExpr)) return operandExpr;
 
+  // A COMPOUND operand (`totalContractValue * probabilityOfWin`) becomes a
+  // synthesized `<expr> AS <metric>_input` property, and the same rule bites:
+  // a property expression is evaluated against the element table's COLUMNS,
+  // so a field name in it -- a sibling alias when a profile bound the field to
+  // a differently named column -- is "Unrecognized name" (verified live).
+  // Rewrite each identifier that names a bound field into that field's own
+  // expression first (see rewriteFieldRefs). Dedupe on the rewritten form: it
+  // is what the node table actually evaluates.
+  const physical = rewriteFieldRefs(operandExpr, lowering.fieldExprs);
+  const reused = lowering.byLocalExpr.get(physical) ??
+      lowering.operandToName.get(physical);
+  if (reused) return reused;
+
   let name: string;
-  if (isSimpleIdentifier(operandExpr) && !lowering.taken.has(operandExpr)) {
+  if (isSimpleIdentifier(physical) && !lowering.taken.has(physical)) {
     // A bare column not already declared: expose it under its own name.
-    name = operandExpr;
+    name = physical;
     lowering.derivedProperties.push(quoteIfReserved(name));
   } else {
     name = uniqueName(`${metricName}_input`, lowering.taken);
-    lowering.derivedProperties.push(`${quoteIfReserved(operandExpr)} AS ${name}`);
+    lowering.derivedProperties.push(`${quoteIfReserved(physical)} AS ${name}`);
   }
   lowering.taken.add(name);
   lowering.operandToName.set(operandExpr, name);
+  lowering.operandToName.set(physical, name);
   return name;
+}
+
+// Rewrites every identifier in `expr` that names a bound field into that
+// field's expression (its physical column, or the SQL a profile bound it to),
+// parenthesized unless it is a bare identifier so operator precedence holds
+// (`a * b` with b bound to `x + y` becomes `a * (x + y)`). Token-aware: string
+// literals ('…' / "…", with backslash escapes) are copied verbatim; a
+// function name (an identifier followed by `(`) and a qualified member (an
+// identifier after `.`, e.g. `t.col` or `s.field`) are left alone; a
+// backtick-quoted identifier is rewritten when its content names a field. The
+// rewrite is a single pass, so a field bound to another field's name is not
+// rewritten twice. An identifier that names no bound field (a raw column, a
+// keyword) is untouched.
+function rewriteFieldRefs(expr: string, fieldExprs: Map<string, string>):
+    string {
+  if (!fieldExprs.size) return expr;
+  const sub = (field: string): string|undefined => {
+    const bound = fieldExprs.get(field);
+    if (bound === undefined) return undefined;
+    return isSimpleIdentifier(bound) || /^`[^`]+`$/.test(bound) ? bound :
+                                                                   `(${bound})`;
+  };
+  let out = '';
+  let i = 0;
+  while (i < expr.length) {
+    const c = expr[i];
+    // String literal: copy through the closing quote.
+    if (c === '\'' || c === '"') {
+      let j = i + 1;
+      while (j < expr.length && expr[j] !== c) j += expr[j] === '\\' ? 2 : 1;
+      out += expr.slice(i, j + 1);
+      i = j + 1;
+      continue;
+    }
+    const prev = out.trimEnd().slice(-1);
+    // Backtick-quoted identifier.
+    if (c === '`') {
+      const j = expr.indexOf('`', i + 1);
+      const end = j < 0 ? expr.length : j + 1;
+      const tok = expr.slice(i, end);
+      const inner = tok.slice(1, j < 0 ? undefined : -1);
+      const repl = prev !== '.' && !followedByParen(expr, end) ?
+          sub(inner) :
+          undefined;
+      out += repl ?? tok;
+      i = end;
+      continue;
+    }
+    if (/[A-Za-z_]/.test(c)) {
+      let j = i + 1;
+      while (j < expr.length && /[A-Za-z0-9_]/.test(expr[j])) j++;
+      const tok = expr.slice(i, j);
+      // A digit run before the identifier (`1e5`) is a number, not a name.
+      const inNumber = /[0-9]/.test(out.slice(-1));
+      const repl = !inNumber && prev !== '.' && !followedByParen(expr, j) ?
+          sub(tok) :
+          undefined;
+      out += repl ?? tok;
+      i = j;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+// True if the next non-space character at or after `from` is `(` -- i.e. the
+// token just read is a function name.
+function followedByParen(expr: string, from: number): boolean {
+  let k = from;
+  while (k < expr.length && /\s/.test(expr[k])) k++;
+  return expr[k] === '(';
 }
 
 // Extracts the function name and operand from a single-aggregate expression, or
@@ -707,11 +849,19 @@ function renderNodeTable(
   // outside any hierarchy keeps the implicit form so existing output is
   // byte-for-byte unchanged.
   const hasAncestors = !!(entity.extends && entity.extends.length);
-  if (hasAncestors || isSupertype) lines.push(line(2, 'DEFAULT LABEL'));
+  const inHierarchy = hasAncestors || isSupertype;
+  if (inHierarchy) lines.push(line(2, 'DEFAULT LABEL'));
   if (labelOpts) lines.push(line(2, labelOpts));
-  // Omit the PROPERTIES block when there is nothing to list, rather than emit
-  // an empty `PROPERTIES()` (a node table may declare just its KEY).
-  if (properties.length) lines.push(propertiesBlock(properties));
+  // Never omit the properties clause: with nothing to list, a label with no
+  // clause defaults to PROPERTIES ARE ALL COLUMNS, which leaks every column of
+  // the source table -- modeled or not -- onto the node as a bare property (see
+  // propertiesClause). Inside a hierarchy that bare property also collides
+  // with the explicit definition of the same name under an ancestor LABEL on
+  // this table (verified live -- "Property 'disposition' has more than one
+  // definition in the element table") and makes a shared label's property set
+  // differ from table to table. An empty `PROPERTIES()` is not valid either,
+  // so a node that declares just its KEY says `NO PROPERTIES`.
+  lines.push(propertiesClause(properties));
 
   // Inheritance: declare one LABEL per transitive ancestor (resolveInheritance
   // expanded `extends` to the full ancestor set), each re-listing that
@@ -755,7 +905,15 @@ function renderNodeTable(
       signature =
           ancestor.fields.map(f => renderFieldProperty(f, ancestor.name));
     }
-    if (signature.length) lines.push(propertiesBlock(signature));
+    // An ancestor with nothing to list -- an abstract root with no fields, or
+    // one whose fields this subtype's binding leaves all unbound -- gets an
+    // explicit `NO PROPERTIES`. Omitting the clause would default the LABEL to
+    // ALL COLUMNS: every column of this table re-exposed under the ancestor,
+    // colliding with its explicitly rendered properties and differing from the
+    // same label on every sibling table (see the DEFAULT LABEL note above).
+    lines.push(
+        signature.length ? propertiesBlock(signature) :
+                           line(2, 'NO PROPERTIES'));
   }
   return lines.join('\n');
 }
@@ -827,14 +985,23 @@ function physicalColumns(
 }
 
 
+// Renders a relationship's edge table. With `reversed`, renders its declared
+// INVERSE instead: the same backing table and KEY -- one edge row per forward
+// edge row, so the two can never disagree -- with SOURCE and DESTINATION
+// swapped and the inverse name as the alias (and so the label). `MATCH
+// (c)-[:hasOpportunity]->(o)` then reads the hasBuyer foreign key backwards
+// without a second physical edge. The forward edge's description/synonyms
+// describe the forward reading, so the inverse carries no OPTIONS.
 function renderEdgeTable(
     rel: Relationship, entitiesByName: Map<string, Entity>,
-    opts: GenerateOptions, warnings: string[]): string {
+    hierarchy: EdgeHierarchy, opts: GenerateOptions, warnings: string[],
+    reversed = false): string {
   // A many-to-many relationship is backed by its own association table rather
   // than a source entity's foreign key; render it from that block.
   if (rel.association) {
     return renderAssociationEdge(
-        rel, rel.association, entitiesByName, opts, warnings);
+        rel, rel.association, entitiesByName, hierarchy, opts, warnings,
+        reversed);
   }
   // A relationship is a direct foreign key: the SOURCE entity's own base table
   // backs the edge (one edge row per source row). Its FK columns
@@ -869,25 +1036,32 @@ function renderEdgeTable(
   const destRef =
       physicalColumns(destEntity, rel.destination.columns, warnings, relCtx)
           .join(', ');
+  // The two endpoint clauses, as (edge columns, node, node columns).
+  const fromEnd = `KEY(${key}) REFERENCES ${
+      quoteIfReserved(rel.source.entity)}(${key})`;
+  const toEnd = `KEY(${destFk}) REFERENCES ${
+      quoteIfReserved(rel.destination.entity)}(${destRef})`;
+  const alias = reversed ? rel.inverse! : rel.name;
   const lines = [
-    line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
+    line(1, `${backing} AS ${quoteIfReserved(alias)}`),
     line(2, `KEY(${key})`),
-    line(
-        2,
-        `SOURCE KEY(${key}) REFERENCES ${quoteIfReserved(rel.source.entity)}(${
-            key})`),
-    line(
-        2,
-        `DESTINATION KEY(${destFk}) REFERENCES ${
-            quoteIfReserved(rel.destination.entity)}(${destRef})`),
+    line(2, `SOURCE ${reversed ? toEnd : fromEnd}`),
+    line(2, `DESTINATION ${reversed ? fromEnd : toEnd}`),
   ];
 
   // Edge description and synonyms attach to the DEFAULT LABEL: after the
-  // SOURCE/DESTINATION clauses (grammar: element_table_definition).
-  const labelOpts = optionsClause(
-      elementDescription(rel.description, rel.aiContext),
-      rel.aiContext?.synonyms);
-  if (labelOpts) lines.push(line(2, labelOpts));
+  // SOURCE/DESTINATION clauses (grammar: element_table_definition); ancestor
+  // LABELs follow it (see edgeLabelLines).
+  //
+  // A foreign-key edge exposes no properties of its own: its backing table is
+  // the SOURCE entity's, whose columns are that node's properties, not the
+  // edge's. edgeLabelLines still SAYS so (`NO PROPERTIES`). Omitting the clause
+  // defaults the edge's label to PROPERTIES ARE ALL COLUMNS, re-exposing every
+  // column of the source table on the edge, and a bare column property
+  // collides with any MEASURE of the same name on a node (verified live --
+  // "Property 'won_amount' is defined as MEASURE, but there are other
+  // declarations with the same name").
+  lines.push(...edgeLabelLines(rel, [], hierarchy, warnings, reversed));
 
   return lines.join('\n');
 }
@@ -896,10 +1070,12 @@ function renderEdgeTable(
 // Renders a many-to-many edge backed by an association (junction) table. Unlike
 // a direct FK, the edge has its OWN backing table and KEY, each endpoint's
 // SOURCE/DESTINATION KEY names the junction columns referencing that entity's
-// declared key, and the junction's own `fields` become edge PROPERTIES.
+// declared key, and the junction's own `fields` become edge PROPERTIES. With
+// `reversed`, the inverse edge over the same junction (see renderEdgeTable).
 function renderAssociationEdge(
     rel: Relationship, assoc: Association, entitiesByName: Map<string, Entity>,
-    opts: GenerateOptions, warnings: string[]): string {
+    hierarchy: EdgeHierarchy, opts: GenerateOptions, warnings: string[],
+    reversed = false): string {
   const backing = qualifyTable(
       assoc.dataSource, opts, warnings, `relationship '${rel.name}'`);
   if (!assoc.keys?.length) {
@@ -921,36 +1097,107 @@ function renderAssociationEdge(
         .join(', ');
   };
 
+  const fromEnd =
+      `KEY(${assoc.sourceColumns.map(quoteIfReserved).join(', ')}) ` +
+      `REFERENCES ${quoteIfReserved(rel.source.entity)}(${
+          refColumns(rel.source)})`;
+  const toEnd =
+      `KEY(${assoc.destinationColumns.map(quoteIfReserved).join(', ')}) ` +
+      `REFERENCES ${quoteIfReserved(rel.destination.entity)}(${
+          refColumns(rel.destination)})`;
+  const alias = reversed ? rel.inverse! : rel.name;
   const lines = [
-    line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
+    line(1, `${backing} AS ${quoteIfReserved(alias)}`),
     line(2, `KEY(${assoc.keys.map(quoteIfReserved).join(', ')})`),
-    line(
-        2,
-        `SOURCE KEY(${assoc.sourceColumns.map(quoteIfReserved).join(', ')}) ` +
-            `REFERENCES ${quoteIfReserved(rel.source.entity)}(${
-                refColumns(rel.source)})`),
-    line(
-        2,
-        `DESTINATION KEY(${
-            assoc.destinationColumns.map(quoteIfReserved).join(', ')}) ` +
-            `REFERENCES ${quoteIfReserved(rel.destination.entity)}(${
-                refColumns(rel.destination)})`),
+    line(2, `SOURCE ${reversed ? toEnd : fromEnd}`),
+    line(2, `DESTINATION ${reversed ? fromEnd : toEnd}`),
   ];
 
   // Edge description and synonyms attach to the DEFAULT LABEL: after the
   // SOURCE/DESTINATION clauses, before PROPERTIES (grammar:
-  // element_table_definition).
-  const labelOpts = optionsClause(
-      elementDescription(rel.description, rel.aiContext),
-      rel.aiContext?.synonyms);
-  if (labelOpts) lines.push(line(2, labelOpts));
+  // element_table_definition); see edgeLabelLines.
 
-  // The junction's own non-key fields are the edge's properties.
+  // The junction's own non-key fields are the edge's properties (the same on
+  // both readings: they describe the pairing, not a direction). A junction
+  // with none says `NO PROPERTIES` rather than default to ALL COLUMNS, which
+  // would expose its key columns as bare edge properties (see edgeLabelLines
+  // and propertiesClause).
   const properties =
       (assoc.fields ?? []).map(f => renderFieldProperty(f, rel.name));
-  if (properties.length) lines.push(propertiesBlock(properties));
+  lines.push(
+      ...edgeLabelLines(rel, properties, hierarchy, warnings, reversed));
 
   return lines.join('\n');
+}
+
+// Where a rendered edge sits in the relationship hierarchy (see
+// Relationship.extends): its transitive super-relationships, and whether some
+// OTHER rendered edge carries this edge's own name as an ancestor LABEL.
+interface EdgeHierarchy {
+  ancestors: string[];
+  isSupertype: boolean;
+}
+
+// Renders an edge table's label clauses -- everything after SOURCE/DESTINATION.
+//
+// Outside any relationship hierarchy this is an implicit default label with
+// the description/synonyms OPTIONS and the edge's properties clause -- its
+// PROPERTIES, or `NO PROPERTIES` when there are none (a direct FK edge), never
+// an omitted clause that would default to all columns (see propertiesClause).
+//
+// Inside one, the edge is labelled once per transitive ancestor, so a query on
+// the super-relationship (`MATCH ()-[e:hasCounterparty]->()`) matches the
+// edges of every descendant table. Three BigQuery rules shape it, mirroring
+// the node-label rules in renderNodeTable:
+//   - an explicit `DEFAULT LABEL` is required once LABEL clauses follow (a
+//     bare implicit default followed by LABEL does not parse);
+//   - a label bound by more than one element table must carry no OPTIONS, so
+//     an ancestor LABEL never has any, and a concrete super-relationship whose
+//     own name is shared drops its description/synonyms (with a warning);
+//   - every element table binding a shared label must declare the same
+//     property set. Descendant edge tables have unrelated backing columns, so
+//     the only set they can all agree on is the empty one: an ancestor LABEL
+//     is `NO PROPERTIES`, and a shared concrete super-relationship's own
+//     default label is too. The super-relationship label is therefore a pure
+//     traversal type; its edges' properties stay on their own DEFAULT LABELs.
+//
+// A `reversed` edge (a relationship's inverse, see renderEdgeTable) is always
+// rendered outside the hierarchy and carries no OPTIONS: the description and
+// synonyms describe the forward reading.
+function edgeLabelLines(
+    rel: Relationship, properties: string[], hierarchy: EdgeHierarchy,
+    warnings: string[], reversed = false): string[] {
+  let labelOpts = reversed ? undefined :
+                             optionsClause(
+                                 elementDescription(rel.description, rel.aiContext),
+                                 rel.aiContext?.synonyms);
+  const inHierarchy = hierarchy.ancestors.length > 0 || hierarchy.isSupertype;
+  if (!inHierarchy) {
+    const out: string[] = [];
+    if (labelOpts) out.push(line(2, labelOpts));
+    out.push(propertiesClause(properties));
+    return out;
+  }
+  const out = [line(2, 'DEFAULT LABEL')];
+  if (hierarchy.isSupertype) {
+    if (labelOpts) {
+      warnings.push(
+          `relationship '${rel.name}' is a super-relationship in a ` +
+          `relationship hierarchy; its description/synonyms are dropped from ` +
+          `the shared '${rel.name}' label (BigQuery forbids OPTIONS on a ` +
+          `label bound by multiple tables)`);
+      labelOpts = undefined;
+    }
+    // Shared with descendants, whose property sets differ: agree on none.
+    out.push(line(2, 'NO PROPERTIES'));
+  } else {
+    if (labelOpts) out.push(line(2, labelOpts));
+    out.push(propertiesClause(properties));
+  }
+  for (const ancestor of hierarchy.ancestors) {
+    out.push(line(2, `LABEL ${quoteIfReserved(ancestor)} NO PROPERTIES`));
+  }
+  return out;
 }
 
 
@@ -1045,6 +1292,20 @@ const list = (depth: number, lines: string[]): string =>
 
 function propertiesBlock(properties: string[]): string {
   return `${line(2, 'PROPERTIES(')}\n${list(3, properties)}\n${line(2, ')')}`;
+}
+
+// The properties clause of an element table's (default) label: the listed
+// properties, or `NO PROPERTIES` when there are none. The clause is never
+// omitted. A label with no properties clause defaults to PROPERTIES ARE ALL
+// COLUMNS, exposing every column of the backing table as a bare property the
+// model never declared -- and such a leaked column collides with any declared
+// property or MEASURE of the same name elsewhere in the graph (verified live
+// on BigQuery: "Property 'won_amount' is defined as MEASURE, but there are
+// other declarations with the same name"). An empty `PROPERTIES()` is not
+// valid, so nothing-to-list is spelled `NO PROPERTIES`.
+function propertiesClause(properties: string[]): string {
+  return properties.length ? propertiesBlock(properties) :
+                             line(2, 'NO PROPERTIES');
 }
 
 

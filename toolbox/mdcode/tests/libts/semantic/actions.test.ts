@@ -932,13 +932,13 @@ describe('Knowledge Catalog round trip across executor kinds', () => {
 
 describe('actions projecting concepts the push does not publish', () => {
   test(
-      'a parameter projected from an abstract entity publishes, and warns',
+      'a parameter projected from an abstract entity publishes, with no warning',
       () => {
-        // An abstract entity is a table-less supertype, so the Knowledge
-        // Catalog leg skips it. The parameter still publishes whole -- its type
-        // and wording were resolved at load and travel in the aspect -- but the
-        // catalog then names a concept it has no entry for, which is what the
-        // warning is about.
+        // An abstract entity is a table-less supertype, and the Knowledge
+        // Catalog leg publishes it as a table-less semantic-entity entry. The
+        // parameter publishes whole -- its type and wording were resolved at
+        // load and travel in the aspect -- and the concept it names has an
+        // entry, so there is nothing to warn about.
         const {models} = fromDocument({
           version: '0.2.0.dev0/google',
           semantic_model: [{
@@ -974,7 +974,7 @@ describe('actions projecting concepts the push does not publish', () => {
         expect(warnings.some(
                    w => w.includes('parameter \'who\'') &&
                        w.includes('does not publish')))
-            .toBe(true);
+            .toBe(false);
       });
 });
 

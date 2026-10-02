@@ -23,9 +23,11 @@
 // (owl:AllDisjointClasses, owl:AllDisjointProperties, owl:AllDifferent -> the
 // model). A carried cross-reference keeps the FULL referent IRI; the mapper
 // shortens it to a local name only when it lives in this ontology's own
-// namespace (see to_ir.refValue). Richer OWL still absent (SHACL, cardinality
-// restrictions, individuals); see the "What is not covered yet" note in the
-// guide.
+// namespace (see to_ir.refValue). Property restrictions (owl:Restriction
+// reached through rdfs:subClassOf / owl:equivalentClass) are staged as
+// OwlRestriction for the mapper's constraint derivation (constraints.ts).
+// Richer OWL still absent (SHACL, class expressions, individuals); see the
+// "What is not covered yet" note in the guide.
 
 /**
  * Per-term annotations parsed from any class or property -- links to
@@ -50,6 +52,87 @@ export interface OwlCommonAnnotations {
   deprecated: boolean;
   // owl:versionInfo on the term itself (not the ontology header), if present.
   versionInfo?: string;
+  // The kcmd constraint-policy annotations (kcmd:severity / kcmd:onViolation)
+  // asserted on this term, if any. They set the severity and violation handling
+  // of the constraints the mapper derives from axioms about the term (see
+  // OwlConstraintPolicy). Undefined when the term carries neither.
+  constraintPolicy?: OwlConstraintPolicy;
+}
+
+/**
+ * How a constraint derived from an OWL axiom is enforced, read from the kcmd
+ * annotation vocabulary (`kcmd:severity`, `kcmd:onViolation`; namespace
+ * KCMD_NS in parse.ts). OWL states WHAT must hold but has no notion of how
+ * much a violation matters or what to do about it, so these optional
+ * annotations supply the two facets a semantic-model constraint needs. Values
+ * are kept as written; the mapper validates them against the constraint
+ * vocabulary (severity: critical|high|medium|low; onViolation:
+ * reject|escalate|warn) and warns on anything else.
+ */
+export interface OwlConstraintPolicy {
+  severity?: string;
+  onViolation?: string;
+}
+
+/**
+ * One OWL property restriction a class is declared to satisfy -- an anonymous
+ * `owl:Restriction` node (a blank node with `owl:onProperty`) that is the
+ * object of the class's `rdfs:subClassOf` (every member satisfies it) or its
+ * `owl:equivalentClass` (membership is defined by it), either bare or as a
+ * conjunct of an `owl:intersectionOf` there: `C ≡ D ⊓ ∃p.X` entails
+ * `C ⊑ ∃p.X`, so every member of C still satisfies the restriction. The
+ * mapper turns each into a model-level constraint.
+ */
+export interface OwlRestriction {
+  // Which axiom attached it to the class.
+  via: 'subClassOf'|'equivalentClass';
+  // Full IRI of the restricted property (owl:onProperty).
+  property: string;
+  // The restriction kind:
+  //   some  -- owl:someValuesFrom   (at least one value, of the filler)
+  //   all   -- owl:allValuesFrom    (every value is of the filler)
+  //   value -- owl:hasValue         (has this specific value)
+  //   exact -- owl:cardinality / owl:qualifiedCardinality
+  //   min   -- owl:minCardinality / owl:minQualifiedCardinality
+  //   max   -- owl:maxCardinality / owl:maxQualifiedCardinality
+  kind: 'some'|'all'|'value'|'exact'|'min'|'max';
+  // The count, for exact/min/max.
+  cardinality?: number;
+  // Full IRI of the filler class or datatype: someValuesFrom / allValuesFrom,
+  // or owl:onClass / owl:onDataRange for a qualified cardinality. Undefined for
+  // an unqualified cardinality or hasValue.
+  filler?: string;
+  // True when the filler is an anonymous class expression (a blank node) --
+  // not a named class, so the mapper cannot name it and skips the restriction
+  // with a warning.
+  anonymousFiller?: boolean;
+  // The owl:hasValue value: a literal's lexical form, or an IRI's local name.
+  value?: string;
+  // True for the qualified cardinality forms (owl:onClass / owl:onDataRange).
+  qualified: boolean;
+  // rdfs:comment on the restriction node, if any -> the constraint's
+  // description.
+  comment?: string;
+  // kcmd policy annotations on the restriction node itself (highest
+  // precedence; see to_ir).
+  policy?: OwlConstraintPolicy;
+  // Local names of the NAMED classes conjoined with this restriction when it
+  // sits inside an `owl:intersectionOf` (e.g. `Engagement` in
+  // `Engagement ⊓ ∃hasHealthCheck.QAHealthCheck`). Provenance only -- the
+  // constraint text quotes the whole axiom; the named conjuncts themselves
+  // also feed the class's `subClassOf` (C ≡ D ⊓ … entails C ⊑ D).
+  intersectedWith?: string[];
+}
+
+/**
+ * One `owl:AllDisjointClasses` axiom with what the mapper needs to turn it into
+ * a constraint: the member class IRIs plus any rdfs:comment / kcmd policy
+ * annotations asserted on the axiom node.
+ */
+export interface OwlDisjointClassesAxiom {
+  members: string[];
+  comment?: string;
+  policy?: OwlConstraintPolicy;
 }
 
 /** An `owl:Class` -- becomes an OSI dataset (entity). */
@@ -98,6 +181,11 @@ export interface OwlClass extends OwlCommonAnnotations {
   // -- the mapper shortens an in-namespace one to its local name. Empty when
   // the class is not an enumeration.
   oneOf: string[];
+  // The property restrictions the class is declared to satisfy (blank-node
+  // `owl:Restriction` objects of rdfs:subClassOf, or a bare restriction as the
+  // object of owl:equivalentClass), in document order. The mapper turns each
+  // into a model-level constraint. Empty when none.
+  restrictions: OwlRestriction[];
 }
 
 /**
@@ -159,16 +247,15 @@ export interface OwlObjectProperty extends OwlCommonAnnotations {
   comment?: string;
   synonyms: string[];
   examples: string[];
-  // Referent IRIs of `rdfs:subPropertyOf` superproperties, if any. Relationship
-  // inheritance has no native OSI home (only entity-level `rdfs:subClassOf` ->
-  // `extends`); it is carried verbatim as a relationship custom extension. Full
-  // IRIs -- the mapper shortens an in-namespace one to its local name. Empty
-  // when none.
+  // Referent IRIs of `rdfs:subPropertyOf` superproperties, if any. Mapped to
+  // the relationship's native `extends` (relationship inheritance) when the
+  // superproperty is itself an object property of the ontology; see
+  // to_ir.ts. Full IRIs. Empty when none.
   subPropertyOf: string[];
   // Referent IRIs of `owl:inverseOf` properties (the edge read the other way),
-  // in document order. No native OSI home (an edge is directed; the inverse is
-  // a separate fact), so it is carried verbatim. Usually one; more than one is
-  // kept here and reconciled by the mapper (first wins, rest warned). Full IRIs
+  // in document order. The mapper folds an inverse pair into ONE relationship
+  // carrying `inverse:` (see planInverseFolds in to_ir.ts). Usually one; more
+  // than one is reconciled by the mapper (first wins, rest warned). Full IRIs
   // (see subPropertyOf). Empty when none.
   inverseOf: string[];
   // Referent IRIs of `owl:equivalentProperty` properties, in document order. No
@@ -258,6 +345,10 @@ export interface OwlModel {
   //
   // owl:AllDisjointClasses -- the listed classes are pairwise disjoint.
   allDisjointClasses: string[][];
+  // The same owl:AllDisjointClasses axioms, each with the rdfs:comment and kcmd
+  // policy annotations on its axiom node, for the mapper's constraint
+  // derivation. Parallel to allDisjointClasses (same axioms, same order).
+  allDisjointClassesAxioms: OwlDisjointClassesAxiom[];
   // owl:AllDisjointProperties -- the listed properties are pairwise disjoint.
   allDisjointProperties: string[][];
   // owl:AllDifferent -- the listed individuals are pairwise distinct. Members

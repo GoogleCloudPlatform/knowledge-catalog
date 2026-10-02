@@ -370,6 +370,28 @@ picks its own backend. The two bindings answer different parts of the same model
   a profile clears the logical model's inline column bindings, so only what the
   profile binds is bound. There is no `unbound` flag; omission is how a field is
   left unbound.
+- A field an entity **inherits** through `extends` is bound on that entity, by
+  its own name, exactly like a field it declares. The supertype declares the
+  field once; the column is per subtype (an `abstract` supertype has no table
+  at all), so the binding goes on each concrete subtype's entry:
+
+  ```yaml
+  # model: Doc is abstract and declares docId; Opportunity extends [Doc]
+  entities:
+    - name: Opportunity
+      source: //bigquery.googleapis.com/projects/p/datasets/d/tables/opportunity
+      fields:
+        - {name: docId, expression: opp_id}   # inherited from Doc
+        - {name: amount, expression: amt}     # Opportunity's own
+  ```
+
+  The merged model carries the bound field on the subtype, declared exactly as
+  the nearest supertype that declares it does (same type, dimension,
+  description), plus the profile's column. It is the same logical field, so
+  nothing the model means changes; because a subtype's own field wins over an
+  inherited one, the subtype's node table and every supertype `LABEL` on it
+  read that column. An inherited field the profile omits stays inherited and
+  unbound.
 - An action the profile does not mention **keeps** the model's executor, if it
   declared one. Omission inherits here rather than unbinding, so a model can
   state one default and a profile override only where the write differs;
@@ -432,7 +454,9 @@ writes nothing.
   `expression` that is not a bare column reference is rejected, naming the
   offending path.
 - **Unknown name** — a profile element whose `name` is not in the logical model
-  is rejected. Profiles bind declarations; they do not add them.
+  is rejected. Profiles bind declarations; they do not add them. A field counts
+  as in the model on an entity that declares it or inherits it through
+  `extends` (transitively).
 - **Unresolvable source** — the BigQuery table a profile binds is probed with a
   dry run; a table that is missing or inaccessible fails and names it. Column
   names are not probed here — a mistyped column resolves to a real table and is

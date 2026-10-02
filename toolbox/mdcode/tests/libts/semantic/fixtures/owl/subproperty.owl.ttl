@@ -1,0 +1,61 @@
+# An ontology exercising relationship inheritance (see the user guide's
+# "Property hierarchies (rdfs:subPropertyOf)" section):
+#   - a superproperty with both ends declared (hasCounterparty), specialized by
+#     two subproperties on different, narrower endpoints (hasBuyer, hasPayer):
+#     each sub-relationship gets `extends: [hasCounterparty]`, and
+#     hasCounterparty becomes `abstract: true` -- the shared label, not an edge
+#     table of its own;
+#   - a superproperty with NO rdfs:domain (belongsToTerritory, transitive):
+#     its domain is INFERRED as the nearest common superclass of its
+#     subproperties' domains (MarketUnit and Opportunity -> BusinessObject);
+#   - a superproperty whose subproperties' domains share NO superclass
+#     (touches): nothing can be inferred, so it is skipped with a warning, and
+#     its subproperties keep their edge but drop the dangling `extends`.
+
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex:   <http://example.com/deals#> .
+
+ex:BusinessObject a owl:Class .
+ex:CommercialDocument a owl:Class ; rdfs:subClassOf ex:BusinessObject .
+ex:Opportunity a owl:Class ; rdfs:subClassOf ex:CommercialDocument .
+ex:Invoice a owl:Class ; rdfs:subClassOf ex:CommercialDocument .
+ex:OrgUnit a owl:Class ; rdfs:subClassOf ex:BusinessObject .
+ex:MarketUnit a owl:Class ; rdfs:subClassOf ex:OrgUnit .
+ex:Region a owl:Class ; rdfs:subClassOf ex:OrgUnit .
+ex:Party a owl:Class .
+ex:Organization a owl:Class ; rdfs:subClassOf ex:Party .
+ex:Client a owl:Class ; rdfs:subClassOf ex:Organization .
+
+# Both ends declared: the umbrella over hasBuyer and hasPayer.
+ex:hasCounterparty a owl:ObjectProperty ;
+    rdfs:domain ex:CommercialDocument ; rdfs:range ex:Organization ;
+    rdfs:comment "The organization on the other side of a commercial document." .
+ex:hasBuyer a owl:ObjectProperty ;
+    rdfs:subPropertyOf ex:hasCounterparty ;
+    rdfs:domain ex:Opportunity ; rdfs:range ex:Client .
+ex:hasPayer a owl:ObjectProperty ;
+    rdfs:subPropertyOf ex:hasCounterparty ;
+    rdfs:domain ex:Invoice ; rdfs:range ex:Organization .
+
+# No domain: inferred from inRegion (MarketUnit) and inMarket (Opportunity),
+# whose nearest common superclass is BusinessObject.
+ex:belongsToTerritory a owl:ObjectProperty, owl:TransitiveProperty ;
+    rdfs:range ex:OrgUnit .
+ex:inRegion a owl:ObjectProperty ;
+    rdfs:subPropertyOf ex:belongsToTerritory ;
+    rdfs:domain ex:MarketUnit ; rdfs:range ex:Region .
+ex:inMarket a owl:ObjectProperty ;
+    rdfs:subPropertyOf ex:belongsToTerritory ;
+    rdfs:domain ex:Opportunity ; rdfs:range ex:MarketUnit .
+
+# No domain, and the subproperties' domains (Party, Opportunity) share no
+# superclass: touches cannot be inferred and is skipped.
+ex:touches a owl:ObjectProperty ;
+    rdfs:range ex:BusinessObject .
+ex:partyTouches a owl:ObjectProperty ;
+    rdfs:subPropertyOf ex:touches ;
+    rdfs:domain ex:Party ; rdfs:range ex:BusinessObject .
+ex:dealTouches a owl:ObjectProperty ;
+    rdfs:subPropertyOf ex:touches ;
+    rdfs:domain ex:Opportunity ; rdfs:range ex:BusinessObject .

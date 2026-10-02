@@ -45,15 +45,18 @@ EDGE TABLES (
   `tpcds.public.store_sales` AS store_sales_to_customer
     KEY(ss_item_sk, ss_ticket_number)
     SOURCE KEY(ss_item_sk, ss_ticket_number) REFERENCES store_sales(ss_item_sk, ss_ticket_number)
-    DESTINATION KEY(ss_customer_sk) REFERENCES customer(c_customer_sk),
+    DESTINATION KEY(ss_customer_sk) REFERENCES customer(c_customer_sk)
+    NO PROPERTIES,
   `tpcds.public.store_sales` AS store_sales_to_item
     KEY(ss_item_sk, ss_ticket_number)
     SOURCE KEY(ss_item_sk, ss_ticket_number) REFERENCES store_sales(ss_item_sk, ss_ticket_number)
-    DESTINATION KEY(ss_item_sk) REFERENCES item(i_item_sk),
+    DESTINATION KEY(ss_item_sk) REFERENCES item(i_item_sk)
+    NO PROPERTIES,
   `tpcds.public.store_sales` AS store_sales_to_store
     KEY(ss_item_sk, ss_ticket_number)
     SOURCE KEY(ss_item_sk, ss_ticket_number) REFERENCES store_sales(ss_item_sk, ss_ticket_number)
     DESTINATION KEY(ss_store_sk) REFERENCES store(s_store_sk)
+    NO PROPERTIES
 );
 
 -- warnings --

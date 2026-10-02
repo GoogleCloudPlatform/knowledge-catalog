@@ -35,6 +35,9 @@
 // (from the semantic-model aspect, back into the GOOGLE `custom_extensions`
 // block), and 1:1 / 1:N relationships (from the `schema-join` entry links a
 // pull fetched -- see `modelsFromCatalogResources`'s `entryLinks` argument).
+// Entity `extends` and `abstract` come back from the `Specializes:` / `Abstract:`
+// paragraphs publish appends to an entity entry's description (see
+// `splitEntityTrailers`).
 // The per-field `semantics` block -- field/metric expressions and the DIMENSION
 // role
 // -- is gated off the catalog by default: the emitter writes it only under
@@ -57,6 +60,7 @@ import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 import {Action, AiContext, Constraint, CustomExtension, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
 import {isActionEntry, readAction} from './kc_actions';
 import {isConstraintEntry, readConstraint} from './kc_constraints';
+import {ABSTRACT_MARKER, INVERSE_PREFIX, linkSlug, SPECIALIZES_PREFIX} from './knowledge_catalog';
 import {referencedEntityNames} from './sql_expr_utils';
 
 export interface ReadResult {
@@ -133,6 +137,25 @@ export function modelsFromCatalogResources(
     const entityEntriesForModel = childrenOf(anchor.name, entityEntries);
     const entities = entityEntriesForModel.map(e => readEntity(e, warnings));
     const entityNames = entities.map(e => e.name);
+    // Entity inheritance round-trip. A restored `extends` naming an entity this
+    // pull did not recover (its entry was skipped, or deleted from the
+    // catalog) would dangle -- a load error -- so keep only parents that
+    // resolve and drop the rest with a warning naming the gap.
+    const pulledEntities = new Set(entityNames);
+    for (const entity of entities) {
+      if (!entity.extends) continue;
+      const kept = entity.extends.filter(p => pulledEntities.has(p));
+      for (const p of entity.extends.filter(p => !pulledEntities.has(p))) {
+        warnings.push(
+            `entity '${entity.name}' specializes '${p}', which this pull did ` +
+            `not recover; 'extends: [${p}]' is dropped`);
+      }
+      if (kept.length) {
+        entity.extends = kept;
+      } else {
+        delete entity.extends;
+      }
+    }
     const metrics = childrenOf(anchor.name, metricEntries)
                         .map(e => readMetric(e, entityNames, warnings));
 
@@ -201,8 +224,12 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
         name}': no semantic-entity aspect data (fetch with the aspect type)`);
   }
 
+  // Publish appends the Specializes paragraph then the Abstract marker to the
+  // entity description (knowledge_catalog.entityDescription); peel them off.
+  const trailers = splitEntityTrailers(entry.entrySource?.description);
   const dataSource = dataSourceFromResource(semantic?.source?.resources?.[0]);
-  if (!dataSource) {
+  // An abstract entity has no table by design, so an empty source is expected.
+  if (!dataSource && !trailers.abstract) {
     warnings.push(
         `entity '${name}': no backing data source in the semantic-entity ` +
         `aspect; 'source' will be empty and the entity may not load`);
@@ -223,11 +250,50 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
                          .map(uc => stringList(uc?.fields))
                          .filter(fields => fields.length);
   if (uniqueKeys.length) entity.uniqueKeys = uniqueKeys;
-  const description = entry.entrySource?.description;
-  if (description !== undefined) entity.description = description;
+  if (trailers.description !== undefined) {
+    entity.description = trailers.description;
+  }
+  if (trailers.parents.length) entity.extends = trailers.parents;
+  if (trailers.abstract) entity.abstract = true;
   const ai = readAiContext(entry);
   if (ai) entity.aiContext = ai;
   return entity;
+}
+
+// Splits a pulled entity description into the authored description, the
+// supertypes publish appended as a `Specializes: a, b.` paragraph, and the
+// trailing `Abstract: no table of its own.` marker (see
+// knowledge_catalog.entityDescription). Peeled from the end in reverse publish
+// order; a description without either paragraph comes back untouched. An
+// empty remainder becomes undefined, so an entity published with no authored
+// description reads back without one.
+export function splitEntityTrailers(text: string|undefined):
+    {description: string|undefined; parents: string[]; abstract: boolean} {
+  if (text === undefined) {
+    return {description: undefined, parents: [], abstract: false};
+  }
+  let paragraphs = text.split('\n\n');
+  let abstract = false;
+  if (paragraphs[paragraphs.length - 1] === ABSTRACT_MARKER) {
+    abstract = true;
+    paragraphs = paragraphs.slice(0, -1);
+  }
+  let parents: string[] = [];
+  const last = paragraphs[paragraphs.length - 1];
+  if (last !== undefined && last.startsWith(SPECIALIZES_PREFIX) &&
+      last.endsWith('.')) {
+    parents = last.slice(SPECIALIZES_PREFIX.length, -1)
+                  .split(',')
+                  .map(s => s.trim())
+                  .filter(s => s.length > 0);
+    paragraphs = paragraphs.slice(0, -1);
+  }
+  const rest = paragraphs.join('\n\n');
+  // Untouched text keeps its exact form (including an authored empty string).
+  if (!abstract && !parents.length) {
+    return {description: text, parents, abstract};
+  }
+  return {description: rest === '' ? undefined : rest, parents, abstract};
 }
 
 
@@ -494,10 +560,83 @@ function readRelationships(
       destination:
           {entity: destination.name, columns: asArray(join.target?.fields)},
     };
-    if (join.description !== undefined) rel.description = join.description;
+    if (join.description !== undefined) {
+      // Publish appends Specializes then Inverse; peel them off in reverse.
+      const inv = splitInverse(join.description);
+      if (inv.inverse !== undefined) rel.inverse = inv.inverse;
+      if (inv.description !== undefined) {
+        const {description, parents} = splitSpecializes(inv.description);
+        if (description !== undefined) rel.description = description;
+        if (parents.length) rel.extends = parents;
+      }
+    }
     out.push(rel);
   }
+  // Relationship inheritance round-trip. Only a concrete (bound) relationship
+  // publishes a link, so a parent that is ABSTRACT -- the common case -- has no
+  // link to pull back, and a restored `extends` naming it would dangle (a
+  // validate error). Keep each parent that resolves to a pulled relationship
+  // (by verbatim name, or by the link-slugged name pull recovers for one not
+  // already in slug form); drop the rest with a warning naming the gap.
+  const pulledNames = new Set(out.map(r => r.name));
+  for (const rel of out) {
+    if (!rel.extends) continue;
+    const kept: string[] = [];
+    for (const parent of rel.extends) {
+      const slug = linkSlug(parent);
+      const resolved = pulledNames.has(parent) ? parent :
+          pulledNames.has(slug)                ? slug :
+                                                 undefined;
+      if (resolved) {
+        kept.push(resolved);
+      } else {
+        warnings.push(
+            `relationship '${rel.name}' specializes '${parent}', which ` +
+            `publishes no schema-join link (it is abstract, or unbound), so ` +
+            `the pulled model cannot declare it; 'extends: [${parent}]' is ` +
+            `dropped -- re-add the abstract relationship to restore it`);
+      }
+    }
+    if (kept.length) {
+      rel.extends = kept;
+    } else {
+      delete rel.extends;
+    }
+  }
   return out;
+}
+
+// Splits a pulled schema-join description into the authored description and
+// the super-relationship names publish appended as its last paragraph (see
+// knowledge_catalog.SPECIALIZES_PREFIX). A description without that trailing
+// paragraph comes back untouched with no parents. Run AFTER splitInverse: the
+// Inverse paragraph, when present, follows this one.
+export function splitSpecializes(text: string):
+    {description: string|undefined; parents: string[]} {
+  const paragraphs = text.split('\n\n');
+  const last = paragraphs[paragraphs.length - 1];
+  if (!last.startsWith(SPECIALIZES_PREFIX) || !last.endsWith('.')) {
+    return {description: text, parents: []};
+  }
+  const parents = last.slice(SPECIALIZES_PREFIX.length, -1)
+                      .split(',')
+                      .map(s => s.trim())
+                      .filter(s => s.length > 0);
+  const rest = paragraphs.slice(0, -1).join('\n\n');
+  return {description: rest.length ? rest : undefined, parents};
+}
+
+// Splits the `Inverse: <name>.` trailer knowledge_catalog.ts appends to a join
+// description back off it (see joinDescription there). Only a final paragraph
+// of exactly that shape is read, so an ordinary description that happens to
+// mention an inverse is left alone.
+export function splitInverse(text: string):
+    {description?: string; inverse?: string} {
+  const m = text.match(
+      new RegExp(`(?:^|\\n\\n)${INVERSE_PREFIX}([A-Za-z_][A-Za-z0-9_-]*)\\.$`));
+  if (!m) return {description: text};
+  const rest = text.slice(0, m.index).trimEnd();
+  return {description: rest || undefined, inverse: m[1]};
 }
 
 

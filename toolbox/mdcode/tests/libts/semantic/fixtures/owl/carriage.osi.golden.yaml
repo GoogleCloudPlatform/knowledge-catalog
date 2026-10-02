@@ -14,6 +14,12 @@ semantic_model:
             datatype: String
           - name: legalName
             datatype: String
+            description: DEPRECATED.
+            ai_context:
+              instructions: "Person.legalName is deprecated: do not use it in new queries or
+                writes."
+              synonyms:
+                - name
       - name: Robot
         description: A machine, never a person.
       - name: LifeStage
@@ -21,9 +27,32 @@ semantic_model:
       - name: ancestorOf
         from: Person
         to: Person
+        extends:
+          - relatedTo
+        inverse: descendantOf
+        ai_context:
+          instructions: "ancestorOf is transitive: if a ancestorOf b and b ancestorOf c,
+            then a ancestorOf c, but only the direct edges are stored. To follow
+            it, match a quantified path, e.g. MATCH
+            (a:Person)-[:ancestorOf]->{1,10}(b:Person) (raise the upper bound
+            for deeper chains)."
       - name: relatedTo
         from: Person
         to: Person
+        abstract: true
+        ai_context:
+          instructions: "relatedTo is symmetric: a relatedTo b implies b relatedTo a, but
+            each pair may be stored in one direction only. Match it undirected,
+            e.g. MATCH (a:Person)-[:relatedTo]-(b:Person)."
+          synonyms:
+            - knows
       - name: uncleOf
         from: Person
         to: Person
+    constraints:
+      - name: Person_Robot_LifeStage_disjoint
+        judgment: No instance is more than one of Person, Robot and LifeStage. An
+          instance classified as two or more of them does not satisfy this rule.
+        description: "Classify it as at most one of Person, Robot and LifeStage. (From
+          OWL: DisjointClasses(Person Robot LifeStage).)"
+        on_violation: warn
