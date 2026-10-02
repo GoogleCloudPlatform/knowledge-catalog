@@ -92,14 +92,14 @@ leaves declaration alone.
 | A profile **may** set (physical binding) | A profile **may not** touch (logical, in the model) |
 |---|---|
 | an entity's `source` (its store URI) | which entities, fields, relationships, metrics, or actions exist, and what each means |
-| a field's column (its `expression`, a bare column reference) | a field's `label`, `description`, `dimension`, `datatype` |
-| whether a field is bound at all under this profile | the grain (`primary_key` / `unique_keys`) and graph shape (`from`/`to`, `from_columns`/`to_columns`) |
+| a field's column or computation (its `expression`) | a field's `label`, `description`, `dimension`, `datatype` |
+| whether a field is bound at all under this profile (`fields_exclude`) | the grain (`primary_key` / `unique_keys`) and graph shape (`from`/`to`, `from_columns`/`to_columns`) |
 | an action's `executor` (how the write is performed) | an action's `parameters`, `guards`, and `affects` — what it takes, what gates it, what it changes |
-| the deployment target | a field `expression` that is arbitrary SQL, which changes the computation; any `metric` definition; any `ai_context` / synonyms; a relationship or its junction `source` |
+| the deployment target | any `metric` definition; any `ai_context` / synonyms; a relationship or its junction `source` |
 
 An element's `name` is not overridden — it is the key that pairs a profile
-element with the model element it binds. The grain and the join columns name
-*fields* rather than physical columns, so they belong to the logical model; each
+element with the model element it binds. Key and join columns name physical
+columns, not fields, so whether a field is bound says nothing about them; each
 field's column is resolved per profile from its `expression`.
 
 **Why an action's executor is a binding.** An action declares what a call does:
@@ -121,17 +121,18 @@ model-level spelling at all: **select a named profile whose model declares a
 form, where one document is both the model and its binding, is the exception —
 its statements already sit beside the columns they name.
 
-**An executor inherits; a column does not.** A model may declare one default
-executor, and a profile overrides it only for the bindings that perform the
-write differently — an action the profile does not mention keeps the default.
-This is the opposite of a field's column, which a profile must restate or leave
-unbound. The asymmetry is deliberate: a column inherited into a renamed schema
-binds to the wrong data and returns it silently, while an executor names a
-whole mechanism, so a wrong one fails rather than answering — at the first call,
-or already at push where the mechanism is a `sql` executor the store rejects. To
-withdraw an inherited executor — a read-only binding that performs no writes at
-all — a profile writes `executor: null`, which leaves the action declared and
-unavailable there.
+**Bindings inherit.** A profile is an overlay: whatever it does not restate
+keeps what the model file says. A model may declare one default executor, and a
+profile overrides it only for the bindings that perform the write differently —
+an action the profile does not mention keeps the default. A field's column works
+the same way: a field the profile does not name keeps the model file's column,
+if the model binds one, and a field the profile lists in `fields_exclude` is
+unbound. That puts one duty on a profile for a store that names columns
+differently: restate every field it serves under another name, or exclude it,
+because a column inherited into a renamed schema binds to the wrong data and
+returns it silently. To withdraw an inherited executor — a read-only binding
+that performs no writes at all — a profile writes `executor: null`, which leaves
+the action declared and unavailable there.
 
 **Why metrics never appear in a profile.** A metric like
 `SUM(OrderedAs.extendedPrice * (1 - OrderedAs.discount))` references field
@@ -154,20 +155,15 @@ bound there. When any input is unbound, the block is unbound too, and so is
 anything built on it.** Availability propagates up the dependency graph from the
 fields a profile binds. The chain runs as far as the model does:
 
-- a field is bound when the profile gives its column;
-- an entity is available when its key fields are bound — a graph node must be
-  keyed, so an entity whose key is unbound is dropped whole, and every
-  relationship and metric that touches it falls with it;
-- a metric is available when every field its expression references is bound and
-  every entity it spans is available;
-- a relationship is available when both endpoint entities are available and the
-  join columns on both ends are bound; a cross-entity metric over it is available
-  only when the relationship is;
-- an action is available when a binding supplies its `executor` and every concept
-  it names — the entity type of each parameter, and each concept in `affects` —
-  is available. An action with no executor is declared and not performable here;
-  one whose parameter type is unavailable has nothing to resolve its argument
-  against, so binding an executor would not make the call work.
+- a field is bound when the profile, or the model file it inherits from, gives
+  its column, and the profile does not exclude it;
+- an entity and a relationship are always available: their key and join columns
+  are physical columns rather than fields, so unbinding a field never removes
+  them;
+- a metric is available when every field its expression references is bound; a
+  cross-entity metric also needs a relationship connecting its entities;
+- an action is available when a binding supplies its `executor`. An action with
+  no executor is declared and not performable here.
 
 So an operational-only field such as live credit carries its operational-only
 metrics with it, and a warehouse-only field such as lifetime value carries its
@@ -182,16 +178,15 @@ that reads it is unavailable there rather than reading a null. Keeping the two
 apart is what lets a query fail against a store that cannot answer it instead of
 returning a blank that reads like real data.
 
-**A profile binds only what its store serves; the rest is unbound.** A profile
-is authoritative for the model's physical bindings: a field the profile gives an
-`expression` is bound, and a field the profile omits is unbound — there is no
-separate flag. (Selecting a named profile also clears any column binding written
-inline in the logical model, so the profile alone decides what is bound; the
-logical model stays where meaning is declared, the profile where columns are.) So
-the operational profile below binds `availableCredit` and omits `lifetimeValue`,
-and the analytical profile does the reverse. A field's absence is not silent: a
-metric or relationship that needs an unbound field is reported as unavailable
-under that profile. When the source table a profile binds is missing or
+**A profile restates what differs and excludes what its store lacks.** A field
+the profile gives an `expression` is bound to it, a field the profile names in
+`fields_exclude` is unbound, and every other field keeps what the model file
+says — bound if the model binds it inline, unbound if not. There is no separate
+flag. The logical model below binds nothing inline, so the operational profile
+binds `availableCredit` and leaves `lifetimeValue` unbound just by not naming
+it, and the analytical profile does the reverse. A field's absence is not
+silent: a metric that needs an unbound field is reported as unavailable under
+that profile. When the source table a profile binds is missing or
 inaccessible, validation fails and names it; a mistyped column name resolves to a
 real table and so surfaces at deploy, when BigQuery rejects the generated graph.
 
@@ -272,7 +267,8 @@ semantic_model:
 
 The analytical binding points the model at the BigQuery warehouse. The warehouse
 carries the modeled `lifetimeValue` and does not hold live credit, so
-`availableCredit` is left unbound (omitted below). It says nothing about
+`availableCredit` is left unbound: the model binds nothing inline, and this
+profile does not name it. It says nothing about
 `CancelOrder`, so the action keeps the default executor: the warehouse reports
 on orders but does not own them, and cancelling one means calling the service
 that does.
@@ -290,7 +286,7 @@ semantic_model:
           - { name: key,             expression: c_custkey }
           - { name: name,            expression: c_name }
           - { name: lifetimeValue,   expression: c_ltv }
-          # availableCredit is omitted -> unbound under this profile
+          # availableCredit: bound neither here nor in the model -> unbound
       - name: Order
         source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
         fields:
@@ -318,7 +314,7 @@ semantic_model:
           - { name: key,             expression: CustomerId }
           - { name: name,            expression: FullName }
           - { name: availableCredit, expression: AvailableCredit }
-          # lifetimeValue is omitted -> unbound under this profile
+          # lifetimeValue: bound neither here nor in the model -> unbound
       - name: Order
         source: //spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/tables/Orders
         fields:
@@ -357,27 +353,27 @@ picks its own backend. The two bindings answer different parts of the same model
 ## Merge rules
 
 - A profile carries `entities` (its alias `datasets` also works) with their
-  `fields`, and `actions` with their `executor`; these merge onto the logical
+  `fields` and `fields_exclude`, and `actions` with their `executor`; these merge onto the logical
   model **by `name`**. A profile never carries a `relationship` or a `metric` —
   those are logical, so they live once in the model and a profile that sets one
   is rejected. An action entry that sets anything but `name` and `executor` is
   rejected the same way.
-- An entity or field named only in the logical model keeps its declaration,
-  but any inline column binding is cleared unless the profile re-declares it;
-  a profile element whose `name` is not in the logical model is rejected.
+- An entity or field named only in the logical model keeps its declaration and
+  any inline column binding; a profile element whose `name` is not in the
+  logical model is rejected.
 - Scalars — `source`, `expression`, `deployment_target` — **replace**.
-- A field the profile does not bind is **unbound** under that profile — selecting
-  a profile clears the logical model's inline column bindings, so only what the
-  profile binds is bound. There is no `unbound` flag; omission is how a field is
-  left unbound.
+- A field the profile does not name **keeps** the model file's binding. A field
+  in `fields_exclude` is **unbound** under that profile. There is no `unbound`
+  flag; `fields_exclude` is how a field is left unbound, and naming one field in
+  both `fields` and `fields_exclude` is rejected.
 - An action the profile does not mention **keeps** the model's executor, if it
-  declared one. Omission inherits here rather than unbinding, so a model can
-  state one default and a profile override only where the write differs;
+  declared one, so a model can state one default and a profile override only
+  where the write differs;
   `executor: null` withdraws it explicitly. Only an `mcp`, `rest` or `grpc`
   executor may be that default; a `sql` one is rejected in a model the profile
   names, and belongs in the profile itself.
-- Profiles are **binding-only**: a profile sets physical facets and may leave a
-  field unbound. It cannot add or remove entities, fields, or metrics, change
+- Profiles are **binding-only**: a profile sets physical facets and may unbind a
+  field with `fields_exclude`. It cannot add or remove entities, fields, or metrics, change
   the grain or graph shape, or change what anything means.
 
 ## Command line
@@ -428,9 +424,8 @@ writes nothing.
 - **Missing or ambiguous target** — a profile that deploys a graph must resolve
   to one `deployment_target`.
 - **Declaration override** — a profile that sets a `label`, `dimension`,
-  `ai_context`, a `metric`, the grain, a relationship's `from`/`to`, or a field
-  `expression` that is not a bare column reference is rejected, naming the
-  offending path.
+  `ai_context`, a `metric`, the grain, or a relationship's `from`/`to` is
+  rejected, naming the offending path.
 - **Unknown name** — a profile element whose `name` is not in the logical model
   is rejected. Profiles bind declarations; they do not add them.
 - **Unresolvable source** — the BigQuery table a profile binds is probed with a

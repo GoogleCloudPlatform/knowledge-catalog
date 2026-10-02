@@ -306,12 +306,13 @@ semantic_model:
               - INSERT INTO transfer (transfer_id, amount, debited_account_id) VALUES (GENERATE_UUID(), @amount, @source)
 ```
 
-Selecting a profile replaces the model's bindings with that profile's, so the
-one you put a `sql` executor in has to carry the columns its statements name as
-well — leave them out and the fields come back unbound and the action cannot
-run. Of the action itself, only the executor is restated: what the call takes,
-what gates it and what it changes stay in the model, exactly as
-[declared](#1-declare-the-action).
+A profile is an overlay on the model's bindings: a field it does not restate
+keeps the column the model file gives it. So the profile you put a `sql`
+executor in has to restate every column its store names differently, the ones
+its statements touch included — leave one out and it keeps the model's column,
+which this store may not have. Of the action itself, only the executor is
+restated: what the call takes, what gates it and what it changes stay in the
+model, exactly as [declared](#1-declare-the-action).
 
 `statements` is a list because one business action is often more than one write.
 The transfer above debits one account, credits another, and records the
