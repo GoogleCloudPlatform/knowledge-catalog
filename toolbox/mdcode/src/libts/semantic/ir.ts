@@ -197,10 +197,31 @@ export interface Entity {
   // like `grain`: the node table stays the all-versions table, and readers are
   // told how to pick current rows (see units_history.ts).
   history?: EntityHistory;
+  // K3 (proposed): the closed set of values a VOCABULARY entity stands for --
+  // a status or stage list, the OWL named individuals of an enumerated class.
+  // The members ARE the entity's rows: the BigQuery leg generates a view over
+  // them and backs the node table with it, edges into the entity match the
+  // code case-insensitively, and Knowledge Catalog and skill pages list them
+  // (see vocabulary.ts). Absent on every other entity.
+  members?: VocabularyMember[];
   description?: string;
   aiContext?: AiContext;
   fields: Field[];       // dimensions / attributes
   customExtensions?: CustomExtension[];
+}
+
+/** One member of a vocabulary entity (see Entity.members). */
+export interface VocabularyMember {
+  // The value the data stores for this member, which edges into the
+  // vocabulary join on (e.g. 'SHIPPED').
+  code: string;
+  label?: string;
+  synonyms?: string[];
+  definition?: string;
+  // Display / lifecycle position within the vocabulary (1 = first).
+  order?: number;
+  // The member's identifier in its source ontology (an OWL individual IRI).
+  iri?: string;
 }
 
 /** The membership predicate of a defined entity (see Entity.definition). */
@@ -377,6 +398,22 @@ export interface Relationship {
   // namespace: it must differ from every entity, relationship, and other
   // inverse name. A `/google` extension.
   inverse?: string;
+  // K2 (proposed): a DERIVED relationship -- the composition of other
+  // relationships, OWL's owl:propertyChainAxiom (`belongsTo` = `memberOf`
+  // read backwards, then `inClub`). It binds no join columns of its own:
+  // a graph leg materializes its (source key, destination key) pairs over the
+  // chain and backs the edge with that (see derived_relationships.ts).
+  via?: RelationshipStep[];
+  // K2 (proposed): an optional boolean SQL condition a derived pair must
+  // satisfy, over the chain's entities (`Entity.field`, as in metric
+  // expressions). Only meaningful with `via`.
+  filter?: string;
+}
+
+/** One hop of a derived relationship's chain (see Relationship.via). */
+export interface RelationshipStep {
+  relationship: string;  // a relationship name in the model
+  inverse?: boolean;     // traversed backwards (destination -> source)
 }
 
 // The relationships (by name) whose declared `inverse` can be emitted as a

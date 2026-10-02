@@ -45,6 +45,7 @@ import * as yaml from 'yaml';
 import {Action, ActionParameter, AffectedConcept, AiContext, Constraint, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
 import {declaredConceptFields} from './resolve_inheritance';
 import {glossaryDoc} from './glossary';
+import {formatStep} from './derived_relationships';
 
 // The version stamped on every serialized document. Pull emits kcmd's extended
 // profile: it uses native extension keys (`entities`, `deployment_target`)
@@ -218,7 +219,8 @@ function datasetDoc(
   // binding without marking the entity abstract. Suppressed for a logical
   // model, where a missing source is intended (a binding profile supplies it
   // later).
-  if (!logical && !entity.abstract && !entity.definition && !entity.dataSource) {
+  if (!logical && !entity.abstract && !entity.definition && !entity.dataSource &&
+      !entity.members) {
     warnings.push(
         `entity '${entity.name}' has no source and is not abstract; the ` +
         `serialized document will not reload until a source is set`);
@@ -255,6 +257,16 @@ function datasetDoc(
       valid_to: entity.history.validTo,
     }) :
                               undefined,
+    // K3 (proposed): a vocabulary's members; written even when empty (an
+    // empty list still marks the dataset a vocabulary).
+    members: entity.members?.map(m => compact({
+      code: m.code,
+      label: m.label,
+      synonyms: nonEmpty(m.synonyms),
+      definition: m.definition,
+      order: m.order,
+      iri: m.iri,
+    })),
     description: entity.description,
     ai_context: aiContextDoc(entity.aiContext),
     fields: nonEmpty(
@@ -491,6 +503,9 @@ function relationshipDoc(
     abstract: rel.abstract || undefined,
     // The edge read backwards (owl:inverseOf); omitted when none.
     inverse: rel.inverse,
+    // K2 (proposed): a derived relationship's chain and pair filter.
+    via: rel.via?.length ? rel.via.map(formatStep) : undefined,
+    filter: rel.filter,
     from_columns: nonEmpty(rel.source.columns),
     to_columns: nonEmpty(rel.destination.columns),
     description: rel.description,

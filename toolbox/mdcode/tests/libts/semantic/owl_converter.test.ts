@@ -951,16 +951,28 @@ describe('mapping table rules (labels, comments, skips)', () => {
 // The carriage fixture exercises every non-native OWL construct. The importer
 // is import-only: it maps the native constructs and DROPS the rest, so the
 // fixture's golden shows only native mappings, with no custom_extensions
-// carrier anywhere.
+// carrier anywhere. owl:oneOf and owl:propertyChainAxiom now map natively
+// (vocabulary members, K3; a `via` chain, K2).
 describe('the carriage fixture imports only its native constructs', () => {
   test('produces exactly the documented OSI (golden)', () => {
     const {yaml, warnings, stats} =
         convertOwlToOsi(readFixture('carriage.owl.ttl'), 'carriage');
     expect(yaml).toEqual(readFixture('carriage.osi.golden.yaml'));
-    // Dropping a non-native construct is never a warning.
-    expect(warnings).toEqual([]);
+    // Dropping a non-native construct is never a warning; the one warning is
+    // about the imported chain, whose second step is an abstract
+    // superproperty.
+    expect(warnings).toEqual([
+      `relationship 'uncleOf': via [ancestorOf, relatedTo]: step 'relatedTo' ` +
+          `names abstract relationship 'relatedTo', which has no edges`,
+    ]);
     // ancestorOf's owl:inverseOf ex:descendantOf maps to `inverse:` (counted).
-    expect(stats).toEqual({classes: 3, datatypeProperties: 3, objectProperties: 4});
+    expect(stats).toEqual({
+      classes: 3,
+      datatypeProperties: 3,
+      objectProperties: 4,
+      vocabularies: 1,
+      derivedRelationships: 1,
+    });
     // Stays schema-valid and loadable (a logical model, under bindingOptional).
     expect(() => load(yaml)).not.toThrow();
     // No custom_extensions carrier anywhere in the output.

@@ -39,6 +39,8 @@ agree on every structural row and differ only where a Spanner target has no
 | Entity `abstract`                                              | table-less `semantic-entity` entry + `Abstract:` paragraph¹⁵ | ✓¹⁵                 | — no node table (a label on its subtypes)                            | — no node table (a label on its subtypes)                            |
 | Field `unit` / `scale`                                         | `Unit: USD (x1000).` trailer on the `schema` field description | ✓ (trailer peeled off) | into column `OPTIONS(description)`                              | — dropped                                                            |
 | Entity `grain` / `history`                                     | `Grain:` / `History:` paragraphs on the entry description | ✓ (paragraphs peeled off) | into node label `OPTIONS(description)`; the node table stays the all-versions table | — dropped                                    |
+| Entity `members` (vocabulary, proposed)                         | `Members:` paragraph on the entry description¹⁷ | codes and labels¹⁷ | generated `vocab_<entity>` view + `NODE TABLE` over it; edges into it via generated views¹⁷ | — push error without a `source`¹⁷ |
+| Relationship `via` / `filter` (derived, proposed)              | `schema-join` over the endpoint keys + `Derived via:` / `Derived filter:` paragraphs¹⁸ | ✓ (step names normalized⁶)¹⁸ | generated `edge_<relationship>` view + `EDGE TABLE` over it¹⁸ | — push error¹⁸ |
 | Action                                                         | `semantic-action` entry¹²       | ✓¹²                                            | — not deployed¹²                                                     | — not deployed¹²                                                     |
 | Constraint                                                     | `semantic-constraint` entry¹³   | ✓¹³                                            | — not deployed¹³                                                     | — not deployed¹³                                                     |
 | Glossary (`glossary:`)                                         | Business Glossary, categories, terms and `related` / `definition` entry links, via `kcmd glossary push`¹⁶ | — not yet¹⁶ | — not deployed¹⁶ | — not deployed¹⁶ |
@@ -148,6 +150,41 @@ agree on every structural row and differ only where a Spanner target has no
     field) and to the semantic entry. A reader (`glossaryFromDataplex`) peels
     the trailers off again, but `kcmd pull` does not call it yet. The OSI
     export carries the block as is. See [Business glossary](glossary.md).
+17. **Vocabulary members (proposed).** Neither closed entity template has a
+    slot for a member list, so a vocabulary's entry description ends with a
+    `Members: "OPEN" — "Open"; "VOID" — "Cancelled".` paragraph (codes and
+    labels as JSON strings, `Members: none.` for an empty list). Pull peels it
+    off and restores `members` with codes and labels in paragraph order. Each
+    member's `order`, `synonyms`, `definition` and `iri` are not published, so
+    a pulled model re-deploys its view with `sort_order`, `definition` and `iri`
+    NULL. Publishing members as Business Glossary terms is a follow-up. On
+    BigQuery, kcmd generates the view `vocab_<snake_case(entity)>` (`code`,
+    `label`, `sort_order`, `definition`, `iri`). It does so when the
+    vocabulary has no `source`, or when the source's table name is that view
+    name. The view is created before the graph, and the node table reads it.
+    A vocabulary bound to any other table keeps that table, and its members
+    only document it. A foreign-key edge into a vocabulary is backed by a
+    generated `edge_<relationship>` view that matches the code
+    case-insensitively. Spanner has no generated views: a vocabulary there
+    needs a `source`. See [Extensions](model_spec.md#5-extensions).
+18. **Derived relationships (proposed).** A derived relationship publishes
+    a `schema-join` of type `JOIN` between its two endpoint entries. The join
+    is keyed on the two entities' keys, since a chain has no foreign key of
+    its own. Its description ends with `Derived via: ^memberOf, inClub.`, plus
+    `Derived filter: <expression>` when it has a filter. Pull peels both off,
+    restoring `via` and `filter`. The steps come back under the pulled
+    (normalized⁶) relationship names, so the second push of a pulled model is
+    a fixed point. On BigQuery, kcmd generates the view
+    `edge_<snake_case(relationship)>`. It holds the distinct
+    (`source_<key>`, `target_<key>`) pairs the chain reaches, and the edge
+    table reads it. Some chains cannot be materialized, and the edge is then
+    omitted with a warning:
+    - a step through a junction or column-less edge;
+    - an endpoint with no table;
+    - a step that is itself derived with its own `filter`.
+
+    Spanner rejects a derived relationship at push time. See
+    [Extensions](model_spec.md#5-extensions).
 
 ## To Knowledge Catalog
 
@@ -276,6 +313,20 @@ dropped (only the primary key is emitted). The imported vendor SQL is not carrie
 as a separate form: the graph builds from the canonical `expression` when
 present, and falls back to the imported vendor SQL verbatim only when the model
 was never transpiled to a canonical form.
+
+**Generated views (proposed).** A model with vocabularies or derived
+relationships deploys more than the graph. Before `CREATE OR REPLACE PROPERTY
+GRAPH`, the push runs one `CREATE OR REPLACE VIEW` for each of these, in this
+order:
+- each vocabulary view, `vocab_<entity>`;
+- each view behind an edge into a vocabulary, `edge_<relationship>`;
+- each derived-relationship view, `edge_<relationship>`.
+
+A view whose source the model names goes there; otherwise it goes in the
+graph's dataset. The views only read the model's tables. A failing view stops
+the push before the graph. `--print` lists them with the graph DDL. Each
+view's own `OPTIONS(description)` says what it holds and that kcmd generated
+it. See footnotes ¹⁷ and ¹⁸.
 
 ## To Spanner
 

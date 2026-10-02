@@ -243,7 +243,11 @@ export async function deployBigQuery(
       for (const w of gen.warnings) {
         warnings.push(`[${model.name} -> ${target.graphName}] ${w}`);
       }
-      ddl.push(`-- ${target.uri}\n${gen.ddl}`);
+      // K2 / K3: the views the graph reads (vocabularies, then the edges over
+      // them) are created first, in order, and listed ahead of the graph.
+      const views = gen.views ?? [];
+      ddl.push(`-- ${target.uri}\n${
+          views.map(v => `${v.ddl};\n\n`).join('')}${gen.ddl}`);
 
       if (options.validateOnly) {
         continue;
@@ -256,19 +260,32 @@ export async function deployBigQuery(
         return fail(
             `Failed to deploy '${target.graphName}': ${err.message || err}`);
       }
-      const started = await bigQuery.query(target.project, gen.ddl, location);
-      const outcome = await awaitQueryDone(
-          bigQuery, target.project, started, maxPolls, backoffMs);
-      if (!outcome.ok) {
-        // These are CREATE OR REPLACE statements executed one at a time, so
-        // any graphs already deployed in this run have mutated production and
-        // are not rolled back. Surface that alongside the failing target.
-        const partial = deployed ?
-            ` (${deployed} graph(s) already deployed in this run; ` +
-                `CREATE OR REPLACE changes are not rolled back)` :
-            '';
-        return fail(`Failed to deploy '${target.graphName}': ${outcome.error}${
-            partial}`);
+      const statements = [
+        ...views.map(v => ({what: `view '${v.ref}'`, sql: v.ddl})),
+        {what: `graph '${target.graphName}'`, sql: gen.ddl},
+      ];
+      let created = 0;
+      for (const {what, sql} of statements) {
+        const started = await bigQuery.query(target.project, sql, location);
+        const outcome = await awaitQueryDone(
+            bigQuery, target.project, started, maxPolls, backoffMs);
+        if (!outcome.ok) {
+          // These are CREATE OR REPLACE statements executed one at a time, so
+          // any graphs already deployed in this run have mutated production
+          // and are not rolled back. Surface that alongside the failing
+          // target.
+          const partial = deployed ?
+              ` (${deployed} graph(s) already deployed in this run; ` +
+                  `CREATE OR REPLACE changes are not rolled back)` :
+              '';
+          const viewsDone = created ?
+              ` (${created} generated view(s) for it were already created)` :
+              '';
+          return fail(`Failed to deploy '${target.graphName}': ${
+              statements.length > 1 ? `${what}: ` : ''}${outcome.error}${
+              viewsDone}${partial}`);
+        }
+        created++;
       }
 
       deployed++;

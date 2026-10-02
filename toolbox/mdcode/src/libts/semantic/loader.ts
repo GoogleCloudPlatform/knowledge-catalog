@@ -12,8 +12,9 @@
 import * as yaml from 'yaml';
 import * as z from 'zod';
 
-import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, Entity, Executor, Field, Glossary, GlossaryCategory, GlossaryDefines, GlossaryTerm, Metric, Relationship, relationshipAncestors, SemanticModel, VIOLATION_EFFECTS,} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, Entity, Executor, Field, Glossary, GlossaryCategory, GlossaryDefines, GlossaryTerm, Metric, Relationship, relationshipAncestors, SemanticModel, VIOLATION_EFFECTS, VocabularyMember,} from './ir';
 import {checkGlossary} from './glossary';
+import {checkDerivedRelationships, parseStep} from './derived_relationships';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {referencedEntityNames} from './sql_expr_utils';
 import {checkUnitsAndHistory} from './units_history';
@@ -117,6 +118,17 @@ const historySchema = z.object({
                          valid_to: z.string().min(1).optional(),
                        }).strict();
 
+// K3 (proposed, see vocabulary.ts): one member of a vocabulary dataset. Only
+// `code` is required; it is the value the data stores and edges join on.
+const memberSchema = z.object({
+                        code: z.string().min(1),
+                        label: z.string().optional(),
+                        synonyms: z.array(z.string()).optional(),
+                        definition: z.string().optional(),
+                        order: z.number().int().optional(),
+                        iri: z.string().optional(),
+                      }).strict();
+
 // The canonical (superset) field shape, for TYPE inference only. The actual
 // validation schemas are rebuilt per-load by buildDocumentSchema, which is
 // strict, gates `custom_extensions` on the version, and applies the
@@ -169,6 +181,8 @@ const datasetBase = z.object({
   // K7 grain / history (see Entity.grain / Entity.history).
   grain: z.string().optional(),
   history: historySchema.optional(),
+  // K3 (proposed): the members of a vocabulary dataset (see Entity.members).
+  members: z.array(memberSchema).optional(),
   description: z.string().optional(),
   ai_context: aiContextSchema.optional(),
   fields: z.array(fieldBase).optional(),
@@ -200,6 +214,12 @@ const relationshipSchema = z.object({
                               // extended profile only (see
                               // buildDocumentSchema).
                               inverse: z.string().min(1).optional(),
+                              // K2 (proposed): a derived relationship's chain
+                              // (`^name` = walked backwards) and optional
+                              // pair filter; extended profile only (see
+                              // Relationship.via / Relationship.filter).
+                              via: z.array(z.string().min(1)).min(2).optional(),
+                              filter: z.string().min(1).optional(),
                               custom_extensions:
                                   z.array(customExtensionSchema).optional(),
                             }).superRefine((r, ctx) => {
@@ -508,6 +528,8 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
            // K7 grain / history: native extensions (see units_history.ts).
            grain: z.string().min(1).optional(),
            history: historySchema.optional(),
+           // K3 (proposed): a vocabulary's members (see vocabulary.ts).
+           members: z.array(memberSchema).optional(),
          } :
                         {}),
        })
@@ -515,10 +537,13 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
           .superRefine((ds: any, ctx) => {
             const abstract = ds.abstract === true;
             const defined = ds.defined !== undefined;
+            // K3: a vocabulary's rows are its members; with no `source` the
+            // graph leg generates its table (see vocabulary.ts).
+            const vocabulary = ds.members !== undefined;
             // A concrete (non-abstract) dataset must name its backing table;
             // only an abstract one may omit `source`. Relaxed under
             // bindingOptional. A defined entity never has a table.
-            if (!bindingOptional && !abstract && !defined &&
+            if (!bindingOptional && !abstract && !defined && !vocabulary &&
                 ds.source === undefined) {
               ctx.addIssue({
                 code: z.ZodIssueCode.custom,
@@ -554,6 +579,35 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
                 });
               }
             }
+            // K3: a vocabulary's members are its rows, which an abstract or
+            // defined dataset does not have of its own.
+            if (vocabulary && (abstract || defined)) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['members'],
+                message: `dataset '${ds.name}': 'members' lists a ` +
+                    `vocabulary's rows, which ${
+                        abstract ? 'an abstract' : 'a defined'} dataset does ` +
+                    `not have; remove 'members' or '${
+                        abstract ? 'abstract' : 'defined'}'`,
+              });
+            }
+            // Edges match a code case-insensitively, so two codes differing
+            // only in case would be one member.
+            const seen = new Map<string, string>();
+            for (const m of (ds.members ?? []) as Array<{code: string}>) {
+              const k = m.code.toLowerCase();
+              if (seen.has(k)) {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  path: ['members'],
+                  message: `dataset '${ds.name}': member code '${
+                      m.code}' repeats '${seen.get(k)}' (codes are matched ` +
+                      `case-insensitively and must be unique)`,
+                });
+              }
+              seen.set(k, m.code);
+            }
             // A field with no `expression` is unbound -- there is no separate
             // flag. A graph leg does not reject it: the availability pass
             // (pruneUnavailable) drops each unbound field, and whatever depends
@@ -582,6 +636,10 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          ...(extended ? {
            extends: z.array(z.string()).optional(),
            abstract: z.boolean().optional(),
+           // K2 (proposed): a derived relationship's chain and pair filter
+           // (see derived_relationships.ts).
+           via: z.array(z.string().min(1)).min(2).optional(),
+           filter: z.string().min(1).optional(),
          } :
                         {}),
        })
@@ -619,6 +677,36 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
                     `relationship itself; an inverse is the edge read the ` +
                     `other way and needs its own name`,
               });
+            }
+            // K2: a derived relationship's pairs come from its chain, so it
+            // binds no join columns and always has edges.
+            if (r.via !== undefined && r.from_columns !== undefined) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['via'],
+                message: `relationship '${r.name}': a derived relationship ` +
+                    `('via') takes its pairs from the chain and binds no ` +
+                    `join columns; remove from_columns/to_columns or 'via'`,
+              });
+            }
+            if (r.via !== undefined && r.abstract === true) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['via'],
+                message: `relationship '${r.name}': a derived relationship ` +
+                    `('via') has edges and cannot be abstract; remove ` +
+                    `'abstract' or 'via'`,
+              });
+            }
+            for (const step of (r.via ?? []) as string[]) {
+              if (step.replace(/^\s*\^/, '').trim() === r.name) {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  path: ['via'],
+                  message: `relationship '${r.name}': 'via' step '${
+                      step}' names the relationship itself`,
+                });
+              }
             }
           });
 
@@ -943,6 +1031,11 @@ function convertModel(
   rejectDuplicateNames(
       relationships.map(r => r.name), 'relationship name', `model '${m.name}'`);
   warnRelationshipInheritance(entities, relationships, warnings);
+  // K2: a derived relationship's chain that does not resolve or connect loads
+  // with a warning; a graph leg omits the edge (see derived_relationships.ts).
+  const k2: string[] = [];
+  checkDerivedRelationships(entities, relationships, k2);
+  for (const msg of k2) warnings.push(`model '${m.name}': ${msg}`);
   // An inverse name is a second graph element name for the same edge (its
   // own edge table and label on a push), so it shares the element namespace:
   // it must differ from every dataset, relationship, and other inverse. A
@@ -1106,7 +1199,8 @@ function convertDataset(
     if (ds.defined.description !== undefined)
       definition.description = ds.defined.description;
   }
-  if (!keys.length && !ds.abstract && !definition) {
+  // A vocabulary without a key is keyed by its code (see vocabulary.ts).
+  if (!keys.length && !ds.abstract && !definition && !ds.members) {
     warnings.push(`${
         ctxLabel}: no primary_key; the entity's KEY will be empty (invalid for graph generation)`);
   }
@@ -1143,6 +1237,17 @@ function convertDataset(
     if (ds.history.valid_to !== undefined)
       history.validTo = ds.history.valid_to;
     entity.history = history;
+  }
+  if (ds.members !== undefined) {
+    entity.members = ds.members.map(m => {
+      const member: VocabularyMember = {code: m.code};
+      if (m.label !== undefined) member.label = m.label;
+      if (m.synonyms?.length) member.synonyms = m.synonyms;
+      if (m.definition !== undefined) member.definition = m.definition;
+      if (m.order !== undefined) member.order = m.order;
+      if (m.iri !== undefined) member.iri = m.iri;
+      return member;
+    });
   }
   const description = composeDescription(ds.description);
   if (description) entity.description = description;
@@ -1240,6 +1345,8 @@ function convertRelationship(
   const ai = aiContextOrUndefined(r.ai_context);
   if (ai) relationship.aiContext = ai;
   if (r.inverse !== undefined) relationship.inverse = r.inverse;
+  if (r.via !== undefined) relationship.via = r.via.map(parseStep);
+  if (r.filter !== undefined) relationship.filter = r.filter;
   const ce = toCustomExtensions(r.custom_extensions);
   if (ce) relationship.customExtensions = ce;
   return relationship;

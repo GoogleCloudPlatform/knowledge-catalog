@@ -12,7 +12,7 @@
 
 import {Parser} from 'n3';
 
-import {OwlClass, OwlClassExpr, OwlCommonAnnotations, OwlConstraintPolicy, OwlDataRange, OwlDatatypeProperty, OwlDisjointClassesAxiom, OwlLiteral, OwlModel, OwlObjectProperty, OwlOntology, OwlRestriction,} from './model';
+import {OwlChainStep, OwlClass, OwlClassExpr, OwlCommonAnnotations, OwlConstraintPolicy, OwlDataRange, OwlDatatypeProperty, OwlDisjointClassesAxiom, OwlIndividual, OwlLiteral, OwlModel, OwlObjectProperty, OwlOntology, OwlRestriction,} from './model';
 
 // RDF/RDFS/OWL/SKOS/Dublin-Core term IRIs we recognize. Only these; anything
 // else is carried by neither the parser nor the model (see the user guide's
@@ -34,6 +34,11 @@ const XSD_BOOLEAN_TRUE = new Set(['true', '1']);
 // (K7): qudt:unit, qudt:hasUnit / om:hasUnit, schema:unitCode, and the common
 // home-grown `unit` / `unitOfMeasure`.
 const UNIT_PREDICATES = new Set(['unit', 'hasUnit', 'unitCode', 'unitOfMeasure']);
+// K3 (proposed): the class-level boolean annotation (by local name) that marks
+// a class a closed vocabulary (`core:vocabulary true`), and the annotations (by
+// local name) that give a vocabulary member its position (`core:sortOrder 3`).
+const VOCABULARY_PREDICATE = 'vocabulary';
+const ORDER_PREDICATES = new Set(['sortOrder', 'order']);
 
 const RDF_TYPE = `${RDF}type`;
 // RDF collection (list) terms, used to walk an owl:hasKey list.
@@ -55,6 +60,9 @@ const OWL_REFLEXIVE_PROPERTY = `${OWL}ReflexiveProperty`;
 const OWL_IRREFLEXIVE_PROPERTY = `${OWL}IrreflexiveProperty`;
 const OWL_ASYMMETRIC_PROPERTY = `${OWL}AsymmetricProperty`;
 const OWL_ONTOLOGY = `${OWL}Ontology`;
+// A named individual (K3: a vocabulary member when it is an instance of one of
+// the ontology's classes).
+const OWL_NAMED_INDIVIDUAL = `${OWL}NamedIndividual`;
 // An ontology header's dependency on another ontology, by IRI. Read only by
 // parseOwlHeader, which the multi-file import uses to find the imported
 // ontology's local file; the merge itself never follows an IRI over the
@@ -64,7 +72,8 @@ const OWL_HAS_KEY = `${OWL}hasKey`;
 // List-valued constructs whose object is an RDF collection head (a blank node),
 // resolved with the same list walker as owl:hasKey. owl:oneOf enumerates a
 // class's members; owl:propertyChainAxiom composes a property from a sequence
-// of others. Both are carried verbatim (no native OSI home).
+// of others. The mapper turns them into a vocabulary's members (K3) and a
+// derived relationship's `via` (K2), both proposed.
 const OWL_ONE_OF = `${OWL}oneOf`;
 const OWL_PROPERTY_CHAIN_AXIOM = `${OWL}propertyChainAxiom`;
 const OWL_INVERSE_OF = `${OWL}inverseOf`;
@@ -262,6 +271,7 @@ interface Annotations {
   onViolation?: string;            // kcmd:onViolation
   encodedBy?: string;              // <ns>:encodedBy (local name)
   unit?: string;                   // qudt:unit / qudt:hasUnit / *:unit (K7)
+  vocabulary?: boolean;            // <ns>:vocabulary true|false (K3)
 }
 
 function emptyAnnotations(): Annotations {
@@ -293,6 +303,15 @@ function emptyAnnotations(): Annotations {
 function descriptionOf(a: Annotations): string|undefined {
   return a.rdfsComment ?? a.skosDefinition ?? a.dctermsDescription ??
       a.dcDescription;
+}
+
+// A boolean annotation value: `true`/`1` or `false`/`0` (xsd:boolean, or the
+// same lexical form as a plain literal); undefined for anything else.
+function booleanLiteral(value: string): boolean|undefined {
+  const v = value.trim().toLowerCase();
+  if (XSD_BOOLEAN_TRUE.has(v)) return true;
+  if (v === 'false' || v === '0') return false;
+  return undefined;
 }
 
 // The kcmd constraint policy asserted on a term, or undefined when it carries
@@ -421,11 +440,30 @@ export function parseOwl(turtle: string|string[]): OwlModel {
   const seenDisjointClasses = new Set<string>();
   const seenDisjointProperties = new Set<string>();
   const seenDifferent = new Set<string>();
+  // K3: the named subjects declared owl:NamedIndividual, and every named
+  // rdf:type of each named subject (first-seen order) -- resolved to the
+  // ontology's individuals once every class is known (see the individuals
+  // pass below), since a class may be declared after its instances.
+  const namedIndividuals = new Set<string>();
+  const typesOf = new Map<string, string[]>();
   let ontologyIri: string|undefined;
   for (const q of quads) {
     if (q.predicate.value !== RDF_TYPE) continue;
     const type = q.object.value;
     const subject = q.subject.value;
+    if (q.subject.termType === 'NamedNode' &&
+        q.object.termType === 'NamedNode') {
+      const types = typesOf.get(subject);
+      if (!types) {
+        typesOf.set(subject, [type]);
+      } else if (!types.includes(type)) {
+        types.push(type);
+      }
+    }
+    if (type === OWL_NAMED_INDIVIDUAL) {
+      if (q.subject.termType === 'NamedNode') namedIndividuals.add(subject);
+      continue;
+    }
     if (type === OWL_INVERSE_FUNCTIONAL_PROPERTY) {
       inverseFunctional.add(subject);
       continue;
@@ -603,17 +641,17 @@ export function parseOwl(turtle: string|string[]): OwlModel {
         a.keyListHeads.push(q.object.value);
         break;
       case OWL_ONE_OF:
-        // Enumerated class -> no native OSI home; carried verbatim. The object
-        // is an RDF collection head; the members (usually individuals) are
-        // resolved with the list walker at build time. This is recorded for any
+        // Enumerated class -> a vocabulary's members (K3). The object is an
+        // RDF collection head; the members (usually individuals) are resolved
+        // with the list walker at build time. This is recorded for any
         // annotated subject, but only the class build reads it -- if the
         // subject is typed a property instead, the heads are collected here and
         // then dropped (an owl:oneOf on a property is not meaningful).
         a.oneOfListHeads.push(q.object.value);
         break;
       case OWL_PROPERTY_CHAIN_AXIOM:
-        // Property chain -> no native OSI home; carried verbatim. The object is
-        // an RDF collection head naming the composed properties, in order.
+        // Property chain -> a derived relationship's `via` (K2). The object is
+        // an RDF collection head naming the composed steps, in order.
         a.chainListHeads.push(q.object.value);
         break;
       case RDFS_SUBCLASS_OF:
@@ -738,6 +776,14 @@ export function parseOwl(turtle: string|string[]): OwlModel {
           } else if (q.object.termType === 'Literal' && q.object.value.trim()) {
             a.unit = q.object.value.trim();
           }
+        }
+        // `<class> <ns>:vocabulary true` -- the class is a closed vocabulary
+        // (K3); `false` keeps it a data class. Matched by local name; first
+        // boolean wins.
+        else if (localName(q.predicate.value) === VOCABULARY_PREDICATE &&
+                 q.object.termType === 'Literal' &&
+                 a.vocabulary === undefined) {
+          a.vocabulary = booleanLiteral(q.object.value);
         }
         break;
     }
@@ -1019,6 +1065,91 @@ export function parseOwl(turtle: string|string[]): OwlModel {
     }
     if (code !== undefined) individualCodes[subject] = code;
   }
+  // K3: the ontology's named individuals -- every named subject declared
+  // owl:NamedIndividual or typed with one of its classes, that is not itself
+  // a class/property or the ontology header -- in document order. Their
+  // labels, definition and sort order are read in one ordered pass (the first
+  // label wins, like a term's); every value read here is a literal.
+  const individualAcc = new Map<string, {
+    labels: string[]; prefLabels: string[]; altLabels: string[];
+    definition?: string; comment?: string; description?: string; order?: string;
+  }>();
+  for (const [subject, types] of typesOf) {
+    if (kind.has(subject) || subject === ontologyIri) continue;
+    if (!namedIndividuals.has(subject) &&
+        !types.some(t => kind.get(t) === 'class')) {
+      continue;
+    }
+    individualAcc.set(subject, {labels: [], prefLabels: [], altLabels: []});
+  }
+  for (const q of quads) {
+    const acc = individualAcc.get(q.subject.value);
+    if (!acc || q.object.termType !== 'Literal') continue;
+    const value = q.object.value;
+    switch (q.predicate.value) {
+      case RDFS_LABEL:
+        acc.labels.push(value);
+        break;
+      case SKOS_PREF_LABEL:
+        acc.prefLabels.push(value);
+        break;
+      case SKOS_ALT_LABEL:
+      case SKOS_HIDDEN_LABEL:
+        acc.altLabels.push(value);
+        break;
+      case SKOS_DEFINITION:
+        acc.definition ??= value;
+        break;
+      case RDFS_COMMENT:
+        acc.comment ??= value;
+        break;
+      case DCTERMS_DESCRIPTION:
+      case DC_DESCRIPTION:
+        acc.description ??= value;
+        break;
+      default:
+        if (ORDER_PREDICATES.has(localName(q.predicate.value))) {
+          acc.order ??= value.trim();
+        }
+        break;
+    }
+  }
+  const individuals: OwlIndividual[] = [];
+  for (const [iri, acc] of individualAcc) {
+    const labels = [...acc.labels, ...acc.prefLabels];
+    const individual: OwlIndividual = {
+      iri,
+      localName: localName(iri),
+      types: (typesOf.get(iri) ?? []).filter(t => kind.get(t) === 'class'),
+      named: namedIndividuals.has(iri),
+      synonyms: [...labels.slice(1), ...acc.altLabels],
+    };
+    if (labels.length) individual.label = labels[0];
+    const definition = acc.definition ?? acc.comment ?? acc.description;
+    if (definition !== undefined) individual.definition = definition;
+    if (individualCodes[iri] !== undefined) individual.code = individualCodes[iri];
+    if (acc.order !== undefined) individual.order = acc.order;
+    individuals.push(individual);
+  }
+  // K2: one owl:propertyChainAxiom list member as a step -- a named property,
+  // or an anonymous `[ owl:inverseOf p ]` (p walked backwards). Any other
+  // member (a nested expression, a literal) is flagged so the mapper can say
+  // why the chain is not imported.
+  const chainStep = (term: Term): OwlChainStep => {
+    if (term.termType === 'NamedNode') return {property: term.value};
+    const inverse = term.termType === 'BlankNode' ?
+        nodeFacts.get(term.value)?.get(OWL_INVERSE_OF) :
+        undefined;
+    if (inverse?.termType === 'NamedNode') {
+      return {property: inverse.value, inverse: true};
+    }
+    return {
+      property: '',
+      unsupported: term.termType === 'BlankNode' ?
+          'an anonymous property expression other than owl:inverseOf' :
+          `a ${term.termType} chain member`,
+    };
+  };
   // The ontology's own namespace: the one shared by MOST of its typed terms.
   // Taking the most common namespace (not merely the first typed term's) is
   // robust to a document that also types a handful of foreign-namespace terms
@@ -1042,8 +1173,22 @@ export function parseOwl(turtle: string|string[]): OwlModel {
         for (const n of expanded.flatMap(e => e.named)) {
           if (n !== self && !subClassOf.includes(n)) subClassOf.push(n);
         }
+        // The full owl:equivalentClass expressions: a bare enumeration of
+        // individuals is a vocabulary (its members join `oneOf`); any other is
+        // a definition, for defined-entity compilation (see
+        // OwlClass.definitions).
+        const equivalents =
+            a.restrictionNodes.filter(ref => ref.via === 'equivalentClass')
+                .map(ref => parseClassExpr({
+                  termType: 'BlankNode',
+                  value: ref.node,
+                } as Term));
+        const definitions = equivalents.filter(d => d.kind !== 'oneOf');
+        const enumerated =
+            equivalents.flatMap(d => d.kind === 'oneOf' ? d.members : []);
         classes.push({
           localName: localName(iri),
+          iri,
           label: a.label,
           comment: descriptionOf(a),
           synonyms: a.synonyms,
@@ -1052,24 +1197,15 @@ export function parseOwl(turtle: string|string[]): OwlModel {
           subClassOf,
           equivalentClass: a.equivalentClass,
           disjointWith: a.disjointWith,
-          // Full member IRIs of the enumeration set (a carried cross-reference;
-          // the mapper shortens an in-namespace one). flatMap unions the
-          // members across every oneOf head -- an enumeration is a set, so the
-          // mapper dedupes and order does not matter (contrast propertyChain).
-          oneOf: a.oneOfListHeads.flatMap(resolveList),
+          // Full member IRIs of the enumeration set, in list order. flatMap
+          // unions the members across every oneOf head (direct or under
+          // owl:equivalentClass) -- an enumeration is a set, so the mapper
+          // dedupes (contrast propertyChain).
+          oneOf: [...a.oneOfListHeads.flatMap(resolveList), ...enumerated],
           restrictions: expanded.flatMap(e => e.restrictions),
           ...commonAnnotations(a),
+          ...(a.vocabulary !== undefined ? {vocabulary: a.vocabulary} : {}),
         });
-        // The full owl:equivalentClass expressions, for defined-entity
-        // compilation (see OwlClass.definitions). A bare enumeration of
-        // individuals is a vocabulary, not a definition over data.
-        const definitions =
-            a.restrictionNodes.filter(ref => ref.via === 'equivalentClass')
-                .map(ref => parseClassExpr({
-                  termType: 'BlankNode',
-                  value: ref.node,
-                } as Term))
-                .filter(d => d.kind !== 'oneOf');
         if (definitions.length) classes[classes.length - 1].definitions = definitions;
         break;
       }
@@ -1109,13 +1245,13 @@ export function parseOwl(turtle: string|string[]): OwlModel {
           propertyDisjointWith: a.propertyDisjointWith,
           // One resolved chain per owl:propertyChainAxiom (map, NOT flatMap):
           // OWL 2 permits several chain axioms on one property, and fusing them
-          // would be indistinguishable from a single longer chain. Full
-          // property IRIs in chain order (the mapper shortens in-namespace
-          // ones); within a chain order and repetition are preserved, so no
-          // dedupe. An empty chain (a broken/gapped list) is dropped rather
-          // than carried as [].
+          // would be indistinguishable from a single longer chain. Steps in
+          // chain order (see chainStep); within a chain order and repetition
+          // are preserved, so no dedupe. An empty chain (a broken/gapped list)
+          // is dropped rather than carried as [].
           propertyChain:
-              a.chainListHeads.map(resolveList).filter(c => c.length),
+              a.chainListHeads.map(h => resolveListTerms(h).map(chainStep))
+                  .filter(c => c.length),
           symmetric: symmetric.has(iri),
           transitive: transitive.has(iri),
           functional: functional.has(iri),
@@ -1188,6 +1324,7 @@ export function parseOwl(turtle: string|string[]): OwlModel {
     allDisjointProperties: resolveMembers(allDisjointPropertiesNodes),
     allDifferent: resolveMembers(allDifferentNodes),
     ...(Object.keys(individualCodes).length ? {individualCodes} : {}),
+    ...(individuals.length ? {individuals} : {}),
   };
 }
 

@@ -27,6 +27,7 @@ import * as yaml from 'yaml';
 
 import {Action, fieldBinding, Metric, Relationship, SemanticModel} from './ir';
 import {blankStringLiterals, escapeRegExp, referencedEntityNames,} from './sql_expr_utils';
+import {withVocabularyBindings} from './vocabulary';
 
 // The implicit profile: the inline bindings already in the model document (the
 // combined single-file form). It is never merged -- it IS the document as
@@ -424,6 +425,10 @@ export interface AvailabilityReport {
 export function pruneUnavailable(model: SemanticModel, profileName: string):
     {model: SemanticModel; report: AvailabilityReport} {
   const clone: SemanticModel = structuredClone(model);
+  // K3: a vocabulary whose view kcmd generates reads that view's columns by
+  // default (see vocabulary.ts withVocabularyBindings), so its fields are bound
+  // before availability is judged.
+  if (clone.entities) clone.entities = clone.entities.map(withVocabularyBindings);
   const report: AvailabilityReport = {
     profile: profileName,
     unboundFields: [],
@@ -517,6 +522,25 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
           {name: r.name, reason: `join column ${missing} is unbound`});
     } else {
       keptRels.push(r);
+    }
+  }
+  // K2: a derived relationship (see Relationship.via) falls with any
+  // relationship its chain walks -- transitively, for a chain over another
+  // derived relationship. A step may name a kept relationship's inverse.
+  for (let changed = true; changed;) {
+    changed = false;
+    const names = new Set(keptRels.flatMap(
+        r => r.inverse ? [r.name, r.inverse] : [r.name]));
+    for (let i = keptRels.length - 1; i >= 0; i--) {
+      const r = keptRels[i];
+      const lost = (r.via ?? []).find(s => !names.has(s.relationship));
+      if (lost === undefined) continue;
+      report.droppedRelationships.push({
+        name: r.name,
+        reason: `chain step ${lost.relationship} is unavailable`,
+      });
+      keptRels.splice(i, 1);
+      changed = true;
     }
   }
   clone.relationships = keptRels;

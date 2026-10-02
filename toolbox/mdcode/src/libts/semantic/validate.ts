@@ -21,6 +21,7 @@ import {DeclaredConcept, declaredConceptFields, resolveInheritance} from './reso
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {checkUnitsAndHistory} from './units_history';
 import {checkGlossary} from './glossary';
+import {generatesVocabularyView, isVocabulary} from './vocabulary';
 
 // Checks every model against the push requirements and returns the collected
 // error messages (empty when all models pass), each tagged with the model's
@@ -134,6 +135,19 @@ export function validatePushRequirements(
         // only as a LABEL on its concrete descendants' edge tables -- so it
         // has no join to bind.
         if (rel.abstract) continue;
+        // K2: a derived relationship (`via`) binds no join columns by design;
+        // the BigQuery leg materializes its pairs in a generated view (see
+        // derived_relationships.ts). Spanner has no such lowering yet.
+        if (rel.via?.length) {
+          if (deployInfo.spanner.length > 0) {
+            errors.push(
+                `relationship '${rel.name}' in model '${model.name}' (${
+                    document}) is derived ('via'), which only a BigQuery ` +
+                `graph push materializes today; remove it or bind it as a ` +
+                `foreign-key relationship for a Spanner Graph deploy.`);
+          }
+          continue;
+        }
         if (!rel.source.columns.length || !rel.destination.columns.length) {
           errors.push(
               `relationship '${rel.name}' in model '${model.name}' (${
@@ -141,6 +155,21 @@ export function validatePushRequirements(
               `from_columns and to_columns to the relationship in the model ` +
               `before a BigQuery or Spanner Graph deploy.`);
         }
+      }
+    }
+
+    // K3: only the BigQuery leg generates a vocabulary's table from its
+    // members (see vocabulary.ts); a Spanner graph needs a real one.
+    if (deployInfo.spanner.length > 0) {
+      for (const e of model.entities ?? []) {
+        if (!isVocabulary(e) || e.abstract || (e.dataSource ?? '').trim()) {
+          continue;
+        }
+        errors.push(
+            `dataset '${e.name}' in model '${model.name}' (${
+                document}) is a vocabulary with no source; only a BigQuery ` +
+            `graph push generates its table from 'members'. Bind it to a ` +
+            `table for a Spanner Graph deploy.`);
       }
     }
 
@@ -856,6 +885,9 @@ export async function validateBigQueryDataSources(
   for (const {document, model} of models) {
     const project = billingProject(model, defaultProject);
     for (const entity of model.entities ?? []) {
+      // K3: the push itself creates a generated vocabulary view, before the
+      // graph (see vocabulary.ts), so there is nothing to probe yet.
+      if (generatesVocabularyView(entity)) continue;
       const ref = probeableRef(entity.dataSource);
       if (!ref) continue;
       const key = `${project}\u0000${ref}`;

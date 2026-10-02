@@ -287,7 +287,10 @@ appears nowhere above.
 | `owl:equivalentClass` / `owl:equivalentProperty` (named term) | `ai_context.synonyms` | the equivalent term's local name and its in-document `rdfs:label`, so NL search resolves either vocabulary to this term; not added when equal to the term's own name (or a field's `label`). See [Semantic annotations](#semantic-annotations-equivalence-deprecation-transitivity) |
 | `owl:deprecated true` (+ `rdfs:seeAlso` replacement) | `description` prefix `DEPRECATED:` + `ai_context.instructions` | on an entity/field the description is prefixed; every deprecated term gets an instruction "do not use it in new queries or writes", naming the replacement when an `rdfs:seeAlso` points at an in-model term of the same kind |
 | `owl:TransitiveProperty` / `owl:SymmetricProperty` (object property) | relationship `ai_context.instructions` | a query hint: transitive → a bounded quantified path `-[:rel]->{1,10}`; symmetric → an undirected match `-[:rel]-` |
-| `owl:oneOf`, `owl:propertyDisjointWith`, `owl:propertyChainAxiom`, `owl:AllDisjointProperties`, `owl:AllDifferent`, the other property characteristics, `rdfs:subPropertyOf` between datatype properties, `rdfs:isDefinedBy`, `owl:versionInfo` on a term, `rdfs:seeAlso` other than a deprecation replacement | *(dropped)* | **no native home** — not imported (see [Limitations](#limitations)) |
+| `owl:oneOf` (directly or as the class's `owl:equivalentClass`), a class with `owl:NamedIndividual` instances, or a class annotated `vocabulary true` | dataset `members` (proposed) | the class becomes a **vocabulary**; each individual a member: code from `skos:notation` or any annotation whose local name is `code`, label from `rdfs:label` / `skos:prefLabel`, order from a local name `sortOrder` / `order`; see [Vocabularies](#vocabularies-owloneof-named-individuals) |
+| `owl:propertyChainAxiom` on an object property | relationship `via` (proposed) | `p owl:propertyChainAxiom ( [owl:inverseOf a] b )` → `via: [^a, b]`, a **derived relationship**; missing `rdfs:domain` / `rdfs:range` are inferred from the chain's ends; see [Property chains](#property-chains-owlpropertychainaxiom) |
+| `encodedBy` (any annotation with that local name) on an object property | relationship `from_columns` / `to_columns` | the named datatype property holds the destination's code: the edge joins it to the destination's single-column key; see [Vocabularies](#vocabularies-owloneof-named-individuals) |
+| `owl:propertyDisjointWith`, `owl:AllDisjointProperties`, `owl:AllDifferent`, the other property characteristics, `rdfs:subPropertyOf` between datatype properties, `rdfs:isDefinedBy`, `owl:versionInfo` on a term, `rdfs:seeAlso` other than a deprecation replacement | *(dropped)* | **no native home** — not imported (see [Limitations](#limitations)) |
 | `rdfs:range xsd:*` | field `datatype` | see [Datatypes](#datatypes-rdfsrange) |
 | `owl:hasKey ( ... )` | dataset `primary_key` | single or composite, in list order |
 | `owl:InverseFunctionalProperty` | dataset `unique_keys` | a uniquely-identifying property; omitted when it is already the `primary_key`; a lone one on a keyless class is promoted to `primary_key` instead |
@@ -705,7 +708,9 @@ The compilation follows the ontology prototype's reference compiler:
   The same fallback applies to a class with its own fields or key (it is a
   table-backed subtype), a class with no superclass, and a definition that
   reduces to `TRUE` or `FALSE`. A top-level `owl:oneOf` of individuals (a
-  closed vocabulary such as `SalesStage`) is not a definition.
+  closed vocabulary such as an order-status list) is not a definition; it
+  imports as a [vocabulary](#vocabularies-owloneof-named-individuals)
+  (proposed).
 
 ### Semantic annotations (equivalence, deprecation, transitivity)
 
@@ -810,6 +815,156 @@ over the **same** backing table with `SOURCE` / `DESTINATION` swapped, so both
 `Inverse: places.` trailer, which pull reads back (see [Relationship
 inverses](reference.md#relationship-inverses-inverse)).
 
+### Vocabularies (`owl:oneOf`, named individuals)
+
+*Proposed.* A class whose instances are a closed list of coded values
+(statuses, stages, categories) imports as a **vocabulary**: a dataset with
+`members` (see [Extensions](model_spec.md#5-extensions)). A class is a
+vocabulary when any of these holds:
+
+- it carries a class-level boolean annotation whose predicate local name is
+  `vocabulary`, set to true (`ex:vocabulary true`, `kcmd:vocabulary true`);
+- it is an enumeration, with `owl:oneOf ( … )` on the class or on its
+  `owl:equivalentClass`;
+- one of its direct instances is declared `owl:NamedIndividual` in the
+  imported files. This case is warned, so the reclassification is visible.
+
+The same annotation set to `false` keeps a class a data class, whatever else
+holds.
+
+```turtle
+ex:OrderStatus a owl:Class ;
+    ex:vocabulary true ;
+    owl:hasKey ( ex:statusCode ) .
+ex:statusCode a owl:DatatypeProperty ;
+    rdfs:domain ex:OrderStatus ; rdfs:range xsd:string .
+ex:Open a owl:NamedIndividual, ex:OrderStatus ;
+    ex:code "OPEN" ; ex:sortOrder 1 ; rdfs:label "Open" .
+ex:Shipped a owl:NamedIndividual, ex:OrderStatus ;
+    ex:code "SHIPPED" ; ex:sortOrder 2 ; rdfs:label "Shipped" ;
+    skos:definition "Left the warehouse." .
+
+ex:hasStatus a owl:ObjectProperty ;
+    rdfs:domain ex:Order ; rdfs:range ex:OrderStatus ;
+    ex:encodedBy ex:statusKey .            # Order.statusKey holds the code
+ex:statusKey a owl:DatatypeProperty ;
+    rdfs:domain ex:Order ; rdfs:range xsd:string .
+```
+
+becomes
+
+```yaml
+entities:
+  - name: OrderStatus
+    primary_key:
+      - statusCode
+    fields:
+      - name: statusCode
+        datatype: String
+    members:
+      - code: OPEN
+        label: Open
+        order: 1
+        iri: http://example.com/sales#Open
+      - code: SHIPPED
+        label: Shipped
+        definition: Left the warehouse.
+        order: 2
+        iri: http://example.com/sales#Shipped
+  # ...
+relationships:
+  - name: hasStatus
+    from: Order
+    to: OrderStatus
+    from_columns:
+      - statusKey
+    to_columns:
+      - statusCode
+```
+
+The members are the enumeration's individuals in list order, then the class's
+other direct instances in document order. They are then sorted by `order`;
+members without one keep their relative place, after those with one. Each
+member reads:
+
+| Member key | OWL source (first present wins) |
+|---|---|
+| `code` | `kcmd:code`, else `skos:notation`, else any literal annotation whose local name is `code` (`ex:code`), else the individual's local name |
+| `label` | `rdfs:label`, else `skos:prefLabel`, else the local name when it differs from the code |
+| `synonyms` | the remaining labels: further `rdfs:label` / `skos:prefLabel` values, `skos:altLabel`, `skos:hiddenLabel` |
+| `definition` | `skos:definition`, else `rdfs:comment`, else `dcterms:` / `dc:description` |
+| `order` | an annotation whose local name is `sortOrder` or `order`, when it is an integer (otherwise warned and ignored) |
+| `iri` | the individual's IRI |
+
+Codes are matched case-insensitively downstream. A member whose code repeats
+another's in any case is therefore dropped with a warning (the first wins). A
+class that also compiles to a [defined entity](#defined-classes-owlequivalentclass)
+keeps its definition, and its members are not imported (warned). A vocabulary
+with no individuals in the imported files gets an empty member list (warned).
+
+**`encodedBy` gives an edge its join columns.** `<objectProperty>
+<ns>:encodedBy <datatypeProperty>` (any namespace; the predicate is matched by
+its local name) states that the edge is stored as a code field on its source.
+The import then joins that field to the destination's key, so an edge into a
+vocabulary needs no hand-written `from_columns` / `to_columns`. The field
+must belong to the source or to a class the source extends, and the
+destination must have a single-column key; otherwise the edge stays logical,
+with a warning. The same annotation lets a [defined
+class](#defined-classes-owlequivalentclass) test a code.
+
+On a BigQuery push the vocabulary needs no table and no profile binding.
+kcmd generates the view `vocab_<snake_case(class)>` from the members, with
+the columns `code`, `label`, `sort_order`, `definition` and `iri`, and the
+edge matches each foreign key to a code case-insensitively. To deploy the
+view somewhere specific, bind the vocabulary's `source` to a table named
+`vocab_<snake_case(class)>`; a source naming any other table is read as-is,
+and the members only document it.
+
+### Property chains (`owl:propertyChainAxiom`)
+
+*Proposed.* A property chain says one object property holds wherever a
+sequence of others does. It imports as a **derived relationship** whose
+`via` lists the steps (see [Extensions](model_spec.md#5-extensions)):
+
+```turtle
+ex:memberOf a owl:ObjectProperty ; rdfs:domain ex:Membership ; rdfs:range ex:Customer .
+ex:inClub   a owl:ObjectProperty ; rdfs:domain ex:Membership ; rdfs:range ex:Club .
+ex:belongsTo a owl:ObjectProperty ;      # no domain / range of its own
+    owl:propertyChainAxiom ( [ owl:inverseOf ex:memberOf ] ex:inClub ) .
+```
+
+```yaml
+relationships:
+  - name: belongsTo        # Customer -> Membership -> Club
+    from: Customer
+    to: Club
+    via:
+      - ^memberOf
+      - inClub
+```
+
+- A named step follows the property. A `[ owl:inverseOf p ]` step walks it
+  backwards (`^p`). A step naming a property that was folded into another
+  relationship's `inverse:` is rewritten as that relationship walked the
+  other way, so the chain never depends on the inverse name.
+- A chain property may omit `rdfs:domain` / `rdfs:range`. The entity where
+  the chain starts, and the one where it ends, stand in, with a warning. A
+  declared end, or one inferred from subproperties, wins. Chains through
+  other chain properties resolve in any order.
+- A chain property that is also a superproperty stays a concrete derived
+  relationship (warned): its pairs are its own edges, and its subproperties
+  still carry its label.
+- These chains are not imported, each with a warning: a single-step chain, a
+  chain naming the property itself (recursive, so no fixed join can
+  materialize it), and a step other than a named property or `owl:inverseOf`.
+  Only the first of several chains on one property is imported.
+- The import runs the loader's chain checks, so a chain whose steps do not
+  connect is already reported by `owl import`.
+
+The import summary counts both features:
+`converted N classes, … (V vocabularies, D derived relationships)`, shown only
+when there are any.
+
 ### SKOS vocabulary (business glossary)
 
 An ontology that ships its business vocabulary as SKOS concepts gets a
@@ -888,6 +1043,13 @@ and they belong in different places:
        from_columns: [o_custkey]   # the Order-side foreign key
        to_columns: [customerId]    # Customer's key column
    ```
+
+   An edge whose object property is annotated `encodedBy` already has its
+   join columns. A vocabulary needs no table: a BigQuery push generates its
+   view from the members (proposed; see
+   [Vocabularies](#vocabularies-owloneof-named-individuals)). A derived
+   relationship needs no join columns: its edges are generated from its chain
+   (see [Property chains](#property-chains-owlpropertychainaxiom)).
 
 2. **The physical binding — in a profile.** Which table each entity reads, which
    column each field reads, and the deployment target go in a
@@ -987,8 +1149,14 @@ Dropped:
 - **Property characteristics** — reflexive / irreflexive / asymmetric, and
   functional on a *datatype* property (functional on an object property becomes
   a constraint; transitive and symmetric become relationship query hints).
-- **Enumerations** (`owl:oneOf`) and **property chains**
-  (`owl:propertyChainAxiom`).
+- **What vocabularies and chains leave out.** Enumerations, named
+  individuals and property chains are imported (proposed; see
+  [Vocabularies](#vocabularies-owloneof-named-individuals) and [Property
+  chains](#property-chains-owlpropertychainaxiom)). Still dropped: an
+  individual's object-property assertions and its other data values, and
+  chains on a property beyond its first. Also dropped are chains a fixed join
+  cannot follow: a single step, a recursive chain, or a step other than a
+  named property or `owl:inverseOf`.
 - **Set-level axioms** — `owl:AllDisjointProperties`, `owl:AllDifferent`
   (`owl:AllDisjointClasses` becomes a constraint).
 - **Per-term annotations** — `rdfs:isDefinedBy`, `owl:versionInfo`, and
@@ -1001,7 +1169,8 @@ converter targets:
 - SHACL shapes in the ontology files (import them separately with
   [`kcmd shacl import`](shacl-import.md)), class expressions (`owl:unionOf` /
   `owl:complementOf` / `owl:oneOf`, and a restriction whose filler is itself
-  anonymous), individuals (A-box instances), and `owl:sameAs` /
+  anonymous), individuals (A-box instances) beyond the vocabulary members
+  they supply, and `owl:sameAs` /
   `owl:differentFrom` (which relate individuals). Only **named** (IRI) classes
   and properties become entities, fields, and relationships: an anonymous class
   expression is never an entity and does not count in the import summary. The
