@@ -292,7 +292,7 @@ describe('relationships map onto the direct-FK IR convention', () => {
 
 describe('abstract datasets and their source constraint', () => {
   test('a non-abstract dataset with no source is a hard error', () => {
-    expect(() => fromDocument({ version: '0.2.0.dev0',
+    expect(() => fromDocument({ version: '0.2.0.dev0/google',
       semantic_model: [{
         name: 'm',
         datasets: [{ name: 'orders', primary_key: ['id'], fields: [] }],
@@ -358,7 +358,9 @@ describe('abstract datasets and their source constraint', () => {
     // A field with no expression is unbound, not an error: the availability
     // pass drops it (and whatever depends on it) before generation. The
     // dataset's own `source` is a separate constraint and is still required.
-    const { models } = fromDocument({ version: '0.2.0.dev0',
+    // Google flavor: a plain vanilla document (no GOOGLE block) must bind
+    // every field, so leaving one unbound is a Google-flavor feature.
+    const { models } = fromDocument({ version: '0.2.0.dev0/google',
       semantic_model: [{
         name: 'm',
         datasets: [{
@@ -490,14 +492,14 @@ describe('document-level handling', () => {
     })).toThrow(/duplicate dataset name 'orders'/);
   });
 
-  test('each semantic_model entry becomes its own IR model', () => {
-    const { models } = fromDocument({ version: '0.2.0.dev0',
+  test('a document holds at most one semantic model', () => {
+    // The format allows one model per document; a second is rejected.
+    expect(() => fromDocument({ version: '0.2.0.dev0',
       semantic_model: [
         { name: 'first', datasets: [{ name: 'a', source: 'a', primary_key: ['id'], fields: [] }] },
         { name: 'second', datasets: [{ name: 'b', source: 'b', primary_key: ['id'], fields: [] }] },
       ],
-    });
-    expect(models.map(m => m.name)).toEqual(['first', 'second']);
+    })).toThrow(/a document declares one model; split 'second' into its own file/);
   });
 
   test('model and metric descriptions carry through to the IR', () => {
@@ -786,7 +788,10 @@ describe('Apache OSI v0.2.0.dev0 spec coverage', () => {
         }],
       }],
     });
-    expect(models[0].entities[0].fields.map(f => f.type)).toEqual(datatypes);
+    // Every value is accepted. `Opaque` means "a type this model cannot name",
+    // the same as leaving `datatype` out, so it loads as no type.
+    expect(models[0].entities[0].fields.map(f => f.type))
+        .toEqual(datatypes.map(dt => (dt === 'Opaque' ? undefined : dt)));
   });
 });
 
@@ -1086,11 +1091,13 @@ describe('authoring sugars: entities alias, bare-string expression, deployment_t
 });
 
 describe('a field is unbound exactly when it has no expression', () => {
+  // Google flavor throughout: a plain vanilla document (no GOOGLE block) must
+  // bind every field, so an unbound field is a Google-flavor feature.
   test('an unbound field loads with no expression', () => {
     // There is no separate flag: a field is unbound simply by carrying no
     // expression. This holds on either leg -- a graph leg does not reject an
     // unbound field; the availability pass drops it before generation.
-    const { models } = fromDocument({ version: '0.2.0.dev0',
+    const { models } = fromDocument({ version: '0.2.0.dev0/google',
       semantic_model: [{
         name: 'm',
         datasets: [{
@@ -1112,7 +1119,7 @@ describe('a field is unbound exactly when it has no expression', () => {
     // availability pass prunes it (and any metric that reads it) before the
     // graph is generated, so one logical model can serve stores that lack a
     // given column.
-    const { models } = fromDocument({ version: '0.2.0.dev0',
+    const { models } = fromDocument({ version: '0.2.0.dev0/google',
       semantic_model: [{
         name: 'm',
         datasets: [{ name: 'a', source: 's', primary_key: ['id'],
@@ -1129,9 +1136,10 @@ describe('a purely logical model loads only under bindingOptional', () => {
   // A logical-only model declares meaning (entities, fields, keys) with no
   // physical binding: no dataset `source`, no field `expression`. It is the
   // Knowledge-Catalog-only push case -- KC governs the logical layer and needs
-  // no table or column to point at.
+  // no table or column to point at. Google flavor: a plain vanilla document
+  // (no GOOGLE block) must bind both, whatever the push.
   const logicalOnly = {
-    version: '0.2.0.dev0',
+    version: '0.2.0.dev0/google',
     semantic_model: [{
       name: 'm',
       datasets: [{
@@ -1174,4 +1182,382 @@ describe('a purely logical model loads only under bindingOptional', () => {
       }],
     }, { bindingOptional: true })).toThrow(/an abstract dataset has no table/);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Flavor rules (b/567743138). The two document versions are two flavors of one
+// format: '0.2.0.dev0' (vanilla Ossie, extensions only in custom_extensions)
+// and '0.2.0.dev0/google' (native extension keys). The tests below pin what
+// each flavor accepts and rejects, and what the IR records.
+// ---------------------------------------------------------------------------
+
+const VANILLA = '0.2.0.dev0';
+const GOOGLE = '0.2.0.dev0/google';
+const FLAVORS = [VANILLA, GOOGLE] as const;
+type Level = 'model'|'dataset'|'field'|'relationship'|'metric';
+const LEVELS: Level[] = ['model', 'dataset', 'field', 'relationship', 'metric'];
+
+function load(version: string, model: object, opts = {}) {
+  return fromDocument({ version, semantic_model: [model] }, opts);
+}
+
+// A small fully-bound model. `patch` is applied to the object at `level`, so a
+// test can place one key (ai_context, custom_extensions, ...) exactly there.
+function fullModel(level?: Level, patch: object = {}): any {
+  const at = (l: Level) => (l === level ? patch : {});
+  return {
+    name: 'm', ...at('model'),
+    datasets: [
+      { name: 'orders', source: 'p.d.orders', primary_key: ['id'], ...at('dataset'),
+        fields: [
+          { name: 'id', expression: expr('id') },
+          { name: 'customer_id', expression: expr('customer_id'), ...at('field') },
+        ] },
+      { name: 'customers', source: 'p.d.customers', primary_key: ['id'], fields: [] },
+    ],
+    relationships: [{
+      name: 'orders_to_customers', from: 'orders', to: 'customers',
+      from_columns: ['customer_id'], to_columns: ['id'], ...at('relationship'),
+    }],
+    metrics: [{ name: 'order_count', expression: expr('COUNT(orders.id)'), ...at('metric') }],
+  };
+}
+
+// The IR object a level maps to.
+function irAt(m: any, level: Level): any {
+  switch (level) {
+    case 'model': return m;
+    case 'dataset': return m.entities[0];
+    case 'field': return m.entities[0].fields[1];
+    case 'relationship': return m.relationships[0];
+    case 'metric': return m.metrics[0];
+  }
+}
+
+describe('a document holds exactly one semantic model', () => {
+  test('one model loads', () => {
+    for (const v of FLAVORS) expect(load(v, fullModel()).models).toHaveLength(1);
+  });
+  test('an empty semantic_model list is rejected', () => {
+    expect(() => fromDocument({ version: VANILLA, semantic_model: [] }))
+      .toThrow(/semantic_model/);
+  });
+});
+
+describe('the declared version is preserved on the model', () => {
+  for (const v of FLAVORS) {
+    test(v, () => expect(load(v, fullModel()).models[0].version).toBe(v));
+  }
+});
+
+describe('ai_context: custom members', () => {
+  const expected = {
+    instructions: 'Use for net revenue',
+    synonyms: ['net_rev'],
+    examples: ['What is net revenue?'],
+    additionalProperties: { dbt_meta: { owner: 'analytics' }, priority: 3 },
+  };
+
+  test('the vanilla and Google worked examples load to the same AiContext', () => {
+    const vanilla = loadModels(`
+version: '0.2.0.dev0'
+semantic_model:
+  - name: m
+    datasets:
+      - name: orders
+        source: p.d.orders
+        primary_key: [id]
+        ai_context:
+          instructions: Use for net revenue
+          synonyms: [net_rev]
+          examples: ["What is net revenue?"]
+          dbt_meta: {owner: analytics}
+          priority: 3
+`);
+    const google = loadModels(`
+version: '0.2.0.dev0/google'
+semantic_model:
+  - name: m
+    datasets:
+      - name: orders
+        source: p.d.orders
+        primary_key: [id]
+        ai_context:
+          instructions: Use for net revenue
+          synonyms: [net_rev]
+          examples: ["What is net revenue?"]
+          custom:
+            dbt_meta: {owner: analytics}
+            priority: 3
+`);
+    expect(vanilla.models[0].entities[0].aiContext).toEqual(expected);
+    expect(google.models[0].entities[0].aiContext).toEqual(expected);
+  });
+
+  test('custom members are carried at every level, in both flavors', () => {
+    for (const level of LEVELS) {
+      const v = load(VANILLA, fullModel(level, { ai_context: { k: 1 } })).models[0];
+      const g = load(GOOGLE, fullModel(level, { ai_context: { custom: { k: 1 } } })).models[0];
+      expect(irAt(v, level).aiContext).toEqual({ additionalProperties: { k: 1 } });
+      expect(irAt(g, level).aiContext).toEqual({ additionalProperties: { k: 1 } });
+    }
+  });
+
+  test('Google: a bare unknown key is still rejected', () => {
+    expect(() => load(GOOGLE, fullModel('dataset', { ai_context: { synonym: ['x'] } })))
+      .toThrow(/synonym/);
+  });
+
+  test("Google: 'custom' must be a mapping", () => {
+    expect(() => load(GOOGLE, fullModel('dataset', { ai_context: { custom: ['x'] } })))
+      .toThrow(/must be a mapping/);
+  });
+
+  test("Google: 'custom' cannot hold a standard member", () => {
+    expect(() => load(GOOGLE,
+      fullModel('dataset', { ai_context: { custom: { synonyms: ['x'] } } })))
+      .toThrow(/cannot hold 'synonyms'/);
+  });
+
+  test("Google: member names are case-sensitive, so custom.Synonyms is custom", () => {
+    const m = load(GOOGLE,
+      fullModel('dataset', { ai_context: { custom: { Synonyms: ['x'] } } })).models[0];
+    expect(m.entities[0].aiContext).toEqual({ additionalProperties: { Synonyms: ['x'] } });
+  });
+
+  test("vanilla: a sibling named 'custom' is a custom member like any other", () => {
+    const m = load(VANILLA,
+      fullModel('dataset', { ai_context: { custom: { a: 1 } } })).models[0];
+    expect(m.entities[0].aiContext).toEqual({ additionalProperties: { custom: { a: 1 } } });
+  });
+
+  test("vanilla: 'Synonyms' is a custom member, not a synonym", () => {
+    const m = load(VANILLA,
+      fullModel('dataset', { ai_context: { Synonyms: ['x'] } })).models[0];
+    expect(m.entities[0].aiContext).toEqual({ additionalProperties: { Synonyms: ['x'] } });
+  });
+
+  test('a non-string example is rejected, not dropped, in both flavors', () => {
+    for (const v of FLAVORS) {
+      expect(() => load(v, fullModel('dataset', { ai_context: { examples: ['ok', 3] } })))
+        .toThrow(/examples/);
+    }
+  });
+
+  test('YAML values with no JSON counterpart (!!timestamp, !!binary, !!set) stay text', () => {
+    const { models } = loadModels(`
+version: '0.2.0.dev0'
+semantic_model:
+  - name: m
+    datasets:
+      - name: orders
+        source: p.d.orders
+        primary_key: [id]
+        ai_context:
+          reviewed: !!timestamp 2025-01-01
+          blob: !!binary aGk=
+          tags: !!set {a: null, b: null}
+`);
+    expect(models[0].entities[0].aiContext).toEqual({
+      additionalProperties: {
+        reviewed: '2025-01-01',
+        blob: 'aGk=',
+        tags: { a: null, b: null },
+      },
+    });
+  });
+
+  test('the string shorthand is instructions only', () => {
+    for (const v of FLAVORS) {
+      const m = load(v, fullModel('dataset', { ai_context: 'Use me' })).models[0];
+      expect(m.entities[0].aiContext).toEqual({ instructions: 'Use me' });
+    }
+  });
+});
+
+describe('custom_extensions: where each vendor block is accepted', () => {
+  const block = (vendor_name: string, data = '{}') => ({ vendor_name, data });
+
+  test('a third-party block is carried at all five levels, in both flavors', () => {
+    for (const v of FLAVORS) {
+      for (const level of LEVELS) {
+        const m = load(v, fullModel(level, { custom_extensions: [block('ACME', '{"a":1}')] }))
+          .models[0];
+        expect(irAt(m, level).customExtensions)
+          .toEqual([{ vendorName: 'ACME', data: '{"a":1}' }]);
+      }
+    }
+  });
+
+  test('Google: a GOOGLE block is rejected at every level', () => {
+    for (const level of LEVELS) {
+      expect(() => load(GOOGLE, fullModel(level, { custom_extensions: [block('GOOGLE')] })))
+        .toThrow(/'GOOGLE' custom_extensions block is not accepted/);
+    }
+  });
+
+  test('vanilla: a GOOGLE block is rejected on a field only', () => {
+    for (const level of LEVELS) {
+      const run = () => load(VANILLA, fullModel(level, { custom_extensions: [block('GOOGLE')] }));
+      if (level === 'field') {
+        expect(run).toThrow(/cannot carry a 'GOOGLE' custom_extensions block on a field/);
+      } else {
+        expect(irAt(run().models[0], level).customExtensions)
+          .toEqual([{ vendorName: 'GOOGLE', data: '{}' }]);
+      }
+    }
+  });
+
+  test("vendor names are case-sensitive: a 'Google' block is third-party", () => {
+    for (const v of FLAVORS) {
+      for (const level of LEVELS) {
+        const m = load(v, fullModel(level, { custom_extensions: [block('Google')] })).models[0];
+        expect(irAt(m, level).customExtensions).toEqual([{ vendorName: 'Google', data: '{}' }]);
+      }
+    }
+  });
+
+  test('several blocks from one vendor are kept in order', () => {
+    const m = load(VANILLA, fullModel('field', {
+      custom_extensions: [block('ACME', '{"n":1}'), block('ACME', '{"n":2}')],
+    })).models[0];
+    expect(irAt(m, 'field').customExtensions).toEqual([
+      { vendorName: 'ACME', data: '{"n":1}' },
+      { vendorName: 'ACME', data: '{"n":2}' },
+    ]);
+  });
+});
+
+describe('relationship description', () => {
+  test('vanilla: a plain description is rejected, naming the GOOGLE-block form', () => {
+    expect(() => load(VANILLA, fullModel('relationship', { description: 'd' })))
+      .toThrow(/cannot carry a plain 'description'[\s\S]*vendor_name: GOOGLE/);
+  });
+  test('Google: a plain description loads', () => {
+    const m = load(GOOGLE, fullModel('relationship', { description: 'd' })).models[0];
+    expect(m.relationships[0].description).toBe('d');
+  });
+  test('vanilla: a description inside a GOOGLE block loads', () => {
+    const m = load(VANILLA, fullModel('relationship', {
+      custom_extensions: [{ vendor_name: 'GOOGLE', data: '{"description": "d"}' }],
+    })).models[0];
+    expect(m.relationships[0].customExtensions)
+      .toEqual([{ vendorName: 'GOOGLE', data: '{"description": "d"}' }]);
+  });
+});
+
+describe('metric entity anchor', () => {
+  const countStar = (patch = {}) => fullModel('metric', { expression: expr('COUNT(*)'), ...patch });
+
+  test('Google: an anchor sets entity and authoredEntity, with no warning', () => {
+    const { models, warnings } = load(GOOGLE, countStar({ entity: 'orders' }));
+    expect(models[0].metrics[0].entity).toBe('orders');
+    expect(models[0].metrics[0].authoredEntity).toBe('orders');
+    expect(warnings.some(w => w.includes('references no known entity'))).toBe(false);
+  });
+  test('Google: an authored anchor wins over the expression', () => {
+    const m = load(GOOGLE, fullModel('metric', { entity: 'customers' })).models[0];
+    expect(m.metrics[0].entity).toBe('customers');
+  });
+  test('vanilla: an anchor is rejected with a pointer to the alternatives', () => {
+    expect(() => load(VANILLA, countStar({ entity: 'orders' })))
+      .toThrow(/'entity' is a '0.2.0.dev0\/google' extension/);
+  });
+  test('without an anchor the entity is inferred, and authoredEntity is unset', () => {
+    for (const v of FLAVORS) {
+      const m = load(v, fullModel()).models[0];
+      expect(m.metrics[0].entity).toBe('orders');
+      expect(m.metrics[0].authoredEntity).toBeUndefined();
+    }
+  });
+  test('COUNT(*) without an anchor still warns', () => {
+    const { warnings } = load(GOOGLE, countStar());
+    expect(warnings.some(w => w.includes('references no known entity'))).toBe(true);
+  });
+  test('an anchor naming an unknown dataset is rejected', () => {
+    expect(() => load(GOOGLE, countStar({ entity: 'nope' })))
+      .toThrow(/'entity' names 'nope', which is not a dataset in this model/);
+  });
+});
+
+describe('datatype casing follows the flavor', () => {
+  // [input, vanilla result, google result]; null means rejected.
+  const cases: [string|undefined, string|undefined|null, string|undefined|null][] = [
+    ['Integer', 'Integer', 'Integer'],
+    ['integer', null, 'Integer'],
+    ['DATETIMETZ', null, 'DateTimeTz'],
+    ['datetime', null, 'DateTime'],
+    ['datetimetz', null, 'DateTimeTz'],
+    ['Opaque', undefined, undefined],
+    ['opaque', null, undefined],
+    [undefined, undefined, undefined],
+    ['VARCHAR', null, null],
+  ];
+  for (const [input, vanilla, google] of cases) {
+    for (const [v, want] of [[VANILLA, vanilla], [GOOGLE, google]] as const) {
+      test(`${v}: ${input ?? '(omitted)'} -> ${want === null ? 'rejected' : want}`, () => {
+        const patch = input === undefined ? {} : { datatype: input };
+        const run = () => load(v, fullModel('field', patch));
+        if (want === null) {
+          expect(run).toThrow(new RegExp(`datatype '${input}' is not valid in a '${v}' document`));
+        } else {
+          expect(irAt(run().models[0], 'field').type).toBe(want);
+        }
+      });
+    }
+  }
+  test('a metric datatype is normalized too', () => {
+    const m = load(GOOGLE, fullModel('metric', { datatype: 'integer' })).models[0];
+    expect(m.metrics[0].type).toBe('Integer');
+    expect(() => load(VANILLA, fullModel('metric', { datatype: 'integer' })))
+      .toThrow(/datatype 'integer' is not valid/);
+  });
+});
+
+describe('what a vanilla document must bind', () => {
+  const opts = { bindingOptional: true };
+  const unbound: [string, (m: any) => void, RegExp][] = [
+    ['a dataset with no source', m => { delete m.datasets[0].source; },
+      /dataset 'orders': a 0\.2\.0\.dev0 document requires 'source'\. Only 0\.2\.0\.dev0\/google lets a dataset leave it to a profile\./],
+    ['a field with no expression', m => { delete m.datasets[0].fields[1].expression; },
+      /field 'orders\.customer_id': a 0\.2\.0\.dev0 document requires 'expression'\. Only 0\.2\.0\.dev0\/google lets a field leave it to a profile\./],
+    ['a relationship with no columns',
+      m => { delete m.relationships[0].from_columns; delete m.relationships[0].to_columns; },
+      /relationship 'orders_to_customers': a 0\.2\.0\.dev0 document requires 'from_columns'\. Only 0\.2\.0\.dev0\/google lets a relationship leave it to a profile\./],
+  ];
+  for (const [name, unbind, message] of unbound) {
+    test(`${name} is rejected in vanilla, with or without bindingOptional`, () => {
+      const m = fullModel(); unbind(m);
+      expect(() => load(VANILLA, m)).toThrow(message);
+      expect(() => load(VANILLA, m, opts)).toThrow(message);
+    });
+    test(`${name} is still rejected when the document carries a GOOGLE block`, () => {
+      const m = fullModel('model', { custom_extensions: [{ vendor_name: 'GOOGLE', data: '{}' }] });
+      unbind(m);
+      expect(() => load(VANILLA, m, opts)).toThrow(message);
+    });
+    test(`${name} loads in the Google flavor`, () => {
+      const m = fullModel(); unbind(m);
+      expect(load(GOOGLE, m, opts).models).toHaveLength(1);
+    });
+  }
+  test('a half-bound relationship is caught by the schema', () => {
+    const m = fullModel(); delete m.relationships[0].to_columns;
+    expect(() => load(VANILLA, m, opts)).toThrow(/from_columns and to_columns/);
+  });
+});
+
+describe('closed objects: custom_extensions and dimension', () => {
+  for (const v of FLAVORS) {
+    test(`${v}: an unknown key inside a custom_extensions entry is rejected`, () => {
+      expect(() => load(v, fullModel('dataset', {
+        custom_extensions: [{ vendor_name: 'ACME', data: '{}', vendor: 'ACME' }],
+      }))).toThrow(/vendor/);
+    });
+    test(`${v}: an unknown key inside dimension is rejected`, () => {
+      expect(() => load(v, fullModel('field', {
+        dimension: { is_time: true, is_tme: true },
+      }))).toThrow(/is_tme/);
+    });
+  }
 });

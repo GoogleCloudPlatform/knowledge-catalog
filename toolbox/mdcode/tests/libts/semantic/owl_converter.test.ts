@@ -233,8 +233,9 @@ describe('org ontology exercises datatypes, keys, and binding', () => {
       lastLogin: 'DateTime',
       startDate: 'Date',
     });
-    // A range outside the mapped set falls back to Opaque.
-    expect(project.fields.find(f => f.name === 'notes')!.type).toBe('Opaque');
+    // A range outside the mapped set is emitted as Opaque, which the loader
+    // reads as no type (the same as leaving `datatype` out).
+    expect(project.fields.find(f => f.name === 'notes')!.type).toBeUndefined();
 
     // Keys: single, and inverse-functional employeeId that IS the key is NOT
     // also emitted as a unique_keys constraint.
@@ -430,8 +431,9 @@ describe('datatype mapping (rdfs:range xsd:* -> DataType)', () => {
       tm: 'Time',
       dtm: 'DateTime',
       tz: 'DateTimeTz',
-      un: 'Opaque',  // range outside the set
-      nr: 'Opaque',  // no range at all
+      // Emitted as Opaque, which loads as no type:
+      un: undefined,  // range outside the set
+      nr: undefined,  // no range at all
     });
   });
 
