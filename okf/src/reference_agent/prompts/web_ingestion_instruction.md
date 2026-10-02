@@ -255,9 +255,7 @@ If a page surfaces several of these at once (a typical "data model"
 or "schema reference" page), make **multiple** `write_concept_doc`
 calls — one per affected concept — rather than dumping everything into
 one doc.
-
 ## Style and integrity
-
 - Record in `sources` **only** URLs you actually fetched (or URLs already
   present in the doc you're refining). Do not invent URLs.
 - Be concrete. Use concrete field names, concrete enum values, concrete
