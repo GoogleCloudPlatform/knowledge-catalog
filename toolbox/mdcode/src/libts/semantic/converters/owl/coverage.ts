@@ -31,9 +31,15 @@ export interface OwlCoverageInput {
   };
 }
 
-const PRUNED =
-    'pruned (--prune-unbound): not bound, not an ancestor of a bound entity, ' +
-    'and not defined over one';
+// The drop reasons of what `--prune-unbound` removed, by why it went (see
+// semantic/prune.ts).
+const PRUNED = 'pruned (--prune-unbound)';
+const PRUNED_ENTITY = `${PRUNED}: not bound, not an ancestor of a bound ` +
+    'entity, and not defined over one';
+const PRUNED_ENDPOINT = `${PRUNED}: an endpoint entity was pruned`;
+const PRUNED_ABSTRACT =
+    `${PRUNED}: an abstract relationship with no kept sub-relationship`;
+const PRUNED_CONSTRAINT = `${PRUNED}: the constraint names a pruned entity`;
 
 // What an outcome hangs on: when that element was pruned, the outcome is a
 // drop.
@@ -56,19 +62,39 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
   const prunedRels = new Set(input.pruned?.relationships ?? []);
   const prunedConstraints = new Set(input.pruned?.constraints ?? []);
 
-  const isPruned = (o: Owner) =>
-      (o.entity !== undefined && prunedEntities.has(o.entity)) ||
-      (o.relationship !== undefined && prunedRels.has(o.relationship)) ||
-      (o.constraint !== undefined && prunedConstraints.has(o.constraint));
+  // Why the owner of an outcome was pruned, or undefined when it was kept.
+  const prunedBecause = (o: Owner): string|undefined => {
+    if (o.entity !== undefined && prunedEntities.has(o.entity)) {
+      return PRUNED_ENTITY;
+    }
+    if (o.relationship !== undefined && prunedRels.has(o.relationship)) {
+      const r = rels.get(o.relationship);
+      return r && !prunedEntities.has(r.source.entity) &&
+              !prunedEntities.has(r.destination.entity) ?
+          PRUNED_ABSTRACT :
+          PRUNED_ENDPOINT;
+    }
+    if (o.constraint !== undefined && prunedConstraints.has(o.constraint)) {
+      return PRUNED_CONSTRAINT;
+    }
+    return undefined;
+  };
   // Records a compiled / hinted outcome, or a drop when its owner was pruned.
   const land =
       (outcome: Exclude<CoverageOutcome, 'dropped'>, construct: string,
        subject: string, owner: Owner, target: string, reason?: string) => {
-        if (isPruned(owner)) {
-          rec.dropped(construct, subject, PRUNED);
+        const pruned = prunedBecause(owner);
+        if (pruned !== undefined) {
+          rec.dropped(construct, subject, pruned);
         } else {
           rec.add({construct, subject, outcome, target, reason});
         }
+      };
+  // Records a drop; when its owner was pruned, the prune is the reason (it
+  // would have gone whatever the mapping made of it).
+  const drop =
+      (construct: string, subject: string, owner: Owner, reason: string) => {
+        rec.dropped(construct, subject, prunedBecause(owner) ?? reason);
       };
   // The mapper's warning about a construct: the first warning containing all
   // needles of any needle set, preferring one that reports a skip.
@@ -285,17 +311,15 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
       if (s === P) continue;
       const subject = `${P} SubPropertyOf ${s}`;
       if (!objectNames.has(s)) {
-        rec.dropped(
-            'rdfs:subPropertyOf', subject,
-            `'${s}' is not an object property of this ontology`);
+        drop('rdfs:subPropertyOf', subject, owner,
+             `'${s}' is not an object property of this ontology`);
       } else if (r?.extends?.includes(s)) {
         land('compiled', 'rdfs:subPropertyOf', subject, owner,
              `relationship ${P} extends`);
       } else {
-        rec.dropped(
-            'rdfs:subPropertyOf', subject,
-            r ? `'${s}' did not become a relationship` :
-                `'${P}' did not become a relationship`);
+        drop('rdfs:subPropertyOf', subject, owner,
+             r ? `'${s}' did not become a relationship` :
+                 `'${P}' did not become a relationship`);
       }
     }
 
@@ -309,10 +333,9 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
         land('compiled', 'owl:inverseOf', subject, {relationship: fwd.name},
              `relationship ${fwd.name} inverse ${fwd.inverse}`);
       } else {
-        rec.dropped(
-            'owl:inverseOf', subject,
-            why([[`'${P}'`, 'inverse'], [`'${q}'`, `'${P}'`, 'inverse']],
-                'not folded into an inverse'));
+        drop('owl:inverseOf', subject, owner,
+             why([[`'${P}'`, 'inverse'], [`'${q}'`, `'${P}'`, 'inverse']],
+                 'not folded into an inverse'));
       }
     }
 
@@ -323,13 +346,12 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
             land('hinted', construct, P, owner,
                  `${carrier} ai_context.instructions`, hint);
           } else if (!carrier) {
-            rec.dropped(
-                construct, P,
-                folded ? `stated on '${P}', which is the inverse reading of ${
-                             folded.name}; not carried` :
-                         'the relationship was not imported');
+            drop(construct, P, owner,
+                 folded ? `stated on '${P}', which is the inverse reading of ${
+                              folded.name}; not carried` :
+                          'the relationship was not imported');
           } else {
-            rec.dropped(construct, P, 'no native construct');
+            drop(construct, P, owner, 'no native construct');
           }
         };
     characteristic(
@@ -362,21 +384,19 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
              `${carrier} ai_context.synonyms`,
              'an equivalence is recorded as alternate names');
       } else {
-        rec.dropped('owl:equivalentProperty', subject,
-                    'the relationship was not imported');
+        drop('owl:equivalentProperty', subject, owner,
+             'the relationship was not imported');
       }
     }
     for (const q of dedupe(p.propertyDisjointWith.map(localName))) {
-      rec.dropped(
-          'owl:propertyDisjointWith', `${P} DisjointWith ${q}`,
-          'no native construct for disjoint properties');
+      drop('owl:propertyDisjointWith', `${P} DisjointWith ${q}`, owner,
+           'no native construct for disjoint properties');
     }
     for (const chain of p.propertyChain) {
-      rec.dropped(
-          'owl:propertyChainAxiom',
-          `${P} = ${chain.map(localName).join(' o ')}`,
-          'no native construct for a property chain (a derived relationship ' +
-              'needs its join path spelled out)');
+      drop('owl:propertyChainAxiom',
+           `${P} = ${chain.map(chainMember).join(' o ')}`, owner,
+           'no native construct for a property chain (a derived relationship ' +
+               'needs its join path spelled out)');
     }
     if (carrier) {
       annotateRelationship(P, p);
@@ -384,9 +404,9 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
     } else if (folded) {
       for (const [has, construct] of annotationKinds(p)) {
         if (has) {
-          rec.dropped(construct, P,
-                      `annotations of an inverse reading (folded into ${
-                          folded.name}) are not carried`);
+          drop(construct, P, owner,
+               `annotations of an inverse reading (folded into ${
+                   folded.name}) are not carried`);
         }
       }
     }
@@ -412,11 +432,10 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
             x => x.startsWith(`class '${C}': its owl:equivalentClass`));
         const blocked =
             w && /defined entity \((.*)\); imported as/.exec(w)?.[1];
-        rec.dropped(
-            'owl:equivalentClass (defined class)', subject,
-            `not compiled to a defined entity${
-                blocked ? ` (${blocked})` : ''}; imported as a subclass whose ` +
-                `restrictions become constraints`);
+        drop('owl:equivalentClass (defined class)', subject, {entity: C},
+             `not compiled to a defined entity${
+                 blocked ? ` (${blocked})` : ''}; imported as a subclass ` +
+                 `whose restrictions become constraints`);
       }
     }
     for (const r of c.restrictions) {
@@ -435,7 +454,7 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
       }
       const w = warnings.find(x => x.startsWith(`restriction '${axiom}'`));
       if (w) {
-        rec.dropped('owl:Restriction', axiom, w);
+        drop('owl:Restriction', axiom, {entity: C}, w);
         continue;
       }
       land('compiled', 'owl:Restriction', axiom, {entity: C}, 'model structure',
@@ -443,10 +462,10 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
                'value; an edge ends at its declared destination)');
     }
     if (c.oneOf.length) {
-      rec.dropped(
-          'owl:oneOf', `${C} = {${c.oneOf.map(localName).join(' ')}}`,
-          'an enumeration of individuals: individuals are not modeled (the ' +
-              'class is imported as an entity whose rows are its members)');
+      drop('owl:oneOf', `${C} = {${c.oneOf.map(localName).join(' ')}}`,
+           {entity: C},
+           'an enumeration of individuals: individuals are not modeled (the ' +
+               'class is imported as an entity whose rows are its members)');
     }
   }
 
@@ -664,6 +683,15 @@ function sameName(label: string, name: string): boolean {
 
 function dedupe(items: string[]): string[] {
   return [...new Set(items)];
+}
+
+// A property-chain member as written in a report: an anonymous inverse
+// (`^<IRI>`, see OwlObjectProperty.propertyChain) reads `inverse(p)`, and any
+// other blank node -- an IRI always has a scheme, a generated blank-node id
+// never does -- reads `[anonymous]` rather than its run-dependent id.
+function chainMember(member: string): string {
+  if (member.startsWith('^')) return `inverse(${localName(member.slice(1))})`;
+  return member.includes(':') ? localName(member) : '[anonymous]';
 }
 
 function sameList(a: readonly string[], b: readonly string[]): boolean {

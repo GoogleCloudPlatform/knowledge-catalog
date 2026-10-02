@@ -340,7 +340,8 @@ export interface OwlObjectProperty extends OwlCommonAnnotations {
   // AND repetition is meaningful (a chain may name the same property twice,
   // e.g. hasParent/hasParent for a grandparent), so it is neither reordered nor
   // deduped. Full IRIs -- the mapper shortens an in-namespace one to its local
-  // name. Empty when the property is not a chain.
+  // name; an anonymous inverse member (`[ owl:inverseOf p ]`) is `^` + p's IRI
+  // (the SPARQL inverse-path form). Empty when the property is not a chain.
   propertyChain: string[][];
   // owl:SymmetricProperty -- the edge holds both ways (`a rel b` implies
   // `b rel a`). Carried verbatim; no native OSI home.

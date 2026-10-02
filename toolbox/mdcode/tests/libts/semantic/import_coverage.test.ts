@@ -213,15 +213,74 @@ describe('pruned elements are reported as dropped', () => {
          const {coverage, prune} =
              convertOwlToOsi(SHOP, 'shop', {bound: ['Order', 'Customer']});
          expect(prune?.pruned.entities).toContain('Department');
+         expect(find(coverage, 'owl:Class', 'Department')).toMatchObject({
+           outcome: 'dropped',
+           reason: 'pruned (--prune-unbound): not bound, not an ancestor of ' +
+               'a bound entity, and not defined over one',
+         });
          const reason = find(coverage, 'owl:Class', 'Department')?.reason;
-         expect(reason).toStartWith('pruned (--prune-unbound)');
          expect(find(coverage, 'owl:DatatypeProperty', 'Department.departmentId'))
              .toMatchObject({outcome: 'dropped', reason});
+         // An edge goes with its endpoint, and says so.
          expect(find(coverage, 'owl:TransitiveProperty', 'partOf'))
-             .toMatchObject({outcome: 'dropped', reason});
+             .toMatchObject({
+               outcome: 'dropped',
+               reason: 'pruned (--prune-unbound): an endpoint entity was pruned',
+             });
+         // A construct the mapping drops anyway reports the prune when its
+         // owner was pruned.
+         expect(find(coverage, 'owl:oneOf', 'Color = {Red Blue}')?.reason)
+             .toBe(reason);
          // What was kept keeps its outcome.
          expect(find(coverage, 'owl:ObjectProperty', 'placedBy')?.outcome)
              .toBe('compiled');
+       });
+
+  test('a kept class loses the constraints that name a pruned one', () => {
+    const ttl = `${PREFIXES}
+      ex:Order a owl:Class ; owl:hasKey ( ex:orderId ) ;
+          rdfs:subClassOf [ a owl:Restriction ; owl:onProperty ex:servedBy ;
+              owl:someValuesFrom ex:Department ] .
+      ex:Department a owl:Class ; owl:hasKey ( ex:departmentId ) .
+      ex:orderId a owl:DatatypeProperty ; rdfs:domain ex:Order ;
+          rdfs:range xsd:string .
+      ex:departmentId a owl:DatatypeProperty ; rdfs:domain ex:Department ;
+          rdfs:range xsd:string .
+      ex:servedBy a owl:ObjectProperty ; rdfs:domain ex:Order ;
+          rdfs:range ex:Department .
+    `;
+    const {coverage, prune} = convertOwlToOsi(ttl, 'shop', {bound: ['Order']});
+    expect(prune?.pruned.constraints.length).toBe(1);
+    const restriction = coverage.find(
+        e => e.construct === 'owl:Restriction' &&
+            e.subject.startsWith('Order SubClassOf'));
+    expect(restriction).toMatchObject({
+      outcome: 'dropped',
+      reason: 'pruned (--prune-unbound): the constraint names a pruned entity',
+    });
+    expect(find(coverage, 'owl:Class', 'Order')?.outcome).toBe('compiled');
+  });
+});
+
+describe('a property chain reads the same on every run', () => {
+  test('an anonymous inverse member is written inverse(p), not a blank id',
+       () => {
+         const ttl = `${PREFIXES}
+           ex:Order a owl:Class .
+           ex:Customer a owl:Class .
+           ex:placedBy a owl:ObjectProperty ; rdfs:domain ex:Order ;
+               rdfs:range ex:Customer .
+           ex:coBuyer a owl:ObjectProperty ; rdfs:domain ex:Customer ;
+               rdfs:range ex:Customer ;
+               owl:propertyChainAxiom ( [ owl:inverseOf ex:placedBy ]
+                                        ex:placedBy ) .
+         `;
+         const {coverage} = convertOwlToOsi(ttl, 'shop');
+         expect(find(
+                    coverage, 'owl:propertyChainAxiom',
+                    'coBuyer = inverse(placedBy) o placedBy')
+                    ?.outcome)
+             .toBe('dropped');
        });
 });
 
