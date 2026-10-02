@@ -20,7 +20,8 @@ set-level axioms, and per-term annotations (`rdfs:seeAlso`, `owl:deprecated`, �
 — are **not imported**. The result is a clean semantic model, never an OWL
 document wrapped in opaque metadata. What maps and what drops is listed in [How
 each OWL construct maps](#how-each-owl-construct-maps) and
-[Limitations](#limitations).
+[Limitations](#limitations); what one import did with each construct it read is
+in its [coverage report](#6-coverage-report-proposed) (proposed).
 
 ## 1. The OWL file
 
@@ -134,6 +135,22 @@ literal types that become each field's `datatype`.
 $ kcmd owl import sales.owl.ttl
 converted 2 classes, 1 object property, 9 datatype properties
 wrote catalog/EntryGroups/<entryGroup>/sales.yaml
+coverage (owl import of model 'sales'):
+  construct                      compiled  hinted  dropped
+  owl:Class                             2       0        0
+  owl:hasKey                            2       0        0
+  owl:DatatypeProperty                  9       0        0
+  rdfs:range                            9       0        0
+  owl:InverseFunctionalProperty         1       0        0
+  rdfs:comment                          5       0        0
+  rdfs:label                            4       0        0
+  skos:example                          1       0        0
+  owl:ObjectProperty                    1       0        0
+  skos:altLabel                         1       0        0
+  owl:Ontology                          1       0        0
+  owl:versionInfo                       1       0        0
+  total                                37       0        0
+wrote catalog/EntryGroups/<entryGroup>/coverage.json
 ```
 
 The model name comes from the file (`sales.owl.ttl` → `sales`); pass `--name
@@ -146,6 +163,17 @@ instead. Either way it is a purely **logical** model — `kcmd push` publishes i
 to Knowledge Catalog as-is, while a BigQuery or Spanner Graph deploy needs each
 relationship's join columns added to the model plus a [binding
 profile](profiles.md) (see [§4](#4-going-from-ontology-to-a-running-graph-binding)).
+
+The `coverage` block is the coverage summary: every construct the import read,
+counted by what became of it. The full report goes to the `coverage.json` named
+on the last line (see [§6](#6-coverage-report-proposed)). The other examples on
+this page leave both out. Three flags are proposed additions:
+
+| Flag | Effect |
+|---|---|
+| `--prune-unbound [binding]` | Keep only the entities a binding gives a `source`, their ancestors and the defined entities over them, and print what was removed. See [§5](#5-pruning-to-what-is-bound-proposed). |
+| `--coverage <path>` | Write the coverage report here instead of to `coverage.json` beside the written model. |
+| `--no-coverage` | Print no coverage summary and write no coverage report. |
 
 ### Importing a modular ontology (several files)
 
@@ -1113,6 +1141,175 @@ $ kcmd push --profile warehouse   # merges the binding, then CREATE OR REPLACE P
 See [One logical model, many physical bindings](profiles.md) for the full profile
 contract — what a profile may and may not set, how merge and prune work, and how
 one logical model binds to several stores.
+
+## 5. Pruning to what is bound (proposed)
+
+A large ontology declares far more classes than one deployment binds to tables:
+upper-ontology concepts, classes another team owns, vocabulary the model only
+refers to. `--prune-unbound` keeps only what a binding can use, so the written
+model, its catalog entries and every review stay the size of the deployment.
+It keeps:
+
+- the **bound** entities: those the binding gives a `source`;
+- their **ancestors** (transitive `extends`): they stay labels on the bound
+  subtypes, and their fields flatten down;
+- the **defined** entities whose base is kept: each is a membership filter over
+  a kept table, not a table of its own (see [Defined
+  classes](#defined-classes-owlequivalentclass)).
+
+Everything else is removed, together with what refers to it:
+
+- relationships with a removed endpoint;
+- abstract relationships left with no sub-relationship, and `extends`
+  references to a removed relationship;
+- constraints whose rule or description names a removed entity or
+  relationship;
+- glossary `defines` links to a removed entity. The term itself stays: it is
+  vocabulary.
+
+The binding is a [binding profile](profiles.md), or any model document with
+inline bindings; only entities with a non-empty `source` count. The import looks
+for it in this order:
+
+1. the path given to the flag: `--prune-unbound model/shop.profiles/bigquery.yaml`;
+2. with the bare flag, the model's binding profiles in the scope's
+   semantic-model layout (`<model>.profiles/*.yaml`);
+3. else the `<model>.profiles/*.yaml` beside `--out`.
+
+The import fails, and writes nothing, when no binding is found, when the named
+file does not exist, or when the binding binds no entity of the model (pruning
+would remove everything). A bound name that is not an entity of the model is
+warned about and ignored.
+
+Take an ontology where `Customer` and `Supplier` extend `Party`, `LargeOrder`
+is defined over `Order`, and `Shipment` and `Department` have no table. Its
+relationships are `placedBy` and `suppliedBy` (both extending the abstract
+`involves`, `Order` → `Party`), `shippedIn` and `partOf`. The profile binds
+`Customer` and `Order`:
+
+```console
+$ kcmd owl import ontology/shop.ttl --out model/shop.yaml --prune-unbound
+--prune-unbound: 2 bound entities in model/shop.profiles/bigquery.yaml
+converted 7 classes, 6 object properties, 6 datatype properties
+pruned to the bound entities: kept 4 entities (2 bound, 1 ancestor, 1 defined); removed 3 entities, 3 relationships, 1 constraint
+  removed entities: Supplier, Shipment, Department
+  removed relationships: suppliedBy, shippedIn, partOf
+  removed constraints: Order_shippedIn_max_1
+  removed glossary links: shipment-term -> Shipment
+wrote model/shop.yaml
+```
+
+The `converted` counts are those of the whole ontology, before pruning.
+`involves` stays because `placedBy`, which extends it, is kept. The coverage
+report that follows lists each removed element as `dropped`, with a reason that
+starts `pruned (--prune-unbound):`, and records the removed names under
+`pruned` (see [§6](#6-coverage-report-proposed)).
+
+This is not the pruning `kcmd push` does. A push that deploys a graph records
+only the bound view in Knowledge Catalog but leaves the model document whole.
+`--prune-unbound` removes the unbound part from the document itself, so every
+later push, skill and review sees only what is bound. After binding more
+entities, re-run the import with the flag.
+
+## 6. Coverage report (proposed)
+
+The warnings an import prints explain single gaps. The coverage report shows the
+whole import: every occurrence of every construct the importer recognizes, each
+with one outcome.
+
+| Outcome | Meaning |
+|---|---|
+| `compiled` | It became a native part of the model: an entity, a field, a key, `extends`, a relationship or its `inverse`, a defined entity's membership predicate, a constraint, or an annotation in its own slot (`description`, field `label`, `ai_context.synonyms` or `examples`). Tools act on it. |
+| `hinted` | Only agent-facing text carries it: the meaning survives, but nothing enforces or lowers it. These are `owl:TransitiveProperty` and `owl:SymmetricProperty` (relationship instructions), `owl:equivalentClass` and `owl:equivalentProperty` to a named term (synonyms), and `owl:deprecated` with its `rdfs:seeAlso` replacement (a description prefix and an instruction). |
+| `dropped` | It is not in the model. The reason is the importer's warning when it gave one, else the mapping policy. |
+
+Each entry names the construct by its vocabulary term, the occurrence in a form
+that reads on its own, and where it landed or why it did not:
+
+```json
+[
+  {"construct": "rdfs:subClassOf", "subject": "Customer SubClassOf Party",
+   "outcome": "compiled", "target": "entity Customer extends"},
+  {"construct": "owl:TransitiveProperty", "subject": "partOf",
+   "outcome": "hinted", "target": "relationship partOf ai_context.instructions",
+   "reason": "no native construct: agents are told the edge is transitive and to follow it with a bounded quantified path"},
+  {"construct": "owl:propertyChainAxiom",
+   "subject": "servedBy = placedBy o assignedTo", "outcome": "dropped",
+   "reason": "no native construct for a property chain (a derived relationship needs its join path spelled out)"}
+]
+```
+
+A chain member that is an anonymous inverse (`[ owl:inverseOf p ]`) reads
+`inverse(p)`, so a subject is the same on every run.
+
+Take an ontology with one occurrence of most constructs: a subclass, keys, a
+functional datatype property, an inverse pair, a property chain, a transitive
+and a symmetric property, a named equivalence, a defined class, an enumeration
+and a deprecated class. Its summary reads:
+
+```console
+coverage (owl import of model 'shop'):
+  construct                            compiled  hinted  dropped
+  owl:Class                                   8       0        0
+  rdfs:subClassOf                             2       0        0
+  owl:hasKey                                  3       0        0
+  owl:DatatypeProperty                        4       0        0
+  rdfs:range                                  4       0        0
+  owl:FunctionalProperty                      1       0        0
+  owl:ObjectProperty                          6       0        0
+  owl:inverseOf                               1       0        0
+  owl:propertyChainAxiom                      0       0        1
+  owl:TransitiveProperty                      0       1        0
+  owl:SymmetricProperty                       0       1        0
+  owl:equivalentClass (named)                 0       1        0
+  owl:equivalentClass (defined class)         1       0        0
+  owl:Restriction                             1       0        0
+  owl:oneOf                                   0       0        1
+  rdfs:comment                                1       0        0
+  skos:altLabel                               1       0        0
+  owl:deprecated                              0       1        0
+  rdfs:seeAlso                                0       1        0
+  owl:Ontology                                1       0        0
+  total                                      34       5        2
+```
+
+An outcome is a fact about the output. The report is built after the mapping,
+by comparing the parsed ontology with the imported model, rather than by
+repeating the mapper's decisions. Some outcomes worth knowing:
+
+- An `owl:Restriction` compiles into a constraint, into a defined entity's
+  membership predicate, or into the model structure when the model already
+  guarantees it (a field holds one value; an edge ends at its declared
+  destination).
+- `owl:FunctionalProperty` on a datatype property compiles by construction: a
+  field holds at most one value.
+- An `owl:equivalentClass` definition that does not compile to a defined entity
+  is dropped with the blocking reason. The class is then imported as a subclass
+  whose restrictions become constraints.
+- The label and comment of an inverse reading are dropped once it is folded
+  into its forward relationship: the inverse is a name, not a second
+  relationship.
+- A named individual compiles only when a compiled definition uses its code.
+  Otherwise it is dropped as instance data, like `owl:AllDifferent`.
+- With [`--prune-unbound`](#5-pruning-to-what-is-bound-proposed), whatever was
+  removed is dropped with the reason for the removal, whatever the mapping
+  made of it:
+  - `pruned (--prune-unbound): not bound, not an ancestor of a bound entity,
+    and not defined over one` for an entity and what it owns (its fields, keys
+    and annotations);
+  - `pruned (--prune-unbound): an endpoint entity was pruned` for a
+    relationship and its characteristics;
+  - `pruned (--prune-unbound): an abstract relationship with no kept
+    sub-relationship`;
+  - `pruned (--prune-unbound): the constraint names a pruned entity` for an
+    axiom whose constraint was removed while its class was kept.
+
+The report goes to `coverage.json` beside the written model, or to
+`--coverage <path>`; `--no-coverage` skips both the summary and the file. The
+file format, shared with [`kcmd shacl
+import`](shacl-import.md#3-coverage-report-proposed), is described in [What an
+import keeps](fidelity.md#what-an-import-keeps-proposed), together with what
+each compiled construct becomes in a BigQuery graph.
 
 ## Limitations
 

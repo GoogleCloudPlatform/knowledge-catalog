@@ -12,6 +12,8 @@ import * as context from '../libts/gcp/context';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {SemanticModelLayout} from '../libts/layouts/semantic-model';
+import * as contracts from '../libts/semantic/contract_tests';
+import {buildCoverageReport, CoverageReport, formatCoverageSummary, writeCoverageFile} from '../libts/semantic/converters/coverage';
 import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import {collectOwlSources} from '../libts/semantic/converters/owl/imports';
 import {importShacl} from '../libts/semantic/converters/shacl/import';
@@ -25,6 +27,7 @@ import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
+import {boundEntityNames, formatPruneSummary} from '../libts/semantic/prune';
 import {AvailabilityReport, DEFAULT_PROFILE, mergeProfileOntoDoc, pruneUnavailable,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {storeLine} from '../libts/semantic/runtime/store';
@@ -1209,6 +1212,17 @@ export interface OwlImportOptions {
   // (`sales.owl.ttl` -> `sales`), which is what a single-file import has
   // always done; a multi-module ontology usually wants a name of its own.
   name?: string;
+  // Proposed: prune the model to what a binding binds -- the bound entities,
+  // their ancestors and the defined entities over them (semantic/prune.ts).
+  // A path names the binding document (a binding profile, or a model document
+  // with inline bindings); the bare flag reads the model's binding profiles
+  // from the scope's layout, else the `<model>.profiles/` directory beside
+  // --out.
+  pruneUnbound?: boolean|string;
+  // Proposed: where to write the coverage report (default: `coverage.json`
+  // beside the written model document). `--no-coverage` (false) writes none
+  // and prints no coverage summary.
+  coverage?: boolean|string;
 }
 
 // Recognized OWL source extensions, stripped to derive the model name from the
@@ -1258,6 +1272,32 @@ export async function owl(
     return 1;
   }
 
+  // Proposed --prune-unbound: the entity names the binding binds.
+  let bound: string[]|undefined;
+  if (options.pruneUnbound !== undefined && options.pruneUnbound !== false) {
+    const docs =
+        await bindingDocuments(options.pruneUnbound, modelName, options.out);
+    if (typeof docs === 'string') {
+      console.error(`Error: ${docs}`);
+      return 1;
+    }
+    bound = [];
+    for (const doc of docs) {
+      for (const name of boundEntityNames(
+               fs.readFileSync(doc, 'utf8'), modelName)) {
+        if (!bound.includes(name)) bound.push(name);
+      }
+    }
+    if (!bound.length) {
+      console.error(
+          `Error: --prune-unbound: ${docs.join(', ')} binds no entity (no ` +
+          `entity with a source), so pruning would remove everything.`);
+      return 1;
+    }
+    console.log(`--prune-unbound: ${bound.length} bound ${
+        plural(bound.length, 'entity', 'entities')} in ${docs.join(', ')}`);
+  }
+
   // The named files plus every local owl:imports they reach, merged in that
   // order. collectOwlSources and convertOwlToOsi throw only on malformed
   // Turtle; main.ts's try/catch reports it.
@@ -1275,7 +1315,7 @@ export async function owl(
   const file = files.join(', ');
   const result = convertOwlToOsi(
       turtle.length === 1 ? turtle[0] : turtle, modelName,
-      {compactFlow: options.compact});
+      {compactFlow: options.compact, bound});
   for (const w of result.warnings) {
     console.warn(`Warning: ${w}`);
   }
@@ -1317,6 +1357,9 @@ export async function owl(
               datatypeProperties, 'datatype property',
               'datatype properties')}` +
       (refined.length ? ` (${refined.join(', ')})` : ''));
+  if (result.prune) {
+    console.log(formatPruneSummary(result.prune));
+  }
 
   // Sink: an explicit --out path writes directly; otherwise the semantic-model
   // layout places the document under the scope's entry group so `kcmd push`
@@ -1342,12 +1385,77 @@ export async function owl(
   }
 
   console.log(`wrote ${writtenPath}`);
+  if (options.coverage !== false) {
+    const pruned = result.prune?.pruned;
+    writeCoverage(
+        buildCoverageReport(
+            'owl', modelName, files, result.coverage,
+            pruned && {
+              entities: pruned.entities,
+              relationships: pruned.relationships,
+              constraints: pruned.constraints,
+            }),
+        options.coverage, writtenPath);
+  }
   return 0;
 }
 
 // Selects the singular or plural form based on `n` (English count agreement).
 function plural(n: number, one: string, many: string): string {
   return n === 1 ? one : many;
+}
+
+// The binding documents `owl import --prune-unbound` reads: the named file,
+// or (bare flag) the model's binding profiles in this scope's layout, else the
+// `<model>.profiles/*.yaml` beside --out. Returns an error message when there
+// is none.
+async function bindingDocuments(
+    flag: boolean|string, modelName: string,
+    out: string|undefined): Promise<string[]|string> {
+  if (flag !== true) {
+    // String(): cac parses a numeric-looking value as a number.
+    const doc = String(flag);
+    return fs.existsSync(doc) ? [doc] :
+                                `--prune-unbound: file not found: ${doc}`;
+  }
+  if (fs.existsSync('catalog.yaml')) {
+    const snapshot =
+        await kcmd.CatalogSnapshot.fromPath('.', context.ApiContext.default());
+    if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
+      const layout = snapshot.layout as SemanticModelLayout;
+      const docs = layout.profilePaths(modelName).map(p => p.path);
+      if (docs.length) return docs;
+    }
+  }
+  if (out) {
+    const dir = path.join(path.dirname(out), `${modelName}.profiles`);
+    if (fs.existsSync(dir)) {
+      const docs = fs.readdirSync(dir)
+                       .filter(f => f.endsWith('.yaml'))
+                       .sort()
+                       .map(f => path.join(dir, f));
+      if (docs.length) return docs;
+    }
+  }
+  return `--prune-unbound found no binding profile for model '${
+             modelName}' in this scope's layout${
+             out ? ' or beside --out' : ''}; name the binding document: ` +
+      `--prune-unbound <profile.yaml>.`;
+}
+
+// Prints an import's coverage summary and writes the report (proposed): to
+// the `--coverage <path>` file, else to `coverage.json` beside the model
+// document the import wrote.
+function writeCoverage(
+    report: CoverageReport, flag: boolean|string|undefined,
+    writtenPath: string): void {
+  console.log(formatCoverageSummary(report));
+  // String(): cac parses a numeric-looking value as a number.
+  const file = flag !== undefined && typeof flag !== 'boolean' ?
+      String(flag) :
+      path.join(path.dirname(writtenPath), 'coverage.json');
+  writeCoverageFile(file, report);
+  console.log(`wrote ${file}`);
 }
 
 
@@ -1361,6 +1469,10 @@ export interface ShaclImportCommandOptions {
   model?: string;
   // Write the updated document here instead of back to its source.
   out?: string;
+  // Proposed: where to write the coverage report (default: `coverage.json`
+  // beside the written model document). `--no-coverage` (false) writes none
+  // and prints no coverage summary.
+  coverage?: boolean|string;
 }
 
 // Handles `kcmd shacl <action> <shapes.ttl...>`. The only action is `import`:
@@ -1450,13 +1562,20 @@ export async function shacl(
                              `import)` :
                          ''));
 
+  let writtenPath: string;
   if (options.out) {
     fs.mkdirSync(path.dirname(path.resolve(options.out)), {recursive: true});
     fs.writeFileSync(options.out, result.yaml);
-    console.log(`wrote ${options.out}`);
+    writtenPath = options.out;
   } else {
     writeBack(result.yaml);
-    console.log(`wrote ${sourcePath}`);
+    writtenPath = sourcePath;
+  }
+  console.log(`wrote ${writtenPath}`);
+  if (options.coverage !== false) {
+    writeCoverage(
+        buildCoverageReport('shacl', result.model, files, result.coverage),
+        options.coverage, writtenPath);
   }
   return 0;
 }
@@ -1883,6 +2002,170 @@ export async function validate(options: ValidateOptions = {}): Promise<number> {
       for (const name of published.published) console.log(`Published ${name}`);
       for (const e of published.errors) console.error(`Error: [${model.name}] ${e}`);
       if (published.errors.length) failed = true;
+    }
+  }
+  return failed ? 1 : 0;
+}
+
+
+export interface ContractTestOptions {
+  /** The engine to test on. Only `bigquery` today. */
+  target?: string;
+  profile?: string|boolean;
+  /** Directory the .sql / .json files are written to. Defaults to `contract-tests`. */
+  out?: string;
+  /** Write the .sql file and the manifest and stop; run nothing. */
+  sqlOnly?: boolean;
+  /** BigQuery processing location (e.g. US). */
+  location?: string;
+  /** The k of quantified paths `{1,k}` (default 10). */
+  pathBound?: string|number;
+  /** The scope directory (default: the working directory). */
+  cwd?: string;
+}
+
+// The models of the semantic-model scope at `root`, AS AUTHORED: the selected
+// binding profile merged, inheritance unresolved -- the shape `validate` loads
+// (see there). `command` names the caller in messages.
+async function loadAuthoredModels(
+    command: string, root: string, profileOption: string|boolean|undefined,
+    ctx: context.ApiContext):
+    Promise<{models: SemanticModel[]; profile: string}|{error: string}> {
+  let snapshot: kcmd.CatalogSnapshot;
+  try {
+    snapshot = await kcmd.CatalogSnapshot.fromPath(root, ctx);
+  } catch (err: any) {
+    return {error: String(err?.message ?? err)};
+  }
+  if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {
+    return {error: `${command} runs in a semantic-model scope.`};
+  }
+  const layout = snapshot.layout as SemanticModelLayout;
+  const source = snapshot.manifest.source as SemanticModelSource;
+  const named = typeof profileOption === 'string' ? profileOption : undefined;
+  const profile = named ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
+  const docs = layout.modelDocuments();
+  if (!docs.length) return {error: 'no semantic model documents found.'};
+  const merged: Array<{name: string; text: string}> = [];
+  for (const doc of docs) {
+    if (profile === DEFAULT_PROFILE) {
+      merged.push({name: doc.name, text: doc.text});
+      continue;
+    }
+    const chosen = layout.profileDocuments(doc.name).find(p => p.name === profile);
+    if (!chosen) {
+      return {error: `unknown binding profile '${profile}' for model '${doc.name}'.`};
+    }
+    const res = mergeProfileOntoDoc(doc.text, chosen.text, profile);
+    if ('error' in res) return {error: `[${doc.name}] ${res.error}`};
+    for (const w of res.warnings) console.warn(`Warning: [${doc.name}] ${w}`);
+    merged.push({name: doc.name, text: res.text});
+  }
+  const loaded = loadSemanticModels(
+      merged,
+      {defaultProject: source.project ?? ctx.project, bindingOptional: true});
+  if (loaded.error) return {error: loaded.error};
+  for (const w of loaded.warnings) console.warn(`Warning: ${w}`);
+  return {models: loaded.models.map(m => m.model), profile};
+}
+
+// Model-derived contract tests (proposed): `kcmd test --target bigquery`.
+//
+// Generates, from the model alone, the tests in contract_tests.ts (defined-
+// class membership, transitive closure, validation queries, and any family
+// registered there), writes them to `--out` (a .sql file and a JSON manifest),
+// and -- unless `--sql-only`, or there are no credentials -- runs them against
+// the deployed graph and the bound tables and prints pass / fail. Queries
+// only: nothing is created or modified.
+//
+// Exit code: 1 when a test fails or errors (or on a usage / load error); 0
+// otherwise. Unlike `validate`, whose counts describe the data, a failing
+// contract test means the deployed graph does not do what the model says.
+export async function contractTest(options: ContractTestOptions = {}):
+    Promise<number> {
+  if (options.target !== 'bigquery') {
+    console.error(`Error: --target must be 'bigquery'${
+        options.target ? `; got '${options.target}'` : ''}.`);
+    return 1;
+  }
+  const pathBound = options.pathBound === undefined ?
+      contracts.DEFAULT_PATH_BOUND :
+      Number(options.pathBound);
+  if (!Number.isInteger(pathBound) || pathBound < 1) {
+    console.error(`Error: --path-bound must be a whole number >= 1; got '${
+        options.pathBound}'.`);
+    return 1;
+  }
+  const root = options.cwd ?? '.';
+  const outDir = path.resolve(root, options.out ?? 'contract-tests');
+  const ctx = generatorContext();
+  const loaded = await loadAuthoredModels('test', root, options.profile, ctx);
+  if ('error' in loaded) {
+    console.error(`Error: ${loaded.error}`);
+    return 1;
+  }
+  const {models, profile} = loaded;
+  const credentials = !!ctx.token;
+  const run = !options.sqlOnly && credentials;
+  if (!options.sqlOnly && !credentials) {
+    console.warn('Warning: no credentials; writing the tests only (as --sql-only).');
+  }
+
+  let failed = false;
+  for (const model of models) {
+    const store = resolveStore(model);
+    if (!('error' in store) && store.kind !== 'bigquery') {
+      console.error(`Error: [${model.name}] profile '${profile}' targets ${
+          store.kind}, not BigQuery.`);
+      failed = true;
+      continue;
+    }
+    const plan = contracts.planContractTests(model, {pathBound});
+    for (const w of plan.warnings) console.warn(`Warning: [${model.name}] ${w}`);
+    const meta = {profile, generatedAt: new Date().toISOString()};
+    const base = path.join(outDir, model.name.replace(/[^A-Za-z0-9_.-]/g, '_'));
+    try {
+      fs.mkdirSync(outDir, {recursive: true});
+      fs.writeFileSync(`${base}.contract.sql`, contracts.renderContractSql(plan, meta));
+      fs.writeFileSync(
+          `${base}.contract.json`,
+          JSON.stringify(contracts.contractManifest(plan, meta), null, 2) + '\n');
+    } catch (e) {
+      console.error(`Error: [${model.name}] could not write under ${outDir}: ${
+          e instanceof Error ? e.message : String(e)}`);
+      failed = true;
+      continue;
+    }
+    console.log(`Wrote ${base}.contract.sql and ${base}.contract.json (${
+        plan.tests.length} tests, ${plan.skipped.length} element(s) not tested).`);
+    if (!run) {
+      for (const s of plan.skipped) {
+        console.log(`  not tested: ${s.kind}:${s.subject}: ${s.reason}`);
+      }
+      continue;
+    }
+    if (!plan.tests.length) continue;
+
+    const results = await contracts.runContractTests(
+        plan, ctx, {location: options.location});
+    console.log(`\n[${model.name}] profile '${profile}'${
+        plan.graph ? `, graph ${plan.graph}` : ''}`);
+    console.log(contracts.formatContractResults(results, plan.skipped));
+    fs.writeFileSync(
+        `${base}.contract-results.json`,
+        JSON.stringify(
+            {
+              model: model.name,
+              profile,
+              checkedAt: new Date().toISOString(),
+              results,
+              skipped: plan.skipped,
+            },
+            null, 2) +
+            '\n');
+    console.log(`Wrote ${base}.contract-results.json`);
+    if (results.some(r => r.status === 'fail' || r.status === 'error')) {
+      failed = true;
     }
   }
   return failed ? 1 : 0;

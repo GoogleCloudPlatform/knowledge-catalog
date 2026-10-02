@@ -134,6 +134,13 @@ cli.command(
     .option(
         '--compact',
         'Emit compact flow YAML (primary_key: [id], inline field/relationship maps) instead of the default block layout')
+    .option(
+        '--prune-unbound [binding]',
+        'Proposed: keep only the entities the binding gives a source, their ancestors and the defined entities over them, and print what was removed. The value is a binding profile (or a model document with inline bindings); the bare flag reads the model\'s profiles in this scope, else <model>.profiles/ beside --out')
+    .option(
+        '--coverage <path>',
+        'Proposed: write the coverage report (each construct read: compiled, hinted or dropped, with the reason) here instead of coverage.json beside the written model')
+    .option('--no-coverage', 'Print no coverage summary and write no coverage report')
     .action(async (action, files, options) => {
       let exitCode = 1;
       try {
@@ -159,6 +166,10 @@ cli.command(
     .option(
         '--out <path>',
         'Write the updated document to this path instead of back to its source')
+    .option(
+        '--coverage <path>',
+        'Proposed: write the coverage report (each shape and constraint component: compiled, hinted or dropped, with the reason) here instead of coverage.json beside the written model')
+    .option('--no-coverage', 'Print no coverage summary and write no coverage report')
     .action(async (action, files, options) => {
       let exitCode = 1;
       try {
@@ -241,6 +252,38 @@ cli.command(
       let exitCode = 1;
       try {
         exitCode = await commands.validate(options);
+      } catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+
+      process.exit(exitCode);
+    });
+
+
+cli.command(
+       'test',
+       '(Proposed) Contract tests generated from the model: the graph\'s is<Class> properties match the defined classes\' expressions, quantified paths over transitive relationships match a recursive SQL closure, and every validation query executes. Writes the tests, runs them read-only, and reports pass / fail')
+    .option('--target <target>', 'The engine to test on. Only `bigquery`')
+    .option(
+        '--profile [name]',
+        'Test the graph and tables this binding profile binds; defaults to default_profile, else the inline bindings')
+    .option(
+        '--out <dir>',
+        'Directory for <model>.contract.sql, <model>.contract.json (the manifest) and <model>.contract-results.json. Defaults to `contract-tests`')
+    .option(
+        '--sql-only',
+        'Write the tests and the manifest, and run nothing (also the behaviour when there are no credentials)')
+    .option(
+        '--location <location>',
+        'BigQuery processing location for the query jobs (e.g. US); inferred from the tables when unset')
+    .option(
+        '--path-bound <k>',
+        'The k of the quantified paths -[:p]->{1,k} the transitive-closure tests compare (default 10)')
+    .action(async (options) => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.contractTest(options);
       } catch (err: any) {
         console.error('Error:', err.message || err);
         exitCode = 1;

@@ -553,6 +553,11 @@ export function parseOwl(turtle: string|string[]): OwlModel {
   // definition can tell a literal member (`owl:oneOf ("Diamond" ...)`, a data
   // enumeration) from an IRI or blank-node one.
   const listFirstTerm = new Map<string, (typeof quads)[number]['object']>();
+  // The property each anonymous inverse expression (`[ owl:inverseOf p ]`, a
+  // blank node) reads backwards, so a chain member that is one is written as
+  // `^<p>` rather than as its generated blank-node id, which differs run to
+  // run.
+  const anonymousInverse = new Map<string, string>();
   for (const q of quads) {
     if (q.predicate.value === RDF_FIRST) {
       listFirst.set(q.subject.value, q.object.value);
@@ -565,6 +570,10 @@ export function parseOwl(turtle: string|string[]): OwlModel {
         q.predicate.value === OWL_DISTINCT_MEMBERS &&
         seenDifferent.has(q.subject.value) && !membersHead.has(q.subject.value))
       membersHead.set(q.subject.value, q.object.value);
+    else if (
+        q.predicate.value === OWL_INVERSE_OF &&
+        q.subject.termType === 'BlankNode' && q.object.termType === 'NamedNode')
+      anonymousInverse.set(q.subject.value, q.object.value);
   }
   // Resolves an RDF collection to its member IRIs, following rdf:rest to nil.
   // Defensive against a cycle or a missing link (stops at the first gap).
@@ -1244,7 +1253,6 @@ export function parseOwl(turtle: string|string[]): OwlModel {
           equivalentProperty: a.equivalentProperty,
           propertyDisjointWith: a.propertyDisjointWith,
           // One resolved chain per owl:propertyChainAxiom (map, NOT flatMap):
-          // OWL 2 permits several chain axioms on one property, and fusing them
           // would be indistinguishable from a single longer chain. Steps in
           // chain order (see chainStep); within a chain order and repetition
           // are preserved, so no dedupe. An empty chain (a broken/gapped list)

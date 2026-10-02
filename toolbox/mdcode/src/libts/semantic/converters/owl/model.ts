@@ -341,7 +341,6 @@ export interface OwlObjectProperty extends OwlCommonAnnotations {
   // No native OSI home; carried verbatim. Named properties only. Full IRIs.
   // Empty when none.
   propertyDisjointWith: string[];
-  // One entry per `owl:propertyChainAxiom` on this property, each the ordered
   // list of steps it composes (e.g. hasParent then hasBrother == hasUncle). OWL
   // 2 allows a property to carry MORE THAN ONE chain axiom (e.g. uncleOf as
   // fatherOf/brotherOf and as motherOf/brotherOf), so the chains are kept

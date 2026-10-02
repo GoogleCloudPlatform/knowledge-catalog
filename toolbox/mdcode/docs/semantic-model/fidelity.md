@@ -15,6 +15,11 @@ also deploys a graph records only the part the graph binds — and whichever way
 you push, only one binding is recorded, even when the model defines several. All
 three are detailed under [To Knowledge Catalog](#to-knowledge-catalog).
 
+A model imported from an OWL ontology or SHACL shapes has already lost
+something before any push. [What an import keeps](#what-an-import-keeps-proposed)
+follows each imported construct through the import's coverage report and on to
+what it becomes in a BigQuery graph.
+
 ## The round-trip matrix
 
 Rows are what you authored; columns are its fate in each direction. `✓` = comes
@@ -188,6 +193,100 @@ agree on every structural row and differ only where a Spanner target has no
 
     Spanner rejects a derived relationship at push time. See
     [Extensions](model_spec.md#5-extensions).
+
+## What an import keeps (proposed)
+
+The matrix starts from what you authored. An imported model loses something
+earlier: an ontology or a shapes graph says more than a model can hold. Every
+`kcmd owl import` and `kcmd shacl import` reports what became of each construct
+occurrence it read, as `compiled`, `hinted` or `dropped` (see the coverage
+reports of the [OWL import](owl-import.md#6-coverage-report-proposed) and the
+[SHACL import](shacl-import.md#3-coverage-report-proposed)). The table follows
+each construct through the import and on into a BigQuery graph. Its **Graph
+lowering** column is the matrix's → BigQuery column applied to imported
+content.
+
+| Imported construct | Coverage outcome | Model element | Graph lowering (BigQuery) |
+|---|---|---|---|
+| `owl:Class` | compiled | entity | `NODE TABLE` once a profile binds it; an unbound entity has no table |
+| `rdfs:subClassOf` (named class) | compiled | entity `extends` | `LABEL` clauses on the subtype's node table, inherited fields flattened down |
+| `owl:hasKey` | compiled | `primary_key` | `KEY(...)` on the node table |
+| `owl:InverseFunctionalProperty` | compiled | `unique_keys`, or `primary_key` on a keyless class | — dropped (only the primary key is emitted), unless it became the primary key |
+| `owl:DatatypeProperty` and its `rdfs:range` | compiled | field and its `datatype` | a property of the node table, typed by the bound column¹ |
+| `owl:FunctionalProperty` on a datatype property | compiled (by construction) | a field, which holds one value | a property, which holds one value |
+| `qudt:unit` and the other unit annotations | compiled | field `unit` | a `Unit:` trailer in the property's `OPTIONS(description)` |
+| `owl:ObjectProperty` | compiled | relationship | `EDGE TABLE` once the model gives it join columns and both ends are node tables |
+| `owl:inverseOf` | compiled | relationship `inverse` | a second `EDGE TABLE` over the same backing table, `SOURCE` and `DESTINATION` swapped, no `OPTIONS` |
+| `rdfs:subPropertyOf` between object properties | compiled | relationship `extends`; the parent is `abstract` | `LABEL <parent> NO PROPERTIES` on each sub-relationship's edge table; no edge table for the parent |
+| `owl:equivalentClass` definition (defined class), with its restrictions | compiled | defined entity (`definition`) | the boolean property `is<Class>` on the base's node table, computed from the definition; `kcmd test` checks it (`defined-membership`) |
+| `owl:NamedIndividual` whose code a definition uses | compiled | the code inside the definition | inside the `is<Class>` expression |
+| `owl:Restriction`, `owl:FunctionalProperty` on an object property, `owl:disjointWith`, `owl:AllDisjointClasses` | compiled | constraint, or the model structure | — not deployed¹³; `kcmd validate` counts the violations in the bound tables |
+| SHACL node and property shapes and their constraint components | compiled | constraint, or the model structure | — not deployed¹³; `kcmd validate` counts the violations |
+| `sh:message` or `sh:description`, `sh:severity` | compiled with their constraint | constraint `description`, `severity`, `on_violation` | — not deployed¹³ |
+| `owl:TransitiveProperty` | hinted | relationship `ai_context.instructions` | into the edge's `OPTIONS(description)`; a query follows the edge with a quantified path `-[:p]->{1,k}`, which `kcmd test` checks (`transitive-closure`) |
+| `owl:SymmetricProperty` | hinted | relationship `ai_context.instructions` | into the edge's `OPTIONS(description)`; a query matches the edge undirected |
+| `owl:equivalentClass` or `owl:equivalentProperty` to a named term | hinted | `ai_context.synonyms` | `OPTIONS(synonyms=[...])` |
+| `owl:deprecated`, with an `rdfs:seeAlso` replacement | hinted | `DEPRECATED:` description prefix and `ai_context.instructions` | into `OPTIONS(description)` |
+| `rdfs:label`, `skos:altLabel`, `rdfs:comment`, `skos:example` | compiled | `description`, field `label`, `ai_context.synonyms`, `instructions` or `examples` | `OPTIONS(description)` and `OPTIONS(synonyms=[...])` (see [To BigQuery](#to-bigquery)) |
+| `owl:Ontology` header and its `owl:versionInfo` | compiled | model `description` and `ai_context` | — dropped⁸ |
+| `skos:Concept` | compiled | glossary term | — not deployed¹⁶ |
+| `owl:propertyChainAxiom`, `owl:oneOf`, other named individuals, `owl:AllDifferent`, `owl:propertyDisjointWith`, `owl:AllDisjointProperties`, reflexive, irreflexive and asymmetric properties, `rdfs:subPropertyOf` between datatype properties, `rdfs:isDefinedBy`, a term's `owl:versionInfo`, other `rdfs:seeAlso` | dropped | — | — |
+| SHACL `sh:name`, targets other than `sh:targetClass`, nested and logical shapes, deactivated shapes | dropped | — | — |
+
+The outcome and the lowering answer different questions. A construct is
+compiled when the model holds it natively, even where the graph then leaves it
+out: a constraint is compiled, and `kcmd validate` measures it, but no graph
+carries it. A hinted construct reaches the graph only as text an agent reads.
+A Spanner target keeps the structural lowerings and drops every `OPTIONS` (see
+[To Spanner](#to-spanner)).
+
+### The coverage file
+
+An import writes its report into `coverage.json` beside the model document it
+wrote, or to the file `--coverage <path>` names. The file holds the reports of
+every model imported there, keyed by model and then by importer. Trimmed to one
+construct:
+
+```json
+{
+  "coverage_version": 1,
+  "models": {
+    "shop": {
+      "owl": {
+        "importer": "owl",
+        "model": "shop",
+        "sources": ["shop.ttl"],
+        "summary": [
+          {"construct": "rdfs:subClassOf", "compiled": 1, "hinted": 0, "dropped": 0}
+        ],
+        "totals": {"compiled": 1, "hinted": 0, "dropped": 0},
+        "entries": [
+          {"construct": "rdfs:subClassOf", "subject": "Customer SubClassOf Party",
+           "outcome": "compiled", "target": "entity Customer extends"}
+        ]
+      }
+    }
+  }
+}
+```
+
+A SHACL import of the same model adds a `shacl` report, of the same shape,
+beside `owl`.
+
+| Key | Holds |
+|---|---|
+| `importer` | `owl` or `shacl`. |
+| `model` | The model the import wrote. |
+| `sources` | The files read, as given on the command line. |
+| `summary[]` | One row per construct, in the order the importer reports them: `construct`, `compiled`, `hinted`, `dropped`. It is the table the import prints. |
+| `totals` | `compiled`, `hinted` and `dropped` over all rows. |
+| `entries[]` | One per occurrence: `construct` (its vocabulary term, such as `rdfs:subClassOf` or `sh:minCount`); `subject` (the occurrence, readable on its own, such as `Order SubClassOf Document` or `OrderShape / total on Order`); `outcome`; `target` (where a compiled or hinted occurrence landed, such as `entity Order extends` or `constraint Order_total_required`); and `reason` (why it was hinted or dropped, or how it compiled when the target does not say). |
+| `pruned` | OWL only, after `--prune-unbound`: the removed `entities`, `relationships` and `constraints`. |
+
+Writing a report replaces only the report of the same importer for the same
+model, so an OWL import followed by a SHACL import leaves both side by side. A
+file that is not a coverage file, or that cannot be read, is replaced. Model
+documents are `*.yaml`, so no push or pull reads the file.
 
 ## To Knowledge Catalog
 
