@@ -40,6 +40,7 @@ function operationFailure(op: Operation, what: string): string|undefined {
 
 export interface Aspect {
   aspectType?: string;
+  path?: string;
   data?: Record<string, any>;
 }
 
@@ -403,9 +404,10 @@ export class CatalogClient extends api.ApiClient {
 }
 
 
-// Fix all entries and aspects to consistently use project id. Its currently a mess with an
-// inconsistent mix of project ids and unusable project numbers.
-async function _fixEntry(entry: Entry, ctx: context.ApiContext): Promise<void> {
+// Normalises an entry and its aspects in place so resource names and aspect
+// keys consistently use project IDs (rather than project numbers), while
+// preserving `@<path>` suffixes and `path` fields on field-level aspects.
+export async function _fixEntry(entry: Entry, ctx: context.ApiContext): Promise<void> {
   entry.name = await crm.fixProject(entry.name, ctx);
   entry.entryType = await crm.fixProject(entry.entryType, ctx);
   if (entry.entrySource?.resource) {
@@ -415,17 +417,26 @@ async function _fixEntry(entry: Entry, ctx: context.ApiContext): Promise<void> {
   if (entry.aspects) {
     const fixedAspects: Record<string, Aspect> = {};
     for (const [aspectKey, aspectValue] of Object.entries(entry.aspects)) {
+      const atIdx = aspectKey.indexOf('@');
+      const typeRef = atIdx === -1 ? aspectKey : aspectKey.slice(0, atIdx);
+      const keyPath = atIdx === -1 ? undefined : aspectKey.slice(atIdx + 1);
+
       let aspectType = '';
       if (!aspectValue || Object.keys(aspectValue).length) {
-        aspectType = _typeRefToName(aspectKey, 'aspect');
+        aspectType = _typeRefToName(typeRef, 'aspect');
       }
       else {
         aspectType = aspectValue['aspectType'] as string;
       }
       aspectType = await crm.fixProject(aspectType, ctx);
 
-      fixedAspects[_nameToTypeRef(aspectType)] = {
+      const path = aspectValue?.path || keyPath;
+      const baseKey = _nameToTypeRef(aspectType);
+      const fixedKey = path ? `${baseKey}@${path}` : baseKey;
+
+      fixedAspects[fixedKey] = {
         aspectType: aspectType,
+        ...(path ? { path } : {}),
         data: aspectValue['data'] ?? {}
       };
     }

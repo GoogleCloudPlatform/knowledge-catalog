@@ -7,11 +7,13 @@
 import {describe, expect, spyOn, test} from 'bun:test';
 
 import {ApiContext} from '../../../src/libts/gcp/context';
-import {CatalogClient, EntryLink} from '../../../src/libts/gcp/dataplex';
+import {_fixEntry, CatalogClient, Entry, EntryLink} from '../../../src/libts/gcp/dataplex';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 const SCHEMA_JOIN =
     'projects/dataplex-types/locations/global/entryLinkTypes/schema-join';
+const GUIDELINES_TYPE =
+    'projects/dataplex-types/locations/global/aspectTypes/guidelines';
 const ENTRY = 'projects/proj/locations/us/entryGroups/g/entries/e1';
 
 function link(id: string): EntryLink {
@@ -114,3 +116,90 @@ describe('CatalogClient.deleteEntryLink', () => {
         .toBe('projects/proj/locations/us/entryGroups/grp/entryLinks/my-link');
   });
 });
+
+describe('_fixEntry path-keyed aspects', () => {
+  test('writing: keeps entity-level and two field-level guidelines keys, normalises aspectType, and keeps path',
+     async () => {
+       const entry: Entry = {
+         name: ENTRY,
+         entryType: 'projects/dataplex-types/locations/global/entryTypes/generic',
+         aspects: {
+           'dataplex-types.global.guidelines': {
+             data: {instructions: 'Orders entity instructions'},
+           },
+           'dataplex-types.global.guidelines@Schema.order_id': {
+             path: 'Schema.order_id',
+             data: {instructions: 'Unique order ID'},
+           },
+           'dataplex-types.global.guidelines@Schema.customer_id': {
+             path: 'Schema.customer_id',
+             data: {instructions: 'Customer foreign key'},
+           },
+         },
+       };
+
+       await _fixEntry(entry, CTX);
+
+       expect(Object.keys(entry.aspects!)).toEqual([
+         'dataplex-types.global.guidelines',
+         'dataplex-types.global.guidelines@Schema.order_id',
+         'dataplex-types.global.guidelines@Schema.customer_id',
+       ]);
+       expect(entry.aspects!['dataplex-types.global.guidelines']).toEqual({
+         aspectType: GUIDELINES_TYPE,
+         data: {instructions: 'Orders entity instructions'},
+       });
+       expect(entry.aspects!['dataplex-types.global.guidelines@Schema.order_id'])
+           .toEqual({
+             aspectType: GUIDELINES_TYPE,
+             path: 'Schema.order_id',
+             data: {instructions: 'Unique order ID'},
+           });
+       expect(entry.aspects!['dataplex-types.global.guidelines@Schema.customer_id'])
+           .toEqual({
+             aspectType: GUIDELINES_TYPE,
+             path: 'Schema.customer_id',
+             data: {instructions: 'Customer foreign key'},
+           });
+     });
+
+  test('reading: handles @Schema.<field> keys when API omits path and when numeric project id is normalised via crm.fixProject',
+     async () => {
+       const entry: Entry = {
+         name: ENTRY,
+         entryType: 'projects/655216118709/locations/global/entryTypes/generic',
+         aspects: {
+           'dataplex-types.global.guidelines@Schema.order_id': {
+             aspectType: GUIDELINES_TYPE,
+             data: {instructions: 'Unique order ID'},
+           },
+           '655216118709.global.guidelines@Schema.customer_id': {
+             aspectType:
+                 'projects/655216118709/locations/global/aspectTypes/guidelines',
+             path: 'Schema.customer_id',
+             data: {instructions: 'Customer foreign key'},
+           },
+         },
+       };
+
+       await _fixEntry(entry, CTX);
+
+       expect(Object.keys(entry.aspects!)).toEqual([
+         'dataplex-types.global.guidelines@Schema.order_id',
+         'dataplex-types.global.guidelines@Schema.customer_id',
+       ]);
+       expect(entry.aspects!['dataplex-types.global.guidelines@Schema.order_id'])
+           .toEqual({
+             aspectType: GUIDELINES_TYPE,
+             path: 'Schema.order_id',
+             data: {instructions: 'Unique order ID'},
+           });
+       expect(entry.aspects!['dataplex-types.global.guidelines@Schema.customer_id'])
+           .toEqual({
+             aspectType: GUIDELINES_TYPE,
+             path: 'Schema.customer_id',
+             data: {instructions: 'Customer foreign key'},
+           });
+     });
+});
+
