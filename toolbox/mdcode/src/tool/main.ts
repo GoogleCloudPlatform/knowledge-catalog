@@ -64,6 +64,12 @@ cli.command('push', 'Push catalog entries')
         'Emit SQL-expression fields not yet in the published Knowledge Catalog system-type templates (per-field schema semantics, metric expression); off by default, enable once the templates support them; semantic-model push only')
     .option('--validate-only', 'Only validate changes without applying')
     .option(
+        '--dry-run',
+        'The same as --validate-only: run every check and print the plan (with --print, the generated DDL), applying nothing')
+    .option(
+        '--no-metric-graphs',
+        'Do not deploy the GRAPH_EXPAND metric graphs (one per fact entity, `<graph>__<fact>_metrics`) and fallback metric views next to each BigQuery graph; they are deployed by default (proposed); semantic-model push only')
+    .option(
         '--no-profile',
         'Deploy the graph for no binding profile: publish only the logical model to Knowledge Catalog, leaving any deployed graph untouched; the graph is deployed by default for the default binding profile; semantic-model push only')
     .option(
@@ -187,6 +193,9 @@ cli.command(
     .option(
         '--location <location>',
         'Query mode: the BigQuery location to name in the skill (the model does not record it)')
+    .option(
+        '--no-metric-graphs',
+        'Query mode: read metrics on the main graph only, not on the GRAPH_EXPAND metric graphs and fallback views `kcmd push` deploys next to it (for a graph pushed with --no-metric-graphs)')
     .option(
         '--force',
         'Replace a skill that is already there, including deleting a reference file the model no longer produces')

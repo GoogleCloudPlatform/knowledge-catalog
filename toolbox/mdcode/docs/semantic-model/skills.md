@@ -67,7 +67,8 @@ All flags are optional:
 | `--name <name>` | Derived from `model.name` | Override the generated skill name (and directory name `<out>/<name>`). Must match `^[a-z0-9]+(-[a-z0-9]+)*$` (lowercase letters, digits, and single hyphens between words, starting and ending with a letter or a digit, max 64 characters). |
 | `--force` | `false` | Overwrite an existing `<out>/<skill-name>/` directory and remove any stale `.md` files in `<out>/<skill-name>/references/` (and `references/entities/`) left over from renamed or deleted actions or entities. Without `--force`, an existing target directory is refused with `Error: <dir> already exists. Pass --force to rewrite it.` |
 | `--mode <act\|query\|both>` | `act` | `act` writes the action router described on this page. `query` writes the read side: an index for answering questions over the BigQuery property graph (see [Query mode](#query-mode-answering-questions)). `both` writes one skill with the two. |
-| `--extra-scope <dir>` | none | Query/both only. Another catalog scope (a directory with `catalog.yaml`) whose BigQuery graph the skill should also point at, typically a metrics slice small enough for `GRAPH_EXPAND`. Read under that scope's own `default_profile`. Repeatable. |
+| `--extra-scope <dir>` | none | Query/both only. Another catalog scope (a directory with `catalog.yaml`) whose BigQuery graph the skill should also point at, typically a hand-built metrics graph small enough for `GRAPH_EXPAND`. Read under that scope's own `default_profile`. Repeatable. The metric graphs `kcmd push` deploys next to the main graph need no flag (see [Metrics and metric graphs](#metrics-and-metric-graphs-proposed)). |
+| `--no-metric-graphs` | metric graphs on | Query/both only (proposed). Read metrics on the main graph's own measures, not on the `GRAPH_EXPAND` metric graphs and fallback views `kcmd push` deploys next to it. Use it for a graph pushed with `kcmd push --no-metric-graphs`. |
 | `--location <loc>` | none | Query/both only. The BigQuery location to state in the skill; the model does not record it. |
 
 If `--name` is not valid, `kcmd skills-generate` refuses before writing any
@@ -444,16 +445,20 @@ an index, and the detail is read on demand.
 2. **Index (`SKILL.md` body)**:
    - `Where the data is`: the property graph (`project.dataset.graph`) from the
      profile's deployment target, any `--extra-scope` graphs with their node
-     table and measure counts, the semantic dataset, the location, and the
-     Knowledge Catalog entry group.
+     table and measure counts, the metric graphs `kcmd push` deploys next to
+     it (each with its root and node tables) and any fallback metric views
+     (see [Metrics and metric graphs](#metrics-and-metric-graphs-proposed)),
+     the semantic dataset, the location, and the Knowledge Catalog entry
+     group.
    - `How to answer`: a short, model-agnostic guide (under 300 words, written
      once in code): GQL for relationships, paths, hierarchies and parent types
      (an abstract label matches every subtype); `GRAPH_EXPAND` + `AGG` for
-     governed metrics; SQL otherwise; the model is the preferred source but not
-     the boundary; read the question literally; one final answer with the
-     definition and tables used; units and scale are per property on entity
-     pages and values are never rescaled unless the page says so; constraints
-     only when relevant and violated. When the model has a
+     governed metrics, on the graph and with the expression
+     `references/metrics.md` gives; SQL otherwise; the model is the preferred
+     source but not the boundary; read the question literally; one final
+     answer with the definition and tables used; units and scale are per
+     property on entity pages and values are never rescaled unless the page
+     says so; constraints only when relevant and violated. When the model has a
      [glossary](glossary.md), one more rule: a business term or metric name
      that is not in the model may be in the Knowledge Catalog glossary
      `<id>` -- search it (`search_entries`) before concluding the data does
@@ -464,8 +469,9 @@ an index, and the detail is read on demand.
    - `Entities`: one row per graph label -- concrete node tables and abstract
      labels -- ranked by number of relationships, with a truncated description,
      the key, and the subsets listed under their parent.
-   - `Metrics`: one row per metric with the node table and graph it is a
-     MEASURE on, or `SQL` when it is not one.
+   - `Metrics`: one row per metric with where to read it: its anchor node
+     table and graph (`` `Order` in `g__order_metrics` ``), its fallback view
+     (`` view `g__order_metrics_view` ``), or `SQL`.
    - `Business terms` (when the model has a `glossary:`): one line per term,
      `Display Name (synonyms) -> model element or formula`, capped at 60 with
      "... N more in the Knowledge Catalog glossary `<id>`".
@@ -486,15 +492,21 @@ an index, and the detail is read on demand.
      entity or one of its fields, constraints that mention it, and the
      source table with a starter `SELECT`.
    - `references/metrics.md`: each metric's expression, description, anchor and
-     synonyms, the graphs it is a MEASURE in, and a ready `GRAPH_EXPAND` query
-     sliced by a dimension; a metric that is not a MEASURE gets an equivalent
-     SQL query over the source tables, with the generator's reason.
+     synonyms, the metric graph to read it on (with its node tables), the
+     graphs it is a MEASURE in, and a ready `GRAPH_EXPAND` query sliced by a
+     dimension. A composite metric also lists its component MEASUREs and the
+     composition to select, such as `SAFE_DIVIDE(AGG(n), AGG(d))`. A metric on
+     a fallback view gets a query over the view; any other metric that is not
+     a MEASURE gets an equivalent SQL query over the source tables, with the
+     reason. See
+     [Metrics and metric graphs](#metrics-and-metric-graphs-proposed).
    - `references/patterns.md`: 6-10 example queries generated from the model,
      never hand-written per domain: a polymorphic `MATCH` on the most used
      abstract label, one- and two-hop traversals along real edges, an aggregate
      over a traversal, a quantified path on a relationship whose `ai_context`
      says it is transitive, an inverse edge, a `GRAPH_EXPAND` metric by a
-     dimension, `GRAPH_TABLE` inside SQL, and plain SQL over the source tables.
+     dimension, a composite metric's composition (when the model has one),
+     `GRAPH_TABLE` inside SQL, and plain SQL over the source tables.
 
 ### What the index is read from
 
@@ -513,9 +525,14 @@ way the BigQuery generator does:
   it.
 - Which metrics are MEASUREs, and on which node table, is taken from running
   the BigQuery DDL generator read-only, so the skill never promises a measure
-  the graph lacks. `GRAPH_EXPAND` accepts at most 10 node tables; when the
-  primary graph is larger, a metric's query points at an `--extra-scope` graph
-  that carries the same measure (and falls back to SQL when none does).
+  the graph lacks. Where each metric is read is taken from the metric-graph
+  plan `kcmd push` deploys, computed the same way over the model pruned to the
+  profile's bindings (see
+  [Metrics and metric graphs](#metrics-and-metric-graphs-proposed)). An
+  `--extra-scope` graph that carries the metric as a measure within the
+  10-node-table limit of `GRAPH_EXPAND` wins over the plan. Under
+  `--no-metric-graphs`, a metric is read on a graph that carries it as a
+  measure, one within the limit first, and falls back to SQL when none does.
 - A **vocabulary** (`members:`, proposed) whose view the push generates is read
   bound to that view (`vocab_<entity>` next to the primary graph, or the source
   that names it). Its page's source table and starter `SELECT` therefore name
@@ -544,6 +561,73 @@ way the BigQuery generator does:
 
 Output is sorted throughout, so regenerating an unchanged model is
 byte-identical. The same budget warnings apply as in act mode.
+
+### Metrics and metric graphs (proposed)
+
+> [!NOTE]
+> A proposed kcmd enhancement. `kcmd push` deploys the metric graphs by
+> default; generate the skill with `--no-metric-graphs` for a graph pushed
+> with `kcmd push --no-metric-graphs`.
+
+`GRAPH_EXPAND` reads a graph `MEASURE` without an Enterprise reservation, but
+only over a tree of at most 10 node tables. So a BigQuery push deploys next to
+the main graph one metric graph per fact entity,
+`<graph>__<fact_in_snake_case>_metrics`, and a fallback view
+`<graph>__<fact>_metrics_view` for the metrics no tree can hold (see
+[how they are cut](fidelity.md#metric-graphs-for-graph_expand-proposed)). The
+query skill plans them with the same planner over the same pruned model, so it
+names what the push deploys. For each metric, `references/metrics.md` gives:
+
+| The metric | Read on | The page gives |
+| :--- | :--- | :--- |
+| One aggregate | Its fact's metric graph, or the main graph when that graph already serves `GRAPH_EXPAND` | `- Graph:` (on a metric graph: the graph and its node tables), `- MEASURE in:`, and a `GRAPH_EXPAND` query selecting `AGG(<NodeTable>_<metric>)` by a dimension |
+| A formula over several aggregates, or a `COUNTIF` | Its fact's metric graph | `- Graph:`, `- MEASUREs:` (each component, and how a `COUNTIF` was rewritten), `- Composition:`, and the same query selecting the composition |
+| One no tree can hold | The fallback view | The reason, and the metric's expression over the view's `<Entity>_<field>` columns by a dimension |
+| One no view can hold either | The source tables | The reason, and an equivalent SQL query |
+
+For example, in a model whose `Order` references a `Customer`, with its main
+graph at `p.d.g`, the metric
+`paid_ratio: SAFE_DIVIDE(COUNTIF(Order.status = 'paid'), COUNT(Order.orderId))`
+gets this section:
+
+```markdown
+## paid_ratio
+
+Share of orders that are paid.
+
+- Expression: `SAFE_DIVIDE(COUNTIF(Order.status = 'paid'), COUNT(Order.orderId))`
+- Anchor: `Order`
+- Graph: `p.d.g__order_metrics`, the metric graph for `Order` (2 node tables: `Order`, `Customer`)
+- MEASUREs: `Order_paid_ratio__agg1` = `SUM(CASE WHEN Order.status = 'paid' THEN 1 ELSE 0 END)` (`COUNTIF(Order.status = 'paid')` as a CASE); `Order_paid_ratio__agg2` = `COUNT(Order.orderId)`
+- Composition: `SAFE_DIVIDE(AGG(Order_paid_ratio__agg1), AGG(Order_paid_ratio__agg2))`
+```
+
+followed by its query:
+
+```sql
+SELECT Customer_partyName AS partyName,
+       SAFE_DIVIDE(AGG(Order_paid_ratio__agg1), AGG(Order_paid_ratio__agg2)) AS paid_ratio
+FROM GRAPH_EXPAND("p.d.g__order_metrics")
+GROUP BY partyName
+ORDER BY paid_ratio DESC
+```
+
+`SAFE_DIVIDE` divides the aggregates of each group, never row by row, and
+gives `NULL` for a group whose denominator is 0. A multiplier stays outside it
+(`100 * SAFE_DIVIDE(AGG(n), AGG(d))`). When a `COUNTIF` condition is the
+membership expression of a defined entity, the component sums that entity's
+membership property instead of a `CASE`:
+`SUM(CAST(Order.isBigOrder AS INT64))`.
+
+`SKILL.md` lists the metric graphs under `Where the data is`:
+
+```markdown
+- Metric graphs for `GRAPH_EXPAND`, one per fact entity (a tree rooted at the fact); `references/metrics.md` names the one for each metric:
+  - `p.d.g__order_metrics`: root `Order`, node tables `Order`, `Customer`.
+```
+
+The skill does not check that the metric graphs exist; it assumes the graph
+was pushed with them, which is the default.
 
 ### Example output
 
@@ -583,8 +667,12 @@ query skill and warns.
   record`) and `references/<action>.md` emits the write actions. Metrics and
   relationships are emitted by `--mode query` (or `both`).
 - **Query mode does not record the BigQuery location** -- the model has no field
-  for it; pass `--location`. The metrics slice graph is a separate catalog
-  scope, so it is only pointed at when passed as `--extra-scope`.
+  for it; pass `--location`. A hand-built metrics graph in a separate catalog
+  scope is only pointed at when passed as `--extra-scope`; the metric graphs
+  `kcmd push` deploys are found without it.
+- **Query mode does not probe the deployed metric graphs** (proposed). It names
+  the metric graphs and views a push with the same profile deploys; for a graph
+  pushed with `--no-metric-graphs`, pass `--no-metric-graphs` here too.
 - **No plugin manifest or MCP server bundle.** When an action uses an `mcp`,
   `rest`, or `grpc` executor, `SKILL.md` prints its target coordinates
   (`MCP tool <tool> on <server>`, `HTTP <METHOD> <endpoint>`,

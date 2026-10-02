@@ -410,6 +410,8 @@ kcmd push --profile analytical            # deploy the graph with the analytical
 kcmd push --profile operational           # deploy the graph with the operational bindings (Spanner target)
 kcmd push --all-profiles                  # deploy the graph once per binding profile
 kcmd push --profile analytical --no-kc    # deploy only the graph, skip Knowledge Catalog
+kcmd push --profile analytical --dry-run  # run every check and print the plan, metric graphs included; apply nothing
+kcmd push --no-metric-graphs              # deploy each BigQuery graph without its metric graphs (proposed)
 kcmd push --no-profile                    # publish only to Knowledge Catalog, deploy no graph
 kcmd profiles                             # list profiles, their resolved sources, and what each cannot answer
 ```
@@ -429,6 +431,20 @@ canonical view of the logical model — the default binding — so a bare `kcmd 
 and a `kcmd push --all-profiles` write the same catalog entries and differ only in
 how many graphs deploy.
 
+**Metric graphs follow the binding (proposed).** A push to a BigQuery target also
+deploys, next to the graph, one `GRAPH_EXPAND`-ready metric graph per fact entity,
+`<graph>__<fact_in_snake_case>_metrics`, and a view for any metric no such graph
+can hold (see
+[Metric graphs for `GRAPH_EXPAND`](reference.md#metric-graphs-for-graph_expand-proposed)).
+They are cut from the model the profile leaves after availability, so they hold
+only what the binding can answer: an unavailable metric gets no metric graph, and
+an unavailable relationship is never a path in one. Their project, dataset and
+names come from the profile's `deployment_target`, so each BigQuery profile gets
+its own set, and `--all-profiles` deploys one set per BigQuery graph. A Spanner
+target gets none, since Spanner Graph has no `MEASURE`. They are a deployment
+behaviour, not a binding: a profile cannot change them, and `--no-metric-graphs`
+turns them off.
+
 There is always a **default binding profile**: whatever `default_profile` names,
 or — if it is unset — the model's inline bindings (the implicit `default`
 profile). Because `default` names those inline bindings, it is reserved: a
@@ -442,8 +458,8 @@ default_profile: analytical
 
 ## Validation
 
-Profiles are checked as part of push; `--validate-only` runs the checks and
-writes nothing.
+Profiles are checked as part of push; `--validate-only` (or `--dry-run`) runs
+the checks and writes nothing.
 
 - **Unknown profile** — `--profile stg` when `stg` is not defined fails and lists
   the profiles that are.

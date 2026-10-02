@@ -40,6 +40,9 @@ import {generatePropertyGraph} from './bigquery';
 import {bigQueryGraphTargets} from './deployment_target';
 import {entityGlossaryLines, glossaryGuideLine, glossaryId, glossarySkillSection} from './glossary';
 import {Constraint, Entity, EntityDefinition, Field, fieldBinding, inverseEdgeNames, isTimeDimension, Metric, Relationship, relationshipAncestors, SemanticModel} from './ir';
+import {MetricComponent} from './metric_composition';
+import {GRAPH_EXPAND_MAX_NODE_TABLES, graphExpandExpression, MetricGraphPlan, MetricPlacement, MetricSlice, MetricView, planMetricGraphs} from './metric_slices';
+import {pruneUnavailable} from './resolve_profiles';
 import {SemanticRuntime} from './runtime/runtime';
 import {cell, collapse, finish, firstLine, paragraph, sentenceEnd, SkillFile, truncate} from './skills_text';
 import {quoteIfReserved} from './sql_identifiers';
@@ -64,6 +67,12 @@ export interface QuerySkillOptions {
   extraModels?: SemanticModel[];
   /** The BigQuery location to run queries in. Not recorded in the model. */
   location?: string;
+  /**
+   * Read metrics on the GRAPH_EXPAND metric graphs and fallback views that
+   * `kcmd push` deploys next to the primary graph (metric_slices.ts, K6). On
+   * unless false; set it false for a graph pushed with --no-metric-graphs.
+   */
+  metricGraphs?: boolean;
 }
 
 /** The read side, in pieces `skills.ts` assembles into a skill. */
@@ -77,8 +86,8 @@ export interface QueryParts {
   warnings: string[];
 }
 
-// GRAPH_EXPAND accepts at most this many node tables (BigQuery limit).
-const GRAPH_EXPAND_MAX_NODE_TABLES = 10;
+// GRAPH_EXPAND accepts at most GRAPH_EXPAND_MAX_NODE_TABLES node tables
+// (BigQuery limit); the metric-slice planner (metric_slices.ts) owns the number.
 // Index cells are truncated to this many characters: the index is for
 // choosing a page, and the page has the rest.
 const INDEX_DESCRIPTION = 90;
@@ -359,6 +368,106 @@ function measureHome(graphs: GraphInfo[], metric: string):
   return g ? {graph: g, nodeTable: g.measures.get(metric)!} : undefined;
 }
 
+// The metric graphs and fallback views `kcmd push` deploys next to the
+// primary graph (metric_slices.ts), planned the way the push plans them: over
+// the model pruned to the profile's bindings.
+function metricGraphPlan(model: SemanticModel, profile: string):
+    MetricGraphPlan|undefined {
+  let target;
+  try {
+    target = bigQueryGraphTargets(model).targets[0];
+  } catch {
+    return undefined;
+  }
+  if (!target) return undefined;
+  return planMetricGraphs(pruneUnavailable(model, profile).model, {
+    project: target.project,
+    dataset: target.dataset,
+    graphName: target.graphName,
+  });
+}
+
+function sliceInfo(s: MetricSlice): GraphInfo {
+  return {
+    ref: s.ref,
+    dataset: s.ref.split('.').slice(0, 2).join('.'),
+    modelName: s.graphName,
+    primary: false,
+    model: s.model,
+    nodeTables: s.nodeTables,
+    measures: s.measures,
+    skipped: new Map(),
+  };
+}
+
+/** Where, and with what expression, the skill tells an agent to read a metric. */
+type Reading = {
+  kind: 'graph';
+  graph: GraphInfo;
+  /** The node table a query slices from: the measure's, or the fact. */
+  anchor: string;
+  /** What to SELECT: `AGG(<NodeTable>_<measure>)`, or a composition. */
+  expression: string;
+  /** The planner's placement, when a metric graph (or the primary) holds it. */
+  placement?: Extract<MetricPlacement, {kind: 'graph'}>;
+}|{
+  kind: 'view';
+  view: MetricView;
+  /** The metric's expression over the view's columns. */
+  expression: string;
+  reason: string;
+}|{
+  kind: 'sql';
+  /** Why the metric is not a MEASURE, when known. */
+  reason?: string;
+};
+
+// A graph named with --extra-scope that holds the metric as a MEASURE within
+// the node-table limit is an explicit choice, so it wins; then the planner's
+// verdict (a metric graph, a fallback view, or SQL); for a metric the planner
+// did not see (no plan, or declared only in an extra model), a MEASURE the
+// graphs already have; else SQL.
+function readingOf(
+    graphs: GraphInfo[], primary: GraphInfo, plan: MetricGraphPlan|undefined,
+    slices: GraphInfo[], name: string): Reading {
+  const extra = graphs.find(g => !g.primary && g.measures.has(name) && expandable(g));
+  if (extra) {
+    const anchor = extra.measures.get(name)!;
+    return {kind: 'graph', graph: extra, anchor, expression: `AGG(${anchor}_${name})`};
+  }
+  const p = plan?.placements.get(name);
+  if (p?.kind === 'graph') {
+    const graph = p.slice ? slices.find(s => s.ref === p.ref) : primary;
+    if (graph) {
+      return {kind: 'graph', graph, anchor: p.fact, expression: graphExpandExpression(p), placement: p};
+    }
+  }
+  if (p?.kind === 'view') {
+    const view = plan!.views.find(v => v.ref === p.ref);
+    if (view) return {kind: 'view', view, expression: p.expression, reason: p.reason};
+  }
+  if (p?.kind === 'none') return {kind: 'sql', reason: p.reason};
+  const home = measureHome(graphs, name);
+  if (home) {
+    return {
+      kind: 'graph',
+      graph: home.graph,
+      anchor: home.nodeTable,
+      expression: `AGG(${home.nodeTable}_${name})`,
+    };
+  }
+  const skipped = graphs.map(g => g.skipped.get(name)).find(x => x);
+  const reason = skipped?.replace(/^metric '[^']+'\s*/, '');
+  return reason ? {kind: 'sql', reason} : {kind: 'sql'};
+}
+
+/** A metric split into several MEASUREs, or one rewritten (a COUNTIF). */
+function composed(r: Reading): boolean {
+  if (r.kind !== 'graph' || !r.placement) return false;
+  const d = r.placement.decomposition;
+  return !d.simple || !!d.components[0].countIf;
+}
+
 
 // ---------------------------------------------------------------------------
 // Small renderers.
@@ -513,6 +622,19 @@ export function queryParts(
   }
   const graphs = [primary, ...extras.filter(g => g.ref)];
 
+  // The metric graphs and fallback views a push deploys next to the primary
+  // graph (K6, metric_slices.ts): the graph each metric is read on.
+  let plan: MetricGraphPlan|undefined;
+  if (primary.ref && !primary.error && opts.metricGraphs !== false) {
+    try {
+      plan = metricGraphPlan(model, runtime.profile);
+    } catch (e) {
+      warnings.push(`Could not plan the metric graphs: ${
+          firstLine(e instanceof Error ? e.message : String(e))}`);
+    }
+  }
+  const slices = (plan?.slices ?? []).map(sliceInfo);
+
   // Metrics: the primary model's, then any an extra model adds, by name.
   const metrics = new Map<string, {metric: Metric; from: string}>();
   for (const g of graphs) {
@@ -521,9 +643,11 @@ export function queryParts(
     }
   }
   const metricList = [...metrics.values()].sort((x, y) => byNameOrder(x.metric, y.metric));
+  const readings = new Map(metricList.map(
+      ({metric}) => [metric.name, readingOf(graphs, primary, plan, slices, metric.name)]));
 
   const paths = entityPaths(a);
-  const ctx: Ctx = {runtime, a, graphs, primary, metricList, paths, opts};
+  const ctx: Ctx = {runtime, a, graphs, primary, metricList, paths, opts, plan, slices, readings};
 
   const files: SkillFile[] = [];
   for (const label of [...a.labels].sort()) {
@@ -533,7 +657,7 @@ export function queryParts(
   files.push({path: 'references/patterns.md', text: patternsPage(ctx)});
   files.sort((x, y) => x.path < y.path ? -1 : x.path > y.path ? 1 : 0);
 
-  const notMeasures = metricList.filter(m => !measureHome(graphs, m.metric.name));
+  const notMeasures = metricList.filter(m => reading(ctx, m.metric.name).kind === 'sql');
   if (notMeasures.length) {
     warnings.push(`${notMeasures.length} metric(s) are not a MEASURE on any ` +
         `graph (${notMeasures.map(m => m.metric.name).join(', ')}); the ` +
@@ -574,6 +698,16 @@ interface Ctx {
   metricList: Array<{metric: Metric; from: string}>;
   paths: Map<string, string>;
   opts: QuerySkillOptions;
+  /** The metric graphs and fallback views next to the primary graph. */
+  plan?: MetricGraphPlan;
+  /** The plan's metric graphs, as graphs a query can name. */
+  slices: GraphInfo[];
+  /** Metric name -> where the skill reads it. */
+  readings: Map<string, Reading>;
+}
+
+function reading(ctx: Ctx, name: string): Reading {
+  return ctx.readings.get(name) ?? {kind: 'sql'};
 }
 
 // One page per label. Entity names are free strings, so they are reduced to a
@@ -643,8 +777,9 @@ export const NAVIGATION_GUIDE: readonly string[] = [
       'properties, relationships, metrics and the source table.',
   '2. Relationships, paths, hierarchies and questions about a parent type: ' +
       'use GQL. A label of an abstract or parent type matches every subtype.',
-  '3. Governed metrics: use `GRAPH_EXPAND` + `AGG(<NodeTable>_<metric>)` on ' +
-      'the graph `references/metrics.md` names, so each record counts once.',
+  '3. Governed metrics: use `GRAPH_EXPAND` on the graph `references/metrics.md` ' +
+      'names, selecting the expression it gives (`AGG(<NodeTable>_<measure>)`, ' +
+      'or several combined), so each record counts once.',
   '4. Anything else: SQL over the source tables.',
   '5. The model is the preferred source, not the boundary. If a term is not ' +
       'in the model, look in the physical tables and columns before ' +
@@ -683,7 +818,7 @@ function gqlBasics(graph: string): string[] {
 }
 
 function skillBody(ctx: Ctx): string[] {
-  const {a, graphs, primary, runtime, opts, paths, metricList} = ctx;
+  const {a, graphs, primary, runtime, opts, paths, metricList, plan} = ctx;
   const out: string[] = [];
   out.push('## Where the data is');
   out.push('');
@@ -693,6 +828,18 @@ function skillBody(ctx: Ctx): string[] {
     const use = expandable(g) && g.measures.size ? ' Use it for `GRAPH_EXPAND`.' : '';
     out.push(`- Also: \`${g.ref}\` (model \`${g.modelName}\`, ${
         g.nodeTables.length} node tables, ${g.measures.size} measures).${use}`);
+  }
+  if (plan?.slices.length) {
+    out.push('- Metric graphs for `GRAPH_EXPAND`, one per fact entity (a tree ' +
+        'rooted at the fact); `references/metrics.md` names the one for each metric:');
+    for (const s of plan.slices) {
+      out.push(`  - \`${s.ref}\`: root \`${s.fact}\`, node tables ${
+          s.nodeTables.map(n => `\`${n}\``).join(', ')}.`);
+    }
+  }
+  if (plan?.views.length) {
+    out.push(`- Metric views, for metrics no graph can hold: ${
+        plan.views.map(v => `\`${v.ref}\` (one row per \`${v.fact}\`)`).join(', ')}.`);
   }
   if (primary.dataset) {
     out.push(`- Semantic dataset: \`${primary.dataset}\`. Each entity page names its source table.`);
@@ -745,8 +892,7 @@ function skillBody(ctx: Ctx): string[] {
     out.push('| Metric | Description | Read on |');
     out.push('| --- | --- | --- |');
     for (const {metric} of metricList) {
-      const home = measureHome(graphs, metric.name);
-      const where = home ? `\`${home.nodeTable}\` in \`${shortGraph(home.graph)}\`` : 'SQL';
+      const where = readOn(reading(ctx, metric.name));
       out.push(`| \`${cell(metric.name)}\` | ${
           truncateCell(firstLine(metric.description ?? ''), INDEX_DESCRIPTION)} | ${where} |`);
     }
@@ -794,13 +940,20 @@ function shortGraph(g: GraphInfo): string {
   return g.ref ? g.ref.split('.').pop()! : g.modelName;
 }
 
+/** The index's "Read on" cell for a metric. */
+function readOn(r: Reading): string {
+  if (r.kind === 'graph') return `\`${r.anchor}\` in \`${shortGraph(r.graph)}\``;
+  if (r.kind === 'view') return `view \`${r.view.viewName}\``;
+  return 'SQL';
+}
+
 
 // ---------------------------------------------------------------------------
 // references/entities/<Label>.md
 // ---------------------------------------------------------------------------
 
 function entityPage(ctx: Ctx, label: string): string {
-  const {a, primary, graphs, metricList, paths} = ctx;
+  const {a, primary, metricList, paths} = ctx;
   const e = a.byName.get(label)!;
   const isNode = a.nodeTables.has(label);
   const ancestors = ancestorsOf(a.byName, label).filter(x => a.labels.has(x));
@@ -914,16 +1067,21 @@ function entityPage(ctx: Ctx, label: string): string {
 
   // Metrics anchored here.
   const anchored = metricList.filter(({metric}) => {
-    const home = measureHome(graphs, metric.name);
-    return metric.entity === label || home?.nodeTable === label ||
+    const r = reading(ctx, metric.name);
+    const anchor = r.kind === 'graph' ? r.anchor : r.kind === 'view' ? r.view.fact : undefined;
+    return metric.entity === label || anchor === label ||
         new RegExp(`\\b${escapeRe(label)}\\.`).test(metric.expression ?? '');
   });
   if (anchored.length) {
     out.push('## Metrics');
     out.push('');
     for (const {metric} of anchored) {
-      const home = measureHome(graphs, metric.name);
-      const how = home ? `MEASURE \`${home.nodeTable}_${metric.name}\` in \`${shortGraph(home.graph)}\`` : 'SQL only';
+      const r = reading(ctx, metric.name);
+      const how = r.kind === 'graph' ?
+          (composed(r) ? `composed from MEASUREs in \`${shortGraph(r.graph)}\`` :
+                         `MEASURE \`${r.anchor}_${metric.name}\` in \`${shortGraph(r.graph)}\``) :
+          r.kind === 'view' ? `view \`${r.view.viewName}\`` :
+                              'SQL only';
       out.push(`- \`${metric.name}\`: \`${collapse(metric.expression ?? metric.importedExpression ?? '')}\` (${how}). See \`references/metrics.md\`.`);
     }
     out.push('');
@@ -1103,7 +1261,7 @@ function joinText(a: Analysis, r: Relationship): string {
 // ---------------------------------------------------------------------------
 
 function metricsPage(ctx: Ctx): string {
-  const {metricList, graphs} = ctx;
+  const {metricList, plan} = ctx;
   const out: string[] = [];
   out.push('# Metrics');
   out.push('');
@@ -1120,7 +1278,30 @@ function metricsPage(ctx: Ctx): string {
     out.push('This model declares no metrics.');
     return finish(out);
   }
-  for (const {metric, from} of metricList) {
+  const readings = metricList.map(m => reading(ctx, m.metric.name));
+  const intro: string[] = [];
+  if (plan?.slices.length) {
+    intro.push('`GRAPH_EXPAND` also needs a tree: one root node table, every ' +
+        'other reached by exactly one path. So each fact entity has a metric ' +
+        'graph -- a tree rooted at the fact, with its many-to-one dimensions -- ' +
+        'and a metric names the one to use.');
+  }
+  if (readings.some(composed)) {
+    intro.push('A metric made of several aggregates is several MEASUREs: ' +
+        'select its composition as given, e.g. `SAFE_DIVIDE(AGG(n), AGG(d))`, ' +
+        'which divides the aggregates of each group (NULL when the ' +
+        'denominator is 0), never row by row.');
+  }
+  if (readings.some(r => r.kind === 'view')) {
+    intro.push('A metric no graph can hold is read from a generated view with ' +
+        'one row per fact record and columns named `<Entity>_<field>`.');
+  }
+  if (intro.length) {
+    out.push(intro.join(' '));
+    out.push('');
+  }
+  metricList.forEach(({metric, from}, i) => {
+    const r = readings[i];
     out.push(`## ${metric.name}`);
     out.push('');
     if (metric.description) {
@@ -1129,50 +1310,96 @@ function metricsPage(ctx: Ctx): string {
     }
     const expr = metric.expression ?? metric.importedExpression;
     if (expr) out.push(`- Expression: \`${collapse(expr)}\``);
-    const home = measureHome(graphs, metric.name);
-    const anchor = home?.nodeTable ?? metric.entity;
+    const anchor = r.kind === 'graph' ? r.anchor : r.kind === 'view' ? r.view.fact : metric.entity;
     if (anchor) out.push(`- Anchor: \`${anchor}\``);
     if (from !== ctx.runtime.model.name) out.push(`- Declared in model \`${from}\``);
     if (metric.type) out.push(`- Type: ${metric.type}`);
     const notes = aiNotes(metric.aiContext);
     if (notes.length) out.push(`- ${notes.join(' ')}`);
-    const homes = graphs.filter(g => g.measures.has(metric.name));
-    if (homes.length) {
-      out.push(`- MEASURE in: ${homes.map(g => `\`${g.ref}\` (on \`${g.measures.get(metric.name)}\`)`).join(', ')}`);
-    }
+    out.push(...readingFacts(ctx, metric.name, r));
     out.push('');
-    if (home) {
-      if (expandable(home.graph)) {
-        out.push(...expandExample(ctx, home.graph, home.nodeTable, metric.name));
-      } else {
-        // BigQuery refuses GRAPH_EXPAND over a graph with more node tables than
-        // the limit ("Property graph has N node tables, which exceeds the
-        // maximum of 10"), so a GRAPH_EXPAND example would only mislead.
-        out.push(`\`${home.graph.ref}\` has ${home.graph.nodeTables.length} node ` +
-            `tables, over the ${GRAPH_EXPAND_MAX_NODE_TABLES} GRAPH_EXPAND ` +
-            'accepts, so query this metric in SQL:');
-        out.push('');
-        out.push(...sqlEquivalent(ctx, metric));
-      }
-    } else {
-      const reason = graphs.map(g => g.skipped.get(metric.name)).find(x => x);
-      out.push(`Not a graph MEASURE${reason ? ` (${collapse(reason.replace(/^metric '[^']+'\s*/, ''))})` : ''}. ` +
-          'Compute it in SQL:');
-      out.push('');
-      out.push(...sqlEquivalent(ctx, metric));
-    }
-  }
+    out.push(...readingQuery(ctx, metric, r));
+  });
   return finish(out);
 }
 
-function expandExample(ctx: Ctx, g: GraphInfo, nodeTable: string, metric: string): string[] {
-  const dim = expandDimension(g, nodeTable);
+// The bullets saying where a metric is read: the metric graph, the MEASUREs
+// and, for a composite, how they recombine.
+function readingFacts(ctx: Ctx, name: string, r: Reading): string[] {
+  const out: string[] = [];
+  if (r.kind === 'graph' && r.placement?.slice) {
+    out.push(`- Graph: \`${r.graph.ref}\`, the metric graph for \`${r.anchor}\` (${
+        r.graph.nodeTables.length} node tables: ${r.graph.nodeTables.map(tick).join(', ')})`);
+  }
+  if (r.kind === 'graph' && r.placement && composed(r)) {
+    const p = r.placement;
+    const parts = p.decomposition.components.map(
+        (c, i) => `\`${p.homes[i]}_${c.name}\` = \`${collapse(c.expression)}\`${countIfNote(c)}`);
+    out.push(`- MEASUREs: ${parts.join('; ')}`);
+    out.push(`- Composition: \`${r.expression}\``);
+  }
+  const seen = new Set<string>();
+  const homes = [...ctx.graphs, ...ctx.slices].filter(g => {
+    if (!g.measures.has(name) || seen.has(g.ref ?? g.modelName)) return false;
+    seen.add(g.ref ?? g.modelName);
+    return true;
+  });
+  if (homes.length) {
+    out.push(`- MEASURE in: ${homes.map(g => `\`${g.ref}\` (on \`${g.measures.get(name)}\`)`).join(', ')}`);
+  }
+  return out;
+}
+
+// How a COUNTIF component was rewritten into a MEASURE aggregate.
+function countIfNote(c: MetricComponent): string {
+  if (!c.countIf) return '';
+  const how = c.countIf.via === 'membership' ?
+      `the membership property \`${c.countIf.flag}\`` :
+      'a CASE';
+  return ` (\`COUNTIF(${collapse(c.countIf.condition)})\` as ${how})`;
+}
+
+// The ready query for a metric: GRAPH_EXPAND on its graph, its fallback
+// view, or SQL over the source tables.
+function readingQuery(ctx: Ctx, metric: Metric, r: Reading): string[] {
+  const out: string[] = [];
+  if (r.kind === 'graph') {
+    if (expandable(r.graph)) return expandExample(r.graph, r.anchor, r.expression, metric.name);
+    // BigQuery refuses GRAPH_EXPAND over a graph with more node tables than
+    // the limit ("Property graph has N node tables, which exceeds the
+    // maximum of 10"), so a GRAPH_EXPAND example would only mislead.
+    out.push(`\`${r.graph.ref}\` has ${r.graph.nodeTables.length} node ` +
+        `tables, over the ${GRAPH_EXPAND_MAX_NODE_TABLES} GRAPH_EXPAND ` +
+        'accepts, so query this metric in SQL:');
+    out.push('');
+    out.push(...sqlEquivalent(ctx, metric));
+    return out;
+  }
+  if (r.kind === 'view') {
+    out.push(`Not a graph MEASURE (${collapse(r.reason)}). Read it on the ` +
+        `generated view \`${r.view.ref}\`, one row per \`${r.view.fact}\` record:`);
+    out.push('');
+    out.push(...viewExample(ctx, r, metric.name));
+    return out;
+  }
+  out.push(`Not a graph MEASURE${r.reason ? ` (${collapse(r.reason)})` : ''}. ` +
+      'Compute it in SQL:');
+  out.push('');
+  out.push(...sqlEquivalent(ctx, metric));
+  return out;
+}
+
+// GRAPH_EXPAND over `g`, selecting `expression` -- `AGG(<NodeTable>_<measure>)`
+// or a composition of several -- by a dimension of the anchor when it has one.
+function expandExample(
+    g: GraphInfo, anchor: string, expression: string, metric: string): string[] {
+  const dim = expandDimension(g, anchor);
   const lines = ['```sql'];
   if (dim) {
     lines.push(`SELECT ${dim.column} AS ${q(dim.alias)},`);
-    lines.push(`       AGG(${nodeTable}_${metric}) AS ${q(metric)}`);
+    lines.push(`       ${expression} AS ${q(metric)}`);
   } else {
-    lines.push(`SELECT AGG(${nodeTable}_${metric}) AS ${q(metric)}`);
+    lines.push(`SELECT ${expression} AS ${q(metric)}`);
   }
   lines.push(`FROM GRAPH_EXPAND("${graphRefOrPlaceholder(g)}")`);
   if (dim) {
@@ -1181,8 +1408,43 @@ function expandExample(ctx: Ctx, g: GraphInfo, nodeTable: string, metric: string
   }
   lines.push('```');
   lines.push('');
-  void ctx;
   return lines;
+}
+
+// The metric's expression over its fallback view's columns, by a dimension
+// of the view when it has one.
+function viewExample(
+    ctx: Ctx, r: Extract<Reading, {kind: 'view'}>, metric: string): string[] {
+  const dim = viewDimension(ctx.a, r.view);
+  const expression = collapse(r.expression);
+  const lines = ['```sql'];
+  if (dim) {
+    lines.push(`SELECT ${q(dim.column)} AS ${q(dim.alias)},`);
+    lines.push(`       ${expression} AS ${q(metric)}`);
+  } else {
+    lines.push(`SELECT ${expression} AS ${q(metric)}`);
+  }
+  lines.push(`FROM ${tick(r.view.ref)}`);
+  if (dim) {
+    lines.push(`GROUP BY ${q(dim.alias)}`);
+    lines.push(`ORDER BY ${q(metric)} DESC`);
+  }
+  lines.push('```');
+  lines.push('');
+  return lines;
+}
+
+// A dimension of a fallback view: a readable column of an entity the fact
+// joins directly, else of the fact itself.
+function viewDimension(a: Analysis, v: MetricView):
+    {column: string; alias: string}|undefined {
+  const near = v.edges.filter(e => e.from === v.fact).map(e => e.to);
+  for (const entity of [...near, v.fact]) {
+    const f = dimensionField(a, entity);
+    const column = f ? v.columnFor.get(`${entity}.${f.name}`) : undefined;
+    if (f && column) return {column, alias: f.name};
+  }
+  return undefined;
 }
 
 // A dimension to slice a measure by, chosen from the graph the measure lives
@@ -1251,7 +1513,7 @@ interface Pattern {
 
 /** The example queries; tests check every name in them via patterns.md. */
 function generatedPatterns(ctx: Ctx): Pattern[] {
-  const {a, primary, graphs, metricList} = ctx;
+  const {a, primary, metricList} = ctx;
   const graph = graphRefOrPlaceholder(primary);
   const G = `GRAPH \`${graph}\``;
   const out: Pattern[] = [];
@@ -1392,16 +1654,30 @@ function generatedPatterns(ctx: Ctx): Pattern[] {
     });
   }
 
-  // A metric by a dimension -- one GRAPH_EXPAND accepts, when there is one.
-  const homed = metricList.map(m => ({m, home: measureHome(graphs, m.metric.name)}))
-                    .filter(x => x.home);
-  const firstMeasure = homed.find(x => expandable(x.home!.graph)) ?? homed[0];
-  if (firstMeasure?.home) {
-    const {graph: g, nodeTable} = firstMeasure.home;
-    const ex = expandExample(ctx, g, nodeTable, firstMeasure.m.metric.name);
+  // A metric by a dimension -- on a graph GRAPH_EXPAND accepts, when there is
+  // one -- and a composite metric's recombination, when the model has one.
+  type OnGraph = {name: string; r: Extract<Reading, {kind: 'graph'}>};
+  const onGraph = metricList.map(m => ({name: m.metric.name, r: reading(ctx, m.metric.name)}))
+                      .filter((x): x is OnGraph => x.r.kind === 'graph');
+  const firstMeasure = onGraph.find(x => expandable(x.r.graph) && !composed(x.r)) ??
+      onGraph.find(x => expandable(x.r.graph)) ?? onGraph[0];
+  if (firstMeasure) {
+    const {name, r} = firstMeasure;
     out.push({
-      title: `Governed metric by a dimension: ${firstMeasure.m.metric.name}`,
-      sql: ex.filter(l => l !== '```sql' && l !== '```' && l !== ''),
+      title: `Governed metric by a dimension: ${name}`,
+      sql: sqlOnly(expandExample(r.graph, r.anchor, r.expression, name)),
+    });
+  }
+  const composite = onGraph.find(
+      x => x !== firstMeasure && expandable(x.r.graph) && composed(x.r));
+  if (composite) {
+    const {name, r} = composite;
+    out.push({
+      title: `Composite metric: ${name}`,
+      note: 'Several MEASUREs recombined after aggregating, exactly as ' +
+          '`references/metrics.md` gives the composition; SAFE_DIVIDE gives ' +
+          'NULL for a group whose denominator is 0.',
+      sql: sqlOnly(expandExample(r.graph, r.anchor, r.expression, name)),
     });
   }
 
@@ -1430,6 +1706,11 @@ function rank(a: Analysis, r: Relationship, top: string|undefined): number {
 
 function lowerFirst(s: string): string {
   return s.charAt(0).toLowerCase() + s.slice(1);
+}
+
+/** A fenced example's SQL lines, without the fence and blank lines. */
+function sqlOnly(lines: string[]): string[] {
+  return lines.filter(l => l !== '```sql' && l !== '```' && l !== '');
 }
 
 function patternsPage(ctx: Ctx): string {

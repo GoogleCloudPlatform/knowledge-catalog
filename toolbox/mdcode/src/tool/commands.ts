@@ -112,6 +112,15 @@ export interface PushOptions {
   // Mutually exclusive with profile and with --no-profile. Semantic-model push
   // only.
   allProfiles?: boolean;
+  // `--dry-run`: the same as validateOnly -- every check runs and the plan
+  // (with --print, the generated DDL) is printed, but nothing is written to
+  // any destination.
+  dryRun?: boolean;
+  // Whether the BigQuery graph leg also deploys the GRAPH_EXPAND metric graphs
+  // and fallback views next to each graph (K6, a proposed enhancement; see
+  // ../libts/semantic/metric_slices.ts). On by default; `--no-metric-graphs`
+  // sets it false. Semantic-model push only.
+  metricGraphs?: boolean;
 }
 
 
@@ -311,6 +320,8 @@ export async function pull(options: PullOptions = {}): Promise<number> {
 
 
 export async function push(options: PushOptions): Promise<number> {
+  // `--dry-run` is `--validate-only` under the name the other commands use.
+  if (options.dryRun) options.validateOnly = true;
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
 
@@ -718,6 +729,7 @@ export async function push(options: PushOptions): Promise<number> {
     [!!options.print, '--print'],
     [!!options.emitExpressions, '--emit-expressions'],
     [!!options.forceRemove, '--force-remove'],
+    [options.metricGraphs === false, '--no-metric-graphs'],
   ];
   for (const [set, flag] of semanticOnlyFlags) {
     if (set) {
@@ -949,6 +961,14 @@ async function pushBigQuery(
   for (const w of result.warnings) {
     console.warn(`Warning: ${w}`);
   }
+  // The GRAPH_EXPAND metric graphs and fallback views next to each graph
+  // (see metric_slices.ts): what was planned, or under a dry run what would be.
+  if (result.metricGraphs.length) {
+    console.log(
+        options.validateOnly ? 'Metric graphs (dry run; nothing created):' :
+                               'Metric graphs:');
+    for (const line of result.metricGraphs) console.log(`  ${line}`);
+  }
   if (options.print) {
     console.log('-- BigQuery Graph --');
     for (const block of result.ddl) {
@@ -960,9 +980,11 @@ async function pushBigQuery(
     console.error('Error pushing semantic model to BigQuery:', result.details);
     return 1;
   }
+  const views = result.views ? ` and ${result.views} metric view(s)` : '';
   console.log(
-      options.validateOnly ? 'Validation complete; no changes applied.' :
-                             `Deployed ${result.deployed} BigQuery Graph(s).`);
+      options.validateOnly ?
+          'Validation complete; no changes applied.' :
+          `Deployed ${result.deployed} BigQuery Graph(s)${views}.`);
   return 0;
 }
 
@@ -1483,6 +1505,13 @@ export interface SkillsGenerateOptions {
   extraScope?: string|string[];
   /** BigQuery location to name in the query side. */
   location?: string;
+  /**
+   * Whether the query side reads metrics on the GRAPH_EXPAND metric graphs
+   * and fallback views `kcmd push` deploys (K6, a proposed enhancement; see
+   * ../libts/semantic/metric_slices.ts). On by default; `--no-metric-graphs`
+   * sets it false, for a graph pushed with `--no-metric-graphs`.
+   */
+  metricGraphs?: boolean;
 }
 
 
@@ -1573,7 +1602,11 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
     }
     extraModels.push(...extra.map(r => r.model));
   }
-  const query = {extraModels, location: options.location};
+  const query = {
+    extraModels,
+    location: options.location,
+    metricGraphs: options.metricGraphs,
+  };
 
   const root = options.out ?? 'skills';
 

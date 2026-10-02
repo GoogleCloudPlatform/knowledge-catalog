@@ -24,6 +24,7 @@ import {generatePropertyGraph} from './bigquery';
 // historical import path.
 import {BigQueryGraphTarget, bigQueryGraphTargets, deploymentTargetUris, googleDeploymentTargets} from './deployment_target';
 import {LoadedModel} from './loader';
+import {describeMetricGraphPlan, planMetricGraphs} from './metric_slices';
 
 export {bigQueryGraphTargets, deploymentTargetUris, googleDeploymentTargets};
 export type {BigQueryGraphTarget};
@@ -31,6 +32,11 @@ export type {BigQueryGraphTarget};
 
 export interface DeployOptions {
   validateOnly?: boolean;
+  // Also deploy, next to each main graph, the GRAPH_EXPAND-ready metric graphs
+  // (one per fact entity) and the SQL views that metrics no graph can hold
+  // fall back to -- see metric_slices.ts (K6, a proposed enhancement). On
+  // unless explicitly false (`kcmd push --no-metric-graphs`).
+  metricGraphs?: boolean;
   // Poll bounds for a slow query job, overridable so tests can exercise the
   // exhaustion path without burning wall-clock. Default to the module
   // constants.
@@ -43,12 +49,20 @@ export interface DeployResult {
   details?: string;
   // Generated DDL, one entry per target (each prefixed with a `-- <uri>`
   // comment), in deploy order. Populated even for validateOnly, where nothing
-  // is executed, so the caller can print or inspect it.
+  // is executed, so the caller can print or inspect it. A target's metric
+  // graphs and fallback views follow its main graph.
   ddl: string[];
   // Loader and generator warnings collected across all documents.
   warnings: string[];
-  // Number of graphs actually executed against BigQuery (0 for validateOnly).
+  // Number of graphs actually executed against BigQuery (0 for validateOnly),
+  // metric graphs included.
   deployed: number;
+  // One line per metric graph / fallback view planned next to a main graph
+  // (and per main graph that serves GRAPH_EXPAND itself), for the CLI to
+  // print. Filled under validateOnly too.
+  metricGraphs: string[];
+  // Number of fallback views actually created (0 for validateOnly).
+  views: number;
 }
 
 
@@ -180,11 +194,24 @@ export async function deployBigQuery(
   const bigQuery = new BigQueryClient(ctx);
   const ddl: string[] = [];
   const warnings: string[] = [];
+  const metricGraphs: string[] = [];
   let deployed = 0;
+  let views = 0;
   let modelsSeen = 0;
 
   const fail = (details: string): DeployResult =>
-      ({success: false, details, ddl, warnings, deployed});
+      ({success: false, details, ddl, warnings, deployed, metricGraphs, views});
+
+  // These are CREATE OR REPLACE statements executed one at a time, so any
+  // graphs (and views) already deployed in this run have mutated production
+  // and are not rolled back. Surfaced alongside a failing statement.
+  const partial = (): string => {
+    if (!deployed && !views) return '';
+    const what = views ? `${deployed} graph(s) and ${views} view(s)` :
+                         `${deployed} graph(s)`;
+    return ` (${what} already deployed in this run; CREATE OR REPLACE ` +
+        `changes are not rolled back)`;
+  };
 
   const maxPolls = options.maxQueryPolls ?? MAX_QUERY_POLLS;
   const backoffMs = options.pollBackoffMs ?? POLL_BACKOFF_MS;
@@ -240,14 +267,32 @@ export async function deployBigQuery(
         dataset: target.dataset,
         graphName: target.graphName,
       });
+      const tag = `[${model.name} -> ${target.graphName}]`;
       for (const w of gen.warnings) {
-        warnings.push(`[${model.name} -> ${target.graphName}] ${w}`);
+        warnings.push(`${tag} ${w}`);
       }
       // K2 / K3: the views the graph reads (vocabularies, then the edges over
       // them) are created first, in order, and listed ahead of the graph.
-      const views = gen.views ?? [];
+      const generatedViews = gen.views ?? [];
       ddl.push(`-- ${target.uri}\n${
-          views.map(v => `${v.ddl};\n\n`).join('')}${gen.ddl}`);
+          generatedViews.map(v => `${v.ddl};\n\n`).join('')}${gen.ddl}`);
+
+      // The metric graphs and fallback views that go next to this graph (see
+      // metric_slices.ts). Planned under validateOnly too, so a dry run shows
+      // exactly what a real push would create.
+      const plan = options.metricGraphs === false ?
+          undefined :
+          planMetricGraphs(model, {
+            project: target.project,
+            dataset: target.dataset,
+            graphName: target.graphName,
+          });
+      for (const w of plan?.warnings ?? []) warnings.push(`${tag} ${w}`);
+      for (const line of plan ? describeMetricGraphPlan(plan) : []) {
+        metricGraphs.push(`${tag} ${line}`);
+      }
+      for (const s of plan?.slices ?? []) ddl.push(`-- ${s.uri}\n${s.ddl}`);
+      for (const v of plan?.views ?? []) ddl.push(`-- ${v.uri}\n${v.sql}`);
 
       if (options.validateOnly) {
         continue;
@@ -260,35 +305,42 @@ export async function deployBigQuery(
         return fail(
             `Failed to deploy '${target.graphName}': ${err.message || err}`);
       }
-      const statements = [
-        ...views.map(v => ({what: `view '${v.ref}'`, sql: v.ddl})),
-        {what: `graph '${target.graphName}'`, sql: gen.ddl},
-      ];
-      let created = 0;
-      for (const {what, sql} of statements) {
-        const started = await bigQuery.query(target.project, sql, location);
-        const outcome = await awaitQueryDone(
-            bigQuery, target.project, started, maxPolls, backoffMs);
-        if (!outcome.ok) {
-          // These are CREATE OR REPLACE statements executed one at a time, so
-          // any graphs already deployed in this run have mutated production
-          // and are not rolled back. Surface that alongside the failing
-          // target.
-          const partial = deployed ?
-              ` (${deployed} graph(s) already deployed in this run; ` +
-                  `CREATE OR REPLACE changes are not rolled back)` :
-              '';
-          const viewsDone = created ?
-              ` (${created} generated view(s) for it were already created)` :
-              '';
-          return fail(`Failed to deploy '${target.graphName}': ${
-              statements.length > 1 ? `${what}: ` : ''}${outcome.error}${
-              viewsDone}${partial}`);
+      const run = async(sql: string) => awaitQueryDone(
+          bigQuery, target.project,
+          await bigQuery.query(target.project, sql, location), maxPolls,
+          backoffMs);
+
+      for (const v of generatedViews) {
+        const done = await run(v.ddl);
+        if (!done.ok) {
+          return fail(`Failed to create generated view '${v.ref}': ${done.error}${partial()}`);
         }
-        created++;
+        views++;
       }
 
+      const outcome = await run(gen.ddl);
+      if (!outcome.ok) {
+        return fail(`Failed to deploy '${target.graphName}': ${outcome.error}${
+            partial()}`);
+      }
       deployed++;
+
+      for (const s of plan?.slices ?? []) {
+        const done = await run(s.ddl);
+        if (!done.ok) {
+          return fail(`Failed to deploy metric graph '${s.graphName}': ${
+              done.error}${partial()}`);
+        }
+        deployed++;
+      }
+      for (const v of plan?.views ?? []) {
+        const done = await run(v.sql);
+        if (!done.ok) {
+          return fail(`Failed to create metric view '${v.viewName}': ${
+              done.error}${partial()}`);
+        }
+        views++;
+      }
     }
   }
 
@@ -300,10 +352,10 @@ export async function deployBigQuery(
   if (!modelsSeen) {
     if (options.validateOnly) {
       warnings.push('No semantic model documents found; nothing to validate.');
-      return {success: true, ddl, warnings, deployed};
+      return {success: true, ddl, warnings, deployed, metricGraphs, views};
     }
     return fail('No semantic model documents found; nothing to deploy.');
   }
 
-  return {success: true, ddl, warnings, deployed};
+  return {success: true, ddl, warnings, deployed, metricGraphs, views};
 }

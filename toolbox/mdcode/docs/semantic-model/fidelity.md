@@ -68,7 +68,10 @@ agree on every structural row and differ only where a Spanner target has no
 4. **Metric shape.** A metric must resolve to exactly one entity (otherwise the
    push is rejected) and reduce to one supported aggregate — `SUM` / `AVG` /
    `COUNT` / `MIN` / `MAX` — over one operand (otherwise it is skipped with a
-   warning).
+   warning). That is the main graph; the metric graphs deployed next to it
+   (proposed) also carry a formula over several aggregates, as single-aggregate
+   component measures plus a composition — see
+   [Metric graphs for `GRAPH_EXPAND`](#metric-graphs-for-graph_expand-proposed).
 5. **Metric type.** A metric's expression is gated behind `--emit-expressions`;
    its data type round-trips only for a concrete type (e.g. `Decimal`) — an
    untyped, `String`, or `Opaque` metric comes back un-typed.
@@ -327,6 +330,67 @@ graph's dataset. The views only read the model's tables. A failing view stops
 the push before the graph. `--print` lists them with the graph DDL. Each
 view's own `OPTIONS(description)` says what it holds and that kcmd generated
 it. See footnotes ¹⁷ and ¹⁸.
+
+### Metric graphs for `GRAPH_EXPAND` (proposed)
+
+> [!NOTE]
+> A proposed kcmd enhancement. It changes what a push deploys, not the model
+> spec; `kcmd push --no-metric-graphs` turns it off.
+
+`GRAPH_EXPAND` is how a graph `MEASURE` is read without an Enterprise
+reservation (GQL needs one). It accepts only a tree: at most 10 node tables, one
+root, every other node reached by exactly one path, and measures on labels no
+other table shares. A main graph rarely qualifies — it holds every entity,
+several facts, inverse edges and diamonds — so next to each main graph a
+BigQuery push also deploys one **metric graph per fact entity** (the entity a
+metric aggregates), named `<graph>__<fact_in_snake_case>_metrics`:
+
+- **The tree.** The fact is the root. The entities the fact's metrics read are
+  reached first, along many-to-one relationships (a foreign key onto the
+  destination's primary or a unique key): shortest path, relationships taken in
+  name order. The tree then grows breadth-first with further many-to-one
+  dimensions of the fact, each reached once, until it has 10 node tables.
+  Inverse edges, many-to-many and self relationships, and a second path to a
+  node already reached are left out; `--dry-run` lists what each graph leaves
+  out.
+- **Labels.** The ancestors of the kept entities become labels only (a concrete
+  ancestor outside the tree is made table-less), so label reads keep working.
+  The super-relationships of kept edges stay edge labels.
+- **Measures.** Only the fact's metrics are carried. A single-aggregate metric
+  is one `MEASURE`. A composite metric — a formula over several aggregates, such
+  as `100 * SUM(a) / (SUM(a) + SUM(b))` — becomes one single-aggregate measure
+  per component (named after a simple metric with the same aggregate, else
+  `<metric>__agg<N>`) plus a composition over `AGG()` of each:
+  `100 * SAFE_DIVIDE(AGG(T_a), AGG(T_a) + AGG(T_<metric>__agg2))`. Each `/`
+  becomes `SAFE_DIVIDE`, and a multiplier stays outside it. `COUNTIF(cond)` is
+  rewritten as `SUM(CAST(is<Defined> AS INT64))` when `cond` is the membership
+  predicate of a defined entity of that table (its membership property), and
+  otherwise as `SUM(CASE WHEN cond THEN 1 ELSE 0 END)`. `COUNT(*)` counts the
+  rows of the entity the other aggregates read (else the metric's entity). A
+  component that reads another entity is declared on that entity's node table
+  and aggregates the rows the root reaches.
+- **Already served.** A fact whose tree would be the whole main graph, with
+  every metric already a `MEASURE` there, gets no metric graph: the main graph
+  serves `GRAPH_EXPAND` itself.
+- **Fallback view.** Some metrics fit no tree: the entities their aggregates
+  read are not reachable from one of them through many-to-one relationships, a
+  path converges, they need more than 10 node tables, or they use an aggregate
+  that cannot be a `MEASURE` (such as `STDDEV`). Such a metric falls back to a
+  generated SQL view, `<graph>__<fact>_metrics_view`: one row per fact record,
+  with the dimensions LEFT JOINed along the same tree and columns named
+  `<Entity>_<field>` as in `GRAPH_EXPAND` output. Each fallback is a push
+  warning. Two kinds of metric get neither a graph nor a view, and the query
+  skill gives plain SQL for them:
+  - a metric a flat view would compute wrong (a duplicate-sensitive aggregate
+    over a dimension's rows);
+  - a metric that reads a defined entity, which has no table (a `MEASURE`
+    cannot filter rows).
+
+The main graph is unchanged. Metric graphs and views are derived, not authored:
+Knowledge Catalog does not record them, `pull` does not read them, and every
+push regenerates them. The query skill names, for each metric, the graph to read
+and the expression to select (see
+[Agent skills](skills.md#metrics-and-metric-graphs-proposed)).
 
 ## To Spanner
 
