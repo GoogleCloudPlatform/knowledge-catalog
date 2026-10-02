@@ -253,6 +253,38 @@ cli.command(
 
 
 cli.command(
+       'test',
+       '(Proposed) Contract tests generated from the model: the graph\'s is<Class> properties match the defined classes\' expressions, quantified paths over transitive relationships match a recursive SQL closure, and every validation query executes. Writes the tests, runs them read-only, and reports pass / fail')
+    .option('--target <target>', 'The engine to test on. Only `bigquery`')
+    .option(
+        '--profile [name]',
+        'Test the graph and tables this binding profile binds; defaults to default_profile, else the inline bindings')
+    .option(
+        '--out <dir>',
+        'Directory for <model>.contract.sql, <model>.contract.json (the manifest) and <model>.contract-results.json. Defaults to `contract-tests`')
+    .option(
+        '--sql-only',
+        'Write the tests and the manifest, and run nothing (also the behaviour when there are no credentials)')
+    .option(
+        '--location <location>',
+        'BigQuery processing location for the query jobs (e.g. US); inferred from the tables when unset')
+    .option(
+        '--path-bound <k>',
+        'The k of the quantified paths -[:p]->{1,k} the transitive-closure tests compare (default 10)')
+    .action(async (options) => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.contractTest(options);
+      } catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+
+      process.exit(exitCode);
+    });
+
+
+cli.command(
        'glossary <action>',
        'Publish each model\'s `glossary` block as a Knowledge Catalog Business Glossary (action: push): the glossary, its categories and terms, `related` links between terms, and `definition` links from the BigQuery tables / columns and semantic entries the terms define. Idempotent; run after `kcmd push`')
     .option(

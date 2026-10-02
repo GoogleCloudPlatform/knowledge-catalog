@@ -12,6 +12,7 @@ import * as context from '../libts/gcp/context';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {SemanticModelLayout} from '../libts/layouts/semantic-model';
+import * as contracts from '../libts/semantic/contract_tests';
 import {buildCoverageReport, CoverageReport, formatCoverageSummary, writeCoverageFile} from '../libts/semantic/converters/coverage';
 import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import {collectOwlSources} from '../libts/semantic/converters/owl/imports';
@@ -1953,6 +1954,170 @@ export async function validate(options: ValidateOptions = {}): Promise<number> {
       for (const name of published.published) console.log(`Published ${name}`);
       for (const e of published.errors) console.error(`Error: [${model.name}] ${e}`);
       if (published.errors.length) failed = true;
+    }
+  }
+  return failed ? 1 : 0;
+}
+
+
+export interface ContractTestOptions {
+  /** The engine to test on. Only `bigquery` today. */
+  target?: string;
+  profile?: string|boolean;
+  /** Directory the .sql / .json files are written to. Defaults to `contract-tests`. */
+  out?: string;
+  /** Write the .sql file and the manifest and stop; run nothing. */
+  sqlOnly?: boolean;
+  /** BigQuery processing location (e.g. US). */
+  location?: string;
+  /** The k of quantified paths `{1,k}` (default 10). */
+  pathBound?: string|number;
+  /** The scope directory (default: the working directory). */
+  cwd?: string;
+}
+
+// The models of the semantic-model scope at `root`, AS AUTHORED: the selected
+// binding profile merged, inheritance unresolved -- the shape `validate` loads
+// (see there). `command` names the caller in messages.
+async function loadAuthoredModels(
+    command: string, root: string, profileOption: string|boolean|undefined,
+    ctx: context.ApiContext):
+    Promise<{models: SemanticModel[]; profile: string}|{error: string}> {
+  let snapshot: kcmd.CatalogSnapshot;
+  try {
+    snapshot = await kcmd.CatalogSnapshot.fromPath(root, ctx);
+  } catch (err: any) {
+    return {error: String(err?.message ?? err)};
+  }
+  if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {
+    return {error: `${command} runs in a semantic-model scope.`};
+  }
+  const layout = snapshot.layout as SemanticModelLayout;
+  const source = snapshot.manifest.source as SemanticModelSource;
+  const named = typeof profileOption === 'string' ? profileOption : undefined;
+  const profile = named ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
+  const docs = layout.modelDocuments();
+  if (!docs.length) return {error: 'no semantic model documents found.'};
+  const merged: Array<{name: string; text: string}> = [];
+  for (const doc of docs) {
+    if (profile === DEFAULT_PROFILE) {
+      merged.push({name: doc.name, text: doc.text});
+      continue;
+    }
+    const chosen = layout.profileDocuments(doc.name).find(p => p.name === profile);
+    if (!chosen) {
+      return {error: `unknown binding profile '${profile}' for model '${doc.name}'.`};
+    }
+    const res = mergeProfileOntoDoc(doc.text, chosen.text, profile);
+    if ('error' in res) return {error: `[${doc.name}] ${res.error}`};
+    for (const w of res.warnings) console.warn(`Warning: [${doc.name}] ${w}`);
+    merged.push({name: doc.name, text: res.text});
+  }
+  const loaded = loadSemanticModels(
+      merged,
+      {defaultProject: source.project ?? ctx.project, bindingOptional: true});
+  if (loaded.error) return {error: loaded.error};
+  for (const w of loaded.warnings) console.warn(`Warning: ${w}`);
+  return {models: loaded.models.map(m => m.model), profile};
+}
+
+// Model-derived contract tests (proposed): `kcmd test --target bigquery`.
+//
+// Generates, from the model alone, the tests in contract_tests.ts (defined-
+// class membership, transitive closure, validation queries, and any family
+// registered there), writes them to `--out` (a .sql file and a JSON manifest),
+// and -- unless `--sql-only`, or there are no credentials -- runs them against
+// the deployed graph and the bound tables and prints pass / fail. Queries
+// only: nothing is created or modified.
+//
+// Exit code: 1 when a test fails or errors (or on a usage / load error); 0
+// otherwise. Unlike `validate`, whose counts describe the data, a failing
+// contract test means the deployed graph does not do what the model says.
+export async function contractTest(options: ContractTestOptions = {}):
+    Promise<number> {
+  if (options.target !== 'bigquery') {
+    console.error(`Error: --target must be 'bigquery'${
+        options.target ? `; got '${options.target}'` : ''}.`);
+    return 1;
+  }
+  const pathBound = options.pathBound === undefined ?
+      contracts.DEFAULT_PATH_BOUND :
+      Number(options.pathBound);
+  if (!Number.isInteger(pathBound) || pathBound < 1) {
+    console.error(`Error: --path-bound must be a whole number >= 1; got '${
+        options.pathBound}'.`);
+    return 1;
+  }
+  const root = options.cwd ?? '.';
+  const outDir = path.resolve(root, options.out ?? 'contract-tests');
+  const ctx = generatorContext();
+  const loaded = await loadAuthoredModels('test', root, options.profile, ctx);
+  if ('error' in loaded) {
+    console.error(`Error: ${loaded.error}`);
+    return 1;
+  }
+  const {models, profile} = loaded;
+  const credentials = !!ctx.token;
+  const run = !options.sqlOnly && credentials;
+  if (!options.sqlOnly && !credentials) {
+    console.warn('Warning: no credentials; writing the tests only (as --sql-only).');
+  }
+
+  let failed = false;
+  for (const model of models) {
+    const store = resolveStore(model);
+    if (!('error' in store) && store.kind !== 'bigquery') {
+      console.error(`Error: [${model.name}] profile '${profile}' targets ${
+          store.kind}, not BigQuery.`);
+      failed = true;
+      continue;
+    }
+    const plan = contracts.planContractTests(model, {pathBound});
+    for (const w of plan.warnings) console.warn(`Warning: [${model.name}] ${w}`);
+    const meta = {profile, generatedAt: new Date().toISOString()};
+    const base = path.join(outDir, model.name.replace(/[^A-Za-z0-9_.-]/g, '_'));
+    try {
+      fs.mkdirSync(outDir, {recursive: true});
+      fs.writeFileSync(`${base}.contract.sql`, contracts.renderContractSql(plan, meta));
+      fs.writeFileSync(
+          `${base}.contract.json`,
+          JSON.stringify(contracts.contractManifest(plan, meta), null, 2) + '\n');
+    } catch (e) {
+      console.error(`Error: [${model.name}] could not write under ${outDir}: ${
+          e instanceof Error ? e.message : String(e)}`);
+      failed = true;
+      continue;
+    }
+    console.log(`Wrote ${base}.contract.sql and ${base}.contract.json (${
+        plan.tests.length} tests, ${plan.skipped.length} element(s) not tested).`);
+    if (!run) {
+      for (const s of plan.skipped) {
+        console.log(`  not tested: ${s.kind}:${s.subject}: ${s.reason}`);
+      }
+      continue;
+    }
+    if (!plan.tests.length) continue;
+
+    const results = await contracts.runContractTests(
+        plan, ctx, {location: options.location});
+    console.log(`\n[${model.name}] profile '${profile}'${
+        plan.graph ? `, graph ${plan.graph}` : ''}`);
+    console.log(contracts.formatContractResults(results, plan.skipped));
+    fs.writeFileSync(
+        `${base}.contract-results.json`,
+        JSON.stringify(
+            {
+              model: model.name,
+              profile,
+              checkedAt: new Date().toISOString(),
+              results,
+              skipped: plan.skipped,
+            },
+            null, 2) +
+            '\n');
+    console.log(`Wrote ${base}.contract-results.json`);
+    if (results.some(r => r.status === 'fail' || r.status === 'error')) {
+      failed = true;
     }
   }
   return failed ? 1 : 0;

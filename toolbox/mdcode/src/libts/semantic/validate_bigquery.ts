@@ -410,11 +410,11 @@ function parseOwl(axiom: string, index: ModelIndex): ParsedConstraint {
 // Binding: which rows of which tables are instances of a class.
 // ---------------------------------------------------------------------------
 
-class Unsupported extends Error {}
+export class Unsupported extends Error {}
 
 // One table that holds instances of a class, with the row filters (a defined
 // entity's membership predicate) that select them.
-interface Branch {
+export interface Branch {
   entity: Entity;
   filters: string[];
 }
@@ -424,7 +424,7 @@ interface Branch {
 // entities lowered to a boolean membership property on their base, then
 // inheritance resolved, so a field reads the same column here as it does as a
 // graph property.
-class Binder {
+export class Binder {
   readonly tables: Map<string, Entity>;
   readonly loweredRelationships: Relationship[];
   private readonly defined: Map<string, {base: string}>;
@@ -1349,7 +1349,7 @@ function errorText(message: string|undefined, status: number): string {
 }
 
 // Runs one statement and returns its rows (cells as strings or null).
-async function runQuery(
+export async function runQuery(
     client: BigQueryClient, project: string, sql: string,
     location: string|undefined, dryRun: boolean,
     maxPolls: number): Promise<{rows?: (string|null)[][]; error?: string}> {
