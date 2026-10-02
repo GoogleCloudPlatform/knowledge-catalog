@@ -108,15 +108,27 @@ describe('extends expansion', () => {
 
 
 describe('robustness', () => {
-  test('a cycle is warned and terminates (no infinite loop)', () => {
-    const {model: r, warnings} = resolveInheritance(model([
+  test('a two-entity cycle is a hard error', () => {
+    expect(() => resolveInheritance(model([
       entity('A', ['a'], ['B']),
       entity('B', ['b'], ['A']),
-    ]));
-    // Each still gets the other as an ancestor, but the back-edge is cut.
-    expect(entityOf(r, 'A').extends).toEqual(['B']);
-    expect(entityOf(r, 'B').extends).toEqual(['A']);
-    expect(warnings.some(w => w.includes('cycle'))).toBe(true);
+    ]))).toThrow(/must not form a cycle/);
+  });
+
+  test('an entity extending itself is a hard error', () => {
+    expect(() => resolveInheritance(model([
+      entity('A', ['a'], ['A']),
+    ]))).toThrow(/must not form a cycle/);
+  });
+
+  test('a longer loop that does not pass through the start is caught', () => {
+    // A -> B -> C -> B: resolving A alone would skip the B/C loop, but B is
+    // resolved too, and B finds itself.
+    expect(() => resolveInheritance(model([
+      entity('A', ['a'], ['B']),
+      entity('B', ['b'], ['C']),
+      entity('C', ['c'], ['B']),
+    ]))).toThrow(/must not form a cycle/);
   });
 
   test('an unknown parent is a hard error', () => {
@@ -210,5 +222,135 @@ describe('inherited-expression localization', () => {
     const inherited =
         entityOf(r, 'Customer').fields.find(f => f.name === 'email')!;
     expect(inherited.expression).toBe('LOWER(email)');
+  });
+});
+
+
+describe('a field inherited from more than one ancestor', () => {
+  test('two unrelated ancestors declaring one field is a hard error', () => {
+    expect(() => resolveInheritance(model([
+      entity('customer', ['id']),
+      entity('account', ['id']),
+      entity('vip', ['tier'], ['customer', 'account']),
+    ]))).toThrow(
+        "entity 'vip' inherits field 'id' from multiple ancestors " +
+        "('customer' and 'account')");
+  });
+
+  test('a diamond reaching one declaration by two paths is fine', () => {
+    // party.id reaches vip through customer and through account, but it is
+    // declared once, in party.
+    const {model: r} = resolveInheritance(model([
+      entity('party', ['id']),
+      entity('customer', ['tier'], ['party']),
+      entity('account', ['balance'], ['party']),
+      entity('vip', ['perks'], ['customer', 'account']),
+    ]));
+    expect(fieldsOf(r, 'vip').filter(n => n === 'id')).toEqual(['id']);
+  });
+
+  test('a redeclaration further down one chain is not ambiguous', () => {
+    // employee rebinds person.id; manager inherits both declarations, which
+    // lie on one line of descent, so the nearer one simply overrides.
+    const {model: r} = resolveInheritance(model([
+      entity('person', ['id']),
+      entity('employee', [], ['person'],
+             {fields: [{name: 'id', expression: 'id_employee'}]}),
+      entity('manager', ['team'], ['employee']),
+    ]));
+    expect(fieldsOf(r, 'manager')).toEqual(['team', 'id']);
+    // The nearer redeclaration's binding is the one that reaches manager.
+    expect(entityOf(r, 'manager').fields.find(f => f.name === 'id')!.expression)
+        .toBe('id_employee');
+  });
+
+  test('the descendant\'s binding wins whatever order extends lists them in', () => {
+    // E reaches Q directly and through P, and P rebinds Q's field. Breadth-first
+    // order would put Q and P at the same distance; ancestry decides instead.
+    for (const order of [['Q', 'P'], ['P', 'Q']]) {
+      const {model: r} = resolveInheritance(model([
+        entity('Q', [], undefined, {fields: [{name: 'x', expression: 'q_x', type: 'String'}]}),
+        entity('P', [], ['Q'], {fields: [{name: 'x', expression: 'p_x'}]}),
+        entity('E', ['e'], order),
+      ]));
+      const x = entityOf(r, 'E').fields.find(f => f.name === 'x')!;
+      expect(x.expression).toBe('p_x');
+      expect(x.type).toBe('String');
+    }
+  });
+});
+
+
+describe('a subtype rebinding an inherited field', () => {
+  const parentName: Field = {
+    name: 'name',
+    expression: 'name',
+    type: 'String',
+    label: 'Name',
+    dimension: {isTime: false},
+    description: "Customer's display name",
+    aiContext: {instructions: 'Prefer the verified name'},
+    customExtensions: [{vendorName: 'ACME', data: '{"owner":"crm"}'}],
+  };
+
+  test('keeps its own binding and inherits every definition property', () => {
+    const {model: r} = resolveInheritance(model([
+      entity('customer', [], undefined, {fields: [parentName]}),
+      entity(
+          'vip_customer', [], ['customer'],
+          {fields: [{name: 'name', expression: 'c_name'}]}),
+    ]));
+    const merged = entityOf(r, 'vip_customer').fields.find(f => f.name === 'name')!;
+    expect(merged.expression).toBe('c_name');
+    expect(merged.type).toBe('String');
+    expect(merged.label).toBe('Name');
+    expect(merged.dimension).toEqual({isTime: false});
+    expect(merged.description).toBe("Customer's display name");
+    expect(merged.aiContext).toEqual({instructions: 'Prefer the verified name'});
+    expect(merged.customExtensions).toEqual(
+        [{vendorName: 'ACME', data: '{"owner":"crm"}'}]);
+  });
+
+  test('a rebinding with a dialect list drops the parent\'s expression', () => {
+    const {model: r} = resolveInheritance(model([
+      entity('customer', [], undefined, {fields: [parentName]}),
+      entity('vip_customer', [], ['customer'], {
+        fields: [{
+          name: 'name',
+          dialects: [{dialect: 'BIGQUERY', expression: 'c_name'}],
+        }],
+      }),
+    ]));
+    const merged = entityOf(r, 'vip_customer').fields.find(f => f.name === 'name')!;
+    expect(merged.expression).toBeUndefined();
+    expect(merged.dialects).toEqual([{dialect: 'BIGQUERY', expression: 'c_name'}]);
+    expect(merged.type).toBe('String');
+  });
+
+  test('a grandchild keeps the grandparent\'s definition through a rebinding parent', () => {
+    const {model: r} = resolveInheritance(model([
+      entity('customer', [], undefined, {fields: [parentName]}),
+      entity(
+          'vip_customer', [], ['customer'],
+          {fields: [{name: 'name', expression: 'c_name'}]}),
+      entity('gold_customer', ['perk'], ['vip_customer']),
+    ]));
+    const merged = entityOf(r, 'gold_customer').fields.find(f => f.name === 'name')!;
+    expect(merged.expression).toBe('c_name');
+    expect(merged.description).toBe("Customer's display name");
+  });
+
+  test('an inherited dialect list is localized like an expression', () => {
+    const {model: r} = resolveInheritance(model([
+      entity('Party', [], undefined, {
+        fields: [{
+          name: 'nm',
+          dialects: [{dialect: 'BIGQUERY', expression: 'Party.nm'}],
+        }],
+      }),
+      entity('Person', ['age'], ['Party']),
+    ]));
+    expect(entityOf(r, 'Person').fields.find(f => f.name === 'nm')!.dialects)
+        .toEqual([{dialect: 'BIGQUERY', expression: 'nm'}]);
   });
 });

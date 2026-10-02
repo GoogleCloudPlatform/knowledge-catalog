@@ -11,11 +11,12 @@
 //
 // What it does, per entity:
 //   - Fields FLOW DOWN (flattening). The entity's own fields come first
-//   (declared
-//     order), then each ancestor's own fields whose name is not already
-//     present, walking ancestors nearest-first. So the NEAREST definition of a
-//     name wins (child overrides parent overrides grandparent), and every
-//     transitive ancestor's own fields are included.
+//     (declared order), then every field it inherits. An inherited field is
+//     MERGED down the chain that declares it: the farthest declaration supplies
+//     the definition (type, label, description, ai_context, ...), and each
+//     nearer redeclaration, the entity's own included, supplies only its
+//     binding. A subtype that rebinds a field to another column therefore keeps
+//     everything its parent said about it.
 //   - `extends` is expanded from the direct parents to the full, de-duplicated
 //     TRANSITIVE ancestor set, ordered nearest-first (a diamond lists each
 //     ancestor once). An emitter reads labels straight off this list.
@@ -28,16 +29,18 @@
 //   - It does not classify abstract vs concrete or drop anything -- that is the
 //     consuming leg's concern (see bigquery.ts). This pass is leg-agnostic.
 //
-// Robustness: a cycle in `extends` is broken (warned, no infinite loop); a
-// parent that is not an entity in the model is warned and excluded from the
-// resolved ancestor list (so the emitter never references a label with no
-// signature).
+// Errors, all thrown: a cycle in `extends`; a parent that is not an entity in
+// the model; and a field inherited from two ancestors that each declare it
+// with neither extending the other, since nothing says which definition wins.
+// A diamond is not that case: two paths reaching ONE declaration resolve to it.
 
 import {Entity, Field, SemanticModel} from './ir';
 import {stripQualifier} from './sql_expr_utils';
 
 export interface ResolveResult {
   model: SemanticModel;
+  // Nothing produces a warning today: every problem resolution can find is an
+  // error, and throws. Kept so callers that print warnings need not change.
   warnings: string[];
 }
 
@@ -58,8 +61,9 @@ export interface ResolveResult {
  *
  * Inheritance is resolved, because a subtype's own `fields` omit everything it
  * inherits. Resolution THROWS on an `extends` naming an entity the model does
- * not declare; a caller that cannot report that -- the loader, which is
- * lenient by design -- catches it and works from the unresolved model instead.
+ * not declare, on a cycle, and on a field inherited ambiguously; a caller that
+ * cannot report that -- the loader, which is lenient by design -- catches it
+ * and works from the unresolved model instead.
  */
 export interface DeclaredConcept {
   kind: 'entity'|'relationship';
@@ -115,31 +119,53 @@ export function resolveInheritance(model: SemanticModel): ResolveResult {
     ownFields.set(e.name, [...e.fields]);
   }
 
-  for (const entity of entities) {
-    const ancestors =
-        transitiveAncestors(entity.name, byName, directParents, warnings);
+  // Every entity's ancestors, nearest-first, computed once: the merge below
+  // needs to know whether one declaring ancestor descends from another.
+  const ancestorsOf = new Map<string, string[]>();
+  for (const e of entities) {
+    ancestorsOf.set(e.name, transitiveAncestors(e.name, byName, directParents));
+  }
 
-    // Flatten: own fields first, then each ancestor's own fields by name unless
-    // already present (nearest definition wins).
+  for (const entity of entities) {
+    const ancestors = ancestorsOf.get(entity.name) ?? [];
+
+    // Which ancestors declare each inherited field name, nearest-first.
+    const declarers = new Map<string, string[]>();
+    for (const anc of ancestors) {
+      for (const f of ownFields.get(anc) ?? []) {
+        const list = declarers.get(f.name) ?? [];
+        if (!list.includes(anc)) list.push(anc);
+        declarers.set(f.name, list);
+      }
+    }
+    for (const [name, list] of declarers) {
+      requireOneChain(entity.name, name, list, ancestorsOf);
+    }
+
+    // Own fields first, then every inherited field, each merged down its
+    // declaring chain. A subtype's redeclaration of an inherited field merges
+    // over that chain too, contributing only its binding.
     const seenField = new Set<string>();
     const flattened: Field[] = [];
     for (const f of ownFields.get(entity.name) ?? []) {
       if (seenField.has(f.name)) continue;  // a self-duplicate; keep the first
       seenField.add(f.name);
-      flattened.push(f);
+      const chain = declarers.get(f.name);
+      flattened.push(
+          chain ? mergeBinding(
+                      mergeChain(f.name, chain, ownFields, ancestorsOf), f) :
+                  f);
     }
-    for (const anc of ancestors) {
-      for (const f of ownFields.get(anc) ?? []) {
-        if (seenField.has(f.name)) continue;
-        seenField.add(f.name);
-        flattened.push(localizeInheritedField(f, anc));
-      }
+    for (const [name, chain] of declarers) {
+      if (seenField.has(name)) continue;
+      seenField.add(name);
+      flattened.push(mergeChain(name, chain, ownFields, ancestorsOf));
     }
     entity.fields = flattened;
 
-    // Expand `extends` to the resolved ancestor list (existing entities only).
-    // Drop the key when it resolves to nothing (no parents, or every parent
-    // unknown/cyclic), so a consumer reads `extends` as the exact label set.
+    // Expand `extends` to the resolved ancestor list. Drop the key when the
+    // entity has no parents, so a consumer reads `extends` as the exact label
+    // set.
     if (ancestors.length) {
       entity.extends = ancestors;
     } else {
@@ -176,7 +202,77 @@ function localizeInheritedField(field: Field, ancestor: string): Field {
     clone.importedExpression =
         stripQualifier(clone.importedExpression, ancestor);
   }
+  if (clone.dialects) {
+    clone.dialects = clone.dialects.map(
+        d => ({...d, expression: stripQualifier(d.expression, ancestor)}));
+  }
   return clone;
+}
+
+// The properties of a field that say how it is bound to a column. A subtype
+// that redeclares an inherited field may set only these; everything else is
+// the field's definition and comes from the ancestor (see
+// validatePushRequirements).
+const BINDING_KEYS = [
+  'expression', 'dialects', 'stringForm', 'importedExpression',
+  'importedDialect',
+] as const;
+
+// `over` laid onto `base`: every property `over` sets wins, and every one it
+// leaves unset comes from `base`. When `over` sets any binding, `base`'s
+// binding is dropped whole, so an expression and a dialect list from two
+// different declarations never end up on one field.
+function mergeBinding(base: Field, over: Field): Field {
+  const merged: Field = structuredClone(base);
+  if (BINDING_KEYS.some(k => over[k] !== undefined)) {
+    for (const k of BINDING_KEYS) delete merged[k];
+  }
+  for (const [k, v] of Object.entries(over)) {
+    if (v !== undefined) (merged as any)[k] = structuredClone(v);
+  }
+  return merged;
+}
+
+// The field `name` as inherited down `chain`, the ancestors that declare it.
+// The chain is folded in order of descent, root first: the root's declaration
+// is the definition, and each descendant's lays its binding over it.
+// Breadth-first
+// distance is not that order when two paths to the entity differ in length, so
+// the chain is sorted by how many ancestors each member has; requireOneChain
+// has already checked that every member descends from the next. Every
+// expression is localized to the declaring ancestor's frame first.
+function mergeChain(
+    name: string, chain: string[], ownFields: Map<string, Field[]>,
+    ancestorsOf: Map<string, string[]>): Field {
+  const depth = (n: string) => (ancestorsOf.get(n) ?? []).length;
+  let merged: Field|undefined;
+  for (const anc of [...chain].sort((a, b) => depth(a) - depth(b))) {
+    const own = (ownFields.get(anc) ?? []).find(f => f.name === name)!;
+    const local = localizeInheritedField(own, anc);
+    merged = merged ? mergeBinding(merged, local) : local;
+  }
+  return merged!;
+}
+
+// Throws unless every ancestor in `declaring` lies on one line of descent, so
+// that one declaration plainly overrides another. Two ancestors that each
+// declare the field, with neither extending the other, leave its definition
+// ambiguous.
+function requireOneChain(
+    entity: string, field: string, declaring: string[],
+    ancestorsOf: Map<string, string[]>): void {
+  for (let i = 0; i < declaring.length; i++) {
+    for (let j = i + 1; j < declaring.length; j++) {
+      const a = declaring[i], b = declaring[j];
+      const related = (ancestorsOf.get(a) ?? []).includes(b) ||
+          (ancestorsOf.get(b) ?? []).includes(a);
+      if (!related) {
+        throw new Error(
+            `entity '${entity}' inherits field '${field}' from multiple ` +
+            `ancestors ('${a}' and '${b}')`);
+      }
+    }
+  }
 }
 
 // Computes the de-duplicated transitive ancestor set for `start`, ORDERED
@@ -186,18 +282,18 @@ function localizeInheritedField(field: Field, ancestor: string): Field {
 // and a grandparent must resolve to the direct parent's. Direct parents are
 // read from the pre-mutation snapshot so resolution is order-independent.
 //
-// A parent edge that points back to `start` is a cycle (warned, skipped so the
-// walk terminates); a parent that is not an entity in the model is a hard error
-// (an emitter cannot label with a signature it does not have, and a typo must
-// not silently drop inheritance). A node re-reached through a second path (a
-// diamond) is simply skipped -- it is already included at its nearest distance.
+// A parent edge that points back to `start` is a cycle, and a parent that is
+// not an entity in the model is a typo; both are hard errors. A cycle that does
+// not pass through `start` is caught when an entity on it is resolved, and
+// every entity is. A node re-reached through a second path (a diamond) is
+// simply skipped -- it is already included at its nearest distance.
 function transitiveAncestors(
     start: string, byName: Map<string, Entity>,
-    directParents: Map<string, string[]>, warnings: string[]): string[] {
+    directParents: Map<string, string[]>): string[] {
   const result: string[] = [];
   const seen = new Set<string>([start]);
 
-  // Queue of (child that declared the edge, parent) so a cycle warning can name
+  // Queue of (child that declared the edge, parent) so a cycle error can name
   // the offending child. Seeded with `start`'s direct parents in declared
   // order.
   const queue: Array<{from: string; name: string}> =
@@ -206,10 +302,9 @@ function transitiveAncestors(
   while (queue.length) {
     const {from, name} = queue.shift()!;
     if (name === start) {
-      warnings.push(
+      throw new Error(
           `entity '${from}' extends '${name}', which is already a supertype ` +
-          `on this chain (cycle); breaking the cycle`);
-      continue;
+          `on this chain; 'extends' must not form a cycle`);
     }
     if (!byName.has(name)) {
       throw new Error(
