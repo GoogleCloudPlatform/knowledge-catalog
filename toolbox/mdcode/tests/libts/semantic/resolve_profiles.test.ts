@@ -124,11 +124,9 @@ describe('mergeProfile overlays physical bindings by name', () => {
         .toBeUndefined();
   });
 
-  test('selecting a profile clears an inline logical binding it omits', () => {
-    // Selecting a profile makes it authoritative for physical bindings: an
-    // inline column binding in the logical model is cleared before the profile
-    // is overlaid, so a field the profile does not rebind is left unbound
-    // (omission is unbound).
+  test('selecting a profile keeps an inline binding it does not mention', () => {
+    // A profile is an overlay: a field it does not rebind keeps the binding
+    // the model file gave it.
     const logical = logicalDoc();
     fieldOf(logical, 'Customer', 'name').expression = 'inline_name';
     const profile = analyticalDoc();
@@ -137,7 +135,7 @@ describe('mergeProfile overlays physical bindings by name', () => {
             .fields.filter((f: any) => f.name !== 'name');
     const {doc, error} = mergeProfile(logical, profile, 'analytical');
     expect(error).toBeUndefined();
-    expect(fieldOf(doc, 'Customer', 'name').expression).toBeUndefined();
+    expect(fieldOf(doc, 'Customer', 'name').expression).toBe('inline_name');
   });
 
   test('the inputs are never mutated', () => {
@@ -176,11 +174,13 @@ describe('mergeProfile overlays physical bindings by name', () => {
     expect(error).toMatch(/field 'Customer.ghost' is not in the logical model/);
   });
 
-  test('a profile expression that is arbitrary SQL is rejected', () => {
+  test('a profile expression may be a computation, not only a column', () => {
     const profile = analyticalDoc();
     fieldOf(profile, 'Customer', 'lifetimeValue').expression = 'c_a + c_b';
-    const {error} = mergeProfile(logicalDoc(), profile, 'analytical');
-    expect(error).toMatch(/bare column reference/);
+    const {doc, error} = mergeProfile(logicalDoc(), profile, 'analytical');
+    expect(error).toBeUndefined();
+    expect(fieldOf(doc, 'Customer', 'lifetimeValue').expression)
+        .toBe('c_a + c_b');
   });
 });
 
@@ -401,16 +401,19 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     expect(relNames(model)).toEqual(['PlacedBy']);
   });
 
-  test('a relationship drops when a join field is unbound', () => {
+  test('an unbound field sharing a join column\'s name keeps the relationship', () => {
+    // Join columns are physical columns, not fields: unbinding the field named
+    // like the FK column drops that field and nothing else.
     const m = irModel();
-    // Unbind the FK field the relationship joins on.
     const customerKey =
         m.entities.find(e => e.name === 'Order')!.fields.find(
             f => f.name === 'customerKey')!;
     delete customerKey.expression;
     const {model, report} = pruneUnavailable(m, 'operational');
-    expect(relNames(model)).toEqual([]);
-    expect(report.droppedRelationships[0].name).toBe('PlacedBy');
+    expect(relNames(model)).toEqual(['PlacedBy']);
+    expect(report.droppedRelationships).toEqual([]);
+    expect(model.entities.find(e => e.name === 'Order')!.fields.map(f => f.name))
+        .not.toContain('customerKey');
   });
 
   test('the input is never mutated', () => {
@@ -440,28 +443,23 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
       });
 
   test(
-      'an unbound KEY field drops the whole entity and everything on it',
+      'an unbound field sharing a key column\'s name drops only that field',
       () => {
-        // A graph node must be keyed, so unbinding a key field makes the entire
-        // entity unavailable; the relationship into it and the metric over it
-        // fall with it, while the other entity survives.
+        // Keys are physical columns, not fields, so unbinding the field named
+        // like the key column leaves the entity and its relationship in place.
         const m = irModel();
         const key = m.entities.find(e => e.name === 'Customer')!.fields.find(
             f => f.name === 'key')!;
         delete key.expression;
         const {model, report} = pruneUnavailable(m, 'operational');
-        expect(model.entities.map(e => e.name)).toEqual(['Order']);
-        expect(report.droppedEntities.map(d => d.name)).toEqual(['Customer']);
-        expect(report.droppedEntities[0].reason)
-            .toMatch(/key field key is unbound/);
-        // The relationship into Customer and the metric over it are gone; a
-        // metric confined to the surviving entity stays.
-        expect(relNames(model)).toEqual([]);
-        expect(report.droppedRelationships[0].reason)
-            .toMatch(/Customer is unavailable/);
-        expect(metricNames(model)).toEqual(['order_count']);
-        expect(report.droppedMetrics.map(d => d.name))
-            .toContain('avg_lifetime_value');
+        expect(model.entities.map(e => e.name).sort())
+            .toEqual(['Customer', 'Order']);
+        expect(report.droppedEntities).toEqual([]);
+        expect(
+            model.entities.find(e => e.name === 'Customer')!.fields.map(
+                f => f.name))
+            .not.toContain('key');
+        expect(relNames(model)).toEqual(['PlacedBy']);
       });
 
   test(
@@ -570,7 +568,9 @@ describe('an action a binding cannot perform is unavailable', () => {
             .toBeUndefined();
       });
 
-  test('an action that affects an unavailable concept is dropped', () => {
+  test('an action is kept when a field named like its concept\'s key is unbound', () => {
+    // Pruning a field never makes an entity unavailable, so an action that
+    // affects the entity keeps its place.
     const m = withoutCustomer(irWithActions());
     m.actions.push({
       name: 'Anonymize',
@@ -579,13 +579,130 @@ describe('an action a binding cannot perform is unavailable', () => {
       executor: {kind: 'sql', sql: {statements: ['UPDATE customer SET x = 1']}},
     });
     const {model, report} = pruneUnavailable(m, 'operational');
-    expect(actionNames(model)).not.toContain('Anonymize');
-    expect(report.droppedActions.find(d => d.name === 'Anonymize')?.reason)
-        .toMatch(/Customer/);
+    expect(actionNames(model)).toContain('Anonymize');
+    expect(report.droppedActions.find(d => d.name === 'Anonymize'))
+        .toBeUndefined();
   });
 
   test('a model that declares no actions reports none dropped', () => {
     const {report} = pruneUnavailable(irModel(), 'operational');
     expect(report.droppedActions).toEqual([]);
+  });
+});
+
+
+describe('mergeProfile reads a profile file', () => {
+  // A profile file in the sibling-file form: a top-level profile object.
+  function prodProfile(): any {
+    return {
+      name: 'prod',
+      entities: [
+        {
+          name: 'Customer',
+          source: TBL('customer_prod'),
+          primary_key: ['c_id'],
+          unique_keys: [['c_email']],
+          fields: [{name: 'name', expression: 'full_name'}],
+          fields_exclude: ['availableCredit'],
+        },
+      ],
+      relationships: [
+        {name: 'PlacedBy', from_columns: ['cust_id'], to_columns: ['c_id']},
+      ],
+      metrics_exclude: ['avg_lifetime_value'],
+    };
+  }
+  function inlineBound(): any {
+    const doc = logicalDoc();
+    fieldOf(doc, 'Customer', 'name').expression = 'inline_name';
+    fieldOf(doc, 'Customer', 'lifetimeValue').expression = 'inline_ltv';
+    fieldOf(doc, 'Customer', 'availableCredit').expression = 'inline_credit';
+    return doc;
+  }
+
+  test('rebinds what it names and leaves the rest as the model file has it', () => {
+    const {doc, error} = mergeProfile(inlineBound(), prodProfile(), 'prod');
+    expect(error).toBeUndefined();
+    const customer = entityOf(doc, 'Customer');
+    expect(customer.source).toBe(TBL('customer_prod'));
+    expect(customer.primary_key).toEqual(['c_id']);
+    expect(customer.unique_keys).toEqual([['c_email']]);
+    expect(fieldOf(doc, 'Customer', 'name').expression).toBe('full_name');
+    expect(fieldOf(doc, 'Customer', 'lifetimeValue').expression)
+        .toBe('inline_ltv');
+    expect(fieldOf(doc, 'Customer', 'availableCredit').expression)
+        .toBeUndefined();
+    const rel = modelOf(doc).relationships[0];
+    expect(rel.from_columns).toEqual(['cust_id']);
+    expect(rel.to_columns).toEqual(['c_id']);
+    expect(modelOf(doc).metrics.map((m: any) => m.name)).toEqual(['order_count']);
+  });
+
+  test('metrics_exclude "*" removes every metric', () => {
+    const profile = {...prodProfile(), metrics_exclude: '*'};
+    const {doc, error} = mergeProfile(inlineBound(), profile, 'prod');
+    expect(error).toBeUndefined();
+    expect(modelOf(doc).metrics).toEqual([]);
+  });
+
+  test('a field expression may use the dialects form', () => {
+    const profile = prodProfile();
+    profile.entities[0].fields = [{
+      name: 'name',
+      expression: {dialects: [{dialect: 'BIGQUERY', expression: 'full_name'}]},
+    }];
+    const {doc, error} = mergeProfile(inlineBound(), profile, 'prod');
+    expect(error).toBeUndefined();
+    expect(fieldOf(doc, 'Customer', 'name').expression).toEqual(
+        {dialects: [{dialect: 'BIGQUERY', expression: 'full_name'}]});
+  });
+
+  test('a field in both fields and fields_exclude is an error', () => {
+    const profile = prodProfile();
+    profile.entities[0].fields_exclude = ['name'];
+    expect(mergeProfile(inlineBound(), profile, 'prod').error)
+        .toMatch(/'Customer.name' is in both 'fields' and 'fields_exclude'/);
+  });
+
+  test('an unknown name in fields_exclude, relationships or metrics_exclude is an error', () => {
+    const a = prodProfile();
+    a.entities[0].fields_exclude = ['ghost'];
+    expect(mergeProfile(inlineBound(), a, 'prod').error)
+        .toMatch(/field 'Customer.ghost' in 'fields_exclude'/);
+    const b = prodProfile();
+    b.relationships = [{name: 'Ghost', from_columns: ['a'], to_columns: ['b']}];
+    expect(mergeProfile(inlineBound(), b, 'prod').error)
+        .toMatch(/relationship 'Ghost' is not in the logical model/);
+    const c = {...prodProfile(), metrics_exclude: ['ghost']};
+    expect(mergeProfile(inlineBound(), c, 'prod').error)
+        .toMatch(/metric 'ghost' in 'metrics_exclude'/);
+  });
+
+  test('"*" inside a metrics_exclude list is an error', () => {
+    const profile = {...prodProfile(), metrics_exclude: ['*']};
+    expect(mergeProfile(inlineBound(), profile, 'prod').error)
+        .toMatch(/"\*" on its own/);
+  });
+
+  test('a logical declaration in a profile file is rejected', () => {
+    for (const set of [
+      (p: any) => { p.deployments = []; },
+      (p: any) => { p.entities[0].description = 'x'; },
+      (p: any) => { p.entities[0].extends = ['Order']; },
+      (p: any) => { p.entities[0].fields[0].datatype = 'String'; },
+      (p: any) => { p.relationships[0].from = 'Order'; },
+    ]) {
+      const profile = prodProfile();
+      set(profile);
+      expect(mergeProfile(inlineBound(), profile, 'prod').error)
+          .toMatch(/which a profile may not set/);
+    }
+  });
+
+  test('a profile file against a document with two models is an error', () => {
+    const logical = inlineBound();
+    logical.semantic_model.push({name: 'other', entities: []});
+    expect(mergeProfile(logical, prodProfile(), 'prod').error)
+        .toMatch(/binds one model/);
   });
 });
