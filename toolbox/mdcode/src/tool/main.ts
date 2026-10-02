@@ -128,6 +128,13 @@ cli.command(
     .option(
         '--compact',
         'Emit compact flow YAML (primary_key: [id], inline field/relationship maps) instead of the default block layout')
+    .option(
+        '--prune-unbound [binding]',
+        'Proposed: keep only the entities the binding gives a source, their ancestors and the defined entities over them, and print what was removed. The value is a binding profile (or a model document with inline bindings); the bare flag reads the model\'s profiles in this scope, else <model>.profiles/ beside --out')
+    .option(
+        '--coverage <path>',
+        'Proposed: write the coverage report (each construct read: compiled, hinted or dropped, with the reason) here instead of coverage.json beside the written model')
+    .option('--no-coverage', 'Print no coverage summary and write no coverage report')
     .action(async (action, files, options) => {
       let exitCode = 1;
       try {
@@ -153,6 +160,10 @@ cli.command(
     .option(
         '--out <path>',
         'Write the updated document to this path instead of back to its source')
+    .option(
+        '--coverage <path>',
+        'Proposed: write the coverage report (each shape and constraint component: compiled, hinted or dropped, with the reason) here instead of coverage.json beside the written model')
+    .option('--no-coverage', 'Print no coverage summary and write no coverage report')
     .action(async (action, files, options) => {
       let exitCode = 1;
       try {

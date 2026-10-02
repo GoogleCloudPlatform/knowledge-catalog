@@ -87,6 +87,23 @@ const SEVERITIES:
 export interface ShapeConstraint {
   shape: string;  // the provenance key (see shapeKey)
   constraint: Constraint;
+  // The SHACL terms the rule was derived from, as quoted in the provenance
+  // note (`sh:minCount 1`, `sh:pattern "..."`).
+  terms: string;
+}
+
+/**
+ * What applying one property shape to one target entity produced: the
+ * constraints derived and the warnings raised. Reported through the optional
+ * `trace` callback of shaclConstraints, which the coverage report reads (see
+ * coverage.ts); deriving constraints does not depend on it.
+ */
+export interface ShaclPropertyTrace {
+  shape: string;
+  property: ShaclPropertyShape;
+  target: string;  // the target entity's local name
+  constraints: ShapeConstraint[];
+  warnings: string[];
 }
 
 /**
@@ -108,11 +125,13 @@ export function provenanceShape(description: string|undefined): string|undefined
  * Derives the constraints the shapes state against `model`. `reservedNames`
  * are constraint names already taken in the model (and not being replaced); a
  * derived name that collides gets a `_2`, `_3`, ... suffix, deterministically.
- * Warnings are appended for every term that cannot be mapped.
+ * Warnings are appended for every term that cannot be mapped. `trace`, when
+ * given, is called once per (property shape, target class) pair applied.
  */
 export function shaclConstraints(
     shapes: ShaclShapes, model: SemanticModel, reservedNames: Set<string>,
-    warnings: string[]): {constraints: ShapeConstraint[]; shapeKeys: string[]} {
+    warnings: string[], trace?: (t: ShaclPropertyTrace) => void):
+    {constraints: ShapeConstraint[]; shapeKeys: string[]} {
   const entitiesByName = new Map(model.entities.map(e => [e.name, e]));
   const relByName = new Map((model.relationships ?? []).map(r => [r.name, r]));
   const used = new Set(reservedNames);
@@ -157,55 +176,70 @@ export function shaclConstraints(
         onViolation: facets.onViolation,
         severity: facets.severity,
       },
+      terms,
     });
   };
 
-  const apply = (shape: string, targets: string[], ps: ShaclPropertyShape) => {
+  // Applies one property shape to one target class (local name `C`).
+  const applyTo = (shape: string, C: string, ps: ShaclPropertyShape) => {
     const psLabel = ps.name ?? (ps.path ? localName(ps.path) : '[anonymous]');
+    const where = `shape '${shape}' property '${psLabel}' on '${C}'`;
+    if (!entitiesByName.has(C)) {
+      warnings.push(`${where}: '${C}' is not an entity in the model; skipped.`);
+      return;
+    }
+    if (ps.deactivated) return;
+    if (ps.pathProblem) {
+      warnings.push(`${where}: ${ps.pathProblem}, which does not name one ` +
+                    `relationship or field; skipped.`);
+      return;
+    }
+    for (const t of ps.unsupported) {
+      warnings.push(`${where}: sh:${t} is not supported; ignored.`);
+    }
+    const p = localName(ps.path!);
+    const rel = relByName.get(p);
+    if (rel && lineage(C).includes(rel.source.entity)) {
+      for (const [rule, terms] of relationshipRules(C, rel, ps, entitiesByName,
+                                                    where, warnings)) {
+        emit(shape, ps, rule, terms, where);
+      }
+      return;
+    }
+    const field = fieldOf(C, p);
+    if (field) {
+      for (const [rule, terms] of fieldRules(C, p, field.type, ps, where,
+                                             warnings)) {
+        emit(shape, ps, rule, terms, where);
+      }
+      for (const [rule, terms] of pairRules(
+               C, p, field.type, ps.pairs, g => fieldOf(C, g),
+               g => relByName.has(g), where, warnings)) {
+        emit(shape, ps, rule, terms, where);
+      }
+      return;
+    }
+    warnings.push(
+        rel ? `${where}: relationship '${p}' starts at '${
+                  rel.source.entity}', not at '${C}' or one of its ` +
+                `supertypes; skipped.` :
+              `${where}: '${p}' is neither a relationship nor a field of ` +
+                `'${C}' (or its supertypes) in the model; skipped.`);
+  };
+
+  const apply = (shape: string, targets: string[], ps: ShaclPropertyShape) => {
     for (const target of targets) {
       const C = localName(target);
-      const where = `shape '${shape}' property '${psLabel}' on '${C}'`;
-      if (!entitiesByName.has(C)) {
-        warnings.push(`${where}: '${C}' is not an entity in the model; skipped.`);
-        continue;
-      }
-      if (ps.deactivated) continue;
-      if (ps.pathProblem) {
-        warnings.push(`${where}: ${ps.pathProblem}, which does not name one ` +
-                      `relationship or field; skipped.`);
-        continue;
-      }
-      for (const t of ps.unsupported) {
-        warnings.push(`${where}: sh:${t} is not supported; ignored.`);
-      }
-      const p = localName(ps.path!);
-      const rel = relByName.get(p);
-      if (rel && lineage(C).includes(rel.source.entity)) {
-        for (const [rule, terms] of relationshipRules(C, rel, ps, entitiesByName,
-                                                      where, warnings)) {
-          emit(shape, ps, rule, terms, where);
-        }
-        continue;
-      }
-      const field = fieldOf(C, p);
-      if (field) {
-        for (const [rule, terms] of fieldRules(C, p, field.type, ps, where,
-                                               warnings)) {
-          emit(shape, ps, rule, terms, where);
-        }
-        for (const [rule, terms] of pairRules(
-                 C, p, field.type, ps.pairs, g => fieldOf(C, g),
-                 g => relByName.has(g), where, warnings)) {
-          emit(shape, ps, rule, terms, where);
-        }
-        continue;
-      }
-      warnings.push(
-          rel ? `${where}: relationship '${p}' starts at '${
-                    rel.source.entity}', not at '${C}' or one of its ` +
-                  `supertypes; skipped.` :
-                `${where}: '${p}' is neither a relationship nor a field of ` +
-                  `'${C}' (or its supertypes) in the model; skipped.`);
+      const firstWarning = warnings.length;
+      const firstConstraint = out.length;
+      applyTo(shape, C, ps);
+      trace?.({
+        shape,
+        property: ps,
+        target: C,
+        constraints: out.slice(firstConstraint),
+        warnings: warnings.slice(firstWarning),
+      });
     }
   };
 
@@ -243,7 +277,8 @@ export function shaclConstraints(
 
 // A node shape's provenance key: its local name, or -- for a blank-node shape,
 // whose parser id is not stable across runs -- the classes it targets.
-function shapeKey(ns: ShaclNodeShape): string {
+// Exported for the coverage report (coverage.ts).
+export function shapeKey(ns: ShaclNodeShape): string {
   if (ns.name) return ns.name;
   const targets = ns.targetClasses.map(localName).join('+');
   return targets ? `[anonymous shape for ${targets}]` : '[anonymous shape]';

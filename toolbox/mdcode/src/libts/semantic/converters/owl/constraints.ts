@@ -584,8 +584,10 @@ function resolvePolicy(
 
 // The axiom in Manchester-like syntax, for provenance and warnings. A
 // restriction that is a conjunct of an intersection is shown with its named
-// conjuncts (`C EquivalentTo D and (p some X)`).
-function manchester(cls: string, r: OwlRestriction): string {
+// conjuncts (`C EquivalentTo D and (p some X)`). Exported for the coverage
+// report (coverage.ts), which matches a restriction to the constraint whose
+// provenance quotes it.
+export function manchester(cls: string, r: OwlRestriction): string {
   const head = `${cls} ${r.via === 'subClassOf' ? 'SubClassOf' : 'EquivalentTo'}`;
   const p = localName(r.property);
   const filler = r.filler ? ` ${localName(r.filler)}` :

@@ -12,6 +12,7 @@ import * as context from '../libts/gcp/context';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {SemanticModelLayout} from '../libts/layouts/semantic-model';
+import {buildCoverageReport, CoverageReport, formatCoverageSummary, writeCoverageFile} from '../libts/semantic/converters/coverage';
 import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import {collectOwlSources} from '../libts/semantic/converters/owl/imports';
 import {importShacl} from '../libts/semantic/converters/shacl/import';
@@ -25,6 +26,7 @@ import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
+import {boundEntityNames, formatPruneSummary} from '../libts/semantic/prune';
 import {AvailabilityReport, DEFAULT_PROFILE, mergeProfileOntoDoc, pruneUnavailable,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {storeLine} from '../libts/semantic/runtime/store';
@@ -1187,6 +1189,17 @@ export interface OwlImportOptions {
   // (`sales.owl.ttl` -> `sales`), which is what a single-file import has
   // always done; a multi-module ontology usually wants a name of its own.
   name?: string;
+  // Proposed: prune the model to what a binding binds -- the bound entities,
+  // their ancestors and the defined entities over them (semantic/prune.ts).
+  // A path names the binding document (a binding profile, or a model document
+  // with inline bindings); the bare flag reads the model's binding profiles
+  // from the scope's layout, else the `<model>.profiles/` directory beside
+  // --out.
+  pruneUnbound?: boolean|string;
+  // Proposed: where to write the coverage report (default: `coverage.json`
+  // beside the written model document). `--no-coverage` (false) writes none
+  // and prints no coverage summary.
+  coverage?: boolean|string;
 }
 
 // Recognized OWL source extensions, stripped to derive the model name from the
@@ -1236,6 +1249,32 @@ export async function owl(
     return 1;
   }
 
+  // Proposed --prune-unbound: the entity names the binding binds.
+  let bound: string[]|undefined;
+  if (options.pruneUnbound !== undefined && options.pruneUnbound !== false) {
+    const docs =
+        await bindingDocuments(options.pruneUnbound, modelName, options.out);
+    if (typeof docs === 'string') {
+      console.error(`Error: ${docs}`);
+      return 1;
+    }
+    bound = [];
+    for (const doc of docs) {
+      for (const name of boundEntityNames(
+               fs.readFileSync(doc, 'utf8'), modelName)) {
+        if (!bound.includes(name)) bound.push(name);
+      }
+    }
+    if (!bound.length) {
+      console.error(
+          `Error: --prune-unbound: ${docs.join(', ')} binds no entity (no ` +
+          `entity with a source), so pruning would remove everything.`);
+      return 1;
+    }
+    console.log(`--prune-unbound: ${bound.length} bound ${
+        plural(bound.length, 'entity', 'entities')} in ${docs.join(', ')}`);
+  }
+
   // The named files plus every local owl:imports they reach, merged in that
   // order. collectOwlSources and convertOwlToOsi throw only on malformed
   // Turtle; main.ts's try/catch reports it.
@@ -1253,7 +1292,7 @@ export async function owl(
   const file = files.join(', ');
   const result = convertOwlToOsi(
       turtle.length === 1 ? turtle[0] : turtle, modelName,
-      {compactFlow: options.compact});
+      {compactFlow: options.compact, bound});
   for (const w of result.warnings) {
     console.warn(`Warning: ${w}`);
   }
@@ -1280,6 +1319,9 @@ export async function owl(
           plural(
               datatypeProperties, 'datatype property',
               'datatype properties')}`);
+  if (result.prune) {
+    console.log(formatPruneSummary(result.prune));
+  }
 
   // Sink: an explicit --out path writes directly; otherwise the semantic-model
   // layout places the document under the scope's entry group so `kcmd push`
@@ -1305,12 +1347,77 @@ export async function owl(
   }
 
   console.log(`wrote ${writtenPath}`);
+  if (options.coverage !== false) {
+    const pruned = result.prune?.pruned;
+    writeCoverage(
+        buildCoverageReport(
+            'owl', modelName, files, result.coverage,
+            pruned && {
+              entities: pruned.entities,
+              relationships: pruned.relationships,
+              constraints: pruned.constraints,
+            }),
+        options.coverage, writtenPath);
+  }
   return 0;
 }
 
 // Selects the singular or plural form based on `n` (English count agreement).
 function plural(n: number, one: string, many: string): string {
   return n === 1 ? one : many;
+}
+
+// The binding documents `owl import --prune-unbound` reads: the named file,
+// or (bare flag) the model's binding profiles in this scope's layout, else the
+// `<model>.profiles/*.yaml` beside --out. Returns an error message when there
+// is none.
+async function bindingDocuments(
+    flag: boolean|string, modelName: string,
+    out: string|undefined): Promise<string[]|string> {
+  if (flag !== true) {
+    // String(): cac parses a numeric-looking value as a number.
+    const doc = String(flag);
+    return fs.existsSync(doc) ? [doc] :
+                                `--prune-unbound: file not found: ${doc}`;
+  }
+  if (fs.existsSync('catalog.yaml')) {
+    const snapshot =
+        await kcmd.CatalogSnapshot.fromPath('.', context.ApiContext.default());
+    if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
+      const layout = snapshot.layout as SemanticModelLayout;
+      const docs = layout.profilePaths(modelName).map(p => p.path);
+      if (docs.length) return docs;
+    }
+  }
+  if (out) {
+    const dir = path.join(path.dirname(out), `${modelName}.profiles`);
+    if (fs.existsSync(dir)) {
+      const docs = fs.readdirSync(dir)
+                       .filter(f => f.endsWith('.yaml'))
+                       .sort()
+                       .map(f => path.join(dir, f));
+      if (docs.length) return docs;
+    }
+  }
+  return `--prune-unbound found no binding profile for model '${
+             modelName}' in this scope's layout${
+             out ? ' or beside --out' : ''}; name the binding document: ` +
+      `--prune-unbound <profile.yaml>.`;
+}
+
+// Prints an import's coverage summary and writes the report (proposed): to
+// the `--coverage <path>` file, else to `coverage.json` beside the model
+// document the import wrote.
+function writeCoverage(
+    report: CoverageReport, flag: boolean|string|undefined,
+    writtenPath: string): void {
+  console.log(formatCoverageSummary(report));
+  // String(): cac parses a numeric-looking value as a number.
+  const file = flag !== undefined && typeof flag !== 'boolean' ?
+      String(flag) :
+      path.join(path.dirname(writtenPath), 'coverage.json');
+  writeCoverageFile(file, report);
+  console.log(`wrote ${file}`);
 }
 
 
@@ -1324,6 +1431,10 @@ export interface ShaclImportCommandOptions {
   model?: string;
   // Write the updated document here instead of back to its source.
   out?: string;
+  // Proposed: where to write the coverage report (default: `coverage.json`
+  // beside the written model document). `--no-coverage` (false) writes none
+  // and prints no coverage summary.
+  coverage?: boolean|string;
 }
 
 // Handles `kcmd shacl <action> <shapes.ttl...>`. The only action is `import`:
@@ -1413,13 +1524,20 @@ export async function shacl(
                              `import)` :
                          ''));
 
+  let writtenPath: string;
   if (options.out) {
     fs.mkdirSync(path.dirname(path.resolve(options.out)), {recursive: true});
     fs.writeFileSync(options.out, result.yaml);
-    console.log(`wrote ${options.out}`);
+    writtenPath = options.out;
   } else {
     writeBack(result.yaml);
-    console.log(`wrote ${sourcePath}`);
+    writtenPath = sourcePath;
+  }
+  console.log(`wrote ${writtenPath}`);
+  if (options.coverage !== false) {
+    writeCoverage(
+        buildCoverageReport('shacl', result.model, files, result.coverage),
+        options.coverage, writtenPath);
   }
   return 0;
 }

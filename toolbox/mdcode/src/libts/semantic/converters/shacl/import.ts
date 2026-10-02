@@ -20,8 +20,10 @@
 import * as YAML from 'yaml';
 
 import {loadModels} from '../../loader';
+import {CoverageEntry} from '../coverage';
 
-import {provenanceShape, shaclConstraints} from './constraints';
+import {provenanceShape, shaclConstraints, ShaclPropertyTrace} from './constraints';
+import {shaclCoverage} from './coverage';
 import {parseShacl} from './parse';
 
 export interface ShaclImportOptions {
@@ -37,6 +39,9 @@ export interface ShaclImportResult {
   replaced: number;    // previously generated constraints removed
   shapes: number;      // shapes read
   warnings: string[];
+  // Every shape and constraint component, and what the import made of it
+  // (proposed; see coverage.ts).
+  coverage: CoverageEntry[];
 }
 
 /**
@@ -102,7 +107,9 @@ export function importShacl(
       return true;
     });
   }
-  const derived = shaclConstraints(parsed, model, kept, warnings);
+  const traces: ShaclPropertyTrace[] = [];
+  const derived =
+      shaclConstraints(parsed, model, kept, warnings, t => traces.push(t));
 
   if (derived.constraints.length) {
     if (!YAML.isSeq(existing)) {
@@ -133,5 +140,6 @@ export function importShacl(
     replaced,
     shapes: parsed.nodeShapes.length + parsed.standaloneProperties.length,
     warnings,
+    coverage: shaclCoverage(parsed, traces),
   };
 }
