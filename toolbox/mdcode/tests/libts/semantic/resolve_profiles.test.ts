@@ -952,3 +952,180 @@ describe('validateProfileConsistency', () => {
     ])).toEqual([]);
   });
 });
+
+
+describe('profile checks the first review found missing', () => {
+  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  const base = (over: Partial<ProfileSpec> = {}): ProfileSpec => ({
+    name: 'prod',
+    entities: [
+      {name: 'Customer', source: BQ('customer'), fields: [{name: 'lifetimeValue', expression: 'ltv'}]},
+      {name: 'Order', source: BQ('orders')},
+    ],
+    relationships: [],
+    ...over,
+  });
+
+  test('a field listed with no expression does not count as bound', () => {
+    const errors = validateProfileCompleteness(irModel(), base({
+      entities: [{name: 'Customer', source: BQ('customer'), fields: [{name: 'lifetimeValue'}]},
+                 {name: 'Order', source: BQ('orders')}],
+    }));
+    expect(errors.join('\n')).toContain("field 'Customer.lifetimeValue' has no binding");
+  });
+
+  test('a bare project.dataset.table source counts as BigQuery; an unknown form is an error', () => {
+    const SP = '//spanner.googleapis.com/projects/p/instances/i/databases/a/tables/Orders';
+    const bare = base({entities: [{...base().entities[0], source: 'acme.prod.customer'},
+                                  {name: 'Order', source: SP}]});
+    expect(validateProfileCompleteness(irModel(), bare).join('\n'))
+        .toContain('more than one database');
+    const unknown = base({entities: [{...base().entities[0], source: '//trino.example.com/x'},
+                                     base().entities[1]]});
+    expect(validateProfileCompleteness(irModel(), unknown).join('\n'))
+        .toContain('is not a resource URI or a catalog name');
+  });
+
+  test('Spanner catalog names and AlloyDB sources classify by database', () => {
+    const one = base({entities: [
+      {...base().entities[0], source: 'spanner:p.regional-us.i.db.Customer'},
+      {name: 'Order', source: '//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/Orders'},
+    ]});
+    expect(validateProfileCompleteness(irModel(), one)).toEqual([]);
+    const two = base({entities: [
+      {...base().entities[0], source: 'spanner:`google.com:p`.regional-us.i.db.Customer'},
+      {name: 'Order', source: 'spanner:`google.com:p`.regional-us.i.db2.Orders'},
+    ]});
+    expect(validateProfileCompleteness(irModel(), two).join('\n'))
+        .toContain('more than one database');
+    const alloy = base({entities: [
+      {...base().entities[0], source: 'alloydb:p.us.c.db.public.customer'},
+      {name: 'Order', source: '//alloydb.googleapis.com/projects/p/locations/us/clusters/c/instances/i/databases/db/tables/orders'},
+    ]});
+    expect(validateProfileCompleteness(irModel(), alloy)).toEqual([]);
+  });
+
+  test('binding an abstract entity is rejected', () => {
+    const m = irModel();
+    m.entities.push({name: 'Party', dataSource: '', keys: [], abstract: true, fields: []});
+    const errors = validateProfileCompleteness(m, base({
+      entities: [...base().entities, {name: 'Party', source: BQ('party')}],
+    }));
+    expect(errors.join('\n')).toContain("entity 'Party' is abstract");
+  });
+
+  test('inherited fields count, and a broken hierarchy falls back to declared fields', () => {
+    const m = irModel();
+    m.entities.push({name: 'Party', dataSource: '', keys: [], abstract: true,
+                     fields: [{name: 'label'}]});
+    m.entities[0].extends = ['Party'];
+    expect(validateProfileCompleteness(m, base()).join('\n'))
+        .toContain("field 'Customer.label' has no binding");
+    expect(validateProfileCompleteness(m, base({
+      entities: [{...base().entities[0], fieldsExclude: ['label']}, base().entities[1]],
+    }))).toEqual([]);
+    m.entities[0].extends = ['Ghost'];
+    expect(() => validateProfileCompleteness(m, base())).not.toThrow();
+  });
+
+  test('a unique-key shape mismatch is rejected', () => {
+    const m = irModel();
+    m.entities[0].uniqueKeys = [['email']];
+    const errors = validateProfileCompleteness(m, base({
+      entities: [{...base().entities[0], uniqueKeys: [['a', 'b']]}, base().entities[1]],
+    }));
+    expect(errors.join('\n')).toContain('restates its unique keys as [2]');
+  });
+
+  test('association relationships are not checked for join columns', () => {
+    const m = irModel();
+    m.relationships.push({
+      name: 'Tags', source: {entity: 'Order', columns: []}, destination: {entity: 'Customer', columns: []},
+      association: {dataSource: 'p.d.tags', keys: [], sourceColumns: [], destinationColumns: []},
+    } as any);
+    expect(validateProfileCompleteness(m, base())).toEqual([]);
+  });
+
+  test('metrics_exclude "*" suppresses a metric reaching an excluded field', () => {
+    const profile = base({
+      entities: [{name: 'Customer', source: BQ('customer'), fieldsExclude: ['lifetimeValue']},
+                 base().entities[1]],
+      metricsExclude: '*',
+    });
+    expect(validateProfileCompleteness(irModel(), profile)).toEqual([]);
+  });
+
+  test('a relationship side the profile does not restate keeps the model file\'s', () => {
+    expect(validateProfileCompleteness(irModel(), base({
+      relationships: [{name: 'PlacedBy', fromColumns: ['o_cust'], toColumns: []}],
+    }))).toEqual([]);
+  });
+
+  test('cardinality: a model file with no join columns is left out; the k-th unique key counts', () => {
+    const m = irModel();
+    m.relationships[0].destination.columns = [];
+    m.relationships[0].source.columns = [];
+    const agree = [
+      {name: 'a', entities: [], relationships: [{name: 'PlacedBy', fromColumns: ['x'], toColumns: ['key']}]},
+      {name: 'b', entities: [], relationships: [{name: 'PlacedBy', fromColumns: ['y'], toColumns: ['key']}]},
+    ];
+    expect(validateProfileConsistency(m, agree)).toEqual([]);
+    const m2 = irModel();
+    m2.entities[0].uniqueKeys = [['email']];
+    const errors = validateProfileConsistency(m2, [
+      {name: 'a', entities: [], relationships: [{name: 'PlacedBy', fromColumns: ['x'], toColumns: ['email']}]},
+    ]);
+    expect(errors.join('\n')).toContain("profile 'a': unique key 1");
+  });
+
+  test('loadProfileFile reads actions, rejects bad shapes, and matches dialects in any case', () => {
+    const p = loadProfileFile(`name: prod
+actions:
+  - name: Cancel
+    executor: {sql: {statements: ["UPDATE t SET x = 1"]}}
+  - name: Read
+    executor: null
+entities:
+  - name: orders
+    fields:
+      - name: region
+        expression: {dialects: [{dialect: bigquery, expression: r}]}
+`, 'prod');
+    expect(p.actions).toEqual([
+      {name: 'Cancel', executor: {kind: 'sql', sql: {statements: ['UPDATE t SET x = 1']}}},
+      {name: 'Read', executor: null},
+    ]);
+    expect(p.entities[0].fields![0].expression).toBe('r');
+    expect(p.entities[0].fields![0].dialects).toEqual([{dialect: 'BIGQUERY', expression: 'r'}]);
+    expect(() => loadProfileFile('name: prod\nentities:\n  -\n', 'prod')).toThrow(/not a mapping/);
+    expect(() => loadProfileFile('name: prod\nentities:\n  - {name: o, primary_key: c_id}\n', 'prod'))
+        .toThrow(/must be a list/);
+    expect(() => loadProfileFile(
+               'name: prod\nentities:\n  - {name: o, fields: [{name: a, expression: x}], fields_exclude: [a]}\n',
+               'prod'))
+        .toThrow(/in both 'fields' and 'fields_exclude'/);
+  });
+
+  test('the merge binds an inherited field by redeclaring it with only a binding', () => {
+    const logical = {
+      semantic_model: [{
+        name: 'm',
+        entities: [
+          {name: 'Party', abstract: true, fields: [{name: 'label', datatype: 'String'}]},
+          {name: 'Person', extends: ['Party'], primary_key: ['id'], fields: [{name: 'id'}]},
+        ],
+      }],
+    };
+    const {doc, error} = mergeProfile(logical, {
+      name: 'prod',
+      entities: [{name: 'Person', fields: [{name: 'label', expression: 'display_name'}]}],
+    }, 'prod');
+    expect(error).toBeUndefined();
+    const person = (doc as any).semantic_model[0].entities[1];
+    expect(person.fields).toEqual([{name: 'id'}, {name: 'label', expression: 'display_name'}]);
+    const excluded = mergeProfile(logical, {
+      name: 'prod', entities: [{name: 'Person', fields_exclude: ['label']}],
+    }, 'prod');
+    expect(excluded.error).toBeUndefined();
+  });
+});
