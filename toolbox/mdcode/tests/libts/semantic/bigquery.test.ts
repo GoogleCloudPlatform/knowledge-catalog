@@ -489,6 +489,27 @@ describe('descriptive metadata: structured synonyms vs folded description', () =
       });
 
   test(
+      'examples render as a joined line and custom ai_context members stay out of the DDL',
+      () => {
+        const m = model();
+        m.entities[0].fields[1].aiContext = {
+          instructions: 'Use for net revenue',
+          synonyms: ['total', 'value'],
+          examples: ['net revenue last month', 'revenue by region'],
+          additionalProperties: {
+            custom_hint: 'prioritize verified orders',
+          },
+        };
+        const {ddl} = generatePropertyGraph(m, GEN_OPTS);
+        expect(ddl).toContain(
+            'Examples: net revenue last month; revenue by region');
+        // A custom member has no slot in a property-graph deployment; it
+        // reaches Knowledge Catalog only.
+        expect(ddl).not.toContain('custom_hint');
+        expect(ddl).not.toContain('prioritize verified orders');
+      });
+
+  test(
       'model-level metadata is not emitted (BigQuery drops statement-level graph OPTIONS)',
       () => {
         const {ddl} = generatePropertyGraph(model(), GEN_OPTS);
