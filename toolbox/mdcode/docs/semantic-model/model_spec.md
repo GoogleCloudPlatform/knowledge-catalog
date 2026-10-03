@@ -183,9 +183,13 @@ MUST be marked `abstract: true` (also an extension).
 
 The format rule is only that supertypes are named datasets in the same model. An
 `extends` that names a dataset not defined in the model is a **hard error** (a typo
-must not silently drop inheritance — agreed with Dmitri). The resolver breaks
-cycles with a warning and flattens diamonds (each ancestor contributes once,
-nearest-first).
+must not silently drop inheritance — agreed with Dmitri). A cycle in `extends` is
+an error. A diamond flattens, with each ancestor contributing once. A field
+declared or rebound by two supertypes that do not extend each other is an error,
+because nothing says which one wins. A subtype MAY redeclare an inherited field
+by name alone or to bind it; the definition comes from the ancestor that
+declares it. A relationship endpoint and a metric's entity MUST be a concrete
+leaf: not abstract, and not extended by another dataset.
 How the hierarchy is *lowered* into each store (labels, field flattening) and the
 downstream limits (e.g. a supertype whose label is shared across subtype tables
 cannot carry a measure) are operational — see
@@ -443,7 +447,8 @@ reads the document ([§6](#6-the-extension-mechanism)).
 
 - **`abstract: true` on a dataset (extended profile only).** Marks a concept with
   no physical table (typically an `extends` supertype). An abstract dataset produces
-  no node table and MUST NOT declare a `source`. Accepted only under
+  no node table and MUST NOT declare a `source`, keys or field expressions.
+  Accepted only under
   `0.2.0.dev0/google`.
 
 - **`deployment_target` (extended profile only).** The physical destination — one

@@ -13,10 +13,10 @@ import {SpannerClient} from '../gcp/spanner';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
-import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
+import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {LoadedModel} from './loader';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
-import {DeclaredConcept, declaredConceptFields, resolveInheritance} from './resolve_inheritance';
+import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 
 // Checks every model against the push requirements and returns the collected
@@ -138,24 +138,26 @@ export function validatePushRequirements(
     }
 
     // Resolving inheritance throws on an `extends` naming an entity the model
-    // does not declare, and the two checks below stand down rather than
+    // does not declare, on a cycle, and on a field inherited from two unrelated
+    // ancestors, and the checks below stand down rather than
     // stack-trace on one. Standing down has to mean reporting somewhere or it
     // means publishing a broken model in silence: the loader accepts such a
     // model, and a Knowledge-Catalog-only push reaches no graph leg that would
     // resolve inheritance and catch it. So the failure is reported here, once
-    // per model, and the checks below stay quiet about it. A profile push that
-    // pruned fields is exempt for the same reason those checks are -- pruning
-    // can remove a supertype whole, and the dangling `extends` it leaves is the
-    // pruner's doing rather than the author's.
-    if (!opts.fieldsPruned) {
-      const failure = inheritanceFailure(model);
-      if (failure) {
-        errors.push(
-            `model '${model.name}' (${document}): ${failure} Constraint and ` +
-            `action checks that need the resolved model are skipped until ` +
-            `this is fixed.`);
-      }
+    // per model, and the checks below stay quiet about it.
+    // A profile push that pruned fields is exempt for an unknown parent only:
+    // pruning can remove a supertype whole, and the dangling `extends` it
+    // leaves is the pruner's doing. It cannot create a cycle or an
+    // ambiguously inherited field, since it only removes things, so those are
+    // reported either way.
+    const failure = inheritanceFailure(model);
+    if (failure && !(opts.fieldsPruned && failure.kind === 'unknown-parent')) {
+      errors.push(
+          `model '${model.name}' (${document}): ${failure.message} Checks ` +
+          `that need the resolved model are skipped until this is fixed.`);
     }
+
+    errors.push(...inheritanceRuleErrors(model, document));
 
     // An action reaches Knowledge Catalog only, so its checks are
     // target-independent: each parameter's type must resolve to something in
@@ -699,8 +701,9 @@ function unknownFieldRefs(
 // resolve.
 //
 // `declaredFields` and `declaredConcepts` both resolve inheritance, and
-// resolving THROWS on an `extends` naming an entity the model does not declare
-// rather than reporting it. The loader accepts such a model, a
+// resolving THROWS on an `extends` naming an entity the model does not declare,
+// on a cycle, and on an ambiguously inherited field, rather than reporting it.
+// The loader accepts such a model, a
 // Knowledge-Catalog-only push reaches no graph leg to catch it, and a profile
 // push can create one by pruning a supertype whole. A validation gate reports;
 // it does not stack-trace, so every caller that resolves inheritance to answer
@@ -722,15 +725,125 @@ function ifResolvable<T>(build: () => T): T|undefined {
 // Reported rather than thrown, and reported once for the model rather than once
 // per check that needed it. A model declaring no inheritance cannot fail, and
 // resolving clones, so it is not asked.
-function inheritanceFailure(model: SemanticModel): string|undefined {
+function inheritanceFailure(model: SemanticModel):
+    {kind: InheritanceError['kind']|'other'; message: string}|undefined {
   if (!(model.entities ?? []).some(e => e.extends?.length)) return undefined;
   try {
     resolveInheritance(model);
     return undefined;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    return message.endsWith('.') ? message : `${message}.`;
+    return {
+      kind: e instanceof InheritanceError ? e.kind : 'other',
+      message: message.endsWith('.') ? message : `${message}.`,
+    };
   }
+}
+
+// The authored name of each property that defines a field rather than binds
+// it, for messages.
+const AUTHORED_NAME: Partial<Record<keyof Field, string>> = {
+  type: 'datatype',
+  aiContext: 'ai_context',
+  customExtensions: 'custom_extensions',
+};
+
+// The rules inheritance puts on a model beyond resolving it:
+//   - a subtype may redeclare an inherited field to rebind it, or with nothing
+//     set at all, and never with any of the field's definition;
+//   - an abstract entity has no table, so it declares no source, no key and no
+//     bound field;
+//   - a relationship endpoint, and the entity a metric belongs to, is a
+//     concrete leaf: not abstract, and extended by no other entity. A non-leaf
+//     entity has no single table, so an edge to it would join only the parent's
+//     own rows, and a measure over it could not bind to one column.
+// The first rule needs the resolved model and is skipped when resolution
+// fails; that failure is reported once elsewhere.
+function inheritanceRuleErrors(
+    model: SemanticModel, document: string): string[] {
+  const errors: string[] = [];
+  const entities = model.entities ?? [];
+  const where = (name: string) =>
+      `entity '${name}' in model '${model.name}' (${document})`;
+
+  const resolved = entities.some(e => e.extends?.length) ?
+      ifResolvable(() => resolveInheritance(model).model.entities ?? []) :
+      undefined;
+  if (resolved) {
+    const ancestorsOf =
+        new Map(resolved.map(e => [e.name, e.extends ?? []]));
+    const ownNames = new Map(
+        entities.map(e => [e.name, new Set(e.fields.map(f => f.name))]));
+    for (const entity of entities) {
+      const inherited = new Set(
+          (ancestorsOf.get(entity.name) ?? [])
+              .flatMap(a => [...(ownNames.get(a) ?? [])]));
+      for (const field of entity.fields) {
+        if (!inherited.has(field.name)) continue;
+        const defined =
+            FIELD_DEFINITION_KEYS.filter(k => field[k] !== undefined)
+                .map(k => `'${AUTHORED_NAME[k] ?? k}'`);
+        if (defined.length) {
+          errors.push(
+              `${where(entity.name)}: field '${field.name}' is inherited, so ` +
+              `it may only be rebound to a column; remove ${
+                  defined.join(', ')}, which an ancestor defines.`);
+        }
+      }
+    }
+  }
+
+  for (const entity of entities) {
+    if (!entity.abstract) continue;
+    if (entity.dataSource || entity.authoredSource) {
+      errors.push(
+          `${where(entity.name)} is abstract, so it has no table and cannot ` +
+          `declare a source.`);
+    }
+    if (entity.keys.length || entity.uniqueKeys?.length) {
+      errors.push(
+          `${where(entity.name)} is abstract, so it has no table and cannot ` +
+          `declare a primary key or unique keys.`);
+    }
+    for (const field of entity.fields) {
+      if (isFieldBound(field)) {
+        errors.push(
+            `${where(entity.name)} is abstract, so its field '${
+                field.name}' cannot carry an expression; bind it on each ` +
+            `concrete subtype instead.`);
+      }
+    }
+  }
+
+  const abstractNames =
+      new Set(entities.filter(e => e.abstract).map(e => e.name));
+  const extendedNames = new Set(entities.flatMap(e => e.extends ?? []));
+  const notLeaf = (name: string): string|undefined => abstractNames.has(name) ?
+      'abstract' :
+      extendedNames.has(name) ? 'extended by another entity' : undefined;
+  for (const rel of model.relationships ?? []) {
+    // A relationship from an entity to itself is reported once.
+    for (const end of new Set([rel.source.entity, rel.destination.entity])) {
+      const why = notLeaf(end);
+      if (why) {
+        errors.push(
+            `relationship '${rel.name}' in model '${model.name}' (${
+                document}) connects '${end}', which is ${why}; a ` +
+            `relationship may connect only concrete leaf entities.`);
+      }
+    }
+  }
+  for (const metric of model.metrics ?? []) {
+    const owner = metric.authoredEntity ?? metric.entity;
+    const why = owner ? notLeaf(owner) : undefined;
+    if (why) {
+      errors.push(
+          `metric '${metric.name}' in model '${model.name}' (${
+              document}) belongs to '${owner}', which is ${why}; a metric ` +
+          `may belong only to a concrete leaf entity.`);
+    }
+  }
+  return errors;
 }
 
 // Every field each entity has, inherited ones included. Inheritance is resolved

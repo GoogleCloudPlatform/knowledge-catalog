@@ -273,11 +273,41 @@ export function isTimeDimension(field: Field): boolean {
 // field's target/canonical `expression` wins; a field awaiting transpilation
 // falls back to its imported vendor expression, which still names a real
 // column, so it is bound rather than unbound. A field with neither is unbound
-// (no column at all). This is the single source of truth for "is this field
-// bound"; availability pruning and the BigQuery generator both consult it so
-// they never disagree.
-export function fieldBinding(field: Field): string|undefined {
+// (no column at all). `isFieldBound` asks the same question as a yes or no.
+export function fieldBinding(
+    field: Pick<Field, 'expression'|'importedExpression'>): string|undefined {
   return field.expression ?? field.importedExpression;
+}
+
+// The properties of a field that bind it to a column, and the ones that define
+// what it is. A subtype that redeclares an inherited field may set binding
+// properties and never definition properties. Together with `name` they are
+// every property a field has; the check below fails to compile if a property
+// is added to Field without being placed in one list or the other.
+export const FIELD_BINDING_KEYS = [
+  'expression', 'dialects', 'stringForm', 'importedExpression',
+  'importedDialect',
+] as const satisfies ReadonlyArray<keyof Field>;
+export const FIELD_DEFINITION_KEYS = [
+  'type', 'label', 'dimension', 'description', 'aiContext', 'customExtensions',
+] as const satisfies ReadonlyArray<keyof Field>;
+type UnlistedFieldKey = Exclude<
+    keyof Field,
+    'name'|(typeof FIELD_BINDING_KEYS)[number]|
+    (typeof FIELD_DEFINITION_KEYS)[number]>;
+const everyFieldKeyListed: [UnlistedFieldKey] extends [never] ? true : never =
+    true;
+void everyFieldKeyListed;
+
+/**
+ * Whether a field is bound to a column under the current binding: it carries an
+ * expression or an imported vendor expression. A dialect list, `stringForm` and
+ * `importedDialect` describe a binding and are not one on their own. Pruning,
+ * the graph generators, inheritance and push validation all use this test.
+ */
+export function isFieldBound(
+    field: Pick<Field, 'expression'|'importedExpression'>): boolean {
+  return fieldBinding(field) !== undefined;
 }
 
 /**

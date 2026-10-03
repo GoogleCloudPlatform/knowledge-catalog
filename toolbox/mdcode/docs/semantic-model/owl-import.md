@@ -344,7 +344,10 @@ Two boundaries to be clear about:
   flow down; edges do not) — see [Class hierarchies (`extends` →
   labels)](reference.md#class-hierarchies-extends--labels). The **Knowledge Catalog** push is
   unchanged: it still publishes each entry with exactly the fields it declares
-  (KC-side inheritance is a separate, later opt-in).
+  (KC-side inheritance is a separate, later opt-in). Every push accepts a
+  relationship only between concrete leaf entities. An object property whose
+  `rdfs:domain` or `rdfs:range` is a class with subclasses imports as written,
+  and push rejects it until you move it onto the leaf classes.
 - **Native inheritance is entity-level only.** `extends` lives on `entities`,
   never on relationships — the boundary is structural. `rdfs:subPropertyOf`
   (property / relationship inheritance) has no such native slot, so it is **not
@@ -355,7 +358,8 @@ Two boundaries to be clear about:
 The import gives you a **logical model**: what the domain means, with no physical
 binding. That is directly useful — `kcmd push` publishes it to
 Knowledge Catalog as-is, so the ontology becomes catalog metadata (entities,
-fields, and keys) with nothing more to fill in:
+fields, and keys) with nothing more to fill in. The exception is a relationship
+on a class with subclasses, which push rejects as described above:
 
 ```console
 $ kcmd push                  # publishes the logical model to Knowledge Catalog

@@ -4,7 +4,8 @@
 import {describe, expect, test} from 'bun:test';
 
 import {Action, CustomExtension, Entity, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
-import {LoadedModel} from '../../../src/libts/semantic/loader';
+import {LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
+import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
 import {validateBigQueryActionStatements, validateBigQueryDataSources, validatePushRequirements, validateSpannerActionStatements} from '../../../src/libts/semantic/validate';
 import {BigQueryClientMock, mockSchema, SpannerClientMock} from '../mocks';
 
@@ -677,6 +678,235 @@ describe('action statement pre-flight', () => {
       expect(errs[0]).toContain('statement 2');
       expect(errs[1]).toContain('action \'B\'');
       expect(errs[1]).toContain('statement 1');
+    });
+  });
+});
+
+
+describe('inheritance rules', () => {
+  function ent(name: string, over: Partial<Entity> = {}): Entity {
+    return {
+      name,
+      dataSource: `p.d.${name}`,
+      keys: [`${name}_id`],
+      fields: [{name: `${name}_id`, expression: `${name}_id`}],
+      ...over,
+    };
+  }
+  function check(over: Partial<SemanticModel>): string[] {
+    return validatePushRequirements(
+        [loaded(model(over))], {targetOptional: true});
+  }
+  const customer = ent('customer', {
+    fields: [{name: 'name', expression: 'name', type: 'String',
+              description: 'Display name'}],
+  });
+
+  test('a subtype rebinding an inherited field passes', () => {
+    expect(check({
+      entities: [
+        customer,
+        ent('vip', {extends: ['customer'],
+                    fields: [{name: 'name', expression: 'c_name'}]}),
+      ],
+    })).toEqual([]);
+  });
+
+  test('a subtype redefining an inherited field is rejected, even with a binding', () => {
+    for (const extra of [
+      {type: 'Integer' as const}, {label: 'L'}, {dimension: {}},
+      {description: 'd'}, {aiContext: {instructions: 'i'}},
+      {customExtensions: [{vendorName: 'ACME', data: '{}'}]},
+    ]) {
+      const errors = check({
+        entities: [
+          customer,
+          ent('vip', {extends: ['customer'],
+                      fields: [{name: 'name', expression: 'c_name', ...extra}]}),
+        ],
+      });
+      expect(errors.join('\n')).toContain(
+          "field 'name' is inherited, so it may only be rebound to a column");
+    }
+  });
+
+  test('a subtype redeclaring an inherited field with nothing set passes', () => {
+    for (const f of [{name: 'name'}, {name: 'name', stringForm: true},
+                     {name: 'name', importedDialect: 'SNOWFLAKE'}]) {
+      expect(check({
+        entities: [customer, ent('vip', {extends: ['customer'], fields: [f]})],
+      })).toEqual([]);
+    }
+  });
+
+  test('name-only redeclarations on both sides of a diamond pass', () => {
+    const party = ent('party', {
+      abstract: true, dataSource: undefined, keys: [],
+      fields: [{name: 'id', type: 'String'}],
+    });
+    const side = (name: string) => ent(name, {
+      abstract: true, dataSource: undefined, keys: [], extends: ['party'],
+      fields: [{name: 'id'}],
+    });
+    expect(check({
+      entities: [
+        party, side('customer'), side('account'),
+        ent('vip', {extends: ['customer', 'account'], keys: ['id'],
+                    fields: [{name: 'id', expression: 'vip_id'}]}),
+      ],
+    })).toEqual([]);
+  });
+
+  test('a profile binds a field the logical model redeclares by name alone', () => {
+    const logical = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    entities:
+      - name: party
+        abstract: true
+        fields:
+          - { name: name, datatype: String }
+      - name: customer
+        extends: [party]
+        primary_key: [id]
+        fields:
+          - { name: id, datatype: Integer }
+          - { name: name }
+`;
+    const profile = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    entities:
+      - name: customer
+        source: p.d.customer
+        fields:
+          - { name: id, expression: c_custkey }
+          - { name: name, expression: c_name }
+`;
+    const docs = (text: string, bindingOptional: boolean) =>
+        loadModels(text, {bindingOptional})
+            .models.map(m => loaded(m, 'sales.yaml'));
+    // The catalog leg validates the logical model unpruned.
+    expect(validatePushRequirements(docs(logical, true), {targetOptional: true}))
+        .toEqual([]);
+    const merged = mergeProfileOntoDoc(logical, profile, 'analytical');
+    if ('error' in merged) throw new Error(merged.error);
+    expect(validatePushRequirements(
+               docs(merged.text, false), {targetOptional: true}))
+        .toEqual([]);
+  });
+
+  test('a cycle or an ambiguous field is still reported on a pruned model', () => {
+    const cyclic = model({
+      entities: [ent('a', {extends: ['b']}), ent('b', {extends: ['a']})],
+    });
+    const ambiguous = model({
+      entities: [
+        ent('x', {fields: [{name: 'id', expression: 'id'}]}),
+        ent('y', {fields: [{name: 'id', expression: 'id'}]}),
+        ent('z', {extends: ['x', 'y']}),
+      ],
+    });
+    for (const [m, want] of [[cyclic, /must not form a cycle/],
+                             [ambiguous, /declare or rebind 'id'/]] as const) {
+      const errors = validatePushRequirements(
+          [loaded(m)], {targetOptional: true, fieldsPruned: true});
+      expect(errors.join('\n')).toMatch(want);
+    }
+    // An unknown parent is still excused on a pruned model.
+    expect(validatePushRequirements(
+               [loaded(model({entities: [ent('a', {extends: ['gone']})]}))],
+               {targetOptional: true, fieldsPruned: true}))
+        .toEqual([]);
+  });
+
+  test('an abstract entity is rejected for a source, keys or a bound field', () => {
+    const base = {abstract: true, keys: [], fields: [], dataSource: ''};
+    expect(check({entities: [ent('party', {...base, dataSource: 'p.d.party'})]})
+               .join('\n')).toContain('cannot declare a source');
+    expect(check({entities: [ent('party', {...base, keys: ['id']})]}).join('\n'))
+        .toContain('cannot declare a primary key or unique keys');
+    expect(check({entities: [ent('party', {...base, uniqueKeys: [['id']]})]})
+               .join('\n')).toContain('cannot declare a primary key or unique keys');
+    expect(check({entities: [ent('party', {...base, fields: [{name: 'id', expression: 'id'}]})]})
+               .join('\n')).toContain("its field 'id' cannot carry an expression");
+    expect(check({entities: [ent('party', {...base, authoredSource: 'bigquery:p.d.party'})]})
+               .join('\n')).toContain('cannot declare a source');
+  });
+
+  test('an abstract entity with no subtypes and nothing physical passes', () => {
+    expect(check({
+      entities: [ent('party', {abstract: true, dataSource: '', keys: [],
+                               fields: [{name: 'id', type: 'String'}]})],
+    })).toEqual([]);
+  });
+
+  describe('concrete leaves', () => {
+    const party = ent('party', {abstract: true, dataSource: '', keys: [], fields: []});
+    const person = ent('person');
+    const employee = ent('employee', {extends: ['person']});
+    const order = ent('order');
+    const rel = (to: string) => ({
+      name: `order_${to}`,
+      source: {entity: 'order', columns: ['c']},
+      destination: {entity: to, columns: ['c']},
+    });
+    const metric = (m: Partial<Metric>): Metric =>
+        ({name: 'm1', expression: 'COUNT(*)', ...m} as Metric);
+
+    test('a relationship to an abstract entity is rejected', () => {
+      expect(check({entities: [party, order], relationships: [rel('party')]})
+                 .join('\n')).toContain("connects 'party', which is abstract");
+    });
+    test('a relationship to an extended entity is rejected', () => {
+      expect(check({entities: [person, employee, order], relationships: [rel('person')]})
+                 .join('\n'))
+          .toContain("connects 'person', which is extended by another entity");
+    });
+    test('a relationship between leaves passes', () => {
+      expect(check({entities: [person, employee, order], relationships: [rel('employee')]}))
+          .toEqual([]);
+    });
+    test('a metric anchored to an abstract or extended entity is rejected', () => {
+      expect(check({entities: [party, order], metrics: [metric({authoredEntity: 'party', entity: 'party'})]})
+                 .join('\n')).toContain("belongs to 'party', which is abstract");
+      expect(check({entities: [person, employee], metrics: [metric({authoredEntity: 'person', entity: 'person'})]})
+                 .join('\n'))
+          .toContain("belongs to 'person', which is extended by another entity");
+    });
+    test('a metric whose inferred entity is abstract is rejected', () => {
+      expect(check({entities: [party, order], metrics: [metric({entity: 'party'})]})
+                 .join('\n')).toContain("belongs to 'party', which is abstract");
+    });
+    test('a relationship from an extended entity to itself is reported once', () => {
+      const errors = check({
+        entities: [person, employee],
+        relationships: [{
+          name: 'knows',
+          source: {entity: 'person', columns: ['c']},
+          destination: {entity: 'person', columns: ['c']},
+        }],
+      });
+      expect(errors.filter(e => e.includes("relationship 'knows'")).length).toBe(1);
+    });
+    test('the rules also run on a pruned model, as a graph push validates', () => {
+      const errors = validatePushRequirements(
+          [loaded(model({entities: [person, employee, order],
+                         relationships: [rel('person')]}))],
+          {targetOptional: true, fieldsPruned: true});
+      expect(errors.join('\n'))
+          .toContain("connects 'person', which is extended by another entity");
+    });
+    test('a metric whose inferred entity is extended is rejected', () => {
+      expect(check({entities: [person, employee], metrics: [metric({entity: 'person'})]})
+                 .join('\n'))
+          .toContain("belongs to 'person', which is extended by another entity");
+    });
+    test('a metric on a leaf passes, anchored or inferred', () => {
+      expect(check({entities: [person, employee], metrics: [metric({authoredEntity: 'employee', entity: 'employee'})]}))
+          .toEqual([]);
+      expect(check({entities: [person, employee], metrics: [metric({entity: 'employee'})]}))
+          .toEqual([]);
     });
   });
 });
