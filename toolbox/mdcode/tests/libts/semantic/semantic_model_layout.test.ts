@@ -341,6 +341,19 @@ describe('SemanticModelLayout profile names per the Preview Decision', () => {
     expect(() => l.profileDocuments('retail')).toThrow(/name the same profile/);
   });
 
+  // decisions.md, naming: a profile name may contain hyphens, and still starts
+  // with a letter.
+  test('a profile name may contain a hyphen but not start with one', async () => {
+    write('retail.yaml', MODEL);
+    write('retail.profile.prod-us.yaml', 'name: prod-us\n');
+    expect((await layout('eg')).profileDocuments('retail').map(d => d.name))
+        .toEqual(['prod-us']);
+    write('retail.profile.-us.yaml', 'name: -us\n');
+    const l = await layout('eg');
+    expect(() => l.profileDocuments('retail'))
+        .toThrow("Profile file 'retail.profile.-us.yaml' has profile name '-us'");
+  });
+
   test('an empty profile name is an error', async () => {
     write('retail.yaml', MODEL);
     write('retail.profile..yaml', 'name: x\n');

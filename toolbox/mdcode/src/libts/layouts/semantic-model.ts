@@ -24,9 +24,9 @@ const PROFILE_FILE = /^(.+)\.profile\.([^.]+)\.yaml$/;
 // Any file shaped like a profile file, including a nameless one and one whose
 // profile name has a dot, which is never a model either.
 const ANY_PROFILE_FILE = /\.profile\.(.*\.)?yaml$/;
-// A profile name: a letter, then letters, digits and underscores, at most 500
-// characters (Preview Decision, naming).
-const PROFILE_NAME = /^[A-Za-z][A-Za-z0-9_]{0,499}$/;
+// A profile name: a letter, then letters, digits, underscores and hyphens, at
+// most 500 characters (decisions.md, naming).
+const PROFILE_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,499}$/;
 
 // The profile name reserved for the inline bindings in the model file.
 const DEFAULT_PROFILE_NAME = 'default';
@@ -152,7 +152,8 @@ export class SemanticModelLayout implements CatalogLayout {
       throw new Error(
           `Profile file '${badName}' has profile name '${
               badName.slice(prefix.length, -'.yaml'.length)}'; a profile ` +
-          `name is a letter followed by letters, digits and underscores.`);
+          `name is a letter followed by letters, digits, underscores and ` +
+          `hyphens.`);
     }
     const siblings = this._siblingProfilePaths(model);
     if (!siblings.length) {
