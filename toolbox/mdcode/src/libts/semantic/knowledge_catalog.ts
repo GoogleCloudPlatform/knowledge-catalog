@@ -414,9 +414,13 @@ function schemaAspectData(
   const primaryKey = keyFields(entity.keys);
   const uniqueConstraints =
       (entity.uniqueKeys ?? []).map(keyFields).filter(set => set.length);
+  // A field a binding profile excludes on this entity is not published for it
+  // (see Entity.excludedFields).
+  const excluded = new Set(entity.excludedFields ?? []);
   return compact({
-    fields: (entity.fields ??
-             []).map(f => compact({
+    fields: (entity.fields ?? [])
+                .filter(f => !excluded.has(f.name))
+                .map(f => compact({
                        name: f.name,
                        // An untyped field is published as Opaque (STRING +
                        // metadataType OTHER), the explicit "type unknown"

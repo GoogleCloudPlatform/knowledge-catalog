@@ -22,7 +22,7 @@ import {SemanticModelSource} from '../../sources/semantic-model';
 import {SemanticModel} from '../ir';
 import {loadSemanticModels} from '../loader';
 import {resolveInheritance} from '../resolve_inheritance';
-import {DEFAULT_PROFILE, mergeProfileOntoDoc} from '../resolve_profiles';
+import {applyProfileExclusions, DEFAULT_PROFILE, mergeProfileOntoDoc, ProfileExclusion} from '../resolve_profiles';
 
 import {resolveStore, Store} from './store';
 
@@ -118,6 +118,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   if (!docs.length) return {error: 'no semantic model documents found.'};
 
   const merged: Array<{name: string; text: string}> = [];
+  const excludedByDoc = new Map<string, ProfileExclusion[]>();
   for (const doc of docs) {
     if (profile === DEFAULT_PROFILE) {
       merged.push({name: doc.name, text: doc.text});
@@ -137,6 +138,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     if ('error' in res) return {error: `[${doc.name}] ${res.error}`};
     for (const w of res.warnings) warn(`Warning: [${doc.name}] ${w}`);
     merged.push({name: doc.name, text: res.text});
+    excludedByDoc.set(doc.name, res.excluded);
   }
 
   const loaded = loadSemanticModels(
@@ -154,7 +156,17 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   // refuses a generated UUID for an Integer key would read the key as a
   // String, pass, and let the store take the mismatch instead.
   const runtimes: SemanticRuntime[] = [];
-  for (const {document, model: authored} of loaded.models) {
+  for (const {document, model: loadedModel} of loaded.models) {
+    // A profile's exclusions apply to the entity that names each one (Model
+    // Spec §4.2.2).
+    const authored = applyProfileExclusions(
+        loadedModel, excludedByDoc.get(document) ?? []);
+    // An excluded metric is not available under the profile.
+    const excludedMetrics = new Set(authored.excludedMetrics ?? []);
+    if (excludedMetrics.size) {
+      authored.metrics =
+          (authored.metrics ?? []).filter(m => !excludedMetrics.has(m.name));
+    }
     const resolved = resolveInheritance(authored);
     for (const w of resolved.warnings) warn(`Warning: ${w}`);
     const store = resolveStore(resolved.model);

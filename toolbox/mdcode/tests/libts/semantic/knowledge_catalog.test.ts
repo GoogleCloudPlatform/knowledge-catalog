@@ -18,6 +18,8 @@ import {describe, expect, test} from 'bun:test';
 
 import {DataType, Entity, SemanticModel} from '../../../src/libts/semantic/ir';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
+import {loadModels} from '../../../src/libts/semantic/loader';
+import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
 
 const OPTS = {
   project: 'dest-proj',
@@ -721,5 +723,64 @@ describe('abstract entities are skipped for Knowledge Catalog', () => {
         entries.find(e => e.entryType.endsWith('/semantic-entity'));
     expect(person).toBeDefined();
     expect(person!.entrySource!.displayName).toBe('Person');
+  });
+});
+
+
+describe('a field a binding profile excludes', () => {
+  // Pruning marks a field excluded on an entity another extends, and a pruned
+  // push publishes what the profile answers.
+  test('is left out of the schema aspect once pruning marks it', () => {
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [{
+        name: 'e', dataSource: 'p.d.t', keys: ['k'],
+        fields: [{name: 'k', expression: 'k'}, {name: 'secret', expression: 'secret'}],
+        excludedFields: ['secret'],
+      }],
+      relationships: [], metrics: [],
+    };
+    const {entries} = generateCatalogResources(model, OPTS);
+    const entity = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
+    const fields = entity.aspects!['dataplex-types.global.schema'].data!.fields;
+    expect(fields.map((f: any) => f.name)).toEqual(['k']);
+  });
+
+  // A catalog-only push publishes the whole logical model (Model Spec §4.5),
+  // so it applies none of the exclusions the merge returns.
+  test('is still published by a catalog-only push, with an excluded metric', () => {
+    const merged = mergeProfileOntoDoc(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: shop
+    entities:
+      - name: orders
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+          - { name: amount, expression: amount }
+          - { name: secret, expression: secret }
+    metrics:
+      - { name: revenue, expression: SUM(orders.amount) }
+`, `name: ops
+entities:
+  - name: orders
+    source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders_ops
+    fields_exclude: [secret]
+metrics_exclude: "*"
+`, 'ops');
+    if ('error' in merged) throw new Error(merged.error);
+    expect(merged.excluded).toEqual([
+      {model: 'shop', entity: 'orders', field: 'secret'},
+      {model: 'shop', metric: 'revenue'},
+    ]);
+    const {models} = loadModels(merged.text, {bindingOptional: true});
+    const {entries} = generateCatalogResources(models[0], OPTS);
+    const entity = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
+    expect(entity.aspects!['dataplex-types.global.schema'].data!.fields
+               .map((f: any) => f.name))
+        .toEqual(['id', 'amount', 'secret']);
+    expect(entries.filter(e => e.entryType.endsWith('/semantic-metric')).length)
+        .toBe(1);
   });
 });

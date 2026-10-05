@@ -20,7 +20,7 @@ import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {AvailabilityReport, DEFAULT_PROFILE, mergeProfileOntoDoc, pruneUnavailable,} from '../libts/semantic/resolve_profiles';
+import {applyProfileExclusions, AvailabilityReport, DEFAULT_PROFILE, mergeProfileOntoDoc, ProfileExclusion, pruneUnavailable,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
@@ -310,6 +310,44 @@ export async function pull(options: PullOptions = {}): Promise<number> {
 }
 
 
+// A model document after one binding profile is merged onto it: the merged
+// text, the fields the profile excludes, and whether the profile is in the
+// profile file form, which names no deployment target.
+export interface MergedDoc {
+  name: string;
+  text: string;
+  excluded?: ProfileExclusion[];
+  profileFile?: boolean;
+}
+
+// Whether a profile text is in the profile file form (a top-level profile
+// object) rather than the legacy `semantic_model:` wrapper.
+export function isProfileFileForm(text: string): boolean {
+  try {
+    const doc = yaml.parse(text);
+    return !!doc && typeof doc === 'object' && !Array.isArray(doc) &&
+        doc.semantic_model === undefined;
+  } catch {
+    return false;
+  }
+}
+
+// Why a graph push of `profileName` cannot go ahead because the profile is a
+// profile file, or undefined when it can. A profile file names no deployment
+// target, and a model cannot yet list one per profile (Model Spec §4.3), so a
+// graph push of one would deploy into the model file's own target, whatever
+// system the profile binds.
+export function profileFileGraphError(
+    docs: MergedDoc[], profileName: string): string|undefined {
+  const fileForm = docs.find(d => d.profileFile);
+  if (!fileForm) return undefined;
+  return `[${fileForm.name}] binding profile '${profileName}' is a profile ` +
+      `file, which names no deployment target, and a model cannot yet list ` +
+      `deployments; a graph push would deploy it into the model file's own ` +
+      `target. Push to Knowledge Catalog with --no-profile, or deploy the ` +
+      `inline bindings.`;
+}
+
 export async function push(options: PushOptions): Promise<number> {
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
@@ -376,9 +414,9 @@ export async function push(options: PushOptions): Promise<number> {
     // concern; without it (an explicit --profile) a missing profile is an
     // error.
     const mergeForProfile = (profileName: string, {skipMissing = false} = {}):
-        Array<{name: string; text: string}>|null => {
+        MergedDoc[]|null => {
           if (profileName === DEFAULT_PROFILE) return layoutDocs;
-          const merged: Array<{name: string; text: string}> = [];
+          const merged: MergedDoc[] = [];
           for (const doc of layoutDocs) {
             const available = layout.profileDocuments(doc.name);
             const chosen = available.find(p => p.name === profileName);
@@ -400,7 +438,12 @@ export async function push(options: PushOptions): Promise<number> {
             for (const w of res.warnings) {
               console.warn(`Warning: [${doc.name}] ${w}`);
             }
-            merged.push({name: doc.name, text: res.text});
+            merged.push({
+              name: doc.name,
+              text: res.text,
+              excluded: res.excluded,
+              profileFile: isProfileFileForm(chosen.text),
+            });
           }
           return merged;
         };
@@ -412,7 +455,7 @@ export async function push(options: PushOptions): Promise<number> {
     // logical model. Returns the models and the target partition the graph legs
     // need, or null after reporting an error.
     const prepareModels = async(
-        docs: Array<{name: string; text: string}>, profileName: string,
+        docs: MergedDoc[], profileName: string,
         {prune}: {prune: boolean}): Promise<{
       models: LoadedModel[]; bqModels: LoadedModel[];
       spannerModels: LoadedModel[]
@@ -434,25 +477,32 @@ export async function push(options: PushOptions): Promise<number> {
         for (const w of transpiled.warnings) console.warn(`Warning: ${w}`);
       }
       if (prune) {
+        // A profile's exclusions apply to the entity that names each one, which
+        // the merged document cannot say on its own (Model Spec §4.2.2). Only a
+        // pruned push applies them: a catalog-only push publishes the whole
+        // logical model (§4.5).
+        const excludedByDoc =
+            new Map(docs.map(d => [d.name, d.excluded ?? []] as const));
         const availability: AvailabilityReport[] = [];
         models = models.map(({document, model}) => {
-          const {model: pruned, report} = pruneUnavailable(model, profileName);
+          const {model: pruned, report} = pruneUnavailable(
+              applyProfileExclusions(model, excludedByDoc.get(document) ?? []),
+              profileName);
           availability.push(report);
           return {document, model: pruned};
         });
+        // Pruning never removes an entity or a relationship: their key and join
+        // columns are physical columns, not fields. So the note counts what
+        // pruning can make unavailable, metrics and actions.
         for (const r of availability) {
-          const dropped = r.droppedEntities.length + r.droppedMetrics.length +
-              r.droppedRelationships.length + r.droppedActions.length;
+          const dropped = r.droppedMetrics.length + r.droppedActions.length;
           if (r.unboundFields.length || dropped) {
             console.warn(
                 `Note: profile '${r.profile}' leaves ${
                     r.unboundFields.length} field(s) unbound` +
                 (dropped ?
-                     `; ${r.droppedEntities.length} entity(ies), ${
-                         r.droppedMetrics.length} metric(s), ${
-                         r.droppedRelationships.length} relationship(s) ` +
-                         `and ${r.droppedActions.length} action(s) ` +
-                         `unavailable` :
+                     `; ${r.droppedMetrics.length} metric(s) and ${
+                         r.droppedActions.length} action(s) unavailable` :
                      '') +
                 '.');
           }
@@ -480,8 +530,7 @@ export async function push(options: PushOptions): Promise<number> {
       models: LoadedModel[]; bqModels: LoadedModel[];
       spannerModels: LoadedModel[];
     };
-    const mergeCache =
-        new Map<string, Array<{name: string; text: string}>|null>();
+    const mergeCache = new Map<string, MergedDoc[]|null>();
     const mergeOnce = (profileName: string, skipMissing: boolean) => {
       const key = `${profileName}|${skipMissing}`;
       if (mergeCache.has(key)) return mergeCache.get(key)!;
@@ -491,7 +540,7 @@ export async function push(options: PushOptions): Promise<number> {
     };
     const prepareCache = new Map<string, Prepared|null>();
     const prepareOnce = async(
-        docs: Array<{name: string; text: string}>, profileName: string,
+        docs: MergedDoc[], profileName: string,
         prune: boolean): Promise<Prepared|null> => {
       const key =
           `${profileName}|${prune}|${docs.map(d => d.name).sort().join(',')}`;
@@ -561,6 +610,9 @@ export async function push(options: PushOptions): Promise<number> {
       }
     };
     const loadedDocs = new Set<string>();
+    // Prepare every selected profile, and check every collision, before the
+    // first graph deploys, so a push that fails leaves no graph replaced.
+    const graphPlans: Array<{profileName: string; prepared: Prepared}> = [];
     for (const profileName of graphProfileNames) {
       // --all-profiles fans out over every model's profiles, so a model that
       // does not define this one is dropped (skipMissing) rather than failing
@@ -572,12 +624,15 @@ export async function push(options: PushOptions): Promise<number> {
         skippedProfiles.push(profileName);
         continue;
       }
+      const blocked = profileFileGraphError(docs, profileName);
+      if (blocked) {
+        console.error(`Error: ${blocked}`);
+        return 1;
+      }
       const prepared = await prepareOnce(docs, profileName, true);
       if (!prepared) return 1;
       for (const d of docs) loadedDocs.add(d.name);
       noteCatalogOnly(prepared.models);
-      // Fail before any deploy if this profile's targets collide with a graph
-      // an earlier profile already claimed this run.
       for (const m of prepared.models) {
         for (const uri of deploy.deploymentTargetUris(m.model)) {
           const owner = claimedTargets.get(uri);
@@ -593,6 +648,9 @@ export async function push(options: PushOptions): Promise<number> {
           claimedTargets.set(uri, profileName);
         }
       }
+      graphPlans.push({profileName, prepared});
+    }
+    for (const {profileName, prepared} of graphPlans) {
       if (multiProfile) console.log(`\n-- Binding profile '${profileName}' --`);
       if (prepared.bqModels.length) {
         const bq = new BigQueryClient(ctx);
@@ -885,7 +943,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
         console.error(`  profile '${name}': ${loaded.error}`);
         continue;
       }
-      const model = loaded.models[0].model;
+      const model = applyProfileExclusions(loaded.models[0].model, res.excluded);
       const {report} = pruneUnavailable(model, name);
       const marker = name === defaultProfile ? ' (default)' : '';
       console.log(`  profile '${name}'${marker}`);
@@ -905,13 +963,11 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
       }
 
       const withheld: string[] = [];
-      for (const d of report.droppedEntities) {
-        withheld.push(`entity ${d.name} (${d.reason})`);
-      }
-      for (const f of report.unboundFields)
-        withheld.push(`field ${f} (unbound)`);
-      for (const d of report.droppedRelationships) {
-        withheld.push(`relationship ${d.name} (${d.reason})`);
+      const excludedHere = new Set((model.entities ?? []).flatMap(
+          e => (e.excludedFields ?? []).map(f => `${e.name}.${f}`)));
+      for (const f of report.unboundFields) {
+        withheld.push(
+            `field ${f} (${excludedHere.has(f) ? 'excluded' : 'unbound'})`);
       }
       for (const d of report.droppedMetrics) {
         withheld.push(`metric ${d.name} (${d.reason})`);

@@ -412,12 +412,10 @@ function sqlExecutorErrors(action: Action, where: string): string[] {
 //
 // An absent `concepts` says the model reaching this point is a profile's view
 // of the author's model, not the author's model. Everything that reads the
-// ontology stands down there, because pruneUnavailable drops whole entities
-// and whole relationships -- not only unbound fields -- when a profile does
-// not bind their keys or join columns. An action survives that pruning
-// untouched, so an entry on a dropped concept is the profile's doing rather
-// than the author's, and failing the deploy over it would fail it for no
-// reason. An action reaches no graph in any case. What is left is the one
+// ontology stands down there, because pruneUnavailable drops the fields a
+// profile leaves unbound, and the metrics that read them. An entry naming a
+// dropped field is the profile's doing rather than the author's, and failing
+// the deploy over it would fail it for no reason. An action reaches no graph in any case. What is left is the one
 // check that reads only the entry itself.
 function affectedConceptErrors(
     action: Action, where: string,

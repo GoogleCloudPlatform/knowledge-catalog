@@ -12,7 +12,7 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import {catalogOnlyWarning, checkPushSelection, declaresGraphTarget} from '../../../src/tool/commands';
+import {catalogOnlyWarning, checkPushSelection, declaresGraphTarget, isProfileFileForm, profileFileGraphError} from '../../../src/tool/commands';
 
 describe('checkPushSelection', () => {
   // Both legs on, no binding-profile selection: the default `kcmd push`. Each
@@ -167,5 +167,21 @@ describe('catalogOnlyWarning', () => {
   test('names both, in one sentence, when the model declares both', () => {
     expect(catalogOnlyWarning('sales', {actions: 1, constraints: 2}))
         .toContain('1 action(s) and 2 constraint(s)');
+  });
+});
+
+
+describe('a graph push of a profile file', () => {
+  test('the profile file form is told apart from the legacy wrapper', () => {
+    expect(isProfileFileForm('name: prod\nentities: []\n')).toBe(true);
+    expect(isProfileFileForm('version: x\nsemantic_model: []\n')).toBe(false);
+  });
+
+  test('is refused before any deploy, since a profile file names no target', () => {
+    expect(profileFileGraphError(
+               [{name: 'retail', text: '', profileFile: true}], 'prod'))
+        .toContain("binding profile 'prod' is a profile file, which names no deployment target");
+    expect(profileFileGraphError([{name: 'retail', text: ''}], 'prod'))
+        .toBeUndefined();
   });
 });

@@ -182,7 +182,13 @@ export function resolveInheritance(model: SemanticModel): ResolveResult {
       seenField.add(name);
       flattened.push(mergeChain(name, chain, ownFields, ancestorsOf));
     }
-    entity.fields = flattened;
+    // A field the binding profile excludes on this entity is left off it.
+    // Descendants read the snapshot of declared fields, so they still inherit
+    // it (Model Spec §3.1.3: a binding is a fact about one table).
+    const excluded = new Set(entity.excludedFields ?? []);
+    entity.fields = excluded.size ?
+        flattened.filter(f => !excluded.has(f.name)) :
+        flattened;
 
     // Expand `extends` to the resolved ancestor list. Drop the key when the
     // entity has no parents, so a consumer reads `extends` as the exact label

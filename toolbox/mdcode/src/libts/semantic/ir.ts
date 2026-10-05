@@ -81,6 +81,10 @@ export interface SemanticModel {
   profiles?: ProfileSpec[];
   // Named targets from `deployments:`. `kcmd push --deployment` selects one.
   deployments?: DeploymentSpec[];
+  // Metrics the binding profile in use names in `metrics_exclude` (Model Spec
+  // §4.2.2). They stay in `metrics`, so a catalog push still publishes them;
+  // pruning drops them. Set when a profile is applied; absent otherwise.
+  excludedMetrics?: string[];
 }
 
 /**
@@ -131,6 +135,13 @@ export interface Entity {
   aiContext?: AiContext;
   fields: Field[];       // dimensions / attributes
   customExtensions?: CustomExtension[];
+  // Fields this entity does not expose under the binding profile in use:
+  // the ones the profile names in `fields_exclude` (Model Spec §4.2.2), and
+  // declarations kept only for descendants that inherit them. Inheritance
+  // resolution leaves them off this entity, declared or inherited, and its
+  // descendants still inherit the declarations, because a binding is a fact
+  // about one table (§3.1.3). Set when a profile is applied; absent otherwise.
+  excludedFields?: string[];
 }
 
 /**
@@ -809,7 +820,10 @@ export interface ProfileEntityBinding {
   source?: string;          // as the profile wrote it
   primaryKey?: string[];    // physical column names
   uniqueKeys?: string[][];
-  fields?: Array<Pick<Field, 'name'|'expression'|'dialects'|'stringForm'>>;
+  fields?: Array<Pick<
+      Field,
+      'name'|'expression'|'dialects'|'stringForm'|'importedExpression'|
+      'importedDialect'>>;
   fieldsExclude?: string[]; // fields this profile deliberately leaves unbound
 }
 

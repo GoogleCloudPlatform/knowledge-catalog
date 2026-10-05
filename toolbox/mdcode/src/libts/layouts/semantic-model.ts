@@ -21,7 +21,12 @@ const SIDECAR_SUFFIXES = ['.aspects.yaml', '.overview.yaml'];
 // A binding-profile file sits beside its model as `<model>.profile.<name>.yaml`.
 // `<model>.profile.yaml`, with no name, is not a model either.
 const PROFILE_FILE = /^(.+)\.profile\.([^.]+)\.yaml$/;
-const NAMELESS_PROFILE_FILE = /\.profile\.yaml$/;
+// Any file shaped like a profile file, including a nameless one and one whose
+// profile name has a dot, which is never a model either.
+const ANY_PROFILE_FILE = /\.profile\.(.*\.)?yaml$/;
+// A profile name: a letter, then letters, digits and underscores, at most 500
+// characters (Preview Decision, naming).
+const PROFILE_NAME = /^[A-Za-z][A-Za-z0-9_]{0,499}$/;
 
 // The profile name reserved for the inline bindings in the model file.
 const DEFAULT_PROFILE_NAME = 'default';
@@ -70,9 +75,7 @@ export class SemanticModelLayout implements CatalogLayout {
         continue;
       }
       const base = path.basename(localPath);
-      if (PROFILE_FILE.test(base) || NAMELESS_PROFILE_FILE.test(base)) {
-        continue;
-      }
+      if (ANY_PROFILE_FILE.test(base)) continue;
 
       const name = path.basename(localPath, '.yaml');
       this._index.set(name, localPath);
@@ -120,22 +123,67 @@ export class SemanticModelLayout implements CatalogLayout {
   // The text of each profile file beside a model, by profile name. Sibling
   // files are checked first, and the first problem found with any of them
   // throws, naming the file:
+  //   - a `<model>.profile.yaml` names no profile;
   //   - the file's `name:` must equal its filename suffix, because `pull`
   //     writes a profile back to the file its name implies;
   //   - `default` names the model's inline bindings, so no profile may use it;
   //   - a vanilla `0.2.0.dev0` model keeps its profiles in its GOOGLE block, so
-  //     it may have no sibling profile files.
+  //     it may have no sibling profile files;
+  //   - the files are named after the model, so the model file must declare
+  //     that name, which `pull` uses to name both.
   profileDocuments(model: string): {name: string; text: string}[] {
+    const nameless = this._entryGroup ?
+        path.join(this._groupDir(), `${model}.profile.yaml`) :
+        undefined;
+    if (nameless && fs.existsSync(nameless)) {
+      throw new Error(
+          `Profile file '${path.basename(nameless)}' names no profile; ` +
+          `rename it '${model}.profile.<name>.yaml'.`);
+    }
+    const prefix = `${model}.profile.`;
+    const badName = this._entryGroup && fs.existsSync(this._groupDir()) ?
+        fs.readdirSync(this._groupDir()).find(f => {
+          if (!f.startsWith(prefix) || !f.endsWith('.yaml')) return false;
+          const n = f.slice(prefix.length, -'.yaml'.length);
+          return f !== `${model}.profile.yaml` && !PROFILE_NAME.test(n);
+        }) :
+        undefined;
+    if (badName) {
+      throw new Error(
+          `Profile file '${badName}' has profile name '${
+              badName.slice(prefix.length, -'.yaml'.length)}'; a profile ` +
+          `name is a letter followed by letters, digits and underscores.`);
+    }
     const siblings = this._siblingProfilePaths(model);
     if (!siblings.length) {
       return this._legacyProfilePaths(model).map(
           ({name, path: p}) => ({name, text: fs.readFileSync(p, 'utf8')}));
     }
     const modelFile = `${model}.yaml`;
-    const version = this._modelVersion(model);
+    const header = this._modelHeader(model);
+    if (header.name !== undefined && header.name !== model) {
+      throw new Error(
+          `Profile file '${path.basename(siblings[0].path)}' is named after ` +
+          `'${modelFile}', which declares model '${header.name}'; a profile ` +
+          `file is named after its model, so name the model file and its ` +
+          `profile files after '${header.name}'.`);
+    }
+    const version = header.version;
     const docs: {name: string; text: string}[] = [];
+    // Profile names are unique ignoring case (Preview Decision, naming).
+    const byLowerName = new Map<string, string>();
     for (const {name, path: p} of siblings) {
       const file = path.basename(p);
+      const twin = byLowerName.get(name.toLowerCase());
+      if (twin) {
+        throw new Error(
+            `Profile files '${twin}' and '${file}' name the same profile; ` +
+            `profile names are unique ignoring case.`);
+      }
+      byLowerName.set(name.toLowerCase(), file);
+      if (!fs.statSync(p).isFile()) {
+        throw new Error(`Profile file '${file}' is not a file.`);
+      }
       if (version === VANILLA_VERSION) {
         throw new Error(
             `Profile file '${file}' sits beside '${modelFile}', which is a ` +
@@ -147,10 +195,16 @@ export class SemanticModelLayout implements CatalogLayout {
       const declared = profileNameIn(text, file);
       const reserved = (n?: string) =>
           n?.toLowerCase() === DEFAULT_PROFILE_NAME;
-      if (reserved(name) || reserved(declared)) {
+      if (reserved(name)) {
         throw new Error(
             `Profile name '${DEFAULT_PROFILE_NAME}' is reserved for the ` +
             `inline bindings in '${modelFile}'; remove '${file}'.`);
+      }
+      if (reserved(declared)) {
+        throw new Error(
+            `Profile name '${DEFAULT_PROFILE_NAME}' is reserved for the ` +
+            `inline bindings in '${modelFile}'; change the name in '${
+                file}' to '${name}'.`);
       }
       if (declared === undefined) {
         throw new Error(
@@ -164,6 +218,13 @@ export class SemanticModelLayout implements CatalogLayout {
       docs.push({name, text});
     }
     return docs;
+  }
+
+  // The text of one profile file beside a model, or undefined when the model
+  // has no profile of that name. The rules `profileDocuments` enforces apply.
+  profileDocument(model: string, profileName: string): string|undefined {
+    return this.profileDocuments(model).find(d => d.name === profileName)
+        ?.text;
   }
 
   // The path a profile file for this model and profile name maps to:
@@ -188,15 +249,17 @@ export class SemanticModelLayout implements CatalogLayout {
     if (fs.existsSync(localPath)) fs.rmSync(localPath);
   }
 
-  // Profile files with no model beside them: `<prefix>.profile.<name>.yaml`
-  // where `<prefix>.yaml` does not exist, for push to report.
+  // Profile files with no model beside them, for push to report: any
+  // `<prefix>.profile.<name>.yaml`, or nameless `<prefix>.profile.yaml`, where
+  // `<prefix>.yaml` does not exist.
   orphanProfilePaths(): string[] {
     const dir = this._entryGroup ? this._groupDir() : undefined;
     if (!dir || !fs.existsSync(dir)) return [];
     return fs.readdirSync(dir)
         .filter(f => {
-          const m = f.match(PROFILE_FILE);
-          return m && !fs.existsSync(path.join(dir, `${m[1]}.yaml`));
+          if (!ANY_PROFILE_FILE.test(f)) return false;
+          const prefix = f.slice(0, f.indexOf('.profile.'));
+          return !fs.existsSync(path.join(dir, `${prefix}.yaml`));
         })
         .sort()
         .map(f => path.join(dir, f));
@@ -249,16 +312,22 @@ export class SemanticModelLayout implements CatalogLayout {
     return out.sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  // The `version` a model document declares, or undefined when it has none or
-  // does not parse; the loader reports both of those.
-  private _modelVersion(model: string): string|undefined {
+  // The `version` and model `name` a model document declares, each undefined
+  // when the document has none or does not parse; the loader reports both.
+  private _modelHeader(model: string): {version?: string; name?: string} {
     const localPath = this._index.get(model);
-    if (!localPath) return undefined;
+    if (!localPath) return {};
     try {
       const doc = yaml.parse(fs.readFileSync(localPath, 'utf8'));
-      return typeof doc?.version === 'string' ? doc.version : undefined;
+      const name = Array.isArray(doc?.semantic_model) ?
+          doc.semantic_model[0]?.name :
+          undefined;
+      return {
+        version: typeof doc?.version === 'string' ? doc.version : undefined,
+        name: typeof name === 'string' ? name : undefined,
+      };
     } catch {
-      return undefined;
+      return {};
     }
   }
 

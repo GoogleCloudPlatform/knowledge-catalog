@@ -70,3 +70,34 @@ export function stripQualifier(expression: string, entity: string): string {
   const re = entityQualifier(entity, 'g');
   return mapOutsideStringLiterals(expression, seg => seg.replace(re, ''));
 }
+
+// Returns every `<field>` an expression reads as `<entityName>.<field>`, with
+// or without backticks, deduplicated in first-seen order, ignoring text inside
+// string literals. A preceding dot stops a struct path from reading as an
+// entity qualifier, and the field is the first segment after the entity, so
+// `orders.shipping_address.city` reads the field `shipping_address` of
+// `orders` and nothing else. Matching is case-sensitive unless
+// `caseInsensitive` is set.
+export function referencedEntityFields(
+    expression: string, entityName: string,
+    opts: {caseInsensitive?: boolean} = {}): string[] {
+  const re = new RegExp(
+      `(?<![\\w\`.])\`?${escapeRegExp(entityName)}\`?\\.\`?` +
+          `([A-Za-z_][A-Za-z0-9_]*)\`?`,
+      opts.caseInsensitive ? 'gi' : 'g');
+  const fields: string[] = [];
+  for (const m of blankStringLiterals(expression).matchAll(re)) {
+    if (!fields.includes(m[1])) fields.push(m[1]);
+  }
+  return fields;
+}
+
+// Whether a key or join column is a physical column name rather than an
+// expression. A value that starts and ends with a backtick, with none between,
+// passes whatever it holds. An unquoted value may not contain whitespace,
+// parentheses, a dot, a comma, a backtick or a SQL operator. Nothing else about
+// the character set is checked; the database rejects a bad name.
+export function isColumnName(value: unknown): boolean {
+  return typeof value === 'string' &&
+      (/^`[^`]+`$/.test(value) || /^[^\s().+\-*/%=<>!|&^~,`]+$/.test(value));
+}

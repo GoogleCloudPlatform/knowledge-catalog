@@ -401,26 +401,33 @@ semantic_model:
     entities:
       - name: orders
         source: $PROJECT.$DATASET.orders
+        primary_key: [o_orderkey]
         fields:
           - { name: order_id,    expression: o_orderkey }
           - { name: customer_id, expression: o_custkey }
           - { name: net_amount,  expression: net_amount }
       - name: customer
         source: $PROJECT.$DATASET.customer
+        primary_key: [c_custkey]
         fields:
           - { name: customer_id, expression: c_custkey }
           - { name: name,        expression: c_name }
       - name: lineitem
         source: $PROJECT.$DATASET.lineitem
+        primary_key: [l_linekey]
         fields:
           - { name: line_id,  expression: l_linekey }
           - { name: order_id, expression: l_orderkey }
+    relationships:
+      - { name: placed_by, from_columns: [o_custkey],  to_columns: [c_custkey] }
+      - { name: part_of,   from_columns: [l_orderkey], to_columns: [o_orderkey] }
 YAML
 ```
 
-The binding restates no relationship, no metric, and no grain — those are logical
-and live once in the model. It carries only bindings: each entity's table and
-each field's column. Make it the default so a bare `kcmd push` selects it (the
+The binding carries only bindings, in this store's column names: each entity's
+table and key columns, each field's column, and each relationship's join
+columns. The relationships, the metric and the grain themselves are logical and
+live once in the model. Make it the default so a bare `kcmd push` selects it (the
 rest of this step relies on this):
 
 ```bash
@@ -707,27 +714,35 @@ semantic_model:
     entities:
       - name: orders
         source: Orders                       # a bare table in the Spanner database
+        primary_key: [OrderId]
         fields:
           - { name: order_id,    expression: OrderId }
           - { name: customer_id, expression: CustomerId }
-          # net_amount is omitted -> unbound: the operational store has no settled total
+        fields_exclude: [net_amount]         # the operational store has no settled total
       - name: customer
         source: Customers
+        primary_key: [CustomerId]
         fields:
           - { name: customer_id, expression: CustomerId }
           - { name: name,        expression: FullName }
       - name: lineitem
         source: LineItems
+        primary_key: [LineId]
         fields:
           - { name: line_id,  expression: LineId }
           - { name: order_id, expression: OrderId }
+    relationships:
+      - { name: placed_by, from_columns: [CustomerId], to_columns: [CustomerId] }
+      - { name: part_of,   from_columns: [OrderId],    to_columns: [OrderId] }
+    metrics_exclude: "*"                     # Spanner Graph has no measures
 YAML
 ```
 
-The profile restates no relationship, no metric, no label, and no grain — those
-are logical and live once in the model. It carries only bindings: each entity's
-Spanner table, each field's Spanner column, and the one field the store does not
-have.
+The profile carries only bindings, in Spanner's column names: each entity's
+table and key columns, each field's column, and each relationship's join
+columns. It also excludes the one field the store does not have, and every
+metric. The relationships, the metric, the labels and the grain themselves are
+logical and live once in the model.
 
 ### Inspect the binding profiles
 
@@ -754,20 +769,22 @@ Model 'sales' ($DATASET):
       customer -> $PROJECT.Customers
       lineitem -> $PROJECT.LineItems
     cannot answer:
-      field orders.net_amount (unbound)
-      metric revenue (field orders.net_amount is unbound)
+      field orders.net_amount (excluded)
+      metric revenue (excluded)
 ```
 
 Both profiles now show side by side: `analytical` binds every field, so it
-withholds nothing; `operational` leaves `net_amount` unbound. (`kcmd profiles`
+withholds nothing; `operational` excludes `net_amount`, and every metric. (`kcmd profiles`
 resolves each source against your project for display — the `analytical` sources
 are fully qualified, and each `operational` bare table such as `Orders` is shown
 project-prefixed; the Spanner graph itself references the bare `Orders`.)
 
-`revenue` is `SUM(orders.net_amount)`, and the operational store does not bind
-`net_amount`, so the profile reports `revenue` as unavailable there — computed
-from the bindings rather than declared. The `analytical` profile binds `net_amount`, so
-the same metric is available under the binding step 3 used. One model; each store
+`revenue` is `SUM(orders.net_amount)`. The operational profile excludes
+`net_amount`, and a metric that reaches an excluded field has to be excluded
+too. The profile also deploys to Spanner, whose graphs have no measures, so it
+excludes every metric with `metrics_exclude: "*"`, which covers `revenue`. The
+`analytical` profile binds `net_amount`, so the same metric is available under
+the binding step 3 used. One model; each store
 answers the part of it that its data can back.
 
 ### Create the tables
@@ -807,7 +824,7 @@ kcmd push --profile operational --no-kc --print
 ```
 
 ```
-Note: profile 'operational' leaves 1 field(s) unbound; 0 entity(ies), 1 metric(s) and 0 relationship(s) unavailable.
+Note: profile 'operational' leaves 1 field(s) unbound; 1 metric(s) and 0 action(s) unavailable.
 Pushing semantic model (Spanner Graph)...
 -- Spanner Graph --
 -- //spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/propertyGraphs/sales
@@ -856,9 +873,9 @@ BigQuery DDL in step 3:
 - **Bare table and graph names.** A Spanner property graph names tables inside
   one database, so there is no backticked `project.dataset.` qualifier — each
   `source` is a bare table (`Orders`) in the target database.
-- **No `MEASURE`.** Spanner Graph has no measures. `revenue` is already withheld
-  here because `net_amount` is unbound, but even a bound metric is not emitted
-  onto a Spanner node; author metrics as usual and a BigQuery target still emits
+- **No `MEASURE`.** Spanner Graph has no measures, so a profile that deploys to
+  Spanner excludes every metric, as `operational` does with
+  `metrics_exclude: "*"`. Author metrics as usual; a BigQuery target still emits
   them.
 - **No `OPTIONS`.** Descriptions and synonyms are not written into the Spanner
   DDL; they live in Knowledge Catalog instead.
@@ -922,9 +939,9 @@ Rewrite the logical model to add three things: an abstract `party` that declares
 the shared `name` field, an `extends: [party]` on `customer`, and a new
 `supplier` entity that also extends `party`. `party` is `abstract`, so it has no
 `source` and no key and produces no node table; it survives in the graph only as
-a label on its subtypes. Each subtype redeclares `name` by name alone, so the
-profile can bind it to that subtype's own column. The datatype comes from
-`party`, and the two subtypes line up under the shared label by that name:
+a label on its subtypes. Each subtype inherits `name`, with its datatype, from
+`party`, and the profile binds it to that subtype's own column. The two
+subtypes line up under the shared label by that name:
 
 ```bash
 cat > catalog/EntryGroups/$DATASET/sales.yaml <<'YAML'
@@ -948,13 +965,11 @@ semantic_model:
         primary_key: [customer_id]
         fields:
           - { name: customer_id, datatype: Integer }
-          - { name: name }             # inherited from party; the profile binds it
       - name: supplier
         extends: [party]
         primary_key: [supplier_id]
         fields:
           - { name: supplier_id, datatype: Integer }
-          - { name: name }
       - name: lineitem
         primary_key: [line_id]
         fields:
@@ -1008,25 +1023,32 @@ semantic_model:
     entities:
       - name: orders
         source: $PROJECT.$DATASET.orders
+        primary_key: [o_orderkey]
         fields:
           - { name: order_id,    expression: o_orderkey }
           - { name: customer_id, expression: o_custkey }
           - { name: net_amount,  expression: net_amount }
       - name: customer
         source: $PROJECT.$DATASET.customer
+        primary_key: [c_custkey]
         fields:
           - { name: customer_id, expression: c_custkey }
           - { name: name,        expression: c_name }
       - name: supplier
         source: $PROJECT.$DATASET.supplier
+        primary_key: [s_suppkey]
         fields:
           - { name: supplier_id, expression: s_suppkey }
           - { name: name,        expression: s_name }
       - name: lineitem
         source: $PROJECT.$DATASET.lineitem
+        primary_key: [l_linekey]
         fields:
           - { name: line_id,  expression: l_linekey }
           - { name: order_id, expression: l_orderkey }
+    relationships:
+      - { name: placed_by, from_columns: [o_custkey],  to_columns: [c_custkey] }
+      - { name: part_of,   from_columns: [l_orderkey], to_columns: [o_orderkey] }
 YAML
 ```
 

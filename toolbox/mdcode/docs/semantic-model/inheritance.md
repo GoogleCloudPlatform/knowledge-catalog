@@ -115,13 +115,11 @@ of its definition come from `Party`, and push rejects a redeclaration that
 restates them.
 
 To bind the same hierarchy to more than one store, put each binding in its own
-[profile](profiles.md). A profile answers the supertype query only for the
-subtypes it binds: bind `Customer` but leave `Supplier` unbound and
-`MATCH (:Party)` returns customers alone. A profile binds only fields its entity
-declares in the model file. To bind an inherited field from a profile,
-redeclare it on the subtype by name alone, as in `- { name: name }`. The
-redeclaration changes nothing in the model and gives the profile a field to
-bind.
+[profile](profiles.md). A named profile binds every concrete subtype, since
+each one stands for a table the profile's database has to hold (Model Spec
+§4.2.2). A profile can bind a field the
+subtype inherits by naming it under that subtype, with no redeclaration in the
+model file, and the binding reads from the subtype's own table.
 
 ## 3. Query the supertype
 
