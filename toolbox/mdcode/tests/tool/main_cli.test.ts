@@ -30,7 +30,7 @@ afterAll(() => {
 
 function run(...args: string[]): {code: number; out: string} {
   const p = Bun.spawnSync({
-    cmd: ['bun', MAIN, ...args],
+    cmd: [process.execPath, MAIN, ...args],
     cwd,
     stdout: 'pipe',
     stderr: 'pipe',
