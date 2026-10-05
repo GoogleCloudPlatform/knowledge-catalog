@@ -84,7 +84,7 @@ export class CatalogSnapshot {
         existingEntry.resource.description = entry.resource.description;
       }
       else {
-        const aspectType = dataplex._typeRefToName(f, 'aspect');
+        const aspectType = dataplex._typeRefToName(aspectTypeRefOf(f), 'aspect');
         if (!this._aspectTypes.has(aspectType)) {
           throw new Error(`The aspect '${f}' is not registered in the snapshot.`);
         }
@@ -266,11 +266,13 @@ function toServiceEntry(entry: md.Entry,
   const aspects: Record<string, dataplex.Aspect> = {};
   if (entry.aspects) {
     for (const key in entry.aspects) {
-      if (manifest.publishingConfig && !manifest.publishingConfig.aspects?.includes(key)) {
+      if (manifest.publishingConfig &&
+          !manifest.publishingConfig.aspects?.includes(aspectTypeRefOf(key))) {
         continue;
       }
 
-      const aspectType = dataplex._typeRefToName(key, 'aspect');
+      // A field-level aspect keeps its `@<path>` in the key it is written under.
+      const aspectType = dataplex._typeRefToName(aspectTypeRefOf(key), 'aspect');
       if (manifest.source.ingestedEntries &&
           entryType.requiredAspects?.find((aspectInfo) => aspectInfo.type == aspectType)) {
         continue;
@@ -308,4 +310,11 @@ function toServiceEntry(entry: md.Entry,
     },
     aspects: aspects
   };
+}
+
+// The aspect type reference in an aspect key: the part before any `@<path>`,
+// as in `p.global.guidelines@Schema.col1`.
+function aspectTypeRefOf(key: string): string {
+  const at = key.indexOf('@');
+  return at < 0 ? key : key.slice(0, at);
 }

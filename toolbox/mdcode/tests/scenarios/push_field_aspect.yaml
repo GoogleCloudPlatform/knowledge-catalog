@@ -1,0 +1,62 @@
+name: push_field_aspect
+description: Pull an entry carrying a field-level aspect, edit that aspect locally, and push it back under its @<path> key
+setup:
+  catalog:
+    entryGroups:
+      - name: projects/p/locations/us/entryGroups/custom-group
+    entryTypes:
+      - name: projects/p/locations/global/entryTypes/custom-type
+    aspectTypes:
+      - name: projects/p/locations/global/aspectTypes/custom-aspect
+    entries:
+      - name: projects/p/locations/us/entryGroups/custom-group/entries/custom-entry
+        entryType: projects/p/locations/global/entryTypes/custom-type
+        entrySource:
+          description: An entry
+        aspects:
+          p.global.custom-aspect@Schema.col1:
+            aspectType: projects/p/locations/global/aspectTypes/custom-aspect
+            path: Schema.col1
+            data:
+              note: column level
+  fileSystem:
+    catalog.yaml: |
+      scope: entryGroup.p.us.custom-group
+      snapshot:
+        entries:
+          - p.global.custom-type
+        aspects:
+          - p.global.custom-aspect
+      publishing:
+        aspects:
+          - p.global.custom-aspect
+
+actions:
+  - action: pull
+  - action: updateEntry
+    entry:
+      name: custom-entry
+      type: p.global.custom-type
+      aspects:
+        p.global.custom-aspect@Schema.col1:
+          note: column level, edited
+    fields:
+      - p.global.custom-aspect@Schema.col1
+  - action: push
+
+assert:
+  fileSystem:
+    catalog/custom-entry.yaml:
+      - contains: "p.global.custom-aspect@Schema.col1"
+      - contains: "column level, edited"
+  catalog:
+    entries:
+      - name: projects/p/locations/us/entryGroups/custom-group/entries/custom-entry
+        entryType: projects/p/locations/global/entryTypes/custom-type
+        entrySource:
+          description: An entry
+        aspects:
+          p.global.custom-aspect@Schema.col1:
+            aspectType: projects/p/locations/global/aspectTypes/custom-aspect
+            data:
+              note: column level, edited
