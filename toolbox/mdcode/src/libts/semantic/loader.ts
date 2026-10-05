@@ -597,8 +597,8 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
               path: ['entity'],
               message: `metric '${mt.name}': 'entity' is a ` +
                   `'${GOOGLE_VERSION}' extension. A '${OSSIE_VERSION}' ` +
-                  `metric takes its entity from its expression: qualify a ` +
-                  `column with it (e.g. 'COUNT(orders.id)'), or set the ` +
+                  `metric takes its entity from the fields it reads, as in ` +
+                  `'COUNT(orders.id)'. To anchor it explicitly, set the ` +
                   `document version to '${GOOGLE_VERSION}'.`,
             });
           });
@@ -850,6 +850,12 @@ function rejectGoogleBlock(
     exts: CustomExtensionDoc[]|undefined, version: FormatVersion,
     level: ExtensionLevel, ctx: string): void {
   if (!hasGoogleBlock(exts)) return;
+  if (version === GOOGLE_VERSION && level === 'field') {
+    throw new Error(
+        `Semantic model load error: ${ctx}: a '${GOOGLE_VENDOR}' ` +
+        `custom_extensions block is not accepted on a field; the format ` +
+        `defines no field-level ${GOOGLE_VENDOR} extension.`);
+  }
   if (version === GOOGLE_VERSION) {
     throw new Error(
         `Semantic model load error: ${ctx}: a '${GOOGLE_VENDOR}' ` +
@@ -914,6 +920,72 @@ function requireVanillaBindings(m: ModelDoc): void {
   }
 }
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+// Each model, dataset, field, relationship and metric in a parsed document
+// that carries an `ai_context`, with the label errors use for it. Runs before
+// schema validation, so it skips anything not shaped as expected.
+function* modelAiContexts(doc: unknown):
+    Generator<{ai: Record<string, unknown>; label: string}> {
+  const list = (v: unknown) => (Array.isArray(v) ? v : []);
+  const named = (kind: string, name: unknown) =>
+      typeof name === 'string' ? `${kind} '${name}'` : kind;
+  const models = isRecord(doc) ? list(doc.semantic_model) : [];
+  for (const m of models) {
+    if (!isRecord(m)) continue;
+    if (isRecord(m.ai_context)) {
+      yield {ai: m.ai_context, label: named('model', m.name)};
+    }
+    for (const ds of [...list(m.datasets), ...list(m.entities)]) {
+      if (!isRecord(ds)) continue;
+      if (isRecord(ds.ai_context)) {
+        yield {ai: ds.ai_context, label: named('dataset', ds.name)};
+      }
+      for (const f of list(ds.fields)) {
+        if (!isRecord(f) || !isRecord(f.ai_context)) continue;
+        const label = typeof f.name === 'string' && typeof ds.name === 'string' ?
+            `field '${ds.name}.${f.name}'` :
+            'field';
+        yield {ai: f.ai_context, label};
+      }
+    }
+    for (const [items, kind] of [
+           [m.relationships, 'relationship'], [m.metrics, 'metric'],
+         ] as const) {
+      for (const it of list(items)) {
+        if (isRecord(it) && isRecord(it.ai_context)) {
+          yield {ai: it.ai_context, label: named(kind, it.name)};
+        }
+      }
+    }
+  }
+}
+
+// Why a custom ai_context member named `__proto__` cannot load, or undefined.
+// Schema validation drops that key as a guard against prototype pollution, so
+// it is rejected here rather than lost without a word (Model Spec §1.5). Only
+// member names are checked: a member's value is opaque and keeps any key. In
+// the Google flavor a sibling of the standard members is an unrecognized key
+// rather than a custom member.
+function protoMemberError(doc: unknown, google: boolean): string|undefined {
+  const custom = (label: string) =>
+      `${label}: custom ai_context member '__proto__' is not supported; ` +
+      `rename it.`;
+  for (const {ai, label} of modelAiContexts(doc)) {
+    if (google && isRecord(ai.custom) && Object.hasOwn(ai.custom, '__proto__')) {
+      return custom(label);
+    }
+    if (Object.hasOwn(ai, '__proto__')) {
+      return google ?
+          `${label}: ai_context has an unrecognized key '__proto__'.` :
+          custom(label);
+    }
+  }
+  return undefined;
+}
+
 /**
  * Loads YAML or JSON text (a document in the AI-first semantics format) into
  * the Semantic Model IR. `yaml.parse` accepts JSON too, so both are supported.
@@ -941,6 +1013,8 @@ export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
 export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
   const version = readVersion(doc);
   const extended = version === GOOGLE_VERSION;
+  const proto = protoMemberError(doc, extended);
+  if (proto) throw new Error(`Semantic model load error: ${proto}`);
 
   const normalized = normalizeDocumentSugars(doc, extended);
   const result = makeDocumentSchema(opts.bindingOptional ?? false, extended)

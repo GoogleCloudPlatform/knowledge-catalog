@@ -1396,6 +1396,13 @@ describe('custom_extensions: where each vendor block is accepted', () => {
     }
   });
 
+  // Addendum 3 §2: the format defines no field-level GOOGLE extension, so the
+  // message does not send the author to a native key.
+  test('Google: a GOOGLE block on a field says no field-level extension exists', () => {
+    expect(() => load(GOOGLE, fullModel('field', { custom_extensions: [block('GOOGLE')] })))
+      .toThrow(/not accepted on a field; the format defines no field-level GOOGLE extension/);
+  });
+
   test('vanilla: a GOOGLE block is rejected on a field only', () => {
     for (const level of LEVELS) {
       const run = () => load(VANILLA, fullModel(level, { custom_extensions: [block('GOOGLE')] }));
@@ -1455,13 +1462,12 @@ describe('metric entity anchor', () => {
     expect(models[0].metrics[0].authoredEntity).toBe('orders');
     expect(warnings.some(w => w.includes('references no known entity'))).toBe(false);
   });
-  test('Google: an authored anchor wins over the expression', () => {
-    const m = load(GOOGLE, fullModel('metric', { entity: 'customers' })).models[0];
-    expect(m.metrics[0].entity).toBe('customers');
-  });
   test('vanilla: an anchor is rejected with a pointer to the alternatives', () => {
     expect(() => load(VANILLA, countStar({ entity: 'orders' })))
       .toThrow(/'entity' is a '0.2.0.dev0\/google' extension/);
+    // A metric reads fields, never columns (Model Spec §3.3).
+    expect(() => load(VANILLA, countStar({ entity: 'orders' })))
+      .toThrow(/takes its entity from the fields it reads/);
   });
   test('without an anchor the entity is inferred, and authoredEntity is unset', () => {
     for (const v of FLAVORS) {
@@ -1560,4 +1566,121 @@ describe('closed objects: custom_extensions and dimension', () => {
       }))).toThrow(/is_tme/);
     });
   }
+});
+
+
+describe('a custom ai_context member named __proto__', () => {
+  const withCustom = (custom: string, version = GOOGLE) => {
+    const body = version === GOOGLE ?
+        `    ai_context:\n      custom:\n${custom.replace(/^/gm, '        ')}\n` :
+        `    ai_context:\n${custom.replace(/^/gm, '      ')}\n`;
+    return `version: "${version}"
+semantic_model:
+  - name: m
+${body}    datasets:
+      - name: d
+        source: p.d.t
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+`;
+  };
+
+  // Model Spec §1.5: nothing is dropped silently. Schema validation drops a
+  // `__proto__` key, so the loader rejects it first.
+  test('a member named __proto__ is rejected in both flavors', () => {
+    for (const v of FLAVORS) {
+      expect(() => loadModels(withCustom('__proto__: {x: 1}\nkeep: 1', v)))
+          .toThrow("model 'm': custom ai_context member '__proto__' is not " +
+                   "supported; rename it.");
+    }
+  });
+
+  // A member's value is opaque (Addendum 4 §2), so a `__proto__` key inside it
+  // is kept, and so is a nested key named `ai_context`.
+  test('a __proto__ key inside a member value is kept', () => {
+    const vanilla = loadModels(withCustom('custom: {__proto__: 1, y: 2}', VANILLA))
+                        .models[0].aiContext?.additionalProperties as any;
+    expect(Object.keys(vanilla.custom)).toEqual(['__proto__', 'y']);
+    const google =
+        loadModels(withCustom('notes: {ai_context: {__proto__: 1}}', GOOGLE))
+            .models[0].aiContext?.additionalProperties as any;
+    expect(Object.keys(google.notes.ai_context)).toEqual(['__proto__']);
+  });
+
+  // The error names the object, as the loader's other errors do.
+  test('the error names the dataset, relationship or metric too', () => {
+    const doc = (patch: object) => ({
+      version: GOOGLE,
+      semantic_model: [{
+        name: 'm',
+        datasets: [
+          {name: 'orders', source: 'p.d.o', primary_key: ['id'],
+           fields: [{name: 'id', expression: 'id'}, {name: 'cid', expression: 'cid'}]},
+          {name: 'customers', source: 'p.d.c', primary_key: ['id'],
+           fields: [{name: 'id', expression: 'id'}]},
+        ],
+        relationships: [{name: 'placed_by', from: 'orders', to: 'customers',
+                         from_columns: ['cid'], to_columns: ['id']}],
+        metrics: [{name: 'n', expression: 'COUNT(orders.id)'}],
+        ...patch,
+      }],
+    });
+    const proto = () => {
+      const custom: Record<string, unknown> = {};
+      Object.defineProperty(custom, '__proto__', {value: 1, enumerable: true});
+      return {custom};
+    };
+    const base = doc({});
+    (base.semantic_model[0].datasets[0] as any).ai_context = proto();
+    expect(() => fromDocument(base)).toThrow("dataset 'orders': custom ai_context member '__proto__'");
+    const rel = doc({});
+    (rel.semantic_model[0].relationships[0] as any).ai_context = proto();
+    expect(() => fromDocument(rel)).toThrow("relationship 'placed_by': custom ai_context member '__proto__'");
+    const met = doc({});
+    (met.semantic_model[0].metrics[0] as any).ai_context = proto();
+    expect(() => fromDocument(met)).toThrow("metric 'n': custom ai_context member '__proto__'");
+  });
+
+  // The version is checked first, so a document with none is told that.
+  test('a missing version is reported before a __proto__ member', () => {
+    const text = withCustom('__proto__: 1', VANILLA).replace(/^version: .*\n/, '');
+    expect(() => loadModels(text)).toThrow("missing 'version'");
+  });
+
+  test('the error names the field whose member is __proto__', () => {
+    const text = `version: "${GOOGLE}"
+semantic_model:
+  - name: m
+    datasets:
+      - name: d
+        source: p.d.t
+        primary_key: [id]
+        fields:
+          - name: id
+            expression: id
+            ai_context:
+              custom:
+                __proto__: 1
+`;
+    expect(() => loadModels(text))
+        .toThrow("field 'd.id': custom ai_context member '__proto__' is not supported");
+  });
+
+  test('in the Google flavor a sibling __proto__ is an unrecognized key', () => {
+    const text = `version: "${GOOGLE}"
+semantic_model:
+  - name: m
+    ai_context:
+      __proto__: 1
+    datasets:
+      - name: d
+        source: p.d.t
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+`;
+    expect(() => loadModels(text))
+        .toThrow("model 'm': ai_context has an unrecognized key '__proto__'.");
+  });
 });
