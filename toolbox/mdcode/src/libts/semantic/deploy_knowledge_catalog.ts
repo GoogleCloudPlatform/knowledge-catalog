@@ -696,7 +696,8 @@ async function writeEntry(
   if (isExists(res)) {
     // Idempotent re-push: refresh the existing entry's source + aspects.
     const upd = await cat.updateEntry(
-        entry, ['entry_source', 'aspects'], reconciledAspectKeys(entry, opts));
+        entry, ['entry_source', 'aspects'], reconciledAspectKeys(entry, opts),
+        true);
     if (!isOk(upd)) return {error: `entry '${entryId}': ${errText(upd)}`};
     return {updated: true};
   }
@@ -713,14 +714,17 @@ async function writeEntry(
 const OPTIONAL_ASPECT_TYPES = ['guidelines'] as const;
 
 // The aspect keys to reconcile when updating an existing entry. A Dataplex
-// entries.patch clears an aspect only when its key is named in `aspectKeys` and
-// absent from the request body; a key that is present is upserted, and one the
-// server does not have is a no-op. Passing only the currently-attached keys
-// therefore leaves a *removed* optional aspect (e.g. an entity whose
-// ai_context.instructions were deleted) stranded on the server, where a later
-// `pull` would resurrect it. Always naming the optional aspect keys -- present
-// or not -- makes a re-push converge: a still-present one is refreshed, a
-// removed one is deleted, and one that was never there stays absent.
+// entries.patch upserts each aspect `aspectKeys` names that the body carries.
+// It removes one the body leaves out only when `deleteMissingAspects` is set,
+// which the update does, and keeps every aspect `aspectKeys` does not name.
+// Naming the optional aspect keys, present or not, makes a re-push converge: a
+// still-present one is refreshed, a removed one is deleted, and one that was
+// never there stays absent. Without that, an entity whose
+// ai_context.instructions were deleted would keep its old `guidelines`, and a
+// later `pull` would bring them back. Push owns `guidelines` on its own
+// entries, so it removes one the model does not declare even if someone added
+// it in the console. Every other aspect another tool attached is left alone,
+// since `aspectKeys` names only the types kcmd writes.
 function reconciledAspectKeys(entry: Entry, opts: KcDeployOptions): string[] {
   const proj = opts.systemTypeProject ?? 'dataplex-types';
   const loc = opts.systemTypeLocation ?? 'global';

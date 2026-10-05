@@ -203,3 +203,29 @@ describe('_fixEntry path-keyed aspects', () => {
      });
 });
 
+
+
+// Dataplex keeps an aspect that aspectKeys names and the body leaves out
+// unless deleteMissingAspects is set, so a caller that means to remove one has
+// to send it.
+describe('CatalogClient.updateEntry', () => {
+  test('sends deleteMissingAspects only when asked to', async () => {
+    const client = new CatalogClient(CTX);
+    const patch = spyOn(client as any, '_patch')
+                      .mockImplementation(async () => ({status: 404}));
+    const entry = {name: ENTRY, aspects: {}} as Entry;
+
+    await client.updateEntry(entry, ['aspects'], ['p.global.guidelines'], true);
+    await client.updateEntry(entry, ['aspects'], ['p.global.guidelines']);
+
+    expect(patch.mock.calls[0][2]).toEqual({
+      updateMask: 'aspects',
+      aspectKeys: ['p.global.guidelines'],
+      deleteMissingAspects: true,
+    });
+    expect(patch.mock.calls[1][2]).toEqual({
+      updateMask: 'aspects',
+      aspectKeys: ['p.global.guidelines'],
+    });
+  });
+});

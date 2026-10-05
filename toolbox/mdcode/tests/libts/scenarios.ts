@@ -244,9 +244,9 @@ function main() {
   );
 
   spyOn(gcp.CatalogClient.prototype, 'updateEntry').mockImplementation(
-    async function(entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[]) {
+    async function(entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[], deleteMissingAspects?: boolean) {
       if (currentCatalogMock) {
-        return await currentCatalogMock.updateEntry(entry, updateMask, aspectKeys);
+        return await currentCatalogMock.updateEntry(entry, updateMask, aspectKeys, deleteMissingAspects);
       }
       return { status: 404, message: 'Not found' };
     }

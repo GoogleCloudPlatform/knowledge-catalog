@@ -205,6 +205,17 @@ describe('deployKnowledgeCatalog: re-push upserts', () => {
     expect(result.updated).toBe(3);
     expect(create).toHaveBeenCalledTimes(3);
     expect(update).toHaveBeenCalledTimes(3);
+    // Dataplex keeps an aspect that aspectKeys names and the body leaves out
+    // unless deleteMissingAspects is set, so a removed guidelines aspect is
+    // only deleted with it.
+    // With deleteMissingAspects set, aspectKeys is what keeps aspects other
+    // tools attached: it names the entry's own aspects and guidelines only.
+    for (const call of update.mock.calls) {
+      const own = Object.keys((call[0] as any).aspects ?? {});
+      expect([...(call[2] as string[])].sort())
+          .toEqual([...new Set([...own, 'dataplex-types.global.guidelines'])].sort());
+      expect(call[3]).toBe(true);
+    }
   });
 });
 

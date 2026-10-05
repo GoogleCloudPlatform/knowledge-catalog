@@ -179,15 +179,20 @@ export class CatalogClient extends api.ApiClient {
     return res;
   }
 
-  async updateEntry(entry: Entry,
-                    updateMask?: string[],
-                    aspectKeys?: string[]): Promise<api.ApiResult<Entry>> {
+  // `deleteMissingAspects` removes each aspect `aspectKeys` names that `entry`
+  // does not carry. Without it Dataplex keeps such an aspect.
+  async updateEntry(entry: Entry, updateMask?: string[], aspectKeys?: string[],
+                    deleteMissingAspects?: boolean):
+      Promise<api.ApiResult<Entry>> {
     const params: Record<string, any> = {};
     if (updateMask && updateMask.length) {
       params.updateMask = updateMask.join(',');
     }
     if (aspectKeys && aspectKeys.length) {
       params.aspectKeys = aspectKeys;
+    }
+    if (deleteMissingAspects) {
+      params.deleteMissingAspects = true;
     }
 
     const res = await this._patch<Entry>(entry.name, entry, params);

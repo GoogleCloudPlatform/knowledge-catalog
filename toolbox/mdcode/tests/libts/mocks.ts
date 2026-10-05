@@ -78,6 +78,12 @@ export class CatalogClientMock extends gcp.CatalogClient {
   }
 
   async modifyEntry(project: string, location: string, entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[]): Promise<gcp.ApiResult<gcp.Entry>> {
+    return this.applyUpdate(entry, updateMask, aspectKeys);
+  }
+
+  // As Dataplex does: each aspect `aspectKeys` names is upserted when the entry
+  // carries it, and removed when it does not only under `deleteMissingAspects`.
+  private applyUpdate(entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[], deleteMissingAspects?: boolean): gcp.ApiResult<gcp.Entry> {
     const existingEntry = this.mockEntries.find(e => e.name == entry.name);
     if (existingEntry) {
       if (updateMask?.find(m => m == 'entry_source')) {
@@ -91,7 +97,7 @@ export class CatalogClientMock extends gcp.CatalogClient {
           if (entry.aspects?.[aspectKey]) {
             existingEntry.aspects[aspectKey] = entry.aspects[aspectKey];
           }
-          else {
+          else if (deleteMissingAspects) {
             delete existingEntry.aspects[aspectKey];
           }
         }
@@ -108,28 +114,8 @@ export class CatalogClientMock extends gcp.CatalogClient {
     }
   }
 
-  async updateEntry(entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[]): Promise<gcp.ApiResult<gcp.Entry>> {
-    const existingEntry = this.mockEntries.find(e => e.name == entry.name);
-    if (existingEntry) {
-      if (updateMask?.find(m => m == 'entry_source')) {
-        existingEntry.entrySource = entry.entrySource;
-      }
-      if (updateMask?.find(m => m == 'aspects')) {
-        if (!existingEntry.aspects) {
-          existingEntry.aspects = {};
-        }
-        for (const f in aspectKeys ?? []) {
-          if (entry.aspects?.[f]) {
-            existingEntry.aspects[f] = entry.aspects[f];
-          }
-          else {
-            delete existingEntry.aspects[f];
-          }
-        }
-      }
-      return { status: 200, result: existingEntry };
-    }
-    return { status: 404, message: 'Not found' };
+  async updateEntry(entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[], deleteMissingAspects?: boolean): Promise<gcp.ApiResult<gcp.Entry>> {
+    return this.applyUpdate(entry, updateMask, aspectKeys, deleteMissingAspects);
   }
 
   async createEntry(project: string, location: string, entryGroup: string, entryId: string, entry?: gcp.Entry): Promise<gcp.ApiResult<gcp.Entry>> {
