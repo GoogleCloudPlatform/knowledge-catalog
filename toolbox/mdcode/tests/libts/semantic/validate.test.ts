@@ -730,16 +730,19 @@ describe('inheritance rules', () => {
     }
   });
 
-  test('a subtype redeclaring an inherited field with nothing set passes', () => {
+  // Model Spec §3.1.3: a redeclaration sets `expression` and nothing else.
+  test('a subtype redeclaring an inherited field with nothing set is rejected', () => {
     for (const f of [{name: 'name'}, {name: 'name', stringForm: true},
                      {name: 'name', importedDialect: 'SNOWFLAKE'}]) {
       expect(check({
         entities: [customer, ent('vip', {extends: ['customer'], fields: [f]})],
-      })).toEqual([]);
+      }).join('\n')).toContain(
+          "field 'name' is inherited from 'customer'; restate it only to " +
+          "rebind it with 'expression', or remove the line.");
     }
   });
 
-  test('name-only redeclarations on both sides of a diamond pass', () => {
+  test('name-only redeclarations on both sides of a diamond are rejected', () => {
     const party = ent('party', {
       abstract: true, dataSource: undefined, keys: [],
       fields: [{name: 'id', type: 'String'}],
@@ -748,16 +751,19 @@ describe('inheritance rules', () => {
       abstract: true, dataSource: undefined, keys: [], extends: ['party'],
       fields: [{name: 'id'}],
     });
-    expect(check({
+    const errors = check({
       entities: [
         party, side('customer'), side('account'),
         ent('vip', {extends: ['customer', 'account'], keys: ['id'],
                     fields: [{name: 'id', expression: 'vip_id'}]}),
       ],
-    })).toEqual([]);
+    }).join('\n');
+    expect(errors).toContain("entity 'customer' in model");
+    expect(errors).toContain("entity 'account' in model");
+    expect(errors).toContain("field 'id' is inherited from 'party'");
   });
 
-  test('a profile binds a field the logical model redeclares by name alone', () => {
+  test('a legacy profile binds an inherited field the model does not redeclare', () => {
     const logical = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
@@ -771,7 +777,6 @@ semantic_model:
         primary_key: [id]
         fields:
           - { name: id, datatype: Integer }
-          - { name: name }
 `;
     const profile = `version: "0.2.0.dev0/google"
 semantic_model:
@@ -813,11 +818,12 @@ semantic_model:
           [loaded(m)], {targetOptional: true, fieldsPruned: true});
       expect(errors.join('\n')).toMatch(want);
     }
-    // An unknown parent is still excused on a pruned model.
+    // Pruning never drops an entity, so an unknown parent is reported on a
+    // pruned model too.
     expect(validatePushRequirements(
                [loaded(model({entities: [ent('a', {extends: ['gone']})]}))],
-               {targetOptional: true, fieldsPruned: true}))
-        .toEqual([]);
+               {targetOptional: true, fieldsPruned: true}).join('\n'))
+        .toContain("extends unknown entity 'gone'");
   });
 
   test('an abstract entity is rejected for a source, keys or a bound field', () => {

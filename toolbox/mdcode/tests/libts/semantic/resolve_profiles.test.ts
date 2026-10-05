@@ -1774,3 +1774,29 @@ describe('profile checks the second review found missing', () => {
         .toBe(2);
   });
 });
+
+
+describe('excluding a field a subtype redeclares', () => {
+  // A redeclaration sets `expression` and nothing else (Model Spec §3.1.3), so
+  // excluding the field drops the whole line rather than leave a bare name.
+  test('drops the redeclaration line, and the subtype still inherits the field', () => {
+    const logical = {
+      version: '0.2.0.dev0/google',
+      semantic_model: [{
+        name: 'm',
+        entities: [
+          {name: 'customer', source: 'p.d.c', primary_key: ['id'],
+           fields: [{name: 'id', expression: 'id'}, {name: 'name', expression: 'cust_name'}]},
+          {name: 'vip', extends: ['customer'], source: 'p.d.v', primary_key: ['id'],
+           fields: [{name: 'name', expression: 'vip_name'}]},
+        ],
+      }],
+    };
+    const {doc, error, excluded} = mergeProfile(
+        logical, {name: 'p', entities: [{name: 'vip', fields_exclude: ['name']}]}, 'p');
+    expect(error).toBeUndefined();
+    const vip = (doc as any).semantic_model[0].entities[1];
+    expect(vip.fields).toEqual([]);
+    expect(excluded).toEqual([{model: 'm', entity: 'vip', field: 'name'}]);
+  });
+});

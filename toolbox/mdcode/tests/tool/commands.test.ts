@@ -140,3 +140,44 @@ describe('v2Aspects forwarding', () => {
     expect(pullSpy.mock.calls[0][1].v2Aspects).toBe(true);
   });
 });
+
+
+// A push that deploys a graph prunes unbound fields, which can remove the very
+// field an inheritance rule is about. The rules run on the model before
+// pruning, so a graph push and a catalog-only push give the same answer.
+describe('a graph push checks inheritance before pruning', () => {
+  const GRAPH_MODEL = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployment_target: //bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g
+    entities:
+      - name: customer
+        source: //bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer
+        primary_key: [id]
+        fields:
+          - { name: id, datatype: Integer, expression: id }
+          - { name: name, datatype: String, expression: cust_name }
+      - name: vip
+        extends: [customer]
+        source: //bigquery.googleapis.com/projects/test-project/datasets/d/tables/vip
+        primary_key: [id]
+        fields:
+          - { name: name, datatype: Integer, description: VIP name }
+`;
+
+  test('a redefined inherited field with no column is reported', async () => {
+    fs.writeFileSync(
+        path.join(dir, 'catalog.yaml'),
+        'scope: semantic-model.test-project.us.commerce_eg\n');
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(eg, {recursive: true});
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), GRAPH_MODEL);
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+    const code = await push({validateOnly: true, kc: false});
+
+    expect(code).toBe(1);
+    expect(errorSpy.mock.calls.map(c => String(c[0])).join('\n'))
+        .toContain("field 'name' is inherited, so it may only be rebound to a column");
+  });
+});

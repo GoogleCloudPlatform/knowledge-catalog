@@ -444,12 +444,14 @@ describe('validatePushRequirements checks every affected concept', () => {
     expect(errs[0]).toContain('extends unknown entity');
   });
 
-  test('a dangling extends does not crash a profile push', () => {
-    // Pruning can create the dangling `extends` itself, by dropping a concrete
-    // supertype whole when the profile leaves its key unbound. So the standdown
-    // has to come before the index is built, not inside the loop over entries.
+  test('a dangling extends is reported, not crashed on, on a profile push', () => {
+    // Pruning never drops an entity, so a dangling `extends` on a pruned model
+    // is the author's. The action checks still stand down before building the
+    // index rather than crash inside the loop over entries.
     const m = withDanglingSupertype([{concept: 'orders', operation: 'modify'}]);
-    expect(validatePushRequirements([m], {fieldsPruned: true})).toEqual([]);
+    const errs = validatePushRequirements([m], {fieldsPruned: true});
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain('extends unknown entity');
   });
 });
 

@@ -187,8 +187,8 @@ must not silently drop inheritance — agreed with Dmitri). A cycle in `extends`
 an error. A diamond flattens, with each ancestor contributing once. A field
 declared or rebound by two supertypes that do not extend each other is an error,
 because nothing says which one wins. A subtype MAY redeclare an inherited field
-by name alone or to bind it; the definition comes from the ancestor that
-declares it. A relationship endpoint and a metric's entity MUST be a concrete
+only to bind it, with an `expression` and nothing else; the definition comes
+from the ancestor that declares it. A relationship endpoint and a metric's entity MUST be a concrete
 leaf: not abstract, and not extended by another dataset.
 How the hierarchy is *lowered* into each store (labels, field flattening) and the
 downstream limits (e.g. a supertype whose label is shared across subtype tables
@@ -376,19 +376,13 @@ Each rule and its reason:
 - **An unknown supertype is rejected.** An `extends` that names a dataset not in the
   model is a hard load error (see [§2.1.2](#212-inheritance-extends)).
 
-- **A graph measure binds only to a leaf type.** For a BigQuery target, a metric
-  whose entity is a supertype — one another entity `extends` — cannot become a
-  `MEASURE` and is skipped with a warning: the supertype's label is shared across
-  its subtype tables, and BigQuery forbids a `MEASURE` on a shared label. Like the
-  single-aggregate rule this is a SHOULD, not a MUST — the metric still reaches
-  Knowledge Catalog; it simply has no graph measure. See [Reference → Class
-  hierarchies](reference.md#class-hierarchies-extends--labels).
+- **A metric belongs to a concrete leaf.** A metric whose entity is abstract, or
+  extended by another entity, is rejected on every push.
 
-Not a narrowing, contrary to a common assumption: **diamonds in a class hierarchy
-are not rejected.** The resolver flattens them (each ancestor once) and breaks
-cycles with a warning. What *is* rejected is downstream and store-specific — a
-BigQuery `MEASURE` cannot bind to a label shared across subtype tables. See
-[§2.1.2](#212-inheritance-extends).
+A diamond in a class hierarchy is allowed when both paths reach one
+declaration: the resolver keeps that field once. A cycle in `extends` is
+rejected, and so is a field that two ancestors which do not extend each other
+both declare or both rebind. See [§2.1.2](#212-inheritance-extends).
 
 ### 4.2. Relaxations (looser than Ossie)
 

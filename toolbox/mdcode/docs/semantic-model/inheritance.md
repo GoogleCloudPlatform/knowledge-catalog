@@ -348,7 +348,7 @@ so a subtype's table must have a column for every inherited field, or the deploy
 fails. Push also rejects a model that breaks any of these rules:
 
 - A subtype redeclares an inherited field only to bind it to a column. A
-  redeclaration with nothing but the name is allowed and changes nothing.
+  redeclaration with nothing but the name is rejected.
 - An abstract entity declares no `source`, no keys and no field expressions.
 - Relationships and metrics attach only to concrete leaf entities.
 - No field is declared or rebound by two supertypes that do not extend each

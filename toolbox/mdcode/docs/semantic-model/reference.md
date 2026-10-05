@@ -211,8 +211,7 @@ A subtype redeclares an inherited field only to bind it. The redeclaration
 names the field and gives it a column of the subtype's table. The datatype,
 label, dimension, description, `ai_context` and `custom_extensions` come from
 the ancestor that declares the field, and push rejects a redeclaration that
-restates any of them. A redeclaration with nothing but the name is allowed and
-changes nothing. A subtype that does not bind an inherited field takes the
+restates any of them, or gives nothing but the name. A subtype that does not bind an inherited field takes the
 binding of the nearest ancestor that does. Under a concrete supertype the graph
 keeps the supertype's binding either way, as the boundaries below describe.
 
@@ -461,7 +460,7 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   [model spec §4.1](model_spec.md#41-narrowings-stricter-than-ossie). *(static)*
 * Every class hierarchy follows the inheritance rules. `extends` forms no cycle,
   and no field is declared by two supertypes that do not extend each other. A
-  subtype redeclares an inherited field by name alone or to bind it. An
+  subtype redeclares an inherited field only to bind it. An
   abstract entity declares no source, key or field expression. Relationships
   and metrics attach only to concrete leaf entities. The rules and their
   reasons are in [Class hierarchies](#class-hierarchies-extends--labels).

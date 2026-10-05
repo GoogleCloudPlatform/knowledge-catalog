@@ -429,7 +429,16 @@ function mergeEntity(
       return `profile '${profileName}': field '${pe.name}.${
           name}' is in both 'fields' and 'fields_exclude'`;
     }
-    if (lf && !inheritedBelow) delete lf.expression;
+    if (lf && !inheritedBelow) {
+      // A line that only redeclares an inherited field goes with its binding,
+      // since a redeclaration with nothing but the name is rejected (Model
+      // Spec §3.1.3). The entity still inherits the declaration.
+      if (inherited.has(name)) {
+        le.fields = le.fields.filter((f: any) => f !== lf);
+      } else {
+        delete lf.expression;
+      }
+    }
   }
   return undefined;
 }

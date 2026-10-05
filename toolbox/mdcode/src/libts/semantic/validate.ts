@@ -137,27 +137,7 @@ export function validatePushRequirements(
       }
     }
 
-    // Resolving inheritance throws on an `extends` naming an entity the model
-    // does not declare, on a cycle, and on a field inherited from two unrelated
-    // ancestors, and the checks below stand down rather than
-    // stack-trace on one. Standing down has to mean reporting somewhere or it
-    // means publishing a broken model in silence: the loader accepts such a
-    // model, and a Knowledge-Catalog-only push reaches no graph leg that would
-    // resolve inheritance and catch it. So the failure is reported here, once
-    // per model, and the checks below stay quiet about it.
-    // A profile push that pruned fields is exempt for an unknown parent only:
-    // pruning can remove a supertype whole, and the dangling `extends` it
-    // leaves is the pruner's doing. It cannot create a cycle or an
-    // ambiguously inherited field, since it only removes things, so those are
-    // reported either way.
-    const failure = inheritanceFailure(model);
-    if (failure && !(opts.fieldsPruned && failure.kind === 'unknown-parent')) {
-      errors.push(
-          `model '${model.name}' (${document}): ${failure.message} Checks ` +
-          `that need the resolved model are skipped until this is fixed.`);
-    }
-
-    errors.push(...inheritanceRuleErrors(model, document));
+    errors.push(...validateInheritance([{document, model}]));
 
     // An action reaches Knowledge Catalog only, so its checks are
     // target-independent: each parameter's type must resolve to something in
@@ -757,6 +737,37 @@ const AUTHORED_NAME: Partial<Record<keyof Field, string>> = {
 //     own rows, and a measure over it could not bind to one column.
 // The first rule needs the resolved model and is skipped when resolution
 // fails; that failure is reported once elsewhere.
+/**
+ * Returns one message per broken inheritance or concrete-leaf rule (Model Spec
+ * §3.1.3, §3.2, §3.3), or an empty list: a cycle, an unknown parent, or a field
+ * inherited from two unrelated ancestors; a redeclared inherited field; an
+ * abstract entity with a table; and a relationship or metric on an entity that
+ * is not a concrete leaf. Pruning can remove the field a rule is about, so a
+ * push that prunes runs this on the model before pruning as well as after.
+ */
+export function validateInheritance(models: LoadedModel[]): string[] {
+  const errors: string[] = [];
+  for (const {document, model} of models) {
+    // Resolving inheritance throws on an `extends` naming an entity the model
+    // does not declare, on a cycle, and on a field inherited from two unrelated
+    // ancestors, and the checks below stand down rather than stack-trace on
+    // one. Standing down has to mean reporting somewhere or it means
+    // publishing a broken model in silence: the loader accepts such a model,
+    // and a Knowledge-Catalog-only push reaches no graph leg that would resolve
+    // inheritance and catch it. So the failure is reported here, once per
+    // model. Pruning never removes an entity, so an unknown parent is always
+    // the author's.
+    const failure = inheritanceFailure(model);
+    if (failure) {
+      errors.push(
+          `model '${model.name}' (${document}): ${failure.message} Checks ` +
+          `that need the resolved model are skipped until this is fixed.`);
+    }
+    errors.push(...inheritanceRuleErrors(model, document));
+  }
+  return errors;
+}
+
 function inheritanceRuleErrors(
     model: SemanticModel, document: string): string[] {
   const errors: string[] = [];
@@ -786,6 +797,15 @@ function inheritanceRuleErrors(
               `${where(entity.name)}: field '${field.name}' is inherited, so ` +
               `it may only be rebound to a column; remove ${
                   defined.join(', ')}, which an ancestor defines.`);
+        } else if (!isFieldBound(field)) {
+          // A redeclaration sets `expression` and nothing else (Model Spec
+          // §3.1.3), so a line with only the name is not one.
+          const from = (ancestorsOf.get(entity.name) ?? [])
+                           .find(a => ownNames.get(a)?.has(field.name));
+          errors.push(
+              `${where(entity.name)}: field '${field.name}' is inherited from ` +
+              `'${from}'; restate it only to rebind it with 'expression', or ` +
+              `remove the line.`);
         }
       }
     }

@@ -25,7 +25,7 @@ import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {transpileModels} from '../libts/semantic/transpile';
-import {validateBigQueryActionStatements, validateBigQueryDataSources, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
+import {validateBigQueryActionStatements, validateBigQueryDataSources, validateInheritance, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
@@ -471,6 +471,7 @@ export async function push(options: PushOptions): Promise<number> {
         console.warn(`Warning: ${w}`);
       }
       let models = loaded.models;
+      let unprunedErrors: string[] = [];
       if (options.transpile) {
         const transpiled = await transpileModels(models);
         models = transpiled.models;
@@ -483,11 +484,17 @@ export async function push(options: PushOptions): Promise<number> {
         // logical model (§4.5).
         const excludedByDoc =
             new Map(docs.map(d => [d.name, d.excluded ?? []] as const));
+        const marked = models.map(({document, model}) => ({
+                                    document,
+                                    model: applyProfileExclusions(
+                                        model, excludedByDoc.get(document) ?? []),
+                                  }));
+        // Pruning can remove the field an inheritance or concrete-leaf rule is
+        // about, so those rules also run on the model before pruning.
+        unprunedErrors = validateInheritance(marked);
         const availability: AvailabilityReport[] = [];
-        models = models.map(({document, model}) => {
-          const {model: pruned, report} = pruneUnavailable(
-              applyProfileExclusions(model, excludedByDoc.get(document) ?? []),
-              profileName);
+        models = marked.map(({document, model}) => {
+          const {model: pruned, report} = pruneUnavailable(model, profileName);
           availability.push(report);
           return {document, model: pruned};
         });
@@ -508,8 +515,13 @@ export async function push(options: PushOptions): Promise<number> {
           }
         }
       }
-      const validationErrors = validatePushRequirements(
-          models, {targetOptional: !prune, fieldsPruned: prune});
+      // The pruned model can only repeat an unpruned error, so each is
+      // reported once.
+      const validationErrors = [...new Set([
+        ...unprunedErrors,
+        ...validatePushRequirements(
+            models, {targetOptional: !prune, fieldsPruned: prune}),
+      ])];
       if (validationErrors.length) {
         for (const e of validationErrors) console.error(`Error: ${e}`);
         return null;
