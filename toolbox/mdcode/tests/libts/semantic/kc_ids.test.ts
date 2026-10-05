@@ -195,7 +195,7 @@ describe('relationshipLinkId', () => {
       'collapses two distinct relationship names that normalize to the same link ID',
       () => {
         expect(relationshipLinkId('retail_sales', 'order_customer'))
-            .toBe(relationshipLinkId('retail_sales', 'Order--Customer'));
+            .toBe(relationshipLinkId('retail_sales', 'order__customer'));
       });
 });
 

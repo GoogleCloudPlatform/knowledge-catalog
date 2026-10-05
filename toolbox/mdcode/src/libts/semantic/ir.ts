@@ -23,7 +23,10 @@ export interface AiContext {
   synonyms?: string[];
   // Example questions / usages illustrating the annotated object.
   examples?: string[];
-  // Unrecognised keys on `ai_context`, preserved verbatim for round-trip.
+  // Custom members, preserved verbatim for round-trip: the members under
+  // `custom:` in the Google flavor, and the sibling members beside the three
+  // standard ones in vanilla (mapping Addendum 4 §2.1). A member whose name is
+  // a whole number sorts first, so document order holds for the rest only.
   additionalProperties?: Record<string, unknown>;
 }
 
@@ -45,10 +48,11 @@ export interface CustomExtension {
  * A semantic model: a graph of entities (nodes) connected by relationships
  * (edges), with model-level metrics defined over them.
  *
- * The IR is primarily semantics. Deployment/target configuration lives in the
- * project manifest (`catalog.yaml`); when the open format carries it inline in a
- * model-level GOOGLE `custom_extensions` block, that block rides along verbatim
- * in `customExtensions` and is interpreted by the consumer that acts on it.
+ * The IR is primarily semantics. The loader reads a model's deployment target
+ * from `deployment_target:`, or from a vanilla document's model-level GOOGLE
+ * `custom_extensions` block, which rides along verbatim in `customExtensions`
+ * for the consumer that acts on it. `deployments` holds named targets; the
+ * loader does not fill it yet.
  */
 export interface SemanticModel {
   name: string;
@@ -77,9 +81,11 @@ export interface SemanticModel {
   // model-level GOOGLE block.
   customExtensions?: CustomExtension[];
   version?: '0.2.0.dev0'|'0.2.0.dev0/google';  // the flavor the document declared
-  // Named profiles, each loaded from its own <model>.profile.<name>.yaml file.
+  // Named profiles. A Google-flavor model's come from its
+  // <model>.profile.<name>.yaml files and a vanilla model's from its GOOGLE
+  // block; the loader does not fill this yet.
   profiles?: ProfileSpec[];
-  // Named targets from `deployments:`. `kcmd push --deployment` selects one.
+  // Named targets from `deployments:`, each naming the profile it deploys.
   deployments?: DeploymentSpec[];
 }
 
@@ -163,15 +169,17 @@ export interface DialectExpression {
  * not fields.
  *
  * Expression fidelity: the format may supply an expression in several SQL
- * dialects. We keep at most two forms — a target/canonical `expression` that is
- * valid against the target (GoogleSQL/ANSI), and the original vendor SQL in
- * `importedExpression` (with its `importedDialect`). At least one of the two is
- * set. When only `importedExpression` is present, `expression` awaits a
- * transpile pass (see ./transpile) that fills it from the imported form.
+ * dialects. The loader keeps at most two forms: `expression`, the BIGQUERY
+ * text or else the ANSI_SQL one, and `importedExpression`, the first other
+ * vendor entry, with its `importedDialect`. A bound field sets at least one of
+ * the two. `dialects` keeps every entry in the order written where a producer
+ * fills it; the loader does not yet. When only `importedExpression` is
+ * present, `expression` awaits a transpile pass (see ./transpile) that fills it
+ * from the imported form.
  */
 export interface Field {
   name: string;
-  expression?: string;             // target/canonical (GoogleSQL-valid) SQL
+  expression?: string;             // the BIGQUERY text, else the ANSI_SQL one
   importedExpression?: string;     // original vendor SQL, verbatim
   importedDialect?: string;        // dialect of `importedExpression` (e.g. 'SNOWFLAKE')
   dialects?: DialectExpression[];  // every entry, in the order written
@@ -195,10 +203,11 @@ export interface Field {
 /**
  * The open format's `datatype` vocabulary, mirroring Apache Ossie's `DataType`:
  * a CLOSED, case-sensitive set of logical types, independent of physical
- * representation. It is optional (omit when unknown); a type outside the
- * vocabulary is expressed as `Opaque` plus a `customExtensions` block, never an
- * invented value. The loader enforces this set at parse time, so a `type` on
- * the IR is always one of these.
+ * representation. It is optional; omit it when the type is unknown. `Opaque`
+ * marks an unknown type: the loader reads it as no type, and the catalog stores
+ * it where a type is required (base mapping §4.1). No custom extension
+ * supplies a real type for it (Model Spec §3.1.2). The loader enforces this set
+ * at parse time, so a `type` on the IR is always one of these.
  */
 export const DATA_TYPES = [
   'String',
@@ -320,7 +329,7 @@ export function isFieldBound(
  */
 export function expressionForDialect(
     item: {expression?: string; dialects?: DialectExpression[]},
-    targetDialect: 'BIGQUERY'|'SPANNER'|'ANSI_SQL'): string|undefined {
+    targetDialect: (typeof ALLOWED_DIALECTS)[number]): string|undefined {
   if (item.dialects && item.dialects.length > 0) {
     const exact = item.dialects.find(d => d.dialect === targetDialect);
     if (exact) return exact.expression;
@@ -787,16 +796,12 @@ export interface Constraint {
   // said, and nothing reads it yet. See CONSTRAINT_SEVERITIES.
   severity?: ConstraintSeverity;
   aiContext?: AiContext;
-  // No `customExtensions`. Every other IR object has one because vanilla Ossie
-  // accepts `custom_extensions` on it. A constraint is unreachable that way:
-  // `constraints` is an extended-profile-only key, and the extended profile
-  // rejects `custom_extensions` outright (ceField in loader.ts), so no document
-  // can carry both. Should vanilla Ossie ever gain constraints, add the field
-  // back with `...ce` on the schema.
+  // No `customExtensions`: the loader's constraint schema takes no
+  // `custom_extensions`, so no document can give a constraint one.
 }
 
 export interface DeploymentSpec {
-  name: string;      // `kcmd push --deployment <name>` selects one
+  name: string;      // unique among the model's deployments
   // A resource URI or a Knowledge Catalog FQN, verbatim. Three kinds are
   // valid: a BigQuery graph, a Spanner graph, an AlloyDB database.
   // `deployment_target.ts` already parses all three. Keep this opaque.
