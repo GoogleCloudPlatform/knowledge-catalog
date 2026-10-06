@@ -160,3 +160,56 @@ export function applyOwlVocabularies(
   }
   return count;
 }
+
+/** A vocabulary detached from field-carrying parents (for coverage). */
+export interface DetachedVocabulary {
+  vocabulary: string;
+  parents: string[];
+}
+
+/**
+ * A vocabulary's rows are its members, read through a view with fixed
+ * columns (code, label, sort_order, definition, iri; see ../../vocabulary.ts).
+ * It cannot bind fields it would inherit from a data class above it
+ * (`GeographicRegion rdfs:subClassOf OrgUnit` would inherit `unitName`), so a
+ * vocabulary entity drops every `extends` parent whose lineage declares
+ * fields, with a warning; parents that carry no fields (pure categories) are
+ * kept. Run after applyOwlVocabularies.
+ */
+export function detachVocabularyParents(
+    entitiesByName: Map<string, Entity>,
+    warnings: string[]): DetachedVocabulary[] {
+  const carriesFields = (name: string): boolean => {
+    const seen = new Set<string>();
+    const queue = [name];
+    while (queue.length) {
+      const n = queue.shift()!;
+      if (seen.has(n)) continue;
+      seen.add(n);
+      const e = entitiesByName.get(n);
+      if (!e) continue;
+      if (e.fields.length) return true;
+      queue.push(...(e.extends ?? []));
+    }
+    return false;
+  };
+  const detached: DetachedVocabulary[] = [];
+  for (const e of entitiesByName.values()) {
+    if (e.members === undefined || !e.extends?.length) continue;
+    const drop = e.extends.filter(carriesFields);
+    if (!drop.length) continue;
+    const keep = e.extends.filter(p => !drop.includes(p));
+    if (keep.length) {
+      e.extends = keep;
+    } else {
+      delete e.extends;
+    }
+    detached.push({vocabulary: e.name, parents: drop});
+    warnings.push(
+        `class '${e.name}' is a vocabulary, so it does not extend ${
+            drop.map(p => `'${p}'`).join(', ')}: a vocabulary's rows are its ` +
+        `members (code, label, sort order), which carry none of the fields ` +
+        `it would inherit.`);
+  }
+  return detached;
+}

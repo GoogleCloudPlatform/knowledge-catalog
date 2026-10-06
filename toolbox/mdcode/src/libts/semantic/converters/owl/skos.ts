@@ -39,6 +39,9 @@ const DCTERMS = 'http://purl.org/dc/terms/';
 const RDF_TYPE = `${RDF}type`;
 const CONCEPT = `${SKOS}Concept`;
 const SCHEME = `${SKOS}ConceptScheme`;
+// kcmd:Metric individuals (see metrics.ts): when a glossary is emitted, each
+// imported metric no concept defines gets a term that defines it.
+const KCMD_METRIC = 'https://kcmd.dev/ns#Metric';
 const DEFINES_PREDICATES = new Set([
   `${DCTERMS}subject`,
   `${RDFS}seeAlso`,
@@ -222,6 +225,33 @@ export function skosToGlossary(
     if (defines.length) term.defines = defines;
     const src = best(c, `${DCTERMS}source`) ?? iris(c, `${DCTERMS}source`)[0];
     if (src) term.source = src;
+    glossary.terms.push(term);
+  }
+
+  // A glossary is emitted, so every imported kcmd:Metric that no concept
+  // already defines gets a term of its own that defines it: display name
+  // from skos:prefLabel / rdfs:label, definition from skos:definition (else
+  // rdfs:comment / dcterms:description), synonyms from skos:altLabel.
+  const definedMetrics = new Set(glossary.terms.flatMap(
+      t => (t.defines ?? []).filter(d => d.kind === 'metric').map(d => d.ref)));
+  for (const [s, t] of types) {
+    if (!t.has(KCMD_METRIC) || t.has(CONCEPT)) continue;
+    const name = localName(s);
+    if (!metricNames.has(name) || definedMetrics.has(name)) continue;
+    definedMetrics.add(name);
+    const term: GlossaryTerm = {id: claim(s)};
+    const label = best(s, `${SKOS}prefLabel`, `${RDFS}label`);
+    if (label) term.displayName = label;
+    const def = best(s, `${SKOS}definition`, `${RDFS}comment`,
+                     `${DCTERMS}description`);
+    if (def) term.definition = def;
+    const syn = [...new Set(lits(s, `${SKOS}altLabel`)
+                                .filter(l => !l.lang ||
+                                        l.lang.toLowerCase().startsWith('en'))
+                                .map(l => l.value.trim())
+                                .filter(v => v && v !== label))];
+    if (syn.length) term.synonyms = syn;
+    term.defines = [{kind: 'metric', ref: name}];
     glossary.terms.push(term);
   }
   return glossary;

@@ -13,12 +13,19 @@ import {Constraint, Entity, SemanticModel} from '../../ir';
 import {CoverageEntry, CoverageOutcome, CoverageRecorder} from '../coverage';
 
 import {manchester} from './constraints';
+import {EquivalentFold} from './folds';
+import {OwlMetricOutcome} from './metrics';
 import {OwlChainStep, OwlClass, OwlCommonAnnotations, OwlModel} from './model';
 import {localName} from './parse';
 import {datatypeFor} from './to_ir';
 
 export interface OwlCoverageInput {
+  // The OwlModel the mapping read (after folding, see folds.ts).
   owl: OwlModel;
+  // The unkeyed classes folded into a keyed equivalent.
+  folds?: readonly EquivalentFold[];
+  // What became of each kcmd:Metric (metrics.ts).
+  metricOutcomes?: readonly OwlMetricOutcome[];
   // The model the mapping produced, BEFORE any pruning.
   model: SemanticModel;
   // The mapper's warnings, for drop reasons.
@@ -139,6 +146,17 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
         'compiled', 'owl:Class', c.localName, {entity: e.name},
         e.definition ? `defined entity ${e.name}` : `entity ${e.name}`);
   }
+  // Classes folded into their keyed equivalent (folds.ts): no entity of their
+  // own, by design.
+  for (const f of input.folds ?? []) {
+    land('compiled', 'owl:Class', f.folded, {entity: f.into},
+         `entity ${f.into} (folded in)`);
+    land('compiled', 'owl:equivalentClass (folded)',
+         `${f.folded} EquivalentTo ${f.into}`, {entity: f.into},
+         `entity ${f.into} ai_context.synonyms`,
+         'an unkeyed class equivalent to a keyed one names the same ' +
+             'concept: its relationships and fields move to the keyed entity');
+  }
   const classes = [...firstClass.values()].filter(c => entities.has(c.localName));
 
   for (const c of classes) {
@@ -190,10 +208,46 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
     }
   }
 
+  // Abstract by structure, and the kcmd:abstract override (abstract.ts).
+  for (const c of classes) {
+    const C = c.localName;
+    const e = entities.get(C)!;
+    const owner = {entity: C};
+    if (c.abstract !== undefined) {
+      if (e.definition || e.members) {
+        drop('kcmd:abstract', C, owner,
+             `${e.definition ? 'a defined entity' : 'a vocabulary'} is never ` +
+                 `abstract`);
+      } else {
+        land('compiled', 'kcmd:abstract', C, owner,
+             c.abstract ? `entity ${C} abstract` : `entity ${C} (concrete)`);
+      }
+      continue;
+    }
+    if (e.definition || e.members) continue;
+    if (lineage(C).some(n => entities.get(n)?.keys.length)) continue;
+    if (e.abstract) {
+      land('compiled', 'owl:hasKey (absent)', C, owner, `entity ${C} abstract`,
+           'no key (own or inherited) and has subclasses: a label on its ' +
+               'subtypes, not a table');
+    } else {
+      drop('owl:hasKey (absent)', C, owner,
+           'no key (own or inherited) and no subclasses with rows of their ' +
+               'own: kept as a concrete entity with an empty primary_key; ' +
+               'declare owl:hasKey to bind it, or annotate kcmd:abstract true');
+    }
+  }
+
   // --- Datatype properties. ----------------------------------------------------
   const seenFields = new Set<string>();
   for (const p of owl.datatypeProperties) {
     const P = p.localName;
+    for (const d of p.unsupportedDomains ?? []) {
+      rec.dropped(
+          'rdfs:domain', `${P} domain ${d}`,
+          'only a named class, or an owl:unionOf of named classes, can hold ' +
+              'a field');
+    }
     if (!p.domains.length) {
       rec.dropped(
           'owl:DatatypeProperty', P,
@@ -225,6 +279,12 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
     }
     if (!produced.length) continue;
     const first = produced[0].name;
+    if (p.unionDomain) {
+      land('compiled', 'owl:unionOf (rdfs:domain)',
+           `${P} domain unionOf(${p.domains.join(' ')})`, {entity: first},
+           `fields ${produced.map(e => `${e.name}.${P}`).join(', ')}`,
+           'the field is placed on each member class');
+    }
     if (p.rangeIri) {
       const type = datatypeFor(p.rangeIri);
       const subject = `${P} range ${localName(p.rangeIri)}`;
@@ -306,6 +366,26 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
     }
     const owner: Owner = {relationship: r ? P : folded?.name};
     const carrier = r ? `relationship ${P}` : undefined;
+
+    // `<ns>:encodedBy` -> the edge's join columns (to_ir.joinEncodedEdges).
+    if (p.encodedBy !== undefined) {
+      const subject = `${P} encodedBy ${p.encodedBy}`;
+      if (r?.source.columns.length) {
+        land('compiled', 'encodedBy', subject, owner,
+             `relationship ${P} from_columns [${
+                 r.source.columns.join(', ')}] to_columns [${
+                 r.destination.columns.join(', ')}]`);
+      } else {
+        drop('encodedBy', subject, owner,
+             why([[`object property '${P}' is encodedBy`]],
+                 !r                ? 'the relationship was not imported' :
+                     r.abstract    ? 'an abstract relationship has no join ' +
+                             'columns' :
+                     r.via?.length ? 'a derived relationship has no join ' +
+                             'columns' :
+                                     'not kept'));
+      }
+    }
 
     for (const s of dedupe(p.subPropertyOf.map(localName))) {
       if (s === P) continue;
@@ -572,7 +652,27 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
                    'model description');
     }
   }
+  const metricTerms = new Set<string>();
+  // kcmd:Metric individuals (metrics.ts). A glossary term that skos.ts made
+  // for a metric (one that is not itself a skos:Concept) is listed under
+  // kcmd:Metric too, not as a concept.
+  for (const o of input.metricOutcomes ?? []) {
+    if (o.imported !== undefined) {
+      rec.compiled('kcmd:Metric', o.metric, `metric ${o.imported}`);
+      const term = o.concept ? undefined : model.glossary?.terms.find(
+          t => t.defines?.length === 1 && t.defines[0].kind === 'metric' &&
+              t.defines[0].ref === o.imported);
+      if (term) {
+        metricTerms.add(term.id);
+        rec.compiled('kcmd:Metric (glossary)', o.metric,
+                     `glossary term ${term.id}`);
+      }
+    } else {
+      rec.dropped('kcmd:Metric', o.metric, o.reason ?? 'not imported');
+    }
+  }
   for (const t of model.glossary?.terms ?? []) {
+    if (metricTerms.has(t.id)) continue;
     rec.compiled('skos:Concept', t.id, `glossary term ${t.id}`);
   }
 

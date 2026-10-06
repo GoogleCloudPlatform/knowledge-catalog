@@ -1367,7 +1367,8 @@ export async function owl(
 
   // K3/K2 (proposed): how many of those became vocabularies / derived
   // relationships, only when there are any.
-  const {vocabularies = 0, derivedRelationships = 0} = result.stats;
+  const {vocabularies = 0, derivedRelationships = 0, metrics = 0} =
+      result.stats;
   const refined = [
     ...(vocabularies ?
             [`${vocabularies} ${
@@ -1378,6 +1379,7 @@ export async function owl(
                 plural(
                     derivedRelationships, 'relationship', 'relationships')}`] :
             []),
+    ...(metrics ? [`${metrics} ${plural(metrics, 'metric', 'metrics')}`] : []),
   ];
   console.log(
       `converted ${classes} ${plural(classes, 'class', 'classes')}, ` +

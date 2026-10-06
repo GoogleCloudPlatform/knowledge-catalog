@@ -35,6 +35,10 @@
 //                                    chains.ts)
 //   <ns>:encodedBy (object prop.) -> the edge's join columns: the code
 //                                    field -> the destination's key
+//   no owl:hasKey + subclasses    -> dataset abstract (kcmd:abstract
+//                                    overrides; see abstract.ts)
+//   unkeyed C owl:equivalentClass keyed D
+//                                 -> C folded into D (see folds.ts)
 //
 // The importer is IMPORT-ONLY: it maps the constructs above and DROPS every
 // other OWL construct rather than carrying it. Facts with no native OSI home --
@@ -62,12 +66,15 @@
 import {checkDerivedRelationships, formatChain, resolveChain} from '../../derived_relationships';
 import {AiContext, Entity, Field, Relationship, RelationshipStep, SemanticModel,} from '../../ir';
 
+import {applyOwlAbstract} from './abstract';
 import {applyOwlAnnotations} from './annotations';
 import {canonicalSteps, chainSteps} from './chains';
 import {owlConstraints} from './constraints';
 import {compileOwlDefinitions} from './definitions';
+import {EquivalentFold, foldEquivalentClasses} from './folds';
+import {OwlMetricOutcome, owlMetrics} from './metrics';
 import {OwlModel, OwlObjectProperty, OwlOntology} from './model';
-import {applyOwlVocabularies} from './vocabularies';
+import {applyOwlVocabularies, DetachedVocabulary, detachVocabularyParents} from './vocabularies';
 
 export interface ToIrResult {
   model: SemanticModel;
@@ -80,6 +87,15 @@ export interface ToIrResult {
   // still counts once. The CLI reports these, so "converted N ..." is honest
   // even when some elements were warned and skipped.
   stats: ImportStats;
+  // The OwlModel actually mapped: the parsed one with unkeyed equivalent
+  // classes folded into their keyed counterpart (see folds.ts). The coverage
+  // report reads this one, plus `folds`.
+  source: OwlModel;
+  folds: EquivalentFold[];
+  // What became of each kcmd:Metric (for the coverage report).
+  metricOutcomes: OwlMetricOutcome[];
+  // Vocabularies detached from field-carrying parents (vocabularies.ts).
+  detachedVocabularies: DetachedVocabulary[];
 }
 
 /** What an OWL import converted (see ToIrResult.stats). */
@@ -92,6 +108,9 @@ export interface ImportStats {
   // when non-zero.
   vocabularies?: number;
   derivedRelationships?: number;
+  // The kcmd:Metric individuals imported as metrics. Present only when
+  // non-zero.
+  metrics?: number;
 }
 
 // --- Datatype mapping. ------------------------------------------------------
@@ -296,8 +315,11 @@ function inferredEnd(
  * source filename). The IR it returns serializes, via osi_converter, to the
  * OSI YAML shown in the user guide.
  */
-export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
+export function owlToIr(parsed: OwlModel, modelName: string): ToIrResult {
   const warnings: string[] = [];
+  // An unkeyed class equivalent to a keyed one is folded into it first, so
+  // every step below sees one class (see folds.ts).
+  const {owl, folds} = foldEquivalentClasses(parsed, warnings);
   const classNames = new Set(owl.classes.map(c => c.localName));
 
   // Entities, one per class, in class-declaration order. Fields are attached in
@@ -354,6 +376,12 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   // than one domain appears on each; one with none has nowhere to live.
   let datatypePropertiesConverted = 0;
   for (const p of owl.datatypeProperties) {
+    for (const d of p.unsupportedDomains ?? []) {
+      warnings.push(
+          `datatype property '${p.localName}' has an rdfs:domain that is ${
+              d}; that domain is skipped (a field goes on a named class, or ` +
+          `on each member of an owl:unionOf of named classes).`);
+    }
     if (!p.domains.length) {
       warnings.push(
           `datatype property '${p.localName}' has no rdfs:domain; skipped ` +
@@ -416,7 +444,25 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   //      inverse-functional property still has a natural identifier; promote
   //      that unique key to the primary_key so the entity is valid for graph
   //      generation rather than keyless. (Ambiguous cases -- several unique
-  //      keys, or a composite one -- are left alone.)
+  //      keys, or a composite one -- are left alone.) Not on a category whose
+  //      subclasses declare keys of their own (`OrgUnit` over keyed
+  //      `MarketUnit` / `ServiceGroup`): each subclass is identified by its own
+  //      key, so the property stays a unique key, inherited by the subclasses
+  //      (see inheritUniqueKeys), and the category is abstract by structure.
+  const ownKeyedDescendant = (name: string): boolean => {
+    const seen = new Set<string>([name]);
+    const queue = [name];
+    while (queue.length) {
+      const parent = queue.shift()!;
+      for (const e of entities) {
+        if (seen.has(e.name) || !e.extends?.includes(parent)) continue;
+        if (e.keys.length) return true;
+        seen.add(e.name);
+        queue.push(e.name);
+      }
+    }
+    return false;
+  };
   for (const entity of entities) {
     const fieldNames = new Set(entity.fields.map(f => f.name));
     const missing = entity.keys.filter(k => !fieldNames.has(k));
@@ -429,8 +475,10 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
           `remaining columns would change the entity's grain).`);
       entity.keys = [];
     }
+  }
+  for (const entity of entities) {
     if (!entity.keys.length && entity.uniqueKeys?.length === 1 &&
-        entity.uniqueKeys[0].length === 1) {
+        entity.uniqueKeys[0].length === 1 && !ownKeyedDescendant(entity.name)) {
       entity.keys = [...entity.uniqueKeys[0]];
       entity.uniqueKeys = undefined;
       warnings.push(
@@ -515,6 +563,11 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
 
   const relationships: Relationship[] = [];
   for (const p of owl.objectProperties) {
+    for (const d of p.unsupportedDomains ?? []) {
+      warnings.push(
+          `object property '${p.localName}' has an rdfs:domain that is ${
+              d}; that domain is skipped.`);
+    }
     if (folded.has(p.localName)) continue;
     const via = chainOf.get(p.localName);
     const declaredDomain = p.domains[0];
@@ -706,6 +759,17 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   // vocabularies.ts). After the definitions: a defined entity keeps its
   // definition.
   const vocabularies = applyOwlVocabularies(owl, entitiesByName, warnings);
+  // A vocabulary does not inherit fields its member view cannot bind.
+  const detachedVocabularies =
+      detachVocabularyParents(entitiesByName, warnings);
+
+  // A keyless class that groups subclasses is abstract (a label on its
+  // subtypes); `kcmd:abstract` overrides (see abstract.ts). After the
+  // vocabularies and defined entities, which are never abstract.
+  applyOwlAbstract(owl, entitiesByName, warnings);
+
+  // Unique keys flow down `extends` to the concrete subclasses.
+  inheritUniqueKeys(entities, entitiesByName);
 
   // Axioms that state a rule -- property restrictions, functional object
   // properties, class disjointness -- become native model-level constraints
@@ -714,19 +778,27 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   const constraints = owlConstraints(
       constraintSource, {entitiesByName, relationships}, warnings);
 
+  // kcmd:Metric individuals become model metrics (see metrics.ts).
+  const {metrics, outcomes: metricOutcomes} =
+      owlMetrics(owl.metrics ?? [], entities, folds, warnings);
+
   const model: SemanticModel = {
     name: modelName,
     description: modelDescription(owl),
     aiContext: ontologyAiContext(owl.ontology, modelName),
     entities,
     relationships,
-    metrics: [],
+    metrics,
   };
   if (constraints.length) model.constraints = constraints;
   const derived = relationships.filter(r => r.via?.length).length;
   return {
     model,
     warnings,
+    source: owl,
+    folds,
+    metricOutcomes,
+    detachedVocabularies,
     stats: {
       classes: entities.length,
       datatypeProperties: datatypePropertiesConverted,
@@ -737,8 +809,44 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
       // of an ontology with neither reads as before.
       ...(vocabularies ? {vocabularies} : {}),
       ...(derived ? {derivedRelationships: derived} : {}),
+      ...(metrics.length ? {metrics: metrics.length} : {}),
     },
   };
+}
+
+// --- Unique keys down the class hierarchy. ----------------------------------
+
+// An inverse-functional property declared on a category (`core:unitName` on
+// `OrgUnit`) identifies every instance of every subclass too, so each
+// subclass that is backed by a table of its own gets the unique key: its
+// ancestors' unique keys, nearest first, appended after its own, skipping one
+// it already has or that equals its primary key. A defined entity shares its
+// parent's identity (no keys of its own, the loader rejects them), and a
+// vocabulary's rows are its members, so neither inherits. Downstream
+// resolution flattens inherited fields (resolve_inheritance.ts), so the key
+// names a field the subclass has.
+function inheritUniqueKeys(
+    entities: readonly Entity[], byName: ReadonlyMap<string, Entity>): void {
+  // Snapshot the declared keys first so the result does not depend on order.
+  const declared = new Map(entities.map(e => [e.name, e.uniqueKeys ?? []]));
+  for (const e of entities) {
+    if (e.definition || e.members !== undefined || e.abstract) continue;
+    const seen = new Set<string>([e.name]);
+    const queue = [...(e.extends ?? [])];
+    const inherited: string[][] = [];
+    while (queue.length) {
+      const n = queue.shift()!;
+      if (seen.has(n)) continue;
+      seen.add(n);
+      inherited.push(...(declared.get(n) ?? []));
+      queue.push(...(byName.get(n)?.extends ?? []));
+    }
+    for (const uk of inherited) {
+      const have = [e.keys, ...(e.uniqueKeys ?? [])];
+      if (have.some(k => arraysEqual(k, uk))) continue;
+      (e.uniqueKeys ??= []).push([...uk]);
+    }
+  }
 }
 
 // --- Property chains with undeclared ends (K2). -------------------------------
@@ -842,11 +950,14 @@ function resolveDeferredChains(
 // `<objectProperty> <ns>:encodedBy <datatypeProperty>` states that the edge is
 // stored as a code field on its source holding the destination's code (its
 // key), so the edge joins that field to the destination's key -- the join
-// columns a binding step would otherwise add. Matched by local name, like
-// every kcmd annotation (see parse.ts). It needs the field on the source (or
-// a class the source extends) and a single-column key on the destination;
-// otherwise the edge stays logical, with a warning. Abstract and derived edges
-// carry no join columns and are left alone.
+// columns a binding step would otherwise add. The destination may be a
+// vocabulary (the field holds a member code) or any keyed entity (the field
+// is a foreign key). Matched by local name, like every kcmd annotation (see
+// parse.ts). It needs the field on the source (or a class the source
+// extends) and a single-column key on the destination (its own, or the
+// nearest ancestor's); otherwise -- a composite key included -- the edge
+// stays logical, with a warning. Abstract and derived edges carry no join
+// columns and are left alone.
 function joinEncodedEdges(
     owl: OwlModel, entitiesByName: ReadonlyMap<string, Entity>,
     relationships: readonly Relationship[],
@@ -870,7 +981,11 @@ function joinEncodedEdges(
           r.source.entity}'; the edge keeps no join columns.`);
       continue;
     }
-    const keys = entitiesByName.get(r.destination.entity)?.keys ?? [];
+    // The destination's key: its own, else the nearest ancestor's (a subclass
+    // of a keyed class is identified by the inherited key).
+    const keyOwner = lineage(r.destination.entity)
+                         .find(n => entitiesByName.get(n)?.keys.length);
+    const keys = keyOwner ? entitiesByName.get(keyOwner)!.keys : [];
     if (keys.length !== 1) {
       warnings.push(`${ctx}, but '${r.destination.entity}' has ${
           keys.length ? 'a composite' : 'no'} primary key to match it to; the ` +

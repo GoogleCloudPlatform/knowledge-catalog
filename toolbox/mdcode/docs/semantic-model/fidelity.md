@@ -226,13 +226,20 @@ content.
 | Imported construct | Coverage outcome | Model element | Graph lowering (BigQuery) |
 |---|---|---|---|
 | `owl:Class` | compiled | entity | `NODE TABLE` once a profile binds it; an unbound entity has no table |
+| `owl:Class` with no key (own or inherited) and subclasses (`owl:hasKey (absent)`), or `kcmd:abstract true` | compiled | entity `abstract: true` | no node table; a `LABEL` on its subtypes' node tables |
+| keyless leaf `owl:Class` (`owl:hasKey (absent)`) | dropped (reported) | entity with no `primary_key` | no node table until the model gives it a key |
+| `owl:equivalentClass` from an unkeyed class to a keyed one (`owl:equivalentClass (folded)`) | compiled | the keyed entity: relationships, fields and `extends` re-pointed, names as `ai_context.synonyms` | the keyed entity's node table and `OPTIONS(synonyms=[...])` |
 | `rdfs:subClassOf` (named class) | compiled | entity `extends` | `LABEL` clauses on the subtype's node table, inherited fields flattened down |
+| `rdfs:subClassOf` from a vocabulary to a class with fields | dropped | — (the vocabulary has no `extends` to it) | — |
 | `owl:hasKey` | compiled | `primary_key` | `KEY(...)` on the node table |
-| `owl:InverseFunctionalProperty` | compiled | `unique_keys`, or `primary_key` on a keyless class | — dropped (only the primary key is emitted), unless it became the primary key |
+| `owl:InverseFunctionalProperty` | compiled | `unique_keys` (inherited by concrete subclasses), or `primary_key` on a keyless class with no keyed subclass | — dropped (only the primary key is emitted), unless it became the primary key |
 | `owl:DatatypeProperty` and its `rdfs:range` | compiled | field and its `datatype` | a property of the node table, typed by the bound column¹ |
+| `owl:unionOf` as an `rdfs:domain` | compiled | the field on every member class | a property of each member's node table |
 | `owl:FunctionalProperty` on a datatype property | compiled (by construction) | a field, which holds one value | a property, which holds one value |
 | `qudt:unit` and the other unit annotations | compiled | field `unit` | a `Unit:` trailer in the property's `OPTIONS(description)` |
 | `owl:ObjectProperty` | compiled | relationship | `EDGE TABLE` once the model gives it join columns and both ends are node tables |
+| `encodedBy` on an object property | compiled | relationship `from_columns` / `to_columns` (the destination's single-column key, own or inherited) | the `EDGE TABLE`'s `SOURCE KEY` / `DESTINATION KEY` |
+| `kcmd:Metric` individual | compiled | metric (`expression`, `description` with `Unit:`, `ai_context`); a glossary term when the model has a glossary | `MEASURE`⁴ |
 | `owl:inverseOf` | compiled | relationship `inverse` | a second `EDGE TABLE` over the same backing table, `SOURCE` and `DESTINATION` swapped, no `OPTIONS` |
 | `rdfs:subPropertyOf` between object properties | compiled | relationship `extends`; the parent is `abstract` | `LABEL <parent> NO PROPERTIES` on each sub-relationship's edge table; no edge table for the parent |
 | `owl:equivalentClass` definition (defined class), with its restrictions | compiled | defined entity (`definition`) | the boolean property `is<Class>` on the base's node table, computed from the definition; `kcmd test` checks it (`defined-membership`) |

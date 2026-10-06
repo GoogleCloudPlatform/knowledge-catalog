@@ -1,0 +1,91 @@
+version: 0.2.0.dev0/google
+semantic_model:
+  - name: pipeline
+    description: Opportunities, engagements and their KPIs.
+    entities:
+      - name: Opportunity
+        primary_key:
+          - opportunityId
+        fields:
+          - name: opportunityId
+            datatype: String
+          - name: totalContractValue
+            datatype: Decimal
+          - name: salesStage
+            datatype: String
+      - name: Engagement
+        primary_key:
+          - engagementId
+        fields:
+          - name: engagementId
+            datatype: String
+          - name: revenue
+            datatype: Decimal
+    metrics:
+      - name: total_contract_value
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: SUM(Opportunity.totalContractValue)
+        description: |-
+          Total contract value of the opportunities in scope.
+
+          Unit: USD.
+        ai_context:
+          synonyms:
+            - Total contract value
+            - TCV
+            - deal value
+      - name: win_rate_pct
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: 100 * SAFE_DIVIDE(COUNTIF(LOWER(Opportunity.salesStage) = 'won'),
+                COUNTIF(LOWER(Opportunity.salesStage) IN ('won', 'lost')))
+        description: |-
+          Won opportunities as a percentage of closed ones.
+
+          Unit: percent.
+        ai_context:
+          instructions: Only closed opportunities are in the denominator.
+          synonyms:
+            - Win rate percentage
+            - win rate
+      - name: revenue_per_deal
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: SAFE_DIVIDE(SUM(Engagement.revenue), COUNT(DISTINCT
+                Opportunity.opportunityId))
+        description: Engagement revenue per opportunity (cross-entity).
+        ai_context:
+          synonyms:
+            - Revenue per deal
+    glossary:
+      display_name: Pipeline glossary
+      terms:
+        - id: deal
+          display_name: Deal
+          definition: A sales opportunity.
+          defines:
+            - entity: Opportunity
+        - id: total-contract-value
+          display_name: Total contract value
+          definition: Total contract value of the opportunities in scope.
+          synonyms:
+            - TCV
+            - deal value
+          defines:
+            - metric: total_contract_value
+        - id: win-rate-pct
+          display_name: Win rate percentage
+          definition: Won opportunities as a percentage of closed ones.
+          synonyms:
+            - win rate
+          defines:
+            - metric: win_rate_pct
+        - id: revenue-per-deal
+          display_name: Revenue per deal
+          definition: Engagement revenue per opportunity (cross-entity).
+          defines:
+            - metric: revenue_per_deal
