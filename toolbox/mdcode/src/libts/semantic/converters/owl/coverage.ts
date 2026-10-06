@@ -514,8 +514,11 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
             w && /defined entity \((.*)\); imported as/.exec(w)?.[1];
         drop('owl:equivalentClass (defined class)', subject, {entity: C},
              `not compiled to a defined entity${
-                 blocked ? ` (${blocked})` : ''}; imported as a subclass ` +
-                 `whose restrictions become constraints`);
+                 blocked ? ` (${blocked})` : ''}; ${
+                 e.abstract ?
+                     'imported as an abstract entity (the definition rides ' +
+                         'ai_context.instructions)' :
+                     'imported as a subclass'} whose restrictions become constraints`);
       }
     }
     for (const r of c.restrictions) {

@@ -768,6 +768,14 @@ export function owlToIr(parsed: OwlModel, modelName: string): ToIrResult {
   // vocabularies and defined entities, which are never abstract.
   applyOwlAbstract(owl, entitiesByName, warnings);
 
+  // A relationship extends a parent only while its endpoints fit the
+  // parent's (each the parent's endpoint or a subtype of it): its edges carry
+  // the parent's label, and the loader rejects edges that do not fit it. The
+  // hierarchy can stop fitting after the vocabulary detach above (a region
+  // that was an OrgUnit is now a vocabulary of its own), so drop the parent,
+  // with a warning, rather than emit a model the loader flags.
+  dropMisfitRelationshipParents(relationships, lineage, warnings);
+
   // Unique keys flow down `extends` to the concrete subclasses.
   inheritUniqueKeys(entities, entitiesByName);
 
@@ -812,6 +820,44 @@ export function owlToIr(parsed: OwlModel, modelName: string): ToIrResult {
       ...(metrics.length ? {metrics: metrics.length} : {}),
     },
   };
+}
+
+// --- Relationship parents whose endpoints no longer fit. ---------------------
+
+// Drops each `extends` parent whose source or destination is not the
+// relationship's own endpoint or an ancestor of it (see the call site).
+function dropMisfitRelationshipParents(
+    relationships: Relationship[], lineage: (cls: string) => string[],
+    warnings: string[]): void {
+  const byName = new Map(relationships.map(r => [r.name, r]));
+  for (const r of relationships) {
+    if (!r.extends?.length) continue;
+    const kept: string[] = [];
+    for (const name of r.extends) {
+      const p = byName.get(name);
+      if (!p) {
+        kept.push(name);
+        continue;
+      }
+      const misfit = [
+        ['source', r.source.entity, p.source.entity],
+        ['destination', r.destination.entity, p.destination.entity],
+      ].filter(([, own, parent]) => !lineage(own).includes(parent));
+      if (!misfit.length) {
+        kept.push(name);
+        continue;
+      }
+      warnings.push(`object property '${r.name}' is rdfs:subPropertyOf '${
+          name}', but its ${misfit.map(([side, own, parent]) => `${side} '${
+          own}' is not '${parent}' or a subtype of it`).join(' and its ')}; '${
+          name}' is dropped from its 'extends' (its edges could not carry that label).`);
+    }
+    if (kept.length) {
+      r.extends = kept;
+    } else {
+      delete r.extends;
+    }
+  }
 }
 
 // --- Unique keys down the class hierarchy. ----------------------------------

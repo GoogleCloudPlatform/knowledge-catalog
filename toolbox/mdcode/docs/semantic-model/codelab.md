@@ -508,6 +508,28 @@ SELECT * FROM UNNEST([                 -- order 100: 2 lines, 101: 1, 102: 3
 > these tables. So the tables must exist first. (Step 2 needed none of this: it
 > governed the logical model, no tables required.)
 
+### Hydrate: let kcmd draft the binding (optional)
+
+Here you wrote the binding by hand because you created the tables yourself. On
+a real estate the raw tables come first, usually in other datasets than the one
+the model deploys to, and `kcmd bind` (proposed) can draft the profile from
+them. It scores each entity against each table and matches fields to columns. It
+then profiles the chosen tables and proposes the hydration they need: a grain
+when a key repeats, a unit normalization when a series changes scale, and so on.
+Everything it decides is explained in `bind_report.md`, and it exits 2 while
+anything still needs a human:
+
+```bash
+# Raw tables in datasets raw_*, the model deploying to $DATASET.
+kcmd bind --profile drafted --scan $PROJECT.raw_*
+kcmd bind --profile drafted --scan $PROJECT.raw_* --accept-review
+```
+
+`bind` never scans the deployment target's own dataset, so here, where the
+tables live in `$DATASET` itself, it has nothing to bind. Keep the hand-written
+`analytical` profile for the rest of this codelab. See
+[Drafting a binding](bind.md).
+
 ### Deploy the semantic model
 
 Now deploy the bound model to BigQuery. The graph backend comes from the model's

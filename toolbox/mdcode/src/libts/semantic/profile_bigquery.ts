@@ -1579,7 +1579,8 @@ export function parseJobLabels(raw: string|string[]|undefined):
   return {labels};
 }
 
-async function runProfileQuery(
+/** Runs one query that returns one row (polling until the job completes). */
+export async function runProfileQuery(
     client: BigQueryClient, project: string, sql: string,
     options: ProfileRunOptions): Promise<QueryOutcome> {
   const started = await client.query(project, sql, options.location, false,

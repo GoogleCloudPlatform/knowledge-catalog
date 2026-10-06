@@ -1,0 +1,356 @@
+# Binding profile 'bigquery', proposed by `kcmd bind` from a scan of kc-demo-349204.ps_*.
+# Every decision is explained in bind_report.md. Rerunning bind rewrites
+# this file; edit the model, the scan or the review flags instead.
+
+version: "0.2.0.dev0/google"
+semantic_model:
+  # 32 of 34 concrete entities bound or derived; 2 need review; 0 unbound.
+  - name: ps_commercial
+    entities:
+      - name: MarketUnit
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_crm/tables/market_unit
+        fields:
+          - {name: marketUnitCode, expression: market_unit}
+          - {name: currencyCode, expression: currency_code}
+          - {name: geographicRegion, expression: geographic_region}
+          - {name: unitName, expression: market_unit_name}
+      - name: ServiceGroup
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_crm/tables/service_group
+        fields:
+          - {name: serviceGroupCode, expression: service_group}
+          - {name: deliveryArchetype, expression: delivery_archetype}
+          - {name: primaryPracticeLead, expression: primary_practice_lead}
+          - {name: unitName, expression: service_group_name}
+      - name: ClientAccount
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_crm/tables/client_account
+        fields:
+          - {name: marketUnitCode, expression: market_unit}
+          - {name: accountId, expression: account_id}
+          - {name: industryVertical, expression: industry_vertical}
+          - {name: accountTier, expression: account_tier}
+          - {name: accountCreatedAt, expression: created_at}
+          - {name: partyName, expression: master_client_name}
+      - name: EcosystemPartner
+        hydration:
+          derive_from:
+            relationship: allianceWith
+      - name: KeyBuyer
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_crm/tables/key_buyer
+        fields:
+          - {name: accountId, expression: account_id}
+          - {name: buyerId, expression: buyer_id}
+          - {name: buyerSeniority, expression: seniority}
+          - {name: disposition, expression: disposition}
+          - {name: influenceScore, expression: influence_score}
+          - {name: partyName, expression: contact_name}
+      - name: ClientStakeholder
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_client_intel/tables/client_stakeholder
+        fields:
+          - {name: accountId, expression: account_id}
+          - {name: stakeholderId, expression: stakeholder_id}
+          - {name: relationshipStance, expression: relationship_stance}
+          - {name: influenceLevel, expression: influence_level}
+          - {name: seniorityLevel, expression: seniority_level}
+          - {name: lastInteractionDate, expression: last_interaction_date}
+          - {name: partyName, expression: contact_name}
+      - name: SalesTeamMember
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_crm/tables/sales_team_member
+        fields:
+          - {name: homeMarketUnit, expression: home_market_unit}
+          - {name: salesTeamMemberId, expression: sales_team_member_id}
+          - {name: corporateEmail, expression: corporate_email}
+          - {name: practitionerLevel, expression: practitioner_level}
+          - {name: partyName, expression: full_name}
+      - name: Opportunity
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_crm/tables/opportunity
+        fields:
+          - {name: marketUnitCode, expression: market_unit}
+          - {name: serviceGroupCode, expression: service_group}
+          - {name: accountId, expression: account_id}
+          - {name: opportunityId, expression: opportunity_id}
+          - {name: originatorId, expression: lead_originator_id}
+          - {name: opportunityName, expression: opportunity_name}
+          - {name: salesStage, expression: sales_stage}
+          - {name: totalContractValue, expression: total_contract_value}
+          - {name: annualContractValue, expression: annual_contract_value}
+          - {name: wonAmount, expression: won_amount}
+          - {name: probabilityOfWin, expression: probability_of_win}
+          - {name: constructType, expression: construct_type}
+          - {name: closeDate, expression: close_date}
+          - {name: createdAt, expression: created_at}
+      - name: SalesStage
+        fields:
+          - {name: stageLabel, expression: label}
+          - {name: stageOrder, expression: sort_order}
+      - name: StageTransition
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_crm/tables/opportunity_stage_history
+        fields:
+          - {name: opportunityId, expression: opportunity_id}
+          - {name: stageHistoryId, expression: stage_history_id}
+          - {name: stageName, expression: stage_name}
+          - {name: stageEnteredDate, expression: stage_entered_date}
+          - {name: daysInStage, expression: days_in_stage}
+          - {name: transitionedBy, expression: transitioned_by}
+      - name: SalesCredit
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_crm/tables/sales_credit
+        fields:
+          - {name: serviceGroupCode, expression: service_group}
+          - {name: salesTeamMemberId, expression: sales_team_member_id}
+          - {name: opportunityId, expression: opportunity_id}
+          - {name: roleAssignmentId, expression: role_assignment_id}
+          - {name: roleName, expression: role_name}
+          - {name: roleAllocationPct, expression: role_allocation_pct}
+      - name: DealPricing
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_pricing/tables/deal_pricing
+        fields:
+          - {name: opportunityId, expression: opportunity_id}
+          - {name: pricingId, expression: pricing_id}
+          - {name: targetPrice, expression: target_price}
+          - {name: floorPrice, expression: floor_price}
+          - {name: approvedDiscountPct, expression: approved_discount_pct}
+          - {name: pricingConstruct, expression: pricing_construct}
+          - {name: pricingStatus, expression: pricing_status}
+          - {name: pricingCreatedAt, expression: created_at}
+      - name: RateCardLine
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_pricing/tables/rate_card_line
+        fields:
+          - {name: pricingId, expression: pricing_id}
+          - {name: rateLineId, expression: rate_line_id}
+          - {name: roleLevel, expression: role_level}
+          - {name: country, expression: country}
+          - {name: averageDailyRate, expression: average_daily_rate}
+          - {name: hoursAssumed, expression: hours_assumed}
+          - {name: billingUnit, expression: billing_unit}
+      - name: PricingDispute
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_pricing/tables/pricing_dispute
+        fields:
+          - {name: opportunityId, expression: opportunity_id}
+          - {name: disputeId, expression: dispute_id}
+          - {name: disputeStatus, expression: dispute_status}
+          - {name: escalationTier, expression: escalation_tier}
+          - {name: loggedAt, expression: logged_at}
+          - {name: resolvedAt, expression: resolved_at}
+      - name: PartnerAlliance
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_client_intel/tables/ecosystem_partner_alliance
+        fields:
+          - {name: accountId, expression: account_id}
+          - {name: partnerName, expression: partner_name}
+          - {name: allianceId, expression: alliance_id}
+          - {name: partnerTier, expression: partner_tier}
+          - {name: jointPipelineUsd, expression: joint_pipeline_usd}
+          - {name: allianceRevenueInfluence, expression: alliance_revenue_influence}
+          - {name: subcontractorUsed, expression: subcontractor_used}
+      - name: ClientHealthScorecard
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_client_intel/tables/client_health_scorecard
+        fields:
+          - {name: accountId, expression: account_id}
+          - {name: scorecardId, expression: scorecard_id}
+          - {name: npsScore, expression: nps_score}
+          - {name: sentimentCategory, expression: sentiment_category}
+          - {name: relationshipHealthIndex, expression: relationship_health_index}
+          - {name: surveyDate, expression: survey_date}
+          - {name: advocacyRating, expression: advocacy_rating}
+          - {name: surveyPeriod, expression: survey_period}
+      - name: PriceAdjustment
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_pricing/tables/price_adjustment
+        fields:
+          - {name: rateLineId, expression: rate_line_id}
+          - {name: adjustmentId, expression: adjustment_id}
+          - {name: adjustmentReason, expression: adjustment_reason}
+          - {name: adjustmentPct, expression: adjustment_pct}
+          - {name: approverName, expression: approver_name}
+          - {name: approvedDate, expression: approved_date}
+      - name: SalesTarget
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_sales_ods/tables/sales_target
+        fields:
+          - {name: marketUnitCode, expression: market_unit}
+          - {name: serviceGroupCode, expression: service_group}
+          - {name: salesTeamMemberId, expression: sales_team_member_id}
+          - {name: targetId, expression: target_id}
+          - {name: fiscalYear, expression: fiscal_year}
+          - {name: contributionTargetAmount, expression: contribution_target_amount}
+          - {name: craftContributionTargetAmount, expression: craft_contribution_target_amount}
+      - name: PipelineSnapshot
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_sales_ods/tables/pipeline_snapshot
+        fields:
+          - {name: marketUnitCode, expression: market_unit}
+          - {name: serviceGroupCode, expression: service_group}
+          - {name: asOfDate, expression: as_of_date}
+          - {name: forecastCategory, expression: forecast_category}
+          - {name: pipelineValue, expression: pipeline_value}
+          - {name: weightedPipelineValue, expression: weighted_pipeline_value}
+      - name: IntentSignal
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_market/tables/intent_signal
+        fields:
+          - {name: accountId, expression: account_id}
+          - {name: signalId, expression: signal_id}
+          - {name: intentTopic, expression: intent_topic}
+          - {name: surgeScore, expression: surge_score}
+          - {name: techInstallCount, expression: tech_install_count}
+          - {name: signalDate, expression: signal_date}
+          - {name: sourceFeed, expression: source_feed}
+          - {name: sourceOfRecord, expression: source_of_record}
+          - {name: genaiUsageRights, expression: genai_usage_rights}
+          - {name: syntheticProxy, expression: synthetic_proxy}
+      - name: IndustryForecast
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_market/tables/industry_forecast
+        fields:
+          - {name: marketUnitCode, expression: market_unit}
+          - {name: serviceGroupCode, expression: service_group}
+          - {name: forecastId, expression: forecast_id}
+          - {name: marketVertical, expression: market_vertical}
+          - {name: forecastYear, expression: forecast_year}
+          - {name: totalAddressableMarketUsd, expression: total_addressable_market_usd}
+          - {name: tamGrowthPct, expression: tam_growth_pct}
+          - {name: cloudMigrationSpendUsd, expression: cloud_migration_spend_usd}
+          - {name: sourceFeed, expression: source_feed}
+          - {name: sourceOfRecord, expression: source_of_record}
+          - {name: genaiUsageRights, expression: genai_usage_rights}
+          - {name: syntheticProxy, expression: synthetic_proxy}
+      # NEEDS REVIEW: no column matches key legacyDealId (guessed: opportunity_id); field coverage 0.50 < 0.60; margin 0.12 over kc-demo-349204.ps_crm.master_account_legacy < 0.15
+      # - name: LegacyDeal
+      #   source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_crm/tables/deal_legacy
+      #   fields:
+      #     - {name: legacyDealId, expression: opportunity_id}
+      # NEEDS REVIEW: margin 0.11 over kc-demo-349204.ps_crm.client_account < 0.15
+      # - name: LegacyMasterAccount
+      #   source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_crm/tables/master_account_legacy
+      #   fields:
+      #     - {name: legacyAccountId, expression: account_id}
+      - name: ContractAgreement
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_contracts/tables/contract_agreement
+        fields:
+          - {name: accountId, expression: account_id}
+          - {name: opportunityId, expression: opportunity_id}
+          - {name: contractNumber, expression: contract_number}
+          - {name: contractName, expression: contract_name}
+          - {name: contractType, expression: contract_type}
+          - {name: contractStatus, expression: contract_status}
+          - {name: contractStartDate, expression: start_date}
+          - {name: contractEndDate, expression: end_date}
+          - {name: governingLaw, expression: governing_law}
+          - {name: liabilityCapUsd, expression: liability_cap_usd}
+          - {name: totalCommittedValue, expression: total_committed_value}
+      - name: ChangeOrder
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_contracts/tables/change_order
+        fields:
+          - {name: contractNumber, expression: contract_number}
+          - {name: changeOrderId, expression: change_order_id}
+          - {name: ccnNumber, expression: ccn_number}
+          - {name: changeType, expression: change_type}
+          - {name: changeStatus, expression: change_status}
+          - {name: effectiveDate, expression: effective_date}
+          - {name: valueDeltaUsd, expression: value_delta_usd}
+          - {name: hoursDelta, expression: hours_delta}
+      - name: ContractObligation
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_contracts/tables/contract_obligation
+        fields:
+          - {name: contractNumber, expression: contract_number}
+          - {name: obligationId, expression: obligation_id}
+          - {name: obligationTitle, expression: obligation_title}
+          - {name: obligationCategory, expression: obligation_category}
+          - {name: penaltyClause, expression: penalty_clause}
+          - {name: slaThresholdPct, expression: sla_threshold_pct}
+      - name: Engagement
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_delivery/tables/engagement
+        fields:
+          - {name: accountId, expression: account_id}
+          - {name: opportunityId, expression: opportunity_id}
+          - {name: contractNumber, expression: contract_number}
+          - {name: engagementId, expression: engagement_id}
+          - {name: deliveryLeadId, expression: delivery_lead_id}
+          - {name: engagementName, expression: engagement_name}
+          - {name: deliveryMethod, expression: delivery_method}
+          - {name: healthStatus, expression: health_status}
+          - {name: plannedEffortHours, expression: planned_effort_hours}
+          - {name: actualEffortHours, expression: actual_effort_hours}
+          - {name: etcEffortHours, expression: etc_effort_hours}
+          - {name: eacMarginPct, expression: eac_margin_pct}
+      - name: Milestone
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_delivery/tables/milestone
+        fields:
+          - {name: engagementId, expression: engagement_id}
+          - {name: milestoneId, expression: delivery_milestone_id}
+          - {name: milestoneName, expression: milestone_name}
+          - {name: milestoneType, expression: milestone_type}
+          - {name: baselineDate, expression: baseline_date}
+          - {name: forecastDate, expression: forecast_date}
+          - {name: completionStatus, expression: completion_status}
+          - {name: delayDays, expression: delay_days}
+      - name: QAHealthCheck
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_delivery/tables/qa_healthcheck
+        fields:
+          - {name: engagementId, expression: engagement_id}
+          - {name: healthcheckId, expression: healthcheck_id}
+          - {name: checkDate, expression: check_date}
+          - {name: checkType, expression: check_type}
+          - {name: qaScore, expression: qa_score}
+          - {name: riskLevel, expression: risk_level}
+          - {name: openDefectsCount, expression: open_defects_count}
+          - {name: criticalRisksCount, expression: critical_risks_count}
+      - name: Employee
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_hcm/tables/employee
+        fields:
+          - {name: homeMarketUnit, expression: home_market_unit}
+          - {name: employeeId, expression: employee_id}
+          - {name: workEmail, expression: work_email}
+          - {name: careerTrack, expression: career_track}
+          - {name: standardLevel, expression: standard_level}
+          - {name: baseDailyCost, expression: base_daily_cost}
+          - {name: utilizationTargetPct, expression: utilization_target_pct}
+          - {name: isActive, expression: is_active}
+          - {name: partyName, expression: full_name}
+      - name: StaffingAssignment
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_hcm/tables/staffing_assignment
+        fields:
+          - {name: engagementId, expression: engagement_id}
+          - {name: employeeId, expression: employee_id}
+          - {name: assignmentId, expression: assignment_id}
+          - {name: assignedRole, expression: assigned_role}
+          - {name: assignmentStartDate, expression: start_date}
+          - {name: assignmentEndDate, expression: end_date}
+          - {name: allocationPct, expression: allocation_pct}
+          - {name: scheduledHours, expression: scheduled_hours}
+      - name: TimesheetEntry
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_hcm/tables/timesheet_entry
+        fields:
+          - {name: engagementId, expression: engagement_id}
+          - {name: employeeId, expression: employee_id}
+          - {name: assignmentId, expression: assignment_id}
+          - {name: timesheetId, expression: timesheet_id}
+          - {name: workDate, expression: work_date}
+          - {name: entryStatus, expression: entry_status}
+          - {name: billableHours, expression: billable_hours}
+          - {name: nonBillableHours, expression: non_billable_hours}
+          - {name: overtimeHours, expression: overtime_hours}
+      - name: WBSElement
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_finance/tables/wbs_element
+        fields:
+          - {name: marketUnitCode, expression: market_unit}
+          - {name: opportunityId, expression: opportunity_id}
+          - {name: wbsElementCode, expression: wbs_element}
+          - {name: companyCode, expression: company_code}
+          - {name: legalEntity, expression: legal_entity}
+          - {name: recognitionMethod, expression: recognition_method}
+          - {name: contractValueUsd, expression: contract_value_usd}
+          - {name: setupDate, expression: setup_date}
+      - name: RevenueActual
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_finance/tables/revenue_actual
+        fields:
+          - {name: marketUnitCode, expression: market_unit}
+          - {name: serviceGroupCode, expression: service_group}
+          - {name: wbsElementCode, expression: wbs_element}
+          - {name: revenueEntryId, expression: revenue_entry_id}
+          - {name: servicesRevenue, expression: services_revenue}
+          - {name: allianceUtilizationRevenue, expression: alliance_utilization_revenue}
+          - {name: softwareMiscRevenue, expression: software_misc_revenue}
+          - {name: costToServe, expression: cost_to_serve}
+          - {name: recognizedPeriod, expression: recognized_period}
+      - name: Booking
+        source: //bigquery.googleapis.com/projects/kc-demo-349204/datasets/ps_finance/tables/booking
+        fields:
+          - {name: marketUnitCode, expression: market_unit}
+          - {name: wbsElementCode, expression: wbs_element}
+          - {name: bookingId, expression: booking_id}
+          - {name: signDate, expression: sign_date}
+          - {name: authorizedBy, expression: authorized_by}

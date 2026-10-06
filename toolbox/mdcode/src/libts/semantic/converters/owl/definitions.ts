@@ -30,9 +30,11 @@
 //
 // Anything else -- above all a restriction that traverses a relationship
 // (`hasBuyer some StrategicAccount`), which needs a join a one-row predicate
-// cannot express -- leaves the class exactly as before (an entity with
-// `extends` plus the constraints its restrictions imply), with a warning
-// naming the construct that blocked compilation.
+// cannot express -- is warned, naming the construct that blocked compilation.
+// A class with fields or a key of its own stays a table-backed subclass with
+// the constraints its restrictions imply. One with neither has no rows to
+// bind, so it becomes ABSTRACT (no node of its own) and keeps its constraints,
+// its definition carried as readable text in ai_context.instructions.
 //
 // Two deliberate differences from the prototype: string comparisons are exact
 // (the prototype lower-cases both sides), so the SQL means what the ontology
@@ -430,16 +432,39 @@ export function compileOwlDefinitions(
   const results = new Map<string, {base: string; sql: string}>();
   for (const [name, cls] of candidates) {
     const entity = c.entitiesByName.get(name)!;
-    const fallback = (why: string) => c.warnings.push(
-        `class '${name}': its owl:equivalentClass definition was not ` +
-        `compiled to a defined entity (${why}); imported as a subclass with ` +
-        `constraints instead.`);
     if (entity.fields.length || entity.keys.length) {
-      fallback(`it declares its own ${
-          entity.fields.length ? 'fields' : 'key'}, so it is a table-backed ` +
-               `subtype rather than a filter over its superclass`);
+      c.warnings.push(
+          `class '${name}': its owl:equivalentClass definition was not ` +
+          `compiled to a defined entity (it declares its own ${
+              entity.fields.length ? 'fields' : 'key'}, so it is a table-backed ` +
+          `subtype rather than a filter over its superclass); imported as a ` +
+          `subclass with constraints instead.`);
       continue;
     }
+    // A class with no fields or key of its own that cannot be a filter has
+    // no rows to bind: as a concrete entity it would be a keyless node no
+    // binding can satisfy. It becomes abstract (no node of its own), keeps
+    // the constraints its restrictions imply, and carries its definition as
+    // text so an agent can still evaluate membership by querying the base.
+    const fallback = (why: string) => {
+      entity.abstract = true;
+      const text = cls.definitions!.map(d => describeClassExpr(d)).join('; or equivalently ');
+      const over = baseOf(name);
+      const note = `Membership is defined, not stored: a ${name} is ${text}. ` +
+          `No ${name} rows or nodes exist; to find its members, evaluate ` +
+          `this definition over ${over ? `${over} and its relationships` :
+                                         'the entities it names'}.`;
+      entity.aiContext = {
+        ...(entity.aiContext ?? {}),
+        instructions: entity.aiContext?.instructions ?
+            `${entity.aiContext.instructions}\n\n${note}` :
+            note,
+      };
+      c.warnings.push(
+          `class '${name}': its owl:equivalentClass definition was not ` +
+          `compiled to a defined entity (${why}); imported as an abstract ` +
+          `entity with constraints, its definition in ai_context.instructions.`);
+    };
     const base = baseOf(name);
     if (!base) {
       fallback('it has no superclass to define it over');
@@ -529,4 +554,66 @@ function isAnyClass(f: OwlClassExpr|OwlDataRange, range?: string): boolean {
 
 function isTopData(r: OwlClassExpr|OwlDataRange): boolean {
   return r.kind === 'named' && r.iri === RDFS_LITERAL;
+}
+
+const FACET_SYMBOL: Record<string, string> = {
+  minInclusive: '>=', minExclusive: '>', maxInclusive: '<=', maxExclusive: '<',
+};
+
+function describeLiteral(l: OwlLiteral): string {
+  return JSON.stringify(l.value);
+}
+
+function describeFiller(f: OwlClassExpr|OwlDataRange): string {
+  switch (f.kind) {
+    case 'datatype':
+      return localName(f.iri);
+    case 'facets':
+      return `${localName(f.datatype)}[${f.facets.map(({facet, value}) => {
+        const name = localName(facet);
+        return `${FACET_SYMBOL[name] ?? name} ${value.value}`;
+      }).join(', ')}]`;
+    case 'dataOneOf':
+      return `{${f.values.map(describeLiteral).join(', ')}}`;
+    default:
+      return describeClassExpr(f, true);
+  }
+}
+
+/**
+ * A class expression as readable text in OWL Manchester syntax, e.g.
+ * `Opportunity and (HighValueOpportunity or (hasBuyer some StrategicAccount))`.
+ * Names are local names; `nested` parenthesizes a compound expression.
+ */
+export function describeClassExpr(e: OwlClassExpr, nested = false): string {
+  const wrap = (s: string) => nested ? `(${s})` : s;
+  switch (e.kind) {
+    case 'named':
+      return localName(e.iri);
+    case 'and':
+    case 'or':
+      return wrap(e.operands.map(o => describeClassExpr(o, true)).join(` ${e.kind} `));
+    case 'not':
+      return `not ${describeClassExpr(e.operand, true)}`;
+    case 'oneOf':
+      return `{${e.members.map(localName).join(', ')}}`;
+    case 'unsupported':
+      return `(${e.construct})`;
+    case 'restriction': {
+      const p = localName(e.property);
+      const filler = e.filler ? ` ${describeFiller(e.filler)}` : '';
+      switch (e.restriction) {
+        case 'value': {
+          const v = e.value;
+          const shown = !v ? '?' : 'literal' in v ? describeLiteral(v.literal) : localName(v.iri);
+          return wrap(`${p} value ${shown}`);
+        }
+        case 'some':
+        case 'all':
+          return wrap(`${p} ${e.restriction === 'some' ? 'some' : 'only'}${filler || ' Thing'}`);
+        default:
+          return wrap(`${p} ${e.restriction} ${e.cardinality ?? 0}${filler}`);
+      }
+    }
+  }
 }

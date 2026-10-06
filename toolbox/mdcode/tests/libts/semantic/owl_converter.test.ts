@@ -403,6 +403,37 @@ describe('class hierarchies map rdfs:subClassOf to entity extends', () => {
             load(yaml).models[0].entities.find(e => e.name === 'Person')!;
         expect(person.extends).toBeUndefined();
       });
+
+  test('a subproperty whose endpoint does not fit its parent drops it, warned', () => {
+    // inRegion's range Region is no Unit, so its edges cannot carry the
+    // belongsTo label (the loader would flag them); the link is dropped. The
+    // fitting subproperty keeps it, and belongsTo stays the abstract umbrella.
+    const ttl = [
+      '@prefix owl:  <http://www.w3.org/2002/07/owl#> .',
+      '@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .',
+      '@prefix ex:   <http://example.com/geo#> .',
+      'ex:Thing2 a owl:Class .',
+      'ex:Unit a owl:Class ; rdfs:subClassOf ex:Thing2 .',
+      'ex:Market a owl:Class ; rdfs:subClassOf ex:Unit .',
+      'ex:Region a owl:Class .',
+      'ex:belongsTo a owl:ObjectProperty ; rdfs:domain ex:Thing2 ; rdfs:range ex:Unit .',
+      'ex:inUnit a owl:ObjectProperty ; rdfs:subPropertyOf ex:belongsTo ;',
+      '  rdfs:domain ex:Market ; rdfs:range ex:Unit .',
+      'ex:inRegion a owl:ObjectProperty ; rdfs:subPropertyOf ex:belongsTo ;',
+      '  rdfs:domain ex:Market ; rdfs:range ex:Region .',
+    ].join('\n');
+    const {yaml, warnings} = convertOwlToOsi(ttl, 'geo');
+    expect(warnings).toContain(
+        `object property 'inRegion' is rdfs:subPropertyOf 'belongsTo', but its ` +
+        `destination 'Region' is not 'Unit' or a subtype of it; 'belongsTo' is ` +
+        `dropped from its 'extends' (its edges could not carry that label).`);
+    const loaded = load(yaml);
+    const rel = (n: string) => loaded.models[0].relationships.find(r => r.name === n)!;
+    expect(rel('inRegion').extends).toBeUndefined();
+    expect(rel('inUnit').extends).toEqual(['belongsTo']);
+    expect(rel('belongsTo').abstract).toBe(true);
+    expect(loaded.warnings.filter(w => w.includes('inRegion'))).toEqual([]);
+  });
 });
 
 
