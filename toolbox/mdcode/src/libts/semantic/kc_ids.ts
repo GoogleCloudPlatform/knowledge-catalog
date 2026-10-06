@@ -16,10 +16,10 @@
 import {Entity, Metric, Relationship, SemanticModel} from './ir';
 
 // Where the `semantic-*` and `schema` system types live: built-in types in
-// project `dataplex-types`, location `global`. Callers may override to reference
-// them from a staging project.
-const DEFAULT_TYPE_PROJECT = 'dataplex-types';
-const DEFAULT_TYPE_LOCATION = 'global';
+// project `dataplex-types`, location `global`. Callers may override to
+// reference them from a staging project.
+export const DEFAULT_TYPE_PROJECT = 'dataplex-types';
+export const DEFAULT_TYPE_LOCATION = 'global';
 
 // Matches the container path and trailing bare ID of any Knowledge Catalog
 // resource name:
@@ -164,12 +164,10 @@ export function ownedEntryIdPrefixes(modelName: string): string[] {
  * (entry, entry link, or type), or returns `resourceName` unchanged if it does
  * not match a known resource container.
  *
- * Unlike `idOf` in `deploy_knowledge_catalog.ts` (which only matches
- * `/entries/` and falls back to `name.split('/').pop()`), this function matches
- * all known container collections via `RESOURCE_ID_RE` and leaves non-matching
- * strings untouched. Falling back to `.split('/').pop()` would corrupt an
- * already-bare V2 slash entry ID (e.g. `'retail_sales/entities/store_orders'`)
- * into just its last segment (`'store_orders'`).
+ * Matches known container collections via `RESOURCE_ID_RE` and leaves
+ * non-matching strings untouched, rather than falling back to
+ * `.split('/').pop()` (which would corrupt an already-bare V2 slash entry ID
+ * like `'retail_sales/entities/store_orders'` into `'store_orders'`).
  */
 export function entryIdOf(resourceName: string): string {
   const m = resourceName.match(RESOURCE_ID_RE);

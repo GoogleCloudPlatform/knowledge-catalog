@@ -36,9 +36,10 @@
 // removing an existing field breaks the update for every project that already
 // provisioned the type.
 
-import {AspectType, CatalogClient, EntryType} from '../gcp/dataplex';
+import {AspectType, CatalogClient, Entry, EntryType} from '../gcp/dataplex';
 
 import {AiContext} from './ir';
+import {entryIdOf} from './kc_ids';
 
 // A type kcmd provisions because no built-in one exists yet.
 export interface CustomType {
@@ -608,6 +609,19 @@ const CUSTOM_TYPE_LOCATION = 'global';
 // built-in has taken over.
 export function isCustomType(id: string): boolean {
   return CUSTOM_TYPES.some(t => t.id === id);
+}
+
+/**
+ * Collects the deduplicated list of `kcmd`-owned custom type IDs
+ * (`semantic-action`, `semantic-constraint`, etc.) used by `entries`.
+ */
+export function collectCustomTypes(entries: readonly Entry[]): string[] {
+  const used = new Set<string>();
+  for (const entry of entries) {
+    const typeId = entryIdOf(entry.entryType ?? '');
+    if (isCustomType(typeId)) used.add(typeId);
+  }
+  return [...used];
 }
 
 // Where a destination's custom types live: the destination project itself,
