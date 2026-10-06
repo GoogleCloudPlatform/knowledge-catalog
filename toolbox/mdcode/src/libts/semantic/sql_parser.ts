@@ -84,16 +84,41 @@ export function sqlColumns(expression: string, dialect: string): SqlColumn[]|
         'the SQL parser is not loaded; call loadSqlEngine() first');
   }
   if (!expression.trim()) return [];
-  // The parentheses keep a text that starts with a keyword, such as the entity
-  // name in `Order.amount - Order.discount`, from reading as a clause. The line
-  // breaks keep a trailing `--` comment from swallowing the closing one.
-  const res = loadedEngine.parse(
-      `SELECT (\n${expression}\n)`,
-      PARSER_DIALECTS[dialect.toUpperCase()] ?? 'generic');
-  if (!res.success || res.ast?.length !== 1) return undefined;
+  const engineDialect = PARSER_DIALECTS[dialect.toUpperCase()] ?? 'generic';
+  // Read as written first. A text that starts with a keyword, such as the
+  // entity name in `Order.amount - Order.discount`, reads as a clause there,
+  // so it is read again inside parentheses. Either way the text must parse as
+  // one expression and nothing more. The line breaks keep a trailing `--`
+  // comment from swallowing the closing parenthesis.
+  const ast = oneExpression(engineDialect, `SELECT ${expression}`) ??
+      oneExpression(engineDialect, `SELECT (\n${expression}\n)`, 'paren');
+  if (!ast) return undefined;
   const columns: SqlColumn[] = [];
-  collectColumns(res.ast[0], columns);
+  collectColumns(ast, columns);
   return columns;
+}
+
+// The parsed statement when `sql` is a `SELECT` of exactly one expression and
+// nothing else: no alias, no `FROM`, `WHERE`, `DISTINCT` or other clause. The
+// expression is of node kind `kind` when given. Undefined otherwise.
+function oneExpression(dialect: string, sql: string, kind?: string): unknown {
+  const res = loadedEngine!.parse(sql, dialect);
+  if (!res.success || res.ast?.length !== 1) return undefined;
+  const select = (res.ast[0] as any)?.select;
+  const items = select?.expressions;
+  if (!Array.isArray(items) || items.length !== 1) return undefined;
+  const itemKind = Object.keys(items[0] ?? {})[0];
+  if (itemKind === 'alias' || (kind && itemKind !== kind)) return undefined;
+  // Inside the parentheses, `x AS y` reads as an alias too.
+  const inner = itemKind === 'paren' ? items[0].paren?.this : undefined;
+  if (inner && Object.keys(inner)[0] === 'alias') return undefined;
+  const isEmpty = (v: unknown) => v === null || v === undefined ||
+      v === false || (Array.isArray(v) && v.length === 0) ||
+      (typeof v === 'object' && Object.keys(v as object).length === 0);
+  for (const [key, value] of Object.entries(select)) {
+    if (key !== 'expressions' && !isEmpty(value)) return undefined;
+  }
+  return res.ast[0];
 }
 
 function collectColumns(node: unknown, out: SqlColumn[]): void {

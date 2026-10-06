@@ -7,8 +7,6 @@
 # profiles beside it re-declare the columns each store serves:
 #   - prod:  an environment swap -- the same columns, a different project/dataset.
 #   - remap: a store that renamed a column and does not carry `discount`.
-# Together they show that selecting a profile clears the inline bindings, so a
-# field the profile does not name is unbound under it (there is no `unbound` flag).
 version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales

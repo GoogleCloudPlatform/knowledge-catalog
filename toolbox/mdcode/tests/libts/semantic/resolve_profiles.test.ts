@@ -463,6 +463,90 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     expect(fieldNames(resolved, 'C')).not.toContain('y');
   });
 
+  test('a restated field that reads an unavailable one does not fall back to the ancestor', () => {
+    // C restates `y` to read its own `bonus`, which is unbound. Removing C's
+    // line alone would hand C the ancestor's `P.x + 1` again.
+    const m: SemanticModel = {
+      name: 'h',
+      entities: [
+        {name: 'P', dataSource: 'p.d.parent', keys: ['id'], fields: [
+          {name: 'id', expression: 'id'},
+          {name: 'x', expression: 'x'},
+          {name: 'y', expression: 'P.x + 1'},
+        ]},
+        {name: 'C', dataSource: 'p.d.child', keys: ['id'], extends: ['P'], fields: [
+          {name: 'bonus'},
+          {name: 'y', expression: 'C.x + C.bonus'},
+        ]},
+      ],
+      relationships: [],
+      metrics: [],
+    };
+    const {model, report} = pruneUnavailable(m, 'default');
+    expect(report.droppedFields).toEqual(
+        [{name: 'C.y', reason: 'reads C.bonus, which is unavailable'}]);
+    expect(fieldNames(resolveInheritance(model).model, 'C')).not.toContain('y');
+    expect(fieldNames(resolveInheritance(model).model, 'P')).toContain('y');
+  });
+
+  test('a metric is dropped when a text it can read reaches an unavailable field', () => {
+    // `Date` is a keyword, so the parser reads the backticked text and not the
+    // other one.
+    const m: SemanticModel = {
+      name: 'cal',
+      entities: [{name: 'Date', dataSource: 'p.d.dates', keys: ['d'], fields: [
+        {name: 'd', expression: 'd'},
+        {name: 'is_holiday'},
+      ]}],
+      relationships: [],
+      metrics: [{
+        name: 'holidays', entity: 'Date',
+        dialects: [
+          {dialect: 'BIGQUERY', expression: 'SUM(`Date`.is_holiday)'},
+          {dialect: 'SNOWFLAKE', expression: 'SUM(Date.is_holiday)'},
+        ],
+      }],
+    };
+    const {model, report} = pruneUnavailable(m, 'default');
+    expect(metricNames(model)).toEqual([]);
+    expect(report.droppedMetrics).toEqual(
+        [{name: 'holidays', reason: 'field Date.is_holiday is unbound'}]);
+  });
+
+  test('a metric is dropped when its readable text joins unconnected entities', () => {
+    const m = irModel();
+    m.relationships = [];
+    m.metrics = [{
+      name: 'mixed', entity: 'Order',
+      dialects: [
+        {dialect: 'BIGQUERY', expression: 'COUNT(Order.key) + COUNT(Customer.key)'},
+        {dialect: 'SNOWFLAKE', expression: 'COUNT(Order.key'},
+      ],
+    }];
+    const {model, report} = pruneUnavailable(m, 'operational');
+    expect(metricNames(model)).toEqual([]);
+    expect(report.droppedMetrics[0].reason)
+        .toBe('no available relationship connects Order, Customer');
+  });
+
+  test('an excluded field is not read for propagation', () => {
+    const m = irModel();
+    m.entities[0].excludedFields = ['odd'];
+    m.entities[0].fields.push({name: 'odd', expression: 'a; b'});
+    const {report} = pruneUnavailable(m, 'operational');
+    expect(report.warnings).toEqual([]);
+  });
+
+  test('nothing is parsed for propagation when nothing is unbound', () => {
+    const m = irModel();
+    m.entities[0].fields = m.entities[0].fields.map(
+        f => ({...f, expression: f.expression ?? 'ltv'}));
+    m.entities[0].fields.push({name: 'odd', expression: 'a; b'});
+    const {report} = pruneUnavailable(m, 'operational');
+    expect(report.droppedFields).toEqual([]);
+    expect(report.warnings).toEqual([]);
+  });
+
   test('a metric is pruned on every text it carries', () => {
     const m = irModel();
     const metric = m.metrics!.find(x => x.name === 'avg_lifetime_value')!;

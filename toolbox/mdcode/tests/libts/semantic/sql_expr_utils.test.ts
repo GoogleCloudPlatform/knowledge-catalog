@@ -101,6 +101,17 @@ describe('columnReferences', () => {
         .toEqual([{qualifier: 'Group', name: 'size'}]);
   });
 
+  test('reads only a text that is one whole expression', () => {
+    expect(columnReferences('Values.a + 1', 'BIGQUERY'))
+        .toEqual([{qualifier: 'Values', name: 'a'}]);
+    for (const bad of [
+           'a) + (b', 'x) FROM t WHERE (y', 'x FROM t', 'a, b', 'x WHERE y',
+           'x) WHERE (y', 'DISTINCT x', 'x AS y', 'a b', 'x LIMIT 1',
+         ]) {
+      expect(columnReferences(bad, 'BIGQUERY')).toBeUndefined();
+    }
+  });
+
   test('reads a dialect name in any case', () => {
     expect(columnReferences('SUM("orders"."amount")', 'snowflake'))
         .toEqual([{qualifier: 'orders', name: 'amount'}]);

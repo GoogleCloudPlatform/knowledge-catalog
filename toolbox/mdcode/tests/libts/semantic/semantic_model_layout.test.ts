@@ -262,6 +262,8 @@ describe('SemanticModelLayout sibling profile files', () => {
     l.removeProfileDocument('retail', 'prod');  // a no-op the second time
     expect(() => l.profilePath('retail', 'x/../../y')).toThrow(
         "Profile name 'x/../../y' is not valid");
+    expect(() => l.profilePath('../x', 'prod')).toThrow(
+        "Model name '../x' is not valid in a file name.");
   });
 });
 

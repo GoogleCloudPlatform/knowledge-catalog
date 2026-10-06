@@ -142,9 +142,6 @@ describe('v2Aspects forwarding', () => {
 });
 
 
-// A push that deploys a graph prunes unbound fields, which can remove the very
-// field an inheritance rule is about. The rules run on the model before
-// pruning, so a graph push and a catalog-only push give the same answer.
 describe('a push with a sibling profile file', () => {
   test('a graph push of the profile file is refused before anything deploys', async () => {
     fs.writeFileSync(
@@ -179,6 +176,9 @@ entities:
 });
 
 
+// A push that deploys a graph prunes unbound fields, which can remove the very
+// field an inheritance rule is about. The rules run on the model before
+// pruning, so a graph push and a catalog-only push give the same answer.
 describe('a graph push checks inheritance before pruning', () => {
   const GRAPH_MODEL = `version: "0.2.0.dev0/google"
 semantic_model:

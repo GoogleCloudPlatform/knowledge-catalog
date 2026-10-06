@@ -27,6 +27,7 @@ import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
 import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryActionStatements, validateBigQueryDataSources, validateInheritance, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
+import {YAML_OPTIONS} from '../libts/semantic/yaml_options';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
@@ -161,7 +162,7 @@ export function checkPushSelection(sel: {
 export function declaresGraphTarget(text: string): boolean {
   let doc: any;
   try {
-    doc = yaml.parse(text);
+    doc = yaml.parse(text, YAML_OPTIONS);
   } catch {
     return true;  // let the strict loader report the parse error
   }
@@ -325,7 +326,7 @@ export interface MergedDoc {
 // object) rather than the legacy `semantic_model:` wrapper.
 export function isProfileFileForm(text: string): boolean {
   try {
-    const doc = yaml.parse(text);
+    const doc = yaml.parse(text, YAML_OPTIONS);
     return !!doc && typeof doc === 'object' && !Array.isArray(doc) &&
         doc.semantic_model === undefined;
   } catch {

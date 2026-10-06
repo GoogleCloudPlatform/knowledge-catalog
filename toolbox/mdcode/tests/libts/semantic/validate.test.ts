@@ -945,6 +945,14 @@ describe('a relationship joins on a key of its target', () => {
     expect(check(ent('customer'), ['`id`'])).toEqual([]);
   });
 
+  test('a join name matches a field exactly, as the generators read it', () => {
+    // The generators read `ID` as a column, not as field `id`, so the join
+    // does not reach the key they emit, `cust_id`.
+    const named = ent('customer', {fields: [{name: 'id', expression: 'cust_id'}]});
+    expect(check(named, ['ID']).join('\n'))
+        .toContain("cover no primary or unique key of 'customer'");
+  });
+
   test('a join that covers no key is rejected', () => {
     expect(check(ent('customer'), ['name']).join('\n')).toContain(
         "relationship 'placed_by' in model 'm' (doc): its to_columns [\"name\"] " +

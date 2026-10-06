@@ -18,8 +18,9 @@
 //     schema validation, so a profile is written in the same syntax as the
 //     model.
 //   - pruneUnavailable runs over the loaded IR and drops each field left unbound
-//     plus every metric whose expression reads one, returning the pruned model
-//     and a per-profile availability report. Keys and join columns are physical
+//     or excluded, every field that reads one of those, and every metric whose
+//     expression reads any of them, returning the pruned model and a
+//     per-profile availability report. Keys and join columns are physical
 //     columns rather than fields, so pruning fields never removes an entity or
 //     a relationship.
 
@@ -473,6 +474,9 @@ function mergeField(lf: any, pf: any, entityName: string, profileName: string):
       return declError(profileName, `field '${entityName}.${pf.name}'`, k);
     }
   }
+  // A profile file's entry always has an expression (profileSpecOf rejects one
+  // without). The legacy wrapper form may list a field with none, and it is
+  // removed with that form.
   if (pf.expression !== undefined) lf.expression = pf.expression;
   return undefined;
 }
@@ -606,8 +610,8 @@ function findLogicalSqlExecutor(models: any[]):
 export interface AvailabilityReport {
   profile: string;
   unboundFields: string[];  // "Entity.field"
-  // No pruning rule drops an entity or a relationship, so these two lists are
-  // always empty (see the file header).
+  // No pruning rule drops an entity or a relationship, so droppedEntities and
+  // droppedRelationships are always empty (see the file header).
   droppedEntities: {name: string; reason: string}[];
   droppedMetrics: {name: string; reason: string}[];
   droppedRelationships: {name: string; reason: string}[];
@@ -616,8 +620,9 @@ export interface AvailabilityReport {
   // A bound field that reads an unavailable field of its entity, directly or
   // through other fields, so it cannot be computed either. "Entity.field".
   droppedFields: {name: string; reason: string}[];
-  // A metric kept because the SQL parser cannot read its expression, so the
-  // fields it reads were not checked.
+  // A field or metric whose SQL the parser cannot read, so the fields that SQL
+  // reads were not checked. A metric is kept; a field is judged on what could
+  // be read.
   warnings: string[];
 }
 
@@ -672,27 +677,35 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
   report.unboundFields = [...unbound];
 
   // A field that reads an unavailable field of its entity is unavailable too,
-  // and so is every field and metric that reads it in turn.
+  // and so is every field and metric that reads it in turn. Each field's
+  // dependencies are read once, and only when something is unbound.
   const unavailable = new Set(unbound);
   const unreadable = new Set<string>();
-  let grew = true;
-  while (grew) {
-    grew = false;
+  const dependencies = new Map<string, string[]>();
+  if (unbound.size) {
     for (const e of resolved) {
       if (e.abstract) continue;
       for (const f of e.fields ?? []) {
         const key = `${e.name}.${f.name}`;
-        if (unavailable.has(key)) continue;
-        const reached =
+        if (unbound.has(key)) continue;
+        dependencies.set(
+            key,
             fieldDependencies(clone, e.name, f.name, unreadable)
-                .map(dep => `${e.name}.${dep}`)
-                .find(target => unavailable.has(target));
-        if (reached) {
-          unavailable.add(key);
-          report.droppedFields.push(
-              {name: key, reason: `reads ${reached}, which is unavailable`});
-          grew = true;
-        }
+                .map(dep => `${e.name}.${dep}`));
+      }
+    }
+  }
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const [key, deps] of dependencies) {
+      if (unavailable.has(key)) continue;
+      const reached = deps.find(target => unavailable.has(target));
+      if (reached) {
+        unavailable.add(key);
+        report.droppedFields.push(
+            {name: key, reason: `reads ${reached}, which is unavailable`});
+        grew = true;
       }
     }
   }
@@ -719,14 +732,16 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
     // Keep an abstract entity's fields intact: they are column-less by design
     // and name the shared label's property set for the emitter (see above).
     if (e.abstract) continue;
-    // An inherited field that reads an unavailable one has no line here to
-    // remove, so it is marked excluded on this entity instead.
+    // A field that reads an unavailable one and that this entity inherits is
+    // marked excluded here. Removing this entity's line alone would let
+    // inheritance hand back the ancestor's definition and binding.
     const declared = new Set((e.fields ?? []).map(f => f.name));
+    const inherited = inheritedNamesOf(clone, e.name);
     const inheritedDependents =
         [...dependent]
             .filter(key => key.startsWith(`${e.name}.`))
             .map(key => key.slice(e.name.length + 1))
-            .filter(name => !declared.has(name));
+            .filter(name => !declared.has(name) || inherited.has(name));
     const excluded = new Set(e.excludedFields ?? []);
     const gone = (f: Field) => !isFieldBound(f) || excluded.has(f.name) ||
         unavailable.has(`${e.name}.${f.name}`);
@@ -749,7 +764,7 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
   const keptRels: Relationship[] = clone.relationships ?? [];
 
   // A metric is available only when the profile does not exclude it, every
-  // field it references is bound, and -- when it spans entities -- a
+  // field it reads is available, and -- when it spans entities -- a
   // relationship connects them.
   const excludedMetrics = new Set(clone.excludedMetrics ?? []);
   delete clone.excludedMetrics;
@@ -760,25 +775,16 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
       continue;
     }
     const columns: SqlColumn[] = [];
-    let readable = true;
-    for (const {text, dialect} of expressionSources(mt)) {
+    const sources = expressionSources(mt);
+    let unread = 0;
+    for (const {text, dialect} of sources) {
       const read = columnReferences(text, dialect);
       if (read) {
         columns.push(...read);
       } else {
-        readable = false;
+        unread++;
       }
     }
-    if (!readable) {
-      report.warnings.push(
-          `metric '${mt.name}': kcmd could not read its SQL, so the fields it ` +
-          `reads were not checked`);
-      keptMetrics.push(mt);
-      continue;
-    }
-    const refs = [...new Set(
-        columns.map(c => c.qualifier)
-            .filter((q): q is string => !!q && allEntityNames.includes(q)))];
     const hit = firstUnboundReferenced(columns, unavailable);
     if (hit) {
       report.droppedMetrics.push({
@@ -787,12 +793,24 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
       });
       continue;
     }
+    const refs = [...new Set(
+        columns.map(c => c.qualifier)
+            .filter((q): q is string => !!q && allEntityNames.includes(q)))];
     if (refs.length > 1 && !connectingRelationshipKept(refs, keptRels)) {
       report.droppedMetrics.push({
         name: mt.name,
         reason: `no available relationship connects ${refs.join(', ')}`,
       });
       continue;
+    }
+    // A text the parser cannot read is skipped, so what it reads is unknown.
+    if (unread) {
+      report.warnings.push(
+          unread === sources.length ?
+              `metric '${mt.name}': kcmd could not read its SQL, so the ` +
+                  `fields it reads were not checked` :
+              `metric '${mt.name}': kcmd could not read some of its SQL, so ` +
+                  `the fields that SQL reads were not checked`);
     }
     keptMetrics.push(mt);
   }
@@ -827,6 +845,24 @@ function resolvedEntities(model: SemanticModel): Entity[] {
   } catch {
     return entities;
   }
+}
+
+// The names of the fields `entityName` inherits from every ancestor its
+// `extends` reaches.
+function inheritedNamesOf(model: SemanticModel, entityName: string):
+    Set<string> {
+  const byName = new Map((model.entities ?? []).map(e => [e.name, e]));
+  const names = new Set<string>();
+  const seen = new Set<string>([entityName]);
+  const queue = [...(byName.get(entityName)?.extends ?? [])];
+  while (queue.length) {
+    const ancestor = queue.shift()!;
+    if (seen.has(ancestor)) continue;
+    seen.add(ancestor);
+    for (const f of byName.get(ancestor)?.fields ?? []) names.add(f.name);
+    queue.push(...(byName.get(ancestor)?.extends ?? []));
+  }
+  return names;
 }
 
 // The first unbound "Entity.field" among the columns a metric expression

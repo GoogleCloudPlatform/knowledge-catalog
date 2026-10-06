@@ -232,9 +232,13 @@ export class SemanticModelLayout implements CatalogLayout {
 
   // The path a profile file for this model and profile name maps to:
   // `<catalog>/EntryGroups/<entryGroup>/<model>.profile.<name>.yaml`. Throws
-  // when `profileName` breaks the profile naming rule, so a name read from
-  // elsewhere cannot point outside the entry group.
+  // when `profileName` breaks the profile naming rule or `model` holds a path
+  // separator, so a name read from elsewhere cannot point outside the entry
+  // group.
   profilePath(model: string, profileName: string): string {
+    if (/[\\/]/.test(model)) {
+      throw new Error(`Model name '${model}' is not valid in a file name.`);
+    }
     if (!PROFILE_NAME.test(profileName)) {
       throw new Error(
           `Profile name '${profileName}' is not valid; a profile name is a ` +
