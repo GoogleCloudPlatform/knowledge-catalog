@@ -517,8 +517,15 @@ semantic_model:
       - name: PriorityOpportunity
         extends:
           - Opportunity
+        abstract: true
         description: An opportunity that is high value, or whose buyer is a strategic
           account.
+        ai_context:
+          instructions: "Membership is defined, not stored: a PriorityOpportunity is
+            Opportunity and (HighValueOpportunity or (hasBuyer some
+            StrategicAccount)). No PriorityOpportunity rows or nodes exist; to
+            find its members, evaluate this definition over Opportunity and its
+            relationships."
       - name: StageTransition
         extends:
           - BusinessObject
@@ -1408,7 +1415,13 @@ semantic_model:
       - name: QAAssuredEngagement
         extends:
           - Engagement
+        abstract: true
         description: An engagement that has had at least one quality-assurance health check.
+        ai_context:
+          instructions: "Membership is defined, not stored: a QAAssuredEngagement is
+            Engagement and (hasHealthCheck some QAHealthCheck). No
+            QAAssuredEngagement rows or nodes exist; to find its members,
+            evaluate this definition over Engagement and its relationships."
       - name: AtRiskEngagement
         extends:
           - Engagement
@@ -1831,8 +1844,6 @@ semantic_model:
       - name: inRegion
         from: MarketUnit
         to: GeographicRegion
-        extends:
-          - belongsToTerritory
         from_columns:
           - geographicRegion
         to_columns:

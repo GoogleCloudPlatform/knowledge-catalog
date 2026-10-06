@@ -866,13 +866,13 @@ View columns: stageLabel -> `label`, stageOrder -> `sort_order`.
 | HighValueOpportunity | defined | defined: a filter over Opportunity, no table |
 | MegaDeal | defined | defined: a filter over HighValueOpportunity, no table |
 | StrategicAccount | defined | defined: a filter over ClientAccount, no table |
-| PriorityOpportunity | keyless | keyless: no key to identify a row, no table |
+| PriorityOpportunity | abstract | abstract: grouped by its subtypes, no table |
 | MarketIntelligenceRecord | abstract | abstract: grouped by its subtypes, no table |
 | MasterServicesAgreement | defined | defined: a filter over ContractAgreement, no table |
 | StatementOfWork | defined | defined: a filter over ContractAgreement, no table |
 | Subcontract | defined | defined: a filter over ContractAgreement, no table |
 | Amendment | defined | defined: a filter over ContractAgreement, no table |
-| QAAssuredEngagement | keyless | keyless: no key to identify a row, no table |
+| QAAssuredEngagement | abstract | abstract: grouped by its subtypes, no table |
 | AtRiskEngagement | defined | defined: a filter over Engagement, no table |
 
 ## Relationships
@@ -934,12 +934,6 @@ View columns: stageLabel -> `label`, stageOrder -> `sort_order`.
 | revenueInMarket | RevenueActual | MarketUnit | `market_unit` |  |  |
 | revenueForServiceGroup | RevenueActual | ServiceGroup | `service_group` |  |  |
 | bookingInMarket | Booking | MarketUnit | `market_unit` |  |  |
-
-## Warnings
-
-- dataset 'PriorityOpportunity': no primary_key; the entity's KEY will be empty (invalid for graph generation)
-- dataset 'QAAssuredEngagement': no primary_key; the entity's KEY will be empty (invalid for graph generation)
-- relationship 'inRegion': destination 'GeographicRegion' is not 'OrgUnit' or a subtype of it, so its edges do not fit the 'belongsToTerritory' label it extends
 
 ## Dropped tables
 
