@@ -509,10 +509,14 @@ inverse-functional property promoted to one — that **has subclasses** is a
 category: a label its subtypes share, not something a table backs. It comes
 out `abstract: true` (`Party` over `Organization` over keyed `ClientAccount`).
 A keyed class is never made abstract, nor is a class that inherits a key.
+Only subclasses with rows of their own count: a **defined** subclass (an
+`owl:equivalentClass` class expression, imported as a filter over its parent's
+rows) does not make its parent abstract, since the parent is what holds those
+rows.
 
-A keyless **leaf** class stays a concrete entity with no `primary_key`; the
-coverage report lists it (`owl:hasKey (absent)`, dropped) and a binding
-refuses to bind it until it has a key.
+A keyless **leaf** class (no subclasses, or only defined ones) stays a concrete
+entity with no `primary_key`; the coverage report lists it (`owl:hasKey
+(absent)`, dropped) and a binding refuses to bind it until it has a key.
 
 `kcmd:abstract` (`https://kcmd.dev/ns#abstract`) overrides the rule either way:
 `ex:Note kcmd:abstract true` makes a leaf abstract, `ex:Organization
@@ -1392,15 +1396,17 @@ A chain member that is an anonymous inverse (`[ owl:inverseOf p ]`) reads
 
 Take an ontology with one occurrence of most constructs: a subclass, keys, a
 functional datatype property, an inverse pair, a property chain, a transitive
-and a symmetric property, a named equivalence, a defined class, an enumeration
-and a deprecated class. Its summary reads:
+and a symmetric property, an equivalence folded into its keyed class, a defined
+class, an enumeration and a deprecated class. Its summary reads:
 
 ```console
 coverage (owl import of model 'shop'):
   construct                            compiled  hinted  dropped
   owl:Class                                   8       0        0
+  owl:equivalentClass (folded)                1       0        0
   rdfs:subClassOf                             2       0        0
   owl:hasKey                                  3       0        0
+  owl:hasKey (absent)                         1       0        1
   owl:DatatypeProperty                        4       0        0
   rdfs:range                                  4       0        0
   owl:FunctionalProperty                      1       0        0
@@ -1409,7 +1415,6 @@ coverage (owl import of model 'shop'):
   owl:propertyChainAxiom                      0       0        1
   owl:TransitiveProperty                      0       1        0
   owl:SymmetricProperty                       0       1        0
-  owl:equivalentClass (named)                 0       1        0
   owl:equivalentClass (defined class)         1       0        0
   owl:Restriction                             1       0        0
   owl:oneOf                                   0       0        1
@@ -1418,7 +1423,7 @@ coverage (owl import of model 'shop'):
   owl:deprecated                              0       1        0
   rdfs:seeAlso                                0       1        0
   owl:Ontology                                1       0        0
-  total                                      34       5        2
+  total                                      36       4        3
 ```
 
 An outcome is a fact about the output. The report is built after the mapping,

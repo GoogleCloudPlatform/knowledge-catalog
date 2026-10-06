@@ -8,6 +8,7 @@ semantic_model:
         - Sales domain
     entities:
       - name: Person
+        abstract: true
         description: A human being.
         fields:
           - name: fullName

@@ -13,6 +13,7 @@ semantic_model:
           - name: name
             datatype: String
       - name: Opportunity
+        abstract: true
         fields:
           - name: amount
             datatype: Opaque
