@@ -22,7 +22,7 @@
 // Unit-level tests for the same generator (inline IR, inline goldens) live in
 // `bigquery.test.ts`.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -31,7 +31,12 @@ import * as yaml from 'yaml';
 import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {loadModels, loadSemanticModels, LoadOptions} from '../../../src/libts/semantic/loader';
 import {mergeProfile, pruneUnavailable} from '../../../src/libts/semantic/resolve_profiles';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
+
+beforeAll(async () => {
+  await loadSqlEngine();
+});
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 

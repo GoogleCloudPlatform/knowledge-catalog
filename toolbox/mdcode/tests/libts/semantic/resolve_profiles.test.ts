@@ -5,12 +5,17 @@
 // Builders are minimal literals in the readable authoring form (mergeProfile) or
 // the IR (pruneUnavailable), mirroring resolve_inheritance.test.ts.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 
 import {isFieldBound, ProfileSpec, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {resolveInheritance} from '../../../src/libts/semantic/resolve_inheritance';
 import {applyProfileExclusions, loadProfileFile, mergeProfile, mergeProfileOntoDoc, pruneUnavailable, validateProfileCompleteness, validateProfileConsistency} from '../../../src/libts/semantic/resolve_profiles';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+
+beforeAll(async () => {
+  await loadSqlEngine();
+});
 
 const GRAPH =
     '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/commerce';
@@ -396,6 +401,18 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
   test('a metric whose fields are all bound survives', () => {
     const {model} = pruneUnavailable(irModel(), 'operational');
     expect(metricNames(model)).toContain('order_count');
+  });
+
+  test('a metric whose SQL cannot be read is kept, with a warning', () => {
+    const m = irModel();
+    m.metrics!.find(x => x.name === 'avg_lifetime_value')!.expression =
+        'AVG(Customer.lifetimeValue';
+    const {model, report} = pruneUnavailable(m, 'operational');
+    expect(metricNames(model)).toContain('avg_lifetime_value');
+    expect(report.warnings).toEqual([
+      "metric 'avg_lifetime_value': kcmd could not read its SQL, so the " +
+      'fields it reads were not checked',
+    ]);
   });
 
   test('a relationship keeps when its join fields are bound', () => {
@@ -960,6 +977,68 @@ describe('validateProfileCompleteness', () => {
       metricsExclude: ['avg_lifetime_value'],
     }))).toEqual([]);
   });
+
+  test('a metric is read in its own dialect', () => {
+    // In PostgreSQL, double quotes name a column, so this text reads the
+    // excluded field.
+    const m = irModel();
+    const metric = m.metrics!.find(x => x.name === 'avg_lifetime_value')!;
+    metric.expression = undefined;
+    metric.dialects =
+        [{dialect: 'POSTGRES', expression: 'AVG("Customer"."lifetimeValue")'}];
+    const errors = validateProfileCompleteness(m, profile({
+      entities: [{name: 'Customer', source: BQ('customer'), fieldsExclude: ['lifetimeValue']},
+                 profile().entities[1]],
+    }));
+    expect(errors.join('\n'))
+        .toContain("metric 'avg_lifetime_value' reaches 'Customer.lifetimeValue'");
+  });
+
+  test('an imported text is read in its imported dialect', () => {
+    const m = irModel();
+    const metric = m.metrics!.find(x => x.name === 'avg_lifetime_value')!;
+    metric.expression = undefined;
+    metric.importedExpression = 'AVG("Customer"."lifetimeValue")';
+    metric.importedDialect = 'SNOWFLAKE';
+    const errors = validateProfileCompleteness(m, profile({
+      entities: [{name: 'Customer', source: BQ('customer'), fieldsExclude: ['lifetimeValue']},
+                 profile().entities[1]],
+    }));
+    expect(errors.join('\n'))
+        .toContain("metric 'avg_lifetime_value' reaches 'Customer.lifetimeValue'");
+  });
+
+  test('a profile field whose SQL cannot be read is skipped, with a warning', () => {
+    const warnings: string[] = [];
+    const errors = validateProfileCompleteness(irModel(), profile({
+      entities: [
+        {name: 'Customer', source: BQ('customer'),
+         fields: [{name: 'lifetimeValue', expression: 'SUM(ltv'}]},
+        profile().entities[1],
+      ],
+    }), warnings);
+    expect(errors).toEqual([]);
+    expect(warnings).toEqual([
+      "profile 'prod': kcmd could not read the SQL of field " +
+      "'Customer.lifetimeValue', so the fields it reads were not checked",
+    ]);
+  });
+
+  test('an expression the parser cannot read is skipped, with a warning', () => {
+    const m = irModel();
+    m.metrics!.find(x => x.name === 'avg_lifetime_value')!.expression =
+        'AVG(Customer.lifetimeValue';
+    const warnings: string[] = [];
+    const errors = validateProfileCompleteness(m, profile({
+      entities: [{name: 'Customer', source: BQ('customer'), fieldsExclude: ['lifetimeValue']},
+                 profile().entities[1]],
+    }), warnings);
+    expect(errors).toEqual([]);
+    expect(warnings).toEqual([
+      "profile 'prod': kcmd could not read the SQL of metric " +
+      "'avg_lifetime_value', so the fields it reads were not checked",
+    ]);
+  });
 });
 
 
@@ -1046,9 +1125,17 @@ describe('profile checks the first review found missing', () => {
         .toContain('more than one database');
     const alloy = base({entities: [
       {...base().entities[0], source: 'alloydb:p.us.c.db.public.customer'},
-      {name: 'Order', source: '//alloydb.googleapis.com/projects/p/locations/us/clusters/c/instances/i/databases/db/tables/orders'},
+      {name: 'Order', source: '//alloydb.googleapis.com/projects/p/locations/us/clusters/c/databases/db/schemas/public/tables/orders'},
     ]});
     expect(validateProfileCompleteness(irModel(), alloy)).toEqual([]);
+    // A database belongs to its cluster, so the instance-based URI names no
+    // real table.
+    const instanceUri = base({entities: [
+      {...base().entities[0], source: 'alloydb:p.us.c.db.public.customer'},
+      {name: 'Order', source: '//alloydb.googleapis.com/projects/p/locations/us/clusters/c/instances/i/databases/db/tables/orders'},
+    ]});
+    expect(validateProfileCompleteness(irModel(), instanceUri).join('\n'))
+        .toContain('is not a resource URI or a catalog name');
   });
 
   test('binding an abstract entity is rejected', () => {
@@ -1133,7 +1220,7 @@ describe('profile checks the first review found missing', () => {
     expect(errors.join('\n')).toContain("profile 'a': unique key 1");
   });
 
-  test('loadProfileFile reads actions, rejects bad shapes, and matches dialects in any case', () => {
+  test('loadProfileFile reads actions, rejects bad shapes, and matches dialects exactly', () => {
     const p = loadProfileFile(`name: prod
 actions:
   - name: Cancel
@@ -1144,7 +1231,7 @@ entities:
   - name: orders
     fields:
       - name: region
-        expression: {dialects: [{dialect: bigquery, expression: r}]}
+        expression: {dialects: [{dialect: BIGQUERY, expression: r}]}
 `, 'prod');
     expect(p.actions).toEqual([
       {name: 'Cancel', executor: {kind: 'sql', sql: {statements: ['UPDATE t SET x = 1']}}},
@@ -1539,12 +1626,11 @@ describe('profile rules', () => {
     expect(() => loadProfileFile(file('{dialect: TABLEAU, expression: x}'), 'prod'))
         .toThrow("dialect 'TABLEAU' is not one of");
     expect(() => loadProfileFile(
-               file('{dialect: BIGQUERY, expression: x}, {dialect: bigquery, expression: y}'),
+               file('{dialect: BIGQUERY, expression: x}, {dialect: BIGQUERY, expression: y}'),
                'prod'))
         .toThrow("dialect 'BIGQUERY' appears twice");
-    expect(loadProfileFile(file('{dialect: BigQuery, expression: x}'), 'prod')
-               .entities[0].fields![0].dialects)
-        .toEqual([{dialect: 'BIGQUERY', expression: 'x'}]);
+    expect(() => loadProfileFile(file('{dialect: BigQuery, expression: x}'), 'prod'))
+        .toThrow("dialect 'BigQuery' is not one of");
   });
 
   // An abstract entity has no table, so a profile entry for one is rejected.

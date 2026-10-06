@@ -12,6 +12,7 @@
 // escapes. (Triple-quoted / raw literals are uncommon in these expressions and
 // are treated as ordinary text.)
 import {Entity, fieldBinding, keysCoveredBy} from './ir';
+import {SqlColumn, sqlColumns} from './sql_parser';
 
 export const STRING_LITERAL = /'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/g;
 
@@ -104,23 +105,28 @@ export function keysCoveredByColumns(
   return covered.length || !anyUnknown ? covered : undefined;
 }
 
-// Returns every `<field>` an expression reads as `<entityName>.<field>`, with
-// or without backticks, deduplicated in first-seen order, ignoring text inside
-// string literals. A preceding dot stops a struct path from reading as an
-// entity qualifier, and the field is the first segment after the entity, so
-// `orders.shipping_address.city` reads the field `shipping_address` of
-// `orders` and nothing else. Matching is case-sensitive unless
-// `caseInsensitive` is set.
-export function referencedEntityFields(
-    expression: string, entityName: string,
-    opts: {caseInsensitive?: boolean} = {}): string[] {
-  const re = new RegExp(
-      `(?<![\\w\`.])\`?${escapeRegExp(entityName)}\`?\\.\`?` +
-          `([A-Za-z_][A-Za-z0-9_]*)\`?`,
-      opts.caseInsensitive ? 'gi' : 'g');
+// Every column an expression reads, with the qualifier written before it, in
+// the order written, or undefined when the SQL parser cannot read the
+// expression in `dialect`, one of the dialect names a dialect list uses. The
+// parser handles string literals, comments and each dialect's quoting, so
+// `"orders"."amount"` in a PostgreSQL text reads the column `amount` of
+// `orders`, while in BigQuery the same text is not SQL and gives undefined. A struct path reads
+// as its first two parts: `orders.shipping_address.city` reads
+// `shipping_address` of `orders`.
+export function columnReferences(expression: string, dialect: string):
+    SqlColumn[]|undefined {
+  return sqlColumns(expression, dialect);
+}
+
+// The fields `columns` read on `entityName`, written `entityName.field`,
+// deduplicated in first-seen order. Matching is case-sensitive.
+export function fieldsReadOn(columns: SqlColumn[], entityName: string):
+    string[] {
   const fields: string[] = [];
-  for (const m of blankStringLiterals(expression).matchAll(re)) {
-    if (!fields.includes(m[1])) fields.push(m[1]);
+  for (const c of columns) {
+    if (c.qualifier === entityName && !fields.includes(c.name)) {
+      fields.push(c.name);
+    }
   }
   return fields;
 }

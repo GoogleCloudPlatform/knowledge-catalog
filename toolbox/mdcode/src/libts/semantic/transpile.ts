@@ -33,10 +33,9 @@
 //     imported form exactly as it would have without this pass.
 //
 
-import {readFileSync} from 'node:fs';
-
 import {Field, Metric, SemanticModel} from './ir';
 import {LoadedModel} from './loader';
+import {loadSqlEngine, PolyglotEngine} from './sql_parser';
 import {referencedEntityNames} from './sql_expr_utils';
 
 // The target dialect this pass rewrites into. The whole point of the pass is to
@@ -260,43 +259,6 @@ function polyglotDialect(token: string): string|undefined {
   return POLYGLOT_DIALECTS[token.toUpperCase()];
 }
 
-// The subset of the @polyglot-sql/sdk `/manual` surface we use. Declared
-// locally because the package's `/manual` subpath does not re-export its named
-// bindings through tsc under this project's CommonJS/nodenext setting; the
-// dynamic import is cast to this shape.
-interface PolyglotEngine {
-  init(opts: {wasmUrl: string}): Promise<void>;
-  transpile(sql: string, read: string, write: string):
-      {success: boolean; sql?: string[]; error?: string};
-}
-
-// The WASM engine, initialized once and shared process-wide. The Rust/WASM blob
-// is embedded into the standalone binary via bun's `import(... , {with: {type:
-// 'file'}})` (statically analyzable, so bundled) and handed to `init()` as
-// bytes
-// -- the package's default loader reads the blob from disk at runtime, which
-// fails inside a `bun --compile` binary, so we use the `/manual` entry instead.
-let enginePromise: Promise<PolyglotEngine>|undefined;
-function loadEngine(): Promise<PolyglotEngine> {
-  if (!enginePromise) {
-    enginePromise = (async () => {
-      const {default: wasmPath} = await import(
-          '@polyglot-sql/sdk/polyglot_sql.wasm', {with: {type: 'file'}});
-      const engine =
-          await import('@polyglot-sql/sdk/manual') as unknown as PolyglotEngine;
-      await engine.init({wasmUrl: readFileSync(wasmPath) as unknown as string});
-      return engine;
-    })().catch(err => {
-      // Don't cache the failure: a transient init error (e.g. a failed read)
-      // must not permanently disable transpilation for a long-lived process.
-      // Clear the memo so the next call retries, then propagate.
-      enginePromise = undefined;
-      throw err;
-    });
-  }
-  return enginePromise;
-}
-
 /**
  * The default {@link SqlTranspiler}: transpiles via the embedded
  * @polyglot-sql/sdk Rust/WASM engine. There is no external runtime dependency
@@ -319,7 +281,7 @@ export const polyglotTranspiler: SqlTranspiler = async (requests, target) => {
 
   let engine: PolyglotEngine;
   try {
-    engine = await loadEngine();
+    engine = await loadSqlEngine();
   } catch (err) {
     const reason = `SQL transpiler engine unavailable: ${errMessage(err)}`;
     return requests.map(r => ({id: r.id, error: reason}));

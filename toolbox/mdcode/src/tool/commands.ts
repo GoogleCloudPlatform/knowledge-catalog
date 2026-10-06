@@ -24,6 +24,7 @@ import {applyProfileExclusions, AvailabilityReport, DEFAULT_PROFILE, mergeProfil
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
+import {loadSqlEngine} from '../libts/semantic/sql_parser';
 import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryActionStatements, validateBigQueryDataSources, validateInheritance, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import {Sources} from '../libts/source';
@@ -478,6 +479,8 @@ export async function push(options: PushOptions): Promise<number> {
         for (const w of transpiled.warnings) console.warn(`Warning: ${w}`);
       }
       if (prune) {
+        // Pruning reads which fields each metric uses, with the SQL parser.
+        if (!await sqlParserReady()) return null;
         // A profile's exclusions apply to the entity that names each one, which
         // the merged document cannot say on its own. Only a
         // pruned push applies them: a catalog-only push publishes the whole
@@ -496,6 +499,9 @@ export async function push(options: PushOptions): Promise<number> {
         models = marked.map(({document, model}) => {
           const {model: pruned, report} = pruneUnavailable(model, profileName);
           availability.push(report);
+          for (const w of report.warnings) {
+            console.warn(`Warning: [${document}] profile '${profileName}': ${w}`);
+          }
           return {document, model: pruned};
         });
         // Pruning never removes an entity or a relationship: their key and join
@@ -893,6 +899,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   const layout = snapshot.layout as SemanticModelLayout;
   const source = snapshot.manifest.source as SemanticModelSource;
   const defaultProfile = snapshot.manifest.defaultProfile;
+  if (!await sqlParserReady()) return 1;
 
   const docs = layout.modelDocuments();
   if (!docs.length) {
@@ -984,6 +991,9 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
       for (const d of report.droppedMetrics) {
         withheld.push(`metric ${d.name} (${d.reason})`);
       }
+      for (const w of report.warnings) {
+        console.warn(`  profile '${name}': warning: ${w}`);
+      }
       if (withheld.length) {
         console.log('    cannot answer:');
         for (const w of withheld) console.log(`      ${w}`);
@@ -1001,6 +1011,20 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
     }
   }
   return missing ? 1 : 0;
+}
+
+
+// Loads the SQL parser the semantic-model checks read expressions with. Prints
+// why when it cannot, and returns false.
+async function sqlParserReady(): Promise<boolean> {
+  try {
+    await loadSqlEngine();
+    return true;
+  } catch (err: any) {
+    console.error(
+        `Error: the SQL parser could not be loaded: ${err.message || err}`);
+    return false;
+  }
 }
 
 

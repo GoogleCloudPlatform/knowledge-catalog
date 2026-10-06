@@ -27,7 +27,8 @@ import * as yaml from 'yaml';
 
 import {Action, ALLOWED_DIALECTS, DialectExpression, Entity, Executor, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
-import {isColumnName, keysCoveredByColumns, referencedEntityFields, referencedEntityNames,} from './sql_expr_utils';
+import {columnReferences, fieldsReadOn, isColumnName, keysCoveredByColumns} from './sql_expr_utils';
+import {SqlColumn} from './sql_parser';
 
 // The implicit profile: the inline bindings already in the model document (the
 // combined single-file form). It is never merged -- it IS the document as
@@ -614,6 +615,9 @@ export interface AvailabilityReport {
   droppedRelationships: {name: string; reason: string}[];
   // An action this profile cannot perform: it binds no executor for it.
   droppedActions: {name: string; reason: string}[];
+  // A metric kept because the SQL parser cannot read its expression, so the
+  // fields it reads were not checked.
+  warnings: string[];
 }
 
 /**
@@ -636,6 +640,7 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
     droppedMetrics: [],
     droppedRelationships: [],
     droppedActions: [],
+    warnings: [],
   };
 
   // A field is bound when isFieldBound says so; otherwise it is unbound
@@ -707,8 +712,18 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
       continue;
     }
     const expr = mt.expression ?? '';
-    const refs = referencedEntityNames(expr, allEntityNames);
-    const hit = firstUnboundReferenced(expr, unbound);
+    const columns = columnReferences(expr, dialectOf(mt, expr));
+    if (!columns) {
+      report.warnings.push(
+          `metric '${mt.name}': kcmd could not read its SQL, so the fields it ` +
+          `reads were not checked`);
+      keptMetrics.push(mt);
+      continue;
+    }
+    const refs = [...new Set(
+        columns.map(c => c.qualifier)
+            .filter((q): q is string => !!q && allEntityNames.includes(q)))];
+    const hit = firstUnboundReferenced(columns, unbound);
     if (hit) {
       report.droppedMetrics.push(
           {name: mt.name, reason: `field ${hit} is unbound`});
@@ -756,18 +771,32 @@ function resolvedEntities(model: SemanticModel): Entity[] {
   }
 }
 
-// The first unbound "Entity.field" a metric expression references (qualified),
-// or null. Text inside string literals is ignored.
-function firstUnboundReferenced(expr: string, unbound: Set<string>): string|
-    null {
+// The first unbound "Entity.field" among the columns a metric expression
+// reads, or null.
+function firstUnboundReferenced(columns: SqlColumn[], unbound: Set<string>):
+    string|null {
   for (const key of unbound) {
     const dot = key.indexOf('.');
-    if (referencedEntityFields(expr, key.slice(0, dot))
-            .includes(key.slice(dot + 1))) {
+    if (fieldsReadOn(columns, key.slice(0, dot)).includes(key.slice(dot + 1))) {
       return key;
     }
   }
   return null;
+}
+
+// The dialect `text` is written in on `f`: the dialect of the list entry that
+// holds it, the imported dialect for the imported text, and BigQuery
+// otherwise, since the loader fills `expression` from a `BIGQUERY` or
+// `ANSI_SQL` entry.
+function dialectOf(
+    f: Pick<Field, 'dialects'|'importedExpression'|'importedDialect'>,
+    text: string): string {
+  const entry = f.dialects?.find(d => d.expression === text);
+  if (entry) return entry.dialect;
+  if (text === f.importedExpression && f.importedDialect) {
+    return f.importedDialect;
+  }
+  return 'BIGQUERY';
 }
 
 // Whether any relationship directly connects two of the referenced entities --
@@ -981,10 +1010,10 @@ function stringList(value: unknown, where: string): string[] {
 }
 
 // The IR form of a profile field's expression, as the loader builds a model
-// field's. Dialect names match case-insensitively, as the loader's do, and the
-// engine-specific entry wins over ANSI_SQL for `expression`. A list with
-// neither keeps its first entry as the imported expression, so the field still
-// counts as bound (see `isFieldBound`).
+// field's. Dialect names match exactly, and the engine-specific entry wins over
+// ANSI_SQL for `expression`. A list with neither keeps its first entry as the
+// imported expression, so the field still counts as bound (see
+// `isFieldBound`).
 function profileExpression(expr: unknown, where: string):
     Pick<
         Field,
@@ -1006,12 +1035,11 @@ function profileExpression(expr: unknown, where: string):
     throw new Error(
         `${where}: 'expression' must be a string or a list of dialects`);
   }
-  // Only the allowlisted dialects, each at most once. A
-  // profile file is Google flavor, so a name matches in any case and is
-  // stored uppercase, as the loader does for that flavor.
+  // Only the allowlisted dialects, each at most once, spelled exactly as the
+  // allowlist spells them.
   const list: DialectExpression[] = [];
   for (const d of dialects) {
-    const dialect = d.dialect.toUpperCase();
+    const dialect = d.dialect;
     if (!(ALLOWED_DIALECTS as readonly string[]).includes(dialect)) {
       throw new Error(
           `${where}: dialect '${d.dialect}' is not one of ${
@@ -1084,8 +1112,9 @@ function databaseOf(source: string): string|undefined {
   let m = source.match(
       /^\/\/spanner\.googleapis\.com\/projects\/([^/]+)\/instances\/([^/]+)\/databases\/([^/]+)\/tables\/[^/]+$/);
   if (m) return `spanner/${m[1]}/${m[2]}/${m[3]}`;
+  // An AlloyDB database belongs to its cluster, and a table to a schema in it.
   m = source.match(
-      /^\/\/alloydb\.googleapis\.com\/projects\/([^/]+)\/locations\/([^/]+)\/clusters\/([^/]+)\/instances\/[^/]+\/databases\/([^/]+)\/tables\/[^/]+$/);
+      /^\/\/alloydb\.googleapis\.com\/projects\/([^/]+)\/locations\/([^/]+)\/clusters\/([^/]+)\/databases\/([^/]+)\/schemas\/[^/]+\/tables\/[^/]+$/);
   if (m) return `alloydb/${m[1]}/${m[2]}/${m[3]}/${m[4]}`;
   m = source.match(/^(databricks:table|[a-z_]+):(.+)$/);
   if (!m) return undefined;
@@ -1179,11 +1208,20 @@ function catalogNameSegments(path: string): string[] {
   return out;
 }
 
-function expressionTexts(
-    f: Pick<Field, 'expression'|'dialects'|'importedExpression'>): string[] {
-  const out = (f.dialects ?? []).map(d => d.expression);
-  if (f.expression !== undefined) out.push(f.expression);
-  if (f.importedExpression !== undefined) out.push(f.importedExpression);
+// Each text a field's or metric's expression carries, with the dialect it is
+// written in.
+function expressionSources(
+    f: Pick<
+        Field,
+        'expression'|'dialects'|'importedExpression'|'importedDialect'>):
+    Array<{text: string; dialect: string}> {
+  const out: Array<{text: string; dialect: string}> = (f.dialects ?? []).map(
+      d => ({text: d.expression, dialect: d.dialect}));
+  for (const text of [f.expression, f.importedExpression]) {
+    if (text !== undefined && !out.some(o => o.text === text)) {
+      out.push({text, dialect: dialectOf(f, text)});
+    }
+  }
   return out;
 }
 
@@ -1194,11 +1232,16 @@ function expressionTexts(
  * model file's where it states keys, every relationship bound, every field the
  * model file leaves unbound accounted for, and exclusions closed under
  * dependency, metrics included. Rules that compare profiles with each other
- * are in validateProfileConsistency.
+ * are in validateProfileConsistency. An expression the SQL parser cannot read
+ * is skipped by the rules that read references, with a message in `warnings`.
  */
 export function validateProfileCompleteness(
-    baseModel: SemanticModel, profile: ProfileSpec): string[] {
+    baseModel: SemanticModel, profile: ProfileSpec,
+    warnings: string[] = []): string[] {
   const errors: string[] = [];
+  // "field 'Entity.field'" or "metric 'name'", for each expression the parser
+  // cannot read, reported once.
+  const unreadable = new Set<string>();
   const at = `profile '${profile.name}'`;
   const entities = baseModel.entities ?? [];
   const byName = new Map(entities.map(e => [e.name, e]));
@@ -1246,15 +1289,20 @@ export function validateProfileCompleteness(
     // `details.customer.id`, and reads no entity.
     const others = entities.map(x => x.name).filter(n => n !== pe.name);
     for (const pf of pe.fields ?? []) {
-      for (const text of expressionTexts(pf)) {
+      for (const {text, dialect} of expressionSources(pf)) {
+        const columns = columnReferences(text, dialect);
+        if (!columns) {
+          unreadable.add(`field '${pe.name}.${pf.name}'`);
+          continue;
+        }
         for (const other of others) {
-          if (referencedEntityFields(text, other).length) {
+          if (fieldsReadOn(columns, other).length) {
             errors.push(
                 `${at}: field '${pe.name}.${pf.name}' reads entity '${
                     other}'; a field expression reads only its own entity`);
           }
         }
-        for (const ref of referencedEntityFields(text, pe.name)) {
+        for (const ref of fieldsReadOn(columns, pe.name)) {
           if (!known.has(ref)) {
             errors.push(
                 `${at}: field '${pe.name}.${pf.name}' reads '${pe.name}.${
@@ -1420,7 +1468,8 @@ export function validateProfileCompleteness(
         // A field reads only its own entity's fields. An
         // inherited field is read in the form its declaring ancestor wrote it,
         // because inheritance strips the qualifier when it copies one down.
-        for (const dep of fieldDependencies(profiled, e.name, f.name)) {
+        for (const dep of fieldDependencies(
+                 profiled, e.name, f.name, unreadable)) {
           const target = `${e.name}.${dep}`;
           if (excluded.has(target) || dangling.has(target)) {
             dangling.set(key, dangling.get(target) ?? target);
@@ -1443,10 +1492,18 @@ export function validateProfileCompleteness(
     const metricExcluded = new Set(profile.metricsExclude ?? []);
     for (const m of baseModel.metrics ?? []) {
       if (metricExcluded.has(m.name)) continue;
-      const texts = expressionTexts(m as Field);
+      const read: SqlColumn[][] = [];
+      for (const {text, dialect} of expressionSources(m as Field)) {
+        const columns = columnReferences(text, dialect);
+        if (columns) {
+          read.push(columns);
+        } else {
+          unreadable.add(`metric '${m.name}'`);
+        }
+      }
       const reached = [...excluded, ...dangling.keys()].filter(target => {
         const [te, tf] = target.split('.');
-        return texts.some(t => referencedEntityFields(t, te).includes(tf));
+        return read.some(columns => fieldsReadOn(columns, te).includes(tf));
       });
       if (reached.length) {
         errors.push(
@@ -1455,6 +1512,11 @@ export function validateProfileCompleteness(
                 m.name}' to 'metrics_exclude'`);
       }
     }
+  }
+  for (const what of unreadable) {
+    warnings.push(
+        `${at}: kcmd could not read the SQL of ${what}, so the fields it ` +
+        `reads were not checked`);
   }
   return errors;
 }
@@ -1634,7 +1696,8 @@ function inheritanceErrorOf(model: SemanticModel): string|undefined {
 // otherwise that of the nearest ancestor that does, read with that ancestor's
 // qualifier.
 function fieldDependencies(
-    model: SemanticModel, entityName: string, field: string): string[] {
+    model: SemanticModel, entityName: string, field: string,
+    unreadable: Set<string>): string[] {
   const byName = new Map((model.entities ?? []).map(e => [e.name, e]));
   const queue = [entityName];
   const seen = new Set<string>();
@@ -1645,8 +1708,16 @@ function fieldDependencies(
     const e = byName.get(name);
     const own = e?.fields.find(f => f.name === field && isFieldBound(f));
     if (own) {
-      return [...new Set(expressionTexts(own).flatMap(
-          t => referencedEntityFields(t, name)))];
+      const deps = new Set<string>();
+      for (const {text, dialect} of expressionSources(own)) {
+        const columns = columnReferences(text, dialect);
+        if (!columns) {
+          unreadable.add(`field '${name}.${field}'`);
+          continue;
+        }
+        for (const dep of fieldsReadOn(columns, name)) deps.add(dep);
+      }
+      return [...deps];
     }
     queue.push(...(e?.extends ?? []));
   }
