@@ -983,13 +983,14 @@ describe('validateProfileConsistency', () => {
 
   test('cardinality may not vary by profile', () => {
     // PlacedBy's to_columns cover Customer's primary key in the model file;
-    // profile b points them at another column.
+    // profile b points them at a column that is no key.
     const errors = validateProfileConsistency(irModel(), [
       p('a'),
       p('b', {relationships: [{name: 'PlacedBy', fromColumns: ['o_c'], toColumns: ['email']}]}),
     ]);
     expect(errors.join('\n')).toContain(
-        "relationship 'PlacedBy' has a different cardinality");
+        "relationship 'PlacedBy': profile 'b' joins on to_columns [\"email\"], " +
+        "which cover no primary or unique key of 'Customer'");
     expect(validateProfileConsistency(irModel(), [
       p('b', {
         relationships: [{name: 'PlacedBy', fromColumns: ['o_c'], toColumns: ['c_id']}],
@@ -1020,7 +1021,7 @@ describe('profile checks the first review found missing', () => {
     expect(errors.join('\n')).toContain("field 'Customer.lifetimeValue' has no binding");
   });
 
-  test('a bare table name and an unknown form are not sources (Model Spec §4.4)', () => {
+  test('a bare table name and an unknown form are not sources', () => {
     const bare = base({entities: [{...base().entities[0], source: 'acme.prod.customer'},
                                   base().entities[1]]});
     expect(validateProfileCompleteness(irModel(), bare).join('\n'))
@@ -1432,7 +1433,7 @@ describe('completeness sees the model as the profile does', () => {
         "entity 'customer' key column 'LOWER(id)', 'a.b' is not a physical column name");
   });
 
-  test('only the sources Model Spec §4.4 lists are accepted', () => {
+  test('only the accepted source forms are accepted', () => {
     const errorsFor = (source: string) => validateProfileCompleteness(model(true), spec([
       {name: 'customer', source}, {name: 'vip', source: BQ('v')},
     ])).join('\n');
@@ -1484,16 +1485,19 @@ describe('completeness sees the model as the profile does', () => {
 });
 
 
-describe('profile rules from the spec', () => {
+describe('profile rules', () => {
   const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
 
-  // Mapping Addendum 2 §2: every binding that states the join columns gives the
-  // same cardinality answer, the model file's included.
+  // Every binding that states the join columns gives the same cardinality
+  // answer, the model file's included.
   test('cardinality compares the model file\'s binding when it states join columns', () => {
+    // The model file joins on customer's primary key; prod restates both keys
+    // and joins on its unique key instead.
     const model = (inlineJoin: boolean): SemanticModel => ({
       name: 'm',
       entities: [
-        {name: 'customer', dataSource: '', keys: [], fields: [{name: 'id', type: 'Integer'}]},
+        {name: 'customer', dataSource: '', keys: ['id'], uniqueKeys: [['email']],
+         fields: []},
         {name: 'orders', dataSource: '', keys: ['o_id'], fields: []},
       ],
       relationships: [{
@@ -1504,16 +1508,16 @@ describe('profile rules from the spec', () => {
     } as any);
     const prod: ProfileSpec = {
       name: 'prod',
-      entities: [{name: 'customer', source: BQ('c'), primaryKey: ['c_id']}],
-      relationships: [{name: 'placed_by', fromColumns: ['o_cust'], toColumns: ['c_id']}],
+      entities: [{name: 'customer', source: BQ('c'), primaryKey: ['c_id'],
+                  uniqueKeys: [['c_email']]}],
+      relationships: [{name: 'placed_by', fromColumns: ['o_mail'], toColumns: ['c_email']}],
     };
     expect(validateProfileConsistency(model(true), [prod]).join('\n'))
-        .toContain("relationship 'placed_by' has a different cardinality");
+        .toContain("relationship 'placed_by' covers different keys under different bindings");
     expect(validateProfileConsistency(model(false), [prod])).toEqual([]);
   });
 
-  // Model Spec §4.5 and §3.5.3: a profile field expression reads only its own
-  // entity's columns and fields.
+  // A profile field expression reads only its own entity's columns and fields.
   test('a profile field expression may not read another entity or a missing field', () => {
     const errors = validateProfileCompleteness(irModel(), {
       name: 'prod',
@@ -1528,7 +1532,7 @@ describe('profile rules from the spec', () => {
     expect(errors).toContain("reads 'Customer.lifetimeValu', which is not a field of 'Customer'");
   });
 
-  // Model Spec §3.5.2: only the allowlisted dialects, each once.
+  // Only the allowlisted dialects, each once.
   test('a profile expression may use only allowlisted dialects, each once', () => {
     const file = (dialects: string) =>
         `name: prod\nentities:\n  - name: o\n    fields:\n      - {name: a, expression: {dialects: [${dialects}]}}\n`;
@@ -1543,7 +1547,7 @@ describe('profile rules from the spec', () => {
         .toEqual([{dialect: 'BIGQUERY', expression: 'x'}]);
   });
 
-  // Model Spec §4.2.2: kcmd push MUST reject a profile entry for an abstract entity.
+  // An abstract entity has no table, so a profile entry for one is rejected.
   test('the merge rejects an entry for an abstract entity', () => {
     const logical = {semantic_model: [{name: 'm', entities: [
       {name: 'party', abstract: true, fields: [{name: 'name'}]},
@@ -1601,8 +1605,8 @@ relationships: []
     expect(errors.join('\n')).toContain("entity 'E' inherits field 'x' from 'B' and from 'D'");
   });
 
-  // Model Spec §3.1.3: a binding is a per-table fact, so an exclusion applies
-  // to the entity that names it.
+  // A binding is a per-table fact, so an exclusion applies to the entity that
+  // names it.
   test('an applied exclusion leaves the field off that entity only', () => {
     const model: SemanticModel = {
       name: 'm',
@@ -1690,7 +1694,7 @@ describe('profile checks the second review found missing', () => {
   const atSource = (source: string): ProfileSpec =>
       ({name: 'p', entities: [{name: 'orders', source}], relationships: []});
 
-  // Mapping §8.1: every bound field has a text its profile's database can run.
+  // Every bound field has a text its profile's database can run.
   test('a bound field needs an expression for the profile\'s dialect or ANSI_SQL', () => {
     expect(validateProfileCompleteness(bqOnly(), atSource(SP('Orders'))).join('\n'))
         .toContain("field 'orders.amount' has no expression for SPANNER or ANSI_SQL");
@@ -1709,11 +1713,11 @@ describe('profile checks the second review found missing', () => {
                rebound(BQ('orders_prod'), '{dialects: [{dialect: SPANNER, expression: amt}]}'))
                .join('\n'))
         .toContain("field 'orders.amount' has no expression for BIGQUERY or ANSI_SQL");
-    // The short form matches every engine (Model Spec §3.5).
+    // The short form matches every engine.
     expect(validateProfileCompleteness(bqOnly(), rebound(SP('Orders'), 'Amount'))).toEqual([]);
   });
 
-  // Model Spec §3.5.3: only `entity.field` names a field; a struct path does not.
+  // Only `entity.field` names a field; a struct path does not.
   test('a struct path segment named like an entity reads no entity', () => {
     const model = {
       name: 'm',
@@ -1736,7 +1740,8 @@ describe('profile checks the second review found missing', () => {
     })).toEqual([]);
   });
 
-  // Mapping Addendum 2 §2, with the exact-match reading in decisions.md.
+  // A key is covered only when all its columns are in to_columns, so [a, a]
+  // does not cover [a, b].
   test('a repeated join column covers no key', () => {
     const model = {
       name: 'm',
@@ -1753,7 +1758,9 @@ describe('profile checks the second review found missing', () => {
     expect(validateProfileConsistency(model, [{
       name: 'p', entities: [],
       relationships: [{name: 'placed_by', fromColumns: ['x', 'y'], toColumns: ['a', 'a']}],
-    }]).join('\n')).toContain("relationship 'placed_by' has a different cardinality");
+    }]).join('\n')).toContain(
+        "profile 'p' joins on to_columns [\"a\",\"a\"], which cover no primary " +
+        "or unique key of 'customer'");
   });
 
   test('pruning drops a metric the profile excludes, and names it excluded', () => {
@@ -1767,7 +1774,7 @@ describe('profile checks the second review found missing', () => {
     expect(report.droppedMetrics).toEqual([{name: 'revenue', reason: 'excluded'}]);
   });
 
-  // decisions.md: actions are out of preview scope and gain no new checks.
+  // Actions are out of preview scope and gain no new checks.
   test('a profile file may list an action twice, as the merge always allowed', () => {
     expect(loadProfileFile('name: p\nactions:\n  - {name: Cancel}\n  - {name: Cancel}\n', 'p')
                .actions!.length)
@@ -1777,7 +1784,7 @@ describe('profile checks the second review found missing', () => {
 
 
 describe('excluding a field a subtype redeclares', () => {
-  // A redeclaration sets `expression` and nothing else (Model Spec §3.1.3), so
+  // A redeclaration sets `expression` and nothing else, so
   // excluding the field drops the whole line rather than leave a bare name.
   test('drops the redeclaration line, and the subtype still inherits the field', () => {
     const logical = {
@@ -1798,5 +1805,96 @@ describe('excluding a field a subtype redeclares', () => {
     const vip = (doc as any).semantic_model[0].entities[1];
     expect(vip.fields).toEqual([]);
     expect(excluded).toEqual([{model: 'm', entity: 'vip', field: 'name'}]);
+  });
+});
+
+
+// A relationship's to_columns must cover a key of its target, a superset
+// counts, and every binding covers the same keys.
+describe('a relationship joins on a key of its target', () => {
+  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  const model = (customer: object, to: string[]) => ({
+    name: 'm',
+    entities: [
+      {name: 'customer', dataSource: BQ('c'), keys: [], fields: [], ...customer},
+      {name: 'orders', dataSource: BQ('o'), keys: ['o_id'], fields: []},
+    ],
+    relationships: [{
+      name: 'placed_by',
+      source: {entity: 'orders', columns: to.map(c => `o_${c}`)},
+      destination: {entity: 'customer', columns: to},
+    }],
+  } as any);
+  const prod = (to: string[], customer: object = {}): ProfileSpec => ({
+    name: 'prod',
+    entities: [{name: 'customer', source: BQ('c2'), ...customer}],
+    relationships: [{name: 'placed_by', fromColumns: to.map(c => `o_${c}`), toColumns: to}],
+  });
+
+  test('a superset of a key covers it', () => {
+    expect(validateProfileConsistency(
+               model({keys: ['c_id']}, ['c_id']), [prod(['c_id', 'tenant'])]))
+        .toEqual([]);
+  });
+
+  test('a target with no key cannot be joined to', () => {
+    expect(validateProfileConsistency(model({}, ['id']), [prod(['id'])]).join('\n'))
+        .toContain("the model file joins on to_columns [\"id\"], which cover no " +
+                   "primary or unique key of 'customer'");
+  });
+
+  test('covering more keys in one binding than another is a different cardinality', () => {
+    const errors = validateProfileConsistency(
+        model({keys: ['id'], uniqueKeys: [['email']]}, ['id']), [prod(['id', 'email'])]);
+    expect(errors.join('\n')).toContain(
+        "relationship 'placed_by' covers different keys under different bindings " +
+        "(the model file: the primary key; profile 'prod': the primary key and unique key 1)");
+  });
+});
+
+
+// A key or join column may name a field or its column, and both name the same
+// column, as the graph generators read them.
+describe('keys and join columns compare as the columns they name', () => {
+  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  test('a key named by field covers a join named by column, in every binding', () => {
+    const model = {
+      name: 'm',
+      entities: [
+        {name: 'customer', dataSource: BQ('c'), keys: ['key'],
+         fields: [{name: 'key', expression: 'c_key'}]},
+        {name: 'orders', dataSource: BQ('o'), keys: ['o_id'], fields: []},
+      ],
+      relationships: [{
+        name: 'placed_by',
+        source: {entity: 'orders', columns: ['cust']},
+        destination: {entity: 'customer', columns: ['c_key']},
+      }],
+    } as any;
+    // prod binds the key field to another column and joins on that column,
+    // without restating the primary key.
+    const prod: ProfileSpec = {
+      name: 'prod',
+      entities: [{name: 'customer', source: BQ('c2'),
+                  fields: [{name: 'key', expression: 'c_custkey'}]}],
+      relationships: [{name: 'placed_by', fromColumns: ['o_cust'], toColumns: ['c_custkey']}],
+    };
+    expect(validateProfileConsistency(model, [prod])).toEqual([]);
+  });
+
+  test('a relationship through a junction table is not checked', () => {
+    const model = {
+      name: 'm',
+      entities: [
+        {name: 'a', dataSource: BQ('a'), keys: ['id'], fields: []},
+        {name: 'b', dataSource: BQ('b'), keys: ['id'], fields: []},
+      ],
+      relationships: [{
+        name: 'a_b', association: {dataSource: BQ('ab')},
+        source: {entity: 'a', columns: ['x']},
+        destination: {entity: 'b', columns: ['not_a_key']},
+      }],
+    } as any;
+    expect(validateProfileConsistency(model, [])).toEqual([]);
   });
 });

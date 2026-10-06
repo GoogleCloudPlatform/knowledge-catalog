@@ -2,9 +2,10 @@
 #
 # TPC-DS model exercising relationship edge cases: a relationship whose
 # from_columns and to_columns share the same column name, and a target
-# dimension (date_dim) that declares no primary_key and no fields (only
-# custom_extensions). Fields carry a second, non-BigQuery dialect variant to
-# exercise dialect selection.
+# dimension (date_dim) that declares a primary key but no fields (only
+# custom_extensions). A relationship's to_columns must cover a key of its
+# target, so date_dim declares the one its join uses. Fields carry a second,
+# non-BigQuery dialect variant to exercise dialect selection.
 #
 # Not to be confused with fixtures/ossie/tpcds_semantic_model.yaml: that is the
 # Apache Ossie reference example, copied verbatim to test that the loader parses
@@ -196,6 +197,7 @@ semantic_model:
 
       - name: date_dim
         source: date_dim
+        primary_key: [ss_sold_date_sk]
         description: Date dimension with calendar attributes
         custom_extensions:
           - vendor_name: GOODDATA

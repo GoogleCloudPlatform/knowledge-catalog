@@ -182,6 +182,8 @@ semantic_model:
             description: Number of employees at the store
       - name: date_dim
         source: sqlgen-testing.demo.date_dim
+        primary_key:
+          - ss_sold_date_sk
         description: Date dimension with calendar attributes
     relationships:
       - name: store_sales_to_date_dim

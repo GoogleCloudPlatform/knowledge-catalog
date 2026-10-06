@@ -325,7 +325,7 @@ describe('SemanticModelLayout profile names and orphans', () => {
 });
 
 
-describe('SemanticModelLayout profile names per the Preview Decision', () => {
+describe('SemanticModelLayout profile name rules', () => {
   function write(file: string, text: string): void {
     const dir = path.join(catalogPath, 'EntryGroups', 'eg');
     fs.mkdirSync(dir, {recursive: true});
@@ -341,8 +341,7 @@ describe('SemanticModelLayout profile names per the Preview Decision', () => {
     expect(() => l.profileDocuments('retail')).toThrow(/name the same profile/);
   });
 
-  // decisions.md, naming: a profile name may contain hyphens, and still starts
-  // with a letter.
+  // A profile name may contain hyphens, and still starts with a letter.
   test('a profile name may contain a hyphen but not start with one', async () => {
     write('retail.yaml', MODEL);
     write('retail.profile.prod-us.yaml', 'name: prod-us\n');

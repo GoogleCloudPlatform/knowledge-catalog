@@ -27,7 +27,7 @@ import * as yaml from 'yaml';
 
 import {Action, ALLOWED_DIALECTS, DialectExpression, Entity, Executor, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
-import {isColumnName, referencedEntityFields, referencedEntityNames,} from './sql_expr_utils';
+import {isColumnName, keysCoveredByColumns, referencedEntityFields, referencedEntityNames,} from './sql_expr_utils';
 
 // The implicit profile: the inline bindings already in the model document (the
 // combined single-file form). It is never merged -- it IS the document as
@@ -47,11 +47,10 @@ export interface MergeResult {
   // set, `doc` should not be deployed.
   error?: string;
   // The fields and metrics the profile excludes. The merged document keeps
-  // them all, so a catalog push publishes the whole logical model (Model Spec
-  // §4.5). Apply them to the loaded model with applyProfileExclusions before
-  // pruning: a field exclusion applies to the entity that names it and not to
-  // its descendants (§3.1.3, §4.2.2), which the merged document alone cannot
-  // say.
+  // them all, so a catalog push publishes the whole logical model. Apply them
+  // to the loaded model with applyProfileExclusions before pruning: a field
+  // exclusion applies to the entity that names it and not to its descendants,
+  // which the merged document alone cannot say.
   excluded: ProfileExclusion[];
 }
 
@@ -307,7 +306,7 @@ function mergeEntities(
       return `profile '${profileName}': entity '${
           pe.name}' is not in the logical model`;
     }
-    // Model Spec §4.2.2: no profile binds an abstract entity.
+    // An abstract entity has no table, so no profile binds it.
     if (le.abstract === true) {
       return `profile '${profileName}': entity '${
           pe.name}' is abstract, so a profile cannot bind it`;
@@ -413,7 +412,7 @@ function mergeEntity(
     if (err) return err;
     rebound.add(pf.name);
   }
-  // An exclusion applies to this entity only (Model Spec §3.1.3, §4.2.2). The
+  // An exclusion applies to this entity only. The
   // caller records it for applyProfileExclusions. A field no entity inherits
   // from this one also loses its binding here, so it stays unbound even where
   // the exclusions are not applied; one a descendant inherits keeps the
@@ -431,8 +430,8 @@ function mergeEntity(
     }
     if (lf && !inheritedBelow) {
       // A line that only redeclares an inherited field goes with its binding,
-      // since a redeclaration with nothing but the name is rejected (Model
-      // Spec §3.1.3). The entity still inherits the declaration.
+      // since a redeclaration with nothing but the name is rejected. The
+      // entity still inherits the declaration.
       if (inherited.has(name)) {
         le.fields = le.fields.filter((f: any) => f !== lf);
       } else {
@@ -647,7 +646,7 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
   // Availability is judged on each entity's resolved fields, declared plus
   // inherited, since a metric can read an inherited field as readily as a
   // declared one. A field the profile excludes on an entity is unavailable on
-  // that entity (Model Spec §4.2.2).
+  // that entity.
   const unbound = new Set<string>();
   for (const e of resolvedEntities(clone)) {
     // An abstract entity has no table and no bindings by design: it survives
@@ -673,8 +672,7 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
   // bound field whose value is null still emits a column -- unbound is not
   // null.) A declaration that a descendant inherits stays, so the descendant
   // keeps the definition and whatever binding it has, and is marked excluded on
-  // the declaring entity instead (Model Spec §3.1.3: a binding is a fact about
-  // one table).
+  // the declaring entity instead, since a binding is a fact about one table.
   const extendedNames = new Set(
       resolvedEntities(clone).flatMap(e => e.extends ?? []));
   for (const e of clone.entities ?? []) {
@@ -1008,7 +1006,7 @@ function profileExpression(expr: unknown, where: string):
     throw new Error(
         `${where}: 'expression' must be a string or a list of dialects`);
   }
-  // Model Spec §3.5.2: only the allowlisted dialects, each at most once. A
+  // Only the allowlisted dialects, each at most once. A
   // profile file is Google flavor, so a name matches in any case and is
   // stored uppercase, as the loader does for that flavor.
   const list: DialectExpression[] = [];
@@ -1062,9 +1060,9 @@ function profileExecutor(ex: any): Executor {
 
 
 // The database a profile source lives in, for the one-database rule, or
-// undefined when the source is in no form Model Spec §4.4 accepts: a bare
-// name, a query, a graph rather than a table, an FQN under any prefix the
-// table there does not list, or one with the wrong number of segments. The
+// undefined when the source is in no accepted form: a bare name, a query, a
+// graph rather than a table, a catalog name under a prefix kcmd does not
+// accept, or one with the wrong number of segments. The
 // result starts with its system, which DIALECT_OF_SYSTEM maps to the dialect
 // the source infers.
 //
@@ -1120,7 +1118,7 @@ function databaseOf(source: string): string|undefined {
   }
 }
 
-// The dialect each system's sources infer (Model Spec §4.4), keyed by the
+// The dialect each system's sources infer, keyed by the
 // system databaseOf puts first.
 const DIALECT_OF_SYSTEM: Record<string, string> = {
   bigquery: 'BIGQUERY',
@@ -1136,7 +1134,7 @@ const DIALECT_OF_SYSTEM: Record<string, string> = {
 
 // Whether a bound field has a text an engine of `dialect` can run: an entry
 // for that dialect, or a text that matches every engine, which is an ANSI_SQL
-// entry or the string form (mapping §8.1). A field read without its dialect
+// entry or the string form. A field read without its dialect
 // list keeps its BigQuery or ANSI_SQL text in `expression` with nothing saying
 // which, so that text counts.
 function runsOn(f: Field, dialect: string): boolean {
@@ -1241,9 +1239,9 @@ export function validateProfileCompleteness(
         errors.push(`${at}: field '${pe.name}.${name}' is not in the model`);
       }
     }
-    // A profile field's expression may be anything the model file's could be
-    // (Model Spec §4.5): its own table's columns and its own entity's fields,
-    // never another entity's fields (§3.5.3).
+    // A profile field's expression may be anything the model file's could be:
+    // its own table's columns and its own entity's fields, never another
+    // entity's fields.
     // A name after a dot is a struct path segment, such as `customer` in
     // `details.customer.id`, and reads no entity.
     const others = entities.map(x => x.name).filter(n => n !== pe.name);
@@ -1343,8 +1341,7 @@ export function validateProfileCompleteness(
   }
 
   // Every relationship bound, by the profile itself: a named profile states
-  // both join column lists, and the model file's do not stand in for them
-  // (Model Spec §4.2.2).
+  // both join column lists, and the model file's do not stand in for them.
   for (const r of baseModel.relationships ?? []) {
     if (r.association) continue;
     const pr = profile.relationships.find(x => x.name === r.name);
@@ -1372,7 +1369,7 @@ export function validateProfileCompleteness(
 
   // Every field the model file leaves unbound is accounted for, and exclusions
   // are closed under dependency. An exclusion applies to the entity that names
-  // it, not to that entity's descendants (Model Spec §3.1.3, §4.2.2).
+  // it, not to that entity's descendants.
   const excluded = new Set<string>();
   for (const e of entities) {
     if (e.abstract) continue;
@@ -1388,9 +1385,9 @@ export function validateProfileCompleteness(
       }
     }
   }
-  // Every bound field has a text this profile's database can run (mapping
-  // §8.1). The profile's dialect is the one its sources infer (Model Spec
-  // §4.4), checked once they all name one database.
+  // Every bound field has a text this profile's database can run. The
+  // profile's dialect is the one its sources infer, checked once they all name
+  // one database.
   const system = databases.size === 1 ?
       [...databases.keys()][0].split('/')[0] :
       undefined;
@@ -1420,7 +1417,7 @@ export function validateProfileCompleteness(
       for (const f of seenOf.get(e.name)?.values() ?? []) {
         const key = `${e.name}.${f.name}`;
         if (excluded.has(key) || dangling.has(key)) continue;
-        // A field reads only its own entity's fields (Model Spec §3.5.3). An
+        // A field reads only its own entity's fields. An
         // inherited field is read in the form its declaring ancestor wrote it,
         // because inheritance strips the qualifier when it copies one down.
         for (const dep of fieldDependencies(profiled, e.name, f.name)) {
@@ -1467,10 +1464,11 @@ export function validateProfileCompleteness(
  * model, or an empty list:
  *   - where the model file states no key for an entity, either every profile
  *     states keys of one shape, or none does;
- *   - whether a relationship's `to_columns` cover the target's primary key, its
- *     k-th unique key, or neither, is the same in every binding that states the
- *     relationship's join columns, the model file's included, because
- *     cardinality is a property of the model (mapping Addendum 2 §2).
+ *   - in every binding that states a relationship's join columns, the model
+ *     file's included, its `to_columns` cover a primary or unique key of the
+ *     target, and the same keys in every binding, because cardinality is a
+ *     property of the model. A superset of a key
+ *     covers it (see keysCoveredBy).
  */
 export function validateProfileConsistency(
     baseModel: SemanticModel, profiles: ProfileSpec[]): string[] {
@@ -1501,31 +1499,54 @@ export function validateProfileConsistency(
   }
 
   const byName = new Map(entities.map(e => [e.name, e]));
+  // Each binding's fields, so a key or join column that names a field is read
+  // as that field's column, as the graph generators read it.
+  const baseFields = fieldsByEntity(baseModel);
+  const profileFields = new Map(
+      profiles.map(p => [p.name, fieldsByEntity(withProfile(baseModel, p))]));
   for (const r of baseModel.relationships ?? []) {
     if (r.association) continue;
     const target = byName.get(r.destination.entity);
-    if (!target) continue;
-    // Mapping Addendum 2 §2: every binding that binds the relationship, by
-    // stating its join columns, gives the same answer. A binding's keys are its
-    // own where it states them and the model file's otherwise, and a binding
-    // whose join columns cover no key answers "neither". A binding that states
-    // no join columns does not bind the relationship and is left out; for a
-    // named profile, completeness reports that.
+    if (!target || target.abstract) continue;
+    // Every binding that binds the relationship, by stating its join columns,
+    // covers a key of the target, and the same keys as every other binding,
+    // because cardinality is a property of the model. A binding's keys are its
+    // own where it states them and the model file's otherwise. A join that
+    // covers no key cannot be built into a graph, so it is rejected. A binding
+    // that states no join columns does not bind the relationship and is left
+    // out; for a named profile, completeness reports that.
     const answers = new Map<string, string[]>();
     const record =
-        (who: string, to: string[], pk: string[], uks: string[][]) => {
+        (who: string, fields: Map<string, Map<string, Field>>, to: string[],
+         pk: string[], uks: string[][]) => {
           if (!to.length) return;
-          const a = coverage(to, pk, uks);
+          const entity = {
+            name: target.name,
+            fields: [...(fields.get(target.name)?.values() ?? [])],
+          };
+          const covered = keysCoveredByColumns(entity, to, pk, uks);
+          // A key that names a field with no column in this binding cannot be
+          // judged here.
+          if (!covered) return;
+          if (!covered.length) {
+            errors.push(
+                `relationship '${r.name}': ${who} joins on to_columns ${
+                    JSON.stringify(to)}, which cover no primary or unique key ` +
+                `of '${target.name}'`);
+            return;
+          }
+          const a = covered.join(' and ');
           answers.set(a, [...(answers.get(a) ?? []), who]);
         };
     record(
-        'the model file', r.destination.columns, target.keys,
+        'the model file', baseFields, r.destination.columns, target.keys,
         target.uniqueKeys ?? []);
     for (const p of profiles) {
       const pr = p.relationships.find(x => x.name === r.name);
       const pe = bindingIn(p, target.name);
       record(
-          `profile '${p.name}'`, pr?.toColumns ?? [],
+          `profile '${p.name}'`, profileFields.get(p.name)!,
+          pr?.toColumns ?? [],
           pe?.primaryKey ?? target.keys,
           pe?.uniqueKeys ?? target.uniqueKeys ?? []);
     }
@@ -1533,9 +1554,9 @@ export function validateProfileConsistency(
       const detail =
           [...answers].map(([a, who]) => `${who.join(', ')}: ${a}`).join('; ');
       errors.push(
-          `relationship '${r.name}' has a different cardinality under ` +
-          `different bindings (${detail}); which key its 'to_columns' cover ` +
-          `must be the same everywhere`);
+          `relationship '${r.name}' covers different keys under different ` +
+          `bindings (${detail}); its 'to_columns' must cover the same keys in ` +
+          `every binding`);
     }
   }
   return errors;
@@ -1637,15 +1658,3 @@ function shapeOf(keys: string[][]): string {
   return `[${keys.map(k => k.length).join(', ')}]`;
 }
 
-// Which key of the target `to` covers: its primary key, its k-th unique key
-// (from 1), or neither.
-function coverage(to: string[], pk: string[], uks: string[][]): string {
-  // `to` covers a key when it is exactly that key's columns, each once, in any
-  // order. A superset covers no key until the spec says otherwise.
-  const same = (a: string[], b: string[]) => a.length > 0 &&
-      a.length === b.length && new Set(a).size === a.length &&
-      a.every(c => b.includes(c));
-  if (same(to, pk)) return 'the primary key';
-  const k = uks.findIndex(u => same(to, u));
-  return k >= 0 ? `unique key ${k + 1}` : 'no key';
-}

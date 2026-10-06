@@ -39,9 +39,16 @@ NODE TABLES (
       s_city,
       s_state,
       s_number_employees OPTIONS(description="Number of employees at the store")
-    )
+    ),
+  `sqlgen-testing.demo.date_dim` AS date_dim
+    KEY(ss_sold_date_sk)
+    OPTIONS(description="Date dimension with calendar attributes")
 )
 EDGE TABLES (
+  `tpcds.public.store_sales` AS store_sales_to_date_dim
+    KEY(ss_item_sk, ss_ticket_number)
+    SOURCE KEY(ss_item_sk, ss_ticket_number) REFERENCES store_sales(ss_item_sk, ss_ticket_number)
+    DESTINATION KEY(ss_sold_date_sk) REFERENCES date_dim(ss_sold_date_sk),
   `tpcds.public.store_sales` AS store_sales_to_customer
     KEY(ss_item_sk, ss_ticket_number)
     SOURCE KEY(ss_item_sk, ss_ticket_number) REFERENCES store_sales(ss_item_sk, ss_ticket_number)
@@ -58,6 +65,3 @@ EDGE TABLES (
 
 -- warnings --
 -- note: no 'BIGQUERY' dialect for one or more expressions; using the portable 'ANSI_SQL' dialect verbatim ('BIGQUERY' accepts the ANSI core subset — supply 'BIGQUERY' variants only for BIGQUERY-specific SQL)
--- dataset 'date_dim': no primary_key; the entity's KEY will be empty (invalid for graph generation)
--- entity 'date_dim': empty KEY (no primary key); node table skipped, as a graph node requires a KEY
--- relationship 'store_sales_to_date_dim': references skipped entity 'date_dim'; edge omitted

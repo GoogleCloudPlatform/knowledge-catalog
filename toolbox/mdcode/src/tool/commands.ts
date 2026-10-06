@@ -334,7 +334,7 @@ export function isProfileFileForm(text: string): boolean {
 
 // Why a graph push of `profileName` cannot go ahead because the profile is a
 // profile file, or undefined when it can. A profile file names no deployment
-// target, and a model cannot yet list one per profile (Model Spec §4.3), so a
+// target, and a model cannot yet list one per profile, so a
 // graph push of one would deploy into the model file's own target, whatever
 // system the profile binds.
 export function profileFileGraphError(
@@ -479,9 +479,9 @@ export async function push(options: PushOptions): Promise<number> {
       }
       if (prune) {
         // A profile's exclusions apply to the entity that names each one, which
-        // the merged document cannot say on its own (Model Spec §4.2.2). Only a
+        // the merged document cannot say on its own. Only a
         // pruned push applies them: a catalog-only push publishes the whole
-        // logical model (§4.5).
+        // logical model.
         const excludedByDoc =
             new Map(docs.map(d => [d.name, d.excluded ?? []] as const));
         const marked = models.map(({document, model}) => ({

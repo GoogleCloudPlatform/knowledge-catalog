@@ -746,7 +746,7 @@ describe('a field a binding profile excludes', () => {
     expect(fields.map((f: any) => f.name)).toEqual(['k']);
   });
 
-  // A catalog-only push publishes the whole logical model (Model Spec §4.5),
+  // A catalog-only push publishes the whole logical model,
   // so it applies none of the exclusions the merge returns.
   test('is still published by a catalog-only push, with an excluded metric', () => {
     const merged = mergeProfileOntoDoc(`version: "0.2.0.dev0/google"

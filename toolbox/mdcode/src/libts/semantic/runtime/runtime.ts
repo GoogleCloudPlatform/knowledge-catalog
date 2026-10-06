@@ -157,8 +157,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   // String, pass, and let the store take the mismatch instead.
   const runtimes: SemanticRuntime[] = [];
   for (const {document, model: loadedModel} of loaded.models) {
-    // A profile's exclusions apply to the entity that names each one (Model
-    // Spec §4.2.2).
+    // A profile's exclusions apply to the entity that names each one.
     const authored = applyProfileExclusions(
         loadedModel, excludedByDoc.get(document) ?? []);
     // An excluded metric is not available under the profile.

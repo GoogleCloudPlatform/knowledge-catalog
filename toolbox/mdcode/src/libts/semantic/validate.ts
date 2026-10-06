@@ -17,6 +17,7 @@ import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_
 import {LoadedModel} from './loader';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
+import {keysCoveredByColumns} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 
 // Checks every model against the push requirements and returns the collected
@@ -138,6 +139,7 @@ export function validatePushRequirements(
     }
 
     errors.push(...validateInheritance([{document, model}]));
+    errors.push(...relationshipKeyErrors(model, document));
 
     // An action reaches Knowledge Catalog only, so its checks are
     // target-independent: each parameter's type must resolve to something in
@@ -738,8 +740,8 @@ const AUTHORED_NAME: Partial<Record<keyof Field, string>> = {
 // The first rule needs the resolved model and is skipped when resolution
 // fails; that failure is reported once elsewhere.
 /**
- * Returns one message per broken inheritance or concrete-leaf rule (Model Spec
- * §3.1.3, §3.2, §3.3), or an empty list: a cycle, an unknown parent, or a field
+ * Returns one message per broken inheritance or concrete-leaf rule, or an
+ * empty list: a cycle, an unknown parent, or a field
  * inherited from two unrelated ancestors; a redeclared inherited field; an
  * abstract entity with a table; and a relationship or metric on an entity that
  * is not a concrete leaf. Pruning can remove the field a rule is about, so a
@@ -798,8 +800,8 @@ function inheritanceRuleErrors(
               `it may only be rebound to a column; remove ${
                   defined.join(', ')}, which an ancestor defines.`);
         } else if (!isFieldBound(field)) {
-          // A redeclaration sets `expression` and nothing else (Model Spec
-          // §3.1.3), so a line with only the name is not one.
+          // A redeclaration sets `expression` and nothing else, so a line with
+          // only the name is not one.
           const from = (ancestorsOf.get(entity.name) ?? [])
                            .find(a => ownNames.get(a)?.has(field.name));
           errors.push(
@@ -859,6 +861,41 @@ function inheritanceRuleErrors(
           `metric '${metric.name}' in model '${model.name}' (${
               document}) belongs to '${owner}', which is ${why}; a metric ` +
           `may belong only to a concrete leaf entity.`);
+    }
+  }
+  return errors;
+}
+
+// A relationship's `to_columns` cover a primary or unique key of the `to`
+// entity: a relationship is a foreign key, which references a key, and a join
+// that reaches no key cannot be built into a graph. A superset of a key covers
+// it (see keysCoveredBy). Keys and join columns are compared as the physical
+// columns they name, and a key that names a field with no column yet cannot be
+// judged until a binding gives it one. A relationship with no join columns
+// yet, one through a junction table, and one to an abstract entity, which the
+// concrete-leaf rule reports, are not checked here.
+function relationshipKeyErrors(
+    model: SemanticModel, document: string): string[] {
+  const errors: string[] = [];
+  const entities = (model.entities ?? []).some(e => e.extends?.length) ?
+      ifResolvable(() => resolveInheritance(model).model.entities) ??
+          model.entities :
+      model.entities ?? [];
+  const byName = new Map(entities.map(e => [e.name, e]));
+  for (const rel of model.relationships ?? []) {
+    const to = rel.destination.columns;
+    if (rel.association || !to.length) continue;
+    const target = byName.get(rel.destination.entity);
+    if (!target || target.abstract) continue;
+    const covered = keysCoveredByColumns(
+        target, to, target.keys, target.uniqueKeys ?? []);
+    if (covered && !covered.length) {
+      errors.push(
+          `relationship '${rel.name}' in model '${model.name}' (${
+              document}): its to_columns ${
+              JSON.stringify(to)} cover no primary or unique key of '${
+              target.name}'; join on every column of one of its keys, and ` +
+          `declare that key if '${target.name}' has none.`);
     }
   }
   return errors;

@@ -214,7 +214,11 @@ A relationship is a directed edge between two datasets.
 `from_columns` and `to_columns` are the edge's join keys. They MUST be given
 together (a bound edge) or both omitted (a logical edge); one without the other is
 rejected. When both are given they MUST have equal length. `from` and `to` MUST
-name datasets declared in the same model.
+name datasets declared in the same model. `to_columns` MUST contain every column
+of a primary or unique key of the `to` dataset, as a foreign key references a
+key; a superset of a key counts, and join columns that cover no key are
+rejected, since no graph can be built from them. Every binding of the
+relationship covers the same keys.
 
 Ossie **requires** both join-column lists; allowing both to be omitted — a
 logical edge with no join keys — is a `kcmd` **relaxation** ([§4](#4-narrowings-and-relaxations))

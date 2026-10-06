@@ -116,8 +116,8 @@ restates them.
 
 To bind the same hierarchy to more than one store, put each binding in its own
 [profile](profiles.md). A named profile binds every concrete subtype, since
-each one stands for a table the profile's database has to hold (Model Spec
-§4.2.2). A profile can bind a field the
+each one stands for a table the profile's database has to hold. A profile can
+bind a field the
 subtype inherits by naming it under that subtype, with no redeclaration in the
 model file, and the binding reads from the subtype's own table.
 

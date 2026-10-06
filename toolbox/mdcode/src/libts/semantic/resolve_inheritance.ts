@@ -184,7 +184,7 @@ export function resolveInheritance(model: SemanticModel): ResolveResult {
     }
     // A field the binding profile excludes on this entity is left off it.
     // Descendants read the snapshot of declared fields, so they still inherit
-    // it (Model Spec §3.1.3: a binding is a fact about one table).
+    // it.
     const excluded = new Set(entity.excludedFields ?? []);
     entity.fields = excluded.size ?
         flattened.filter(f => !excluded.has(f.name)) :

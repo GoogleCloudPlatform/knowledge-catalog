@@ -730,7 +730,7 @@ describe('inheritance rules', () => {
     }
   });
 
-  // Model Spec §3.1.3: a redeclaration sets `expression` and nothing else.
+  // A redeclaration sets `expression` and nothing else.
   test('a subtype redeclaring an inherited field with nothing set is rejected', () => {
     for (const f of [{name: 'name'}, {name: 'name', stringForm: true},
                      {name: 'name', importedDialect: 'SNOWFLAKE'}]) {
@@ -852,10 +852,11 @@ semantic_model:
     const person = ent('person');
     const employee = ent('employee', {extends: ['person']});
     const order = ent('order');
+    // Each join reaches the target's key, `<name>_id`.
     const rel = (to: string) => ({
       name: `order_${to}`,
       source: {entity: 'order', columns: ['c']},
-      destination: {entity: to, columns: ['c']},
+      destination: {entity: to, columns: [`${to}_id`]},
     });
     const metric = (m: Partial<Metric>): Metric =>
         ({name: 'm1', expression: 'COUNT(*)', ...m} as Metric);
@@ -890,7 +891,7 @@ semantic_model:
         relationships: [{
           name: 'knows',
           source: {entity: 'person', columns: ['c']},
-          destination: {entity: 'person', columns: ['c']},
+          destination: {entity: 'person', columns: ['person_id']},
         }],
       });
       expect(errors.filter(e => e.includes("relationship 'knows'")).length).toBe(1);
@@ -914,5 +915,88 @@ semantic_model:
       expect(check({entities: [person, employee], metrics: [metric({entity: 'employee'})]}))
           .toEqual([]);
     });
+  });
+});
+
+
+// A relationship is a foreign key, which references a key, and a join that
+// reaches no key cannot be built into a graph.
+describe('a relationship joins on a key of its target', () => {
+  const ent = (name: string, over: Partial<Entity> = {}): Entity => ({
+    name, dataSource: `p.d.${name}`, keys: ['id'], fields: [], ...over,
+  });
+  const join = (to: string[]) => ({
+    name: 'placed_by',
+    source: {entity: 'orders', columns: to.map(c => `o_${c}`)},
+    destination: {entity: 'customer', columns: to},
+  });
+  const check = (customer: Entity, to: string[]) => validatePushRequirements(
+      [loaded(model({entities: [ent('orders'), customer], relationships: [join(to)]}))],
+      {targetOptional: true});
+
+  test('a join on a key, a unique key or a superset of one passes', () => {
+    expect(check(ent('customer'), ['id'])).toEqual([]);
+    expect(check(ent('customer', {uniqueKeys: [['email']]}), ['email'])).toEqual([]);
+    expect(check(ent('customer'), ['id', 'tenant'])).toEqual([]);
+  });
+
+  test('a join that covers no key is rejected', () => {
+    expect(check(ent('customer'), ['name']).join('\n')).toContain(
+        "relationship 'placed_by' in model 'm' (doc): its to_columns [\"name\"] " +
+        "cover no primary or unique key of 'customer'");
+  });
+
+  test('a target with no key cannot be joined to', () => {
+    expect(check(ent('customer', {keys: []}), ['id']).join('\n'))
+        .toContain("cover no primary or unique key of 'customer'");
+  });
+
+  test('a relationship with no join columns yet is not checked', () => {
+    expect(check(ent('customer', {keys: []}), [])).toEqual([]);
+  });
+});
+
+
+describe('a relationship key check reads names as columns', () => {
+  const join = (toEntity: string, to: string[]) => ({
+    name: 'placed_by',
+    source: {entity: 'orders', columns: to.map(c => `o_${c}`)},
+    destination: {entity: toEntity, columns: to},
+  });
+  const orders: Entity = {name: 'orders', dataSource: 'p.d.o', keys: ['o_id'], fields: []};
+  const check = (entities: Entity[], rel: any) => validatePushRequirements(
+      [loaded(model({entities: [orders, ...entities], relationships: [rel]}))],
+      {targetOptional: true});
+
+  test('a key that names a field covers a join on that field\'s column', () => {
+    const customer: Entity = {
+      name: 'customer', dataSource: 'p.d.c', keys: ['customerId'],
+      fields: [{name: 'customerId', expression: 'customer_id'}],
+    };
+    expect(check([customer], join('customer', ['customer_id']))).toEqual([]);
+  });
+
+  // The column is bound only in a profile, so this binding cannot tell which
+  // column the key is; the profile's binding is checked instead.
+  test('a key that names a field with no column yet is not judged', () => {
+    const customer: Entity = {
+      name: 'customer', dataSource: 'p.d.c', keys: ['customerId'],
+      fields: [{name: 'customerId'}],
+    };
+    expect(check([customer], join('customer', ['customer_id']))).toEqual([]);
+  });
+
+  test('a relationship through a junction table is not checked', () => {
+    const customer: Entity = {name: 'customer', dataSource: 'p.d.c', keys: ['id'], fields: []};
+    expect(check([customer], {...join('customer', ['not_a_key']),
+                              association: {dataSource: 'p.d.oc'}}))
+        .toEqual([]);
+  });
+
+  test('a relationship to an abstract entity gets only the concrete-leaf error', () => {
+    const party: Entity = {name: 'party', abstract: true, dataSource: '', keys: [], fields: []};
+    const errors = check([party], join('party', ['id'])).join('\n');
+    expect(errors).toContain("connects 'party', which is abstract");
+    expect(errors).not.toContain('cover no primary or unique key');
   });
 });

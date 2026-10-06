@@ -394,7 +394,9 @@ picks its own backend. The two bindings answer different parts of the same model
   field.
 - Every named profile must state each relationship's join columns itself. The
   model file's join columns are the inline binding's, and do not stand in for a
-  named profile's.
+  named profile's. In every binding, `to_columns` must contain every column of
+  a primary or unique key of the target, a superset counting, and cover the
+  same keys as every other binding.
 - An entity or field named only in the logical model keeps its declaration and
   any inline column binding; a profile element whose `name` is not in the
   logical model is rejected.
