@@ -13,12 +13,16 @@ import {Constraint, Entity, SemanticModel} from '../../ir';
 import {CoverageEntry, CoverageOutcome, CoverageRecorder} from '../coverage';
 
 import {manchester} from './constraints';
+import {EquivalentFold} from './folds';
 import {OwlChainStep, OwlClass, OwlCommonAnnotations, OwlModel} from './model';
 import {localName} from './parse';
 import {datatypeFor} from './to_ir';
 
 export interface OwlCoverageInput {
+  // The OwlModel the mapping read (after folding, see folds.ts).
   owl: OwlModel;
+  // The unkeyed classes folded into a keyed equivalent.
+  folds?: readonly EquivalentFold[];
   // The model the mapping produced, BEFORE any pruning.
   model: SemanticModel;
   // The mapper's warnings, for drop reasons.
@@ -138,6 +142,17 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
     land(
         'compiled', 'owl:Class', c.localName, {entity: e.name},
         e.definition ? `defined entity ${e.name}` : `entity ${e.name}`);
+  }
+  // Classes folded into their keyed equivalent (folds.ts): no entity of their
+  // own, by design.
+  for (const f of input.folds ?? []) {
+    land('compiled', 'owl:Class', f.folded, {entity: f.into},
+         `entity ${f.into} (folded in)`);
+    land('compiled', 'owl:equivalentClass (folded)',
+         `${f.folded} EquivalentTo ${f.into}`, {entity: f.into},
+         `entity ${f.into} ai_context.synonyms`,
+         'an unkeyed class equivalent to a keyed one names the same ' +
+             'concept: its relationships and fields move to the keyed entity');
   }
   const classes = [...firstClass.values()].filter(c => entities.has(c.localName));
 

@@ -37,6 +37,8 @@
 //                                    field -> the destination's key
 //   no owl:hasKey + subclasses    -> dataset abstract (kcmd:abstract
 //                                    overrides; see abstract.ts)
+//   unkeyed C owl:equivalentClass keyed D
+//                                 -> C folded into D (see folds.ts)
 //
 // The importer is IMPORT-ONLY: it maps the constructs above and DROPS every
 // other OWL construct rather than carrying it. Facts with no native OSI home --
@@ -69,6 +71,7 @@ import {applyOwlAnnotations} from './annotations';
 import {canonicalSteps, chainSteps} from './chains';
 import {owlConstraints} from './constraints';
 import {compileOwlDefinitions} from './definitions';
+import {EquivalentFold, foldEquivalentClasses} from './folds';
 import {OwlModel, OwlObjectProperty, OwlOntology} from './model';
 import {applyOwlVocabularies} from './vocabularies';
 
@@ -83,6 +86,11 @@ export interface ToIrResult {
   // still counts once. The CLI reports these, so "converted N ..." is honest
   // even when some elements were warned and skipped.
   stats: ImportStats;
+  // The OwlModel actually mapped: the parsed one with unkeyed equivalent
+  // classes folded into their keyed counterpart (see folds.ts). The coverage
+  // report reads this one, plus `folds`.
+  source: OwlModel;
+  folds: EquivalentFold[];
 }
 
 /** What an OWL import converted (see ToIrResult.stats). */
@@ -299,8 +307,11 @@ function inferredEnd(
  * source filename). The IR it returns serializes, via osi_converter, to the
  * OSI YAML shown in the user guide.
  */
-export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
+export function owlToIr(parsed: OwlModel, modelName: string): ToIrResult {
   const warnings: string[] = [];
+  // An unkeyed class equivalent to a keyed one is folded into it first, so
+  // every step below sees one class (see folds.ts).
+  const {owl, folds} = foldEquivalentClasses(parsed, warnings);
   const classNames = new Set(owl.classes.map(c => c.localName));
 
   // Entities, one per class, in class-declaration order. Fields are attached in
@@ -746,6 +757,8 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   return {
     model,
     warnings,
+    source: owl,
+    folds,
     stats: {
       classes: entities.length,
       datatypeProperties: datatypePropertiesConverted,

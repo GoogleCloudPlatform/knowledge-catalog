@@ -70,7 +70,8 @@ export function convertOwlToOsi(
     turtle: string|string[], modelName: string,
     opts: ConvertOptions = {}): ConvertResult {
   const owl = parseOwl(turtle);
-  const {model: mapped, warnings: mapWarnings, stats} = owlToIr(owl, modelName);
+  const {model: mapped, warnings: mapWarnings, stats, source, folds} =
+      owlToIr(owl, modelName);
   // K9: the ontology's SKOS vocabulary, if any, becomes the business glossary
   // (see skos.ts); `defines` resolve against the entities just mapped.
   const skosWarnings: string[] = [];
@@ -87,7 +88,8 @@ export function convertOwlToOsi(
     pruneWarnings.push(...result.warnings);
   }
   const coverage = owlCoverage({
-    owl,
+    owl: source,
+    folds,
     model: mapped,
     warnings: [...mapWarnings, ...skosWarnings],
     pruned: prune?.pruned,
