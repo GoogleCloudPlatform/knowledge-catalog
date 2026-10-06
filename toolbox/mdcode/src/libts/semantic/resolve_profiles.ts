@@ -615,6 +615,9 @@ export interface AvailabilityReport {
   droppedRelationships: {name: string; reason: string}[];
   // An action this profile cannot perform: it binds no executor for it.
   droppedActions: {name: string; reason: string}[];
+  // A bound field that reads an unavailable field of its entity, directly or
+  // through other fields, so it cannot be computed either. "Entity.field".
+  droppedFields: {name: string; reason: string}[];
   // A metric kept because the SQL parser cannot read its expression, so the
   // fields it reads were not checked.
   warnings: string[];
@@ -622,11 +625,11 @@ export interface AvailabilityReport {
 
 /**
  * Returns a clone of `model` reduced to what `profileName` can answer: unbound
- * and excluded fields taken off their entities, every excluded metric and
- * every metric that depends on such a field dropped, and every action with no
- * executor dropped. A field counts
- * whether the entity declares or inherits it. The input is never
- * mutated. The report names each dropped block and the unbound field that
+ * and excluded fields taken off their entities, with every field that reads
+ * one of them, directly or through other fields; every excluded metric and
+ * every metric that reads an unavailable field dropped; and every action with
+ * no executor dropped. A field counts whether the entity declares or inherits
+ * it. The input is never mutated. The report names each dropped block and the unbound field that
  * stops it, so a caller can state the withheld coverage. A model with nothing
  * unbound resolves unchanged.
  */
@@ -640,6 +643,7 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
     droppedMetrics: [],
     droppedRelationships: [],
     droppedActions: [],
+    droppedFields: [],
     warnings: [],
   };
 
@@ -653,7 +657,8 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
   // declared one. A field the profile excludes on an entity is unavailable on
   // that entity.
   const unbound = new Set<string>();
-  for (const e of resolvedEntities(clone)) {
+  const resolved = resolvedEntities(clone);
+  for (const e of resolved) {
     // An abstract entity has no table and no bindings by design: it survives
     // only as a label on its subtypes (which bind its inherited fields on their
     // own tables). Its fields are legitimately column-less, so they are not
@@ -667,6 +672,37 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
     }
   }
   report.unboundFields = [...unbound];
+
+  // A field that reads an unavailable field of its entity is unavailable too,
+  // and so is every field and metric that reads it in turn.
+  const unavailable = new Set(unbound);
+  const unreadable = new Set<string>();
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const e of resolved) {
+      if (e.abstract) continue;
+      for (const f of e.fields ?? []) {
+        const key = `${e.name}.${f.name}`;
+        if (unavailable.has(key)) continue;
+        const reached =
+            fieldDependencies(clone, e.name, f.name, unreadable)
+                .map(dep => `${e.name}.${dep}`)
+                .find(target => unavailable.has(target));
+        if (reached) {
+          unavailable.add(key);
+          report.droppedFields.push(
+              {name: key, reason: `reads ${reached}, which is unavailable`});
+          grew = true;
+        }
+      }
+    }
+  }
+  for (const what of unreadable) {
+    report.warnings.push(
+        `${what}: kcmd could not read its SQL, so the fields it reads were ` +
+        `not checked`);
+  }
 
   // Keys and join columns are physical column names, not fields, so whether a
   // field is bound says nothing about them. Excluding a field that happens to
@@ -685,7 +721,8 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
     // and name the shared label's property set for the emitter (see above).
     if (e.abstract) continue;
     const excluded = new Set(e.excludedFields ?? []);
-    const gone = (f: Field) => !isFieldBound(f) || excluded.has(f.name);
+    const gone = (f: Field) => !isFieldBound(f) || excluded.has(f.name) ||
+        unavailable.has(`${e.name}.${f.name}`);
     if (extendedNames.has(e.name)) {
       const kept = (e.fields ?? []).filter(gone).map(f => f.name);
       if (kept.length) {
@@ -723,10 +760,12 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
     const refs = [...new Set(
         columns.map(c => c.qualifier)
             .filter((q): q is string => !!q && allEntityNames.includes(q)))];
-    const hit = firstUnboundReferenced(columns, unbound);
+    const hit = firstUnboundReferenced(columns, unavailable);
     if (hit) {
-      report.droppedMetrics.push(
-          {name: mt.name, reason: `field ${hit} is unbound`});
+      report.droppedMetrics.push({
+        name: mt.name,
+        reason: `field ${hit} is ${unbound.has(hit) ? 'unbound' : 'unavailable'}`,
+      });
       continue;
     }
     if (refs.length > 1 && !connectingRelationshipKept(refs, keptRels)) {

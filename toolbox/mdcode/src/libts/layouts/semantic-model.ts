@@ -15,6 +15,10 @@ import * as yaml from 'yaml';
 import {CatalogLayout} from '../layout';
 import * as md from '../metadata';
 
+// Read model and profile files the way the loader and the profile reader do,
+// so a value means the same thing to all three.
+const YAML_OPTIONS = {resolveKnownTags: false, logLevel: 'error'} as const;
+
 // Sidecar suffixes that are NOT model documents.
 const SIDECAR_SUFFIXES = ['.aspects.yaml', '.overview.yaml'];
 
@@ -194,7 +198,7 @@ export class SemanticModelLayout implements CatalogLayout {
             `profiles in its GOOGLE block.`);
       }
       const text = fs.readFileSync(p, 'utf8');
-      const declared = profileNameIn(text, file);
+      const declared = parseProfileName(text, file);
       const reserved = (n?: string) =>
           n?.toLowerCase() === DEFAULT_PROFILE_NAME;
       if (reserved(name)) {
@@ -320,7 +324,7 @@ export class SemanticModelLayout implements CatalogLayout {
     const localPath = this._index.get(model);
     if (!localPath) return {};
     try {
-      const doc = yaml.parse(fs.readFileSync(localPath, 'utf8'));
+      const doc = yaml.parse(fs.readFileSync(localPath, 'utf8'), YAML_OPTIONS);
       const name = Array.isArray(doc?.semantic_model) ?
           doc.semantic_model[0]?.name :
           undefined;
@@ -396,10 +400,10 @@ export class SemanticModelLayout implements CatalogLayout {
 
 // The `name` a profile file declares at its top level, or undefined when it
 // declares none. A file that does not parse throws, naming the file.
-function profileNameIn(text: string, file: string): string|undefined {
+function parseProfileName(text: string, file: string): string|undefined {
   let doc: any;
   try {
-    doc = yaml.parse(text);
+    doc = yaml.parse(text, YAML_OPTIONS);
   } catch (err: any) {
     throw new Error(
         `Profile file '${file}' does not parse: ${err?.message ?? err}`);

@@ -124,7 +124,12 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
       merged.push({name: doc.name, text: doc.text});
       continue;
     }
-    const available = layout.profileDocuments(doc.name);
+    let available: Array<{name: string; text: string}>;
+    try {
+      available = layout.profileDocuments(doc.name);
+    } catch (err: any) {
+      return {error: err?.message ?? String(err)};
+    }
     const chosen = available.find(p => p.name === profile);
     if (!chosen) {
       const names = available.map(p => p.name);

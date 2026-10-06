@@ -7,7 +7,7 @@
 
 import {beforeAll, describe, expect, test} from 'bun:test';
 
-import {isFieldBound, ProfileSpec, SemanticModel} from '../../../src/libts/semantic/ir';
+import {Field, isFieldBound, ProfileSpec, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {resolveInheritance} from '../../../src/libts/semantic/resolve_inheritance';
 import {applyProfileExclusions, loadProfileFile, mergeProfile, mergeProfileOntoDoc, pruneUnavailable, validateProfileCompleteness, validateProfileConsistency} from '../../../src/libts/semantic/resolve_profiles';
@@ -401,6 +401,42 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
   test('a metric whose fields are all bound survives', () => {
     const {model} = pruneUnavailable(irModel(), 'operational');
     expect(metricNames(model)).toContain('order_count');
+  });
+
+  test('a field that reads an unavailable field is unavailable too, transitively', () => {
+    // `discount` is unbound; `net_amount` reads it, `tax` reads `net_amount`,
+    // and `total_tax` reads `tax`. All three go with it.
+    const chain = (discount: Partial<Field>, excluded: string[] = []):
+        SemanticModel => ({
+          name: 'sales',
+          entities: [{
+            name: 'Order', dataSource: 'p.d.orders', keys: ['o_id'],
+            excludedFields: excluded,
+            fields: [
+              {name: 'gross_amount', expression: 'gross'},
+              {name: 'discount', ...discount},
+              {name: 'net_amount', expression: 'Order.gross_amount - Order.discount'},
+              {name: 'tax', expression: 'Order.net_amount * 0.08'},
+            ],
+          }],
+          relationships: [],
+          metrics: [
+            {name: 'total_tax', expression: 'SUM(Order.tax)', entity: 'Order'},
+            {name: 'gross', expression: 'SUM(Order.gross_amount)', entity: 'Order'},
+          ],
+        });
+    for (const m of [chain({}), chain({expression: 'disc'}, ['discount'])]) {
+      const {model, report} = pruneUnavailable(m, 'prod');
+      expect(fieldNames(model, 'Order')).toEqual(['gross_amount']);
+      expect(report.droppedFields).toEqual([
+        {name: 'Order.net_amount', reason: 'reads Order.discount, which is unavailable'},
+        {name: 'Order.tax', reason: 'reads Order.net_amount, which is unavailable'},
+      ]);
+      expect(metricNames(model)).toEqual(['gross']);
+      expect(report.droppedMetrics).toEqual([
+        {name: 'total_tax', reason: 'field Order.tax is unavailable'},
+      ]);
+    }
   });
 
   test('a metric whose SQL cannot be read is kept, with a warning', () => {

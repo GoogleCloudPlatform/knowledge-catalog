@@ -91,6 +91,16 @@ describe('columnReferences', () => {
         .toEqual([{qualifier: 'orders', name: 'address'}]);
   });
 
+  test('reads a text that starts with a keyword used as an entity name', () => {
+    expect(columnReferences('Order.amount - Order.discount', 'BIGQUERY'))
+        .toEqual([
+          {qualifier: 'Order', name: 'amount'},
+          {qualifier: 'Order', name: 'discount'},
+        ]);
+    expect(columnReferences('Group.size -- a trailing comment', 'ANSI_SQL'))
+        .toEqual([{qualifier: 'Group', name: 'size'}]);
+  });
+
   test('reads a dialect name in any case', () => {
     expect(columnReferences('SUM("orders"."amount")', 'snowflake'))
         .toEqual([{qualifier: 'orders', name: 'amount'}]);

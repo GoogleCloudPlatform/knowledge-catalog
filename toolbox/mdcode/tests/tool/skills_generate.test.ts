@@ -101,6 +101,16 @@ describe('kcmd skills-generate: what lands on disk', () => {
 });
 
 
+describe('kcmd skills-generate: a broken profile file', () => {
+  test('is reported as an error, not thrown', async () => {
+    writeModel('commerce.yaml', modelText('commerce', 'IssueCredit'));
+    writeModel('commerce.profile.prod.yaml', 'name: staging\n');
+    expect(await skillsGenerate({out: 'skills', profile: 'prod'})).toBe(1);
+    expect(logs.join('\n')).toContain('commerce.profile.prod.yaml');
+  });
+});
+
+
 describe('kcmd skills-generate: --force replaces rather than layers', () => {
   test('a page for an action the model dropped is removed', async () => {
     // Progressive disclosure means an agent opens files under references/ on

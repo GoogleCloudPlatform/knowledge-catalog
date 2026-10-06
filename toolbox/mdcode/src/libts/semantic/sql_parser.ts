@@ -84,8 +84,11 @@ export function sqlColumns(expression: string, dialect: string): SqlColumn[]|
         'the SQL parser is not loaded; call loadSqlEngine() first');
   }
   if (!expression.trim()) return [];
+  // The parentheses keep a text that starts with a keyword, such as the entity
+  // name in `Order.amount - Order.discount`, from reading as a clause. The line
+  // breaks keep a trailing `--` comment from swallowing the closing one.
   const res = loadedEngine.parse(
-      `SELECT ${expression}`,
+      `SELECT (\n${expression}\n)`,
       PARSER_DIALECTS[dialect.toUpperCase()] ?? 'generic');
   if (!res.success || res.ast?.length !== 1) return undefined;
   const columns: SqlColumn[] = [];

@@ -506,13 +506,17 @@ export async function push(options: PushOptions): Promise<number> {
         });
         // Pruning never removes an entity or a relationship: their key and join
         // columns are physical columns, not fields. So the note counts what
-        // pruning can make unavailable, metrics and actions.
+        // pruning can make unavailable: fields, metrics and actions.
         for (const r of availability) {
           const dropped = r.droppedMetrics.length + r.droppedActions.length;
-          if (r.unboundFields.length || dropped) {
+          if (r.unboundFields.length || r.droppedFields.length || dropped) {
             console.warn(
                 `Note: profile '${r.profile}' leaves ${
                     r.unboundFields.length} field(s) unbound` +
+                (r.droppedFields.length ?
+                     `; ${r.droppedFields.length} field(s) that read them ` +
+                         `unavailable` :
+                     '') +
                 (dropped ?
                      `; ${r.droppedMetrics.length} metric(s) and ${
                          r.droppedActions.length} action(s) unavailable` :
@@ -987,6 +991,9 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
       for (const f of report.unboundFields) {
         withheld.push(
             `field ${f} (${excludedHere.has(f) ? 'excluded' : 'unbound'})`);
+      }
+      for (const d of report.droppedFields) {
+        withheld.push(`field ${d.name} (${d.reason})`);
       }
       for (const d of report.droppedMetrics) {
         withheld.push(`metric ${d.name} (${d.reason})`);
