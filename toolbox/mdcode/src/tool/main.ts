@@ -3,6 +3,7 @@
 
 import * as cac from 'cac';
 
+import {bind} from './bind';
 import * as commands from './commands';
 import * as mcp from './mcp';
 
@@ -338,6 +339,37 @@ cli.command(
       let exitCode = 1;
       try {
         exitCode = await commands.profile(options);
+      } catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+
+      process.exit(exitCode);
+    });
+
+
+cli.command(
+       'bind',
+       '(Proposed) Propose a binding profile from the raw warehouse: score every concrete entity against every scanned table (name, key, field coverage), match fields to columns, profile the chosen tables and propose hydration (grain, resolve, normalize, derive_from). Writes <model>.profiles/<profile>.yaml and bind_report.md; exits 2 when something needs review')
+    .option('--profile <name>', 'The binding profile to write (default `bigquery`)')
+    .option('--scan <pattern>', 'The datasets to scan, as <project>.<dataset glob> (e.g. my-project.ps_*)')
+    .option('--scan-file <file>', 'Read the scan from a file instead: a bind_scan.json, or an INFORMATION_SCHEMA.COLUMNS CSV export')
+    .option('--model <file>', 'Bind this model document instead of the scope\'s; the profile is written to <file stem>.profiles/ beside it')
+    .option('--from-catalog', 'Bind the model pulled from Knowledge Catalog (the scope\'s entry group) instead of the local documents')
+    .option('--accept-review', 'Accept every review item: bind each needs-review entity to its best candidate and switch on the proposed normalize rules')
+    .option('--no-profile-data', 'Do not profile the chosen tables (no hydration proposals)')
+    .option('--exclude <glob>', 'Leave datasets matching this glob out of the scan; repeatable. The deployment target\'s dataset is always left out')
+    .option('--include-views', 'Consider views as well as base tables')
+    .option('--kc-search', 'Also search Knowledge Catalog for each entity\'s names (a 0.10 score signal)')
+    .option('--deployment-target <uri>', 'The deployment target the profile declares; defaults to the existing profile\'s, else the model\'s')
+    .option('--location <location>', 'BigQuery location of the scanned datasets (default US)')
+    .option('--project <project>', 'Project the query jobs run and bill in; defaults to the scanned project')
+    .option('--label <key:value>', 'Label every query job; repeatable')
+    .option('--out <dir>', 'Directory for bind_report.md and bind_scan.json (default: the profile\'s directory)')
+    .action(async (options) => {
+      let exitCode = 1;
+      try {
+        exitCode = await bind(options);
       } catch (err: any) {
         console.error('Error:', err.message || err);
         exitCode = 1;

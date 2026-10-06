@@ -1,0 +1,2691 @@
+version: 0.2.0.dev0/google
+semantic_model:
+  - name: ps_commercial
+    description: "Upper ontology shared by the commercial, finance, contract and
+      delivery modules: parties, organizational units, commercial documents, and
+      the generic counterparty and territory relationships. (ontology version
+      1.0.0)"
+    ai_context:
+      synonyms:
+        - Professional services core ontology
+    entities:
+      - name: BusinessObject
+        abstract: true
+        description: Any identifiable thing the enterprise records and reasons about.
+      - name: Party
+        extends:
+          - BusinessObject
+        abstract: true
+        description: "A person or organization that takes part in business: clients,
+          partners, buyers, sellers, practitioners."
+        fields:
+          - name: partyName
+            datatype: String
+            description: "Display name of a party: an organization's legal / trading name or
+              a person's full name."
+      - name: Organization
+        extends:
+          - Party
+        abstract: true
+        description: A legal or commercial organization.
+      - name: Person
+        extends:
+          - Party
+        abstract: true
+        description: An individual human.
+      - name: OrgUnit
+        extends:
+          - BusinessObject
+        abstract: true
+        unique_keys:
+          - - unitName
+        description: "A unit the enterprise uses to organize sales and delivery:
+          territories and service lines."
+        ai_context:
+          synonyms:
+            - Organizational unit
+        fields:
+          - name: unitName
+            datatype: String
+            description: "Display name of an organizational unit. Business rule: no two
+              units share a name (owl:InverseFunctionalProperty), so the name is
+              a unique key of the unit besides its code. Several source systems
+              record a market unit or service group by name instead of by code;
+              such a reference resolves to the unit through this key. The source
+              unit masters do hold a few names shared by several units; those
+              names identify no unit, are reported by validation, and do not
+              resolve."
+      - name: MarketUnit
+        extends:
+          - OrgUnit
+        primary_key:
+          - marketUnitCode
+        unique_keys:
+          - - unitName
+        description: A sales territory that rolls up into a geographic region.
+        ai_context:
+          synonyms:
+            - Territory
+            - Sales territory
+        fields:
+          - name: marketUnitCode
+            datatype: String
+            description: "Identifier of a market unit (pattern MUD-G-nnnnn). On the market
+              unit it is the key; on a client account, opportunity, sales
+              target, pipeline snapshot, industry forecast, WBS element, revenue
+              posting or booking it references the market unit the record
+              belongs to, as recorded: usually the code, sometimes the unit's
+              name (see unitName)."
+          - name: currencyCode
+            datatype: String
+            description: ISO 4217 currency of the market unit's local ledger.
+          - name: geographicRegion
+            datatype: String
+            label: geographic region code
+            description: Code of the geographic region the market unit rolls up into, as
+              recorded; must be one of the GeographicRegion codes (NA, EMEA,
+              APAC).
+      - name: GeographicRegion
+        primary_key:
+          - regionCode
+        members:
+          - code: NA
+            label: North America
+            order: 1
+            iri: https://example.org/ontology/core#Region_NA
+          - code: EMEA
+            label: Europe, Middle East & Africa
+            order: 2
+            iri: https://example.org/ontology/core#Region_EMEA
+          - code: APAC
+            label: Asia Pacific
+            order: 3
+            iri: https://example.org/ontology/core#Region_APAC
+        description: "Top-level geographic region a market unit rolls up into. A closed
+          vocabulary: the regions are the named individuals below (the ontology
+          is their system of record; market units record the region's code)."
+        ai_context:
+          synonyms:
+            - Region
+            - Geography
+        fields:
+          - name: regionCode
+            datatype: String
+            description: Canonical code of a geographic region (NA, EMEA, APAC).
+      - name: ServiceGroup
+        extends:
+          - OrgUnit
+        primary_key:
+          - serviceGroupCode
+        unique_keys:
+          - - unitName
+        description: An offering / practice line that sells and delivers a family of
+          services.
+        ai_context:
+          synonyms:
+            - Service line
+            - Practice
+        fields:
+          - name: serviceGroupCode
+            datatype: String
+            description: "Identifier of a service group (pattern SGD-G-nnnnn). On the
+              service group it is the key; on an opportunity, sales credit,
+              sales target, pipeline snapshot, industry forecast or revenue
+              posting it references the service group the record is attributed
+              to, as recorded: usually the code, sometimes the group's name (see
+              unitName)."
+          - name: deliveryArchetype
+            datatype: String
+            description: How the service group typically delivers (e.g. consulting, managed
+              services).
+          - name: primaryPracticeLead
+            datatype: String
+            description: Name of the service group's primary practice lead, as recorded (a
+              name, not a link to an employee record).
+      - name: CommercialDocument
+        extends:
+          - BusinessObject
+        abstract: true
+        description: "A record of a commercial commitment or proposal with a
+          counterparty: opportunities, pricing cases, agreements, change
+          orders."
+      - name: Agreement
+        extends:
+          - CommercialDocument
+        abstract: true
+        description: A commercial document that binds the parties once signed.
+      - name: ClientAccount
+        extends:
+          - Organization
+        primary_key:
+          - accountId
+        description: An organization that buys services. The authoritative client
+          master; the finance module's Counterparty is the same concept.
+        ai_context:
+          synonyms:
+            - Client
+            - Customer
+            - Account
+            - Counterparty
+            - Payer
+            - Bill-to party
+        fields:
+          - name: marketUnitCode
+            datatype: String
+            description: "Identifier of a market unit (pattern MUD-G-nnnnn). On the market
+              unit it is the key; on a client account, opportunity, sales
+              target, pipeline snapshot, industry forecast, WBS element, revenue
+              posting or booking it references the market unit the record
+              belongs to, as recorded: usually the code, sometimes the unit's
+              name (see unitName)."
+          - name: accountId
+            datatype: String
+            description: Identifier of a client account (pattern CA-G-nnnnn). On the client
+              account it is the key; on an opportunity (buyer), key buyer,
+              stakeholder, partner alliance, health scorecard, intent signal,
+              contract agreement (payer) or engagement (client delivered for) it
+              references the client account.
+          - name: industryVertical
+            datatype: String
+            description: Industry the client operates in.
+          - name: accountTier
+            datatype: String
+            description: "Coverage tier: Diamond, Tier 1 Global, Tier 2 Regional, Tier 3
+              Growth."
+          - name: accountCreatedAt
+            datatype: DateTime
+            dimension:
+              is_time: true
+            description: When the client account was created.
+      - name: EcosystemPartner
+        extends:
+          - Organization
+        primary_key:
+          - partnerName
+        description: A technology or platform vendor the enterprise partners with to win
+          and deliver work.
+        ai_context:
+          synonyms:
+            - Alliance partner
+            - Technology partner
+        fields:
+          - name: partnerName
+            datatype: String
+            description: Name of an ecosystem partner. On the partner it is the key; on a
+              partner alliance it names the partner the alliance is with.
+      - name: KeyBuyer
+        extends:
+          - Person
+        primary_key:
+          - buyerId
+        description: A named decision maker at a client account.
+        ai_context:
+          synonyms:
+            - Decision maker
+            - Buyer contact
+        fields:
+          - name: accountId
+            datatype: String
+            description: Identifier of a client account (pattern CA-G-nnnnn). On the client
+              account it is the key; on an opportunity (buyer), key buyer,
+              stakeholder, partner alliance, health scorecard, intent signal,
+              contract agreement (payer) or engagement (client delivered for) it
+              references the client account.
+          - name: buyerId
+            datatype: String
+            description: Identifier of a key buyer.
+          - name: buyerSeniority
+            datatype: String
+            description: Seniority of the buyer (e.g. C-suite).
+          - name: disposition
+            datatype: String
+            description: The buyer's disposition toward the enterprise.
+          - name: influenceScore
+            datatype: Decimal
+            description: How much the buyer influences purchase decisions, on a 1-10 scale.
+      - name: ClientStakeholder
+        extends:
+          - Person
+        primary_key:
+          - stakeholderId
+        description: A person mapped on a client account's relationship matrix, with
+          their stance toward the enterprise.
+        fields:
+          - name: accountId
+            datatype: String
+            description: Identifier of a client account (pattern CA-G-nnnnn). On the client
+              account it is the key; on an opportunity (buyer), key buyer,
+              stakeholder, partner alliance, health scorecard, intent signal,
+              contract agreement (payer) or engagement (client delivered for) it
+              references the client account.
+          - name: stakeholderId
+            datatype: String
+            description: Identifier of a client stakeholder.
+          - name: relationshipStance
+            datatype: String
+            description: Champion, Supporter, Neutral, Skeptic or Hostile.
+          - name: influenceLevel
+            datatype: String
+            description: Influence of the stakeholder on decisions.
+          - name: seniorityLevel
+            datatype: String
+            description: "Seniority or role of the stakeholder in the client organization:
+              C-Suite, VP, Director, Program Manager or Procurement Lead."
+          - name: lastInteractionDate
+            datatype: Date
+            dimension:
+              is_time: true
+            description: Date of the most recent recorded interaction with the stakeholder.
+      - name: SalesTeamMember
+        extends:
+          - Person
+        primary_key:
+          - salesTeamMemberId
+        unique_keys:
+          - - corporateEmail
+        description: A seller who originates, leads or is credited on opportunities; can
+          also lead delivery engagements.
+        ai_context:
+          synonyms:
+            - Seller
+            - Originator
+        fields:
+          - name: homeMarketUnit
+            datatype: String
+            description: "The market unit a seller or employee belongs to, as recorded:
+              usually the market unit code, sometimes the unit's name (see
+              unitName). References a market unit."
+          - name: salesTeamMemberId
+            datatype: String
+            description: Identifier of a seller (pattern STM-G-nnnnn). On the seller it is
+              the key; on a sales credit or sales target it references the
+              seller credited or targeted.
+          - name: corporateEmail
+            datatype: String
+            description: "The seller's corporate email address. Business rule: no two
+              sellers share a corporate email (owl:InverseFunctionalProperty,
+              published as a uniqueness constraint and reported by validation).
+              It is a data-quality rule, not an identifier: the CRM holds
+              duplicate addresses, so sellers are identified and joined only by
+              salesTeamMemberId."
+          - name: practitionerLevel
+            datatype: String
+            description: Career level of the seller.
+      - name: Opportunity
+        extends:
+          - CommercialDocument
+        primary_key:
+          - opportunityId
+        description: A potential sale to a client account, tracked from identification
+          to won or lost.
+        ai_context:
+          synonyms:
+            - Deal
+            - Pursuit
+            - Sales opportunity
+        fields:
+          - name: marketUnitCode
+            datatype: String
+            description: "Identifier of a market unit (pattern MUD-G-nnnnn). On the market
+              unit it is the key; on a client account, opportunity, sales
+              target, pipeline snapshot, industry forecast, WBS element, revenue
+              posting or booking it references the market unit the record
+              belongs to, as recorded: usually the code, sometimes the unit's
+              name (see unitName)."
+          - name: serviceGroupCode
+            datatype: String
+            description: "Identifier of a service group (pattern SGD-G-nnnnn). On the
+              service group it is the key; on an opportunity, sales credit,
+              sales target, pipeline snapshot, industry forecast or revenue
+              posting it references the service group the record is attributed
+              to, as recorded: usually the code, sometimes the group's name (see
+              unitName)."
+          - name: accountId
+            datatype: String
+            description: Identifier of a client account (pattern CA-G-nnnnn). On the client
+              account it is the key; on an opportunity (buyer), key buyer,
+              stakeholder, partner alliance, health scorecard, intent signal,
+              contract agreement (payer) or engagement (client delivered for) it
+              references the client account.
+          - name: opportunityId
+            datatype: String
+            description: Identifier of an opportunity (pattern OPP-G-nnnnn; records migrated
+              from an older CRM use OPP-yyyy-nnnnn). On the opportunity it is
+              the key; on a stage transition, sales credit, pricing case,
+              pricing dispute, WBS element, contract agreement or engagement it
+              references the opportunity the record belongs to.
+          - name: originatorId
+            datatype: String
+            label: lead originator ID
+            description: Sales team member ID of the seller who originated the opportunity.
+              References a sales team member.
+          - name: opportunityName
+            datatype: String
+            description: Name of the opportunity.
+          - name: salesStage
+            datatype: String
+            label: sales stage code
+            description: "Code of the opportunity's current sales stage as recorded in the
+              CRM; references a SalesStage by its code (the edge inStage). Must
+              be one of the canonical SalesStage codes: the CRM mixes casings
+              (e.g. '5_WON' for '5_won'), which match their stage
+              case-insensitively and are reported by the shapes."
+          - name: totalContractValue
+            datatype: Decimal
+            unit: USD
+            description: Total value of the contract over its full term, USD.
+            ai_context:
+              synonyms:
+                - TCV
+          - name: annualContractValue
+            datatype: Decimal
+            unit: USD
+            description: Contract value per year, USD.
+            ai_context:
+              synonyms:
+                - ACV
+          - name: wonAmount
+            datatype: Decimal
+            unit: USD
+            description: Amount credited as sold when the opportunity is won, USD.
+            ai_context:
+              synonyms:
+                - sales
+          - name: probabilityOfWin
+            datatype: Decimal
+            description: Estimated probability (0-1) that the opportunity is won.
+            ai_context:
+              synonyms:
+                - PWIN
+                - win probability
+          - name: constructType
+            datatype: String
+            description: Commercial construct the opportunity is being sold on.
+          - name: closeDate
+            datatype: Date
+            dimension:
+              is_time: true
+            description: Expected or actual close date (ISO 8601).
+          - name: createdAt
+            datatype: DateTime
+            dimension:
+              is_time: true
+            description: When the opportunity was created.
+      - name: SalesStage
+        extends:
+          - BusinessObject
+        primary_key:
+          - stageCode
+        members:
+          - code: 0A
+            label: Identified
+            order: 1
+            iri: https://example.org/ontology/commercial#Stage_0A
+          - code: 0B
+            label: Qualifying
+            order: 2
+            iri: https://example.org/ontology/commercial#Stage_0B
+          - code: "1"
+            label: Qualified
+            order: 3
+            iri: https://example.org/ontology/commercial#Stage_1
+          - code: 2A
+            label: Solutioning
+            order: 4
+            iri: https://example.org/ontology/commercial#Stage_2A
+          - code: 2B
+            label: Proposal
+            order: 5
+            iri: https://example.org/ontology/commercial#Stage_2B
+          - code: "3"
+            label: Shortlisted
+            order: 6
+            iri: https://example.org/ontology/commercial#Stage_3
+          - code: "4"
+            label: Negotiation
+            order: 7
+            iri: https://example.org/ontology/commercial#Stage_4
+          - code: 5_won
+            label: Won
+            order: 8
+            iri: https://example.org/ontology/commercial#Stage_Won
+          - code: closed_lost
+            label: Lost
+            order: 9
+            iri: https://example.org/ontology/commercial#Stage_Lost
+        description: A step of the opportunity lifecycle. The canonical codes are the
+          named individuals below; any other spelling in the data is a quality
+          defect.
+        fields:
+          - name: stageCode
+            datatype: String
+            description: Canonical code of a sales stage.
+          - name: stageLabel
+            datatype: String
+            description: Business name of a sales stage.
+          - name: stageOrder
+            datatype: Integer
+            description: Position of the stage in the lifecycle.
+      - name: WonOpportunity
+        extends:
+          - ClosedOpportunity
+        defined:
+          expression: LOWER(salesStage) = '5_won'
+        description: An opportunity in the Won stage.
+      - name: LostOpportunity
+        extends:
+          - ClosedOpportunity
+        defined:
+          expression: LOWER(salesStage) = 'closed_lost'
+        description: An opportunity in the Lost stage.
+      - name: ClosedOpportunity
+        extends:
+          - Opportunity
+        defined:
+          expression: LOWER(salesStage) = '5_won' OR LOWER(salesStage) = 'closed_lost'
+        description: An opportunity that has been won or lost.
+      - name: ActivePipeline
+        extends:
+          - Opportunity
+        defined:
+          expression: NOT (LOWER(salesStage) = '5_won' OR LOWER(salesStage) =
+            'closed_lost')
+        description: An opportunity that is not closed (neither won nor lost).
+        ai_context:
+          synonyms:
+            - Open opportunity
+            - Open pipeline
+      - name: HighValueOpportunity
+        extends:
+          - Opportunity
+        defined:
+          expression: totalContractValue >= 1000
+        description: An opportunity whose total contract value is at least USD 1,000.
+      - name: MegaDeal
+        extends:
+          - HighValueOpportunity
+        defined:
+          expression: totalContractValue >= 20000
+        description: An opportunity whose total contract value is at least USD 20,000;
+          requires executive deal review.
+      - name: StrategicAccount
+        extends:
+          - ClientAccount
+        defined:
+          expression: accountTier IN ('Diamond', 'Tier 1 Global')
+        description: A client account in the Diamond or Tier 1 Global tier.
+      - name: PriorityOpportunity
+        extends:
+          - Opportunity
+        description: An opportunity that is high value, or whose buyer is a strategic
+          account.
+      - name: StageTransition
+        extends:
+          - BusinessObject
+        primary_key:
+          - stageHistoryId
+        description: An opportunity entering a sales stage, with the time spent in it.
+        fields:
+          - name: opportunityId
+            datatype: String
+            description: Identifier of an opportunity (pattern OPP-G-nnnnn; records migrated
+              from an older CRM use OPP-yyyy-nnnnn). On the opportunity it is
+              the key; on a stage transition, sales credit, pricing case,
+              pricing dispute, WBS element, contract agreement or engagement it
+              references the opportunity the record belongs to.
+          - name: stageHistoryId
+            datatype: String
+            description: Identifier of a stage transition.
+          - name: stageName
+            datatype: String
+            label: stage entered
+            description: Code of the stage that was entered.
+          - name: stageEnteredDate
+            datatype: DateTime
+            dimension:
+              is_time: true
+            description: When the stage was entered.
+          - name: daysInStage
+            datatype: Integer
+            description: Days the opportunity spent in the stage.
+          - name: transitionedBy
+            datatype: String
+            description: Who moved the opportunity into the stage, as recorded in the CRM (a
+              user name, not a link to a seller or employee record).
+      - name: SalesCredit
+        extends:
+          - BusinessObject
+        primary_key:
+          - roleAssignmentId
+        description: A seller's role and credit allocation on an opportunity.
+        ai_context:
+          synonyms:
+            - Sales role assignment
+        fields:
+          - name: serviceGroupCode
+            datatype: String
+            description: "Identifier of a service group (pattern SGD-G-nnnnn). On the
+              service group it is the key; on an opportunity, sales credit,
+              sales target, pipeline snapshot, industry forecast or revenue
+              posting it references the service group the record is attributed
+              to, as recorded: usually the code, sometimes the group's name (see
+              unitName)."
+          - name: salesTeamMemberId
+            datatype: String
+            description: Identifier of a seller (pattern STM-G-nnnnn). On the seller it is
+              the key; on a sales credit or sales target it references the
+              seller credited or targeted.
+          - name: opportunityId
+            datatype: String
+            description: Identifier of an opportunity (pattern OPP-G-nnnnn; records migrated
+              from an older CRM use OPP-yyyy-nnnnn). On the opportunity it is
+              the key; on a stage transition, sales credit, pricing case,
+              pricing dispute, WBS element, contract agreement or engagement it
+              references the opportunity the record belongs to.
+          - name: roleAssignmentId
+            datatype: String
+            description: Identifier of a sales credit.
+          - name: roleName
+            datatype: String
+            label: sales role
+            description: Lead Originator, Sales Co-Originator, Solution Lead, Commercial
+              Architect or Advisory Partner.
+          - name: roleAllocationPct
+            datatype: Decimal
+            label: role allocation %
+            description: Share of the opportunity credited to this role.
+      - name: DealPricing
+        extends:
+          - CommercialDocument
+        primary_key:
+          - pricingId
+        description: "The priced proposal for an opportunity: target and floor price,
+          approved discount and commercial construct."
+        ai_context:
+          synonyms:
+            - Pricing case
+            - Price proposal
+        fields:
+          - name: opportunityId
+            datatype: String
+            description: Identifier of an opportunity (pattern OPP-G-nnnnn; records migrated
+              from an older CRM use OPP-yyyy-nnnnn). On the opportunity it is
+              the key; on a stage transition, sales credit, pricing case,
+              pricing dispute, WBS element, contract agreement or engagement it
+              references the opportunity the record belongs to.
+          - name: pricingId
+            datatype: String
+            description: Identifier of a pricing case. On the pricing case it is the key; on
+              a rate card line it references the pricing case the line belongs
+              to.
+          - name: targetPrice
+            datatype: Decimal
+            unit: USD
+            description: Price the deal team aims for, USD.
+          - name: floorPrice
+            datatype: Decimal
+            unit: USD
+            description: Lowest price allowed without an exception, USD.
+          - name: approvedDiscountPct
+            datatype: Decimal
+            label: approved discount %
+            description: Discount approved against the standard price.
+          - name: pricingConstruct
+            datatype: String
+            label: pricing construct code
+            description: "Name of the pricing construct as recorded; references a
+              PricingConstruct by its code (the edge pricedOn). Must be one of
+              the canonical PricingConstruct codes: differently-cased spellings
+              match their construct case-insensitively and are reported by the
+              shapes."
+          - name: pricingStatus
+            datatype: String
+            description: Approval status of the pricing case.
+          - name: pricingCreatedAt
+            datatype: DateTime
+            dimension:
+              is_time: true
+            description: When the pricing case was created.
+      - name: PricingConstruct
+        extends:
+          - BusinessObject
+        primary_key:
+          - constructCode
+        members:
+          - code: Fixed Price Milestone
+            label: Fixed price (milestone)
+            order: 1
+            iri: https://example.org/ontology/commercial#Construct_FixedPriceMilestone
+          - code: Managed Services Annuity
+            label: Managed services annuity
+            order: 2
+            iri: https://example.org/ontology/commercial#Construct_ManagedServicesAnnuity
+          - code: Time and Materials
+            label: Time and materials
+            order: 3
+            iri: https://example.org/ontology/commercial#Construct_TimeAndMaterials
+          - code: Gainshare Outcome
+            label: Gainshare / outcome based
+            order: 4
+            iri: https://example.org/ontology/commercial#Construct_GainshareOutcome
+        description: The commercial model a deal is priced on.
+        ai_context:
+          synonyms:
+            - Commercial model
+        fields:
+          - name: constructCode
+            datatype: String
+            description: Canonical name of a pricing construct.
+      - name: RateCardLine
+        extends:
+          - BusinessObject
+        primary_key:
+          - rateLineId
+        description: A role / country line of a pricing case with its average daily rate.
+        fields:
+          - name: pricingId
+            datatype: String
+            description: Identifier of a pricing case. On the pricing case it is the key; on
+              a rate card line it references the pricing case the line belongs
+              to.
+          - name: rateLineId
+            datatype: String
+            description: Identifier of a rate card line. On the line it is the key; on a
+              price adjustment it references the line whose rate is adjusted.
+          - name: roleLevel
+            datatype: String
+            description: Career level priced on the line.
+          - name: country
+            datatype: String
+            description: Delivery country of the line.
+          - name: averageDailyRate
+            datatype: Decimal
+            description: Average price per person-day on the line, USD. The line's
+              billingUnit records whether the rate was quoted hourly or per
+              8-hour day.
+            ai_context:
+              synonyms:
+                - ADR
+          - name: hoursAssumed
+            datatype: Decimal
+            description: Hours assumed on the line.
+          - name: billingUnit
+            datatype: String
+            description: "Unit the line's rate is quoted in: Hourly Rate or Daily 8h Rate,
+              as recorded."
+      - name: PricingDispute
+        extends:
+          - BusinessObject
+        primary_key:
+          - disputeId
+        description: An escalation raised because a deal's price breaches policy (e.g.
+          below floor).
+        ai_context:
+          synonyms:
+            - Pricing escalation
+        fields:
+          - name: opportunityId
+            datatype: String
+            description: Identifier of an opportunity (pattern OPP-G-nnnnn; records migrated
+              from an older CRM use OPP-yyyy-nnnnn). On the opportunity it is
+              the key; on a stage transition, sales credit, pricing case,
+              pricing dispute, WBS element, contract agreement or engagement it
+              references the opportunity the record belongs to.
+          - name: disputeId
+            datatype: String
+            description: Identifier of a pricing dispute.
+          - name: disputeStatus
+            datatype: String
+            description: Open, Under Escalation, Hurdle Waived, Restructured or Declined.
+          - name: escalationTier
+            datatype: String
+            description: Management level the dispute is escalated to.
+          - name: loggedAt
+            datatype: DateTime
+            dimension:
+              is_time: true
+            description: When the dispute was raised.
+          - name: resolvedAt
+            datatype: DateTime
+            dimension:
+              is_time: true
+            description: When the dispute was resolved, as recorded. Must not precede
+              loggedAt (reported by the pricing dispute shape).
+      - name: PartnerAlliance
+        extends:
+          - BusinessObject
+        primary_key:
+          - allianceId
+        description: A joint go-to-market relationship between a client account and an
+          ecosystem partner.
+        fields:
+          - name: accountId
+            datatype: String
+            description: Identifier of a client account (pattern CA-G-nnnnn). On the client
+              account it is the key; on an opportunity (buyer), key buyer,
+              stakeholder, partner alliance, health scorecard, intent signal,
+              contract agreement (payer) or engagement (client delivered for) it
+              references the client account.
+          - name: partnerName
+            datatype: String
+            description: Name of an ecosystem partner. On the partner it is the key; on a
+              partner alliance it names the partner the alliance is with.
+          - name: allianceId
+            datatype: String
+            description: Identifier of a partner alliance.
+          - name: partnerTier
+            datatype: String
+            description: "Tier of the alliance: Global Strategic, Premier, Certified,
+              Niche."
+          - name: jointPipelineUsd
+            datatype: Decimal
+            unit: USD
+            label: joint pipeline
+            description: Pipeline pursued jointly with the partner, USD.
+          - name: allianceRevenueInfluence
+            datatype: Decimal
+            description: Revenue influenced by the alliance, as recorded on the alliance.
+          - name: subcontractorUsed
+            datatype: String
+            description: Whether the partner is used as a subcontractor on the alliance
+              ('true' / 'false').
+      - name: ClientHealthScorecard
+        extends:
+          - BusinessObject
+        primary_key:
+          - scorecardId
+        description: A periodic survey of a client's satisfaction and relationship health.
+        ai_context:
+          synonyms:
+            - NPS survey
+            - Client satisfaction survey
+        fields:
+          - name: accountId
+            datatype: String
+            description: Identifier of a client account (pattern CA-G-nnnnn). On the client
+              account it is the key; on an opportunity (buyer), key buyer,
+              stakeholder, partner alliance, health scorecard, intent signal,
+              contract agreement (payer) or engagement (client delivered for) it
+              references the client account.
+          - name: scorecardId
+            datatype: String
+            description: Identifier of a client health scorecard.
+          - name: npsScore
+            datatype: Integer
+            description: Net promoter score given by the client (-100 to 100).
+            ai_context:
+              synonyms:
+                - Net promoter score
+          - name: sentimentCategory
+            datatype: String
+            description: Promoter, passive or detractor.
+          - name: relationshipHealthIndex
+            datatype: Decimal
+            description: Composite relationship-health score.
+          - name: surveyDate
+            datatype: Date
+            dimension:
+              is_time: true
+            description: When the survey was taken.
+          - name: advocacyRating
+            datatype: Decimal
+            description: How strongly the client advocates for the enterprise, as rated in
+              the survey on a five-point scale.
+          - name: surveyPeriod
+            datatype: String
+            description: Fiscal quarter the survey belongs to, as recorded (e.g. FY25-Q1).
+      - name: PriceAdjustment
+        extends:
+          - BusinessObject
+        primary_key:
+          - adjustmentId
+        description: An approved percentage adjustment to the rate of a rate card line,
+          with its reason and approver.
+        ai_context:
+          synonyms:
+            - Rate adjustment
+            - Rate concession
+        fields:
+          - name: rateLineId
+            datatype: String
+            description: Identifier of a rate card line. On the line it is the key; on a
+              price adjustment it references the line whose rate is adjusted.
+          - name: adjustmentId
+            datatype: String
+            description: Identifier of a price adjustment (pattern PA-G-nnnnn).
+          - name: adjustmentReason
+            datatype: String
+            description: "Why the rate was adjusted: Competitive Pressure, Strategic Entry,
+              Volume Commitment, TPA Benchmark Match or Executive Concession
+              (casing varies in the source)."
+          - name: adjustmentPct
+            datatype: Decimal
+            label: adjustment %
+            description: Size of the adjustment as a fraction of the rate (0-1).
+          - name: approverName
+            datatype: String
+            description: Name of the person who approved the adjustment, as recorded (a
+              name, not a link to a seller or employee record).
+          - name: approvedDate
+            datatype: Date
+            dimension:
+              is_time: true
+            description: When the adjustment was approved.
+      - name: SalesTarget
+        extends:
+          - BusinessObject
+        primary_key:
+          - targetId
+        description: A seller's contribution target for a fiscal year in a market unit
+          and service group.
+        ai_context:
+          synonyms:
+            - Quota
+            - Contribution target
+        fields:
+          - name: marketUnitCode
+            datatype: String
+            description: "Identifier of a market unit (pattern MUD-G-nnnnn). On the market
+              unit it is the key; on a client account, opportunity, sales
+              target, pipeline snapshot, industry forecast, WBS element, revenue
+              posting or booking it references the market unit the record
+              belongs to, as recorded: usually the code, sometimes the unit's
+              name (see unitName)."
+          - name: serviceGroupCode
+            datatype: String
+            description: "Identifier of a service group (pattern SGD-G-nnnnn). On the
+              service group it is the key; on an opportunity, sales credit,
+              sales target, pipeline snapshot, industry forecast or revenue
+              posting it references the service group the record is attributed
+              to, as recorded: usually the code, sometimes the group's name (see
+              unitName)."
+          - name: salesTeamMemberId
+            datatype: String
+            description: Identifier of a seller (pattern STM-G-nnnnn). On the seller it is
+              the key; on a sales credit or sales target it references the
+              seller credited or targeted.
+          - name: targetId
+            datatype: String
+            description: Identifier of a sales target (pattern ST-G-nnnnn).
+          - name: fiscalYear
+            datatype: String
+            description: Fiscal year the target applies to (e.g. FY24).
+          - name: contributionTargetAmount
+            datatype: Decimal
+            label: contribution target
+            description: Contribution the seller is expected to deliver in the fiscal year.
+            ai_context:
+              synonyms:
+                - quota
+          - name: craftContributionTargetAmount
+            datatype: Decimal
+            label: craft contribution target
+            description: Craft (practice-specific) part of the seller's contribution target
+              for the fiscal year, as recorded.
+      - name: PipelineSnapshot
+        extends:
+          - BusinessObject
+        primary_key:
+          - asOfDate
+          - forecastCategory
+          - marketUnitCode
+          - serviceGroupCode
+        description: "Pipeline value and probability-weighted pipeline value recorded on
+          a date for a forecast category, market unit and service group: the
+          history of the pipeline, which current opportunity records do not
+          keep. One snapshot per (as-of date, forecast category, market unit,
+          service group); a few snapshots record no market unit or no service
+          group."
+        ai_context:
+          synonyms:
+            - Pipeline history
+            - Forecast snapshot
+        fields:
+          - name: marketUnitCode
+            datatype: String
+            description: "Identifier of a market unit (pattern MUD-G-nnnnn). On the market
+              unit it is the key; on a client account, opportunity, sales
+              target, pipeline snapshot, industry forecast, WBS element, revenue
+              posting or booking it references the market unit the record
+              belongs to, as recorded: usually the code, sometimes the unit's
+              name (see unitName)."
+          - name: serviceGroupCode
+            datatype: String
+            description: "Identifier of a service group (pattern SGD-G-nnnnn). On the
+              service group it is the key; on an opportunity, sales credit,
+              sales target, pipeline snapshot, industry forecast or revenue
+              posting it references the service group the record is attributed
+              to, as recorded: usually the code, sometimes the group's name (see
+              unitName)."
+          - name: asOfDate
+            datatype: Date
+            dimension:
+              is_time: true
+            description: Date the pipeline was measured.
+          - name: forecastCategory
+            datatype: String
+            description: "Forecast category of the measured pipeline: commit, best_case or
+              pipeline."
+          - name: pipelineValue
+            datatype: Decimal
+            description: Pipeline value on the as-of date.
+          - name: weightedPipelineValue
+            datatype: Decimal
+            description: Probability-weighted pipeline value on the as-of date; should not
+              exceed pipelineValue.
+      - name: MarketIntelligenceRecord
+        extends:
+          - BusinessObject
+        abstract: true
+        description: A record licensed from an external market-data provider, with its
+          source feed, source of record and generative-AI usage rights.
+        fields:
+          - name: sourceFeed
+            datatype: String
+            description: External feed the record was ingested from.
+          - name: sourceOfRecord
+            datatype: String
+            description: Provider that is authoritative for the record.
+          - name: genaiUsageRights
+            datatype: String
+            label: generative AI usage rights
+            description: Whether the licence allows the record to be used with generative AI
+              ('Yes' / 'No'). Records marked 'No' must not be passed to
+              generative AI.
+          - name: syntheticProxy
+            datatype: String
+            description: Whether the record is a synthetic stand-in for licensed data
+              ('true' / 'false').
+      - name: IntentSignal
+        extends:
+          - MarketIntelligenceRecord
+        primary_key:
+          - signalId
+        description: An external signal that a client account is researching a topic
+          (surge score), with its installed-technology count.
+        ai_context:
+          synonyms:
+            - Buying signal
+            - Intent surge
+        fields:
+          - name: accountId
+            datatype: String
+            description: Identifier of a client account (pattern CA-G-nnnnn). On the client
+              account it is the key; on an opportunity (buyer), key buyer,
+              stakeholder, partner alliance, health scorecard, intent signal,
+              contract agreement (payer) or engagement (client delivered for) it
+              references the client account.
+          - name: signalId
+            datatype: String
+            description: Identifier of an intent signal (pattern MIS-G-nnnnn).
+          - name: intentTopic
+            datatype: String
+            description: Topic the account is researching (e.g. Generative AI, Cloud
+              Migration).
+          - name: surgeScore
+            datatype: Decimal
+            description: Strength of the account's research interest in the topic, 0-100.
+          - name: techInstallCount
+            datatype: Integer
+            label: technology install count
+            description: Number of technologies detected as installed at the account.
+          - name: signalDate
+            datatype: Date
+            dimension:
+              is_time: true
+            description: When the signal was observed.
+      - name: IndustryForecast
+        extends:
+          - MarketIntelligenceRecord
+        primary_key:
+          - forecastId
+        description: An external forecast of the total addressable market and
+          cloud-migration spend for a market vertical in a year, attributed to a
+          market unit and service group.
+        ai_context:
+          synonyms:
+            - Market forecast
+            - TAM forecast
+        fields:
+          - name: marketUnitCode
+            datatype: String
+            description: "Identifier of a market unit (pattern MUD-G-nnnnn). On the market
+              unit it is the key; on a client account, opportunity, sales
+              target, pipeline snapshot, industry forecast, WBS element, revenue
+              posting or booking it references the market unit the record
+              belongs to, as recorded: usually the code, sometimes the unit's
+              name (see unitName)."
+          - name: serviceGroupCode
+            datatype: String
+            description: "Identifier of a service group (pattern SGD-G-nnnnn). On the
+              service group it is the key; on an opportunity, sales credit,
+              sales target, pipeline snapshot, industry forecast or revenue
+              posting it references the service group the record is attributed
+              to, as recorded: usually the code, sometimes the group's name (see
+              unitName)."
+          - name: forecastId
+            datatype: String
+            description: Identifier of an industry forecast (pattern MFI-G-nnnnn).
+          - name: marketVertical
+            datatype: String
+            description: "Industry vertical forecast: Communications & Media, Financial
+              Services, Health & Public Service, Products or Resources (casing
+              varies in the source)."
+          - name: forecastYear
+            datatype: String
+            description: Calendar year the forecast is for (e.g. 2026).
+          - name: totalAddressableMarketUsd
+            datatype: Decimal
+            unit: USD
+            label: total addressable market
+            description: Forecast total addressable market for the vertical, USD.
+            ai_context:
+              synonyms:
+                - TAM
+          - name: tamGrowthPct
+            datatype: Decimal
+            label: TAM growth %
+            description: Forecast growth of the total addressable market, in percent (e.g.
+              9.5).
+          - name: cloudMigrationSpendUsd
+            datatype: Decimal
+            unit: USD
+            label: cloud migration spend
+            description: Forecast spend on cloud migration in the vertical, USD.
+      - name: LegacyDeal
+        extends:
+          - BusinessObject
+        primary_key:
+          - legacyDealId
+        description: "DEPRECATED: Frozen extract of a retired deal system. Not
+          authoritative; use Opportunity."
+        ai_context:
+          instructions: "LegacyDeal is deprecated: do not use it in new queries or writes.
+            Use Opportunity instead."
+        fields:
+          - name: legacyDealId
+            datatype: String
+            description: Identifier in the retired deal system.
+      - name: LegacyMasterAccount
+        extends:
+          - BusinessObject
+        primary_key:
+          - legacyAccountId
+        description: "DEPRECATED: Frozen extract of a retired account master. Not
+          authoritative; use ClientAccount."
+        ai_context:
+          instructions: "LegacyMasterAccount is deprecated: do not use it in new queries
+            or writes. Use ClientAccount instead."
+        fields:
+          - name: legacyAccountId
+            datatype: String
+            description: Identifier in the retired account master.
+      - name: ContractAgreement
+        extends:
+          - Agreement
+        primary_key:
+          - contractNumber
+        description: A signed or in-flight agreement with a client that governs an
+          opportunity's delivery.
+        ai_context:
+          synonyms:
+            - Contract
+        fields:
+          - name: accountId
+            datatype: String
+            description: Identifier of a client account (pattern CA-G-nnnnn). On the client
+              account it is the key; on an opportunity (buyer), key buyer,
+              stakeholder, partner alliance, health scorecard, intent signal,
+              contract agreement (payer) or engagement (client delivered for) it
+              references the client account.
+          - name: opportunityId
+            datatype: String
+            description: Identifier of an opportunity (pattern OPP-G-nnnnn; records migrated
+              from an older CRM use OPP-yyyy-nnnnn). On the opportunity it is
+              the key; on a stage transition, sales credit, pricing case,
+              pricing dispute, WBS element, contract agreement or engagement it
+              references the opportunity the record belongs to.
+          - name: contractNumber
+            datatype: String
+            description: Identifier of a contract agreement. On the agreement it is the key;
+              on a change order, obligation or engagement it references the
+              agreement amended, owing the obligation or executed.
+          - name: contractName
+            datatype: String
+            description: Name of the contract.
+          - name: contractType
+            datatype: String
+            description: MSA, SOW, Subcontract or Amendment.
+          - name: contractStatus
+            datatype: String
+            label: contract status code
+            description: "Status name as recorded; references a ContractStatus by its code
+              (the edge hasStatus). Must be one of the canonical ContractStatus
+              codes: differently-cased spellings match their status
+              case-insensitively and are reported by the shapes."
+          - name: contractStartDate
+            datatype: Date
+            dimension:
+              is_time: true
+            description: When the contract term starts.
+          - name: contractEndDate
+            datatype: Date
+            dimension:
+              is_time: true
+            description: When the contract term ends.
+          - name: governingLaw
+            datatype: String
+            description: Jurisdiction whose law governs the contract.
+          - name: liabilityCapUsd
+            datatype: Decimal
+            unit: USD
+            label: liability cap
+            description: Contractual liability cap, USD.
+          - name: totalCommittedValue
+            datatype: Decimal
+            unit: USD
+            description: Value committed under the contract, USD.
+      - name: MasterServicesAgreement
+        extends:
+          - ContractAgreement
+        defined:
+          expression: contractType = 'MSA'
+        description: Umbrella agreement setting the terms that later statements of work
+          inherit.
+        ai_context:
+          synonyms:
+            - MSA
+      - name: StatementOfWork
+        extends:
+          - ContractAgreement
+        defined:
+          expression: contractType = 'SOW'
+        description: Agreement defining the scope, deliverables and price of a specific
+          piece of work.
+        ai_context:
+          synonyms:
+            - SOW
+      - name: Subcontract
+        extends:
+          - ContractAgreement
+        defined:
+          expression: contractType = 'Subcontract'
+        description: Agreement under which a third party performs part of the work.
+      - name: Amendment
+        extends:
+          - ContractAgreement
+        defined:
+          expression: contractType = 'Amendment'
+        description: Agreement that modifies the terms of an existing agreement.
+      - name: ContractStatus
+        extends:
+          - BusinessObject
+        primary_key:
+          - statusCode
+        members:
+          - code: Draft
+            label: Draft
+            order: 1
+            iri: https://example.org/ontology/contract#Status_Draft
+          - code: Under Review
+            label: Under review
+            order: 2
+            iri: https://example.org/ontology/contract#Status_UnderReview
+          - code: Signed
+            label: Signed
+            order: 3
+            iri: https://example.org/ontology/contract#Status_Signed
+          - code: Active
+            label: Active
+            order: 4
+            iri: https://example.org/ontology/contract#Status_Active
+          - code: Expired
+            label: Expired
+            order: 5
+            iri: https://example.org/ontology/contract#Status_Expired
+          - code: Terminated
+            label: Terminated
+            order: 6
+            iri: https://example.org/ontology/contract#Status_Terminated
+        description: Lifecycle status of a contract agreement.
+        fields:
+          - name: statusCode
+            datatype: String
+            description: Canonical contract status name.
+      - name: ChangeOrder
+        extends:
+          - CommercialDocument
+        primary_key:
+          - changeOrderId
+        description: A change to a contract's value, scope or effort.
+        ai_context:
+          synonyms:
+            - Contract change notice
+            - CCN
+        fields:
+          - name: contractNumber
+            datatype: String
+            description: Identifier of a contract agreement. On the agreement it is the key;
+              on a change order, obligation or engagement it references the
+              agreement amended, owing the obligation or executed.
+          - name: changeOrderId
+            datatype: String
+            description: Identifier of a change order.
+          - name: ccnNumber
+            datatype: String
+            description: "Number of the contract change notice (CCN) under which the change
+              order was issued, as recorded. Not an identifier: many change
+              orders share a CCN number; use changeOrderId."
+            ai_context:
+              synonyms:
+                - contract change notice number
+          - name: changeType
+            datatype: String
+            description: Kind of change (scope, schedule, price...).
+          - name: changeStatus
+            datatype: String
+            description: Proposed, Approved, Executed or Rejected.
+          - name: effectiveDate
+            datatype: Date
+            dimension:
+              is_time: true
+            description: When the change takes effect.
+          - name: valueDeltaUsd
+            datatype: Decimal
+            unit: USD
+            label: value delta
+            description: Change in contract value, USD.
+          - name: hoursDelta
+            datatype: Decimal
+            description: Change in contracted effort, hours.
+      - name: ContractObligation
+        extends:
+          - BusinessObject
+        primary_key:
+          - obligationId
+        description: An obligation or service-level commitment in a contract, possibly
+          with a penalty clause.
+        ai_context:
+          synonyms:
+            - SLA
+            - Contract clause
+        fields:
+          - name: contractNumber
+            datatype: String
+            description: Identifier of a contract agreement. On the agreement it is the key;
+              on a change order, obligation or engagement it references the
+              agreement amended, owing the obligation or executed.
+          - name: obligationId
+            datatype: String
+            description: Identifier of a contract obligation.
+          - name: obligationTitle
+            datatype: String
+            description: Title of the obligation.
+          - name: obligationCategory
+            datatype: String
+            description: Category of the obligation.
+          - name: penaltyClause
+            datatype: String
+            description: Penalty applied when the obligation is breached.
+          - name: slaThresholdPct
+            datatype: Decimal
+            label: SLA threshold %
+            description: Service-level threshold to meet.
+      - name: Engagement
+        extends:
+          - BusinessObject
+        primary_key:
+          - engagementId
+        description: The delivery of a won opportunity under a contract agreement.
+        ai_context:
+          synonyms:
+            - Project
+            - Delivery engagement
+        fields:
+          - name: accountId
+            datatype: String
+            description: Identifier of a client account (pattern CA-G-nnnnn). On the client
+              account it is the key; on an opportunity (buyer), key buyer,
+              stakeholder, partner alliance, health scorecard, intent signal,
+              contract agreement (payer) or engagement (client delivered for) it
+              references the client account.
+          - name: opportunityId
+            datatype: String
+            description: Identifier of an opportunity (pattern OPP-G-nnnnn; records migrated
+              from an older CRM use OPP-yyyy-nnnnn). On the opportunity it is
+              the key; on a stage transition, sales credit, pricing case,
+              pricing dispute, WBS element, contract agreement or engagement it
+              references the opportunity the record belongs to.
+          - name: contractNumber
+            datatype: String
+            description: Identifier of a contract agreement. On the agreement it is the key;
+              on a change order, obligation or engagement it references the
+              agreement amended, owing the obligation or executed.
+          - name: engagementId
+            datatype: String
+            description: Identifier of an engagement. On the engagement it is the key; on a
+              milestone, QA health check, staffing assignment or timesheet entry
+              it references the engagement the record belongs to.
+          - name: deliveryLeadId
+            datatype: String
+            description: Sales team member ID of the client-facing lead accountable for the
+              engagement's delivery. References a sales team member.
+          - name: engagementName
+            datatype: String
+            description: Name of the engagement.
+          - name: deliveryMethod
+            datatype: String
+            description: Agile, Waterfall, Hybrid, DevOps or Continuous Delivery.
+          - name: healthStatus
+            datatype: String
+            label: health status code
+            description: "Delivery health name as recorded; references a HealthStatus by its
+              code (the edge hasHealth). Must be one of the canonical
+              HealthStatus codes: differently-cased spellings match their status
+              case-insensitively and are reported by the shapes."
+          - name: plannedEffortHours
+            datatype: Decimal
+            description: Effort planned at contract signature.
+          - name: actualEffortHours
+            datatype: Decimal
+            description: Effort consumed to date.
+          - name: etcEffortHours
+            datatype: Decimal
+            label: estimate to complete
+            description: Effort still needed to complete.
+            ai_context:
+              synonyms:
+                - ETC
+          - name: eacMarginPct
+            datatype: Decimal
+            label: EAC margin %
+            description: Contribution margin forecast at completion, as a percentage of
+              revenue.
+            ai_context:
+              synonyms:
+                - delivered contribution margin
+                - estimate-at-completion margin
+      - name: QAAssuredEngagement
+        extends:
+          - Engagement
+        description: An engagement that has had at least one quality-assurance health check.
+      - name: AtRiskEngagement
+        extends:
+          - Engagement
+        defined:
+          expression: LOWER(healthStatus) = 'red'
+        description: An engagement whose delivery health is Red.
+      - name: HealthStatus
+        extends:
+          - BusinessObject
+        primary_key:
+          - healthCode
+        members:
+          - code: Green
+            label: Green
+            definition: On track.
+            order: 1
+            iri: https://example.org/ontology/delivery#Health_Green
+          - code: Amber
+            label: Amber
+            definition: At risk; recovery plan in place.
+            order: 2
+            iri: https://example.org/ontology/delivery#Health_Amber
+          - code: Red
+            label: Red
+            definition: Off track; escalated.
+            order: 3
+            iri: https://example.org/ontology/delivery#Health_Red
+        description: Red / amber / green delivery health rating.
+        ai_context:
+          synonyms:
+            - RAG status
+        fields:
+          - name: healthCode
+            datatype: String
+            description: Canonical health status name.
+      - name: Milestone
+        extends:
+          - BusinessObject
+        primary_key:
+          - milestoneId
+        description: A planned delivery milestone of an engagement, with baseline and
+          forecast dates.
+        fields:
+          - name: engagementId
+            datatype: String
+            description: Identifier of an engagement. On the engagement it is the key; on a
+              milestone, QA health check, staffing assignment or timesheet entry
+              it references the engagement the record belongs to.
+          - name: milestoneId
+            datatype: String
+            description: Identifier of a milestone.
+          - name: milestoneName
+            datatype: String
+            description: Name of the milestone.
+          - name: milestoneType
+            datatype: String
+            description: Kind of milestone.
+          - name: baselineDate
+            datatype: Date
+            dimension:
+              is_time: true
+            description: Originally planned date.
+          - name: forecastDate
+            datatype: Date
+            dimension:
+              is_time: true
+            description: Currently forecast date.
+          - name: completionStatus
+            datatype: String
+            description: Planned, In Progress, Achieved, Delayed or Waived.
+          - name: delayDays
+            datatype: Integer
+            description: Days between forecast and baseline date.
+      - name: QAHealthCheck
+        extends:
+          - BusinessObject
+        primary_key:
+          - healthcheckId
+        description: A quality-assurance review of an engagement, with its score and risks.
+        ai_context:
+          synonyms:
+            - Quality review
+        fields:
+          - name: engagementId
+            datatype: String
+            description: Identifier of an engagement. On the engagement it is the key; on a
+              milestone, QA health check, staffing assignment or timesheet entry
+              it references the engagement the record belongs to.
+          - name: healthcheckId
+            datatype: String
+            description: Identifier of a QA health check.
+          - name: checkDate
+            datatype: Date
+            dimension:
+              is_time: true
+            description: When the check was performed.
+          - name: checkType
+            datatype: String
+            description: Kind of QA review.
+          - name: qaScore
+            datatype: Decimal
+            description: Score awarded by the review.
+          - name: riskLevel
+            datatype: String
+            description: Low, Medium, High or Critical.
+          - name: openDefectsCount
+            datatype: Integer
+            label: open defects
+            description: Defects open at the time of the check.
+          - name: criticalRisksCount
+            datatype: Integer
+            label: critical risks
+            description: Critical risks raised by the check.
+      - name: Employee
+        extends:
+          - Person
+        primary_key:
+          - employeeId
+        unique_keys:
+          - - workEmail
+        description: A member of the delivery workforce.
+        ai_context:
+          synonyms:
+            - Practitioner
+            - Resource
+        fields:
+          - name: homeMarketUnit
+            datatype: String
+            description: "The market unit a seller or employee belongs to, as recorded:
+              usually the market unit code, sometimes the unit's name (see
+              unitName). References a market unit."
+          - name: employeeId
+            datatype: String
+            description: Identifier of an employee (pattern EP-G-nnnnn). On the employee it
+              is the key; on a staffing assignment or timesheet entry it
+              references the employee assigned or recording.
+          - name: workEmail
+            datatype: String
+            description: "The employee's work email address. Business rule: no two employees
+              share a work email (owl:InverseFunctionalProperty, published as a
+              uniqueness constraint and reported by validation). It is a
+              data-quality rule, not an identifier: the source HR system reuses
+              addresses across employees, so employees are identified and joined
+              only by employeeId."
+          - name: careerTrack
+            datatype: String
+            description: Career track of the employee.
+          - name: standardLevel
+            datatype: String
+            label: career level
+            description: Analyst, Consultant, Manager, Senior Manager or Managing Director.
+          - name: baseDailyCost
+            datatype: Decimal
+            description: Fully loaded cost per day, USD.
+          - name: utilizationTargetPct
+            datatype: Decimal
+            label: utilization target %
+            description: Share of time the employee is expected to be chargeable.
+          - name: isActive
+            datatype: String
+            description: Whether the employee is currently employed ('true' / 'false').
+      - name: StaffingAssignment
+        extends:
+          - BusinessObject
+        primary_key:
+          - assignmentId
+        description: An employee assigned to an engagement for a period at an allocation.
+        fields:
+          - name: engagementId
+            datatype: String
+            description: Identifier of an engagement. On the engagement it is the key; on a
+              milestone, QA health check, staffing assignment or timesheet entry
+              it references the engagement the record belongs to.
+          - name: employeeId
+            datatype: String
+            description: Identifier of an employee (pattern EP-G-nnnnn). On the employee it
+              is the key; on a staffing assignment or timesheet entry it
+              references the employee assigned or recording.
+          - name: assignmentId
+            datatype: String
+            description: Identifier of a staffing assignment. On the assignment it is the
+              key; on a timesheet entry it references the assignment the hours
+              are recorded against.
+          - name: assignedRole
+            datatype: String
+            description: Role the employee plays on the engagement.
+          - name: assignmentStartDate
+            datatype: Date
+            dimension:
+              is_time: true
+            description: When the assignment starts.
+          - name: assignmentEndDate
+            datatype: Date
+            dimension:
+              is_time: true
+            description: When the assignment ends.
+          - name: allocationPct
+            datatype: Decimal
+            label: allocation %
+            description: Share of the employee's time allocated.
+          - name: scheduledHours
+            datatype: Decimal
+            description: Hours scheduled over the assignment.
+      - name: TimesheetEntry
+        extends:
+          - BusinessObject
+        primary_key:
+          - timesheetId
+        description: Hours an employee recorded against a staffing assignment on a day.
+        fields:
+          - name: engagementId
+            datatype: String
+            description: Identifier of an engagement. On the engagement it is the key; on a
+              milestone, QA health check, staffing assignment or timesheet entry
+              it references the engagement the record belongs to.
+          - name: employeeId
+            datatype: String
+            description: Identifier of an employee (pattern EP-G-nnnnn). On the employee it
+              is the key; on a staffing assignment or timesheet entry it
+              references the employee assigned or recording.
+          - name: assignmentId
+            datatype: String
+            description: Identifier of a staffing assignment. On the assignment it is the
+              key; on a timesheet entry it references the assignment the hours
+              are recorded against.
+          - name: timesheetId
+            datatype: String
+            description: Identifier of a timesheet entry.
+          - name: workDate
+            datatype: Date
+            dimension:
+              is_time: true
+            description: Day the hours were worked.
+          - name: entryStatus
+            datatype: String
+            description: Submitted, Pending Review or Approved.
+          - name: billableHours
+            datatype: Decimal
+            description: Hours chargeable to the client.
+            ai_context:
+              synonyms:
+                - chargeable hours
+          - name: nonBillableHours
+            datatype: Decimal
+            description: Hours not chargeable to the client.
+          - name: overtimeHours
+            datatype: Decimal
+            description: Hours beyond the standard day.
+      - name: WBSElement
+        extends:
+          - BusinessObject
+        primary_key:
+          - wbsElementCode
+        description: A financial work-breakdown-structure element set up when an
+          opportunity is won; revenue, cost and bookings post against it.
+        ai_context:
+          synonyms:
+            - Charge code
+            - Contract financials
+        fields:
+          - name: marketUnitCode
+            datatype: String
+            description: "Identifier of a market unit (pattern MUD-G-nnnnn). On the market
+              unit it is the key; on a client account, opportunity, sales
+              target, pipeline snapshot, industry forecast, WBS element, revenue
+              posting or booking it references the market unit the record
+              belongs to, as recorded: usually the code, sometimes the unit's
+              name (see unitName)."
+          - name: opportunityId
+            datatype: String
+            description: Identifier of an opportunity (pattern OPP-G-nnnnn; records migrated
+              from an older CRM use OPP-yyyy-nnnnn). On the opportunity it is
+              the key; on a stage transition, sales credit, pricing case,
+              pricing dispute, WBS element, contract agreement or engagement it
+              references the opportunity the record belongs to.
+          - name: wbsElementCode
+            datatype: String
+            label: WBS element
+            description: Code of the WBS element. On the WBS element it is the key; on a
+              revenue posting or booking it references the WBS element posted or
+              booked on.
+          - name: companyCode
+            datatype: String
+            description: Ledger company code.
+          - name: legalEntity
+            datatype: String
+            description: Contracting legal entity.
+          - name: recognitionMethod
+            datatype: String
+            description: "Revenue recognition method: Milestone Completion, As Incurred T&M,
+              Ratable Straight Line, Percentage of Completion EAC."
+          - name: contractValueUsd
+            datatype: Decimal
+            unit: USD
+            label: contract value
+            description: Contract value set up in finance, USD.
+          - name: setupDate
+            datatype: Date
+            dimension:
+              is_time: true
+            description: When the WBS element was created.
+      - name: RevenueActual
+        extends:
+          - BusinessObject
+        primary_key:
+          - revenueEntryId
+        description: Revenue recognized and cost incurred on a WBS element in a period.
+        ai_context:
+          synonyms:
+            - Recognized revenue
+        fields:
+          - name: marketUnitCode
+            datatype: String
+            description: "Identifier of a market unit (pattern MUD-G-nnnnn). On the market
+              unit it is the key; on a client account, opportunity, sales
+              target, pipeline snapshot, industry forecast, WBS element, revenue
+              posting or booking it references the market unit the record
+              belongs to, as recorded: usually the code, sometimes the unit's
+              name (see unitName)."
+          - name: serviceGroupCode
+            datatype: String
+            description: "Identifier of a service group (pattern SGD-G-nnnnn). On the
+              service group it is the key; on an opportunity, sales credit,
+              sales target, pipeline snapshot, industry forecast or revenue
+              posting it references the service group the record is attributed
+              to, as recorded: usually the code, sometimes the group's name (see
+              unitName)."
+          - name: wbsElementCode
+            datatype: String
+            label: WBS element
+            description: Code of the WBS element. On the WBS element it is the key; on a
+              revenue posting or booking it references the WBS element posted or
+              booked on.
+          - name: revenueEntryId
+            datatype: String
+            description: Identifier of a revenue posting.
+          - name: servicesRevenue
+            datatype: Decimal
+            unit: USD
+            description: Revenue from services delivered, USD.
+          - name: allianceUtilizationRevenue
+            datatype: Decimal
+            unit: USD
+            label: alliance revenue
+            description: Revenue from resold partner products, USD.
+          - name: softwareMiscRevenue
+            datatype: Decimal
+            unit: USD
+            label: software and other revenue
+            description: Software and miscellaneous revenue, USD.
+          - name: costToServe
+            datatype: Decimal
+            unit: USD
+            description: Cost incurred to deliver, USD.
+          - name: recognizedPeriod
+            datatype: String
+            description: Fiscal period the revenue is recognized in.
+      - name: Booking
+        extends:
+          - BusinessObject
+        primary_key:
+          - bookingId
+        description: The amount booked on a WBS element when the contract is signed.
+        fields:
+          - name: marketUnitCode
+            datatype: String
+            description: "Identifier of a market unit (pattern MUD-G-nnnnn). On the market
+              unit it is the key; on a client account, opportunity, sales
+              target, pipeline snapshot, industry forecast, WBS element, revenue
+              posting or booking it references the market unit the record
+              belongs to, as recorded: usually the code, sometimes the unit's
+              name (see unitName)."
+          - name: wbsElementCode
+            datatype: String
+            label: WBS element
+            description: Code of the WBS element. On the WBS element it is the key; on a
+              revenue posting or booking it references the WBS element posted or
+              booked on.
+          - name: bookingId
+            datatype: String
+            description: Identifier of a booking.
+          - name: bookedAmount
+            datatype: Decimal
+            unit: USD
+            description: Won amount at the sign date, USD.
+          - name: signDate
+            datatype: Date
+            dimension:
+              is_time: true
+            description: When the contract was signed.
+          - name: authorizedBy
+            datatype: String
+            description: Who authorized the booking.
+    relationships:
+      - name: hasCounterparty
+        from: CommercialDocument
+        to: Organization
+        abstract: true
+        ai_context:
+          instructions: Links a commercial document to an organization on the other side
+            of it. Specialized by the buyer of an opportunity and the payer of a
+            contract; querying this property returns every counterparty
+            relationship, whatever the domain calls it.
+      - name: belongsToTerritory
+        from: BusinessObject
+        to: OrgUnit
+        abstract: true
+        ai_context:
+          instructions: >-
+            Places a business object in a territory. Transitive: an opportunity
+            in a market unit that belongs to a region also belongs to that
+            region.
+
+
+            belongsToTerritory is transitive: if a belongsToTerritory b and b
+            belongsToTerritory c, then a belongsToTerritory c, but only the
+            direct edges are stored. To follow it, match a quantified path, e.g.
+            MATCH (a:BusinessObject)-[:belongsToTerritory]->{1,10}(b:OrgUnit)
+            (raise the upper bound for deeper chains).
+      - name: inRegion
+        from: MarketUnit
+        to: GeographicRegion
+        extends:
+          - belongsToTerritory
+        from_columns:
+          - geographicRegion
+        to_columns:
+          - regionCode
+        ai_context:
+          instructions: The geographic region a market unit rolls up into.
+      - name: relatedParty
+        from: Party
+        to: Party
+        abstract: true
+        ai_context:
+          instructions: >-
+            Any business relationship between two parties. Symmetric: if A is
+            related to B then B is related to A.
+
+
+            relatedParty is symmetric: a relatedParty b implies b relatedParty
+            a, but each pair may be stored in one direction only. Match it
+            undirected, e.g. MATCH (a:Party)-[:relatedParty]-(b:Party).
+      - name: inStage
+        from: Opportunity
+        to: SalesStage
+        from_columns:
+          - salesStage
+        to_columns:
+          - stageCode
+        ai_context:
+          instructions: The current sales stage of an opportunity.
+      - name: pricedOn
+        from: DealPricing
+        to: PricingConstruct
+        from_columns:
+          - pricingConstruct
+        to_columns:
+          - constructCode
+        ai_context:
+          instructions: The pricing construct of a deal pricing case.
+      - name: hasBuyer
+        from: Opportunity
+        to: ClientAccount
+        extends:
+          - hasCounterparty
+        inverse: hasOpportunity
+        from_columns:
+          - accountId
+        to_columns:
+          - accountId
+        ai_context:
+          instructions: The client account buying an opportunity.
+          synonyms:
+            - buyer
+            - client of
+      - name: bookedIn
+        from: Opportunity
+        to: MarketUnit
+        extends:
+          - belongsToTerritory
+        from_columns:
+          - marketUnitCode
+        to_columns:
+          - marketUnitCode
+        ai_context:
+          instructions: The market unit an opportunity is booked in.
+      - name: soldBy
+        from: Opportunity
+        to: ServiceGroup
+        from_columns:
+          - serviceGroupCode
+        to_columns:
+          - serviceGroupCode
+        ai_context:
+          instructions: The service group selling an opportunity.
+      - name: originatedBy
+        from: Opportunity
+        to: SalesTeamMember
+        from_columns:
+          - originatorId
+        to_columns:
+          - salesTeamMemberId
+        ai_context:
+          instructions: The seller who originated an opportunity.
+          synonyms:
+            - lead originator
+      - name: managedIn
+        from: ClientAccount
+        to: MarketUnit
+        extends:
+          - belongsToTerritory
+        from_columns:
+          - marketUnitCode
+        to_columns:
+          - marketUnitCode
+        ai_context:
+          instructions: The market unit that manages a client account.
+      - name: buyerAt
+        from: KeyBuyer
+        to: ClientAccount
+        from_columns:
+          - accountId
+        to_columns:
+          - accountId
+        ai_context:
+          instructions: The client account a key buyer works for.
+      - name: stakeholderAt
+        from: ClientStakeholder
+        to: ClientAccount
+        from_columns:
+          - accountId
+        to_columns:
+          - accountId
+        ai_context:
+          instructions: The client account a stakeholder belongs to.
+      - name: sellerHomeMarket
+        from: SalesTeamMember
+        to: MarketUnit
+        extends:
+          - belongsToTerritory
+        from_columns:
+          - homeMarketUnit
+        to_columns:
+          - marketUnitCode
+        ai_context:
+          instructions: The home market unit of a seller.
+      - name: transitionOf
+        from: StageTransition
+        to: Opportunity
+        from_columns:
+          - opportunityId
+        to_columns:
+          - opportunityId
+        ai_context:
+          instructions: The opportunity a stage transition belongs to.
+      - name: creditedOn
+        from: SalesCredit
+        to: Opportunity
+        from_columns:
+          - opportunityId
+        to_columns:
+          - opportunityId
+        ai_context:
+          instructions: The opportunity a sales credit is on.
+      - name: creditedTo
+        from: SalesCredit
+        to: SalesTeamMember
+        from_columns:
+          - salesTeamMemberId
+        to_columns:
+          - salesTeamMemberId
+        ai_context:
+          instructions: The seller who receives a sales credit.
+      - name: creditedServiceGroup
+        from: SalesCredit
+        to: ServiceGroup
+        from_columns:
+          - serviceGroupCode
+        to_columns:
+          - serviceGroupCode
+        ai_context:
+          instructions: The service group a sales credit is attributed to, as recorded on
+            the credit.
+      - name: prices
+        from: DealPricing
+        to: Opportunity
+        from_columns:
+          - opportunityId
+        to_columns:
+          - opportunityId
+        ai_context:
+          instructions: The opportunity a pricing case prices.
+      - name: lineOf
+        from: RateCardLine
+        to: DealPricing
+        from_columns:
+          - pricingId
+        to_columns:
+          - pricingId
+        ai_context:
+          instructions: The pricing case a rate card line belongs to.
+      - name: disputes
+        from: PricingDispute
+        to: Opportunity
+        from_columns:
+          - opportunityId
+        to_columns:
+          - opportunityId
+        ai_context:
+          instructions: The opportunity whose pricing is disputed.
+      - name: allianceWith
+        from: PartnerAlliance
+        to: EcosystemPartner
+        from_columns:
+          - partnerName
+        to_columns:
+          - partnerName
+        ai_context:
+          instructions: "The ecosystem partner in an alliance. Partners are known only
+            through the alliances that name them: every distinct partner name
+            recorded on an alliance is one ecosystem partner."
+      - name: allianceFor
+        from: PartnerAlliance
+        to: ClientAccount
+        from_columns:
+          - accountId
+        to_columns:
+          - accountId
+        ai_context:
+          instructions: The client account an alliance is for.
+      - name: scorecardOf
+        from: ClientHealthScorecard
+        to: ClientAccount
+        from_columns:
+          - accountId
+        to_columns:
+          - accountId
+        ai_context:
+          instructions: The client account a health scorecard surveys.
+      - name: adjusts
+        from: PriceAdjustment
+        to: RateCardLine
+        from_columns:
+          - rateLineId
+        to_columns:
+          - rateLineId
+        ai_context:
+          instructions: The rate card line whose rate a price adjustment changes.
+      - name: targetOf
+        from: SalesTarget
+        to: SalesTeamMember
+        from_columns:
+          - salesTeamMemberId
+        to_columns:
+          - salesTeamMemberId
+        ai_context:
+          instructions: The seller a sales target is set for.
+      - name: targetInMarket
+        from: SalesTarget
+        to: MarketUnit
+        extends:
+          - belongsToTerritory
+        from_columns:
+          - marketUnitCode
+        to_columns:
+          - marketUnitCode
+        ai_context:
+          instructions: The market unit a sales target applies to, as recorded.
+      - name: targetForServiceGroup
+        from: SalesTarget
+        to: ServiceGroup
+        from_columns:
+          - serviceGroupCode
+        to_columns:
+          - serviceGroupCode
+        ai_context:
+          instructions: The service group a sales target applies to, as recorded.
+      - name: snapshotInMarket
+        from: PipelineSnapshot
+        to: MarketUnit
+        extends:
+          - belongsToTerritory
+        from_columns:
+          - marketUnitCode
+        to_columns:
+          - marketUnitCode
+        ai_context:
+          instructions: The market unit a pipeline snapshot covers, as recorded.
+      - name: snapshotForServiceGroup
+        from: PipelineSnapshot
+        to: ServiceGroup
+        from_columns:
+          - serviceGroupCode
+        to_columns:
+          - serviceGroupCode
+        ai_context:
+          instructions: The service group a pipeline snapshot covers, as recorded.
+      - name: signalFor
+        from: IntentSignal
+        to: ClientAccount
+        from_columns:
+          - accountId
+        to_columns:
+          - accountId
+        ai_context:
+          instructions: The client account an intent signal was observed for.
+      - name: forecastForMarket
+        from: IndustryForecast
+        to: MarketUnit
+        extends:
+          - belongsToTerritory
+        from_columns:
+          - marketUnitCode
+        to_columns:
+          - marketUnitCode
+        ai_context:
+          instructions: The market unit an industry forecast is attributed to, as recorded.
+      - name: forecastForServiceGroup
+        from: IndustryForecast
+        to: ServiceGroup
+        from_columns:
+          - serviceGroupCode
+        to_columns:
+          - serviceGroupCode
+        ai_context:
+          instructions: The service group an industry forecast is attributed to, as recorded.
+      - name: partnersWith
+        from: ClientAccount
+        to: EcosystemPartner
+        extends:
+          - relatedParty
+        via:
+          - ^allianceFor
+          - allianceWith
+        ai_context:
+          instructions: >-
+            A client account and an ecosystem partner that have an alliance.
+            Inferred from PartnerAlliance records.
+
+
+            partnersWith is symmetric: a partnersWith b implies b partnersWith
+            a, but each pair may be stored in one direction only. Match it
+            undirected, e.g. MATCH
+            (a:ClientAccount)-[:partnersWith]-(b:EcosystemPartner).
+      - name: hasStatus
+        from: ContractAgreement
+        to: ContractStatus
+        from_columns:
+          - contractStatus
+        to_columns:
+          - statusCode
+        ai_context:
+          instructions: The lifecycle status of a contract agreement.
+      - name: contractFor
+        from: ContractAgreement
+        to: Opportunity
+        inverse: governedBy
+        from_columns:
+          - opportunityId
+        to_columns:
+          - opportunityId
+        ai_context:
+          instructions: The opportunity a contract agreement was signed for.
+      - name: amends
+        from: ChangeOrder
+        to: ContractAgreement
+        from_columns:
+          - contractNumber
+        to_columns:
+          - contractNumber
+        ai_context:
+          instructions: The contract agreement a change order modifies.
+      - name: obligationOf
+        from: ContractObligation
+        to: ContractAgreement
+        from_columns:
+          - contractNumber
+        to_columns:
+          - contractNumber
+        ai_context:
+          instructions: The contract agreement an obligation belongs to.
+      - name: hasHealth
+        from: Engagement
+        to: HealthStatus
+        from_columns:
+          - healthStatus
+        to_columns:
+          - healthCode
+        ai_context:
+          instructions: The current delivery health of an engagement.
+      - name: delivers
+        from: Engagement
+        to: Opportunity
+        inverse: deliveredBy
+        from_columns:
+          - opportunityId
+        to_columns:
+          - opportunityId
+        ai_context:
+          instructions: The won opportunity an engagement delivers.
+      - name: executes
+        from: Engagement
+        to: ContractAgreement
+        from_columns:
+          - contractNumber
+        to_columns:
+          - contractNumber
+        ai_context:
+          instructions: The contract agreement an engagement executes.
+      - name: ledBy
+        from: Engagement
+        to: SalesTeamMember
+        from_columns:
+          - deliveryLeadId
+        to_columns:
+          - salesTeamMemberId
+        ai_context:
+          instructions: The client-facing lead accountable for an engagement's delivery.
+          synonyms:
+            - delivery lead
+      - name: milestoneOf
+        from: Milestone
+        to: Engagement
+        from_columns:
+          - engagementId
+        to_columns:
+          - engagementId
+        ai_context:
+          instructions: The engagement a milestone belongs to.
+      - name: checks
+        from: QAHealthCheck
+        to: Engagement
+        inverse: hasHealthCheck
+        from_columns:
+          - engagementId
+        to_columns:
+          - engagementId
+        ai_context:
+          instructions: The engagement a QA health check reviews.
+      - name: staffedOn
+        from: StaffingAssignment
+        to: Engagement
+        from_columns:
+          - engagementId
+        to_columns:
+          - engagementId
+        ai_context:
+          instructions: The engagement a staffing assignment is for.
+      - name: assignee
+        from: StaffingAssignment
+        to: Employee
+        from_columns:
+          - employeeId
+        to_columns:
+          - employeeId
+        ai_context:
+          instructions: The employee on a staffing assignment.
+      - name: recordedAgainst
+        from: TimesheetEntry
+        to: StaffingAssignment
+        from_columns:
+          - assignmentId
+        to_columns:
+          - assignmentId
+        ai_context:
+          instructions: The staffing assignment a timesheet entry is recorded against.
+      - name: employeeHomeMarket
+        from: Employee
+        to: MarketUnit
+        extends:
+          - belongsToTerritory
+        from_columns:
+          - homeMarketUnit
+        to_columns:
+          - marketUnitCode
+        ai_context:
+          instructions: The home market unit of an employee.
+      - name: deliveredFor
+        from: Engagement
+        to: ClientAccount
+        from_columns:
+          - accountId
+        to_columns:
+          - accountId
+        ai_context:
+          instructions: "The client account an engagement is delivered for, as recorded on
+            the engagement. Recorded independently of the contract: it almost
+            never equals the payer of the contract the engagement executes
+            (executes / hasPayer), so the two answers differ."
+          synonyms:
+            - engagement client
+      - name: recordedBy
+        from: TimesheetEntry
+        to: Employee
+        from_columns:
+          - employeeId
+        to_columns:
+          - employeeId
+        ai_context:
+          instructions: "The employee who recorded a timesheet entry, as recorded on the
+            entry. Recorded independently of the staffing assignment: it almost
+            never equals the assignment's employee (recordedAgainst / assignee),
+            so the two answers differ."
+      - name: recordedOn
+        from: TimesheetEntry
+        to: Engagement
+        from_columns:
+          - engagementId
+        to_columns:
+          - engagementId
+        ai_context:
+          instructions: "The engagement a timesheet entry's hours were charged to, as
+            recorded on the entry. Recorded independently of the staffing
+            assignment: it almost never equals the assignment's engagement
+            (recordedAgainst / staffedOn), so the two answers differ."
+      - name: hasPayer
+        from: ContractAgreement
+        to: ClientAccount
+        extends:
+          - hasCounterparty
+        from_columns:
+          - accountId
+        to_columns:
+          - accountId
+        ai_context:
+          instructions: The counterparty that pays under a contract agreement.
+          synonyms:
+            - bill to
+      - name: financesOpportunity
+        from: WBSElement
+        to: Opportunity
+        from_columns:
+          - opportunityId
+        to_columns:
+          - opportunityId
+        ai_context:
+          instructions: The won opportunity a WBS element was set up for.
+      - name: postedTo
+        from: RevenueActual
+        to: WBSElement
+        from_columns:
+          - wbsElementCode
+        to_columns:
+          - wbsElementCode
+        ai_context:
+          instructions: The WBS element a revenue posting belongs to.
+      - name: bookedOn
+        from: Booking
+        to: WBSElement
+        from_columns:
+          - wbsElementCode
+        to_columns:
+          - wbsElementCode
+        ai_context:
+          instructions: The WBS element a booking is recorded on.
+      - name: wbsInMarket
+        from: WBSElement
+        to: MarketUnit
+        extends:
+          - belongsToTerritory
+        from_columns:
+          - marketUnitCode
+        to_columns:
+          - marketUnitCode
+        ai_context:
+          instructions: The market unit a WBS element is set up in, as recorded in the
+            ledger.
+      - name: revenueInMarket
+        from: RevenueActual
+        to: MarketUnit
+        extends:
+          - belongsToTerritory
+        from_columns:
+          - marketUnitCode
+        to_columns:
+          - marketUnitCode
+        ai_context:
+          instructions: The market unit a revenue posting is recognized in, as recorded in
+            the ledger.
+      - name: revenueForServiceGroup
+        from: RevenueActual
+        to: ServiceGroup
+        from_columns:
+          - serviceGroupCode
+        to_columns:
+          - serviceGroupCode
+        ai_context:
+          instructions: The service group a revenue posting is attributed to, as recorded
+            in the ledger.
+      - name: bookingInMarket
+        from: Booking
+        to: MarketUnit
+        extends:
+          - belongsToTerritory
+        from_columns:
+          - marketUnitCode
+        to_columns:
+          - marketUnitCode
+        ai_context:
+          instructions: The market unit a booking is recorded in, as recorded in the ledger.
+    metrics:
+      - name: total_contract_value
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: SUM(Opportunity.totalContractValue)
+        description: |-
+          Total contract value of the opportunities in scope, USD.
+
+          Unit: USD.
+        ai_context:
+          synonyms:
+            - Total contract value
+            - TCV
+            - deal value
+            - pipeline value
+      - name: won_amount
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: SUM(Opportunity.wonAmount)
+        description: |-
+          Amount credited as sold on won opportunities, USD.
+
+          Unit: USD.
+        ai_context:
+          synonyms:
+            - Won amount
+            - sales
+            - bookings value
+            - sold value
+      - name: avg_probability_of_win
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: AVG(Opportunity.probabilityOfWin)
+        description: |-
+          Average estimated probability of win (0-1).
+
+          Unit: ratio.
+        ai_context:
+          synonyms:
+            - Average probability of win
+            - average PWIN
+      - name: win_rate_pct
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: 100 * SAFE_DIVIDE(COUNTIF(LOWER(Opportunity.salesStage) = '5_won'),
+                COUNTIF(LOWER(Opportunity.salesStage) IN ('5_won',
+                'closed_lost')))
+        description: >-
+          Won opportunities as a percentage of closed (won + lost)
+          opportunities. Stage codes are compared case-insensitively because the
+          source CRM mixes '5_won' and '5_WON'.
+
+
+          Unit: percent.
+        ai_context:
+          instructions: Only closed opportunities are in the denominator; open pipeline is
+            excluded.
+          synonyms:
+            - Win rate percentage
+            - win rate
+            - close rate
+            - hit rate
+      - name: weighted_pipeline
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: SUM(Opportunity.totalContractValue * Opportunity.probabilityOfWin)
+        description: |-
+          Probability-weighted total contract value, USD.
+
+          Unit: USD.
+        ai_context:
+          synonyms:
+            - Weighted pipeline
+            - weighted TCV
+            - expected value
+      - name: avg_daily_rate
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: AVG(RateCardLine.averageDailyRate)
+        description: |-
+          Average daily rate across rate card lines, USD per person-day.
+
+          Unit: USD per person-day.
+        ai_context:
+          synonyms:
+            - Average daily rate
+            - ADR
+            - average day rate
+      - name: approved_discount_pct
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: AVG(DealPricing.approvedDiscountPct)
+        description: |-
+          Average approved discount across pricing cases.
+
+          Unit: ratio.
+        ai_context:
+          synonyms:
+            - Approved discount
+      - name: delivered_margin_pct
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: AVG(Engagement.eacMarginPct)
+        description: >-
+          Average estimate-at-completion contribution margin of engagements
+          (delivered margin).
+
+
+          Unit: percent.
+        ai_context:
+          synonyms:
+            - Delivered margin
+            - delivered contribution margin
+            - EAC margin
+      - name: services_revenue
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: SUM(RevenueActual.servicesRevenue)
+        description: |-
+          Recognized services revenue, USD.
+
+          Unit: USD.
+        ai_context:
+          synonyms:
+            - Services revenue
+            - revenue
+            - net revenue
+      - name: cost_to_serve
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: SUM(RevenueActual.costToServe)
+        description: |-
+          Cost incurred to deliver, USD.
+
+          Unit: USD.
+        ai_context:
+          synonyms:
+            - Cost to serve
+      - name: contribution_margin_pct
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: 100 * SAFE_DIVIDE(SUM(RevenueActual.servicesRevenue) -
+                SUM(RevenueActual.costToServe),
+                SUM(RevenueActual.servicesRevenue))
+        description: >-
+          (Services revenue - cost to serve) / services revenue, as a
+          percentage.
+
+
+          Unit: percent.
+        ai_context:
+          synonyms:
+            - Contribution margin percentage
+            - contribution margin
+            - CM%
+      - name: billable_hours
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: SUM(TimesheetEntry.billableHours)
+        description: |-
+          Hours charged to clients.
+
+          Unit: hours.
+        ai_context:
+          synonyms:
+            - Billable hours
+            - chargeable hours
+      - name: chargeable_utilization_pct
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: 100 * SAFE_DIVIDE(SUM(TimesheetEntry.billableHours),
+                SUM(TimesheetEntry.billableHours) +
+                SUM(TimesheetEntry.nonBillableHours))
+        description: |-
+          Billable hours as a percentage of all recorded hours.
+
+          Unit: percent.
+        ai_context:
+          synonyms:
+            - Chargeable utilization
+            - utilization
+            - chargeability
+    constraints:
+      - name: Opportunity_hasBuyer_exactly_1
+        judgment: Each Opportunity has exactly one hasBuyer relationship to a
+          ClientAccount. An Opportunity with no hasBuyer relationship to a
+          ClientAccount, or with more than one, does not satisfy this rule.
+        description: "Link each Opportunity to exactly one ClientAccount through
+          hasBuyer. (From OWL: Opportunity SubClassOf hasBuyer exactly 1
+          ClientAccount.)"
+        on_violation: warn
+      - name: Opportunity_governedBy_max_1
+        judgment: Each Opportunity is linked from at most one ContractAgreement via
+          contractFor (governedBy is contractFor read backwards). An Opportunity
+          linked from more than one does not satisfy this rule.
+        description: "Link each Opportunity from at most one ContractAgreement through
+          contractFor. (From OWL: Opportunity SubClassOf governedBy max 1
+          ContractAgreement.)"
+        on_violation: warn
+      - name: WonOpportunity_deliveredBy_some_QAAssuredEngagement
+        judgment: Each WonOpportunity is linked from at least one QAAssuredEngagement
+          via delivers (deliveredBy is delivers read backwards). A
+          WonOpportunity linked from no QAAssuredEngagement via delivers does
+          not satisfy this rule.
+        description: "Link each WonOpportunity from at least one QAAssuredEngagement
+          through delivers. (From OWL: WonOpportunity SubClassOf deliveredBy
+          some QAAssuredEngagement.)"
+        on_violation: warn
+      - name: QAAssuredEngagement_hasHealthCheck_some_QAHealthCheck
+        judgment: Each QAAssuredEngagement is linked from at least one QAHealthCheck via
+          checks (hasHealthCheck is checks read backwards). A
+          QAAssuredEngagement linked from no QAHealthCheck via checks does not
+          satisfy this rule.
+        description: "Link each QAAssuredEngagement from at least one QAHealthCheck
+          through checks. (From OWL: QAAssuredEngagement EquivalentTo Engagement
+          and (hasHealthCheck some QAHealthCheck).)"
+        on_violation: warn
+      - name: MarketUnit_inRegion_functional
+        judgment: Each MarketUnit has at most one inRegion relationship. A MarketUnit
+          with more than one does not satisfy this rule.
+        description: "Link each MarketUnit to at most one GeographicRegion through
+          inRegion. (From OWL: inRegion is a FunctionalProperty.)"
+        on_violation: warn
+      - name: Organization_disjoint_Person
+        judgment: No Organization is also a Person. An instance that is both an
+          Organization and a Person does not satisfy this rule.
+        description: "Classify it as an Organization or a Person, not both. (From OWL:
+          Organization DisjointWith Person.)"
+        on_violation: warn
+      - name: ClientAccount_disjoint_EcosystemPartner
+        judgment: No ClientAccount is also an EcosystemPartner. An instance that is both
+          a ClientAccount and an EcosystemPartner does not satisfy this rule.
+        description: "Classify it as a ClientAccount or an EcosystemPartner, not both.
+          (From OWL: ClientAccount DisjointWith EcosystemPartner.)"
+        on_violation: warn
+      - name: WonOpportunity_disjoint_LostOpportunity
+        judgment: No WonOpportunity is also a LostOpportunity. An instance that is both
+          a WonOpportunity and a LostOpportunity does not satisfy this rule.
+        description: "Classify it as a WonOpportunity or a LostOpportunity, not both.
+          (From OWL: WonOpportunity DisjointWith LostOpportunity.)"
+        on_violation: warn
+      - name: MarketUnit_GeographicRegion_ServiceGroup_disjoint
+        judgment: No instance is more than one of MarketUnit, GeographicRegion and
+          ServiceGroup. An instance classified as two or more of them does not
+          satisfy this rule.
+        description: "Classify it as at most one of MarketUnit, GeographicRegion and
+          ServiceGroup. (From OWL: DisjointClasses(MarketUnit GeographicRegion
+          ServiceGroup).)"
+        on_violation: warn
+      - name: MasterServicesAgreement_StatementOfWork_Subcontract_Amendment_disjoint
+        judgment: No instance is more than one of MasterServicesAgreement,
+          StatementOfWork, Subcontract and Amendment. An instance classified as
+          two or more of them does not satisfy this rule.
+        description: "Classify it as at most one of MasterServicesAgreement,
+          StatementOfWork, Subcontract and Amendment. (From OWL:
+          DisjointClasses(MasterServicesAgreement StatementOfWork Subcontract
+          Amendment).)"
+        on_violation: warn
+      - name: WBSElement_RevenueActual_Booking_disjoint
+        judgment: No instance is more than one of WBSElement, RevenueActual and Booking.
+          An instance classified as two or more of them does not satisfy this
+          rule.
+        description: "Classify it as at most one of WBSElement, RevenueActual and
+          Booking. (From OWL: DisjointClasses(WBSElement RevenueActual
+          Booking).)"
+        on_violation: warn
