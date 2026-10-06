@@ -62,7 +62,13 @@ export function applyOwlAbstract(
       continue;
     }
     if (c.abstract !== undefined) {
-      if (c.abstract) e.abstract = true;
+      // Explicit either way, including over the uncompiled-definition
+      // fallback (definitions.ts), which marks a class abstract before this.
+      if (c.abstract) {
+        e.abstract = true;
+      } else {
+        delete e.abstract;
+      }
       continue;
     }
     if (isKeyed(c.localName)) continue;

@@ -819,24 +819,45 @@ The compilation follows the ontology prototype's reference compiler:
   Its `rdfs:subClassOf` restrictions and disjointness still do.
 - **String comparisons are exact.** The prototype lower-cases both sides; the
   importer compares as written.
-- **Fallback.** Anything that needs a join (above all a restriction that
+- **Fallback.** Some definitions need a join, above all a restriction that
   traverses a relationship with no `encodedBy` column, e.g. `hasBuyer some
-  StrategicAccount`) keeps the [intersection](#rules-restrictions-functional-properties-disjointness)
-  import: `extends` plus constraints. It is warned with the reason:
+  StrategicAccount`. Others reduce to `TRUE` or `FALSE`, or the class has no
+  superclass. None of these can be a filter. The class has no fields or key of
+  its own, so it has no rows to bind either: as a concrete entity it would be a
+  keyless node that no binding can satisfy and a graph deploy rejects. It is
+  therefore imported **abstract**: no node of its own, and its
+  [restrictions](#rules-restrictions-functional-properties-disjointness) still
+  become constraints. Its definition is written in Manchester syntax into
+  `ai_context.instructions`, so an agent can still evaluate membership over the
+  base. The warning names the reason:
 
   ```
   class 'PriorityOpportunity': its owl:equivalentClass definition was not
   compiled to a defined entity (unsupported: a restriction on object property
   'hasBuyer', which traverses a relationship and has no encodedBy code column
-  on 'Opportunity'); imported as a subclass with constraints instead.
+  on 'Opportunity'); imported as an abstract entity with constraints, its
+  definition in ai_context.instructions.
   ```
 
-  The same fallback applies to a class with its own fields or key (it is a
-  table-backed subtype), a class with no superclass, and a definition that
-  reduces to `TRUE` or `FALSE`. A top-level `owl:oneOf` of individuals (a
-  closed vocabulary such as an order-status list) is not a definition; it
-  imports as a [vocabulary](#vocabularies-owloneof-named-individuals)
-  (proposed).
+  ```yaml
+  - name: PriorityOpportunity
+    extends: [Opportunity]
+    abstract: true
+    ai_context:
+      instructions: >-
+        Membership is defined, not stored: a PriorityOpportunity is Opportunity
+        and (HighValueOpportunity or (hasBuyer some StrategicAccount)). No
+        PriorityOpportunity rows or nodes exist; to find its members, evaluate
+        this definition over Opportunity and its relationships.
+  ```
+
+  `kcmd:abstract false` on the class keeps it concrete. A class with fields or
+  a key of its own is a table-backed subtype rather than a filter, so it keeps
+  the [intersection](#rules-restrictions-functional-properties-disjointness)
+  import: `extends` plus constraints, with a warning. A top-level `owl:oneOf`
+  of individuals (a closed vocabulary such as an order-status list) is not a
+  definition; it imports as a
+  [vocabulary](#vocabularies-owloneof-named-individuals) (proposed).
 
 ### Semantic annotations (equivalence, deprecation, transitivity)
 
