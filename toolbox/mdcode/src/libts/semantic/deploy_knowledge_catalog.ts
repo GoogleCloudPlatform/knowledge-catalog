@@ -3,44 +3,52 @@
 // This is the Knowledge Catalog leg of `kcmd push` for the semantic-model
 // scope, the counterpart to `deploy_bigquery.ts`. It consumes models already
 // parsed into the semantic IR (see loadSemanticModels, shared with the BigQuery
-// leg so a multi-destination push parses each document once), maps each to catalog
-// Entries + Aspects (the pure emitter in knowledge_catalog.ts), and writes them
-// through the Knowledge Catalog client.
+// leg so a multi-destination push parses each document once), maps each to
+// catalog Entries + Aspects (the pure emitter in knowledge_catalog.ts), and
+// writes them through the Knowledge Catalog client.
 //
 // Types: the `semantic-model`/`semantic-entity`/`semantic-metric` entry and
 // aspect types — and the built-in `schema` aspect — are built-in system types
-// in `dataplex-types/global`. Push does NOT provision any type, nor the entry
-// group (that is created at `init`); it only writes entries. The caller needs
-// `dataplex.entryGroups.useSemanticModelAspect` on the destination entry group.
+// in `dataplex-types/global`, while `kcmd`-owned custom types (such as
+// `semantic-action` and `semantic-constraint`) live in the destination project.
+// Push does NOT provision any type, nor the entry group (those are created at
+// `init`); it only validates and writes entries and entry links. The caller
+// needs `dataplex.entryGroups.useSemanticModelAspect` on the destination entry
+// group.
 //
-// Publish sequence (mirrors the BigQuery leg's structure):
-//   * Create each model's entries in array order: the semantic-model anchor
-//     first (it is the parentEntry of every entity/metric entry), then the
-//     children concurrently. No entry-group or type creation -- the entry
-//     group is provisioned at `init` and the system types are built-in.
-//   * A re-push upserts: an entry that already exists is updated in place.
-//   * Reconcile deletions: an entity or metric removed from a still-present
-//     model leaves an orphaned entry under its anchor; after writing, delete
-//     any entry this push owns (by entry-id prefix) that was not re-emitted.
-//   * Relationship edges are published as schema-join entry links between the
-//     two entity entries, written after that model's entries (both endpoints
-//     must exist first). A re-push upserts the link's aspect; a many-to-many
-//     (association) edge is not published yet (the emitter warns and skips it).
-//     The caller additionally needs `dataplex.entryGroups.useSchemaJoinEntryLink`
-//     and `useSchemaJoinAspect` on the destination entry group.
+// Publish sequence (split into read-only `preflightKnowledgeCatalog` and write
+// `applyKnowledgeCatalog`):
+//   * Preflight validates that exactly one model is deployed per entry group,
+//     snapshots the destination entry group to guard against foreign models
+//     (unless `--force-remove` is set), and checks that any required custom
+//     entry/aspect types exist in the target project.
+//   * Apply creates or updates each model's entries in dependency order: the
+//     `semantic-model` anchor first, then independent child entries
+//     concurrently, and finally dependent child entries (`semantic-metric` and
+//     `semantic-explore`).
+//   * Relationship edges are published as `schema-join` entry links between
+//     the two entity entries after that model's entries exist. A re-push
+//     updates the link's aspects in place, and orphaned links are deleted.
+//     The caller additionally needs
+//     `dataplex.entryGroups.useSchemaJoinEntryLink` and `useSchemaJoinAspect`
+//     on the destination entry group.
+//   * Reconcile deletions: after writing, delete any child entry this push owns
+//     (by `ownedPrefixes`) that is present in the pre-write listing but was not
+//     re-emitted.
 //
 // This is a library module: it emits no console output. Warnings and the
 // dry-run plan are returned in `KcDeployResult` for the CLI (commands.ts) to
 // print.
-//
 
 import {ApiResult} from '../gcp/api';
 import * as context from '../gcp/context';
 import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 
+import {collectCustomTypes, customTypeHome} from './kc_custom_types';
+import {anchorId, entryId, entryTypeId, linkId, linkTypeId,} from './kc_entries';
+import {entryIdOf} from './kc_ids';
 import * as kcEmit from './knowledge_catalog';
 import {LoadedModel} from './loader';
-
 
 export interface KcDeployOptions {
   // Project that owns the destination entry group. Flag overrides are applied
@@ -64,9 +72,9 @@ export interface KcDeployOptions {
   emitExpressions?: boolean;
   // Emit the second-generation built-in aspect fields and entry-id layout
   // (selected via KC_V2_ASPECTS=1). Off by default (absent means false).
-  // Consumed by `emitModels` when called through `deployKnowledgeCatalog`;
-  // `deployEmittedModels` takes already-emitted resources from an origin with
-  // its own emitter and ignores this field.
+  // Consumed by `emitModels` when called through `preflightKnowledgeCatalog` or
+  // `deployKnowledgeCatalog`; `deployEmittedModels` takes already-emitted
+  // resources from an origin with its own emitter and ignores this field.
   v2Aspects?: boolean;
   // Compile and report only; never writes to the catalog (a dry run).
   validateOnly?: boolean;
@@ -99,17 +107,17 @@ export interface KcDeployResult {
   // Entries deleted: those orphaned by removed entities/metrics, plus every
   // entry of a --force-remove'd model (0 for validateOnly).
   deleted: number;
-  // Relationship (schema-join) entry links written -- created or upserted (0 for
-  // validateOnly).
+  // Relationship (schema-join) entry links written -- created or upserted (0
+  // for validateOnly).
   linked: number;
-  // Orphaned schema-join links deleted -- from relationships dropped or renamed
-  // on a still-present model, and from force-removed models (0 for validateOnly).
+  // Orphaned relationship links deleted -- from relationships dropped or
+  // renamed on a still-present model, and from force-removed models (0 for
+  // validateOnly).
   unlinked: number;
   // A human-readable plan of what would be written: the sole output of a
   // validateOnly run, and also returned (for --print) on a real push.
   plan: string[];
 }
-
 
 // Running tallies threaded through the write phase so a partial failure still
 // reports what had been done. Field names match KcDeployResult so this spreads
@@ -122,9 +130,26 @@ interface Counts {
   unlinked: number;
 }
 
-// One authored model paired with the catalog resources it emitted.
-type EmittedModel = {model: string; resources: kcEmit.KcResources};
+/** One authored model paired with the catalog resources it emitted. */
+export interface EmittedModel {
+  model: string;
+  resources: kcEmit.KcResources;
+}
 
+/**
+ * The read-only preflight output handed to `applyKnowledgeCatalog`. Holds the
+ * emitted catalog resources, the pre-write entry-group snapshot, any emitter
+ * warnings, and the human-readable plan so `applyKnowledgeCatalog` can write
+ * without repeating generation or listing.
+ */
+export interface KcPreparedDeploy {
+  emitted: EmittedModel[];
+  existing: Entry[];
+  warnings: string[];
+  plan: string[];
+}
+
+type ResultBuilder = (success: boolean, details?: string) => KcDeployResult;
 
 // entries.create propagation retry: a just-created entry group can briefly 404.
 const ENTRY_CREATE_TRIES = 3;
@@ -134,93 +159,76 @@ function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
 }
 
-
-// Deploys every authored model's Knowledge Catalog resources. The body is the
-// sequence of phases, each a helper below:
-//   emitModels           -- turn the model into catalog resources (pure)
-//   buildPlan            -- the dry-run plan (and stop here for --validate-only)
-//   listEntryGroup       -- snapshot the group once, before any write
-//   guardForeignModels   -- refuse (or --force-remove) models no longer pushed
-//   writeModels          -- create/upsert each model's entries and links
-//   reconcileDeletions   -- delete entries orphaned by removed entities/metrics
-// Emits no console output; warnings and the plan are returned in KcDeployResult
-// for the caller (commands.ts) to print.
-export async function deployKnowledgeCatalog(
-    models: LoadedModel[], ctx: context.ApiContext,
-    opts: KcDeployOptions): Promise<KcDeployResult> {
-  // Emit every model to catalog resources up front (pure -- no network).
+/**
+ * Runs every read-only check for a Knowledge Catalog push without writing to
+ * the catalog.
+ *
+ * The method performs the following actions:
+ *   1. Translates the IR models into catalog resources.
+ *   2. Verifies that exactly one model is being deployed, builds the dry-run
+ *      plan, and returns early when `opts.validateOnly` is set.
+ *   3. Lists the destination entry group and fails if an unrecognized model's
+ *      anchor entry is present without `--force-remove`.
+ *   4. Verifies that every custom entry type and aspect type required by the
+ *      model exists in the target project.
+ *   5. Returns the emitted resources, entry-group listing, warnings, and plan
+ *      as `prepared` for `applyKnowledgeCatalog`.
+ */
+export async function preflightKnowledgeCatalog(
+    models: LoadedModel[], ctx: context.ApiContext, opts: KcDeployOptions):
+    Promise<{prepared?: KcPreparedDeploy; result?: KcDeployResult}> {
   const emit = emitModels(models, opts);
   if (emit.error) {
     return {
-      success: false, details: emit.error, warnings: emit.warnings,
-      created: 0, updated: 0, deleted: 0, linked: 0, unlinked: 0, plan: [],
+      result: {
+        success: false,
+        details: emit.error,
+        warnings: emit.warnings,
+        created: 0,
+        updated: 0,
+        deleted: 0,
+        linked: 0,
+        unlinked: 0,
+        plan: [],
+      },
     };
   }
-  return deployEmittedModels(emit.emitted, emit.warnings, ctx, opts);
+  return preflightEmittedModels(emit.emitted, emit.warnings, ctx, opts);
 }
 
-
-// Publishes models that are already mapped to catalog resources. Origin-
-// agnostic: everything below operates on EmittedModel and never looks at the
-// source format, so an origin with its own emitter (LookML, which does not use
-// the Ossie IR) calls this directly instead of deployKnowledgeCatalog.
-export async function deployEmittedModels(
-    emitted: EmittedModel[], emitWarnings: string[], ctx: context.ApiContext,
+/**
+ * Writes a preflight-checked Knowledge Catalog deployment.
+ *
+ * The method performs the following actions:
+ *   1. Removes foreign models when `--force-remove` is set.
+ *   2. Writes the model's entries and relationship links.
+ *   3. Deletes orphaned entries the model no longer emits.
+ */
+export async function applyKnowledgeCatalog(
+    prepared: KcPreparedDeploy, ctx: context.ApiContext,
     opts: KcDeployOptions): Promise<KcDeployResult> {
-  const warnings: string[] = [...emitWarnings];
-  const counts: Counts =
-      {created: 0, updated: 0, deleted: 0, linked: 0, unlinked: 0};
-  let plan: string[] = [];
-  // Builds the return value from the running state; details is set only on a
-  // failure, and counts/plan reflect whatever had been done when called.
-  const result = (success: boolean, details?: string): KcDeployResult =>
+  const warnings: string[] = [...prepared.warnings];
+  const counts:
+      Counts = {created: 0, updated: 0, deleted: 0, linked: 0, unlinked: 0};
+  const plan = prepared.plan;
+  const result: ResultBuilder = (success, details) =>
       ({success, warnings, ...counts, plan, ...(details ? {details} : {})});
 
-  // Exactly one model per entry group is supported for now. An empty workspace
-  // is a clean no-op under --validate-only and a configuration error on a real
-  // push; more than one model in a single push is always rejected (which also
-  // means two models can never race for the same entry id).
-  if (emitted.length !== 1) {
-    if (!emitted.length) {
-      if (opts.validateOnly) {
-        warnings.push(
-            'No semantic model documents found; nothing to validate.');
-        return result(true);
-      }
-      return result(
-          false, 'No semantic model documents found; nothing to deploy.');
+  const cat = new CatalogClient(ctx);
+  const {emitted, existing} = prepared;
+
+  if (opts.forceRemove) {
+    const foreignAnchorIds = findForeignAnchorIds(emitted[0], existing);
+    if (foreignAnchorIds.length) {
+      const removed =
+          await removeForeignModels(cat, opts, existing, foreignAnchorIds);
+      if (removed.error) return result(false, removed.error);
+      counts.deleted += removed.deleted;
+      counts.unlinked += removed.unlinked;
     }
-    return result(
-        false,
-        `entry group '${opts.entryGroup}' would receive ${
-            emitted.length} models, but only one model per entry group is ` +
-            `supported; split them into separate entry groups.`);
   }
 
-  // The plan is built for every push (printed with --print) and is the only
-  // output of a --validate-only run, which writes nothing.
-  plan = buildPlan(emitted, opts);
-  if (opts.validateOnly) return result(true);
-
-  // From here on we write. The entry group is provisioned at `init`, not here;
-  // a missing group surfaces as a clear entry-creation error, and createEntries
-  // rides out the brief post-init propagation window.
-  const cat = new CatalogClient(ctx);
-
-  // Snapshot the entry group once, before any write: the same listing feeds the
-  // foreign-model guard, link reconciliation, and deletion reconciliation. A
-  // re-emitted entry is never a deletion candidate, so a pre-write snapshot is
-  // correct for all three.
-  const listing = await listEntryGroup(cat, opts);
-  if (listing.error) return result(false, listing.error);
-  const existing = listing.entries;
-
-  // Whole-model lifecycle: refuse (or, with --force-remove, delete) any model
-  // the group still holds that this push no longer includes.
-  const guard = await guardForeignModels(cat, opts, emitted, existing, counts);
-  if (guard.error) return result(false, guard.error);
-
-  // Write each model's entries and relationship links.
+  // Write each emitted model's entries and relationship links.
   const written = await writeModels(cat, opts, emitted, existing, counts);
   if (written.error) return result(false, written.error);
 
@@ -233,12 +241,211 @@ export async function deployEmittedModels(
   return result(true);
 }
 
+/**
+ * Deploys every authored model's Knowledge Catalog resources.
+ *
+ * Runs `preflightKnowledgeCatalog` followed by `applyKnowledgeCatalog`.
+ */
+export async function deployKnowledgeCatalog(
+    models: LoadedModel[], ctx: context.ApiContext,
+    opts: KcDeployOptions): Promise<KcDeployResult> {
+  const pre = await preflightKnowledgeCatalog(models, ctx, opts);
+  if (pre.result) return pre.result;
+  return applyKnowledgeCatalog(pre.prepared!, ctx, opts);
+}
 
-// Turns every authored model into its catalog resources. Pure -- no network I/O
-// -- so the dry-run plan and any generation warnings are produced even when a
-// later write fails. A malformed GOOGLE custom_extension (reached via the
-// semantic-model aspect) throws; report it against its document, as the BigQuery
-// leg does, rather than letting it escape as an uncaught stack trace.
+/**
+ * Publishes models that are already mapped to catalog resources.
+ *
+ * Origin-agnostic wrapper over `preflightEmittedModels` and
+ * `applyKnowledgeCatalog` for callers with their own emitter (such as LookML).
+ */
+export async function deployEmittedModels(
+    emitted: EmittedModel[], emitWarnings: string[], ctx: context.ApiContext,
+    opts: KcDeployOptions): Promise<KcDeployResult> {
+  const pre = await preflightEmittedModels(emitted, emitWarnings, ctx, opts);
+  if (pre.result) return pre.result;
+  return applyKnowledgeCatalog(pre.prepared!, ctx, opts);
+}
+
+/**
+ * Runs read-only preflight checks on already-emitted models.
+ *
+ * The method performs the following checks:
+ *   1. Validates locally that `emitted` contains a single model, builds the
+ *      dry-run plan, and returns early when `opts.validateOnly` is set.
+ *   2. Lists the destination entry group and validates that it contains no
+ *      foreign models unless `--force-remove` is set.
+ *   3. Validates that every custom type used by the model exists in the
+ *      target project.
+ */
+async function preflightEmittedModels(
+    emitted: EmittedModel[], emitWarnings: string[], ctx: context.ApiContext,
+    opts: KcDeployOptions):
+    Promise<{prepared?: KcPreparedDeploy; result?: KcDeployResult}> {
+  const warnings: string[] = [...emitWarnings];
+  const counts: Counts =
+      {created: 0, updated: 0, deleted: 0, linked: 0, unlinked: 0};
+  let plan: string[] = [];
+  const result: ResultBuilder = (success, details) =>
+      ({success, warnings, ...counts, plan, ...(details ? {details} : {})});
+
+  // 1. Local validation (offline, zero network calls).
+  const modelsValidation =
+      validateEmittedModels(emitted, opts, warnings, result);
+  if (!modelsValidation.success || !emitted.length) {
+    return {result: modelsValidation};
+  }
+
+  // Once `validateEmittedModels` passes and `emitted` is non-empty, `emitted`
+  // is guaranteed to contain exactly one model (`emitted[0]`).
+  const model = emitted[0];
+  plan = buildPlan(emitted, opts);
+  if (opts.validateOnly) return {result: result(true)};
+
+  // 2. Snapshot the entry group once, before any write: the same listing feeds
+  //    the foreign-model guard, link reconciliation, and deletion
+  //    reconciliation. A re-emitted entry is never a deletion candidate, so a
+  //    pre-write snapshot is correct for all three.
+  const cat = new CatalogClient(ctx);
+  const listing = await listEntryGroup(cat, opts);
+  if (listing.error) return {result: result(false, listing.error)};
+  const existing = listing.entries;
+
+  const groupValidation = validateEntryGroup(model, existing, opts, result);
+  if (!groupValidation.success) return {result: groupValidation};
+
+  // 3. Validate that every kcmd-owned custom type used by the model exists in
+  //    the target project.
+  const customTypesValidation =
+      await validateCustomTypes(cat, model, opts, result);
+  if (!customTypesValidation.success) return {result: customTypesValidation};
+
+  return {prepared: {emitted, existing, warnings, plan}};
+}
+
+/**
+ * Returns any `semantic-model` anchor IDs in `existing` that do not match the
+ * input `model`'s anchor ID.
+ *
+ * A foreign anchor ID exists when the remote entry group already contains a
+ * different `semantic-model` entry (for example, when the model was renamed
+ * locally or a different model is pushed to the same entry group).
+ */
+function findForeignAnchorIds(
+    model: EmittedModel|undefined, existing: readonly Entry[]): string[] {
+  const modelAnchorId = anchorId(model?.resources.entries[0]);
+  return existing.map(anchorId).filter(
+      (id): id is string => id !== undefined && id !== modelAnchorId);
+}
+
+/**
+ * Validates that `emitted` contains a single model.
+ *
+ * Only one semantic model per entry group is supported (so two models cannot
+ * share an entry group or collide on entry IDs, and `kcmd pull` can
+ * unambiguously read the group back).
+ *
+ * An empty workspace is a clean no-op under `--validate-only` and a
+ * configuration error on a real push.
+ */
+function validateEmittedModels(
+    emitted: EmittedModel[], opts: KcDeployOptions, warnings: string[],
+    result: ResultBuilder): KcDeployResult {
+  if (!emitted.length) {
+    if (opts.validateOnly) {
+      warnings.push('No semantic model documents found; nothing to validate.');
+      return result(true);
+    }
+    return result(
+        false, 'No semantic model documents found; nothing to deploy.');
+  }
+  if (emitted.length > 1) {
+    return result(
+        false,
+        `entry group '${opts.entryGroup}' would receive ${
+            emitted.length} models, but only one model per entry group is ` +
+            `supported; split them into separate entry groups.`);
+  }
+  return result(true);
+}
+
+/**
+ * Validates that `existing` (the destination entry-group snapshot) contains no
+ * foreign `semantic-model` anchors unless `--force-remove` is set.
+ *
+ * If the entry group already contains a different model (for example, when a
+ * model was renamed or replaced locally), pushing without removing the old
+ * model would leave multiple models in the same entry group. We fail by
+ * default unless the caller passes `--force-remove` to delete the old model.
+ */
+function validateEntryGroup(
+    model: EmittedModel, existing: Entry[], opts: KcDeployOptions,
+    result: ResultBuilder): KcDeployResult {
+  const foreignAnchorIds = findForeignAnchorIds(model, existing);
+  if (foreignAnchorIds.length && !opts.forceRemove) {
+    return result(
+        false,
+        `entry group '${opts.entryGroup}' already contains model(s) this ` +
+            `push does not include: ${foreignAnchorIds.join(', ')}. Re-run ` +
+            `with --force-remove to delete them, or add their documents to ` +
+            `this push.`);
+  }
+  return result(true);
+}
+
+/**
+ * Validates that every kcmd-owned custom type (`semantic-action`,
+ * `semantic-constraint`) used by `model` exists in the target project.
+ *
+ * Unlike built-in system types in `dataplex-types`, custom entry and aspect
+ * types are provisioned in the destination project by `kcmd init`;
+ * checking them up front in preflight fails fast with an actionable message
+ * before any catalog entries or entry links are written, rather than failing
+ * mid-push when creating an action or constraint entry.
+ *
+ * Makes no network calls when the model uses no custom types.
+ */
+async function validateCustomTypes(
+    cat: CatalogClient, model: EmittedModel, opts: KcDeployOptions,
+    result: ResultBuilder): Promise<KcDeployResult> {
+  const home = customTypeHome(opts);
+  for (const typeId of collectCustomTypes(model.resources.entries)) {
+    const [entryTypeRes, aspectTypeRes] = await Promise.all([
+      cat.getEntryType(home.project, home.location, typeId),
+      cat.getAspectType(home.project, home.location, typeId),
+    ]);
+    if (isNotFoundStatus(entryTypeRes) || isNotFoundStatus(aspectTypeRes)) {
+      return result(
+          false,
+          `Custom type '${typeId}' not found in project '${opts.project}'; ` +
+              `run 'kcmd init --semantic-model' first.`);
+    }
+    if (!isOkStatus(entryTypeRes)) {
+      return result(
+          false,
+          `checking entry type '${typeId}' (HTTP ${entryTypeRes.status}): ` +
+              `${errText(entryTypeRes)}`);
+    }
+    if (!isOkStatus(aspectTypeRes)) {
+      return result(
+          false,
+          `checking aspect type '${typeId}' (HTTP ${aspectTypeRes.status}): ` +
+              `${errText(aspectTypeRes)}`);
+    }
+  }
+  return result(true);
+}
+
+/**
+ * Turns every authored model into its catalog resources.
+ *
+ * Pure (no network I/O), so the dry-run plan and any generation warnings are
+ * produced even when a later write fails. A malformed GOOGLE
+ * `custom_extension` (reached via the `semantic-model` aspect) throws; report
+ * it against its document, as the BigQuery leg does, rather than letting it
+ * escape as an uncaught stack trace.
+ */
 function emitModels(models: LoadedModel[], opts: KcDeployOptions):
     {emitted: EmittedModel[]; warnings: string[]; error?: string} {
   const emitted: EmittedModel[] = [];
@@ -257,7 +464,8 @@ function emitModels(models: LoadedModel[], opts: KcDeployOptions):
       });
     } catch (err: any) {
       return {
-        emitted, warnings,
+        emitted,
+        warnings,
         error: `Model '${model.name}' (${document}): ${err.message || err}`,
       };
     }
@@ -267,8 +475,10 @@ function emitModels(models: LoadedModel[], opts: KcDeployOptions):
   return {emitted, warnings};
 }
 
-
-// The full dry-run plan across all models (one block per model; see planSummary).
+/**
+ * Builds the full dry-run plan across all models (one block per model; see
+ * `planSummary`).
+ */
 function buildPlan(emitted: EmittedModel[], opts: KcDeployOptions): string[] {
   const plan: string[] = [];
   for (const {model, resources} of emitted) {
@@ -277,36 +487,32 @@ function buildPlan(emitted: EmittedModel[], opts: KcDeployOptions): string[] {
   return plan;
 }
 
-
-// Whole-model lifecycle guard. A `semantic-model` anchor already in the group
-// whose id this push does not re-emit belongs to a model whose document is gone
-// (removed or renamed). Refuse the push and name them -- unless --force-remove,
-// which deletes each such model's links and entries first (tallied into counts).
-async function guardForeignModels(
-    cat: CatalogClient, opts: KcDeployOptions, emitted: EmittedModel[],
-    existing: Entry[], counts: Counts): Promise<{error?: string}> {
-  const pushedAnchors =
-      new Set(emitted.map(e => idOf(e.resources.entries[0].name)));
-  const foreignAnchors = existing
-      .filter(e => (e.entryType ?? '').endsWith('/semantic-model'))
-      .map(e => idOf(e.name))
-      .filter(id => !pushedAnchors.has(id));
-  if (!foreignAnchors.length) return {};
-  if (!opts.forceRemove) {
-    return {
-      error:
-          `entry group '${opts.entryGroup}' already contains model(s) this ` +
-          `push does not include: ${foreignAnchors.join(', ')}. Re-run with ` +
-          `--force-remove to delete them, or add their documents to this push.`,
-    };
+/**
+ * Builds a human-readable summary of what a (dry-run) push would write for one
+ * model.
+ */
+function planSummary(
+    model: string, resources: kcEmit.KcResources,
+    opts: KcDeployOptions): string[] {
+  const dest = `${opts.project}.${opts.location}.${opts.entryGroup}`;
+  const lines = [
+    `Knowledge Catalog plan for '${model}' (destination ${dest}):`,
+    `  ${resources.entries.length} entr${
+        resources.entries.length === 1 ? 'y' : 'ies'}:`,
+    ...resources.entries.map(e => `    - ${entryId(e)} (${entryTypeId(e)})`),
+  ];
+  const linksByType = new Map<string, string[]>();
+  for (const link of resources.entryLinks) {
+    const type = linkTypeId(link);
+    linksByType.set(type, [...(linksByType.get(type) ?? []), linkId(link)]);
   }
-  const removed = await removeForeignModels(cat, opts, existing, foreignAnchors);
-  if (removed.error) return {error: removed.error};
-  counts.deleted += removed.deleted;
-  counts.unlinked += removed.unlinked;
-  return {};
+  for (const [type, ids] of linksByType) {
+    lines.push(
+        `  ${ids.length} ${type} link${ids.length === 1 ? '' : 's'}:`,
+        ...ids.map(id => `    - ${id}`));
+  }
+  return lines;
 }
-
 
 // Writes every model's entries and relationship links, in model order. For each
 // model: create/upsert its entries (anchor first), write its schema-join links
@@ -363,13 +569,13 @@ function reconcileDeletions(
   const anchorIds = new Set<string>();
   const childPrefixes: string[] = [];
   for (const {resources} of emitted) {
-    for (const e of resources.entries) emittedIds.add(idOf(e.name));
+    for (const e of resources.entries) emittedIds.add(entryId(e));
     // entries[0] is the model anchor (the emitter writes it first). An emitter
     // that produced no entries has no anchor and owns nothing, so skip it
     // rather than index into an empty array -- a throw here escapes the
     // KcDeployResult contract, and it would do so *after* writes.
     if (!resources.entries.length) continue;
-    anchorIds.add(idOf(resources.entries[0].name));
+    anchorIds.add(entryId(resources.entries[0]));
     // An empty prefix matches every id, which would make every entry in the
     // group -- including ones this tool never wrote -- an orphan. Both current
     // emitters build prefixes from a validated model name and cannot produce
@@ -381,8 +587,8 @@ function reconcileDeletions(
   const owned = (id: string) =>
       anchorIds.has(id) || childPrefixes.some(p => id.startsWith(p));
 
-  const orphans = existing.map(e => idOf(e.name))
-                      .filter(id => owned(id) && !emittedIds.has(id));
+  const orphans =
+      existing.map(entryId).filter(id => owned(id) && !emittedIds.has(id));
 
   return deleteOrphanEntries(cat, opts, orphans);
 }
@@ -395,7 +601,7 @@ async function deleteOrphanEntries(
     const res =
         await cat.deleteEntry(opts.project, opts.location, opts.entryGroup, id);
     // A 404 means it is already gone -- reconciliation's goal is met either way.
-    if (isOk(res) || res.status === 404) {
+    if (isOkStatus(res) || isNotFoundStatus(res)) {
       deleted++;
       continue;
     }
@@ -414,14 +620,14 @@ function schemaJoinLinkType(opts: KcDeployOptions): string {
   return `projects/${proj}/locations/${loc}/entryLinkTypes/schema-join`;
 }
 
-
-// Snapshots the destination entry group's entries once, before any write. A
-// brand-new entry group can briefly fail to list its entries collection (the
-// same propagation window createEntryWithRetry rides out); treat only that
-// not-yet-visible error as empty -- there is nothing to guard against or
-// reconcile, and the create path retries the window. The match mirrors
-// isPropagating (entry-group-scoped) so any OTHER listing failure -- a real
-// backend error, a permission problem -- is surfaced rather than masked.
+/**
+ * Snapshots the destination entry group's entries once, before any write.
+ *
+ * A brand-new entry group can briefly fail to list its entries collection (the
+ * same propagation window `createEntry` rides out); treat only that
+ * not-yet-visible error as empty so any other listing failure (such as a
+ * backend error or permission problem) is surfaced rather than masked.
+ */
 async function listEntryGroup(
     cat: CatalogClient,
     opts: KcDeployOptions): Promise<{entries: Entry[]; error?: string}> {
@@ -433,12 +639,13 @@ async function listEntryGroup(
     }
   } catch (err: any) {
     const msg = err.message || String(err);
-    if (/may not exist/i.test(msg) ||
-        /entry group .*(not found|does not exist)/i.test(msg)) {
+    if (isPropagationError({message: msg})) {
       return {entries: []};
     }
-    return {entries: [], error: `listing entries in entry group '${
-                                    opts.entryGroup}': ${msg}`};
+    return {
+      entries: [],
+      error: `listing entries in entry group '${opts.entryGroup}': ${msg}`,
+    };
   }
   return {entries};
 }
@@ -464,18 +671,21 @@ async function deleteOwnedLinks(
   for (const entry of entityNames) {
     const res = await cat.lookupEntryLinks(
         opts.project, opts.location, {entry, entryLinkTypes: [linkType]});
-    if (!isOk(res)) {
-      return {unlinked, error: `looking up entry links for '${idOf(entry)}': ${
-                                   errText(res)}`};
+    if (!isOkStatus(res)) {
+      return {
+        unlinked,
+        error:
+            `looking up entry links for '${entryIdOf(entry)}': ${errText(res)}`
+      };
     }
     for (const link of res.result ?? []) {
-      const id = idOf(link.name ?? '');
+      const id = linkId(link);
       if (seen.has(id)) continue;
       seen.add(id);
       if (!shouldDelete(link)) continue;
       const del = await cat.deleteEntryLink(
           opts.project, opts.location, opts.entryGroup, id);
-      if (isOk(del) || del.status === 404) {
+      if (isOkStatus(del) || isNotFoundStatus(del)) {
         unlinked++;
         continue;
       }
@@ -515,19 +725,16 @@ function reconcileLinks(
   const entityNames =
       existing.filter(e => (e.entryType ?? '').endsWith('/semantic-entity'))
           .map(e => e.name)
-          .filter(name => ownedId(idOf(name)));
+          .filter(name => ownedId(entryIdOf(name)));
   if (!entityNames.length) return Promise.resolve({unlinked: 0});
 
-  const emittedLinkIds =
-      new Set(resources.entryLinks.map(l => idOf(l.name ?? '')));
-  const ownedByModel = (link: EntryLink) =>
-      link.entryReferences.length === 2 &&
-      link.entryReferences.every(r => ownedId(idOf(r.name)));
+  const emittedLinkIds = new Set(resources.entryLinks.map(linkId));
+  const ownedByModel = (link: EntryLink) => link.entryReferences.length === 2 &&
+      link.entryReferences.every(r => ownedId(entryIdOf(r.name)));
 
   return deleteOwnedLinks(
       cat, opts, entityNames,
-      link =>
-          ownedByModel(link) && !emittedLinkIds.has(idOf(link.name ?? '')));
+      link => ownedByModel(link) && !emittedLinkIds.has(linkId(link)));
 }
 
 
@@ -551,7 +758,7 @@ async function removeForeignModels(
   let unlinked = 0;
   for (const anchor of foreignAnchors) {
     const owned = existing.filter(e => {
-      const id = idOf(e.name);
+      const id = entryId(e);
       return id === anchor || id.startsWith(`${anchor}.`) ||
           id.startsWith(`${anchor}/`);
     });
@@ -566,10 +773,10 @@ async function removeForeignModels(
     unlinked += links.unlinked;
 
     for (const e of owned) {
-      const id = idOf(e.name);
+      const id = entryId(e);
       const res = await cat.deleteEntry(
           opts.project, opts.location, opts.entryGroup, id);
-      if (isOk(res) || res.status === 404) {
+      if (isOkStatus(res) || isNotFoundStatus(res)) {
         deleted++;
         continue;
       }
@@ -657,10 +864,10 @@ async function createEntryLinks(
 async function writeEntryLink(
     cat: CatalogClient, opts: KcDeployOptions,
     link: EntryLink): Promise<{error?: string}> {
-  const linkId = linkIdOf(link.name ?? '');
+  const id = linkId(link);
   const res = await cat.createEntryLink(
-      opts.project, opts.location, opts.entryGroup, linkId, link);
-  if (isExists(res)) {
+      opts.project, opts.location, opts.entryGroup, id, link);
+  if (isExistsStatus(res)) {
     const upd = await cat.updateEntryLink(
         {name: link.name, aspects: link.aspects} as EntryLink,
         Object.keys(link.aspects ?? {}));
@@ -671,12 +878,12 @@ async function writeEntryLink(
     // the aspect refresh is unavailable, so treat a not-addressable response as a
     // no-op success rather than failing an otherwise-complete push. (This mirrors
     // deleteOwnedLinks tolerating a 404 on delete.)
-    if (!isOk(upd) && !isLinkNotAddressable(upd)) {
-      return {error: `entry link '${linkId}': ${errText(upd)}`};
+    if (!isOkStatus(upd) && !isLinkNotAddressable(upd)) {
+      return {error: `entry link '${id}': ${errText(upd)}`};
     }
     return {};
   }
-  if (!isOk(res)) return {error: `entry link '${linkId}': ${errText(res)}`};
+  if (!isOkStatus(res)) return {error: `entry link '${id}': ${errText(res)}`};
   return {};
 }
 
@@ -691,17 +898,17 @@ interface WriteOutcome {
 async function writeEntry(
     cat: CatalogClient, opts: KcDeployOptions,
     entry: Entry): Promise<WriteOutcome> {
-  const entryId = idOf(entry.name);
-  let res = await createEntryWithRetry(cat, opts, entryId, entry);
-  if (isExists(res)) {
+  const id = entryId(entry);
+  const res = await createEntryWithRetry(cat, opts, id, entry);
+  if (isExistsStatus(res)) {
     // Idempotent re-push: refresh the existing entry's source + aspects.
     const upd = await cat.updateEntry(
         entry, ['entry_source', 'aspects'], reconciledAspectKeys(entry, opts),
         /* deleteMissingAspects= */ true);
-    if (!isOk(upd)) return {error: `entry '${entryId}': ${errText(upd)}`};
+    if (!isOkStatus(upd)) return {error: `entry '${id}': ${errText(upd)}`};
     return {updated: true};
   }
-  if (!isOk(res)) return {error: `entry '${entryId}': ${errText(res)}`};
+  if (!isOkStatus(res)) return {error: `entry '${id}': ${errText(res)}`};
   return {};
 }
 
@@ -736,100 +943,65 @@ function reconciledAspectKeys(entry: Entry, opts: KcDeployOptions): string[] {
 // entries.create can briefly 404 on a just-created entry group; retry that
 // window.
 async function createEntryWithRetry(
-    cat: CatalogClient, opts: KcDeployOptions, entryId: string,
+    cat: CatalogClient, opts: KcDeployOptions, id: string,
     entry: Entry): Promise<ApiResult<Entry>> {
   const tries = opts.entryCreateTries ?? ENTRY_CREATE_TRIES;
   const retryMs = opts.entryCreateRetryMs ?? ENTRY_CREATE_RETRY_MS;
   let res = await cat.createEntry(
-      opts.project, opts.location, opts.entryGroup, entryId, entry);
+      opts.project, opts.location, opts.entryGroup, id, entry);
   for (let attempt = 1; attempt < tries; attempt++) {
-    if (isOk(res) || isExists(res) || !isPropagating(res)) break;
+    if (isOkStatus(res) || isExistsStatus(res) || !isPropagationError(res)) {
+      break;
+    }
     await sleep(retryMs);
     res = await cat.createEntry(
-        opts.project, opts.location, opts.entryGroup, entryId, entry);
+        opts.project, opts.location, opts.entryGroup, id, entry);
   }
   return res;
 }
 
-
-// A human-readable summary of what a (dry-run) push would write for one model.
-function planSummary(
-    model: string, resources: kcEmit.KcResources, opts: KcDeployOptions): string[] {
-  const dest = `${opts.project}.${opts.location}.${opts.entryGroup}`;
-  const lines = [
-    `Knowledge Catalog plan for '${model}' (destination ${dest}):`,
-    `  ${resources.entries.length} entr${
-        resources.entries.length === 1 ? 'y' : 'ies'}:`,
-    ...resources.entries.map(
-        e => `    - ${idOf(e.name)} (${typeIdOf(e.entryType)})`),
-  ];
-  if (resources.entryLinks.length) {
-    lines.push(
-        `  ${resources.entryLinks.length} schema-join link${
-            resources.entryLinks.length === 1 ? '' : 's'}:`,
-        ...resources.entryLinks.map(
-            l => `    - ${linkIdOf(l.name ?? '')}`));
-  }
-  return lines;
-}
-
-
-function idOf(name: string): string {
-  // Match the container's SHAPE rather than any exact text. Two reasons:
-  //   - names from listEntries do not always spell the project the way the
-  //     scope does (the server mixes project ids and numbers, and _fixEntry
-  //     normalizes them only when its Cloud Resource Manager lookup succeeds);
-  //   - an entry id may itself contain slashes, as the LookML emitter's
-  //     `<model>/metrics/<view>/<name>` does, so taking the last segment alone
-  //     would return `<name>` and match no ownership prefix.
-  // Falls back to the last segment, which is correct for entry-link and type
-  // resource names that have no `/entries/` container.
-  const m = name.match(
-      /^projects\/[^/]+\/locations\/[^/]+\/entryGroups\/[^/]+\/entries\/(.+)$/);
-  return m ? m[1] : (name.split('/').pop() ?? name);
-}
-
-// The entry-link id: everything after `/entryLinks/`. Link ids are restricted to
-// a single segment (see linkSlug), but this stays symmetric with idOf so a
-// link name is never parsed by the wrong rule.
-function linkIdOf(name: string): string {
-  const i = name.indexOf('/entryLinks/');
-  return i < 0 ? name : name.slice(i + '/entryLinks/'.length);
-}
-
-// The trailing id of a *type* resource name, e.g.
-// `projects/dataplex-types/locations/global/entryTypes/semantic-metric` ->
-// `semantic-metric`. Type ids are always one segment, so last-segment is right
-// here -- and is why one shared helper worked until entry ids gained slashes.
-function typeIdOf(name: string): string {
-  return name.split('/').pop() ?? name;
-}
-
-function isOk(res: {status: number}): boolean {
+/**
+ * Returns true when the API response succeeded with HTTP 200 OK.
+ */
+function isOkStatus(res: {status: number}): boolean {
   return res.status === 200;
 }
 
-// A create that failed because the resource already exists — treated as success
-// for idempotent provisioning and re-push. The API layer preserves the HTTP
-// status (gcp/api.ts), so the 409 ALREADY_EXISTS status is authoritative; no
-// need to match the error text.
-function isExists(res: {status: number}): boolean {
+/**
+ * Returns true when a create failed because the resource already exists (HTTP
+ * 409 ALREADY_EXISTS), treated as success for idempotent provisioning and
+ * re-push.
+ */
+function isExistsStatus(res: {status: number}): boolean {
   return res.status === 409;
 }
 
-// An entry link that a create reported as already existing (409) but that the
-// by-name UpdateEntryLink then could not address: NOT_FOUND (404) or a masked
-// PERMISSION_DENIED (403). Some catalog surfaces expose only create + lookup for
-// entry links, so the aspect-refresh update is unavailable there even though the
-// link itself is present -- writeEntryLink treats this as a no-op success.
-function isLinkNotAddressable(res: {status: number}): boolean {
-  return res.status === 404 || res.status === 403;
+/**
+ * Returns true when the API response failed because the resource does not exist
+ * (HTTP 404 NOT_FOUND).
+ */
+function isNotFoundStatus(res: {status: number}): boolean {
+  return res.status === 404;
 }
 
-// A transient "not visible yet" error worth retrying, matching the propagation
-// phrasing specifically rather than a bare "not found" (which also covers a
-// genuinely missing aspect/entry type — a real, non-transient failure).
-function isPropagating(res: {message?: string}): boolean {
+/**
+ * Returns true when an entry link that `createEntryLink` reported as already
+ * existing (409) could not be addressed by name in `updateEntryLink`:
+ * `NOT_FOUND` (404) or a masked `PERMISSION_DENIED` (403). Some catalog
+ * surfaces expose only create + lookup for entry links, so `writeEntryLink`
+ * treats this as a no-op success.
+ */
+function isLinkNotAddressable(res: {status: number}): boolean {
+  return isNotFoundStatus(res) || res.status === 403;
+}
+
+/**
+ * Returns true for a transient "not visible yet" entry-group propagation error
+ * worth retrying, matching the propagation phrasing specifically rather than a
+ * bare "not found" (which also covers a genuinely missing aspect or entry
+ * type).
+ */
+function isPropagationError(res: {message?: string}): boolean {
   const msg = res.message ?? '';
   return /may not exist/i.test(msg) ||
       /entry group .*(not found|does not exist)/i.test(msg);

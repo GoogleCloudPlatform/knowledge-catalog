@@ -15,7 +15,7 @@ import * as path from 'node:path';
 import {ApiResult} from '../../../src/libts/gcp/api';
 import {ApiContext} from '../../../src/libts/gcp/context';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
-import {deployEmittedModels, deployKnowledgeCatalog} from '../../../src/libts/semantic/deploy_knowledge_catalog';
+import {applyKnowledgeCatalog, deployEmittedModels, deployKnowledgeCatalog, EmittedModel, preflightKnowledgeCatalog,} from '../../../src/libts/semantic/deploy_knowledge_catalog';
 import {loadSemanticModels} from '../../../src/libts/semantic/loader';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
@@ -33,6 +33,11 @@ const DOCS = [{name: 'sales.yaml', text: OSSIE}];
 const STAR =
     fs.readFileSync(path.join(FIXTURES, 'star_orders_customer.yaml'), 'utf8');
 const STAR_DOCS = [{name: 'star.yaml', text: STAR}];
+
+// A model declaring actions, used to exercise custom-type preflight checks.
+const ACTIONS_DOC =
+    fs.readFileSync(path.join(FIXTURES, 'actions_executors.yaml'), 'utf8');
+const ACTIONS_DOCS = [{name: 'actions.yaml', text: ACTIONS_DOC}];
 
 // The deploy leg now consumes models already parsed by loadSemanticModels
 // (shared with the BigQuery leg). These tests author documents, so this helper
@@ -98,9 +103,8 @@ function err(status: number, message: string): ApiResult<any> {
   return {status, message};
 }
 
-// Stubs createEntryGroup + createEntry (+ optionally updateEntry) and the entry-
-// link writes, returning the spies so a test can assert call counts and
-// ordering.
+// Stubs CatalogClient entry, entry-link, and custom-type operations, returning
+// the spies so a test can assert call counts and ordering.
 function stubClient(opts: {
   group?: ApiResult<any>,
   create?: (entryId: string) => ApiResult<any>,
@@ -108,7 +112,11 @@ function stubClient(opts: {
   // Entries the destination entry group already holds (yielded by listEntries).
   // A bare id defaults to a generic entryType; pass {id, type} to stage a
   // specific one (e.g. a foreign semantic-model anchor). Default: none.
-  existing?: (string | {id: string; type: string})[],
+  existing?: (string |
+              {
+                id: string;
+                type?: string
+              })[],
   // How listEntries spells the project in the names it yields. Defaults to the
   // scope's own project; set to a number to reproduce the server's inconsistent
   // id/number spelling.
@@ -122,6 +130,9 @@ function stubClient(opts: {
   links?: (entry: string) => ApiResult<any>,
   // Result of deleteEntryLink, keyed by the entry-link id. Default: 200.
   delLink?: (linkId: string) => ApiResult<any>,
+  // Result of getEntryType / getAspectType, keyed by typeId. Default: 200.
+  entryType?: (typeId: string) => ApiResult<any>,
+  aspectType?: (typeId: string) => ApiResult<any>,
 } = {}) {
   const group = spyOn(CatalogClient.prototype, 'createEntryGroup')
                     .mockImplementation(async () => opts.group ?? ok({}));
@@ -135,8 +146,9 @@ function stubClient(opts: {
                    .mockImplementation(async function*() {
                      for (const e of opts.existing ?? []) {
                        const id = typeof e === 'string' ? e : e.id;
-                       const entryType =
-                           typeof e === 'string' ? 'semantic' : e.type;
+                       const entryType = typeof e === 'string' ?
+                           'semantic' :
+                           (e.type ?? 'semantic');
                        yield {
                          name: entryName(id, opts.existingProject),
                          entryType,
@@ -162,9 +174,27 @@ function stubClient(opts: {
                       .mockImplementation(
                           async (_p, _l, _eg, linkId) =>
                               (opts.delLink ?? (() => ok({})))(linkId));
-  return {group,      create, update,      list,
-          del,        createLink,          updateLink,
-          lookupLinks, delLink};
+  const getEntryType = spyOn(CatalogClient.prototype, 'getEntryType')
+                           .mockImplementation(
+                               async (_p, _l, typeId) =>
+                                   (opts.entryType ?? (() => ok({})))(typeId));
+  const getAspectType = spyOn(CatalogClient.prototype, 'getAspectType')
+                            .mockImplementation(
+                                async (_p, _l, typeId) => (
+                                    opts.aspectType ?? (() => ok({})))(typeId));
+  return {
+    group,
+    create,
+    update,
+    list,
+    del,
+    createLink,
+    updateLink,
+    lookupLinks,
+    delLink,
+    getEntryType,
+    getAspectType,
+  };
 }
 
 
@@ -216,6 +246,18 @@ describe('deployKnowledgeCatalog: re-push upserts', () => {
           .toEqual([...new Set([...own, 'dataplex-types.global.guidelines'])].sort());
       expect(call[3]).toBe(true);
     }
+  });
+
+  test('a failed entry update fails the push, naming the entry', async () => {
+    stubClient({
+      create: () => err(409, 'entry already exists'),
+      update: err(500, 'update boom'),
+    });
+
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(false);
+    expect(result.details).toContain('entry \'sales\': update boom');
   });
 });
 
@@ -290,6 +332,23 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
     expect(updateLink).toHaveBeenCalledTimes(1);
   });
 
+  test(
+      'a hard failure on updateEntryLink fails the push, naming the link',
+      async () => {
+        stubClient({
+          createLink: () => err(409, 'entry link already exists'),
+          updateLink: err(500, 'update link boom'),
+        });
+
+        const result =
+            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+        expect(result.success).toBe(false);
+        expect(result.details)
+            .toContain(
+                'entry link \'sales-orders-to-customer\': update link boom');
+      });
+
   test('a failed link write fails the push, naming the link', async () => {
     stubClient({
       createLink: () => err(500, 'boom'),
@@ -317,8 +376,8 @@ describe('deployKnowledgeCatalog: validateOnly', () => {
   test('writes nothing and returns a plan', async () => {
     const {group, create} = stubClient();
 
-    const result =
-        await deployKnowledgeCatalog(models(DOCS), CTX, {...OPTS, validateOnly: true});
+    const result = await deployKnowledgeCatalog(
+        models(DOCS), CTX, {...OPTS, validateOnly: true});
 
     expect(result.success).toBe(true);
     expect(result.created).toBe(0);
@@ -561,8 +620,9 @@ describe('deployKnowledgeCatalog: link reconciliation', () => {
       ['sales.entities.orders', 'sales.entities.customer']);
 
   // The model's entity entries as the destination already holds them (a
-  // re-push). reconcileLinks looks up links via these server-known entities, so
-  // they must be in the pre-write listing for a link to be discoverable.
+  // re-push). The deploy pipeline looks up links via these server-known
+  // entities, so they must be in the pre-write listing for a link to be
+  // discoverable.
   const STAR_ENTITIES = [
     {id: 'sales.entities.orders', type: ENTITY_TYPE},
     {id: 'sales.entities.customer', type: ENTITY_TYPE},
@@ -689,8 +749,8 @@ describe('deployKnowledgeCatalog: link reconciliation', () => {
      });
 
   test('a first push (empty group) issues no link lookups', async () => {
-    // No entity of the model exists on the server yet, so there is nothing to
-    // reconcile and reconcileLinks makes no lookupEntryLinks call.
+    // No entity of the model exists on the server yet, so there are no
+    // existing entity names to pass to lookupEntryLinks.
     const {lookupLinks, delLink} = stubClient();
 
     const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
@@ -795,4 +855,358 @@ describe('deployKnowledgeCatalog: whole-model removal (--force-remove)', () => {
        expect(result.deleted).toBe(0);
        expect(del).not.toHaveBeenCalled();
      });
+});
+
+
+describe('preflightKnowledgeCatalog and applyKnowledgeCatalog', () => {
+  test(
+      'fails preflight before any write when a custom entry type is missing',
+      async () => {
+        // The model declares actions (`semantic-action`), which is a custom
+        // type that `kcmd init --semantic-model` provisions in the destination
+        // project (`global` location). Simulate a project where
+        // `semantic-action` has not been provisioned (404 on getEntryType).
+        const {
+          create,
+          update,
+          del,
+          createLink,
+          updateLink,
+          delLink,
+          getEntryType,
+          getAspectType,
+        } = stubClient({
+          entryType: (typeId) =>
+              typeId === 'semantic-action' ? err(404, 'not found') : ok({}),
+        });
+
+        const pre =
+            await preflightKnowledgeCatalog(models(ACTIONS_DOCS), CTX, OPTS);
+
+        // Preflight returns a failure result without writing any entry.
+        expect(pre.prepared).toBeUndefined();
+        expect(pre.result?.success).toBe(false);
+        expect(pre.result?.details)
+            .toBe(
+                'Custom type \'semantic-action\' not found in project \'dest\'; ' +
+                'run \'kcmd init --semantic-model\' first.');
+        expect(getEntryType)
+            .toHaveBeenCalledWith('dest', 'global', 'semantic-action');
+        expect(getAspectType)
+            .toHaveBeenCalledWith('dest', 'global', 'semantic-action');
+        expect(create).not.toHaveBeenCalled();
+        expect(update).not.toHaveBeenCalled();
+        expect(del).not.toHaveBeenCalled();
+        expect(createLink).not.toHaveBeenCalled();
+        expect(updateLink).not.toHaveBeenCalled();
+        expect(delLink).not.toHaveBeenCalled();
+      });
+
+  test(
+      'fails preflight before any write when a custom aspect type is missing',
+      async () => {
+        // Simulate a project where the `semantic-action` entry type exists but
+        // its companion aspect type has not been provisioned (404 on
+        // getAspectType).
+        const {create, update, getEntryType, getAspectType} = stubClient({
+          aspectType: (typeId) =>
+              typeId === 'semantic-action' ? err(404, 'not found') : ok({}),
+        });
+
+        const pre =
+            await preflightKnowledgeCatalog(models(ACTIONS_DOCS), CTX, OPTS);
+
+        expect(pre.prepared).toBeUndefined();
+        expect(pre.result?.success).toBe(false);
+        expect(pre.result?.details)
+            .toBe(
+                'Custom type \'semantic-action\' not found in project \'dest\'; ' +
+                'run \'kcmd init --semantic-model\' first.');
+        expect(getEntryType)
+            .toHaveBeenCalledWith('dest', 'global', 'semantic-action');
+        expect(getAspectType)
+            .toHaveBeenCalledWith('dest', 'global', 'semantic-action');
+        expect(create).not.toHaveBeenCalled();
+        expect(update).not.toHaveBeenCalled();
+      });
+
+  test(
+      'fails preflight naming the status when getEntryType or getAspectType ' +
+          'returns a non-404 error',
+      async () => {
+        // Only HTTP 404 reports the type as missing ('run kcmd init'); any
+        // other non-200 status (e.g. 403 or 500) still fails preflight naming
+        // the status and error rather than proceeding to writes.
+        const {create} = stubClient({
+          entryType: () => err(403, 'permission denied'),
+          aspectType: () => ok({}),
+        });
+
+        const entryErr =
+            await preflightKnowledgeCatalog(models(ACTIONS_DOCS), CTX, OPTS);
+        expect(entryErr.prepared).toBeUndefined();
+        expect(entryErr.result?.success).toBe(false);
+        expect(entryErr.result?.details)
+            .toBe(
+                'checking entry type \'semantic-action\' (HTTP 403): ' +
+                'permission denied');
+        expect(create).not.toHaveBeenCalled();
+
+        mock.restore();
+        stubClient({
+          entryType: () => ok({}),
+          aspectType: () => err(500, 'internal error'),
+        });
+
+        const aspectErr =
+            await preflightKnowledgeCatalog(models(ACTIONS_DOCS), CTX, OPTS);
+        expect(aspectErr.prepared).toBeUndefined();
+        expect(aspectErr.result?.success).toBe(false);
+        expect(aspectErr.result?.details)
+            .toBe(
+                'checking aspect type \'semantic-action\' (HTTP 500): ' +
+                'internal error');
+      });
+
+  test(
+      'skips getEntryType and getAspectType when no custom types are used, ' +
+          'and succeeds when used custom types exist',
+      async () => {
+        const {getEntryType, getAspectType} = stubClient();
+
+        const pre = await preflightKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+        expect(pre.result).toBeUndefined();
+        expect(pre.prepared).toBeDefined();
+        expect(getEntryType).not.toHaveBeenCalled();
+        expect(getAspectType).not.toHaveBeenCalled();
+
+        const actionsPre =
+            await preflightKnowledgeCatalog(models(ACTIONS_DOCS), CTX, OPTS);
+        expect(actionsPre.result).toBeUndefined();
+        expect(actionsPre.prepared).toBeDefined();
+        expect(getEntryType)
+            .toHaveBeenCalledWith('dest', 'global', 'semantic-action');
+        expect(getAspectType)
+            .toHaveBeenCalledWith('dest', 'global', 'semantic-action');
+      });
+
+  test(
+      'preflight performs no deletions under --force-remove until apply runs',
+      async () => {
+        // Stage a foreign model ('old') in the entry group and run preflight
+        // with `forceRemove: true`. Preflight must succeed without calling
+        // `deleteEntry` or `deleteEntryLink`; only `applyKnowledgeCatalog`
+        // performs the deletions and writes.
+        const {create, del, delLink} = stubClient({
+          existing: [
+            {id: 'old', type: MODEL_TYPE},
+            {id: 'old.entities.a', type: ENTITY_TYPE},
+          ],
+        });
+        const forceOpts = {...OPTS, forceRemove: true};
+
+        const pre =
+            await preflightKnowledgeCatalog(models(DOCS), CTX, forceOpts);
+
+        // Preflight makes zero mutations.
+        expect(pre.result).toBeUndefined();
+        expect(pre.prepared).toBeDefined();
+        expect(create).not.toHaveBeenCalled();
+        expect(del).not.toHaveBeenCalled();
+        expect(delLink).not.toHaveBeenCalled();
+
+        const applied =
+            await applyKnowledgeCatalog(pre.prepared!, CTX, forceOpts);
+
+        // Apply deletes the foreign model and creates the new entries.
+        expect(applied.success).toBe(true);
+        expect(applied.deleted).toBe(2);
+        expect(applied.created).toBe(3);
+        expect(del).toHaveBeenCalledTimes(2);
+        expect(create).toHaveBeenCalledTimes(3);
+      });
+
+  test(
+      'apply fails under --force-remove when lookupEntryLinks fails on a ' +
+          'foreign model',
+      async () => {
+        const forceOpts = {...OPTS, forceRemove: true};
+        stubClient({
+          existing: [
+            {id: 'old', type: MODEL_TYPE},
+            {id: 'old.entities.a', type: ENTITY_TYPE},
+            {id: 'old.entities.b', type: ENTITY_TYPE},
+          ],
+          links: () => err(500, 'lookup failed'),
+        });
+
+        const pre =
+            await preflightKnowledgeCatalog(models(DOCS), CTX, forceOpts);
+        const applied =
+            await applyKnowledgeCatalog(pre.prepared!, CTX, forceOpts);
+
+        expect(applied.success).toBe(false);
+        expect(applied.details)
+            .toContain(
+                'looking up entry links for \'old.entities.a\': lookup failed');
+      });
+
+  test(
+      'apply fails under --force-remove when deleteEntryLink fails on a ' +
+          'foreign model',
+      async () => {
+        const forceOpts = {...OPTS, forceRemove: true};
+        const foreignLink =
+            linkEntry('old-a-to-b', ['old.entities.a', 'old.entities.b']);
+        stubClient({
+          existing: [
+            {id: 'old', type: MODEL_TYPE},
+            {id: 'old.entities.a', type: ENTITY_TYPE},
+            {id: 'old.entities.b', type: ENTITY_TYPE},
+          ],
+          links: () => ok([foreignLink]),
+          delLink: () => err(500, 'delete link failed'),
+        });
+
+        const pre =
+            await preflightKnowledgeCatalog(models(DOCS), CTX, forceOpts);
+        const applied =
+            await applyKnowledgeCatalog(pre.prepared!, CTX, forceOpts);
+
+        expect(applied.success).toBe(false);
+        expect(applied.details)
+            .toContain(
+                'deleting entry link \'old-a-to-b\': delete link failed');
+      });
+
+  test(
+      'apply fails under --force-remove when deleteEntry fails on a ' +
+          'foreign model',
+      async () => {
+        const forceOpts = {...OPTS, forceRemove: true};
+        stubClient({
+          existing: [
+            {id: 'old', type: MODEL_TYPE},
+            {id: 'old.entities.a', type: ENTITY_TYPE},
+          ],
+          del: () => err(500, 'delete entry failed'),
+        });
+
+        const pre =
+            await preflightKnowledgeCatalog(models(DOCS), CTX, forceOpts);
+        const applied =
+            await applyKnowledgeCatalog(pre.prepared!, CTX, forceOpts);
+
+        expect(applied.success).toBe(false);
+        expect(applied.details).toContain('delete entry failed');
+      });
+
+  test(
+      'preflight treats a transient entry-group propagation error during ' +
+          'listEntries as empty and fails on non-propagation errors',
+      async () => {
+        stubClient();
+        spyOn(CatalogClient.prototype, 'listEntries')
+            .mockImplementationOnce(async function*() {
+              throw new Error('Entry group eg may not exist');
+            })
+            .mockImplementationOnce(async function*() {
+              throw new Error('backend unavailable');
+            });
+
+        const transientPre =
+            await preflightKnowledgeCatalog(models(DOCS), CTX, OPTS);
+        expect(transientPre.result).toBeUndefined();
+        expect(transientPre.prepared?.existing).toEqual([]);
+
+        const fatalPre =
+            await preflightKnowledgeCatalog(models(DOCS), CTX, OPTS);
+        expect(fatalPre.prepared).toBeUndefined();
+        expect(fatalPre.result?.success).toBe(false);
+        expect(fatalPre.result?.details)
+            .toContain(
+                'listing entries in entry group \'eg\': backend unavailable');
+      });
+
+  test(
+      'retries createEntry on transient entry-group propagation errors and ' +
+          'stops on non-propagation 404s',
+      async () => {
+        let calls = 0;
+        const {create} = stubClient({
+          create: () => {
+            calls++;
+            return calls === 1 ? err(404, 'entry group eg not found') : ok({});
+          },
+        });
+        const retryOpts = {
+          ...OPTS,
+          entryCreateTries: 2,
+          entryCreateRetryMs: 0,
+        };
+
+        const recovered =
+            await deployKnowledgeCatalog(models(DOCS), CTX, retryOpts);
+        expect(recovered.success).toBe(true);
+        expect(create).toHaveBeenCalledTimes(4);
+
+        mock.restore();
+        const {create: createFatal} = stubClient({
+          create: () => err(404, 'aspect type not found'),
+        });
+        const fatal =
+            await deployKnowledgeCatalog(models(DOCS), CTX, retryOpts);
+        expect(fatal.success).toBe(false);
+        expect(createFatal).toHaveBeenCalledTimes(1);
+      });
+
+  test(
+      'planSummary groups entry links by linkTypeId from the links themselves',
+      async () => {
+        stubClient();
+        const emitted: EmittedModel[] = [{
+          model: 'sales',
+          resources: {
+            entries: [
+              {name: entryName('sales'), entryType: MODEL_TYPE},
+            ],
+            entryLinks: [
+              {
+                ...linkEntry(
+                    'sales-orders-to-customer',
+                    ['sales/entities/orders', 'sales/entities/customer']),
+                entryLinkType:
+                    'projects/dataplex-types/locations/global/entryLinkTypes/' +
+                    'semantic-relationship',
+              },
+              {
+                ...linkEntry(
+                    'sales-orders-to-lineitem',
+                    ['sales/entities/orders', 'sales/entities/lineitem']),
+                entryLinkType:
+                    'projects/dataplex-types/locations/global/entryLinkTypes/' +
+                    'semantic-relationship',
+              },
+              linkEntry(
+                  'sales-legacy-join',
+                  ['sales.entities.orders', 'sales.entities.customer']),
+            ],
+            ownedPrefixes: ['sales/entities/'],
+            warnings: [],
+          },
+        }];
+
+        const result = await deployEmittedModels(
+            emitted, [], CTX, {...OPTS, validateOnly: true});
+
+        expect(result.success).toBe(true);
+        expect(result.plan.join('\n'))
+            .toContain(
+                '  2 semantic-relationship links:\n' +
+                '    - sales-orders-to-customer\n' +
+                '    - sales-orders-to-lineitem\n' +
+                '  1 schema-join link:\n' +
+                '    - sales-legacy-join');
+      });
 });
