@@ -599,10 +599,15 @@ the downstream effect `rdfs:subPropertyOf` means.
   sub-property's own end.
 - **Only object properties.** `rdfs:subPropertyOf` between datatype properties
   has no native home (fields do not inherit from fields) and is dropped.
-- **Endpoints should narrow.** A sub-relationship's `from`/`to` should be its
-  parent's or a subtype of them (per entity `extends`); the loader warns when
-  they are not, since a match on the parent label would then return edges
-  outside its declared ends.
+- **Endpoints must narrow.** A sub-relationship's `from` and `to` must each be
+  its parent's endpoint or a subtype of it (per entity `extends`). Otherwise a
+  match on the parent label would return edges outside the parent's declared
+  ends, and the loader flags them. The importer drops such a parent from
+  `extends`, with a warning. This happens most often after a
+  [vocabulary](#vocabularies-owloneof-named-individuals) detaches from its
+  superclass: a `GeographicRegion` that was an `OrgUnit` no longer fits
+  `belongsToTerritory`'s range, so `inRegion` stops extending it. The parent
+  stays the abstract umbrella over the sub-properties that do fit.
 
 ### Rules (restrictions, functional properties, disjointness)
 
