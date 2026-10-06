@@ -21,6 +21,12 @@ semantic_model:
       - name: WonOpportunity
         extends:
           - Opportunity
+        abstract: true
+        ai_context:
+          instructions: "Membership is defined, not stored: a WonOpportunity is
+            Opportunity and (governedBy some Contract). No WonOpportunity rows
+            or nodes exist; to find its members, evaluate this definition over
+            Opportunity and its relationships."
     relationships:
       - name: hasBuyer
         from: Opportunity
