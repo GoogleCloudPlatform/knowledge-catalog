@@ -1,0 +1,69 @@
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix kcmd: <https://kcmd.dev/ns#> .
+@prefix ex:   <https://example.org/pipeline#> .
+@prefix met:  <https://example.org/pipeline/metrics#> .
+
+# Metrics stated in the ontology: every kcmd:Metric individual becomes a model
+# metric (name = local name, expression over <Class>.<property> names).
+
+<https://example.org/pipeline> a owl:Ontology ;
+    rdfs:label "Pipeline" ;
+    rdfs:comment "Opportunities, engagements and their KPIs." .
+
+ex:Opportunity a owl:Class ;
+    rdfs:label "Opportunity" ;
+    owl:hasKey ( ex:opportunityId ) .
+ex:opportunityId a owl:DatatypeProperty ; rdfs:domain ex:Opportunity ;
+    rdfs:range xsd:string .
+ex:totalContractValue a owl:DatatypeProperty ; rdfs:domain ex:Opportunity ;
+    rdfs:range xsd:decimal .
+ex:salesStage a owl:DatatypeProperty ; rdfs:domain ex:Opportunity ;
+    rdfs:range xsd:string .
+
+ex:Engagement a owl:Class ;
+    rdfs:label "Engagement" ;
+    owl:hasKey ( ex:engagementId ) .
+ex:engagementId a owl:DatatypeProperty ; rdfs:domain ex:Engagement ;
+    rdfs:range xsd:string .
+ex:revenue a owl:DatatypeProperty ; rdfs:domain ex:Engagement ;
+    rdfs:range xsd:decimal .
+
+# The metric vocabulary, declared so OWL tools accept the individuals. Never
+# imported as an entity.
+kcmd:Metric a owl:Class ; rdfs:label "Metric" .
+kcmd:expression a owl:AnnotationProperty .
+kcmd:unit a owl:AnnotationProperty .
+kcmd:instructions a owl:AnnotationProperty .
+
+# A SKOS glossary: with one, every metric also gets a glossary term.
+ex:PipelineGlossary a skos:ConceptScheme ;
+    skos:prefLabel "Pipeline glossary" .
+ex:Deal a skos:Concept ; skos:inScheme ex:PipelineGlossary ;
+    skos:prefLabel "Deal" ; skos:definition "A sales opportunity." ;
+    skos:exactMatch ex:Opportunity .
+
+met:total_contract_value a kcmd:Metric ;
+    skos:prefLabel "Total contract value" ;
+    skos:altLabel "TCV" , "deal value" ;
+    kcmd:expression "SUM(Opportunity.totalContractValue)" ;
+    skos:definition "Total contract value of the opportunities in scope." ;
+    kcmd:unit "USD" .
+
+met:win_rate_pct a kcmd:Metric ;
+    skos:prefLabel "Win rate percentage" ;
+    skos:altLabel "win rate" ;
+    kcmd:expression "100 * SAFE_DIVIDE(COUNTIF(LOWER(Opportunity.salesStage) = 'won'), COUNTIF(LOWER(Opportunity.salesStage) IN ('won', 'lost')))" ;
+    skos:definition "Won opportunities as a percentage of closed ones." ;
+    kcmd:instructions "Only closed opportunities are in the denominator." ;
+    kcmd:unit "percent" .
+
+met:revenue_per_deal a kcmd:Metric ;
+    skos:prefLabel "Revenue per deal" ;
+    kcmd:expression "SAFE_DIVIDE(SUM(Engagement.revenue), COUNT(DISTINCT Opportunity.opportunityId))" ;
+    rdfs:comment "Engagement revenue per opportunity (cross-entity)." .
+
+met:draft_metric a kcmd:Metric ;
+    skos:prefLabel "Draft metric" .

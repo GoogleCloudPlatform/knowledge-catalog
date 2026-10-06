@@ -12,7 +12,7 @@
 
 import {Parser} from 'n3';
 
-import {OwlChainStep, OwlClass, OwlClassExpr, OwlCommonAnnotations, OwlConstraintPolicy, OwlDataRange, OwlDatatypeProperty, OwlDisjointClassesAxiom, OwlIndividual, OwlLiteral, OwlModel, OwlObjectProperty, OwlOntology, OwlRestriction,} from './model';
+import {OwlChainStep, OwlClass, OwlClassExpr, OwlCommonAnnotations, OwlConstraintPolicy, OwlDataRange, OwlDatatypeProperty, OwlDisjointClassesAxiom, OwlIndividual, OwlLiteral, OwlMetric, OwlModel, OwlObjectProperty, OwlOntology, OwlRestriction,} from './model';
 
 // RDF/RDFS/OWL/SKOS/Dublin-Core term IRIs we recognize. Only these; anything
 // else is carried by neither the parser nor the model (see the user guide's
@@ -161,6 +161,12 @@ const KCMD_CODE = `${KCMD_NS}code`;
 // `<class> kcmd:abstract true|false` overrides the abstract-by-structure rule
 // (see abstract.ts).
 const KCMD_ABSTRACT = `${KCMD_NS}abstract`;
+// `met:x a kcmd:Metric ; kcmd:expression "..." ; kcmd:instructions "..."` --
+// a business metric (see OwlMetric). kcmd:unit is read by local name with the
+// other unit predicates (UNIT_PREDICATES).
+export const KCMD_METRIC = `${KCMD_NS}Metric`;
+const KCMD_EXPRESSION = `${KCMD_NS}expression`;
+const KCMD_INSTRUCTIONS = `${KCMD_NS}instructions`;
 const SKOS_NOTATION = `${SKOS}notation`;
 
 // Class-expression and data-range vocabulary read by the owl:equivalentClass
@@ -538,6 +544,10 @@ export function parseOwl(turtle: string|string[]): OwlModel {
     // through the triples that reference them; they are just not routed to a
     // kind, so they neither become model terms nor count in the import stats.
     if (q.subject.termType === 'BlankNode') continue;
+    // The importer's own kcmd: vocabulary is not domain content: an ontology
+    // declares `kcmd:Metric a owl:Class` so OWL tools accept its metric
+    // individuals, and that class must not become an entity.
+    if (subject.startsWith(KCMD_NS)) continue;
     if (!kind.has(subject)) {
       kind.set(subject, k);
       order.push(subject);
@@ -1103,6 +1113,7 @@ export function parseOwl(turtle: string|string[]): OwlModel {
   }>();
   for (const [subject, types] of typesOf) {
     if (kind.has(subject) || subject === ontologyIri) continue;
+    if (types.includes(KCMD_METRIC)) continue;  // a metric, read below
     if (!namedIndividuals.has(subject) &&
         !types.some(t => kind.get(t) === 'class')) {
       continue;
@@ -1157,6 +1168,80 @@ export function parseOwl(turtle: string|string[]): OwlModel {
     if (individualCodes[iri] !== undefined) individual.code = individualCodes[iri];
     if (acc.order !== undefined) individual.order = acc.order;
     individuals.push(individual);
+  }
+  // The kcmd:Metric individuals (see OwlMetric), in document order. Values
+  // are read in one ordered pass; the first expression / definition /
+  // instructions / unit wins.
+  const metricAcc = new Map<string, {
+    labels: string[]; prefLabels: string[]; altLabels: string[];
+    expression?: string; definition?: string; comment?: string;
+    description?: string; instructions?: string; unit?: string;
+  }>();
+  for (const [subject, types] of typesOf) {
+    if (types.includes(KCMD_METRIC) && !kind.has(subject)) {
+      metricAcc.set(subject, {labels: [], prefLabels: [], altLabels: []});
+    }
+  }
+  for (const q of quads) {
+    const acc = metricAcc.get(q.subject.value);
+    if (!acc) continue;
+    const p = q.predicate.value;
+    if (UNIT_PREDICATES.has(localName(p)) && acc.unit === undefined) {
+      if (q.object.termType === 'NamedNode') {
+        acc.unit = localName(q.object.value);
+      } else if (q.object.termType === 'Literal' && q.object.value.trim()) {
+        acc.unit = q.object.value.trim();
+      }
+      continue;
+    }
+    if (q.object.termType !== 'Literal') continue;
+    const value = q.object.value;
+    switch (p) {
+      case RDFS_LABEL:
+        acc.labels.push(value);
+        break;
+      case SKOS_PREF_LABEL:
+        acc.prefLabels.push(value);
+        break;
+      case SKOS_ALT_LABEL:
+      case SKOS_HIDDEN_LABEL:
+        acc.altLabels.push(value);
+        break;
+      case KCMD_EXPRESSION:
+        if (value.trim()) acc.expression ??= value.trim();
+        break;
+      case KCMD_INSTRUCTIONS:
+        acc.instructions ??= value;
+        break;
+      case SKOS_DEFINITION:
+        acc.definition ??= value;
+        break;
+      case RDFS_COMMENT:
+        acc.comment ??= value;
+        break;
+      case DCTERMS_DESCRIPTION:
+      case DC_DESCRIPTION:
+        acc.description ??= value;
+        break;
+      default:
+        break;
+    }
+  }
+  const metrics: OwlMetric[] = [];
+  for (const [iri, acc] of metricAcc) {
+    const metric: OwlMetric = {
+      iri,
+      localName: localName(iri),
+      labels: [...acc.prefLabels, ...acc.labels],
+      altLabels: acc.altLabels,
+    };
+    if (acc.expression !== undefined) metric.expression = acc.expression;
+    const definition = acc.definition ?? acc.comment ?? acc.description;
+    if (definition !== undefined) metric.definition = definition;
+    if (acc.instructions !== undefined) metric.instructions = acc.instructions;
+    if (acc.unit !== undefined) metric.unit = acc.unit;
+    if (typesOf.get(iri)?.includes(`${SKOS}Concept`)) metric.concept = true;
+    metrics.push(metric);
   }
   // A blank-node rdfs:domain (see Annotations.domainNodes) as the classes it
   // names. An owl:unionOf is the one shape that maps: the property applies to
@@ -1416,6 +1501,7 @@ export function parseOwl(turtle: string|string[]): OwlModel {
     allDifferent: resolveMembers(allDifferentNodes),
     ...(Object.keys(individualCodes).length ? {individualCodes} : {}),
     ...(individuals.length ? {individuals} : {}),
+    ...(metrics.length ? {metrics} : {}),
   };
 }
 

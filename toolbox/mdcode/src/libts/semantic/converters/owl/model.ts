@@ -506,4 +506,36 @@ export interface OwlModel {
   // declared owl:NamedIndividual, in document order (see OwlIndividual). A
   // term that is itself a class or property is not listed. Absent when none.
   individuals?: OwlIndividual[];
+  // The kcmd:Metric individuals (https://kcmd.dev/ns#Metric), in document
+  // order (see OwlMetric). They are not listed in `individuals`. Absent when
+  // none.
+  metrics?: OwlMetric[];
+}
+
+/**
+ * A business metric stated in the ontology as an individual of kcmd:Metric:
+ *
+ *   met:win_rate a kcmd:Metric ;
+ *       skos:prefLabel "Win rate" ; skos:altLabel "close rate" ;
+ *       kcmd:expression "100 * SAFE_DIVIDE(...)" ;
+ *       skos:definition "..." ; kcmd:instructions "..." ; kcmd:unit "percent" .
+ *
+ * The local name is the metric name; `expression` is written over the
+ * ontology's own `<Class>.<property>` names. Every value is a literal (the
+ * unit may also be an IRI, whose local name is kept).
+ */
+export interface OwlMetric {
+  iri: string;
+  localName: string;
+  expression?: string;
+  // rdfs:label / skos:prefLabel values (prefLabel first), then
+  // skos:altLabel / skos:hiddenLabel values.
+  labels: string[];
+  altLabels: string[];
+  // skos:definition, else rdfs:comment, else dcterms:/dc:description.
+  definition?: string;
+  instructions?: string;
+  unit?: string;
+  // Also typed skos:Concept: the SKOS glossary already has a term for it.
+  concept?: true;
 }

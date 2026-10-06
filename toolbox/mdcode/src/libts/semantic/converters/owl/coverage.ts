@@ -14,6 +14,7 @@ import {CoverageEntry, CoverageOutcome, CoverageRecorder} from '../coverage';
 
 import {manchester} from './constraints';
 import {EquivalentFold} from './folds';
+import {OwlMetricOutcome} from './metrics';
 import {OwlChainStep, OwlClass, OwlCommonAnnotations, OwlModel} from './model';
 import {localName} from './parse';
 import {datatypeFor} from './to_ir';
@@ -23,6 +24,8 @@ export interface OwlCoverageInput {
   owl: OwlModel;
   // The unkeyed classes folded into a keyed equivalent.
   folds?: readonly EquivalentFold[];
+  // What became of each kcmd:Metric (metrics.ts).
+  metricOutcomes?: readonly OwlMetricOutcome[];
   // The model the mapping produced, BEFORE any pruning.
   model: SemanticModel;
   // The mapper's warnings, for drop reasons.
@@ -649,7 +652,27 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
                    'model description');
     }
   }
+  const metricTerms = new Set<string>();
+  // kcmd:Metric individuals (metrics.ts). A glossary term that skos.ts made
+  // for a metric (one that is not itself a skos:Concept) is listed under
+  // kcmd:Metric too, not as a concept.
+  for (const o of input.metricOutcomes ?? []) {
+    if (o.imported !== undefined) {
+      rec.compiled('kcmd:Metric', o.metric, `metric ${o.imported}`);
+      const term = o.concept ? undefined : model.glossary?.terms.find(
+          t => t.defines?.length === 1 && t.defines[0].kind === 'metric' &&
+              t.defines[0].ref === o.imported);
+      if (term) {
+        metricTerms.add(term.id);
+        rec.compiled('kcmd:Metric (glossary)', o.metric,
+                     `glossary term ${term.id}`);
+      }
+    } else {
+      rec.dropped('kcmd:Metric', o.metric, o.reason ?? 'not imported');
+    }
+  }
   for (const t of model.glossary?.terms ?? []) {
+    if (metricTerms.has(t.id)) continue;
     rec.compiled('skos:Concept', t.id, `glossary term ${t.id}`);
   }
 

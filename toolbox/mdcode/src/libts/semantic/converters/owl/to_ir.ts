@@ -72,8 +72,9 @@ import {canonicalSteps, chainSteps} from './chains';
 import {owlConstraints} from './constraints';
 import {compileOwlDefinitions} from './definitions';
 import {EquivalentFold, foldEquivalentClasses} from './folds';
+import {OwlMetricOutcome, owlMetrics} from './metrics';
 import {OwlModel, OwlObjectProperty, OwlOntology} from './model';
-import {applyOwlVocabularies} from './vocabularies';
+import {applyOwlVocabularies, DetachedVocabulary, detachVocabularyParents} from './vocabularies';
 
 export interface ToIrResult {
   model: SemanticModel;
@@ -91,6 +92,10 @@ export interface ToIrResult {
   // report reads this one, plus `folds`.
   source: OwlModel;
   folds: EquivalentFold[];
+  // What became of each kcmd:Metric (for the coverage report).
+  metricOutcomes: OwlMetricOutcome[];
+  // Vocabularies detached from field-carrying parents (vocabularies.ts).
+  detachedVocabularies: DetachedVocabulary[];
 }
 
 /** What an OWL import converted (see ToIrResult.stats). */
@@ -103,6 +108,9 @@ export interface ImportStats {
   // when non-zero.
   vocabularies?: number;
   derivedRelationships?: number;
+  // The kcmd:Metric individuals imported as metrics. Present only when
+  // non-zero.
+  metrics?: number;
 }
 
 // --- Datatype mapping. ------------------------------------------------------
@@ -436,7 +444,25 @@ export function owlToIr(parsed: OwlModel, modelName: string): ToIrResult {
   //      inverse-functional property still has a natural identifier; promote
   //      that unique key to the primary_key so the entity is valid for graph
   //      generation rather than keyless. (Ambiguous cases -- several unique
-  //      keys, or a composite one -- are left alone.)
+  //      keys, or a composite one -- are left alone.) Not on a category whose
+  //      subclasses declare keys of their own (`OrgUnit` over keyed
+  //      `MarketUnit` / `ServiceGroup`): each subclass is identified by its own
+  //      key, so the property stays a unique key, inherited by the subclasses
+  //      (see inheritUniqueKeys), and the category is abstract by structure.
+  const ownKeyedDescendant = (name: string): boolean => {
+    const seen = new Set<string>([name]);
+    const queue = [name];
+    while (queue.length) {
+      const parent = queue.shift()!;
+      for (const e of entities) {
+        if (seen.has(e.name) || !e.extends?.includes(parent)) continue;
+        if (e.keys.length) return true;
+        seen.add(e.name);
+        queue.push(e.name);
+      }
+    }
+    return false;
+  };
   for (const entity of entities) {
     const fieldNames = new Set(entity.fields.map(f => f.name));
     const missing = entity.keys.filter(k => !fieldNames.has(k));
@@ -449,8 +475,10 @@ export function owlToIr(parsed: OwlModel, modelName: string): ToIrResult {
           `remaining columns would change the entity's grain).`);
       entity.keys = [];
     }
+  }
+  for (const entity of entities) {
     if (!entity.keys.length && entity.uniqueKeys?.length === 1 &&
-        entity.uniqueKeys[0].length === 1) {
+        entity.uniqueKeys[0].length === 1 && !ownKeyedDescendant(entity.name)) {
       entity.keys = [...entity.uniqueKeys[0]];
       entity.uniqueKeys = undefined;
       warnings.push(
@@ -731,11 +759,17 @@ export function owlToIr(parsed: OwlModel, modelName: string): ToIrResult {
   // vocabularies.ts). After the definitions: a defined entity keeps its
   // definition.
   const vocabularies = applyOwlVocabularies(owl, entitiesByName, warnings);
+  // A vocabulary does not inherit fields its member view cannot bind.
+  const detachedVocabularies =
+      detachVocabularyParents(entitiesByName, warnings);
 
   // A keyless class that groups subclasses is abstract (a label on its
   // subtypes); `kcmd:abstract` overrides (see abstract.ts). After the
   // vocabularies and defined entities, which are never abstract.
   applyOwlAbstract(owl, entitiesByName, warnings);
+
+  // Unique keys flow down `extends` to the concrete subclasses.
+  inheritUniqueKeys(entities, entitiesByName);
 
   // Axioms that state a rule -- property restrictions, functional object
   // properties, class disjointness -- become native model-level constraints
@@ -744,13 +778,17 @@ export function owlToIr(parsed: OwlModel, modelName: string): ToIrResult {
   const constraints = owlConstraints(
       constraintSource, {entitiesByName, relationships}, warnings);
 
+  // kcmd:Metric individuals become model metrics (see metrics.ts).
+  const {metrics, outcomes: metricOutcomes} =
+      owlMetrics(owl.metrics ?? [], entities, folds, warnings);
+
   const model: SemanticModel = {
     name: modelName,
     description: modelDescription(owl),
     aiContext: ontologyAiContext(owl.ontology, modelName),
     entities,
     relationships,
-    metrics: [],
+    metrics,
   };
   if (constraints.length) model.constraints = constraints;
   const derived = relationships.filter(r => r.via?.length).length;
@@ -759,6 +797,8 @@ export function owlToIr(parsed: OwlModel, modelName: string): ToIrResult {
     warnings,
     source: owl,
     folds,
+    metricOutcomes,
+    detachedVocabularies,
     stats: {
       classes: entities.length,
       datatypeProperties: datatypePropertiesConverted,
@@ -769,8 +809,44 @@ export function owlToIr(parsed: OwlModel, modelName: string): ToIrResult {
       // of an ontology with neither reads as before.
       ...(vocabularies ? {vocabularies} : {}),
       ...(derived ? {derivedRelationships: derived} : {}),
+      ...(metrics.length ? {metrics: metrics.length} : {}),
     },
   };
+}
+
+// --- Unique keys down the class hierarchy. ----------------------------------
+
+// An inverse-functional property declared on a category (`core:unitName` on
+// `OrgUnit`) identifies every instance of every subclass too, so each
+// subclass that is backed by a table of its own gets the unique key: its
+// ancestors' unique keys, nearest first, appended after its own, skipping one
+// it already has or that equals its primary key. A defined entity shares its
+// parent's identity (no keys of its own, the loader rejects them), and a
+// vocabulary's rows are its members, so neither inherits. Downstream
+// resolution flattens inherited fields (resolve_inheritance.ts), so the key
+// names a field the subclass has.
+function inheritUniqueKeys(
+    entities: readonly Entity[], byName: ReadonlyMap<string, Entity>): void {
+  // Snapshot the declared keys first so the result does not depend on order.
+  const declared = new Map(entities.map(e => [e.name, e.uniqueKeys ?? []]));
+  for (const e of entities) {
+    if (e.definition || e.members !== undefined || e.abstract) continue;
+    const seen = new Set<string>([e.name]);
+    const queue = [...(e.extends ?? [])];
+    const inherited: string[][] = [];
+    while (queue.length) {
+      const n = queue.shift()!;
+      if (seen.has(n)) continue;
+      seen.add(n);
+      inherited.push(...(declared.get(n) ?? []));
+      queue.push(...(byName.get(n)?.extends ?? []));
+    }
+    for (const uk of inherited) {
+      const have = [e.keys, ...(e.uniqueKeys ?? [])];
+      if (have.some(k => arraysEqual(k, uk))) continue;
+      (e.uniqueKeys ??= []).push([...uk]);
+    }
+  }
 }
 
 // --- Property chains with undeclared ends (K2). -------------------------------
