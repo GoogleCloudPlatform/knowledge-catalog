@@ -40,8 +40,12 @@ export function applyOwlAbstract(
     }
     return out;
   };
-  const hasSubclass = new Set(
-      [...entitiesByName.values()].flatMap(e => e.extends ?? []));
+  // Only subclasses with rows of their own count: a defined entity is a filter
+  // over its parent's rows, so a keyless class whose only subclasses are
+  // defined (`Opportunity` over `WonOpportunity`) is still the table.
+  const hasSubclass = new Set([...entitiesByName.values()]
+                                  .filter(e => !e.definition)
+                                  .flatMap(e => e.extends ?? []));
   const done = new Set<string>();
   for (const c of owl.classes) {
     if (done.has(c.localName)) continue;  // the first declaration is the entity

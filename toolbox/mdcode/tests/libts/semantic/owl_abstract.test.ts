@@ -68,7 +68,8 @@ describe('a keyless class with subclasses is abstract', () => {
     expect(convert(ttl).abstract('Deal')).toBe(false);
   });
 
-  test('a defined entity does not make its keyless parent concrete', () => {
+  test('a keyless class whose only subclasses are defined stays concrete',
+       () => {
     const ttl = `${PREFIXES}
       ex:Deal a owl:Class .
       ex:amount a owl:DatatypeProperty ; rdfs:domain ex:Deal ;
@@ -84,7 +85,8 @@ describe('a keyless class with subclasses is abstract', () => {
     expect(model.entities.find(e => e.name === 'BigDeal')!.definition)
         .toBeDefined();
     expect(abstract('BigDeal')).toBe(false);
-    expect(abstract('Deal')).toBe(true);
+    // A defined entity is a filter over Deal's rows: Deal is still the table.
+    expect(abstract('Deal')).toBe(false);
   });
 });
 

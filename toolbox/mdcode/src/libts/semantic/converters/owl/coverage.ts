@@ -232,9 +232,9 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
                'subtypes, not a table');
     } else {
       drop('owl:hasKey (absent)', C, owner,
-           'no key (own or inherited) and no subclasses: kept as a concrete ' +
-               'entity with an empty primary_key; declare owl:hasKey to bind ' +
-               'it, or annotate kcmd:abstract true');
+           'no key (own or inherited) and no subclasses with rows of their ' +
+               'own: kept as a concrete entity with an empty primary_key; ' +
+               'declare owl:hasKey to bind it, or annotate kcmd:abstract true');
     }
   }
 
