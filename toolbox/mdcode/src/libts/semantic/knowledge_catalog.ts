@@ -41,30 +41,52 @@
 // The SQL-expression fields -- `semantic-metric.expression` and the per-field
 // `schema.semantics` { expression, role } block -- are NOT in the published
 // system-type templates yet, so they are gated behind
-// KcGenerateOptions.emitExpressions (off by default) and omitted above.
+// KcGenerateOptions.emitExpressions (off by default) and omitted above. The
+// `semantic-expressions` annotation aspect below carries them losslessly
+// instead, whenever it is provisioned.
+//
+// Annotation aspects (K1). What the closed templates above cannot hold -- the
+// whole ai_context (synonyms, examples, field-level), expressions and logical
+// types, binding mode, hydration, vocabulary members, verbatim relationship
+// names -- rides three aspect-only CUSTOM types `kcmd init` provisions
+// (`semantic-ai-context`, `semantic-expressions`, `semantic-binding`; see
+// kc_annotations.ts). The caller passes the provisioned ids in
+// KcGenerateOptions.customAspects; none provisioned = the pre-K1 output.
 //
 // Relationships become `schema-join` entry links between the two entity entries.
 // schema-join is a built-in, undirected entry link type in `dataplex-types/global`
 // whose required `schema-join` aspect carries the join detail (the paired join
 // columns, JOIN vs FOREIGN_KEY, USER inference). The join's direction -- which
 // side holds the foreign key -- is preserved inside that aspect, not by the link.
-// Many-to-many (association / junction-table) edges are not emitted yet: a
-// junction is two joins through a third table, which schema-join's single
-// source/target pair does not model; the emitter warns and skips them (the edge
-// still lives in the BigQuery property graph, see bigquery.ts).
+// A many-to-many (association) edge is published through its junction table:
+// one `semantic-entity` entry for the junction (id `<model>.associations.<rel>`)
+// and two schema-join links, junction -> source (`-src`) and junction ->
+// destination (`-dst`). The junction's `semantic-binding` aspect names the
+// relationship, so a pull folds the three back into one relationship.
+//
+// Binding links (K3). When the caller resolves where the BigQuery entries live
+// (KcGenerateOptions.bigQueryEntries), each bound entity also gets schema-join
+// links to the `@bigquery` entry of the table or node view it is read through
+// and to its graph node entry, so a reader can walk from the concept to the
+// physical asset. They are returned apart (KcResources.bindingLinks) because
+// they cross into an entry group kcmd does not own.
 //
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
 import {googleDeploymentTargets} from './deployment_target';
+import {snakeCase, viewRef} from './generated_views';
 import {resolveRelationship} from './hydration';
 import {hydrationTrailer} from './hydration_kc';
 import {AiContext, DataType, Entity, Metric, Relationship, SemanticModel} from './ir';
 import {actionEntries, actionOwnedPrefix} from './kc_actions';
+import {AnnotationTarget, EntityPhysical, entityAnnotationAspects, junctionAnnotationAspects, metricAnnotationAspects, modelAnnotationAspects, RelationshipIndexRow} from './kc_annotations';
 import {constraintEntries, constraintOwnedPrefix} from './kc_constraints';
+import {AI_CONTEXT_TYPE_ID, BINDING_TYPE_ID} from './kc_custom_types';
+import {lowerNodeViews} from './node_views';
 import {entityTrailers, withUnitTrailer} from './units_history';
 import {derivedTrailers} from './derived_relationships';
-import {membersTrailer} from './vocabulary';
+import {generatesVocabularyView, membersTrailer, vocabularyViewName} from './vocabulary';
 
 // Where the `semantic-*` and `schema` system types live: built-in types in
 // project `dataplex-types`, location `global`. Callers may override to reference
@@ -85,11 +107,36 @@ export interface KcGenerateOptions {
   // against today's types fails the push with an ASPECT_*_PARSING_FAILURE on
   // the unknown property.
   emitExpressions?: boolean;
+  // The annotation aspect types provisioned in the destination (see
+  // kc_custom_types.provisionedCustomAspects; ids from ANNOTATION_ASPECT_IDS).
+  // Only these are attached. When `semantic-expressions` is among them every
+  // expression is published through it by default, without emitExpressions
+  // (which targets fields the built-in templates still lack).
+  customAspects?: readonly string[];
+  // Where the BigQuery entries of the model's physical assets live, resolved by
+  // the caller (a dataset's location and a project's number are API lookups,
+  // and this module is pure). Absent = no binding links.
+  bigQueryEntries?: BigQueryEntryLocator;
+}
+
+/** Resolved names for `@bigquery` entries (see bindingLinksFor). */
+export interface BigQueryEntryLocator {
+  // `project.dataset` -> the dataset's location (`US`, `europe-west1`, ...),
+  // lowercased as Dataplex names it. A dataset missing here gets no links.
+  datasetLocations: ReadonlyMap<string, string>;
+  // project id -> project number. Optional: Dataplex accepts either form in
+  // an entry reference, but echoes the number back on read.
+  projectNumbers?: ReadonlyMap<string, string>;
 }
 
 export interface KcResources {
   entries: Entry[];
   entryLinks: EntryLink[];
+  // K3: links from entity entries to the `@bigquery` table / node view entry
+  // and the graph node entry. Written after entryLinks, non-fatally: their
+  // targets live outside the entry group and may not exist yet. Absent when
+  // the caller supplied no BigQueryEntryLocator (and on the LookML path).
+  bindingLinks?: EntryLink[];
   warnings: string[];
   // Entry-id prefixes this model owns, used by delete reconciliation to decide
   // which existing entries a push is allowed to remove. Supplied by the emitter
@@ -128,6 +175,14 @@ export function generateCatalogResources(
 
   const names = new Namer(opts);
   const emitExpr = opts.emitExpressions ?? false;
+  const annotations: AnnotationTarget = {
+    aspects: new Set(opts.customAspects ?? []),
+    dest: {project: opts.project},
+  };
+  const physical = annotations.aspects.has(BINDING_TYPE_ID) ||
+          opts.bigQueryEntries ?
+      physicalBindings(model) :
+      new Map<string, EntityPhysical>();
 
   // Entry ids must be unique within the entry group. Two source names that
   // normalize to the same id (see slug), or exact duplicates the loader did not
@@ -187,12 +242,16 @@ export function generateCatalogResources(
       // required_aspects: semantic-entity AND the built-in schema; plus the
       // built-in guidelines aspect when the entity carries ai_context
       // instructions.
-      aspects: aspectsFor(
-          names, {
-            'semantic-entity': entityAspectData(entity),
-            'schema': schemaAspectData(entity, emitExpr),
-          },
-          entity.aiContext),
+      aspects: {
+        ...aspectsFor(
+            names, {
+              'semantic-entity': entityAspectData(entity),
+              'schema': schemaAspectData(entity, emitExpr),
+            },
+            entity.aiContext),
+        ...entityAnnotationAspects(
+            entity, physical.get(entity.name), annotations),
+      },
     });
   }
 
@@ -205,9 +264,12 @@ export function generateCatalogResources(
       entryType: names.typeName('entry', 'semantic-metric'),
       parentEntry: modelEntryName,
       entrySource: source(metric.name, metric.description),
-      aspects: aspectsFor(
-          names, {'semantic-metric': metricAspectData(metric, emitExpr)},
-          metric.aiContext),
+      aspects: {
+        ...aspectsFor(
+            names, {'semantic-metric': metricAspectData(metric, emitExpr)},
+            metric.aiContext),
+        ...metricAnnotationAspects(metric, annotations),
+      },
     });
   }
 
@@ -238,51 +300,210 @@ export function generateCatalogResources(
         claim(seen, id, 'entry', label, warnings),
   }, warnings));
 
-  // Relationships map to schema-join entry links between their endpoint entries.
+  // Relationships map to schema-join entry links between their endpoint
+  // entries; a many-to-many one to a junction entry plus two links.
   const entryLinks: EntryLink[] = [];
   const seenLinks = new Set<string>();
+  // With the ai-context aspect provisioned, each relationship's authored name
+  // (and ai_context) rides the anchor, so the normalized link id stops being
+  // the only record of the name.
+  const namesIndexed = annotations.aspects.has(AI_CONTEXT_TYPE_ID);
+  const index: RelationshipIndexRow[] = [];
   for (const rel of relationships) {
+    if (rel.association) {
+      const junction = junctionResources(
+          names, model, rel, entityEntryName, abstractEntities, modelEntryName,
+          annotations, seen, seenLinks, warnings);
+      if (!junction) continue;
+      entries.push(junction.entry);
+      entryLinks.push(...junction.links);
+      index.push(compact({
+        name: rel.name,
+        link: linkIdOf(junction.links[0]),
+        aiContext: rel.aiContext,
+      }));
+      continue;
+    }
     const link = relationshipLink(
         names, model, rel, entityEntryName, abstractEntities, seenLinks,
-        warnings);
-    if (link) entryLinks.push(link);
+        warnings, namesIndexed);
+    if (!link) continue;
+    entryLinks.push(link);
+    index.push(compact({
+      name: rel.name,
+      link: linkIdOf(link),
+      aiContext: rel.aiContext,
+    }));
   }
+  Object.assign(
+      entries[0].aspects ?? (entries[0].aspects = {}),
+      modelAnnotationAspects(model, index, annotations));
+
+  const bindingLinks = opts.bigQueryEntries ?
+      bindingLinksFor(
+          names, model, physical, entityEntryName, opts.bigQueryEntries,
+          warnings) :
+      undefined;
 
   return {
     entries,
     entryLinks,
+    ...(bindingLinks ? {bindingLinks} : {}),
     warnings: [...new Set(warnings)],
     // Ossie ids are dotted: `<model>.entities.<name>` / `<model>.metrics.<name>`
-    // / `<model>.actions.<name>` / `<model>.constraints.<name>`.
+    // / `<model>.associations.<name>` / `<model>.actions.<name>` /
+    // `<model>.constraints.<name>`.
     ownedPrefixes: [
       `${modelId}.entities.`,
       `${modelId}.metrics.`,
+      `${modelId}.associations.`,
       actionOwnedPrefix(modelId),
       constraintOwnedPrefix(modelId),
     ],
   };
 }
 
+// The last path segment of an entry link name: its id.
+function linkIdOf(link: EntryLink): string {
+  const name = link.name ?? '';
+  return name.slice(name.lastIndexOf('/') + 1);
+}
 
-// Builds the schema-join entry link for one relationship, or undefined when it
-// cannot be published. Skipped, each with a warning: a many-to-many
-// (association) edge -- a junction is two joins, which the single source/target
-// schema-join does not model; an edge whose endpoint entity was not emitted
-// (e.g. skipped for a duplicate id) or is abstract (no table behind that end);
-// and a column-less (purely logical) edge, whose join columns must be added to
-// the model before it can publish. The BigQuery property graph still carries
-// the association and (once bound) direct edges.
+// The fixed description of a junction entry. Pull recognizes a junction by its
+// id (`.associations.`) or its binding aspect, never by this text.
+export const JUNCTION_DESCRIPTION_PREFIX = 'Junction table of the many-to-many ' +
+    'relationship ';
+
+// A many-to-many relationship as catalog resources: an entry for its junction
+// table and two schema-join links, junction -> source (`-src`, which also
+// carries the relationship's join description: Specializes / Inverse) and
+// junction -> destination (`-dst`). Each link pairs the junction's columns
+// for that side with the endpoint's columns (its declared key when the
+// relationship names none). Skipped, with a warning, when an endpoint is
+// unpublished or abstract.
+function junctionResources(
+    names: Namer, model: SemanticModel, rel: Relationship,
+    entityEntryName: Map<string, string>, abstractEntities: Set<string>,
+    modelEntryName: string, annotations: AnnotationTarget, seen: Set<string>,
+    seenLinks: Set<string>, warnings: string[]):
+    {entry: Entry; links: EntryLink[]}|undefined {
+  const assoc = rel.association!;
+  const src = entityEntryName.get(rel.source.entity);
+  const dst = entityEntryName.get(rel.destination.entity);
+  if (!src || !dst) {
+    const missing = !src ? rel.source.entity : rel.destination.entity;
+    warnings.push(
+        `relationship '${rel.name}': endpoint entity '${missing}' is not a ` +
+        `published entity; the many-to-many relationship is skipped.`);
+    return undefined;
+  }
+  const abstractEnd = [rel.source.entity, rel.destination.entity].find(
+      e => abstractEntities.has(e));
+  if (abstractEnd !== undefined) {
+    warnings.push(
+        `relationship '${rel.name}': endpoint entity '${abstractEnd}' is ` +
+        `abstract (no table), so the many-to-many relationship is skipped.`);
+    return undefined;
+  }
+  const entryId = `${slug(model.name)}.associations.${slug(rel.name)}`;
+  if (!claim(seen, entryId, 'entry', `relationship '${rel.name}'`, warnings))
+    return undefined;
+  const base = names.linkId(model, rel).slice(0, 59).replace(/-+$/, '');
+  const srcId = `${base}-src`;
+  const dstId = `${base}-dst`;
+  if (!claim(seenLinks, srcId, 'entry link', `relationship '${rel.name}'`,
+             warnings) ||
+      !claim(seenLinks, dstId, 'entry link', `relationship '${rel.name}'`,
+             warnings))
+    return undefined;
+
+  const junction: Entity = {
+    name: rel.name,
+    dataSource: assoc.dataSource,
+    keys: assoc.keys,
+    fields: assoc.fields ?? [],
+  };
+  const entry: Entry = {
+    name: names.entry(entryId),
+    entryType: names.typeName('entry', 'semantic-entity'),
+    parentEntry: modelEntryName,
+    entrySource: source(
+        rel.name,
+        `${JUNCTION_DESCRIPTION_PREFIX}${rel.name} (${rel.source.entity} to ${
+            rel.destination.entity}).`),
+    aspects: {
+      ...aspectMap(names, {
+        'semantic-entity': entityAspectData(junction),
+        'schema': schemaAspectData(junction, false),
+      }),
+      // The junction's own fields (edge properties) keep their ai_context and
+      // expressions like any entity's; its binding aspect names the
+      // relationship instead of a binding mode.
+      ...entityAnnotationAspects(junction, undefined, {
+        ...annotations,
+        aspects: new Set(
+            [...annotations.aspects].filter(a => a !== BINDING_TYPE_ID)),
+      }),
+      ...junctionAnnotationAspects(
+          rel.name, rel.source.entity, rel.destination.entity, annotations),
+    },
+  };
+
+  const endFields = (end: Relationship['source']): string[] => end.columns
+      .length ? end.columns : entityByName(model, end.entity)?.keys ?? [];
+  const sideLink =
+      (id: string, end: Relationship['source'], endEntry: string,
+       junctionCols: string[], description?: string): EntryLink => {
+        const endEntity = entityByName(model, end.entity);
+        return {
+          name: names.entryLink(id),
+          entryLinkType: names.typeName('entryLink', 'schema-join'),
+          entryReferences: [
+            {name: entry.name, type: 'UNSPECIFIED'},
+            {name: endEntry, type: 'UNSPECIFIED'},
+          ],
+          aspects: aspectMap(names, {
+            'schema-join': {
+              joins: [compact({
+                source: {name: assoc.dataSource, fields: junctionCols},
+                target: {
+                  name: endEntity?.dataSource || end.entity,
+                  fields: endFields(end),
+                },
+                description,
+                type: 'FOREIGN_KEY',
+                inferenceSource: 'USER',
+              })],
+              userManaged: true,
+            },
+          }),
+        };
+      };
+  return {
+    entry,
+    links: [
+      sideLink(srcId, rel.source, src, assoc.sourceColumns,
+               joinDescription(rel)),
+      sideLink(dstId, rel.destination, dst, assoc.destinationColumns),
+    ],
+  };
+}
+
+
+// Builds the schema-join entry link for one direct relationship, or undefined
+// when it cannot be published. (A many-to-many one goes through
+// junctionResources instead.) Skipped, each with a warning: an edge whose
+// endpoint entity was not emitted (e.g. skipped for a duplicate id) or is
+// abstract (no table behind that end); and a column-less (purely logical)
+// edge, whose join columns must be added to the model before it can publish.
+// The BigQuery property graph still carries the (once bound) direct edges.
+// `namesIndexed`: the authored name rides the anchor's ai-context aspect, so
+// the link id's normalization loses nothing and is not warned about.
 function relationshipLink(
     names: Namer, model: SemanticModel, rel: Relationship,
     entityEntryName: Map<string, string>, abstractEntities: Set<string>,
-    seenLinks: Set<string>, warnings: string[]): EntryLink|undefined {
-  if (rel.association) {
-    warnings.push(
-        `relationship '${rel.name}': many-to-many (association) edges are not ` +
-        `published to Knowledge Catalog yet; the edge lives in the BigQuery ` +
-        `property graph.`);
-    return undefined;
-  }
+    seenLinks: Set<string>, warnings: string[],
+    namesIndexed = false): EntryLink|undefined {
   // An abstract relationship (relationship inheritance) binds no join by
   // design -- it is a label over its sub-relationships, not an edge -- so it
   // has no schema-join to publish. Its name still reaches Knowledge Catalog on
@@ -351,11 +572,11 @@ function relationshipLink(
 
   // The name lives only in the link id (schema-join's aspect has no name
   // field), and link ids are normalized -- lowercase, hyphens only. When the
-  // authored name is not already in that form, a later pull recovers it
-  // lowercased and hyphenated, not verbatim; warn so the round-trip change is
-  // not a surprise.
+  // authored name is not already in that form and the anchor does not index
+  // it (no ai-context aspect), a later pull recovers it lowercased and
+  // hyphenated, not verbatim; warn so the round-trip change is not a surprise.
   const normalizedName = linkSlug(rel.name);
-  if (normalizedName !== rel.name) {
+  if (normalizedName !== rel.name && !namesIndexed) {
     warnings.push(
         `relationship '${rel.name}': Knowledge Catalog stores the name only ` +
         `in the normalized link id, so a pull returns it lowercased/hyphenated ` +
@@ -545,6 +766,189 @@ function entityDescription(entity: Entity, model?: SemanticModel): string|undefi
 
 function entityByName(model: SemanticModel, name: string): Entity|undefined {
   return (model.entities ?? []).find(e => e.name === name);
+}
+
+
+// ---------------------------------------------------------------------------
+// Physical bindings (K3): what each entity is read through in BigQuery.
+// ---------------------------------------------------------------------------
+
+/**
+ * Per entity, the physical assets the BigQuery leg reads it through: its node
+ * view (or its generated vocabulary view), the graph and its node label. Uses
+ * the model's first BigQuery graph target and the same pure node-view
+ * lowering the graph push runs, so the names match what `kcmd push` deploys.
+ * An entity with no table behind it (abstract, defined, unbound) gets none;
+ * `mode: direct` gets the graph node but no node view.
+ */
+export function physicalBindings(model: SemanticModel):
+    Map<string, EntityPhysical> {
+  const out = new Map<string, EntityPhysical>();
+  let target: ReturnType<typeof googleDeploymentTargets>['bigQuery'][number]|
+      undefined;
+  try {
+    target = googleDeploymentTargets(model).bigQuery[0];
+  } catch {
+    return out;  // malformed extension JSON: validation reports it
+  }
+  if (!target) return out;
+  const viewTarget = {project: target.project, dataset: target.dataset};
+  const nodeViews = new Map<string, string>();
+  try {
+    for (const v of lowerNodeViews(model, viewTarget, []).views) {
+      if (v.kind === 'node' && v.element) nodeViews.set(v.element, v.ref);
+    }
+  } catch {
+    // A model the lowering cannot plan binds directly; the graph push warns.
+  }
+  const graph = `${target.project}.${target.dataset}.${target.graphName}`;
+  for (const e of model.entities ?? []) {
+    if (e.abstract || e.definition) continue;
+    const vocab = generatesVocabularyView(e);
+    const nodeView = nodeViews.get(e.name) ??
+        (vocab ? viewRef(vocabularyViewName(e.name), viewTarget) : undefined);
+    const bound = !!nodeView || !!(e.dataSource ?? '').trim() &&
+        !(e.dataSource ?? '').trim().startsWith('unbound:');
+    if (!bound) continue;
+    out.set(e.name, {
+      ...(nodeView ? {nodeView} : {}),
+      graph,
+      graphNode: e.name,
+    });
+  }
+  return out;
+}
+
+/** Entry-link id prefix of a model's binding links (for reconciliation). */
+export function bindingLinkPrefix(modelName: string): string {
+  return linkSlug(`${modelName}-bind`);
+}
+
+// The `@bigquery` entry of a `project.dataset.table` reference, or undefined
+// when the reference is not three plain parts or its dataset was not located.
+function bigQueryEntryName(
+    ref: string, locator: BigQueryEntryLocator, suffix = ''): string|undefined {
+  const parts = ref.trim().split('.').map(unquote);
+  if (parts.length !== 3 || !parts.every(p => p && !/\s/.test(p)))
+    return undefined;
+  const [project, dataset, table] = parts;
+  const location = locator.datasetLocations.get(`${project}.${dataset}`);
+  if (!location) return undefined;
+  const number = locator.projectNumbers?.get(project) ?? project;
+  return `projects/${number}/locations/${location.toLowerCase()}/entryGroups/` +
+      `@bigquery/entries/bigquery.googleapis.com/projects/${project}/` +
+      `datasets/${dataset}/${suffix || `tables/${table}`}`;
+}
+
+/**
+ * The `@bigquery` entry of a property graph's node label.
+ *
+ * TODO(Phase E): this `propertyGraphs/<g>/nodes/<Label>` naming is unverified;
+ * confirm it live against kc-demo-349204. Until then a link to it that the API
+ * refuses is a push warning, never an error.
+ */
+export function graphNodeEntryName(
+    graph: string, label: string, locator: BigQueryEntryLocator): string|
+    undefined {
+  const [project, dataset, name] = graph.split('.');
+  return bigQueryEntryName(
+      `${project}.${dataset}.${name}`, locator,
+      `propertyGraphs/${name}/nodes/${label}`);
+}
+
+// A binding link id: `<model>-bind-<kind>-<entity>`, link-slugged; a long one
+// is cut and given a short hash of the full form so two entities sharing a
+// long prefix still get distinct ids.
+function bindingLinkId(modelName: string, kind: string, entity: string):
+    string {
+  const full = `${bindingLinkPrefix(modelName)}-${kind}-${entity}`;
+  const id = linkSlug(full);
+  if (id.length < 63) return id;
+  return `${id.slice(0, 54).replace(/-+$/, '')}-${fnv(full)}`;
+}
+
+function fnv(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(36).padStart(7, '0').slice(0, 7);
+}
+
+/**
+ * K3: per bound entity, a schema-join from its entry to the `@bigquery` entry
+ * it is read through (the node view; the table itself under `mode: direct`
+ * or when no view is generated) and one to its graph node entry. Each is a
+ * JOIN on the entity's key against the physical key columns. A target whose
+ * dataset the locator does not know is skipped with a warning.
+ */
+function bindingLinksFor(
+    names: Namer, model: SemanticModel, physical: Map<string, EntityPhysical>,
+    entityEntryName: Map<string, string>, locator: BigQueryEntryLocator,
+    warnings: string[]): EntryLink[] {
+  const links: EntryLink[] = [];
+  const seenIds = new Set<string>();
+  for (const [entityName, phys] of physical) {
+    const entity = entityByName(model, entityName);
+    const from = entityEntryName.get(entityName);
+    if (!entity || !from) continue;
+    const keys = entity.keys ?? [];
+    const viewCols = keys.map(snakeCase);
+    const tableRef = phys.nodeView ?? entity.dataSource;
+    const join = (target: string, targetCols: string[], what: string) =>
+        aspectMap(names, {
+          'schema-join': {
+            joins: [compact({
+              source: {name: entity.dataSource || entityName, fields: keys},
+              target: {name: target, fields: targetCols},
+              description: `Binding: ${entityName} is read through ${what}.`,
+              type: 'JOIN',
+              inferenceSource: 'USER',
+            })],
+            userManaged: true,
+          },
+        });
+    const push = (kind: string, to: string|undefined, target: string,
+                  cols: string[], what: string) => {
+      if (!to) {
+        warnings.push(
+            `entity '${entityName}': the BigQuery location of '${target}' is ` +
+            `unknown, so its binding link to ${what} is skipped.`);
+        return;
+      }
+      const id = bindingLinkId(model.name, kind, entityName);
+      if (seenIds.has(id)) return;
+      seenIds.add(id);
+      links.push({
+        name: names.entryLink(id),
+        entryLinkType: names.typeName('entryLink', 'schema-join'),
+        entryReferences: [
+          {name: from, type: 'UNSPECIFIED'},
+          {name: to, type: 'UNSPECIFIED'},
+        ],
+        aspects: join(target, cols, what),
+      });
+    };
+    if (tableRef && !/\s/.test(tableRef.trim())) {
+      const isView = !!phys.nodeView;
+      push('view', bigQueryEntryName(tableRef, locator), tableRef,
+           isView ? viewCols : keys,
+           isView ? `node view ${tableRef}` : `table ${tableRef}`);
+    }
+    if (phys.graph && phys.graphNode) {
+      push('node', graphNodeEntryName(phys.graph, phys.graphNode, locator),
+           phys.graph, isViewCols(phys) ? viewCols : keys,
+           `graph node ${phys.graph}/${phys.graphNode}`);
+    }
+  }
+  return links;
+}
+
+// A graph node's key properties are the node view's snake_case columns when
+// it reads one, else the table's own key columns.
+function isViewCols(phys: EntityPhysical): boolean {
+  return !!phys.nodeView;
 }
 
 

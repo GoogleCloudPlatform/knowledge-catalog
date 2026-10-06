@@ -23,7 +23,8 @@ import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets} from '../libts/semantic/deployment_target';
 import {checkGlossary} from '../libts/semantic/glossary';
 import {publishGlossary} from '../libts/semantic/glossary_publish';
-import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
+import {probeAnnotationAspects, resolveBigQueryEntries} from '../libts/semantic/kc_closure_env';
+import {provisionCustomTypes, provisionedCustomAspects} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
@@ -1067,6 +1068,12 @@ async function pushKnowledgeCatalog(
       options.validateOnly ?
           'Validating semantic model for Knowledge Catalog...' :
           'Pushing semantic model (Knowledge Catalog)...');
+  // K1 / K3: attach the annotation aspects `kcmd init` provisioned, and link
+  // each entity to the BigQuery entries it is read through.
+  const customAspects =
+      await probeAnnotationAspects(ctx, {project: source.project});
+  const bigQueryEntries =
+      await resolveBigQueryEntries(models.map(m => m.model), ctx);
   const result = await kc.deployKnowledgeCatalog(models, ctx, {
     project: source.project,
     location: source.location,
@@ -1074,6 +1081,8 @@ async function pushKnowledgeCatalog(
     validateOnly: options.validateOnly,
     forceRemove: options.forceRemove,
     emitExpressions: options.emitExpressions,
+    customAspects,
+    bigQueryEntries,
     // The semantic-* system types live in `dataplex-types/global` on prod.
     // Override via KC_TYPE_PROJECT to reference them from another project
     // (e.g. `dataplex-autopush-types` on the autopush/sandbox EAP).
@@ -1106,12 +1115,15 @@ async function pushKnowledgeCatalog(
       `; unlinked ${result.unlinked} orphaned link${
           result.unlinked === 1 ? '' : 's'}` :
       '';
+  const bound = result.bound ? `; bound ${result.bound} BigQuery link${
+                                   result.bound === 1 ? '' : 's'}` :
+                               '';
   console.log(
       options.validateOnly ?
           'Validation complete; no changes applied.' :
           `Wrote ${result.created} new and ${result.updated} updated ` +
               `Knowledge Catalog entr${n === 1 ? 'y' : 'ies'}${removed}${
-                  linked}${unlinked}.`);
+                  linked}${unlinked}${bound}.`);
   return 0;
 }
 
@@ -1142,6 +1154,8 @@ async function pullSemanticModel(
     project: source.project,
     location: source.location,
     entryGroup: source.entryGroup,
+    customAspects: await provisionedCustomAspects(
+        catalog, {project: source.project}),
   });
 
   for (const w of result.warnings) {

@@ -56,11 +56,22 @@
 // field -- the reader leaves it un-typed rather than guess. Relationship NAMES
 // come back normalized (lowercased/hyphenated), since the emitter encodes the
 // name only in the link id (via `linkSlug`), not in the join aspect.
+//
+// K1 (lossless push/pull): when the push attached kcmd's annotation aspects
+// (`semantic-ai-context`, `semantic-expressions`, `semantic-binding`; see
+// kc_annotations.ts), they are authoritative for what they cover and lift
+// every limit above: the whole ai_context (synonyms, examples, field-level),
+// expressions, imported SQL, dimension roles and logical types, binding mode,
+// hydration and full vocabulary members, relationship names verbatim (from
+// the anchor's index) in authored order, and many-to-many relationships
+// (folded back from their junction entry and its two links). Without them
+// (a project that has not re-run `kcmd init`) the read is as described above.
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
-import {Action, AiContext, Constraint, CustomExtension, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
+import {Action, AiContext, Association, Constraint, CustomExtension, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
 import {isActionEntry, readAction} from './kc_actions';
+import {applyFieldExpressions, readAiContextAnnotation, readBindingAnnotation, readExpressionsAnnotation, RelationshipIndexRow} from './kc_annotations';
 import {isConstraintEntry, readConstraint} from './kc_constraints';
 import {ABSTRACT_MARKER, DEFINED_AS_PREFIX, DEFINITION_NOTE_PREFIX, INVERSE_PREFIX, linkSlug, SPECIALIZES_PREFIX} from './knowledge_catalog';
 import {referencedEntityNames} from './sql_expr_utils';
@@ -140,7 +151,12 @@ export function modelsFromCatalogResources(
   const models = anchors.map(anchor => {
     const name = anchor.entrySource?.displayName ?? idOf(anchor.name);
 
-    const entityEntriesForModel = childrenOf(anchor.name, entityEntries);
+    // A many-to-many relationship's junction is published as a semantic-entity
+    // entry too; it is part of a relationship, not an entity of the model.
+    const childEntityEntries = childrenOf(anchor.name, entityEntries);
+    const junctionEntries = childEntityEntries.filter(isJunctionEntry);
+    const entityEntriesForModel =
+        childEntityEntries.filter(e => !isJunctionEntry(e));
     const entities = entityEntriesForModel.map(e => readEntity(e, warnings));
     const entityNames = entities.map(e => e.name);
     // Entity inheritance round-trip. A restored `extends` naming an entity this
@@ -174,12 +190,17 @@ export function modelsFromCatalogResources(
     const entityByEntryId = new Map<string, Entity>();
     entityEntriesForModel.forEach(
         (e, i) => entityByEntryId.set(idOf(e.name), entities[i]));
+    const junctionByEntryId =
+        new Map(junctionEntries.map(e => [idOf(e.name), e] as const));
 
     // Relationships come from the schema-join entry links whose two endpoints
-    // are both this model's entity entries (M:N edges were never published --
-    // they live only in the BigQuery property graph -- so stay absent here).
-    const relationships =
-        readRelationships(entryLinks, name, entityByEntryId, warnings);
+    // are both this model's entity entries, plus each junction's pair of
+    // links (a many-to-many relationship). The anchor's ai-context aspect,
+    // when present, indexes them by link id with their authored names.
+    const anchorAi = readAiContextAnnotation(anchor);
+    const relationships = readRelationships(
+        entryLinks, name, entityByEntryId, warnings, junctionByEntryId,
+        anchorAi?.relationships ?? []);
 
     const model: SemanticModel = {name, entities, relationships, metrics};
     const description = anchor.entrySource?.description;
@@ -197,7 +218,7 @@ export function modelsFromCatalogResources(
     // the author wrote them in (the inverse of the emitter's modelAspectData).
     const targets = readDeploymentTargets(anchor);
     if (targets) model.customExtensions = [targets];
-    const ai = readAiContext(anchor);
+    const ai = anchorAi ? anchorAi.aiContext : readAiContext(anchor);
     if (ai) model.aiContext = ai;
     return model;
   });
@@ -278,9 +299,50 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
   if (k3.members !== undefined) entity.members = k3.members;
   if (hyd.hydration !== undefined) entity.hydration = hyd.hydration;
   if (hyd.mode !== undefined) entity.mode = hyd.mode;
-  const ai = readAiContext(entry);
+  const aiAnn = readAiContextAnnotation(entry);
+  const ai = aiAnn ? aiAnn.aiContext : readAiContext(entry);
   if (ai) entity.aiContext = ai;
+  applyEntityAnnotations(entity, entry);
   return entity;
+}
+
+// K1: an entity entry's annotation aspects, when present, are authoritative
+// for what they cover (see kc_annotations.ts): field ai_context; field
+// expressions, imported SQL, dimension role and logical type; and the binding
+// mode, hydration rules and full vocabulary members (the trailers carry only
+// codes and labels).
+function applyEntityAnnotations(entity: Entity, entry: Entry): void {
+  const aiAnn = readAiContextAnnotation(entry);
+  if (aiAnn) {
+    for (const field of entity.fields) {
+      const fieldAi = aiAnn.fields.get(field.name);
+      if (fieldAi) {
+        field.aiContext = fieldAi;
+      } else {
+        delete field.aiContext;
+      }
+    }
+  }
+  const exprAnn = readExpressionsAnnotation(entry);
+  if (exprAnn) applyFieldExpressions(entity.fields, exprAnn);
+  const binding = readBindingAnnotation(entry);
+  if (binding && !binding.association) {
+    for (const key of ['mode', 'hydration', 'members'] as const) {
+      if (binding[key] !== undefined) {
+        (entity as any)[key] = binding[key];
+      } else {
+        delete entity[key];
+      }
+    }
+  }
+}
+
+// A junction entry: the table behind a many-to-many relationship, published
+// as a semantic-entity under the `<model>.associations.` prefix and tagged by
+// its binding aspect's `association`.
+function isJunctionEntry(entry: Entry): boolean {
+  return idOf(entry.name).includes('.associations.') ||
+      !!readBindingAnnotation(entry)?.association;
 }
 
 // Peels a defined entity's trailers -- an optional `Definition note: …`
@@ -402,7 +464,11 @@ function readField(fd: any, entityName: string, warnings: string[]): Field|
 function readMetric(
     entry: Entry, entityNames: string[], warnings: string[]): Metric {
   const name = entry.entrySource?.displayName ?? idOf(entry.name);
-  const data = aspectData(entry, 'semantic-metric');
+  const data = {...aspectData(entry, 'semantic-metric')};
+  // K1: the expressions aspect, when present, is authoritative for the
+  // expression, its imported vendor form and the logical type.
+  const exprAnn = readExpressionsAnnotation(entry);
+  if (exprAnn) data.expression = exprAnn.expression;
 
   const metric: Metric = {name};
   if (data.expression !== undefined) metric.expression = data.expression;
@@ -433,11 +499,16 @@ function readMetric(
   // un-typed
   // -- a metric authored without a datatype round-trips un-typed rather than as
   // a guessed numeric type.
-  const type = irDataType(data.dataType, undefined);
+  const type = exprAnn ? exprAnn.type : irDataType(data.dataType, undefined);
   if (type !== undefined) metric.type = type;
+  if (exprAnn?.importedExpression !== undefined)
+    metric.importedExpression = exprAnn.importedExpression;
+  if (exprAnn?.importedDialect !== undefined)
+    metric.importedDialect = exprAnn.importedDialect;
   const description = entry.entrySource?.description;
   if (description !== undefined) metric.description = description;
-  const ai = readAiContext(entry);
+  const aiAnn = readAiContextAnnotation(entry);
+  const ai = aiAnn ? aiAnn.aiContext : readAiContext(entry);
   if (ai) metric.aiContext = ai;
   return metric;
 }
@@ -543,7 +614,8 @@ function readDeploymentTargets(anchor: Entry): CustomExtension|undefined {
 
 // Inverts schemaJoinAspectData (knowledge_catalog.ts): each schema-join link
 // whose two endpoints are both this model's entity entries becomes one
-// direct-FK relationship.
+// direct-FK relationship, and each junction entry's `-src` / `-dst` link pair
+// one many-to-many relationship (see knowledge_catalog.junctionResources).
 //
 // Endpoint identity comes from the link's entryReferences (matched by entry id
 // via `entityByEntryId`), NOT from the aspect's table names: the id is unique
@@ -552,24 +624,57 @@ function readDeploymentTargets(anchor: Entry): CustomExtension|undefined {
 // lookupEntryLinks does not apply to link references. The aspect then supplies
 // the join columns and the direction -- its `source` side is the foreign-key
 // side, named by its data source -- used only to orient the two endpoints. The
-// link id encodes the (normalized) relationship name. Links are deduped --
-// schema-join is undirected, so a per-entry lookup can return the same link
-// once from each endpoint.
+// link id encodes the (normalized) relationship name; the anchor's index
+// (`index`, from its ai-context aspect) maps a link id back to the authored
+// name and ai_context, and fixes the order. Links are deduped -- schema-join
+// is undirected, so a per-entry lookup can return the same link once from
+// each endpoint.
 function readRelationships(
     links: EntryLink[], modelName: string, entityByEntryId: Map<string, Entity>,
-    warnings: string[]): Relationship[] {
+    warnings: string[], junctionByEntryId: Map<string, Entry> = new Map(),
+    index: RelationshipIndexRow[] = []): Relationship[] {
   const prefix = linkNamePrefix(modelName);
+  const byLink = new Map(
+      index.filter(r => r.link).map(r => [r.link!, r] as const));
+  const indexed = (link: EntryLink|undefined, rel: Relationship) => {
+    const row = link ? byLink.get(idOf(link.name ?? '')) : undefined;
+    if (!row) return;
+    rel.name = row.name;
+    if (row.aiContext) rel.aiContext = row.aiContext;
+  };
   const seen = new Set<string>();
   const out: Relationship[] = [];
+  // Junction entry id -> its two side links and the endpoint each reaches.
+  const sides =
+      new Map<string, {src?: [EntryLink, Entity]; dst?: [EntryLink, Entity]}>();
   for (const link of links) {
     if (!link.entryLinkType?.endsWith('/entryLinkTypes/schema-join')) continue;
     const refs = link.entryReferences ?? [];
     if (refs.length !== 2) continue;
     // Resolve both endpoints from the link's references. A reference that is
     // not one of this model's entities (another model, or a non-entity) means
-    // the link does not belong here -- skip it quietly, as with M:N edges.
+    // the link does not belong here -- skip it quietly.
     const endA = entityByEntryId.get(idOf(refs[0].name));
     const endB = entityByEntryId.get(idOf(refs[1].name));
+    const juncA = junctionByEntryId.has(idOf(refs[0].name)) ?
+        idOf(refs[0].name) : undefined;
+    const juncB = junctionByEntryId.has(idOf(refs[1].name)) ?
+        idOf(refs[1].name) : undefined;
+    if ((juncA && endB) || (juncB && endA)) {
+      const key = linkDedupKey(link);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const junction = (juncA ?? juncB)!;
+      const end = (juncA ? endB : endA)!;
+      const id = idOf(link.name ?? '');
+      const side = id.endsWith('-src') ? 'src' : id.endsWith('-dst') ? 'dst' :
+                                                                        undefined;
+      if (!side) continue;
+      const entry = sides.get(junction) ?? {};
+      entry[side] = [link, end];
+      sides.set(junction, entry);
+      continue;
+    }
     if (!endA || !endB) continue;
 
     const key = linkDedupKey(link);
@@ -613,28 +718,56 @@ function readRelationships(
       destination:
           {entity: destination.name, columns: asArray(join.target?.fields)},
     };
-    if (join.description !== undefined) {
-      // Publish appends Specializes, then Inverse, then (K2) the Derived
-      // paragraphs; peel them off in reverse.
-      const k2 = splitDerivedTrailers(join.description);
-      if (k2.via) {
-        // A derived join publishes its endpoints' keys as `fields` (see
-        // knowledge_catalog.schemaJoinAspectData); its pairs come from the
-        // chain, so it binds no columns of its own.
-        rel.via = k2.via;
-        if (k2.filter !== undefined) rel.filter = k2.filter;
-        rel.source.columns = [];
-        rel.destination.columns = [];
-      }
-      const inv = k2.rest !== undefined ? splitInverse(k2.rest) : {};
-      if (inv.inverse !== undefined) rel.inverse = inv.inverse;
-      if (inv.description !== undefined) {
-        const {description, parents} = splitSpecializes(inv.description);
-        if (description !== undefined) rel.description = description;
-        if (parents.length) rel.extends = parents;
-      }
-    }
+    applyJoinDescription(rel, join.description);
+    indexed(link, rel);
     out.push(rel);
+  }
+
+  // Many-to-many: a junction entry plus its two side links.
+  for (const [junctionId, pair] of sides) {
+    const junctionEntry = junctionByEntryId.get(junctionId)!;
+    if (!pair.src || !pair.dst) {
+      warnings.push(
+          `junction entry '${junctionEntry.name}': missing its ${
+              pair.src ? 'destination' : 'source'} link; the many-to-many ` +
+          `relationship is skipped`);
+      continue;
+    }
+    const [srcLink, srcEnd] = pair.src;
+    const [dstLink, dstEnd] = pair.dst;
+    const srcJoin =
+        asArray(aspectDataOf(srcLink.aspects, 'schema-join').joins)[0] ?? {};
+    const dstJoin =
+        asArray(aspectDataOf(dstLink.aspects, 'schema-join').joins)[0] ?? {};
+    const junction = readEntity(junctionEntry, []);
+    const association: Association = {
+      dataSource: junction.dataSource,
+      keys: junction.keys,
+      sourceColumns: stringList(srcJoin.source?.fields),
+      destinationColumns: stringList(dstJoin.source?.fields),
+    };
+    if (junction.fields.length) association.fields = junction.fields;
+    const tagged = readBindingAnnotation(junctionEntry)?.association;
+    const rel: Relationship = {
+      name: tagged?.relationship ??
+          relationshipName(
+              (srcLink.name ?? '').replace(/-src$/, ''), prefix),
+      source: {entity: srcEnd.name, columns: stringList(srcJoin.target?.fields)},
+      destination:
+          {entity: dstEnd.name, columns: stringList(dstJoin.target?.fields)},
+      association,
+    };
+    applyJoinDescription(rel, srcJoin.description);
+    indexed(srcLink, rel);
+    out.push(rel);
+  }
+
+  // The anchor's index fixes the authored order; anything it does not list
+  // (a catalog pushed before it existed) keeps the order it was read in.
+  if (index.length) {
+    const position = new Map(index.map((r, i) => [r.name, i] as const));
+    const at = (r: Relationship) => position.get(r.name) ?? index.length;
+    out.sort((a, b) => at(a) - at(b));
   }
   // Relationship inheritance round-trip. Only a concrete (bound) relationship
   // publishes a link, so a parent that is ABSTRACT -- the common case -- has no
@@ -683,6 +816,31 @@ function readRelationships(
     });
   }
   return out;
+}
+
+// Peels a pulled join description back into the relationship: publish
+// appends Specializes, then Inverse, then (K2) the Derived paragraphs (see
+// knowledge_catalog.joinDescription); peel them off in reverse.
+function applyJoinDescription(
+    rel: Relationship, text: string|undefined): void {
+  if (text === undefined) return;
+  const k2 = splitDerivedTrailers(text);
+  if (k2.via) {
+    // A derived join publishes its endpoints' keys as `fields` (see
+    // knowledge_catalog.schemaJoinAspectData); its pairs come from the
+    // chain, so it binds no columns of its own.
+    rel.via = k2.via;
+    if (k2.filter !== undefined) rel.filter = k2.filter;
+    rel.source.columns = [];
+    rel.destination.columns = [];
+  }
+  const inv = k2.rest !== undefined ? splitInverse(k2.rest) : {};
+  if (inv.inverse !== undefined) rel.inverse = inv.inverse;
+  if (inv.description !== undefined) {
+    const {description, parents} = splitSpecializes(inv.description);
+    if (description !== undefined) rel.description = description;
+    if (parents.length) rel.extends = parents;
+  }
 }
 
 // Splits a pulled schema-join description into the authored description and

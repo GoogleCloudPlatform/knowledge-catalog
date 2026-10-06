@@ -676,6 +676,46 @@ This is standalone GQL. The pattern and the model's property names are portable
 across graph query engines; only the graph reference is engine-specific, and here
 BigQuery takes the fully qualified `$PROJECT.$DATASET.$GRAPH`.
 
+### Consume with an agent
+
+The two queries above were written by someone who already knew the graph name,
+the node labels and the measure. An agent starts from a question instead, and
+the push you just ran left it everything it needs in Knowledge Catalog: the
+semantic entries, their annotation aspects (synonyms, examples, field-level
+`ai_context`, expressions, binding and hydration — provisioned by `kcmd init`),
+and binding links from each entity to its BigQuery node view and graph node
+entry (see
+[Reference → What gets created in Knowledge Catalog](reference.md#what-gets-created-in-knowledge-catalog)).
+
+A generic agent skill, `semantic-navigator`, follows one protocol for any model
+pushed by kcmd. It names no entity, table, metric or project:
+
+1. **Find** — one `search_entries` call over the catalog with the question's
+   business terms; synonyms on the `semantic-ai-context` aspect make
+   `"turnover"` find `revenue`.
+2. **Ground** — one `lookup_context` call on the hits. The entry gives the
+   metric's entity and expression, the instructions and examples, and the
+   binding: graph, node label and node view.
+3. **Execute** — pick the cheapest correct form:
+   - a metric → `AGG(<node>_<measure>)` over `GRAPH_EXPAND("<graph>")`, as in
+     [Query Semantic Model: metrics](#query-semantic-model-metrics) above —
+     never a hand-written join;
+   - a path or an absence ("customers with no orders") → GQL `MATCH`, with
+     `NOT EXISTS` or a bounded quantifier such as `{1,5}`;
+   - a plain fact about one entity → the node view, which already applies the
+     grain, normalization and resolution rules;
+   - nothing modeled → fall back to the raw tables, and say so in the answer.
+4. **Answer** — cite the metric or entity used and any instruction that shaped
+   the query.
+
+Its budget is at most three catalog calls and three queries per question. When
+the agent is unsure of a `GRAPH_EXPAND` column name, it calls
+`BQ.SHOW_GRAPH_EXPAND_SCHEMA` (one of its three queries) rather than guessing.
+Put the skill wherever your agent harness loads skills from, and connect the
+harness to the Knowledge Catalog MCP server and BigQuery. Then ask it "revenue
+by customer". It should return the `290 / 40` result above, not the fan-out
+`380 / 120`.
+
 ---
 
 ## 4. Deploy the same model to Spanner

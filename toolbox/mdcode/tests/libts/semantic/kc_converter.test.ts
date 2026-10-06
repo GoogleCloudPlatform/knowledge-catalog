@@ -8,7 +8,9 @@
 // aspect primaryKey / uniqueConstraints), field labels (schema aspect per-field
 // annotations), and ai_context.instructions (guidelines aspect) on
 // model/entity/metric. It still drops by design ai_context.synonyms/examples,
-// field-level ai_context, importedDialect, and many-to-many relationships (see
+// field-level ai_context and importedDialect unless the K1 annotation aspects
+// are provisioned (see kc_closure.test.ts for that lossless path; many-to-many
+// relationships now publish through a junction entry either way) (see
 // the emitter header), so the expected read-back is the source model with
 // exactly those fields cleared. It ALSO drops the per-field `semantics` block
 // (field/metric expressions and the DIMENSION role) unless the push enabled
@@ -282,7 +284,7 @@ describe('relationship recovery (schema-join links -> IR)', () => {
             .toBe('places-order');
       });
 
-  test('a many-to-many (association) relationship is not recovered', () => {
+  test('a many-to-many (association) relationship is recovered', () => {
     const model: SemanticModel = {
       name: 'sales',
       entities: twoEntities,
@@ -299,8 +301,11 @@ describe('relationship recovery (schema-join links -> IR)', () => {
       }],
       metrics: [],
     };
-    // The emitter never publishes M:N, so no schema-join link exists to read.
-    expect(roundTrip(model).models[0].relationships).toEqual([]);
+    // Published as a junction entry plus `-src` / `-dst` schema-join links;
+    // without the annotation aspects the name comes from the link id.
+    const {models} = roundTrip(model);
+    expect(models[0].entities.map(e => e.name)).toEqual(['orders', 'customer']);
+    expect(models[0].relationships).toEqual(model.relationships);
   });
 
   test(

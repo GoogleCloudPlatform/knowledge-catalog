@@ -558,7 +558,8 @@ describe('relationships map to schema-join entry links', () => {
   });
 
   test(
-      'a many-to-many (association) edge is skipped and warned, no link',
+      'a many-to-many (association) edge publishes a junction entry and ' +
+          'two links through it',
       () => {
         const model = directFkModel();
         model.relationships[0].association = {
@@ -567,12 +568,35 @@ describe('relationships map to schema-join entry links', () => {
           sourceColumns: ['o_key'],
           destinationColumns: ['c_key'],
         };
-        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
-        expect(entryLinks.length).toBe(0);
-        expect(warnings.some(
-                   w => w.includes('orders-to-customer') &&
-                       w.includes('many-to-many')))
+        const {entries, entryLinks, warnings, ownedPrefixes} =
+            generateCatalogResources(model, OPTS);
+        const junction = entries.find(
+            e => e.name.endsWith('/entries/m.associations.orders-to-customer'));
+        expect(junction).toBeDefined();
+        expect(junction!.entryType.endsWith('/entryTypes/semantic-entity'))
             .toBe(true);
+        expect(ownedPrefixes).toContain('m.associations.');
+        expect(entryLinks.map(l => l.name!.split('/').pop())).toEqual([
+          'm-orders-to-customer-src', 'm-orders-to-customer-dst'
+        ]);
+        const [src, dst] = entryLinks;
+        expect(src.entryReferences[0].name).toBe(junction!.name);
+        expect(src.entryReferences[1].name.endsWith('/entries/m.entities.orders'))
+            .toBe(true);
+        expect(
+            dst.entryReferences[1].name.endsWith('/entries/m.entities.customer'))
+            .toBe(true);
+        const srcJoin =
+            src.aspects!['dataplex-types.global.schema-join'].data!.joins[0];
+        expect(srcJoin.source).toEqual(
+            {name: 'p.d.order_customer', fields: ['o_key']});
+        expect(srcJoin.target).toEqual({name: 'p.d.orders', fields: ['custkey']});
+        const dstJoin =
+            dst.aspects!['dataplex-types.global.schema-join'].data!.joins[0];
+        expect(dstJoin.source).toEqual(
+            {name: 'p.d.order_customer', fields: ['c_key']});
+        expect(dstJoin.target).toEqual({name: 'p.d.customer', fields: ['c_key']});
+        expect(warnings.some(w => w.includes('many-to-many'))).toBe(false);
       });
 
   test('an edge to an unpublished entity is skipped and warned', () => {

@@ -32,7 +32,9 @@
 //   entryLinks  .../projects.locations.entryGroups.entryLinks
 //   guide       https://cloud.google.com/dataplex/docs/manage-glossaries
 
+import {snakeCase} from './generated_views';
 import {fieldBinding, Glossary, GlossaryCategory, GlossaryDefines, GlossaryTerm, SemanticModel} from './ir';
+import {physicalBindings} from './knowledge_catalog';
 import {declaredConceptFields} from './resolve_inheritance';
 import {stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier} from './sql_identifiers';
@@ -407,6 +409,11 @@ export interface GlossaryRequest {
   onConflict: {updateMask: string}|'exists';
   // A human line for dry-run output and logs.
   label: string;
+  // K5: what to send instead when this request is refused. A definition link
+  // on a kcmd semantic entry falls back to the column of the node view the
+  // entity is read through (in `@bigquery`), so the term still lands on the
+  // modelled concept rather than only on the raw source table.
+  fallback?: GlossaryRequest;
 }
 
 export interface GlossaryPlan {
@@ -557,27 +564,31 @@ export function planGlossary(
   const termEntry = (id: string) =>
       termEntryName(projectNumber, location, gid, id);
   const seenLinks = new Set<string>();
-  const pushLink = (
+  const linkRequest = (
       group: string, id: string, type: keyof typeof LINK_TYPES,
       refs: Array<{name: string; path?: string; type: string}>,
-      label: string) => {
-    const name = `${group}/entryLinks/${id}`;
-    if (seenLinks.has(name)) return;
-    seenLinks.add(name);
-    requests.push({
-      kind: 'link',
-      id,
-      name,
-      method: 'POST',
-      path: `${group}/entryLinks`,
-      query: {entryLinkId: id},
-      body: {
-        entryLinkType: LINK_TYPES[type],
-        entryReferences: refs.map(r => compact(r)),
-      },
-      onConflict: 'exists',
-      label,
-    });
+      label: string): GlossaryRequest => ({
+    kind: 'link',
+    id,
+    name: `${group}/entryLinks/${id}`,
+    method: 'POST',
+    path: `${group}/entryLinks`,
+    query: {entryLinkId: id},
+    body: {
+      entryLinkType: LINK_TYPES[type],
+      entryReferences: refs.map(r => compact(r)),
+    },
+    onConflict: 'exists',
+    label,
+  });
+  const pushLink = (
+      group: string, id: string, type: keyof typeof LINK_TYPES,
+      refs: Array<{name: string; path?: string; type: string}>, label: string,
+      fallback?: GlossaryRequest) => {
+    const request = linkRequest(group, id, type, refs, label);
+    if (seenLinks.has(request.name)) return;
+    seenLinks.add(request.name);
+    requests.push(fallback ? {...request, fallback} : request);
   };
 
   // 4. related (term <-> term), one link per unordered pair. The guide
@@ -617,6 +628,38 @@ export function planGlossary(
           sem.entryGroup}` :
       '';
   const modelSlug = entrySlug(model.name);
+
+  // K5: the node view each entity is read through (node_views.ts), and the
+  // `@bigquery` definition link a refused semantic-entry link falls back to.
+  // A field maps to its snake_case view column; an entity (or a metric, via
+  // its attach entity) links the view itself. No node view (mode: direct,
+  // abstract, unbound) or an unknown dataset location: no fallback -- the raw
+  // table leg above already covers a directly bound entity.
+  const physical = sem ? physicalBindings(model) : new Map();
+  const nodeViewFallback =
+      (entity: string, field: string|undefined,
+       termRef: {name: string; type: string},
+       termId: string): GlossaryRequest|undefined => {
+        const view = bigQueryTableParts(physical.get(entity)?.nodeView ?? '');
+        if (!view) return undefined;
+        const dsLoc = target.datasetLocations
+                          ?.get(`${view.project}.${view.dataset}`)
+                          ?.toLowerCase();
+        const dataNumber = target.projectNumbers?.get(view.project);
+        if (!dsLoc || !dataNumber) return undefined;
+        const group =
+            `projects/${dataNumber}/locations/${dsLoc}/entryGroups/@bigquery`;
+        const entry = `${group}/entries/bigquery.googleapis.com/projects/${
+            view.project}/datasets/${view.dataset}/tables/${view.table}`;
+        const column = field !== undefined ? snakeCase(field) : undefined;
+        const path = column ? `Schema.${column}` : undefined;
+        return linkRequest(
+            group,
+            linkId('def', termId, `${entry}#${path ?? ''}->${termRef.name}`),
+            'definition', [{name: entry, path, type: 'SOURCE'}, termRef],
+            `definition ${view.project}.${view.dataset}.${view.table}${
+                column ? `.${column}` : ''} -> ${termId} (node view fallback)`);
+      };
 
   for (const t of g.terms) {
     for (const d of t.defines ?? []) {
@@ -677,18 +720,27 @@ export function planGlossary(
         }
       }
 
-      // Semantic entry leg.
+      // Semantic entry leg. If the API refuses a definition link on the kcmd
+      // entry, the publisher sends the fallback: the same term on the column
+      // of the node view the entity is read through (K5).
       if (sem) {
         const entryId = d.kind === 'metric' ?
             `${modelSlug}.metrics.${entrySlug(d.ref)}` :
             `${modelSlug}.entities.${entrySlug(hit.entity!)}`;
         const entry = `${semGroup}/entries/${entryId}`;
         const path = hit.field ? `Schema.${hit.field}` : undefined;
+        const viewEntity = d.kind === 'metric' ?
+            (model.metrics ?? []).find(m => m.name === d.ref)?.entity :
+            hit.entity;
+        const fallback = viewEntity !== undefined ?
+            nodeViewFallback(viewEntity, hit.field, termRef, t.id) :
+            undefined;
         pushLink(
             semGroup,
             linkId('def', t.id, `${entry}#${path ?? ''}->${termRef.name}`),
             'definition', [{name: entry, path, type: 'SOURCE'}, termRef],
-            `definition ${entryId}${path ? ` ${path}` : ''} -> ${t.id}`);
+            `definition ${entryId}${path ? ` ${path}` : ''} -> ${t.id}`,
+            fallback);
       }
     }
   }

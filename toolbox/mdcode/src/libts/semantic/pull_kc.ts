@@ -21,13 +21,18 @@ import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 import {SemanticModel} from './ir';
 import {actionAspectTypes} from './kc_actions';
 import {constraintAspectTypes} from './kc_constraints';
-import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID} from './kc_custom_types';
+import {ACTION_TYPE_ID, AI_CONTEXT_TYPE_ID, BINDING_TYPE_ID, CONSTRAINT_TYPE_ID, customAspectTypeName, EXPRESSIONS_TYPE_ID} from './kc_custom_types';
 import {idOf, linkDedupKey, modelsFromCatalogResources} from './kc_converter';
 
 export interface KcPullOptions {
   project: string;
   location: string;
   entryGroup: string;
+  // The annotation aspect types provisioned in the project (see
+  // kc_custom_types.provisionedCustomAspects). Each semantic entry is also
+  // hydrated with the ones its kind can carry; naming a type the project
+  // lacks would fail the lookup, so the caller probes first. Absent = none.
+  customAspects?: readonly string[];
 }
 
 export interface KcPullResult {
@@ -46,6 +51,14 @@ const HYDRATE_CONCURRENCY = 8;
 const SCHEMA_JOIN_LINK_TYPE =
     'projects/dataplex-types/locations/global/entryLinkTypes/schema-join';
 
+// Which annotation aspects each semantic entry kind carries (see
+// kc_annotations.ts).
+const ANNOTATIONS_BY_KIND: Record<string, readonly string[]> = {
+  'semantic-model': [AI_CONTEXT_TYPE_ID],
+  'semantic-entity': [AI_CONTEXT_TYPE_ID, EXPRESSIONS_TYPE_ID, BINDING_TYPE_ID],
+  'semantic-metric': [AI_CONTEXT_TYPE_ID, EXPRESSIONS_TYPE_ID],
+};
+
 // Reads the semantic model back from a Knowledge Catalog entry group. Emits no
 // console output; soft warnings (from the reader) are returned for the caller
 // to print. Hard failures -- more than one model in the group, or a fetch error
@@ -55,6 +68,7 @@ export async function pullKnowledgeCatalog(
     cat: CatalogClient, opts: KcPullOptions): Promise<KcPullResult> {
   const destination = `${opts.project}.${opts.location}.${opts.entryGroup}`;
   const warnings: string[] = [];
+  const provisioned = new Set(opts.customAspects ?? []);
 
   // Enumerate the group (paging is inherently sequential) and pick the semantic
   // entries, then hydrate their aspects concurrently: a BASIC list omits aspect
@@ -64,8 +78,14 @@ export async function pullKnowledgeCatalog(
   for await (const entry of cat.listEntries(
       opts.project, opts.location, opts.entryGroup)) {
     const aspectTypes = semanticAspectTypes(entry.entryType);
-    if (aspectTypes) targets.push({entry, aspectTypes});
-    // else: not part of a semantic model; ignore it.
+    if (!aspectTypes) continue;  // not part of a semantic model; ignore it.
+    const kind = entry.entryType.slice(entry.entryType.lastIndexOf('/') + 1);
+    for (const id of ANNOTATIONS_BY_KIND[kind] ?? []) {
+      if (provisioned.has(id)) {
+        aspectTypes.push(customAspectTypeName(id, {project: opts.project}));
+      }
+    }
+    targets.push({entry, aspectTypes});
   }
 
   // An entry group holds exactly one semantic model. Zero anchors is a clean

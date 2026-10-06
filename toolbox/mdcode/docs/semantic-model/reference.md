@@ -788,10 +788,11 @@ statement is planned against the target database first, on both legs (see
 ## What gets created in Knowledge Catalog
 
 Each element of your model maps to one catalog resource. Every resource type
-below except `semantic-action` and `semantic-constraint` is a built-in system
-type under `dataplex-types/global` — push references them, it never creates
-them. Those two are custom, and `kcmd init --semantic-model` creates them in
-your own project at `global`; push still writes only entries.
+below except `semantic-action`, `semantic-constraint` and the three annotation
+aspects (`semantic-ai-context`, `semantic-expressions`, `semantic-binding`) is
+a built-in system type under `dataplex-types/global` — push references them, it
+never creates them. The custom ones are created by `kcmd init --semantic-model`
+in your own project at `global`; push still writes only entries and links.
 
 > Set `KC_TYPE_PROJECT` to read these system types from another project, and
 > `DATAPLEX_ENDPOINT` to target a non-prod Dataplex host; both default to
@@ -799,10 +800,12 @@ your own project at `global`; push still writes only entries.
 
 | Model element | Catalog resource | Kind | Id |
 |---|---|---|---|
-| Model | `semantic-model` | entry — anchor / parent of the rest | `<model>` |
-| Entity | `semantic-entity` (+ built-in `schema` aspect) | entry | `<model>.entities.<entity>` |
-| Metric | `semantic-metric` | entry | `<model>.metrics.<metric>` |
-| Relationship | `schema-join` | entry link between the two entity entries | derived from the model and relationship names |
+| Model | `semantic-model` (+ `semantic-ai-context`) | entry — anchor / parent of the rest | `<model>` |
+| Entity | `semantic-entity` (+ built-in `schema`; + `semantic-ai-context`, `semantic-expressions`, `semantic-binding`) | entry | `<model>.entities.<entity>` |
+| Metric | `semantic-metric` (+ `semantic-ai-context`, `semantic-expressions`) | entry | `<model>.metrics.<metric>` |
+| Relationship (1:1 / 1:N) | `schema-join` | entry link between the two entity entries | derived from the model and relationship names |
+| Relationship (many-to-many) | `semantic-entity` for the junction table + two `schema-join` links (junction → source, junction → destination) | entry + 2 entry links | `<model>.associations.<relationship>`; links `…-src` / `…-dst` |
+| Binding (entity → physical) | `schema-join` (type `JOIN`) to the `@bigquery` node view / table entry and to the graph node entry | entry links | `<model>-bind-view-<entity>`, `<model>-bind-node-<entity>` |
 | Action | `semantic-action` (custom type) | entry | `<model>.actions.<action>` |
 | Constraint | `semantic-constraint` (custom type) | entry | `<model>.constraints.<constraint>` |
 
@@ -812,6 +815,49 @@ description, and any `label` per field), plus the entity's keys and unique keys
 relationship detail — the paired columns and foreign-key direction — in its
 aspect. Any element with `ai_context.instructions` (the model, an entity, or a
 metric) also gets a built-in `guidelines` aspect holding that text.
+
+### Annotation aspects (lossless push / pull)
+
+The built-in templates are closed and have no slot for several things a model
+says, so `kcmd init --semantic-model` also provisions three **aspect-only**
+custom types in your project at `global`. Push attaches each one only when
+`init` provisioned it (push probes for them) and only to elements that have
+content for it; a project that has not re-run `init` publishes exactly what it
+did before.
+
+| Aspect | On | Carries |
+|---|---|---|
+| `semantic-ai-context` | model, entity, metric | the element's whole `ai_context` (instructions, synonyms, examples) and each field's `ai_context`; on the model entry, every relationship's authored name, its link id and its `ai_context` (an entry link cannot carry a custom aspect) |
+| `semantic-expressions` | entity, metric | the metric's expression, imported vendor SQL and logical type; per field its expression, imported SQL, logical type and dimension role |
+| `semantic-binding` | entity | binding `mode`, `hydration` rules, vocabulary `members` (all member fields), and the node view / graph / node label it is read through; on a junction entry, the many-to-many relationship it backs |
+
+With `semantic-expressions` provisioned, expressions are always published
+through it, so `--emit-expressions` is no longer needed. `pull` reads all three
+back and treats them as authoritative for what they cover; the description
+trailers (`Hydration:`, `Members:`, …) stay for human and agent readers.
+
+### Binding links
+
+When the graph and the source datasets are visible, push links each bound
+entity entry to the `@bigquery` entry it is read through — its generated node
+view, or its table under `mode: direct` — and to its node in the property graph
+(`…/propertyGraphs/<graph>/nodes/<Label>`). Each is a `schema-join` of type
+`JOIN` on the entity key, described `Binding: <entity> is read through …`, so
+`lookup_context` on an entity returns its physical asset and a glossary term
+walks term → entity → view inside the catalog. The `@bigquery` entries exist
+only once BigQuery has created the view or graph and Dataplex has indexed it,
+so a refused binding link is a warning, not a failed push; the next push writes
+it. Binding links an entity no longer has are deleted on push.
+
+### Glossary definition links
+
+`kcmd glossary push` links each term to the BigQuery table column it names and
+to the kcmd `semantic-entity` / `semantic-metric` entry. If Dataplex refuses
+the link on the kcmd entry, the publisher links the term to the matching column
+of the entity's node view (`Schema.<snake_case field>`; the whole view for an
+entity or a metric) instead, and reports `… linked … (node view fallback)
+instead`. An entity with no node view (`mode: direct`) keeps only the table
+link.
 
 An **action** entry carries its executor, its typed parameters, the names of the
 constraints that gate it (`guards`), and the concepts it changes (`affects`) in
