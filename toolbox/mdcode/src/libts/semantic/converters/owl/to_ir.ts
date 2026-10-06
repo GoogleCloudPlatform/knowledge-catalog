@@ -35,6 +35,8 @@
 //                                    chains.ts)
 //   <ns>:encodedBy (object prop.) -> the edge's join columns: the code
 //                                    field -> the destination's key
+//   no owl:hasKey + subclasses    -> dataset abstract (kcmd:abstract
+//                                    overrides; see abstract.ts)
 //
 // The importer is IMPORT-ONLY: it maps the constructs above and DROPS every
 // other OWL construct rather than carrying it. Facts with no native OSI home --
@@ -62,6 +64,7 @@
 import {checkDerivedRelationships, formatChain, resolveChain} from '../../derived_relationships';
 import {AiContext, Entity, Field, Relationship, RelationshipStep, SemanticModel,} from '../../ir';
 
+import {applyOwlAbstract} from './abstract';
 import {applyOwlAnnotations} from './annotations';
 import {canonicalSteps, chainSteps} from './chains';
 import {owlConstraints} from './constraints';
@@ -717,6 +720,11 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   // vocabularies.ts). After the definitions: a defined entity keeps its
   // definition.
   const vocabularies = applyOwlVocabularies(owl, entitiesByName, warnings);
+
+  // A keyless class that groups subclasses is abstract (a label on its
+  // subtypes); `kcmd:abstract` overrides (see abstract.ts). After the
+  // vocabularies and defined entities, which are never abstract.
+  applyOwlAbstract(owl, entitiesByName, warnings);
 
   // Axioms that state a rule -- property restrictions, functional object
   // properties, class disjointness -- become native model-level constraints

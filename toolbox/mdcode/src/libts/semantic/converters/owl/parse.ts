@@ -158,6 +158,9 @@ const KCMD_SEVERITY = `${KCMD_NS}severity`;
 const KCMD_ON_VIOLATION = `${KCMD_NS}onViolation`;
 // The stored code of a vocabulary individual (see OwlModel.individualCodes).
 const KCMD_CODE = `${KCMD_NS}code`;
+// `<class> kcmd:abstract true|false` overrides the abstract-by-structure rule
+// (see abstract.ts).
+const KCMD_ABSTRACT = `${KCMD_NS}abstract`;
 const SKOS_NOTATION = `${SKOS}notation`;
 
 // Class-expression and data-range vocabulary read by the owl:equivalentClass
@@ -275,6 +278,7 @@ interface Annotations {
   encodedBy?: string;              // <ns>:encodedBy (local name)
   unit?: string;                   // qudt:unit / qudt:hasUnit / *:unit (K7)
   vocabulary?: boolean;            // <ns>:vocabulary true|false (K3)
+  abstract?: boolean;              // kcmd:abstract true|false
 }
 
 function emptyAnnotations(): Annotations {
@@ -720,6 +724,10 @@ export function parseOwl(turtle: string|string[]): OwlModel {
         break;
       case KCMD_ON_VIOLATION:
         if (q.object.termType === 'Literal') a.onViolation = q.object.value;
+        break;
+      case KCMD_ABSTRACT:
+        if (q.object.termType === 'Literal' && a.abstract === undefined)
+          a.abstract = booleanLiteral(q.object.value);
         break;
       case OWL_DISJOINT_WITH:
         // Class disjointness -> no native OSI home; carried verbatim. Named
@@ -1281,6 +1289,7 @@ export function parseOwl(turtle: string|string[]): OwlModel {
           restrictions: expanded.flatMap(e => e.restrictions),
           ...commonAnnotations(a),
           ...(a.vocabulary !== undefined ? {vocabulary: a.vocabulary} : {}),
+          ...(a.abstract !== undefined ? {abstract: a.abstract} : {}),
         });
         if (definitions.length) classes[classes.length - 1].definitions = definitions;
         break;

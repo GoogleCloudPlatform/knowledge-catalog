@@ -190,6 +190,36 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
     }
   }
 
+  // Abstract by structure, and the kcmd:abstract override (abstract.ts).
+  for (const c of classes) {
+    const C = c.localName;
+    const e = entities.get(C)!;
+    const owner = {entity: C};
+    if (c.abstract !== undefined) {
+      if (e.definition || e.members) {
+        drop('kcmd:abstract', C, owner,
+             `${e.definition ? 'a defined entity' : 'a vocabulary'} is never ` +
+                 `abstract`);
+      } else {
+        land('compiled', 'kcmd:abstract', C, owner,
+             c.abstract ? `entity ${C} abstract` : `entity ${C} (concrete)`);
+      }
+      continue;
+    }
+    if (e.definition || e.members) continue;
+    if (lineage(C).some(n => entities.get(n)?.keys.length)) continue;
+    if (e.abstract) {
+      land('compiled', 'owl:hasKey (absent)', C, owner, `entity ${C} abstract`,
+           'no key (own or inherited) and has subclasses: a label on its ' +
+               'subtypes, not a table');
+    } else {
+      drop('owl:hasKey (absent)', C, owner,
+           'no key (own or inherited) and no subclasses: kept as a concrete ' +
+               'entity with an empty primary_key; declare owl:hasKey to bind ' +
+               'it, or annotate kcmd:abstract true');
+    }
+  }
+
   // --- Datatype properties. ----------------------------------------------------
   const seenFields = new Set<string>();
   for (const p of owl.datatypeProperties) {

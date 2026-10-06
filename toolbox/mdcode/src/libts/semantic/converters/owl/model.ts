@@ -152,6 +152,9 @@ export interface OwlClass extends OwlCommonAnnotations {
   // class a closed vocabulary even without an owl:oneOf, false keeps it a data
   // class even when it has named individuals. Absent when not annotated.
   vocabulary?: boolean;
+  // `kcmd:abstract true|false`: overrides the abstract-by-structure rule
+  // (abstract.ts). Absent when not annotated.
+  abstract?: boolean;
   // rdfs:label, if present. A display name; carried to the entity only when it
   // adds information over `localName` (see to_ir.ts).
   label?: string;
