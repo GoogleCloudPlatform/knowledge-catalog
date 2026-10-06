@@ -697,7 +697,7 @@ async function writeEntry(
     // Idempotent re-push: refresh the existing entry's source + aspects.
     const upd = await cat.updateEntry(
         entry, ['entry_source', 'aspects'], reconciledAspectKeys(entry, opts),
-        true);
+        /* deleteMissingAspects= */ true);
     if (!isOk(upd)) return {error: `entry '${entryId}': ${errText(upd)}`};
     return {updated: true};
   }
