@@ -29,15 +29,12 @@ import {Action, ALLOWED_DIALECTS, DialectExpression, Entity, Executor, Field, FI
 import {resolveInheritance} from './resolve_inheritance';
 import {columnReferences, fieldsReadOn, isColumnName, keysCoveredByColumns} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
+import {YAML_OPTIONS} from './yaml_options';
 
 // The implicit profile: the inline bindings already in the model document (the
 // combined single-file form). It is never merged -- it IS the document as
 // authored -- so a bare `kcmd push` behaves as it always has.
 export const DEFAULT_PROFILE = 'default';
-
-// The loader's YAML options (see loadModels in loader.ts): YAML-only tags stay
-// the text written, and unresolved-tag warnings stay off stderr.
-const YAML_OPTIONS = {resolveKnownTags: false, logLevel: 'error'} as const;
 
 export interface MergeResult {
   // The merged authoring document (still in the sugared form), ready to feed
@@ -202,7 +199,8 @@ function plainCopy(value: unknown): any {
  * Marks on `model` the fields and metrics a merged profile excludes. Inheritance
  * resolution leaves an excluded field off the entity that names it while its
  * descendants still inherit the declaration, and pruning drops an excluded
- * metric. Returns a copy; the input is not mutated.
+ * metric. Returns a copy when anything applies, and `model` itself otherwise;
+ * the input is never mutated.
  */
 export function applyProfileExclusions(
     model: SemanticModel,
@@ -608,8 +606,8 @@ function findLogicalSqlExecutor(models: any[]):
 export interface AvailabilityReport {
   profile: string;
   unboundFields: string[];  // "Entity.field"
-  // No pruning rule drops an entity or a relationship today (see the file
-  // header); both lists stay for the callers that report them.
+  // No pruning rule drops an entity or a relationship, so these two lists are
+  // always empty (see the file header).
   droppedEntities: {name: string; reason: string}[];
   droppedMetrics: {name: string; reason: string}[];
   droppedRelationships: {name: string; reason: string}[];
@@ -716,10 +714,19 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
   // the declaring entity instead, since a binding is a fact about one table.
   const extendedNames = new Set(
       resolvedEntities(clone).flatMap(e => e.extends ?? []));
+  const dependent = new Set(report.droppedFields.map(d => d.name));
   for (const e of clone.entities ?? []) {
     // Keep an abstract entity's fields intact: they are column-less by design
     // and name the shared label's property set for the emitter (see above).
     if (e.abstract) continue;
+    // An inherited field that reads an unavailable one has no line here to
+    // remove, so it is marked excluded on this entity instead.
+    const declared = new Set((e.fields ?? []).map(f => f.name));
+    const inheritedDependents =
+        [...dependent]
+            .filter(key => key.startsWith(`${e.name}.`))
+            .map(key => key.slice(e.name.length + 1))
+            .filter(name => !declared.has(name));
     const excluded = new Set(e.excludedFields ?? []);
     const gone = (f: Field) => !isFieldBound(f) || excluded.has(f.name) ||
         unavailable.has(`${e.name}.${f.name}`);
@@ -730,6 +737,10 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
       }
     } else {
       e.fields = (e.fields ?? []).filter(f => !gone(f));
+    }
+    if (inheritedDependents.length) {
+      e.excludedFields =
+          [...new Set([...(e.excludedFields ?? []), ...inheritedDependents])];
     }
   }
 
@@ -748,9 +759,17 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
       report.droppedMetrics.push({name: mt.name, reason: 'excluded'});
       continue;
     }
-    const expr = mt.expression ?? '';
-    const columns = columnReferences(expr, dialectOf(mt, expr));
-    if (!columns) {
+    const columns: SqlColumn[] = [];
+    let readable = true;
+    for (const {text, dialect} of expressionSources(mt)) {
+      const read = columnReferences(text, dialect);
+      if (read) {
+        columns.push(...read);
+      } else {
+        readable = false;
+      }
+    }
+    if (!readable) {
       report.warnings.push(
           `metric '${mt.name}': kcmd could not read its SQL, so the fields it ` +
           `reads were not checked`);
@@ -888,10 +907,9 @@ export function mergeProfileOntoDoc(
  * accepts -- into the IR's `ProfileSpec`. Throws on anything a profile may not
  * say: an unknown key at any level, a value of the wrong shape, a field in both
  * `fields` and `fields_exclude`, `"*"` inside a `metrics_exclude` list, or a
- * `name` other than `profileName`. A field expression is converted as the
- * loader converts a model field's: the short form becomes a one-entry
- * `ANSI_SQL` list with `stringForm` set, and the `dialects:` form is kept as
- * written. An action's executor is carried through as the loader reads one;
+ * `name` other than `profileName`. A field expression's short form means
+ * `ANSI_SQL`, so it becomes a one-entry `ANSI_SQL` list with `stringForm` set,
+ * and the `dialects:` form is kept as written. An action's executor is carried through as the loader reads one;
  * actions are out of scope for the preview, so nothing more is checked.
  */
 export function loadProfileFile(text: string, profileName: string):
@@ -914,6 +932,11 @@ function profileSpecOf(doc: any, profileName: string): ProfileSpec {
   if (!doc || typeof doc !== 'object' || Array.isArray(doc) ||
       doc.semantic_model !== undefined) {
     throw new Error(`${where} is not a profile file`);
+  }
+  if (doc.version !== undefined) {
+    throw new Error(
+        `${where} sets 'version'; a profile file takes its version from the ` +
+        `model file beside it, so remove the line`);
   }
   // The profile's own name is checked against the file name below.
   requireKeys(doc, PROFILE_FILE_KEYS, where, false);
@@ -991,6 +1014,11 @@ function profileEntity(e: any, where: string): ProfileEntityBinding {
     binding.fields = namedListOf(e.fields, `${at} 'fields'`).map(f => {
       requireKeys(f, PROFILE_FIELD_KEYS, `${at}: field`);
       const fat = `${at}: field '${f.name}'`;
+      if (f.expression === undefined) {
+        throw new Error(
+            `${fat} has no 'expression'; bind it with one, or list it in ` +
+            `'fields_exclude'`);
+      }
       return {name: f.name, ...profileExpression(f.expression, fat)};
     });
   }
@@ -1048,8 +1076,7 @@ function stringList(value: unknown, where: string): string[] {
   return list;
 }
 
-// The IR form of a profile field's expression, as the loader builds a model
-// field's. Dialect names match exactly, and the engine-specific entry wins over
+// The IR form of a profile field's expression. Dialect names match exactly, and the engine-specific entry wins over
 // ANSI_SQL for `expression`. A list with neither keeps its first entry as the
 // imported expression, so the field still counts as bound (see
 // `isFieldBound`).
@@ -1157,6 +1184,9 @@ function databaseOf(source: string): string|undefined {
   if (m) return `alloydb/${m[1]}/${m[2]}/${m[3]}/${m[4]}`;
   m = source.match(/^(databricks:table|[a-z_]+):(.+)$/);
   if (!m) return undefined;
+  // A subtype after the prefix, such as `graph:` in `bigquery:graph:p.d.g`,
+  // names something other than a table.
+  if (/^[a-z_]+:/.test(m[2])) return undefined;
   const seg = catalogNameSegments(m[2]);
   const first = (n: number) => seg.slice(0, n).join('.');
   switch (m[1]) {

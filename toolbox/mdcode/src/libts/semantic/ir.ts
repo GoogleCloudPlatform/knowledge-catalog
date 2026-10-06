@@ -326,13 +326,16 @@ export function isFieldBound(
  * "unique key k" (from 1), in that order. A key is covered when every one of
  * its columns is among `to_columns`, so a superset of a key covers it, since
  * each row still matches at most one target row. An empty result means the
- * join reaches no key.
+ * join reaches no key. Column names compare as BigQuery compares them: ignoring
+ * case, and without the backticks that only quote a name.
  */
 export function keysCoveredBy(
     toColumns: string[], primaryKey: string[], uniqueKeys: string[][]):
     string[] {
-  const has = new Set(toColumns);
-  const covers = (key: string[]) => key.length > 0 && key.every(c => has.has(c));
+  const columnKey = (c: string) => c.replace(/^`(.*)`$/, '$1').toLowerCase();
+  const has = new Set(toColumns.map(columnKey));
+  const covers = (key: string[]) =>
+      key.length > 0 && key.every(c => has.has(columnKey(c)));
   const out: string[] = [];
   if (covers(primaryKey)) out.push('the primary key');
   uniqueKeys.forEach((key, i) => {

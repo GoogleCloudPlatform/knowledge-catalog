@@ -122,6 +122,31 @@ afterEach(() => {
 
 
 describe('kcmd profiles', () => {
+  test('reads a sibling profile file', async () => {
+    fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml(undefined));
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(eg, {recursive: true});
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), LOGICAL);
+    fs.writeFileSync(path.join(eg, 'commerce.profile.analytical.yaml'), `name: analytical
+entities:
+  - name: Customer
+    source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer
+    fields:
+      - { name: key, expression: c_custkey }
+      - { name: lifetimeValue, expression: c_ltv }
+    fields_exclude: [availableCredit]
+  - name: Order
+    source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
+    fields:
+      - { name: key, expression: o_orderkey }
+`);
+    expect(await profiles()).toBe(0);
+    const out = logs.join('\n');
+    expect(out).toContain("profile 'analytical'");
+    expect(out).toContain('Customer -> acme-analytics.sales.customer');
+    expect(out).toContain('field Customer.availableCredit (excluded)');
+  });
+
   test(
       'lists each profile with its target, sources, and withheld coverage',
       async () => {

@@ -1,9 +1,10 @@
 # A COMBINED single-file model: the logical declarations AND an inline physical
 # binding (the implicit `default` profile) in one file -- the form a model has
 # before any profile exists. Every field is bound to a column here, so this file
-# deploys on its own with a bare `kcmd push`. Selecting a profile clears these
-# inline bindings, so a profile is authoritative -- it alone decides what is
-# bound. The profiles beside it re-declare the columns each store serves:
+# deploys on its own with a bare `kcmd push`. A profile merges over these
+# inline bindings: a field it binds takes the profile's column, a field it
+# excludes is unbound, and every other field keeps the binding here. The
+# profiles beside it re-declare the columns each store serves:
 #   - prod:  an environment swap -- the same columns, a different project/dataset.
 #   - remap: a store that renamed a column and does not carry `discount`.
 # Together they show that selecting a profile clears the inline bindings, so a

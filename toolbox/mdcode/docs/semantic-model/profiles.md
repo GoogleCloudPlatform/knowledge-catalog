@@ -196,8 +196,7 @@ lists: leaving it out of both is an error, not a quiet way to unbind it. The
 logical model below binds nothing inline, so the operational profile binds
 `availableCredit` and excludes `lifetimeValue`, and the analytical profile does
 the reverse. A metric that reaches an excluded field has to be named in the
-profile's `metrics_exclude`, and push names each metric that needs it, with the
-field it reaches. When the source table a profile binds is missing or
+profile's `metrics_exclude`. When the source table a profile binds is missing or
 inaccessible, validation fails and names it; a mistyped column name resolves to a
 real table and so surfaces at deploy, when BigQuery rejects the generated graph.
 

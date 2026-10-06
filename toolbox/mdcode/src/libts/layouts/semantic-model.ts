@@ -14,10 +14,7 @@ import * as yaml from 'yaml';
 
 import {CatalogLayout} from '../layout';
 import * as md from '../metadata';
-
-// Read model and profile files the way the loader and the profile reader do,
-// so a value means the same thing to all three.
-const YAML_OPTIONS = {resolveKnownTags: false, logLevel: 'error'} as const;
+import {YAML_OPTIONS} from '../semantic/yaml_options';
 
 // Sidecar suffixes that are NOT model documents.
 const SIDECAR_SUFFIXES = ['.aspects.yaml', '.overview.yaml'];
@@ -234,8 +231,15 @@ export class SemanticModelLayout implements CatalogLayout {
   }
 
   // The path a profile file for this model and profile name maps to:
-  // `<catalog>/EntryGroups/<entryGroup>/<model>.profile.<name>.yaml`.
+  // `<catalog>/EntryGroups/<entryGroup>/<model>.profile.<name>.yaml`. Throws
+  // when `profileName` breaks the profile naming rule, so a name read from
+  // elsewhere cannot point outside the entry group.
   profilePath(model: string, profileName: string): string {
+    if (!PROFILE_NAME.test(profileName)) {
+      throw new Error(
+          `Profile name '${profileName}' is not valid; a profile name is a ` +
+          `letter, then letters, digits, underscores or hyphens.`);
+    }
     return path.join(this._groupDir(), `${model}.profile.${profileName}.yaml`);
   }
 

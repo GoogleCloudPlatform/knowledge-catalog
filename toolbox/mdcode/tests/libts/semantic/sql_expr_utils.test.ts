@@ -4,7 +4,7 @@
 
 import {beforeAll, describe, expect, test} from 'bun:test';
 
-import {columnReferences, fieldsReadOn, isColumnName} from '../../../src/libts/semantic/sql_expr_utils';
+import {columnReferences, fieldsReadOn, isColumnName, keysCoveredByColumns} from '../../../src/libts/semantic/sql_expr_utils';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
 beforeAll(async () => {
@@ -118,5 +118,22 @@ describe('columnReferences', () => {
   test('returns undefined for text the parser cannot read', () => {
     expect(columnReferences('SUM(orders.amount', 'ANSI_SQL')).toBeUndefined();
     expect(columnReferences('a; b', 'BIGQUERY')).toBeUndefined();
+  });
+});
+
+describe('keysCoveredByColumns', () => {
+  test('gives no answer while a key names a field with no column', () => {
+    // The primary key reads field `id`, unbound here, so which keys a join
+    // covers cannot be told, even though it covers the unique key.
+    const customer = {
+      name: 'customer',
+      fields: [{name: 'id'}, {name: 'email', expression: 'email'}],
+    };
+    expect(keysCoveredByColumns(customer, ['email'], ['id'], [['email']]))
+        .toBeUndefined();
+    expect(keysCoveredByColumns(
+               {...customer, fields: [{name: 'email', expression: 'email'}]},
+               ['email'], ['id'], [['email']]))
+        .toEqual(['unique key 1']);
   });
 });

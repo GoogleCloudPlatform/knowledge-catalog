@@ -8,12 +8,12 @@
 // placement / qualifier stripping) share this one implementation.
 //
 
-// Matches a single- or double-quoted SQL string literal, honoring backslash
-// escapes. (Triple-quoted / raw literals are uncommon in these expressions and
-// are treated as ordinary text.)
 import {Entity, fieldBinding, keysCoveredBy} from './ir';
 import {SqlColumn, sqlColumns} from './sql_parser';
 
+// Matches a single- or double-quoted SQL string literal, honoring backslash
+// escapes. (Triple-quoted / raw literals are uncommon in these expressions and
+// are treated as ordinary text.)
 export const STRING_LITERAL = /'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/g;
 
 // Escapes a string so it can be embedded literally in a RegExp.
@@ -87,9 +87,8 @@ export function keyColumn(
 }
 
 // Which keys `toColumns` cover once every name is read as its column (see
-// keysCoveredBy), or undefined when that cannot be told yet: a join column, or
-// every column of a key the join does not cover, names a field with no column
-// in this binding.
+// keysCoveredBy), or undefined when that cannot be told yet: a join column or
+// a key column names a field with no column in this binding.
 export function keysCoveredByColumns(
     entity: Pick<Entity, 'name'|'fields'>, toColumns: string[],
     primaryKey: string[], uniqueKeys: string[][]): string[]|undefined {
@@ -97,12 +96,9 @@ export function keysCoveredByColumns(
   const to = toColumns.map(col);
   if (to.some(c => c === undefined)) return undefined;
   const keys = [primaryKey, ...uniqueKeys].map(k => k.map(col));
-  const known = (k: (string|undefined)[]) =>
-      k.every((c): c is string => c !== undefined) ? k : [];
-  const covered = keysCoveredBy(
-      to as string[], known(keys[0]), keys.slice(1).map(known));
-  const anyUnknown = keys.some(k => k.some(c => c === undefined));
-  return covered.length || !anyUnknown ? covered : undefined;
+  if (keys.some(k => k.some(c => c === undefined))) return undefined;
+  return keysCoveredBy(
+      to as string[], keys[0] as string[], keys.slice(1) as string[][]);
 }
 
 // Every column an expression reads, with the qualifier written before it, in

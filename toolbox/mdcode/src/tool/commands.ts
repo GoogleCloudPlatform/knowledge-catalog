@@ -345,8 +345,8 @@ export function profileFileGraphError(
   return `[${fileForm.name}] binding profile '${profileName}' is a profile ` +
       `file, which names no deployment target, and a model cannot yet list ` +
       `deployments; a graph push would deploy it into the model file's own ` +
-      `target. Push to Knowledge Catalog with --no-profile, or deploy the ` +
-      `inline bindings.`;
+      `target. Deploy the inline bindings instead, or use --no-profile to ` +
+      `publish the model file to Knowledge Catalog without deploying a graph.`;
 }
 
 export async function push(options: PushOptions): Promise<number> {
@@ -395,7 +395,7 @@ export async function push(options: PushOptions): Promise<number> {
     if (graphEnabled) {
       for (const doc of layoutDocs) {
         const clash = layout.profileDocuments(doc.name).some(
-            p => p.name === DEFAULT_PROFILE);
+            p => p.name.toLowerCase() === DEFAULT_PROFILE);
         if (clash) {
           console.error(
               `Error: [${doc.name}] a binding profile may not be named '${
@@ -633,7 +633,9 @@ export async function push(options: PushOptions): Promise<number> {
     };
     const loadedDocs = new Set<string>();
     // Prepare every selected profile, and check every collision, before the
-    // first graph deploys, so a push that fails leaves no graph replaced.
+    // first graph deploys, so a push that fails one of those checks replaces no
+    // graph. The live checks against each backend still run inside the deploy
+    // loop, one profile at a time.
     const graphPlans: Array<{profileName: string; prepared: Prepared}> = [];
     for (const profileName of graphProfileNames) {
       // --all-profiles fans out over every model's profiles, so a model that

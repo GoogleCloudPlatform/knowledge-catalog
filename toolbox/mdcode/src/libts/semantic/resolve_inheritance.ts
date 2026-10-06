@@ -111,9 +111,9 @@ export function declaredConceptFields(model: SemanticModel):
 /**
  * Returns a clone of `model` with every entity's `extends` expanded to its full
  * transitive ancestor set and its `fields` flattened to include inherited
- * fields. The input is never mutated. An entity with no `extends` is returned
- * byte-for-byte unchanged (same fields, no `extends`), so a model with no
- * inheritance resolves to an equivalent model.
+ * fields, less any a profile excludes on that entity. The input is never
+ * mutated. An entity with no `extends` keeps its own fields, so a model with no
+ * inheritance and no exclusions resolves to an equivalent model.
  */
 export function resolveInheritance(model: SemanticModel): ResolveResult {
   const clone: SemanticModel = structuredClone(model);

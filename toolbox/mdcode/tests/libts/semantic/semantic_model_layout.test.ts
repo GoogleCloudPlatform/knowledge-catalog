@@ -29,6 +29,13 @@ async function layout(entryGroup?: string): Promise<SemanticModelLayout> {
 }
 
 
+// Writes `file` into entry group `eg` under the test catalog.
+function writeToGroup(file: string, text: string): void {
+  const dir = path.join(catalogPath, 'EntryGroups', 'eg');
+  fs.mkdirSync(dir, {recursive: true});
+  fs.writeFileSync(path.join(dir, file), text);
+}
+
 describe('SemanticModelLayout write path', () => {
   test('modelPath maps to EntryGroups/<entryGroup>/<name>.yaml', async () => {
     const l = await layout('eg');
@@ -253,61 +260,53 @@ describe('SemanticModelLayout sibling profile files', () => {
     l.removeProfileDocument('retail', 'prod');
     expect(fs.existsSync(p)).toBe(false);
     l.removeProfileDocument('retail', 'prod');  // a no-op the second time
+    expect(() => l.profilePath('retail', 'x/../../y')).toThrow(
+        "Profile name 'x/../../y' is not valid");
   });
 });
 
 
 describe('SemanticModelLayout profile file rules', () => {
-  function write(file: string, text: string): void {
-    const dir = path.join(catalogPath, 'EntryGroups', 'eg');
-    fs.mkdirSync(dir, {recursive: true});
-    fs.writeFileSync(path.join(dir, file), text);
-  }
   const MODEL = (name: string) =>
       `version: 0.2.0.dev0/google\nsemantic_model:\n  - name: ${name}\n`;
 
   test('a <model>.profile.yaml with no profile name is an error', async () => {
-    write('retail.yaml', MODEL('retail'));
-    write('retail.profile.yaml', 'name: prod\n');
+    writeToGroup('retail.yaml', MODEL('retail'));
+    writeToGroup('retail.profile.yaml', 'name: prod\n');
     const l = await layout('eg');
     expect(() => l.profileDocuments('retail'))
         .toThrow("Profile file 'retail.profile.yaml' names no profile");
   });
 
   test('profile files must be named after the model the file declares', async () => {
-    write('retail.yaml', MODEL('sales'));
-    write('retail.profile.prod.yaml', 'name: prod\n');
+    writeToGroup('retail.yaml', MODEL('sales'));
+    writeToGroup('retail.profile.prod.yaml', 'name: prod\n');
     const l = await layout('eg');
     expect(() => l.profileDocuments('retail'))
         .toThrow("'retail.yaml', which declares model 'sales'");
     // A model with no sibling profile files is not checked.
-    write('other.yaml', MODEL('different'));
+    writeToGroup('other.yaml', MODEL('different'));
     expect(l.profileDocuments('other')).toEqual([]);
   });
 
   test('profileDocument reads one profile by name, under the same rules', async () => {
-    write('retail.yaml', MODEL('retail'));
-    write('retail.profile.prod.yaml', 'name: prod\n');
-    write('retail.profile.staging.yaml', 'name: staging\n');
+    writeToGroup('retail.yaml', MODEL('retail'));
+    writeToGroup('retail.profile.prod.yaml', 'name: prod\n');
+    writeToGroup('retail.profile.staging.yaml', 'name: staging\n');
     const l = await layout('eg');
     expect(l.profileDocument('retail', 'staging')).toBe('name: staging\n');
     expect(l.profileDocument('retail', 'missing')).toBeUndefined();
-    write('retail.profile.bad.yaml', 'name: other\n');
+    writeToGroup('retail.profile.bad.yaml', 'name: other\n');
     expect(() => l.profileDocument('retail', 'prod')).toThrow(/does not match/);
   });
 });
 
 
 describe('SemanticModelLayout profile names and orphans', () => {
-  function write(file: string, text: string): void {
-    const dir = path.join(catalogPath, 'EntryGroups', 'eg');
-    fs.mkdirSync(dir, {recursive: true});
-    fs.writeFileSync(path.join(dir, file), text);
-  }
 
   test('a profile file whose name has a dot is not a model and is an error', async () => {
-    write('retail.yaml', 'version: 0.2.0.dev0/google\n');
-    write('retail.profile.prod.v2.yaml', 'name: prod\n');
+    writeToGroup('retail.yaml', 'version: 0.2.0.dev0/google\n');
+    writeToGroup('retail.profile.prod.v2.yaml', 'name: prod\n');
     const l = await layout('eg');
     expect(l.modelDocuments().map(d => d.name)).toEqual(['retail']);
     expect(() => l.profileDocuments('retail'))
@@ -315,9 +314,9 @@ describe('SemanticModelLayout profile names and orphans', () => {
   });
 
   test('a nameless profile file with no model is an orphan', async () => {
-    write('retail.yaml', 'version: 0.2.0.dev0/google\n');
-    write('sales.profile.yaml', 'name: prod\n');
-    write('sales.profile.prod.yaml', 'name: prod\n');
+    writeToGroup('retail.yaml', 'version: 0.2.0.dev0/google\n');
+    writeToGroup('sales.profile.yaml', 'name: prod\n');
+    writeToGroup('sales.profile.prod.yaml', 'name: prod\n');
     const l = await layout('eg');
     expect(l.orphanProfilePaths().map(p => path.basename(p)))
         .toEqual(['sales.profile.prod.yaml', 'sales.profile.yaml']);
@@ -326,42 +325,37 @@ describe('SemanticModelLayout profile names and orphans', () => {
 
 
 describe('SemanticModelLayout profile name rules', () => {
-  function write(file: string, text: string): void {
-    const dir = path.join(catalogPath, 'EntryGroups', 'eg');
-    fs.mkdirSync(dir, {recursive: true});
-    fs.writeFileSync(path.join(dir, file), text);
-  }
   const MODEL = 'version: 0.2.0.dev0/google\n';
 
   test('two profile files whose names differ only in case are an error', async () => {
-    write('retail.yaml', MODEL);
-    write('retail.profile.prod.yaml', 'name: prod\n');
-    write('retail.profile.PROD.yaml', 'name: PROD\n');
+    writeToGroup('retail.yaml', MODEL);
+    writeToGroup('retail.profile.prod.yaml', 'name: prod\n');
+    writeToGroup('retail.profile.PROD.yaml', 'name: PROD\n');
     const l = await layout('eg');
     expect(() => l.profileDocuments('retail')).toThrow(/name the same profile/);
   });
 
   // A profile name may contain hyphens, and still starts with a letter.
   test('a profile name may contain a hyphen but not start with one', async () => {
-    write('retail.yaml', MODEL);
-    write('retail.profile.prod-us.yaml', 'name: prod-us\n');
+    writeToGroup('retail.yaml', MODEL);
+    writeToGroup('retail.profile.prod-us.yaml', 'name: prod-us\n');
     expect((await layout('eg')).profileDocuments('retail').map(d => d.name))
         .toEqual(['prod-us']);
-    write('retail.profile.-us.yaml', 'name: -us\n');
+    writeToGroup('retail.profile.-us.yaml', 'name: -us\n');
     const l = await layout('eg');
     expect(() => l.profileDocuments('retail'))
         .toThrow("Profile file 'retail.profile.-us.yaml' has profile name '-us'");
   });
 
   test('an empty profile name is an error', async () => {
-    write('retail.yaml', MODEL);
-    write('retail.profile..yaml', 'name: x\n');
+    writeToGroup('retail.yaml', MODEL);
+    writeToGroup('retail.profile..yaml', 'name: x\n');
     const l = await layout('eg');
     expect(() => l.profileDocuments('retail')).toThrow("Profile file 'retail.profile..yaml'");
   });
 
   test('a directory named like a profile file is an error naming it', async () => {
-    write('retail.yaml', MODEL);
+    writeToGroup('retail.yaml', MODEL);
     fs.mkdirSync(path.join(catalogPath, 'EntryGroups', 'eg', 'retail.profile.prod.yaml'));
     const l = await layout('eg');
     expect(() => l.profileDocuments('retail'))
@@ -369,8 +363,8 @@ describe('SemanticModelLayout profile name rules', () => {
   });
 
   test('a profile file declaring name: default is told to change its name', async () => {
-    write('retail.yaml', MODEL);
-    write('retail.profile.prod.yaml', 'name: default\n');
+    writeToGroup('retail.yaml', MODEL);
+    writeToGroup('retail.profile.prod.yaml', 'name: default\n');
     const l = await layout('eg');
     expect(() => l.profileDocuments('retail'))
         .toThrow("change the name in 'retail.profile.prod.yaml' to 'prod'");

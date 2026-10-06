@@ -145,6 +145,40 @@ describe('v2Aspects forwarding', () => {
 // A push that deploys a graph prunes unbound fields, which can remove the very
 // field an inheritance rule is about. The rules run on the model before
 // pruning, so a graph push and a catalog-only push give the same answer.
+describe('a push with a sibling profile file', () => {
+  test('a graph push of the profile file is refused before anything deploys', async () => {
+    fs.writeFileSync(
+        path.join(dir, 'catalog.yaml'),
+        'scope: semantic-model.test-project.us.commerce_eg\n');
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(eg, {recursive: true});
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployment_target: //bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g
+    entities:
+      - name: Customer
+        source: //bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer
+        primary_key: [key]
+        fields:
+          - { name: key, expression: c_key }
+`);
+    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), `name: prod
+entities:
+  - name: Customer
+    source: //bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
+`);
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+    const code = await push({validateOnly: true, kc: false, profile: 'prod'});
+
+    expect(code).toBe(1);
+    expect(errorSpy.mock.calls.map(c => String(c[0])).join('\n'))
+        .toContain("binding profile 'prod' is a profile file, which names no deployment target");
+  });
+});
+
+
 describe('a graph push checks inheritance before pruning', () => {
   const GRAPH_MODEL = `version: "0.2.0.dev0/google"
 semantic_model:

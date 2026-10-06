@@ -15,6 +15,7 @@ import * as z from 'zod';
 import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, Entity, Executor, Field, Metric, normalizeDataType, Relationship, SemanticModel, VIOLATION_EFFECTS,} from './ir';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {referencedEntityNames} from './sql_expr_utils';
+import {YAML_OPTIONS} from './yaml_options';
 
 export interface LoadOptions {
   dialect?: string;  // preferred expression dialect; default 'BIGQUERY'
@@ -921,11 +922,7 @@ function requireVanillaBindings(m: ModelDoc): void {
 export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
   let doc: unknown;
   try {
-    // `resolveKnownTags: false` keeps YAML-only tags (`!!timestamp`,
-    // `!!binary`) as the text written instead of turning them into Date or
-    // Uint8Array, and reads `!!set` as a mapping with null values, so custom
-    // `ai_context` members with no JSON counterpart stay text.
-    doc = yaml.parse(text, {resolveKnownTags: false, logLevel: 'error'});
+    doc = yaml.parse(text, YAML_OPTIONS);
   } catch (err: any) {
     throw new Error(`Semantic model load error: could not parse input: ${
         err?.message ?? err}`);

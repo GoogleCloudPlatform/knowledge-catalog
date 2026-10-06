@@ -188,9 +188,9 @@ function validateActions(
   // inheritance.
   //
   // `fieldsPruned` stands the whole lookup down, which is what a profile push
-  // needs: pruning removes unbound fields and unavailable entities, so the
-  // concept a parameter projects from may be gone from the model in hand even
-  // though the author's document names one that exists. A parameter needs only
+  // needs: pruning removes unbound and unavailable fields, so the field a
+  // parameter projects from may be gone from the model in hand even though the
+  // author's document names one that exists. A parameter needs only
   // the logical definition and the loader already copied it down, so nothing
   // about the push depends on resolving the reference a second time here.
   // A `type` naming something that is not a scalar counts too, and it is the
@@ -728,17 +728,6 @@ const AUTHORED_NAME: Partial<Record<keyof Field, string>> = {
   customExtensions: 'custom_extensions',
 };
 
-// The rules inheritance puts on a model beyond resolving it:
-//   - a subtype may redeclare an inherited field to rebind it, or with nothing
-//     set at all, and never with any of the field's definition;
-//   - an abstract entity has no table, so it declares no source, no key and no
-//     bound field;
-//   - a relationship endpoint, and the entity a metric belongs to, is a
-//     concrete leaf: not abstract, and extended by no other entity. A non-leaf
-//     entity has no single table, so an edge to it would join only the parent's
-//     own rows, and a measure over it could not bind to one column.
-// The first rule needs the resolved model and is skipped when resolution
-// fails; that failure is reported once elsewhere.
 /**
  * Returns one message per broken inheritance or concrete-leaf rule, or an
  * empty list: a cycle, an unknown parent, or a field
@@ -770,6 +759,17 @@ export function validateInheritance(models: LoadedModel[]): string[] {
   return errors;
 }
 
+// The rules inheritance puts on a model beyond resolving it:
+//   - a subtype may redeclare an inherited field only to rebind it: the line
+//     sets `expression` and nothing else;
+//   - an abstract entity has no table, so it declares no source, no key and no
+//     bound field;
+//   - a relationship endpoint, and the entity a metric belongs to, is a
+//     concrete leaf: not abstract, and extended by no other entity. An edge
+//     joins one table to one table and a measure binds to one table, while a
+//     non-leaf entity stands for the union of its descendants' tables.
+// The first rule needs the resolved model and is skipped when resolution
+// fails; that failure is reported once elsewhere.
 function inheritanceRuleErrors(
     model: SemanticModel, document: string): string[] {
   const errors: string[] = [];

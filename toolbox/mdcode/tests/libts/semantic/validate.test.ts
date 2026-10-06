@@ -940,6 +940,11 @@ describe('a relationship joins on a key of its target', () => {
     expect(check(ent('customer'), ['id', 'tenant'])).toEqual([]);
   });
 
+  test('column names compare ignoring case and backticks', () => {
+    expect(check(ent('customer'), ['ID'])).toEqual([]);
+    expect(check(ent('customer'), ['`id`'])).toEqual([]);
+  });
+
   test('a join that covers no key is rejected', () => {
     expect(check(ent('customer'), ['name']).join('\n')).toContain(
         "relationship 'placed_by' in model 'm' (doc): its to_columns [\"name\"] " +

@@ -439,6 +439,42 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     }
   });
 
+  test('an inherited field that reads an unavailable one is excluded on the leaf', () => {
+    // `y` reads `x`, which is unbound. The leaf inherits `y` and declares no
+    // line for it, so pruning marks it excluded there.
+    const m: SemanticModel = {
+      name: 'h',
+      entities: [
+        {name: 'P', dataSource: 'p.d.parent', keys: ['id'], fields: [
+          {name: 'id', expression: 'id'},
+          {name: 'x'},
+          {name: 'y', expression: 'P.x + 1'},
+        ]},
+        {name: 'C', dataSource: 'p.d.child', keys: ['id'], extends: ['P'], fields: []},
+      ],
+      relationships: [],
+      metrics: [],
+    };
+    const {model, report} = pruneUnavailable(m, 'prod');
+    expect(report.droppedFields.map(d => d.name)).toContain('C.y');
+    expect(model.entities.find(e => e.name === 'C')!.excludedFields)
+        .toEqual(['y']);
+    const resolved = resolveInheritance(model).model;
+    expect(fieldNames(resolved, 'C')).not.toContain('y');
+  });
+
+  test('a metric is pruned on every text it carries', () => {
+    const m = irModel();
+    const metric = m.metrics!.find(x => x.name === 'avg_lifetime_value')!;
+    metric.expression = undefined;
+    metric.importedExpression = 'AVG("Customer"."lifetimeValue")';
+    metric.importedDialect = 'SNOWFLAKE';
+    const {model, report} = pruneUnavailable(m, 'operational');
+    expect(metricNames(model)).toEqual(['order_count']);
+    expect(report.droppedMetrics).toContainEqual(
+        {name: 'avg_lifetime_value', reason: 'field Customer.lifetimeValue is unbound'});
+  });
+
   test('a metric whose SQL cannot be read is kept, with a warning', () => {
     const m = irModel();
     m.metrics!.find(x => x.name === 'avg_lifetime_value')!.expression =
@@ -1116,7 +1152,7 @@ describe('validateProfileConsistency', () => {
 });
 
 
-describe('profile checks the first review found missing', () => {
+describe('profile completeness: sources, keys, relationships and inheritance', () => {
   const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   const base = (over: Partial<ProfileSpec> = {}): ProfileSpec => ({
     name: 'prod',
@@ -1276,6 +1312,11 @@ entities:
     expect(p.entities[0].fields![0].expression).toBe('r');
     expect(p.entities[0].fields![0].dialects).toEqual([{dialect: 'BIGQUERY', expression: 'r'}]);
     expect(() => loadProfileFile('name: prod\nentities:\n  -\n', 'prod')).toThrow(/not a mapping/);
+    expect(() => loadProfileFile('name: prod\nversion: "0.2.0.dev0/google"\n', 'prod'))
+        .toThrow("profile 'prod' sets 'version'; a profile file takes its version from the model file beside it");
+    expect(() => loadProfileFile(
+               'name: prod\nentities:\n  - {name: o, fields: [{name: a}]}\n', 'prod'))
+        .toThrow("field 'a' has no 'expression'; bind it with one, or list it in 'fields_exclude'");
     expect(() => loadProfileFile('name: prod\nentities:\n  - {name: o, primary_key: c_id}\n', 'prod'))
         .toThrow(/must be a list/);
     expect(() => loadProfileFile(
@@ -1433,7 +1474,7 @@ entities:
 });
 
 
-describe('profile review follow-ups', () => {
+describe('profile merge: exclusions, duplicates and catalog names', () => {
   // vip extends customer; both have their own table.
   const logical = (emailInline: boolean) => ({
     semantic_model: [{
@@ -1564,6 +1605,8 @@ describe('completeness sees the model as the profile does', () => {
            'not_a_table', 'acme.raw.customer', 'custom:foo.bar', 'trino:c.s.t',
            'bigtable:p.i.t', 'spanner:p.c.i.db', 'bigquery:p.d',
            '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g',
+           'bigquery:graph:p.d.g', 'bigquery:propertygraph:p.d.g',
+           'spanner:graph:p.c.i.db.g',
          ]) {
       expect(errorsFor(bad)).toContain('is not a resource URI or a catalog name');
     }
@@ -1797,7 +1840,7 @@ relationships: []
 });
 
 
-describe('profile checks the second review found missing', () => {
+describe('profile completeness: dialects and struct paths', () => {
   const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   const SP = (t: string) =>
       `//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
