@@ -988,6 +988,14 @@ async function pushBigQuery(
   for (const w of result.warnings) {
     console.warn(`Warning: ${w}`);
   }
+  // The node views each graph reads its entities through (hydration; see
+  // node_views.ts): what was created, or under a dry run what would be.
+  if (result.nodeViews?.length) {
+    console.log(
+        options.validateOnly ? 'Node views (dry run; nothing created):' :
+                               'Node views:');
+    for (const line of result.nodeViews) console.log(`  ${line}`);
+  }
   // The GRAPH_EXPAND metric graphs and fallback views next to each graph
   // (see metric_slices.ts): what was planned, or under a dry run what would be.
   if (result.metricGraphs.length) {
@@ -1007,7 +1015,7 @@ async function pushBigQuery(
     console.error('Error pushing semantic model to BigQuery:', result.details);
     return 1;
   }
-  const views = result.views ? ` and ${result.views} metric view(s)` : '';
+  const views = result.views ? ` and ${result.views} view(s)` : '';
   console.log(
       options.validateOnly ?
           'Validation complete; no changes applied.' :

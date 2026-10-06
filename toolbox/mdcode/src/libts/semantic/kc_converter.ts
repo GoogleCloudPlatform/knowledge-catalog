@@ -67,6 +67,7 @@ import {referencedEntityNames} from './sql_expr_utils';
 import {splitGrainHistoryTrailers, splitUnitTrailer} from './units_history';
 import {splitDerivedTrailers} from './derived_relationships';
 import {splitMembersTrailer} from './vocabulary';
+import {splitHydrationTrailer} from './hydration_kc';
 
 export interface ReadResult {
   models: SemanticModel[];
@@ -231,17 +232,21 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
 
   // Publish appends the Specializes paragraph then the Abstract marker (or the
   // definition trailers), then the K7 Grain / History paragraphs, then the K3
-  // Members paragraph, to the entity description
-  // (knowledge_catalog.entityDescription); peel them off in reverse.
-  const k3 = splitMembersTrailer(entry.entrySource?.description);
+  // Members paragraph, then the Hydration paragraph, to the entity
+  // description (knowledge_catalog.entityDescription); peel them off in
+  // reverse.
+  const hyd = splitHydrationTrailer(entry.entrySource?.description);
+  const k3 = splitMembersTrailer(hyd.rest);
   const k7 = splitGrainHistoryTrailers(k3.rest);
   const defined = splitDefinitionTrailer(k7.rest);
   const trailers = splitEntityTrailers(defined.rest);
   const dataSource = dataSourceFromResource(semantic?.source?.resources?.[0]);
   // An abstract entity has no table by design, so an empty source is expected;
-  // so does a defined one (a subset of its parent's rows), and a vocabulary
-  // (its rows are its members).
-  if (!dataSource && !trailers.abstract && !defined.definition && !k3.members) {
+  // so does a defined one (a subset of its parent's rows), a vocabulary (its
+  // rows are its members), and a derived one (its rows come from a
+  // relationship).
+  if (!dataSource && !trailers.abstract && !defined.definition && !k3.members &&
+      !hyd.hydration?.deriveFrom) {
     warnings.push(
         `entity '${name}': no backing data source in the semantic-entity ` +
         `aspect; 'source' will be empty and the entity may not load`);
@@ -271,6 +276,8 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
   if (k7.grain !== undefined) entity.grain = k7.grain;
   if (k7.history !== undefined) entity.history = k7.history;
   if (k3.members !== undefined) entity.members = k3.members;
+  if (hyd.hydration !== undefined) entity.hydration = hyd.hydration;
+  if (hyd.mode !== undefined) entity.mode = hyd.mode;
   const ai = readAiContext(entry);
   if (ai) entity.aiContext = ai;
   return entity;

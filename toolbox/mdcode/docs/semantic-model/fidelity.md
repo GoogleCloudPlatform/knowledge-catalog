@@ -30,7 +30,7 @@ agree on every structural row and differ only where a Spanner target has no
 
 | Authored element                                               | → Knowledge Catalog             | Recovered by `pull`                            | → BigQuery                                                           | → Spanner                                                            |
 |----------------------------------------------------------------|---------------------------------|------------------------------------------------|----------------------------------------------------------------------|----------------------------------------------------------------------|
-| Entity (name, `source`)                                        | `semantic-entity` entry¹⁰       | ✓                                              | `NODE TABLE`                                                         | `NODE TABLE`                                                         |
+| Entity (name, `source`)                                        | `semantic-entity` entry¹⁰       | ✓                                              | generated node view + `NODE TABLE` over it¹⁹                         | `NODE TABLE`                                                         |
 | Field                                                          | `schema` aspect column          | ✓ (type collapses²)                            | column on the node table¹                                            | column on the node table¹                                            |
 | Field `label`                                                  | `schema` per-field annotation   | ✓                                              | into `OPTIONS(description)`                                          | — dropped                                                            |
 | Field expression (canonical SQL)                               | only with `--emit-expressions`  | only if pushed with it                         | builds the DDL                                                       | builds the DDL                                                       |
@@ -46,6 +46,7 @@ agree on every structural row and differ only where a Spanner target has no
 | Entity `grain` / `history`                                     | `Grain:` / `History:` paragraphs on the entry description | ✓ (paragraphs peeled off) | into node label `OPTIONS(description)`; the node table stays the all-versions table | — dropped                                    |
 | Entity `members` (vocabulary, proposed)                         | `Members:` paragraph on the entry description¹⁷ | codes and labels¹⁷ | generated `vocab_<entity>` view + `NODE TABLE` over it; edges into it via generated views¹⁷ | — push error without a `source`¹⁷ |
 | Relationship `via` / `filter` (derived, proposed)              | `schema-join` over the endpoint keys + `Derived via:` / `Derived filter:` paragraphs¹⁸ | ✓ (step names normalized⁶)¹⁸ | generated `edge_<relationship>` view + `EDGE TABLE` over it¹⁸ | — push error¹⁸ |
+| Entity `hydration` / `mode` (binding)                          | `Hydration:` paragraph on the entry description¹⁹ | ✓¹⁹ | the generated node view's rows (`mode: direct`: the source table as-is)¹⁹ | — tables bound as-is; `derive_from` is a push error¹⁹ |
 | Action                                                         | `semantic-action` entry¹²       | ✓¹²                                            | — not deployed¹²                                                     | — not deployed¹²                                                     |
 | Constraint                                                     | `semantic-constraint` entry¹³   | ✓¹³                                            | — not deployed¹³                                                     | — not deployed¹³                                                     |
 | Glossary (`glossary:`)                                         | Business Glossary, categories, terms and `related` / `definition` entry links, via `kcmd glossary push`¹⁶ | — not yet¹⁶ | — not deployed¹⁶ | — not deployed¹⁶ |
@@ -193,6 +194,22 @@ agree on every structural row and differ only where a Spanner target has no
 
     Spanner rejects a derived relationship at push time. See
     [Extensions](model_spec.md#5-extensions).
+19. **Hydration and binding mode.** Neither closed entity template has a slot
+    for how a table is reshaped, so an entity with `hydration` rules or
+    `mode: direct` ends its entry description with one
+    `Hydration: latest version per opportunity_id by created_at; wonAmount
+    ÷100 before 2024-03-25; homeMarketUnit resolved to MarketUnit by
+    marketUnitCode or unitName.` paragraph (`derived from <relationship>`,
+    `bound directly (no node view)` for the other forms). It is the last
+    paragraph, after `Members:`. Pull peels it off and restores `hydration`
+    and `mode`, and writes them back into the pulled document; a paragraph
+    that does not parse in full is left in the description. An entity bound
+    through a pass-through node view (the default) carries none. On BigQuery
+    each bound entity's node table reads a generated node view whose
+    description carries the same summary (see
+    [Node views](reference.md#node-views-hydration)); a `derive_from` entity
+    publishes a table-less entry (`resources: []`). Spanner binds tables as-is
+    and rejects `derive_from` at push time.
 
 ## What an import keeps (proposed)
 

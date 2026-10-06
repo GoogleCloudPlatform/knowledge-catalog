@@ -94,6 +94,8 @@ leaves declaration alone.
 | an entity's `source` (its store URI) | which entities, fields, relationships, metrics, or actions exist, and what each means |
 | a field's column (its `expression`, a bare column reference) | a field's `label`, `description`, `dimension`, `datatype` |
 | whether a field is bound at all under this profile | the grain (`primary_key` / `unique_keys`) and graph shape (`from`/`to`, `from_columns`/`to_columns`) |
+| an entity's `hydration` — how its table is reshaped into the entity, from a closed set of rules (see [Hydration](#hydration--reshaping-a-table-into-the-entity)) | SQL of any kind in `hydration` (there is no SQL rule) |
+| an entity's `mode` — `view` (the default: read through a generated node view) or `direct` | |
 | an action's `executor` (how the write is performed) | an action's `parameters`, `guards`, and `affects` — what it takes, what gates it, what it changes |
 | the deployment target | a field `expression` that is arbitrary SQL, which changes the computation; any `metric` definition; any `ai_context` / synonyms; a relationship or its junction `source` |
 
@@ -101,6 +103,16 @@ An element's `name` is not overridden — it is the key that pairs a profile
 element with the model element it binds. The grain and the join columns name
 *fields* rather than physical columns, so they belong to the logical model; each
 field's column is resolved per profile from its `expression`.
+
+**Why hydration is a binding.** A table rarely matches the entity exactly: it
+keeps every version of a row, a money column changed units on a known date, a
+foreign key is recorded sometimes as a code and sometimes as a name, or an
+entity the model declares has no table at all. None of that is what the entity
+*means* — it is how one store happens to hold it, and another store may hold it
+cleanly. So the profile states each deviation, and it states it with one rule
+from a closed vocabulary rather than with SQL: the model's meaning stays in the
+model, and every reshaping a push applies is reviewable and recorded in the
+catalog.
 
 **Why an action's executor is a binding.** An action declares what a call does:
 its parameters, the constraints that gate it, and the concepts it changes. None
@@ -401,6 +413,59 @@ picks its own backend. The two bindings answer different parts of the same model
 - Profiles are **binding-only**: a profile sets physical facets and may leave a
   field unbound. It cannot add or remove entities, fields, or metrics, change
   the grain or graph shape, or change what anything means.
+- An entity's `hydration` and `mode` **replace** the model's whole: the
+  profile's block is the entity's block, rules are not merged one by one, and
+  a profile that omits them keeps whatever the model declared.
+  `hydration: null` (or `mode: null`) withdraws the model's. A profile
+  `hydration` with `derive_from` also drops the model's `source` for that
+  entity, unless the profile sets one (which push then rejects).
+
+## Hydration — reshaping a table into the entity
+
+By default a BigQuery push reads every bound entity through a **node view** it
+generates next to the graph, named after the entity (`Opportunity` →
+`<graph dataset>.opportunity`), whose columns are the entity's modeled fields
+(`snake_case(field)`) and whose rows realize the model's key. With no rules the
+view is a pass-through: it still names the columns after the model and drops
+the columns the model does not declare. An entity's `hydration` adds rules from
+a closed set — anything else, and SQL in particular, is rejected:
+
+```yaml
+# analytical.yaml
+entities:
+  - name: Opportunity
+    source: //bigquery.googleapis.com/projects/p/datasets/ps_crm/tables/opportunity
+    hydration:
+      grain: {latest_by: created_at}            # or {deterministic: true}
+      normalize:
+        - {field: wonAmount, before: "2024-03-25", divide_by: 100}
+      resolve:
+        - {field: homeMarketUnit, match: [marketUnitCode, unitName]}
+    fields: [...]
+  - name: AlliancePartner                       # model key: partnerName
+    hydration:
+      derive_from: {relationship: allianceWith} # no table: rows come from the edge
+  - name: Calendar
+    source: //bigquery.googleapis.com/projects/p/datasets/ref/tables/calendar
+    mode: direct                                # bind the table as-is, no view
+```
+
+| Rule | Shape | What the node view does |
+|---|---|---|
+| `grain` | `{latest_by: <column>}` or `{deterministic: true}` | keeps one row per key: the greatest `latest_by` (ties broken by a hash of the row), or a stable arbitrary pick — `QUALIFY ROW_NUMBER() OVER (PARTITION BY <key> ORDER BY …) = 1` |
+| `normalize` | list of `{field, before\|after: <ISO date or timestamp>, divide_by\|multiply_by: <n > 0>, on?: <date column>}` | rescales the field on rows dated before (or from) the bound: `IF(<on> < DATE '<d>', <col> / n, <col>)`; `on` defaults to `grain.latest_by` |
+| `resolve` | list of `{field, match: [<destination field>, …]}` | rewrites a foreign key to the destination's key when the recorded value matches — trimmed, case-insensitively — the destination's key or a listed single-field unique key; the key match wins, a value matching several destinations or none stays as recorded (so a relationship check still reports it): `COALESCE(<resolved key>, <as recorded>)` |
+| `derive_from` | `{relationship: <name>}` | the entity has no table: its rows are the distinct non-null foreign keys of the named relationship (whose destination must be this entity's single-field key), read from the source entity's node view. Stands alone, and the entity has no `source` |
+
+`mode: direct` opts an entity out of its node view; only `resolve` may go with
+it, and is applied in a generated `edge_<relationship>` view instead. A node view
+that would replace a table the model binds (its own source, or another entity's)
+falls back to direct with a warning. `kcmd push --dry-run` lists every node view
+under `Node views (dry run; nothing created):` with the rules it applies, and
+`--print` shows its DDL ahead of the graph. The view's description, and the
+entity's Knowledge Catalog entry (a trailing `Hydration: …` paragraph), record
+the rules a push applied. Only the BigQuery leg generates node views today; a
+Spanner Graph push binds tables directly and rejects `derive_from`.
 
 ## Command line
 
@@ -473,6 +538,15 @@ the checks and writes nothing.
   is rejected. Profiles bind declarations; they do not add them. A field counts
   as in the model on an entity that declares it or inherits it through
   `extends` (transitively).
+- **Hydration** — an unknown rule or key, a malformed date or factor, or a
+  `mode` other than `view` / `direct` is rejected when the profile merges,
+  naming the profile and entity. At push, every rule must name what the model
+  has: `normalize` a non-key field (and a date to compare), `resolve` the single
+  `from_columns` field of a relationship into the destination's key, matched
+  against that key or a declared single-field `unique_keys`; `derive_from` a
+  plain foreign key into this entity's key. Columns a rule names
+  (`latest_by`, `on`) are checked by BigQuery when the node view is created; a
+  failure names the view and the entity.
 - **Unresolvable source** — the BigQuery table a profile binds is probed with a
   dry run; a table that is missing or inaccessible fails and names it. Column
   names are not probed here — a mistyped column resolves to a real table and is

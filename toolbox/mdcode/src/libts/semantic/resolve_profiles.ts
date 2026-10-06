@@ -25,7 +25,9 @@
 
 import * as yaml from 'yaml';
 
+import {hydrationDocErrors, modeDocError} from './hydration';
 import {Action, fieldBinding, Metric, Relationship, SemanticModel} from './ir';
+import {withHydrationBindings} from './node_views';
 import {blankStringLiterals, escapeRegExp, referencedEntityNames,} from './sql_expr_utils';
 import {withVocabularyBindings} from './vocabulary';
 
@@ -50,7 +52,8 @@ export interface MergeResult {
 const PROFILE_MODEL_KEYS = new Set([
   'name', 'version', 'deployment_target', 'entities', 'datasets', 'actions',
 ]);
-const PROFILE_ENTITY_KEYS = new Set(['name', 'source', 'fields']);
+const PROFILE_ENTITY_KEYS =
+    new Set(['name', 'source', 'hydration', 'mode', 'fields']);
 const PROFILE_FIELD_KEYS = new Set(['name', 'expression']);
 const PROFILE_ACTION_KEYS = new Set(['name', 'executor']);
 
@@ -235,6 +238,31 @@ function mergeEntity(
     }
   }
   if (pe.source !== undefined) le.source = pe.source;
+  // Hydration and mode are physical (how this store's table is reshaped into
+  // the entity), so a profile owns them: each replaces the model's whole
+  // (rules are not merged one by one), and `null` withdraws it. The block is
+  // the closed rule vocabulary -- never SQL -- checked here so a profile
+  // error names the profile.
+  if (pe.hydration === null) {
+    delete le.hydration;
+  } else if (pe.hydration !== undefined) {
+    const errors = hydrationDocErrors(pe.hydration);
+    if (errors.length) {
+      return `profile '${profileName}': entity '${pe.name}' ${errors.join('; ')}`;
+    }
+    le.hydration = structuredClone(pe.hydration);
+    // A derived entity has no table: its rows come from the relationship.
+    if (pe.hydration.derive_from !== undefined && pe.source === undefined) {
+      delete le.source;
+    }
+  }
+  if (pe.mode === null) {
+    delete le.mode;
+  } else if (pe.mode !== undefined) {
+    const error = modeDocError(pe.mode);
+    if (error) return `profile '${profileName}': entity '${pe.name}' ${error}`;
+    le.mode = pe.mode;
+  }
 
   if (pe.fields === undefined) return undefined;
   if (!Array.isArray(pe.fields)) {
@@ -317,7 +345,7 @@ function mergeField(lf: any, pf: any, entityName: string, profileName: string):
 function declError(profileName: string, where: string, key: string): string {
   return `profile '${profileName}': ${where} sets '${key}', a logical ` +
       `declaration the model owns; a profile may set only physical bindings ` +
-      `(source, expression, executor, deployment_target)`;
+      `(source, hydration, mode, expression, executor, deployment_target)`;
 }
 
 // A profile's field expression must be a BARE column reference (e.g. `c_name`),
@@ -427,8 +455,12 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
   const clone: SemanticModel = structuredClone(model);
   // K3: a vocabulary whose view kcmd generates reads that view's columns by
   // default (see vocabulary.ts withVocabularyBindings), so its fields are bound
-  // before availability is judged.
-  if (clone.entities) clone.entities = clone.entities.map(withVocabularyBindings);
+  // before availability is judged. Likewise a derived entity's key reads its
+  // node view's key column (see node_views.ts withHydrationBindings).
+  if (clone.entities) {
+    clone.entities =
+        clone.entities.map(withVocabularyBindings).map(withHydrationBindings);
+  }
   const report: AvailabilityReport = {
     profile: profileName,
     unboundFields: [],
@@ -527,6 +559,9 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
   // K2: a derived relationship (see Relationship.via) falls with any
   // relationship its chain walks -- transitively, for a chain over another
   // derived relationship. A step may name a kept relationship's inverse.
+  // Hydration: an entity derived from a relationship (derive_from) has no
+  // rows without it, so it falls with that relationship, and with it every
+  // relationship that reaches it.
   for (let changed = true; changed;) {
     changed = false;
     const names = new Set(keptRels.flatMap(
@@ -542,7 +577,30 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
       keptRels.splice(i, 1);
       changed = true;
     }
+    const keptNames = new Set(keptRels.map(r => r.name));
+    for (const e of clone.entities) {
+      const from = e.hydration?.deriveFrom?.relationship;
+      if (from === undefined || unavailableEntities.has(e.name) ||
+          keptNames.has(from)) {
+        continue;
+      }
+      unavailableEntities.add(e.name);
+      report.droppedEntities.push(
+          {name: e.name, reason: `relationship ${from} it is derived from is unavailable`});
+      changed = true;
+    }
+    for (let i = keptRels.length - 1; i >= 0; i--) {
+      const r = keptRels[i];
+      const deadEnd = [r.source.entity, r.destination.entity].find(
+          n => unavailableEntities.has(n));
+      if (deadEnd === undefined) continue;
+      report.droppedRelationships.push(
+          {name: r.name, reason: `entity ${deadEnd} is unavailable`});
+      keptRels.splice(i, 1);
+      changed = true;
+    }
   }
+  clone.entities = clone.entities.filter(e => !unavailableEntities.has(e.name));
   clone.relationships = keptRels;
 
   // A metric is available only when no entity it spans is unavailable, every

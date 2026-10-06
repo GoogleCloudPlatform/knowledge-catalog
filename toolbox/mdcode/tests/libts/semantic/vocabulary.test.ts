@@ -369,10 +369,13 @@ describe('deploy', () => {
       const res = await deployBigQuery(loaded(), CTX, {});
       expect(res.success).toBe(true);
       const sqls = querySpy.mock.calls.map(c => String(c[1]));
-      expect(sqls.length).toBe(3);
-      expect(sqls[0]).toStartWith('CREATE OR REPLACE VIEW `p.d.vocab_order_status`');
-      expect(sqls[1]).toStartWith('CREATE OR REPLACE VIEW `p.d.edge_has_status`');
-      expect(sqls[2]).toContain('CREATE OR REPLACE PROPERTY GRAPH `p.d.g`');
+      // Node views first (Order reads its generated node view), then the
+      // vocabulary view, the edge view over it, and the graph.
+      expect(sqls.length).toBe(4);
+      expect(sqls[0]).toStartWith('CREATE OR REPLACE VIEW `p.d.order`');
+      expect(sqls[1]).toStartWith('CREATE OR REPLACE VIEW `p.d.vocab_order_status`');
+      expect(sqls[2]).toStartWith('CREATE OR REPLACE VIEW `p.d.edge_has_status`');
+      expect(sqls[3]).toContain('CREATE OR REPLACE PROPERTY GRAPH `p.d.g`');
     } finally {
       dsSpy.mockRestore();
       querySpy.mockRestore();
@@ -382,15 +385,19 @@ describe('deploy', () => {
   test('a failing view stops the push before the graph, naming the view',
        async () => {
          const dsSpy = mockDataset();
+         // The node view succeeds; the vocabulary view after it fails.
+         let calls = 0;
          const querySpy = spyOn(bq.BigQueryClient.prototype, 'query')
-                              .mockImplementation(
-                                  async () => ({status: 400, message: 'boom'}));
+                              .mockImplementation(async () => (++calls === 1 ?
+                                  {status: 200, result: {jobComplete: true}} :
+                                  {status: 400, message: 'boom'}) as any);
          try {
            const res = await deployBigQuery(loaded(), CTX, {});
            expect(res.success).toBe(false);
            expect(res.details).toContain(`view 'p.d.vocab_order_status'`);
            expect(res.details).toContain('boom');
-           expect(querySpy).toHaveBeenCalledTimes(1);
+           expect(res.details).toContain('1 view(s) already deployed');
+           expect(querySpy).toHaveBeenCalledTimes(2);
          } finally {
            dsSpy.mockRestore();
            querySpy.mockRestore();

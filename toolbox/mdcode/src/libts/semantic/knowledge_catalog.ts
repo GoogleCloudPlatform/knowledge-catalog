@@ -57,6 +57,8 @@
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
 import {googleDeploymentTargets} from './deployment_target';
+import {resolveRelationship} from './hydration';
+import {hydrationTrailer} from './hydration_kc';
 import {AiContext, DataType, Entity, Metric, Relationship, SemanticModel} from './ir';
 import {actionEntries, actionOwnedPrefix} from './kc_actions';
 import {constraintEntries, constraintOwnedPrefix} from './kc_constraints';
@@ -181,7 +183,7 @@ export function generateCatalogResources(
       name: names.entry(entityId),
       entryType: names.typeName('entry', 'semantic-entity'),
       parentEntry: modelEntryName,
-      entrySource: source(entity.name, entityDescription(entity)),
+      entrySource: source(entity.name, entityDescription(entity, model)),
       // required_aspects: semantic-entity AND the built-in schema; plus the
       // built-in guidelines aspect when the entity carries ai_context
       // instructions.
@@ -510,7 +512,7 @@ export function oneParagraph(text: string): string {
 // The description, then the Specializes paragraph, then the Abstract marker or
 // the definition trailers -- a fixed order, so pull peels them off from the end
 // in reverse.
-function entityDescription(entity: Entity): string|undefined {
+function entityDescription(entity: Entity, model?: SemanticModel): string|undefined {
   const parts = [
     entity.description,
     entity.extends?.length ?
@@ -527,9 +529,16 @@ function entityDescription(entity: Entity): string|undefined {
     // K7: `Grain: …` then `History: …`, so pull peels them right after the
     // K3 members (see units_history.splitGrainHistoryTrailers).
     ...entityTrailers(entity),
-    // K3: a vocabulary's `Members: …` paragraph, last of all, so pull peels
-    // it first (see vocabulary.splitMembersTrailer).
+    // K3: a vocabulary's `Members: …` paragraph, so pull peels it right
+    // after the hydration paragraph (see vocabulary.splitMembersTrailer).
     membersTrailer(entity),
+    // Hydration: how the binding reshapes the source (and `mode: direct`),
+    // last of all, so pull peels it first (see hydration_kc.ts).
+    hydrationTrailer(
+        entity,
+        model ? field => resolveRelationship(model, entity, field)
+                             ?.destination.entity :
+                undefined),
   ].filter((p): p is string => !!p);
   return parts.length ? parts.join('\n\n') : undefined;
 }

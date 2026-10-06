@@ -346,7 +346,7 @@ becomes one part of that graph:
 | Model element | BigQuery construct | Notes |
 |---|---|---|
 | Model | `PROPERTY GRAPH` | named by the deployment-target URI |
-| Entity | `NODE TABLE` | backed by the entity's `source` table, keyed by its primary key |
+| Entity | a node view + `NODE TABLE` | the node table reads the entity's generated node view (see [Node views](#node-views-hydration)), keyed by its primary key; with `mode: direct` it reads the `source` table itself |
 | Relationship | `EDGE TABLE` | connects the two entities' node tables |
 | Relationship `inverse` | a second `EDGE TABLE` over the same backing table | `SOURCE`/`DESTINATION` swapped, labeled with the inverse name (see [Relationship inverses](#relationship-inverses-inverse)) |
 | Metric | `MEASURE` on a node table | must resolve to a single entity (otherwise the push is rejected — see [Validation](#validation)) and reduce to one supported aggregate over one operand (otherwise that metric is skipped with a warning) |
@@ -363,8 +363,16 @@ Next to that graph, a push also deploys the model's metrics as small
 statement runs in the right region; without that permission it falls back to
 BigQuery's own location inference and warns. Under `--validate-only` (or
 `--dry-run`) no graph DDL is executed and nothing is written (the live
-source-table checks still run — see [Validation](#validation)); add `--print`
-to see the generated DDL.
+source-table checks still run — see [Validation](#validation)); the node views
+a push would create are listed under `Node views (dry run; nothing created):`,
+and `--print` shows every statement's DDL in deploy order.
+
+Statements run one at a time, in this order, each `CREATE OR REPLACE`: node
+views; vocabulary views; edge views (resolved foreign keys, vocabulary edges,
+derived relationships); the graph; the metric graphs; the metric views. A
+failing statement stops the push and names what it was creating — for a node
+view, the view and its entity — and what earlier statements already deployed
+(nothing is rolled back). Knowledge Catalog is written after the graph legs.
 
 **How a metric becomes a `MEASURE`.** A graph measure aggregates a node
 property, so the aggregate's operand is exposed as one first. An operand that
@@ -379,11 +387,40 @@ column (or SQL) it is bound to, parenthesized when it is not a bare column:
 profile that binds `total_contract_value` and `probability_of_win` becomes
 `total_contract_value * probability_of_win AS weighted_pipeline_input`. String
 literals, function names, and qualified names are left untouched. Two metrics
-whose operands resolve to the same SQL share one derived property.
+whose operands resolve to the same SQL share one derived property. (Through a
+node view, the column a field is bound to is its view column,
+`snake_case(<field>)`.)
 
 For which of your descriptive metadata (`description`, `ai_context`, field
 labels, …) lands in the graph and which is dropped, see
 [What push and pull preserve](fidelity.md#to-bigquery).
+
+### Node views (hydration)
+
+A property graph is a schema over tables, and BigQuery does not enforce a node
+table's `KEY`: a key the source repeats silently doubles every match and
+measure through it. So by default a push reads each bound concrete entity
+through a view it generates in the graph's dataset, named
+`snake_case(<entity>)`, with:
+
+- **columns** — the entity's modeled fields only, each named
+  `snake_case(<field>)` and computed from the field's binding (a column the
+  model does not declare is not exposed);
+- **rows** — what the entity's binding `hydration` rules make of the source:
+  one row per key (`grain`), rescaled values (`normalize`), foreign keys
+  rewritten to the destination's key (`resolve`), or, for an entity with no
+  table, the distinct foreign keys of a relationship (`derive_from`). See
+  [Hydration](profiles.md#hydration--reshaping-a-table-into-the-entity) for the
+  rules and the SQL each compiles to;
+- **description** — the entity's description, its key, a one-line summary of
+  the rules applied, and its source.
+
+The graph, its edges (a foreign key is read from its entity's view), vocabulary
+and derived edges, measures, and metric graphs all read the views. An abstract,
+defined, or vocabulary entity gets none (a vocabulary keeps its `vocab_*`
+view), nor does one with `mode: direct`, or one whose view would replace a
+table the model binds (warned). The views need `bigquery.tables.create` /
+`bigquery.tables.update` on the graph's dataset, as the graph does.
 
 ### Metric graphs for `GRAPH_EXPAND` (proposed)
 

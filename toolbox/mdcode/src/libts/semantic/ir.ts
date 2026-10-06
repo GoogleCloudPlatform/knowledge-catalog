@@ -204,10 +204,61 @@ export interface Entity {
   // code case-insensitively, and Knowledge Catalog and skill pages list them
   // (see vocabulary.ts). Absent on every other entity.
   members?: VocabularyMember[];
+  // How the bound source is reshaped into the entity the model declares (a
+  // binding concern, set by a profile): which version of a key to keep,
+  // declared value corrections, codes resolved against a related entity, or
+  // the entity's rows derived from a relationship. A closed vocabulary; the
+  // BigQuery leg compiles it into the entity's node view (see hydration.ts,
+  // node_views.ts).
+  hydration?: EntityHydration;
+  // How the BigQuery leg binds the entity: `view` (the default) reads it
+  // through a generated node view named after the entity whose columns are
+  // the modeled fields; `direct` binds the source table as-is.
+  mode?: EntityBindingMode;
   description?: string;
   aiContext?: AiContext;
   fields: Field[];       // dimensions / attributes
   customExtensions?: CustomExtension[];
+}
+
+/** See Entity.mode. */
+export type EntityBindingMode = 'view'|'direct';
+
+/**
+ * An entity's hydration rules (see Entity.hydration and hydration.ts). Field
+ * references are field NAMES on the entity (inherited fields count), except
+ * `grain.latestBy` and `normalize.on`, which name a physical column of the
+ * entity's source (or a field, whose column is then used).
+ */
+export interface EntityHydration {
+  // Realizes the key over a source that repeats it: keep the row with the
+  // greatest `latestBy` per key, or (`deterministic`) one row per key picked
+  // by a hash of the row, so reruns pick the same one.
+  grain?: {latestBy?: string; deterministic?: boolean};
+  normalize?: NormalizeRule[];
+  resolve?: ResolveRule[];
+  // The entity has no table: its rows are the distinct foreign-key values of
+  // this relationship, whose destination is the entity's key.
+  deriveFrom?: {relationship: string};
+}
+
+/** A declared value correction applied before or after a date. */
+export interface NormalizeRule {
+  field: string;
+  before?: string;     // ISO date or timestamp; exactly one of before / after
+  after?: string;
+  divideBy?: number;   // exactly one of divideBy / multiplyBy, > 0
+  multiplyBy?: number;
+  on?: string;         // the date column compared (default: grain.latestBy)
+}
+
+/**
+ * A foreign key recorded as either the destination's key or one of its unique
+ * keys (a code or a name), resolved to the key.
+ */
+export interface ResolveRule {
+  field: string;    // the relationship's source (foreign-key) field
+  match: string[];  // destination fields: its key and/or single-field unique keys
 }
 
 /** One member of a vocabulary entity (see Entity.members). */
