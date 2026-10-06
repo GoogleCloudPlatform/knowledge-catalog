@@ -45,7 +45,7 @@ import * as context from '../gcp/context';
 import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 
 import {collectCustomTypes, customTypeHome} from './kc_custom_types';
-import {anchorId, entryId, entryTypeId, linkId, linkTypeId,} from './kc_entries';
+import {anchorId, collectEntityNames, collectOwnedEntries, entryAspectKeys, entryId, entryTypeId, isAnchorEntry, isDependentEntry, isEntryOwner, KcAnchor, linkId, linkTypeId,} from './kc_entries';
 import {entryIdOf} from './kc_ids';
 import * as kcEmit from './knowledge_catalog';
 import {LoadedModel} from './loader';
@@ -73,8 +73,9 @@ export interface KcDeployOptions {
   // Emit the second-generation built-in aspect fields and entry-id layout
   // (selected via KC_V2_ASPECTS=1). Off by default (absent means false).
   // Consumed by `emitModels` when called through `preflightKnowledgeCatalog` or
-  // `deployKnowledgeCatalog`; `deployEmittedModels` takes already-emitted
-  // resources from an origin with its own emitter and ignores this field.
+  // `deployKnowledgeCatalog`, and by `updateEntry` when computing `aspectKeys`
+  // (including when called through `deployEmittedModels`, which takes
+  // already-emitted resources from an origin with its own emitter).
   v2Aspects?: boolean;
   // Compile and report only; never writes to the catalog (a dry run).
   validateOnly?: boolean;
@@ -201,8 +202,8 @@ export async function preflightKnowledgeCatalog(
  *
  * The method performs the following actions:
  *   1. Removes foreign models when `--force-remove` is set.
- *   2. Writes the model's entries and relationship links.
- *   3. Deletes orphaned entries the model no longer emits.
+ *   2. Writes each emitted model's entries and relationship links and deletes
+ *      any orphaned links and entries.
  */
 export async function applyKnowledgeCatalog(
     prepared: KcPreparedDeploy, ctx: context.ApiContext,
@@ -222,21 +223,17 @@ export async function applyKnowledgeCatalog(
     if (foreignAnchorIds.length) {
       const removed =
           await removeForeignModels(cat, opts, existing, foreignAnchorIds);
-      if (removed.error) return result(false, removed.error);
       counts.deleted += removed.deleted;
       counts.unlinked += removed.unlinked;
+      if (removed.error) return result(false, removed.error);
     }
   }
 
-  // Write each emitted model's entries and relationship links.
-  const written = await writeModels(cat, opts, emitted, existing, counts);
+  // Write each emitted model's entries and relationship links and delete any
+  // orphaned resources.
+  const written =
+      await writeEmittedModels(cat, opts, emitted, existing, counts);
   if (written.error) return result(false, written.error);
-
-  // Finally, delete entries orphaned by entities/metrics removed from a
-  // still-present model since its last push.
-  const recon = await reconcileDeletions(cat, opts, emitted, existing);
-  if (recon.error) return result(false, recon.error);
-  counts.deleted += recon.deleted;
 
   return result(true);
 }
@@ -514,98 +511,105 @@ function planSummary(
   return lines;
 }
 
-// Writes every model's entries and relationship links, in model order. For each
-// model: create/upsert its entries (anchor first), write its schema-join links
-// (both endpoints must exist first), then drop any link it owns but no longer
-// emits (a dropped or renamed relationship). Progress accumulates into counts, so
-// a mid-way failure still reports what had been written.
-async function writeModels(
+/**
+ * Writes every model's entries and relationship links and deletes orphaned
+ * resources in model order.
+ *
+ * For each model, the method performs the following actions:
+ *   1. Creates or updates the model's entries (anchor first).
+ *   2. Creates or updates the model's relationship links.
+ *   3. Deletes any existing relationship links owned by the model that are no
+ *      longer emitted.
+ *   4. Deletes any existing entries owned by the model that are no longer
+ *      emitted.
+ *
+ * Progress accumulates into `counts`, so a mid-way failure still reports what
+ * had been written.
+ */
+async function writeEmittedModels(
     cat: CatalogClient, opts: KcDeployOptions, emitted: EmittedModel[],
     existing: Entry[], counts: Counts): Promise<{error?: string}> {
   for (const {model, resources} of emitted) {
-    const entries = await createEntries(cat, opts, resources.entries);
-    if (entries.error) return {error: `Model '${model}': ${entries.error}`};
+    const entries = await writeEntries(cat, opts, resources.entries);
     counts.created += entries.created;
     counts.updated += entries.updated;
+    if (entries.error) return {error: `Model '${model}': ${entries.error}`};
 
     // Links reference this model's entity entries, so they follow the entries
     // above (both endpoints must exist first).
     const links = await createEntryLinks(cat, opts, resources.entryLinks);
-    if (links.error) return {error: `Model '${model}': ${links.error}`};
     counts.linked += links.linked;
+    if (links.error) return {error: `Model '${model}': ${links.error}`};
 
     // Then drop any schema-join link this model owns but no longer emits (a
     // relationship dropped or renamed), after its current links are written so a
     // rename never leaves the pair with no link between them.
     const relLinks = await reconcileLinks(cat, opts, resources, existing);
-    if (relLinks.error) return {error: `Model '${model}': ${relLinks.error}`};
     counts.unlinked += relLinks.unlinked;
+    if (relLinks.error) return {error: `Model '${model}': ${relLinks.error}`};
+
+    // Finally, delete any entry this model owns but no longer emits.
+    const orphanedEntries = findOrphanedEntries(resources, existing);
+    const deleted = await deleteEntries(cat, opts, orphanedEntries);
+    counts.deleted += deleted.deleted;
+    if (deleted.error) {
+      const {entryId, message} = deleted.error;
+      return {
+        error: `Deleting orphaned entry '${entryId}' from model '${
+            model}' failed: ${message}`,
+      };
+    }
   }
   return {};
 }
 
-
 interface ReconcileOutcome {
   deleted: number;
-  error?: string;
+  error?: {entryId: string; message: string};
 }
 
-// Removes the catalog entries left behind when you delete an entity or metric
-// from a model and push again -- the entries the model no longer emits. Only
-// entries this push OWNS are ever touched: an entry whose id is a pushed model's
-// anchor, or that lives under that anchor's `<model>.entities.` /
-// `<model>.metrics.` namespace. Entries belonging to other models that share the
-// entry group are left alone, and an anchor (always re-emitted) is never deleted
-// here.
-//
-// Deleting a whole model is handled by the --force-remove guard, and orphaned
-// relationship links by reconcileLinks. This step reads the pre-write snapshot
-// `existing`, so it issues no list call of its own (a re-emitted entry is never a
-// deletion candidate, so the snapshot stays correct).
-function reconcileDeletions(
-    cat: CatalogClient, opts: KcDeployOptions, emitted: EmittedModel[],
-    existing: Entry[]): Promise<ReconcileOutcome> {
-  const emittedIds = new Set<string>();
-  const anchorIds = new Set<string>();
-  const childPrefixes: string[] = [];
-  for (const {resources} of emitted) {
-    for (const e of resources.entries) emittedIds.add(entryId(e));
-    // entries[0] is the model anchor (the emitter writes it first). An emitter
-    // that produced no entries has no anchor and owns nothing, so skip it
-    // rather than index into an empty array -- a throw here escapes the
-    // KcDeployResult contract, and it would do so *after* writes.
-    if (!resources.entries.length) continue;
-    anchorIds.add(entryId(resources.entries[0]));
-    // An empty prefix matches every id, which would make every entry in the
-    // group -- including ones this tool never wrote -- an orphan. Both current
-    // emitters build prefixes from a validated model name and cannot produce
-    // one, but this function deletes things on the strength of what it is
-    // handed, and a future origin may supply them. Drop empties rather than trust
-    // the caller.
-    childPrefixes.push(...resources.ownedPrefixes.filter(p => p.length > 0));
-  }
-  const owned = (id: string) =>
-      anchorIds.has(id) || childPrefixes.some(p => id.startsWith(p));
-
-  const orphans =
-      existing.map(entryId).filter(id => owned(id) && !emittedIds.has(id));
-
-  return deleteOrphanEntries(cat, opts, orphans);
+/**
+ * Returns the entries in `existing` that `resources` owns but no longer emits.
+ *
+ * An entry becomes orphaned when a child resource (such as an entity, metric,
+ * action, constraint, or explore) is deleted or renamed in the model since the
+ * last push. Only child entries under `resources.ownedPrefixes` are ever
+ * touched: entries outside those prefixes and the model anchor (always
+ * re-emitted) are never deleted here.
+ *
+ * Deleting a whole model is handled by the `--force-remove` guard, and orphaned
+ * relationship links by `reconcileLinks`. This step reads the pre-write
+ * snapshot `existing`, so it issues no list call of its own (a re-emitted entry
+ * is never a deletion candidate, so the snapshot stays correct).
+ */
+function findOrphanedEntries(
+    resources: kcEmit.KcResources, existing: Entry[]): Entry[] {
+  // An emitter that produced no entries has no anchor and owns nothing.
+  if (!resources.entries.length) return [];
+  const emittedIds = new Set(resources.entries.map(entryId));
+  return existing.filter(
+      e => isEntryOwner(resources, e) && !emittedIds.has(entryId(e)));
 }
 
-async function deleteOrphanEntries(
+/**
+ * Deletes every entry in `entries`.
+ *
+ * A 404 response on delete counts as success because the entry is already gone.
+ */
+async function deleteEntries(
     cat: CatalogClient, opts: KcDeployOptions,
-    orphans: string[]): Promise<ReconcileOutcome> {
+    entries: Iterable<Entry>): Promise<ReconcileOutcome> {
   let deleted = 0;
-  for (const id of orphans) {
+  for (const entry of entries) {
+    const id = entryId(entry);
     const res =
         await cat.deleteEntry(opts.project, opts.location, opts.entryGroup, id);
-    // A 404 means it is already gone -- reconciliation's goal is met either way.
+    // A 404 means it is already gone -- reconciliation's goal is met.
     if (isOkStatus(res) || isNotFoundStatus(res)) {
       deleted++;
       continue;
     }
-    return {deleted, error: `deleting orphaned entry '${id}': ${errText(res)}`};
+    return {deleted, error: {entryId: id, message: errText(res)}};
   }
   return {deleted};
 }
@@ -697,17 +701,16 @@ async function deleteOwnedLinks(
 
 
 // Reconciles a still-present model's schema-join links: deletes any link this
-// model OWNS (both endpoints under its `<anchor>.entities.` namespace) that the
-// model no longer emits -- a relationship dropped or renamed since the last
-// push. A link touching an entry outside this model is never treated as owned,
-// so a shared entry group is safe.
+// model OWNS (both endpoints under `resources.ownedPrefixes`, i.e.
+// `<anchor>.entities.` or `<anchor>/entities/`) that the model no longer emits
+// -- a relationship dropped or renamed since the last push. A link touching an
+// entry outside this model is never treated as owned.
 function reconcileLinks(
     cat: CatalogClient, opts: KcDeployOptions, resources: kcEmit.KcResources,
     existing: Entry[]): Promise<LinkReconcileOutcome> {
   // An emitter that produced no entries has no anchor and owns nothing. Guarded
-  // for the same reason reconcileDeletions guards it: this runs inside
-  // writeModels, so a throw here escapes the KcDeployResult contract *after*
-  // writes have happened.
+  // because this runs inside writeEmittedModels, so a throw here would escape
+  // the KcDeployResult contract *after* writes have happened.
   if (!resources.entries.length) return Promise.resolve({unlinked: 0});
   // Owned by this model: the prefixes its emitter declared, not a guess at the
   // id scheme.
@@ -717,11 +720,10 @@ function reconcileLinks(
   // pre-write snapshot), not the ones this push emits. Only a server-side entry
   // can already carry a link, and enumerating the snapshot also reaches a link
   // both of whose endpoints were removed in this push -- neither is re-emitted,
-  // but both entries are still present in `existing` until reconcileDeletions
-  // deletes them at the end. A brand-new model has no such entries, so it issues
-  // no lookups at all.
-  // Entity entries specifically, by entry type rather than by id shape: only
-  // those can be a schema-join endpoint.
+  // but both entries are still present in `existing` until deleteEntries
+  // deletes them at the end. A brand-new model has no such entries, so it
+  // issues no lookups at all. Entity entries specifically, by entry type rather
+  // than by id shape: only those can be a schema-join endpoint.
   const entityNames =
       existing.filter(e => (e.entryType ?? '').endsWith('/semantic-entity'))
           .map(e => e.name)
@@ -737,57 +739,68 @@ function reconcileLinks(
       link => ownedByModel(link) && !emittedLinkIds.has(linkId(link)));
 }
 
-
-// Deletes models already in the entry group that this push does not re-emit
-// (--force-remove). For each foreign anchor: remove its schema-join links first
-// (they reference entries about to be deleted), then its entries -- the anchor
-// and its children present in the pre-write listing `existing`.
-//
-// A foreign model is by definition not in this push, so its emitter's
-// `ownedPrefixes` are unavailable. Ownership is instead the anchor followed by
-// a separator, which holds for every id scheme without naming its segments:
-// `<anchor>.entities.x` and `<anchor>/entities/x` both match. Naming the
-// segments here would leave a model published by a different emitter with its
-// children orphaned and unreachable -- the anchor goes, so no later push sees a
-// foreign model, and nothing owns the remainder.
+/**
+ * Deletes models already in the entry group that this push does not re-emit
+ * (`--force-remove`).
+ *
+ * For each foreign anchor, removes its relationship links first (since they
+ * reference entries about to be deleted), then deletes its children present in
+ * `existing` followed by the anchor itself.
+ *
+ * A foreign model is by definition not in this push, so its emitter's
+ * `ownedPrefixes` are unavailable. Ownership is instead the anchor followed by
+ * a separator (`.` or `/`), which matches every ID scheme
+ * (`<anchor>.entities.x` and `<anchor>/entities/x`) without hardcoding segment
+ * names. Naming the segments here would leave a model published by a different
+ * emitter with its children orphaned and unreachable -- the anchor goes, so no
+ * later push sees a foreign model, and nothing owns the remainder.
+ */
 async function removeForeignModels(
     cat: CatalogClient, opts: KcDeployOptions, existing: Entry[],
-    foreignAnchors: string[]):
+    foreignAnchorIds: string[]):
     Promise<{deleted: number; unlinked: number; error?: string}> {
   let deleted = 0;
   let unlinked = 0;
-  for (const anchor of foreignAnchors) {
-    const owned = existing.filter(e => {
-      const id = entryId(e);
-      return id === anchor || id.startsWith(`${anchor}.`) ||
-          id.startsWith(`${anchor}/`);
-    });
-    const entityNames = owned
-        .filter(e => (e.entryType ?? '').endsWith('/semantic-entity'))
-        .map(e => e.name);
+  for (const foreignAnchorId of foreignAnchorIds) {
+    // Find the foreign model's anchor entry and all of its child entries
+    // across both the V1 dotted (`<anchor>.`) and V2/LookML slash (`<anchor>/`)
+    // namespaces, then extract the full resource names of its `semantic-entity`
+    // entries so we can look up their relationship links.
+    const foreignAnchor: KcAnchor = {
+      anchorId: foreignAnchorId,
+      ownedPrefixes: [`${foreignAnchorId}.`, `${foreignAnchorId}/`],
+    };
+    const foreignEntries = collectOwnedEntries(foreignAnchor, existing);
+    const foreignEntityNames = collectEntityNames(foreignEntries);
 
-    // The whole model is going away, so every schema-join link referencing one
-    // of its entities is orphaned -- delete them all.
-    const links = await deleteOwnedLinks(cat, opts, entityNames, () => true);
-    if (links.error) return {deleted, unlinked, error: links.error};
+    // Delete all relationship links referencing the foreign model's entities
+    // before deleting the entries themselves.
+    const links =
+        await deleteOwnedLinks(cat, opts, foreignEntityNames, () => true);
     unlinked += links.unlinked;
+    if (links.error) return {deleted, unlinked, error: links.error};
 
-    for (const e of owned) {
-      const id = entryId(e);
-      const res = await cat.deleteEntry(
-          opts.project, opts.location, opts.entryGroup, id);
-      if (isOkStatus(res) || isNotFoundStatus(res)) {
-        deleted++;
-        continue;
-      }
-      return {deleted, unlinked,
-              error: `deleting entry '${id}' of removed model '${anchor}': ${
-                         errText(res)}`};
+    // Delete child entries before the anchor so that if a child delete fails
+    // mid-way, the foreign anchor remains in the entry group and a subsequent
+    // `--force-remove` push can still discover and finish removing the model.
+    const orderedDeletions = [
+      ...foreignEntries.filter(e => !isAnchorEntry(e)),
+      ...foreignEntries.filter(isAnchorEntry),
+    ];
+    const entries = await deleteEntries(cat, opts, orderedDeletions);
+    deleted += entries.deleted;
+    if (entries.error) {
+      const {entryId, message} = entries.error;
+      return {
+        deleted,
+        unlinked,
+        error: `Deleting entry '${entryId}' from removed model '${
+            foreignAnchorId}' failed: ${message}`,
+      };
     }
   }
   return {deleted, unlinked};
 }
-
 
 interface EntriesOutcome {
   created: number;
@@ -795,14 +808,22 @@ interface EntriesOutcome {
   error?: string;
 }
 
-// Creates a model's entries. The anchor (entries[0]) is the parent of every
-// child and is written first. Entity entries are then written before the entries
-// that reference them by name -- metrics (`semantic-metric.entity`) and, for
-// LookML, explores (`semantic-explore.baseEntity` / `joins[].fromEntity`) -- and
-// within each of those two waves the entries are independent and written
-// concurrently. An entry that already exists is updated in place (idempotent
-// re-push).
-async function createEntries(
+/**
+ * Creates or updates a model's entries in dependency order.
+ *
+ * The method writes entries in three stages:
+ *   1. Writes the model anchor (`entries[0]`) first, since it is the parent of
+ *      every child entry.
+ *   2. Writes independent child entries (such as entities, actions, and
+ *      constraints) concurrently.
+ *   3. Writes dependent child entries (`semantic-metric` via
+ *      `semantic-metric.entity` and, for LookML, `semantic-explore` via
+ *      `semantic-explore.baseEntity` / `joins[].fromEntity`, which reference
+ *      entities by name) concurrently.
+ *
+ * An entry that already exists is updated in place (idempotent re-push).
+ */
+async function writeEntries(
     cat: CatalogClient, opts: KcDeployOptions,
     entries: Entry[]): Promise<EntriesOutcome> {
   if (!entries.length) return {created: 0, updated: 0};
@@ -814,23 +835,19 @@ async function createEntries(
   let created = anchorRes.updated ? 0 : 1;
   let updated = anchorRes.updated ? 1 : 0;
 
-  // Entities first, then the entries that reference an entity by name (metrics
-  // and explores); each wave is written concurrently.
-  const dependsOnEntity = (e: Entry) => {
-    const type = e.entryType ?? '';
-    return type.endsWith('/semantic-metric') ||
-        type.endsWith('/semantic-explore');
-  };
-  for (const wave of [children.filter(e => !dependsOnEntity(e)),
-                      children.filter(dependsOnEntity)]) {
-    const res = await Promise.all(wave.map(e => writeEntry(cat, opts, e)));
+  const independentEntries = children.filter(e => !isDependentEntry(e));
+  const dependentEntries = children.filter(isDependentEntry);
+
+  for (const entryWave of [independentEntries, dependentEntries]) {
+    const res = await Promise.all(entryWave.map(e => writeEntry(cat, opts, e)));
     const firstErr = res.find(r => r.error);
     if (firstErr) return {created, updated, error: firstErr.error};
     for (const r of res) {
-      if (r.updated)
+      if (r.updated) {
         updated++;
-      else
+      } else {
         created++;
+      }
     }
   }
   return {created, updated};
@@ -843,9 +860,9 @@ interface LinksOutcome {
 }
 
 // Writes a model's schema-join entry links. Both endpoint entries already exist
-// (createEntries ran first for this model), and links are independent of each
-// other, so they are written concurrently. A link that already exists is upserted
-// (its aspect refreshed).
+// (writeEntries ran first for this model), and links are independent of each
+// other, so they are written concurrently. A link that already exists is
+// upserted (its aspect refreshed).
 async function createEntryLinks(
     cat: CatalogClient, opts: KcDeployOptions,
     links: EntryLink[]): Promise<LinksOutcome> {
@@ -887,62 +904,69 @@ async function writeEntryLink(
   return {};
 }
 
-
 interface WriteOutcome {
-  updated?: boolean;  // true when the entry already existed and was updated
+  updated?: boolean;  // true when the resource already existed and was updated
   error?: string;
 }
 
-// Writes one entry: create (retrying the group-propagation window), then fall
-// back to update-in-place if it already exists.
+/**
+ * Writes a single entry to Knowledge Catalog.
+ *
+ * Attempts to create `entry` (retrying brief entry-group propagation 404s), and
+ * if it already exists (HTTP 409), delegates to `updateEntry`.
+ */
 async function writeEntry(
     cat: CatalogClient, opts: KcDeployOptions,
     entry: Entry): Promise<WriteOutcome> {
   const id = entryId(entry);
-  const res = await createEntryWithRetry(cat, opts, id, entry);
-  if (isExistsStatus(res)) {
-    // Idempotent re-push: refresh the existing entry's source + aspects.
-    const upd = await cat.updateEntry(
-        entry, ['entry_source', 'aspects'], reconciledAspectKeys(entry, opts),
-        /* deleteMissingAspects= */ true);
-    if (!isOkStatus(upd)) return {error: `entry '${id}': ${errText(upd)}`};
-    return {updated: true};
-  }
+  const res = await createEntry(cat, opts, id, entry);
+  if (isExistsStatus(res)) return updateEntry(cat, opts, entry);
   if (!isOkStatus(res)) return {error: `entry '${id}': ${errText(res)}`};
   return {};
 }
 
-// The aspects the emitter attaches CONDITIONALLY. `guidelines` (only when an
-// object carries ai_context.instructions) can ride any entry, so it is
-// reconciled everywhere. Every other aspect the emitter writes (semantic-*,
-// schema, semantic-action, semantic-constraint) is unconditional on the entry
-// that carries it, so it is always present on a re-push and never needs
-// explicit clearing.
-const OPTIONAL_ASPECT_TYPES = ['guidelines'] as const;
-
-// The aspect keys to reconcile when updating an existing entry. A Dataplex
-// entries.patch upserts each aspect `aspectKeys` names that the body carries.
-// It removes one the body leaves out only when `deleteMissingAspects` is set,
-// which the update does, and keeps every aspect `aspectKeys` does not name.
-// Naming the optional aspect keys, present or not, makes a re-push converge: a
-// still-present one is refreshed, a removed one is deleted, and one that was
-// never there stays absent. Without that, an entity whose
-// ai_context.instructions were deleted would keep its old `guidelines`, and a
-// later `pull` would bring them back. Push owns `guidelines` on its own
-// entries, so it removes one the model does not declare even if someone added
-// it in the console. Every other aspect another tool attached is left alone,
-// since `aspectKeys` names only the types kcmd writes.
-function reconciledAspectKeys(entry: Entry, opts: KcDeployOptions): string[] {
-  const proj = opts.systemTypeProject ?? 'dataplex-types';
-  const loc = opts.systemTypeLocation ?? 'global';
-  const keys = new Set(Object.keys(entry.aspects ?? {}));
-  for (const type of OPTIONAL_ASPECT_TYPES) keys.add(`${proj}.${loc}.${type}`);
-  return [...keys];
+/**
+ * Updates an existing entry in place after `createEntry` returns HTTP 409.
+ *
+ * A Dataplex `entries.patch` upserts each aspect `aspectKeys` names that the
+ * body carries, removes one the body leaves out only when
+ * `deleteMissingAspects` is set, and keeps every aspect `aspectKeys` does not
+ * name. Passing `entryAspectKeys(entry, opts)` with `deleteMissingAspects:
+ * true` makes a re-push converge: a still-present optional aspect is refreshed,
+ * and a removed one (such as `guidelines` when `ai_context.instructions` is
+ * deleted, `sql-expressions`, or field-level `guidelines@Schema.<field>`
+ * matched by `<project>.<location>.guidelines@*` under `v2Aspects`) is deleted
+ * so a later `pull` does not bring it back. Push owns `guidelines` on its own
+ * entries -- and, under `v2Aspects`, field-level `guidelines@Schema.<field>` on
+ * its entity entries and `sql-expressions` on its entity and metric entries --
+ * so it removes any that the model does not declare even if someone added them
+ * in the console. Every other aspect another tool attached is left alone,
+ * since `aspectKeys` names only the types kcmd writes.
+ */
+async function updateEntry(
+    cat: CatalogClient, opts: KcDeployOptions,
+    entry: Entry): Promise<WriteOutcome> {
+  // We cannot simply pass `Object.keys(entry.aspects ?? {})` here because
+  // `entry.aspects` only contains the aspects emitted in *this* push. If an
+  // optional aspect (such as `guidelines`, `sql-expressions`, or a column's
+  // `guidelines@Schema.<field>`) was present on a previous push and removed in
+  // this push, it is absent from `entry.aspects` -- and Dataplex only deletes a
+  // removed aspect when its key (or `<project>.<location>.guidelines@*` for
+  // field-level `guidelines`) is still listed in `aspectKeys`.
+  const aspectKeys = entryAspectKeys(entry, opts);
+  const upd = await cat.updateEntry(
+      entry, ['entry_source', 'aspects'], [...aspectKeys],
+      /* deleteMissingAspects= */ true);
+  if (!isOkStatus(upd)) {
+    return {error: `entry '${entryId(entry)}': ${errText(upd)}`};
+  }
+  return {updated: true};
 }
 
-// entries.create can briefly 404 on a just-created entry group; retry that
-// window.
-async function createEntryWithRetry(
+/**
+ * Creates an entry, retrying brief 404s on a just-created entry group.
+ */
+async function createEntry(
     cat: CatalogClient, opts: KcDeployOptions, id: string,
     entry: Entry): Promise<ApiResult<Entry>> {
   const tries = opts.entryCreateTries ?? ENTRY_CREATE_TRIES;
