@@ -194,6 +194,12 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
   const seenFields = new Set<string>();
   for (const p of owl.datatypeProperties) {
     const P = p.localName;
+    for (const d of p.unsupportedDomains ?? []) {
+      rec.dropped(
+          'rdfs:domain', `${P} domain ${d}`,
+          'only a named class, or an owl:unionOf of named classes, can hold ' +
+              'a field');
+    }
     if (!p.domains.length) {
       rec.dropped(
           'owl:DatatypeProperty', P,
@@ -225,6 +231,12 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
     }
     if (!produced.length) continue;
     const first = produced[0].name;
+    if (p.unionDomain) {
+      land('compiled', 'owl:unionOf (rdfs:domain)',
+           `${P} domain unionOf(${p.domains.join(' ')})`, {entity: first},
+           `fields ${produced.map(e => `${e.name}.${P}`).join(', ')}`,
+           'the field is placed on each member class');
+    }
     if (p.rangeIri) {
       const type = datatypeFor(p.rangeIri);
       const subject = `${P} range ${localName(p.rangeIri)}`;
@@ -306,6 +318,26 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
     }
     const owner: Owner = {relationship: r ? P : folded?.name};
     const carrier = r ? `relationship ${P}` : undefined;
+
+    // `<ns>:encodedBy` -> the edge's join columns (to_ir.joinEncodedEdges).
+    if (p.encodedBy !== undefined) {
+      const subject = `${P} encodedBy ${p.encodedBy}`;
+      if (r?.source.columns.length) {
+        land('compiled', 'encodedBy', subject, owner,
+             `relationship ${P} from_columns [${
+                 r.source.columns.join(', ')}] to_columns [${
+                 r.destination.columns.join(', ')}]`);
+      } else {
+        drop('encodedBy', subject, owner,
+             why([[`object property '${P}' is encodedBy`]],
+                 !r                ? 'the relationship was not imported' :
+                     r.abstract    ? 'an abstract relationship has no join ' +
+                             'columns' :
+                     r.via?.length ? 'a derived relationship has no join ' +
+                             'columns' :
+                                     'not kept'));
+      }
+    }
 
     for (const s of dedupe(p.subPropertyOf.map(localName))) {
       if (s === P) continue;

@@ -265,9 +265,18 @@ export interface OwlDatatypeProperty extends OwlCommonAnnotations {
   localName: string;
   // Local names of every rdfs:domain class this property hangs off; the field
   // is added to each. A property may declare more than one domain (it then
-  // appears on each entity). Empty when no domain is declared (skipped with a
+  // appears on each entity), or one `owl:unionOf` domain, whose member classes
+  // are listed here (the form to use: several rdfs:domain triples mean an
+  // intersection in OWL). Empty when no domain is declared (skipped with a
   // warning -- an unattached field has nowhere to live).
   domains: string[];
+  // True when (some of) `domains` came from an owl:unionOf domain.
+  unionDomain?: boolean;
+  // The rdfs:domain class expressions that could not be read as classes (an
+  // owl:intersectionOf, a restriction, an anonymous owl:unionOf member that
+  // is not itself a union, ...), named by construct for the mapper's warning.
+  // Absent when none.
+  unsupportedDomains?: string[];
   // The rdfs:range IRI (e.g. the xsd:string IRI), mapped to an OSI datatype by
   // the mapper. Undefined when no range is declared (-> Opaque).
   rangeIri?: string;
@@ -318,6 +327,8 @@ export interface OwlObjectProperty extends OwlCommonAnnotations {
   // warning: an edge needs both endpoints).
   domains: string[];
   ranges: string[];
+  // As OwlDatatypeProperty.unsupportedDomains.
+  unsupportedDomains?: string[];
   label?: string;
   comment?: string;
   synonyms: string[];

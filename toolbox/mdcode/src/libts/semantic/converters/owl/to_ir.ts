@@ -354,6 +354,12 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   // than one domain appears on each; one with none has nowhere to live.
   let datatypePropertiesConverted = 0;
   for (const p of owl.datatypeProperties) {
+    for (const d of p.unsupportedDomains ?? []) {
+      warnings.push(
+          `datatype property '${p.localName}' has an rdfs:domain that is ${
+              d}; that domain is skipped (a field goes on a named class, or ` +
+          `on each member of an owl:unionOf of named classes).`);
+    }
     if (!p.domains.length) {
       warnings.push(
           `datatype property '${p.localName}' has no rdfs:domain; skipped ` +
@@ -515,6 +521,11 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
 
   const relationships: Relationship[] = [];
   for (const p of owl.objectProperties) {
+    for (const d of p.unsupportedDomains ?? []) {
+      warnings.push(
+          `object property '${p.localName}' has an rdfs:domain that is ${
+              d}; that domain is skipped.`);
+    }
     if (folded.has(p.localName)) continue;
     const via = chainOf.get(p.localName);
     const declaredDomain = p.domains[0];
@@ -842,11 +853,14 @@ function resolveDeferredChains(
 // `<objectProperty> <ns>:encodedBy <datatypeProperty>` states that the edge is
 // stored as a code field on its source holding the destination's code (its
 // key), so the edge joins that field to the destination's key -- the join
-// columns a binding step would otherwise add. Matched by local name, like
-// every kcmd annotation (see parse.ts). It needs the field on the source (or
-// a class the source extends) and a single-column key on the destination;
-// otherwise the edge stays logical, with a warning. Abstract and derived edges
-// carry no join columns and are left alone.
+// columns a binding step would otherwise add. The destination may be a
+// vocabulary (the field holds a member code) or any keyed entity (the field
+// is a foreign key). Matched by local name, like every kcmd annotation (see
+// parse.ts). It needs the field on the source (or a class the source
+// extends) and a single-column key on the destination (its own, or the
+// nearest ancestor's); otherwise -- a composite key included -- the edge
+// stays logical, with a warning. Abstract and derived edges carry no join
+// columns and are left alone.
 function joinEncodedEdges(
     owl: OwlModel, entitiesByName: ReadonlyMap<string, Entity>,
     relationships: readonly Relationship[],
@@ -870,7 +884,11 @@ function joinEncodedEdges(
           r.source.entity}'; the edge keeps no join columns.`);
       continue;
     }
-    const keys = entitiesByName.get(r.destination.entity)?.keys ?? [];
+    // The destination's key: its own, else the nearest ancestor's (a subclass
+    // of a keyed class is identified by the inherited key).
+    const keyOwner = lineage(r.destination.entity)
+                         .find(n => entitiesByName.get(n)?.keys.length);
+    const keys = keyOwner ? entitiesByName.get(keyOwner)!.keys : [];
     if (keys.length !== 1) {
       warnings.push(`${ctx}, but '${r.destination.entity}' has ${
           keys.length ? 'a composite' : 'no'} primary key to match it to; the ` +
