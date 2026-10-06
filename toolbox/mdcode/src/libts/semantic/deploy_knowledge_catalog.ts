@@ -28,8 +28,9 @@
 //     `semantic-explore`).
 //   * Relationship edges are published as `schema-join` entry links between
 //     the two entity entries after that model's entries exist. A re-push
-//     updates the link's aspects in place, and orphaned links are deleted.
-//     The caller additionally needs
+//     updates the link's aspects in place, or deletes and recreates the link
+//     when its type or endpoint references changed; orphaned links are then
+//     deleted. The caller additionally needs
 //     `dataplex.entryGroups.useSchemaJoinEntryLink` and `useSchemaJoinAspect`
 //     on the destination entry group.
 //   * Reconcile deletions: after writing, delete any child entry this push owns
@@ -45,7 +46,7 @@ import * as context from '../gcp/context';
 import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 
 import {collectCustomTypes, customTypeHome} from './kc_custom_types';
-import {anchorId, collectEntityNames, collectOwnedEntries, entryAspectKeys, entryId, entryTypeId, isAnchorEntry, isDependentEntry, isEntryOwner, KcAnchor, linkId, linkTypeId,} from './kc_entries';
+import {anchorId, collectEntityNames, collectOwnedEntries, entryAspectKeys, entryId, entryTypeId, isAnchorEntry, isDependentEntry, isEntryOwner, isLinkOwner, isRelationshipLink, KcAnchor, linkId, linkTypeId, sameLinkReferences,} from './kc_entries';
 import {entryIdOf} from './kc_ids';
 import * as kcEmit from './knowledge_catalog';
 import {LoadedModel} from './loader';
@@ -517,10 +518,12 @@ function planSummary(
  *
  * For each model, the method performs the following actions:
  *   1. Creates or updates the model's entries (anchor first).
- *   2. Creates or updates the model's relationship links.
- *   3. Deletes any existing relationship links owned by the model that are no
+ *   2. Looks up the model's existing relationship links when the pre-write
+ *      entry group contains entities owned by the model.
+ *   3. Creates, updates, or recreates the model's relationship links.
+ *   4. Deletes any existing relationship links owned by the model that are no
  *      longer emitted.
- *   4. Deletes any existing entries owned by the model that are no longer
+ *   5. Deletes any existing entries owned by the model that are no longer
  *      emitted.
  *
  * Progress accumulates into `counts`, so a mid-way failure still reports what
@@ -535,18 +538,47 @@ async function writeEmittedModels(
     counts.updated += entries.updated;
     if (entries.error) return {error: `Model '${model}': ${entries.error}`};
 
+    // When the pre-write listing contains entity entries this model owns, look
+    // up the model's existing links once and share the map between
+    // writeEntryLinks (to detect changed endpoints) and findOrphanedEntryLinks
+    // (to delete dropped links). Look up links via the model's entity entries
+    // known to the server (the pre-write snapshot `existing`), not the ones
+    // this push emits: only a server-side entry can already carry a link, and
+    // enumerating the snapshot also reaches a link both of whose endpoints were
+    // removed in this push (neither is re-emitted, but both entries are still
+    // present in `existing` until `deleteEntries` deletes them at the end). On
+    // a first push there are no such entries, so no lookup is made.
+    const existingEntityNames = resources.entries.length ?
+        collectEntityNames(collectOwnedEntries(resources, existing)) :
+        [];
+    let existingLinks = new Map<string, EntryLink>();
+    if (existingEntityNames.length) {
+      const lookedUp = await lookupEntryLinks(cat, opts, existingEntityNames);
+      if (lookedUp.error) {
+        return {error: `Model '${model}': ${lookedUp.error}`};
+      }
+      existingLinks = lookedUp.links;
+    }
+
     // Links reference this model's entity entries, so they follow the entries
     // above (both endpoints must exist first).
-    const links = await createEntryLinks(cat, opts, resources.entryLinks);
+    const links = await writeEntryLinks(cat, opts, resources, existingLinks);
     counts.linked += links.linked;
     if (links.error) return {error: `Model '${model}': ${links.error}`};
 
-    // Then drop any schema-join link this model owns but no longer emits (a
-    // relationship dropped or renamed), after its current links are written so a
-    // rename never leaves the pair with no link between them.
-    const relLinks = await reconcileLinks(cat, opts, resources, existing);
-    counts.unlinked += relLinks.unlinked;
-    if (relLinks.error) return {error: `Model '${model}': ${relLinks.error}`};
+    // Then drop any relationship link this model owns but no longer emits (a
+    // relationship dropped or renamed), after its current links are written so
+    // a rename never leaves the pair with no link between them.
+    const orphanedLinks = findOrphanedEntryLinks(resources, existingLinks);
+    const unlinked = await deleteEntryLinks(cat, opts, orphanedLinks);
+    counts.unlinked += unlinked.unlinked;
+    if (unlinked.error) {
+      const {linkId, message} = unlinked.error;
+      return {
+        error: `Deleting orphaned entry link '${linkId}' from model '${
+            model}' failed: ${message}`,
+      };
+    }
 
     // Finally, delete any entry this model owns but no longer emits.
     const orphanedEntries = findOrphanedEntries(resources, existing);
@@ -578,9 +610,10 @@ interface ReconcileOutcome {
  * re-emitted) are never deleted here.
  *
  * Deleting a whole model is handled by the `--force-remove` guard, and orphaned
- * relationship links by `reconcileLinks`. This step reads the pre-write
- * snapshot `existing`, so it issues no list call of its own (a re-emitted entry
- * is never a deletion candidate, so the snapshot stays correct).
+ * relationship links by `findOrphanedEntryLinks` and `deleteEntryLinks`. This
+ * step reads the pre-write snapshot `existing`, so it issues no list call of
+ * its own (a re-emitted entry is never a deletion candidate, so the snapshot
+ * stays correct).
  */
 function findOrphanedEntries(
     resources: kcEmit.KcResources, existing: Entry[]): Entry[] {
@@ -614,16 +647,6 @@ async function deleteEntries(
   return {deleted};
 }
 
-
-// The schema-join entry-link type name, matching what the emitter stamps on each
-// link (Namer.typeName('entryLink', 'schema-join')). Used to filter
-// lookupEntryLinks to the links this leg owns.
-function schemaJoinLinkType(opts: KcDeployOptions): string {
-  const proj = opts.systemTypeProject ?? 'dataplex-types';
-  const loc = opts.systemTypeLocation ?? 'global';
-  return `projects/${proj}/locations/${loc}/entryLinkTypes/schema-join`;
-}
-
 /**
  * Snapshots the destination entry group's entries once, before any write.
  *
@@ -654,89 +677,82 @@ async function listEntryGroup(
   return {entries};
 }
 
-
 interface LinkReconcileOutcome {
   unlinked: number;
-  error?: string;
+  error?: {linkId: string; message: string};
 }
 
-// Deletes the schema-join links referencing any of `entityNames` (full entry
-// resource names) for which `shouldDelete` returns true. Links are looked up per
-// referenced entry -- the only server-side access path -- so a link between two
-// of the entities is returned twice; a `seen` set dedups it. A 404 on delete
-// counts as success (already gone).
-async function deleteOwnedLinks(
-    cat: CatalogClient, opts: KcDeployOptions, entityNames: string[],
-    shouldDelete: (link: EntryLink) => boolean):
-    Promise<LinkReconcileOutcome> {
-  const linkType = schemaJoinLinkType(opts);
-  const seen = new Set<string>();
-  let unlinked = 0;
-  for (const entry of entityNames) {
+/**
+ * Looks up all relationship entry links referencing any of `entityNames`.
+ *
+ * Links are looked up per referenced entry -- the only server-side access path
+ * -- so a link between two of the entities is returned twice and deduplicated
+ * here by bare link ID. Queries `lookupEntryLinks` and filters the results to
+ * relationship links via `isRelationshipLink`.
+ */
+async function lookupEntryLinks(
+    cat: CatalogClient, opts: KcDeployOptions, entityNames: string[]):
+    Promise<{links: Map<string, EntryLink>; error?: string}> {
+  const links = new Map<string, EntryLink>();
+  for (const entityName of entityNames) {
     const res = await cat.lookupEntryLinks(
-        opts.project, opts.location, {entry, entryLinkTypes: [linkType]});
+        opts.project, opts.location, {entry: entityName});
     if (!isOkStatus(res)) {
       return {
-        unlinked,
-        error:
-            `looking up entry links for '${entryIdOf(entry)}': ${errText(res)}`
+        links,
+        error: `looking up entry links for '${entryIdOf(entityName)}': ` +
+            errText(res),
       };
     }
     for (const link of res.result ?? []) {
+      if (!isRelationshipLink(link)) continue;
       const id = linkId(link);
-      if (seen.has(id)) continue;
-      seen.add(id);
-      if (!shouldDelete(link)) continue;
-      const del = await cat.deleteEntryLink(
-          opts.project, opts.location, opts.entryGroup, id);
-      if (isOkStatus(del) || isNotFoundStatus(del)) {
-        unlinked++;
-        continue;
-      }
-      return {unlinked, error: `deleting entry link '${id}': ${errText(del)}`};
+      if (!links.has(id)) links.set(id, link);
     }
+  }
+  return {links};
+}
+
+/**
+ * Deletes every entry link in `links`.
+ *
+ * A 404 response on delete counts as success because the link is already gone.
+ */
+async function deleteEntryLinks(
+    cat: CatalogClient, opts: KcDeployOptions,
+    links: Iterable<EntryLink>): Promise<LinkReconcileOutcome> {
+  let unlinked = 0;
+  for (const link of links) {
+    const id = linkId(link);
+    const del = await cat.deleteEntryLink(
+        opts.project, opts.location, opts.entryGroup, id);
+    if (isOkStatus(del) || isNotFoundStatus(del)) {
+      unlinked++;
+      continue;
+    }
+    return {unlinked, error: {linkId: id, message: errText(del)}};
   }
   return {unlinked};
 }
 
-
-// Reconciles a still-present model's schema-join links: deletes any link this
-// model OWNS (both endpoints under `resources.ownedPrefixes`, i.e.
-// `<anchor>.entities.` or `<anchor>/entities/`) that the model no longer emits
-// -- a relationship dropped or renamed since the last push. A link touching an
-// entry outside this model is never treated as owned.
-function reconcileLinks(
-    cat: CatalogClient, opts: KcDeployOptions, resources: kcEmit.KcResources,
-    existing: Entry[]): Promise<LinkReconcileOutcome> {
-  // An emitter that produced no entries has no anchor and owns nothing. Guarded
-  // because this runs inside writeEmittedModels, so a throw here would escape
-  // the KcDeployResult contract *after* writes have happened.
-  if (!resources.entries.length) return Promise.resolve({unlinked: 0});
-  // Owned by this model: the prefixes its emitter declared, not a guess at the
-  // id scheme.
-  const ownedId = (id: string) =>
-      resources.ownedPrefixes.some(p => p.length > 0 && id.startsWith(p));
-  // Look up links via the model's entity entries KNOWN TO THE SERVER (the
-  // pre-write snapshot), not the ones this push emits. Only a server-side entry
-  // can already carry a link, and enumerating the snapshot also reaches a link
-  // both of whose endpoints were removed in this push -- neither is re-emitted,
-  // but both entries are still present in `existing` until deleteEntries
-  // deletes them at the end. A brand-new model has no such entries, so it
-  // issues no lookups at all. Entity entries specifically, by entry type rather
-  // than by id shape: only those can be a schema-join endpoint.
-  const entityNames =
-      existing.filter(e => (e.entryType ?? '').endsWith('/semantic-entity'))
-          .map(e => e.name)
-          .filter(name => ownedId(entryIdOf(name)));
-  if (!entityNames.length) return Promise.resolve({unlinked: 0});
-
+/**
+ * Returns the relationship entry links in `existingLinks` that `resources`
+ * owns but no longer emits.
+ *
+ * An entry link becomes orphaned when a relationship is deleted or renamed in
+ * the model since the last push, or when a relationship stops being published
+ * (for example, if one of its endpoint entities is removed). A link touching an
+ * entry outside `resources` is never treated as owned.
+ */
+function findOrphanedEntryLinks(
+    resources: kcEmit.KcResources,
+    existingLinks: Map<string, EntryLink>): EntryLink[] {
+  // An emitter that produced no entries has no anchor and owns nothing.
+  if (!resources.entries.length || !existingLinks.size) return [];
   const emittedLinkIds = new Set(resources.entryLinks.map(linkId));
-  const ownedByModel = (link: EntryLink) => link.entryReferences.length === 2 &&
-      link.entryReferences.every(r => ownedId(entryIdOf(r.name)));
-
-  return deleteOwnedLinks(
-      cat, opts, entityNames,
-      link => ownedByModel(link) && !emittedLinkIds.has(linkId(link)));
+  return [...existingLinks.values()].filter(
+      link =>
+          isLinkOwner(resources, link) && !emittedLinkIds.has(linkId(link)));
 }
 
 /**
@@ -775,10 +791,19 @@ async function removeForeignModels(
 
     // Delete all relationship links referencing the foreign model's entities
     // before deleting the entries themselves.
-    const links =
-        await deleteOwnedLinks(cat, opts, foreignEntityNames, () => true);
+    const lookedUp = await lookupEntryLinks(cat, opts, foreignEntityNames);
+    if (lookedUp.error) return {deleted, unlinked, error: lookedUp.error};
+    const links = await deleteEntryLinks(cat, opts, lookedUp.links.values());
     unlinked += links.unlinked;
-    if (links.error) return {deleted, unlinked, error: links.error};
+    if (links.error) {
+      const {linkId, message} = links.error;
+      return {
+        deleted,
+        unlinked,
+        error: `Deleting entry link '${linkId}' from removed model '${
+            foreignAnchorId}' failed: ${message}`,
+      };
+    }
 
     // Delete child entries before the anchor so that if a child delete fails
     // mid-way, the foreign anchor remains in the entry group and a subsequent
@@ -840,73 +865,118 @@ async function writeEntries(
 
   for (const entryWave of [independentEntries, dependentEntries]) {
     const res = await Promise.all(entryWave.map(e => writeEntry(cat, opts, e)));
-    const firstErr = res.find(r => r.error);
-    if (firstErr) return {created, updated, error: firstErr.error};
     for (const r of res) {
+      if (r.error) continue;
       if (r.updated) {
         updated++;
       } else {
         created++;
       }
     }
+    const firstErr = res.find(r => r.error);
+    if (firstErr) return {created, updated, error: firstErr.error};
   }
   return {created, updated};
 }
-
 
 interface LinksOutcome {
   linked: number;
   error?: string;
 }
 
-// Writes a model's schema-join entry links. Both endpoint entries already exist
-// (writeEntries ran first for this model), and links are independent of each
-// other, so they are written concurrently. A link that already exists is
-// upserted (its aspect refreshed).
-async function createEntryLinks(
-    cat: CatalogClient, opts: KcDeployOptions,
-    links: EntryLink[]): Promise<LinksOutcome> {
-  if (!links.length) return {linked: 0};
-  const res = await Promise.all(links.map(l => writeEntryLink(cat, opts, l)));
+/**
+ * Writes a model's relationship entry links concurrently.
+ *
+ * Both endpoint entries already exist because `writeEntries` runs first, and
+ * links are independent of one another.
+ */
+async function writeEntryLinks(
+    cat: CatalogClient, opts: KcDeployOptions, resources: kcEmit.KcResources,
+    existingLinks: Map<string, EntryLink>): Promise<LinksOutcome> {
+  if (!resources.entryLinks.length) return {linked: 0};
+  const res = await Promise.all(resources.entryLinks.map(
+      l => writeEntryLink(
+          cat, opts, l, resources, existingLinks.get(linkId(l)))));
+  const linked = res.filter(r => !r.error).length;
   const firstErr = res.find(r => r.error);
-  if (firstErr) return {linked: 0, error: firstErr.error};
-  return {linked: links.length};
-}
-
-// Writes one entry link: create, then fall back to an in-place aspect update if
-// it already exists. A link's entry references and type are immutable, so a
-// re-push only refreshes the aspect (the join detail). A relationship whose id
-// changed writes a new link and leaves the old one; reconcileLinks deletes such
-// orphaned links after this model's links are written.
-async function writeEntryLink(
-    cat: CatalogClient, opts: KcDeployOptions,
-    link: EntryLink): Promise<{error?: string}> {
-  const id = linkId(link);
-  const res = await cat.createEntryLink(
-      opts.project, opts.location, opts.entryGroup, id, link);
-  if (isExistsStatus(res)) {
-    const upd = await cat.updateEntryLink(
-        {name: link.name, aspects: link.aspects} as EntryLink,
-        Object.keys(link.aspects ?? {}));
-    // A 409 already proved the link is present, and its entry references and type
-    // are immutable, so this follow-up only refreshes the aspect. Some catalog
-    // surfaces expose only create + lookup for an entry link and cannot address
-    // it by name for an update -- there the link is still fully written and only
-    // the aspect refresh is unavailable, so treat a not-addressable response as a
-    // no-op success rather than failing an otherwise-complete push. (This mirrors
-    // deleteOwnedLinks tolerating a 404 on delete.)
-    if (!isOkStatus(upd) && !isLinkNotAddressable(upd)) {
-      return {error: `entry link '${id}': ${errText(upd)}`};
-    }
-    return {};
-  }
-  if (!isOkStatus(res)) return {error: `entry link '${id}': ${errText(res)}`};
-  return {};
+  if (firstErr) return {linked, error: firstErr.error};
+  return {linked};
 }
 
 interface WriteOutcome {
   updated?: boolean;  // true when the resource already existed and was updated
   error?: string;
+}
+
+/**
+ * Writes a single relationship entry link to Knowledge Catalog.
+ *
+ * Attempts to create `link`, and if it already exists (HTTP 409), delegates to
+ * `updateEntryLink`.
+ */
+async function writeEntryLink(
+    cat: CatalogClient, opts: KcDeployOptions, link: EntryLink,
+    resources: kcEmit.KcResources,
+    existingLink?: EntryLink): Promise<WriteOutcome> {
+  const id = linkId(link);
+  const res = await cat.createEntryLink(
+      opts.project, opts.location, opts.entryGroup, id, link);
+  if (isExistsStatus(res)) {
+    return updateEntryLink(cat, opts, link, resources, existingLink);
+  }
+  if (!isOkStatus(res)) return {error: `entry link '${id}': ${errText(res)}`};
+  return {};
+}
+
+/**
+ * Updates an existing relationship entry link after `createEntryLink` returns
+ * HTTP 409.
+ *
+ * Entry-link type and endpoint references are immutable in Knowledge Catalog,
+ * so when `existingLink` differs in type or references, deletes and recreates
+ * the link (failing if `existingLink` references an entry outside `resources`);
+ * otherwise updates the link's aspects in place.
+ */
+async function updateEntryLink(
+    cat: CatalogClient, opts: KcDeployOptions, link: EntryLink,
+    resources: kcEmit.KcResources,
+    existingLink?: EntryLink): Promise<WriteOutcome> {
+  const id = linkId(link);
+  if (existingLink &&
+      (linkTypeId(existingLink) !== linkTypeId(link) ||
+       !sameLinkReferences(existingLink, link))) {
+    if (!isLinkOwner(resources, existingLink)) {
+      return {
+        error: `entry link '${id}' references an entry outside this model`,
+      };
+    }
+    const del = await cat.deleteEntryLink(
+        opts.project, opts.location, opts.entryGroup, id);
+    if (!isOkStatus(del) && !isNotFoundStatus(del)) {
+      return {error: `deleting entry link '${id}': ${errText(del)}`};
+    }
+    const recreated = await cat.createEntryLink(
+        opts.project, opts.location, opts.entryGroup, id, link);
+    if (!isOkStatus(recreated)) {
+      return {error: `entry link '${id}': ${errText(recreated)}`};
+    }
+    return {};
+  }
+
+  const upd = await cat.updateEntryLink(
+      {name: link.name, aspects: link.aspects} as EntryLink,
+      Object.keys(link.aspects ?? {}));
+  // A 409 already proved the link is present, and its entry references and
+  // type are immutable, so this follow-up only refreshes the aspect. Some
+  // catalog surfaces expose only create + lookup for an entry link and cannot
+  // address it by name for an update -- there the link is still fully written
+  // and only the aspect refresh is unavailable, so treat a not-addressable
+  // response as a no-op success rather than failing an otherwise-complete
+  // push. (This mirrors deleteEntryLinks tolerating a 404 on delete.)
+  if (!isOkStatus(upd) && !isLinkNotAddressable(upd)) {
+    return {error: `entry link '${id}': ${errText(upd)}`};
+  }
+  return {updated: true};
 }
 
 /**
@@ -1012,7 +1082,7 @@ function isNotFoundStatus(res: {status: number}): boolean {
  * Returns true when an entry link that `createEntryLink` reported as already
  * existing (409) could not be addressed by name in `updateEntryLink`:
  * `NOT_FOUND` (404) or a masked `PERMISSION_DENIED` (403). Some catalog
- * surfaces expose only create + lookup for entry links, so `writeEntryLink`
+ * surfaces expose only create + lookup for entry links, so `updateEntryLink`
  * treats this as a no-op success.
  */
 function isLinkNotAddressable(res: {status: number}): boolean {
