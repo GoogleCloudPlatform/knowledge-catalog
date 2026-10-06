@@ -1396,8 +1396,8 @@ describe('custom_extensions: where each vendor block is accepted', () => {
     }
   });
 
-  // Addendum 3 §2: the format defines no field-level GOOGLE extension, so the
-  // message does not send the author to a native key.
+  // The format defines no field-level GOOGLE extension, so the message does not
+  // send the author to a native key.
   test('Google: a GOOGLE block on a field says no field-level extension exists', () => {
     expect(() => load(GOOGLE, fullModel('field', { custom_extensions: [block('GOOGLE')] })))
       .toThrow(/not accepted on a field; the format defines no field-level GOOGLE extension/);
@@ -1465,7 +1465,7 @@ describe('metric entity anchor', () => {
   test('vanilla: an anchor is rejected with a pointer to the alternatives', () => {
     expect(() => load(VANILLA, countStar({ entity: 'orders' })))
       .toThrow(/'entity' is a '0.2.0.dev0\/google' extension/);
-    // A metric reads fields, never columns (Model Spec §3.3).
+    // A metric reads fields, never columns.
     expect(() => load(VANILLA, countStar({ entity: 'orders' })))
       .toThrow(/takes its entity from the fields it reads/);
   });
@@ -1586,8 +1586,8 @@ ${body}    datasets:
 `;
   };
 
-  // Model Spec §1.5: nothing is dropped silently. Schema validation drops a
-  // `__proto__` key, so the loader rejects it first.
+  // Nothing is dropped silently. Schema validation drops a `__proto__` key, so
+  // the loader rejects it first.
   test('a member named __proto__ is rejected in both flavors', () => {
     for (const v of FLAVORS) {
       expect(() => loadModels(withCustom('__proto__: {x: 1}\nkeep: 1', v)))
@@ -1596,8 +1596,8 @@ ${body}    datasets:
     }
   });
 
-  // A member's value is opaque (Addendum 4 §2), so a `__proto__` key inside it
-  // is kept, and so is a nested key named `ai_context`.
+  // A member's value is opaque, so a `__proto__` key inside it is kept, and so
+  // is a nested key named `ai_context`.
   test('a __proto__ key inside a member value is kept', () => {
     const vanilla = loadModels(withCustom('custom: {__proto__: 1, y: 2}', VANILLA))
                         .models[0].aiContext?.additionalProperties as any;

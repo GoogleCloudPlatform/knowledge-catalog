@@ -25,8 +25,8 @@ export interface AiContext {
   examples?: string[];
   // Custom members, preserved verbatim for round-trip: the members under
   // `custom:` in the Google flavor, and the sibling members beside the three
-  // standard ones in vanilla (mapping Addendum 4 §2.1). A member whose name is
-  // a whole number sorts first, so document order holds for the rest only.
+  // standard ones in vanilla. A member whose name is a whole number sorts
+  // first, so document order holds for the rest only.
   additionalProperties?: Record<string, unknown>;
 }
 
@@ -205,9 +205,9 @@ export interface Field {
  * a CLOSED, case-sensitive set of logical types, independent of physical
  * representation. It is optional; omit it when the type is unknown. `Opaque`
  * marks an unknown type: the loader reads it as no type, and the catalog stores
- * it where a type is required (base mapping §4.1). No custom extension
- * supplies a real type for it (Model Spec §3.1.2). The loader enforces this set
- * at parse time, so a `type` on the IR is always one of these.
+ * it where a type is required. No custom extension supplies a real type for
+ * it. The loader enforces this set at parse time, so a `type` on the IR is
+ * always one of these.
  */
 export const DATA_TYPES = [
   'String',

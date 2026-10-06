@@ -965,10 +965,10 @@ function* modelAiContexts(doc: unknown):
 
 // Why a custom ai_context member named `__proto__` cannot load, or undefined.
 // Schema validation drops that key as a guard against prototype pollution, so
-// it is rejected here rather than lost without a word (Model Spec §1.5). Only
-// member names are checked: a member's value is opaque and keeps any key. In
-// the Google flavor a sibling of the standard members is an unrecognized key
-// rather than a custom member.
+// it is rejected here rather than lost without a word. Only member names are
+// checked: a member's value is opaque and keeps any key. In the Google flavor
+// a sibling of the standard members is an unrecognized key rather than a
+// custom member.
 function protoMemberError(doc: unknown, google: boolean): string|undefined {
   const custom = (label: string) =>
       `${label}: custom ai_context member '__proto__' is not supported; ` +
