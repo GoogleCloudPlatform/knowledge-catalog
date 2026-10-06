@@ -542,6 +542,31 @@ describe('deployKnowledgeCatalog: delete reconciliation', () => {
     expect(result.deleted).toBe(0);
   });
 
+  test(
+      'an emitter that produced no entries deletes nothing even with ' +
+          'non-empty ownedPrefixes',
+      async () => {
+        const {del} = stubClient({
+          existing: ['sales.entities.orders', 'sales.metrics.total_revenue'],
+        });
+
+        const result = await deployEmittedModels(
+            [{
+              model: 'sales',
+              resources: {
+                entries: [],
+                entryLinks: [],
+                warnings: [],
+                ownedPrefixes: ['sales.entities.', 'sales.metrics.'],
+              },
+            }],
+            [], CTX, OPTS);
+
+        expect(result.success).toBe(true);
+        expect(del).not.toHaveBeenCalled();
+        expect(result.deleted).toBe(0);
+      });
+
   test('deletes nothing when the model still emits every entry', async () => {
     const {del} = stubClient({existing: EMITTED});
 
@@ -565,18 +590,31 @@ describe('deployKnowledgeCatalog: delete reconciliation', () => {
     expect(del).toHaveBeenCalledTimes(1);
   });
 
-  test('a failed delete fails the push, naming the entry', async () => {
-    const {del} = stubClient({
-      existing: [...EMITTED, 'sales.metrics.removed'],
-      del: () => err(500, 'boom'),
-    });
+  test(
+      'a failed delete fails the push, naming the orphaned entry and model ' +
+          'while keeping partial counts',
+      async () => {
+        const {del} = stubClient({
+          existing: [
+            ...EMITTED,
+            'sales.entities.removed',
+            'sales.metrics.removed',
+          ],
+          del: (id) =>
+              id === 'sales.metrics.removed' ? err(500, 'boom') : ok({}),
+        });
 
-    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+        const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
-    expect(result.success).toBe(false);
-    expect(result.details).toContain('sales.metrics.removed');
-    expect(del).toHaveBeenCalledTimes(1);
-  });
+        expect(result.success).toBe(false);
+        expect(result.created).toBe(3);
+        expect(result.deleted).toBe(1);
+        expect(result.details)
+            .toBe(
+                'Deleting orphaned entry \'sales.metrics.removed\' from model ' +
+                '\'sales\' failed: boom');
+        expect(del).toHaveBeenCalledTimes(2);
+      });
 
   test('validateOnly never lists or deletes (offline)', async () => {
     const {list, del} = stubClient({existing: ['sales.entities.removed']});
@@ -798,12 +836,14 @@ describe('deployKnowledgeCatalog: whole-model removal (--force-remove)', () => {
            models(DOCS), CTX, {...OPTS, forceRemove: true});
 
        expect(result.success).toBe(true);
-       // The foreign model's 4 entries and its 1 link are removed...
+       // The foreign model's 4 entries (children first, anchor last) and its 1
+       // link are removed...
        expect(result.deleted).toBe(4);
        expect(result.unlinked).toBe(1);
        expect(delLink.mock.calls.map(c => c[3])).toEqual(['old-a-to-b']);
-       expect(del.mock.calls.map(c => c[3]).sort()).toEqual(
-           ['old', 'old.entities.a', 'old.entities.b', 'old.metrics.m']);
+       expect(del.mock.calls.map(c => c[3])).toEqual([
+         'old.entities.a', 'old.entities.b', 'old.metrics.m', 'old'
+       ]);
        // ...and the current model is still written (3 entries).
        expect(create).toHaveBeenCalledTimes(3);
      });
@@ -1082,15 +1122,18 @@ describe('preflightKnowledgeCatalog and applyKnowledgeCatalog', () => {
 
   test(
       'apply fails under --force-remove when deleteEntry fails on a ' +
-          'foreign model',
+          'foreign model, leaving the foreign anchor intact',
       async () => {
         const forceOpts = {...OPTS, forceRemove: true};
-        stubClient({
+        const {del} = stubClient({
           existing: [
             {id: 'old', type: MODEL_TYPE},
             {id: 'old.entities.a', type: ENTITY_TYPE},
+            {id: 'old.entities.b', type: ENTITY_TYPE},
           ],
-          del: () => err(500, 'delete entry failed'),
+          del: (id) => id === 'old.entities.b' ?
+              err(500, 'delete entry failed') :
+              ok({}),
         });
 
         const pre =
@@ -1099,7 +1142,15 @@ describe('preflightKnowledgeCatalog and applyKnowledgeCatalog', () => {
             await applyKnowledgeCatalog(pre.prepared!, CTX, forceOpts);
 
         expect(applied.success).toBe(false);
-        expect(applied.details).toContain('delete entry failed');
+        expect(applied.deleted).toBe(1);
+        expect(del.mock.calls.map(c => c[3])).toEqual([
+          'old.entities.a',
+          'old.entities.b',
+        ]);
+        expect(applied.details)
+            .toBe(
+                'Deleting entry \'old.entities.b\' from removed model ' +
+                '\'old\' failed: delete entry failed');
       });
 
   test(
@@ -1208,5 +1259,136 @@ describe('preflightKnowledgeCatalog and applyKnowledgeCatalog', () => {
                 '    - sales-orders-to-lineitem\n' +
                 '  1 schema-join link:\n' +
                 '    - sales-legacy-join');
+      });
+});
+
+
+describe('deployKnowledgeCatalog: aspect removal on update', () => {
+  test(
+      'with v2Aspects on, updating model, entity, metric, and action ' +
+          'entries passes the exact V2 aspectKeys list and ' +
+          'deleteMissingAspects: true',
+      async () => {
+        // Force every `createEntry` call to return 409 ALREADY_EXISTS so
+        // `writeEntry` falls back to `updateEntry`.
+        const {update} = stubClient({
+          create: () => err(409, 'already exists'),
+          update: ok({}),
+        });
+
+        const salesResult = await deployKnowledgeCatalog(
+            models(DOCS), CTX, {...OPTS, v2Aspects: true});
+        const actionsResult = await deployKnowledgeCatalog(
+            models(ACTIONS_DOCS), CTX, {...OPTS, v2Aspects: true});
+
+        expect(salesResult.success).toBe(true);
+        expect(actionsResult.success).toBe(true);
+
+        const modelUpdateCall = update.mock.calls.find(
+            c => (c[0].name as string).endsWith('/entries/sales'));
+        const entityUpdateCall = update.mock.calls.find(
+            c => (c[0].name as string).endsWith('sales/entities/orders'));
+        const metricUpdateCall = update.mock.calls.find(
+            c => (c[0].name as string).endsWith('sales/metrics/total_revenue'));
+        const actionUpdateCall = update.mock.calls.find(
+            c =>
+                (c[0].name as string).endsWith('commerce.actions.RefundOrder'));
+
+        expect(modelUpdateCall).toBeDefined();
+        expect(entityUpdateCall).toBeDefined();
+        expect(metricUpdateCall).toBeDefined();
+        expect(actionUpdateCall).toBeDefined();
+
+        expect(
+            entityUpdateCall![0]
+                .aspects?.['dataplex-types.global.sql-expressions'])
+            .toBeUndefined();
+
+        expect(modelUpdateCall![2]).toEqual([
+          'dataplex-types.global.semantic-model',
+          'dataplex-types.global.guidelines',
+        ]);
+        expect(modelUpdateCall![3]).toBe(true);
+
+        expect(entityUpdateCall![2]).toEqual([
+          'dataplex-types.global.semantic-entity',
+          'dataplex-types.global.schema',
+          'dataplex-types.global.guidelines',
+          'dataplex-types.global.sql-expressions',
+          'dataplex-types.global.guidelines@*',
+        ]);
+        expect(entityUpdateCall![3]).toBe(true);
+
+        expect(metricUpdateCall![2]).toEqual([
+          'dataplex-types.global.semantic-metric',
+          'dataplex-types.global.guidelines',
+          'dataplex-types.global.sql-expressions',
+        ]);
+        expect(metricUpdateCall![3]).toBe(true);
+
+        expect(actionUpdateCall![2]).toEqual([
+          'dest.global.semantic-action',
+          'dataplex-types.global.guidelines',
+        ]);
+        expect(actionUpdateCall![3]).toBe(true);
+      });
+
+  test(
+      'with v2Aspects off, updating model, entity, metric, and action ' +
+          'entries passes the exact V1 aspectKeys list and ' +
+          'deleteMissingAspects: true',
+      async () => {
+        const {update} = stubClient({
+          create: () => err(409, 'already exists'),
+          update: ok({}),
+        });
+
+        const salesResult =
+            await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+        const actionsResult =
+            await deployKnowledgeCatalog(models(ACTIONS_DOCS), CTX, OPTS);
+
+        expect(salesResult.success).toBe(true);
+        expect(actionsResult.success).toBe(true);
+
+        const modelUpdateCall = update.mock.calls.find(
+            c => (c[0].name as string).endsWith('/entries/sales'));
+        const entityUpdateCall = update.mock.calls.find(
+            c => (c[0].name as string).endsWith('sales.entities.orders'));
+        const metricUpdateCall = update.mock.calls.find(
+            c => (c[0].name as string).endsWith('sales.metrics.total_revenue'));
+        const actionUpdateCall = update.mock.calls.find(
+            c =>
+                (c[0].name as string).endsWith('commerce.actions.RefundOrder'));
+
+        expect(modelUpdateCall).toBeDefined();
+        expect(entityUpdateCall).toBeDefined();
+        expect(metricUpdateCall).toBeDefined();
+        expect(actionUpdateCall).toBeDefined();
+
+        expect(modelUpdateCall![2]).toEqual([
+          'dataplex-types.global.semantic-model',
+          'dataplex-types.global.guidelines',
+        ]);
+        expect(modelUpdateCall![3]).toBe(true);
+
+        expect(entityUpdateCall![2]).toEqual([
+          'dataplex-types.global.semantic-entity',
+          'dataplex-types.global.schema',
+          'dataplex-types.global.guidelines',
+        ]);
+        expect(entityUpdateCall![3]).toBe(true);
+
+        expect(metricUpdateCall![2]).toEqual([
+          'dataplex-types.global.semantic-metric',
+          'dataplex-types.global.guidelines',
+        ]);
+        expect(metricUpdateCall![3]).toBe(true);
+
+        expect(actionUpdateCall![2]).toEqual([
+          'dest.global.semantic-action',
+          'dataplex-types.global.guidelines',
+        ]);
+        expect(actionUpdateCall![3]).toBe(true);
       });
 });
