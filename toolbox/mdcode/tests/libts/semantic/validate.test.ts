@@ -919,8 +919,9 @@ semantic_model:
 });
 
 
-// A relationship is a foreign key, which references a key, and a join that
-// reaches no key cannot be built into a graph.
+// A relationship's cardinality comes from the key its to_columns cover, so a
+// join that covers no key is rejected on every push, a catalog-only one
+// included.
 describe('a relationship joins on a key of its target', () => {
   const ent = (name: string, over: Partial<Entity> = {}): Entity => ({
     name, dataSource: `p.d.${name}`, keys: ['id'], fields: [], ...over,

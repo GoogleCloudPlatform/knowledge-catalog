@@ -866,10 +866,12 @@ function inheritanceRuleErrors(
   return errors;
 }
 
-// A relationship's `to_columns` cover a primary or unique key of the `to`
-// entity: a relationship is a foreign key, which references a key, and a join
-// that reaches no key cannot be built into a graph. A superset of a key covers
-// it (see keysCoveredBy). Keys and join columns are compared as the physical
+// A relationship's `to_columns` must cover a primary or unique key of the `to`
+// entity. A relationship is many-to-one or one-to-one, and the key its
+// `to_columns` cover decides which, so a join that covers no key is invalid in
+// every model, whatever it deploys to. The check runs on every push, a
+// catalog-only push included. A superset of a key covers it (see
+// keysCoveredBy). Keys and join columns are compared as the physical
 // columns they name, and a key that names a field with no column yet cannot be
 // judged until a binding gives it one. A relationship with no join columns
 // yet, one through a junction table, and one to an abstract entity, which the

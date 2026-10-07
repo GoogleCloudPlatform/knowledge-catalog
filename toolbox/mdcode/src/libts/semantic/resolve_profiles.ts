@@ -1679,7 +1679,7 @@ export function validateProfileConsistency(
     // covers a key of the target, and the same keys as every other binding,
     // because cardinality is a property of the model. A binding's keys are its
     // own where it states them and the model file's otherwise. A join that
-    // covers no key cannot be built into a graph, so it is rejected. A binding
+    // covers no key is neither many-to-one nor one-to-one, so it is rejected. A binding
     // that states no join columns does not bind the relationship and is left
     // out; for a named profile, completeness reports that.
     const answers = new Map<string, string[]>();
