@@ -1103,29 +1103,14 @@ describe('authoring sugars: entities alias, bare-string expression, deployment_t
     })).toThrow(/dialects:/);
   });
 
-  test("a top-level 'deployment_target' folds into the GOOGLE block form", () => {
-    const sugar = fromDocument({ version: '0.2.0.dev0/google',
+  test("a top-level 'deployment_target' is rejected with a migration pointer to 'deployments'", () => {
+    expect(() => fromDocument({ version: '0.2.0.dev0/google',
       semantic_model: [{
         name: 'm', deployment_target: URI,
         datasets: [{ name: 'a', source: 'bigquery:p.d.s', primary_key: ['id'],
           fields: [{ name: 'id', expression: 'id' }] }],
       }],
-    });
-    const explicit = fromDocument({ version: '0.2.0.dev0',
-      semantic_model: [{
-        name: 'm',
-        custom_extensions: [{ vendor_name: 'GOOGLE',
-          data: JSON.stringify({ deploymentTargets: [URI] }) }],
-        datasets: [{ name: 'a', source: 'bigquery:p.d.s', primary_key: ['id'],
-          fields: [{ name: 'id', expression: expr('id') }] }],
-      }],
-    });
-    expect(sugar.models[0].customExtensions)
-      .toEqual(explicit.models[0].customExtensions);
-    expect(sugar.models[0].customExtensions).toEqual([
-      { vendorName: 'GOOGLE',
-        data: JSON.stringify({ deploymentTargets: [URI] }) },
-    ]);
+    })).toThrow("model 'm': 'deployment_target' is no longer supported; migrate to the named 'deployments' list");
   });
 
 });
@@ -2088,4 +2073,96 @@ describe('strict entity sources', () => {
     }
   });
 });
+
+
+describe('deployments and inline profiles', () => {
+  const BQ_TARGET = '//bigquery.googleapis.com/projects/acme/datasets/analytics/propertyGraphs/sales';
+  const SPANNER_TARGET = '//spanner.googleapis.com/projects/acme/instances/test/databases/sales/propertyGraphs/sales';
+
+  test('a named deployments list loads onto model.deployments and folds targets into the GOOGLE custom_extensions shim', () => {
+    const { models } = load(GOOGLE, {
+      name: 'sales',
+      deployments: [
+        { name: 'prod', target: BQ_TARGET },
+        { name: 'staging', target: SPANNER_TARGET, profile: 'spanner_binding' },
+      ],
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    });
+    const m = models[0];
+    expect(m.deployments).toEqual([
+      { name: 'prod', target: BQ_TARGET },
+      { name: 'staging', target: SPANNER_TARGET, profile: 'spanner_binding' },
+    ]);
+    expect(m.customExtensions).toEqual([
+      {
+        vendorName: 'GOOGLE',
+        data: JSON.stringify({ deploymentTargets: [BQ_TARGET, SPANNER_TARGET] }),
+      },
+    ]);
+  });
+
+  test('duplicate deployment names are rejected', () => {
+    expect(() => load(GOOGLE, {
+      name: 'sales',
+      deployments: [
+        { name: 'prod', target: BQ_TARGET },
+        { name: 'prod', target: SPANNER_TARGET },
+      ],
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    })).toThrow("model 'sales': duplicate deployment name 'prod'");
+  });
+
+  test('duplicate deployment targets are rejected, naming both deployments', () => {
+    expect(() => load(GOOGLE, {
+      name: 'sales',
+      deployments: [
+        { name: 'prod', target: BQ_TARGET },
+        { name: 'staging', target: BQ_TARGET },
+      ],
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    })).toThrow(
+      `model 'sales': deployments 'prod' and 'staging' target the same resource '${BQ_TARGET}'; each deployment must target a distinct resource`,
+    );
+  });
+
+  test('deployment_target is rejected in both flavors with flavor-appropriate guidance', () => {
+    for (const extra of [{}, { deployments: [{ name: 'prod', target: BQ_TARGET }] }]) {
+      expect(() => load(GOOGLE, {
+        name: 'sales',
+        deployment_target: BQ_TARGET,
+        ...extra,
+        datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+      })).toThrow("model 'sales': 'deployment_target' is no longer supported; migrate to the named 'deployments' list");
+    }
+
+    expect(() => load(VANILLA, {
+      name: 'sales',
+      deployment_target: BQ_TARGET,
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    })).toThrow(
+      "model 'sales': 'deployment_target' is not in the open format ('0.2.0.dev0'); declare deployment targets in a GOOGLE 'custom_extensions' block, or set version: '0.2.0.dev0/google' and use 'deployments:'",
+    );
+  });
+
+  test('a plain deployments key is rejected in vanilla', () => {
+    expect(() => load(VANILLA, {
+      name: 'sales',
+      deployments: [{ name: 'prod', target: BQ_TARGET }],
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    })).toThrow('Unrecognized key: \\"deployments\\"');
+  });
+
+  test('an inline profiles key in a Google-flavor document is rejected, naming the sidecar file', () => {
+    expect(() => load(GOOGLE, {
+      name: 'sales',
+      profiles: {
+        bq: { datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders' }] },
+      },
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    })).toThrow(
+      "model 'sales': inline 'profiles' are not supported in a '0.2.0.dev0/google' document; write each binding profile in its own sidecar file 'sales.profile.<name>.yaml'.",
+    );
+  });
+});
+
 

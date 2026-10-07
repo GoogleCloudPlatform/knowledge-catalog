@@ -61,6 +61,7 @@ import {AiContext, DataType, Entity, Metric, Relationship, SemanticModel} from '
 import {actionEntries} from './kc_actions';
 import {constraintEntries} from './kc_constraints';
 import {linkSlug, Namer, ownedEntryIdPrefixes} from './kc_ids';
+import {databaseOf} from './loader';
 
 export interface KcGenerateOptions {
   project: string;     // project the entries are created in (destination)
@@ -392,7 +393,10 @@ function entityAspectData(entity: Entity): Record<string, any> {
   // list), so omitting it is rejected server-side. An empty list is the honest
   // "no binding yet"; the reader treats it the same as an absent source
   // (dataSource becomes '').
-  const path = resourcePath(entity.dataSource);
+  const path = entity.authoredSource &&
+          databaseOf(entity.authoredSource) !== undefined ?
+      entity.authoredSource.trim() :
+      resourcePath(entity.dataSource);
   return compact({
     source: {resources: path ? [path] : []},
   });
@@ -554,7 +558,10 @@ function columnMetadataType(type: DataType|undefined): string {
 // need a different URI shape than the BigQuery managed-table one below.
 function resourcePath(dataSource: string): string {
   const trimmed = (dataSource ?? '').trim();
-  if (!trimmed || /\s/.test(trimmed)) return trimmed;
+  if (!trimmed || /\s/.test(trimmed) || trimmed.includes('/') ||
+      trimmed.includes(':')) {
+    return trimmed;
+  }
   const parts = trimmed.split('.').map(unquote);
   if (parts.length === 3 && parts.every(p => p.length)) {
     return `//bigquery.googleapis.com/projects/${parts[0]}/datasets/${

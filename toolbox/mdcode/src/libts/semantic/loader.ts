@@ -49,8 +49,8 @@ const FALLBACK_DIALECT = 'ANSI_SQL';
 // selects which extension surface is legal:
 //   - OSSIE_VERSION: vanilla Apache Ossie. kcmd's extensions ride ONLY in
 //     Ossie's `custom_extensions` carrier; the native extension keys
-//     (`entities` alias, `extends`, `abstract`, `deployment_target`) are not
-//     accepted.
+//     (`entities` alias, `extends`, `abstract`, `deployments`, `actions`,
+//     `constraints`) are not accepted.
 //   - GOOGLE_VERSION: kcmd's extended profile. The native extension keys are
 //     first-class. Ossie's `custom_extensions` carrier is accepted for
 //     third-party vendors only; a GOOGLE block is rejected, since everything
@@ -463,6 +463,13 @@ function rejectExpressionBody(
   });
 }
 
+const deploymentSchema =
+    z.object({
+       name: z.string().min(1),
+       target: z.string().min(1),
+       profile: z.string().min(1).optional(),
+     }).strict();
+
 const modelBase = z.object({
   name: z.string(),
   description: z.string().optional(),
@@ -471,9 +478,12 @@ const modelBase = z.object({
   datasets: z.array(datasetBase).min(1),
   relationships: z.array(relationshipSchema).optional(),
   metrics: z.array(metricSchema).optional(),
-  // A native deployment-target key (GOOGLE_VERSION only). Folded into a GOOGLE
-  // `custom_extensions` block on the IR after validation (see convertModel).
+  // A native deployment-target key (GOOGLE_VERSION only, under
+  // allowLegacyBareSource). Folded into a GOOGLE `custom_extensions` block on
+  // the IR after validation (see convertModel).
   deployment_target: z.string().optional(),
+  // Named deployment targets (GOOGLE_VERSION only).
+  deployments: z.array(deploymentSchema).optional(),
   // Model-level write operations, also GOOGLE_VERSION only (see actionSchema).
   actions: z.array(actionSchema).optional(),
   constraints: z.array(constraintSchema).optional(),
@@ -491,7 +501,7 @@ const customExtensionsKey = {custom_extensions: z.array(customExtensionSchema).o
 // Every object is `.strict()`, so an unknown key is a hard error rather than
 // silently dropped. Two axes shape it:
 //   - `extended` selects the version's extension surface: under the extended
-//     profile the native keys (`extends`, `abstract`, `deployment_target`,
+//     profile the native keys (`extends`, `abstract`, `deployments`,
 //     metric `entity`) are accepted; under vanilla Ossie they are not.
 //     (`entities` is folded to `datasets` before validation, so it is never a
 //     schema key -- see normalizeDocumentSugars.)
@@ -683,6 +693,7 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
                    // unknown rather than silently dropped.
          ...(extended ? {
            deployment_target: z.string().optional(),
+           deployments: z.array(deploymentSchema).optional(),
            actions: z.array(action).optional(),
            constraints: z.array(constraint).optional(),
          } :
@@ -800,30 +811,66 @@ function composeDescription(...parts: (string|undefined)[]): string|undefined {
 
 
 // The vendor tag for Google-specific extension blocks (kept in sync with the
-// deploy leg's reader). A model-level `deployment_target:` folds into one.
+// deploy leg's reader). A model-level `deployments:` list folds into one.
 const GOOGLE_VENDOR = 'GOOGLE';
 
 // Rewrites the author-friendly sugar forms into the canonical wire shape the
 // schema validates, so the guide's readable syntax and the underlying format
 // are one code path. Today that is the `entities:` alias for `datasets:`, which
 // is a native extension accepted only under the extended profile. A model-level
-// `deployment_target:` is a native key under the extended profile too, but it
-// is left in place here and folded into a GOOGLE `custom_extensions` block on
-// the IR after validation (see convertModel), so the strict schema can accept
-// (and reject) it natively. Operates on the parsed document before validation.
-function normalizeDocumentSugars(doc: unknown, extended: boolean): unknown {
+// `deployments:` list is a native key under the extended profile too, left in
+// place here and folded into a GOOGLE `custom_extensions` block on the IR after
+// validation (see convertModel) so the strict schema can accept (and reject) it
+// natively. Operates on the parsed document before validation.
+function normalizeDocumentSugars(
+    doc: unknown, extended: boolean, allowLegacyBareSource = false): unknown {
   if (!doc || typeof doc !== 'object') return doc;
   const cloned = structuredClone(doc) as any;
   const models = cloned.semantic_model;
   if (!Array.isArray(models)) return cloned;
   for (const m of models) {
-    if (m && typeof m === 'object') normalizeModelSugars(m, extended);
+    if (m && typeof m === 'object') {
+      normalizeModelSugars(m, extended, allowLegacyBareSource);
+    }
   }
   return cloned;
 }
 
-function normalizeModelSugars(m: any, extended: boolean): void {
+function normalizeModelSugars(
+    m: any, extended: boolean, allowLegacyBareSource = false): void {
   const label = typeof m.name === 'string' ? `model '${m.name}'` : 'model';
+
+  // `deployment_target` has been replaced by the named `deployments:` list in
+  // the extended profile (and was never in vanilla). Reject it unless
+  // `allowLegacyBareSource` is set for legacy fixtures and profile files.
+  if (m.deployment_target !== undefined && !allowLegacyBareSource) {
+    if (!extended) {
+      throw new Error(
+          `Semantic model load error: ${label}: 'deployment_target' is not ` +
+          `in the open format ('${OSSIE_VERSION}'); declare deployment ` +
+          `targets in a GOOGLE 'custom_extensions' block, or set ` +
+          `version: '${GOOGLE_VERSION}' and use 'deployments:'`);
+    }
+    const target = typeof m.deployment_target === 'string' ?
+        m.deployment_target :
+        '<target>';
+    throw new Error(
+        `Semantic model load error: ${label}: 'deployment_target' is no ` +
+        `longer supported; migrate to the named 'deployments' list:\n` +
+        `  deployments:\n` +
+        `    - name: default\n` +
+        `      target: ${target}`);
+  }
+
+  // In the Google flavor, binding profiles live in sidecar files
+  // (`<model>.profile.<name>.yaml`), never inline under `profiles:`.
+  if (extended && m.profiles !== undefined) {
+    const modelFile = typeof m.name === 'string' ? m.name : '<model>';
+    throw new Error(
+        `Semantic model load error: ${label}: inline 'profiles' are not ` +
+        `supported in a '${GOOGLE_VERSION}' document; write each binding ` +
+        `profile in its own sidecar file '${modelFile}.profile.<name>.yaml'.`);
+  }
 
   // `entities` is a native alias for `datasets`, accepted only under the
   // extended profile. Under vanilla Ossie the key is unknown; surface a clear
@@ -845,16 +892,16 @@ function normalizeModelSugars(m: any, extended: boolean): void {
   }
 }
 
-// Builds the GOOGLE custom-extension block that carries a model's
-// `deployment_target` URI on the IR (the form the deploy leg reads). The native
-// `deployment_target:` key (extended profile only) is folded into one after
-// validation (see convertModel). The extended profile rejects any authored
-// GOOGLE block (see rejectGoogleBlock), so there is never a pre-existing one to
-// reconcile with.
-function deploymentTargetExtension(target: string): CustomExtension {
+// Builds the GOOGLE custom-extension block that carries a model's deployment
+// target URIs on the IR (the form the deploy leg reads). Both the native
+// `deployments:` list and (under `allowLegacyBareSource`) the legacy
+// `deployment_target:` key fold into this block after validation (see
+// convertModel). The extended profile rejects any authored GOOGLE block (see
+// rejectGoogleBlock), so there is never a pre-existing one to reconcile with.
+function deploymentTargetsExtension(targets: string[]): CustomExtension {
   return {
     vendorName: GOOGLE_VENDOR,
-    data: JSON.stringify({deploymentTargets: [target]}),
+    data: JSON.stringify({deploymentTargets: targets}),
   };
 }
 
@@ -1040,7 +1087,8 @@ export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
   const proto = protoMemberError(doc, extended);
   if (proto) throw new Error(`Semantic model load error: ${proto}`);
 
-  const normalized = normalizeDocumentSugars(doc, extended);
+  const normalized =
+      normalizeDocumentSugars(doc, extended, opts.allowLegacyBareSource);
   const result = makeDocumentSchema(opts.bindingOptional ?? false, extended)
                      .safeParse(normalized);
   if (!result.success) {
@@ -1164,6 +1212,28 @@ function convertModel(
   rejectDuplicateNames(
       constraints.map(c => c.name), 'constraint name', `model '${m.name}'`);
 
+  const deployments = (m.deployments ?? []).map(d => ({
+    name: d.name,
+    target: d.target,
+    ...(d.profile !== undefined ? {profile: d.profile} : {}),
+  }));
+  rejectDuplicateNames(
+      deployments.map(d => d.name), 'deployment name', `model '${m.name}'`);
+  const seenTargets = new Map<string, string>();
+  for (const d of deployments) {
+    const first = seenTargets.get(d.target);
+    if (first !== undefined) {
+      throw new Error(
+          `Semantic model load error: model '${m.name}': deployments '${
+              first}' and '${d.name}' target the same resource '${
+              d.target}'; each deployment must target a distinct resource`);
+    }
+    seenTargets.set(d.target, d.name);
+  }
+  if (!deployments.length && m.deployment_target !== undefined) {
+    deployments.push({name: 'default', target: m.deployment_target});
+  }
+
   const description = composeDescription(m.description);
 
   // `version` records the flavor the document was written in, so a consumer
@@ -1172,19 +1242,21 @@ function convertModel(
       {name: m.name, version, entities, relationships, metrics};
   if (actions.length) model.actions = actions;
   if (constraints.length) model.constraints = constraints;
+  if (deployments.length) model.deployments = deployments;
   if (description) model.description = description;
   const ai = aiContextOrUndefined(m.ai_context);
   if (ai) model.aiContext = ai;
   // Authored custom extensions are carried verbatim. Under the extended
-  // profile the native `deployment_target` key is folded into a GOOGLE block
-  // appended after them; no authored GOOGLE block can collide with it, since
-  // that flavor rejects one (see rejectGoogleBlock).
+  // profile the native `deployments` list (or legacy `deployment_target` key)
+  // is folded into a GOOGLE block appended after them; no authored GOOGLE block
+  // can collide with it, since that flavor rejects one (see rejectGoogleBlock).
   const ce = toCustomExtensions(m.custom_extensions);
   if (ce) model.customExtensions = ce;
-  if (m.deployment_target !== undefined) {
+  const foldedTargets = deployments.map(d => d.target);
+  if (foldedTargets.length) {
     model.customExtensions = [
       ...(model.customExtensions ?? []),
-      deploymentTargetExtension(m.deployment_target),
+      deploymentTargetsExtension(foldedTargets),
     ];
   }
   return model;
@@ -1820,9 +1892,9 @@ interface ParsedSource {
 
 const MAX_CATALOG_NAME_LENGTH = 4000;
 
-const BIGQUERY_TABLE_URI =
+export const BIGQUERY_TABLE_URI =
     /^\/\/bigquery\.googleapis\.com\/projects\/([^/]+)\/datasets\/([^/.]+)\/tables\/([^/.]+)$/;
-const BIGLAKE_TABLE_URI =
+export const BIGLAKE_TABLE_URI =
     /^\/\/biglake\.googleapis\.com\/projects\/([^/]+)\/catalogs\/([^/.]+)\/namespaces\/([^/.]+)\/tables\/([^/.]+)$/;
 const SPANNER_TABLE_URI =
     /^\/\/spanner\.googleapis\.com\/projects\/([^/]+)\/instances\/([^/]+)\/databases\/([^/]+)\/tables\/[^/]+$/;

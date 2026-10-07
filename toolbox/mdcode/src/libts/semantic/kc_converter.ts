@@ -54,9 +54,10 @@
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
-import {Action, AiContext, Constraint, CustomExtension, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
+import {Action, AiContext, Constraint, CustomExtension, DataType, DeploymentSpec, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
 import {isActionEntry, readAction} from './kc_actions';
 import {isConstraintEntry, readConstraint} from './kc_constraints';
+import {BIGLAKE_TABLE_URI, BIGQUERY_TABLE_URI, catalogNameSegments} from './loader';
 import {referencedEntityNames} from './sql_expr_utils';
 
 export interface ReadResult {
@@ -164,10 +165,14 @@ export function modelsFromCatalogResources(
                             .filter((c): c is Constraint => c !== undefined);
     if (constraints.length) model.constraints = constraints;
     warnDanglingGuards(actions, constraints, name, warnings);
-    // Deployment targets ride back in the same GOOGLE custom_extensions block
-    // the author wrote them in (the inverse of the emitter's modelAspectData).
-    const targets = readDeploymentTargets(anchor);
-    if (targets) model.customExtensions = [targets];
+    // Deployment targets ride back in both the GOOGLE custom_extensions block
+    // and as synthesized `deployments` entries (`default` when one,
+    // `deployment_1`, `deployment_2`, ... when several).
+    const targets = readDeploymentTargets(anchor, name, warnings);
+    if (targets) {
+      model.customExtensions = [targets.extension];
+      model.deployments = targets.deployments;
+    }
     const ai = readAiContext(anchor);
     if (ai) model.aiContext = ai;
     return model;
@@ -201,7 +206,8 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
         name}': no semantic-entity aspect data (fetch with the aspect type)`);
   }
 
-  const dataSource = dataSourceFromResource(semantic?.source?.resources?.[0]);
+  const rawResource = (semantic?.source?.resources?.[0] ?? '').trim();
+  const dataSource = dataSourceFromResource(rawResource);
   if (!dataSource) {
     warnings.push(
         `entity '${name}': no backing data source in the semantic-entity ` +
@@ -210,6 +216,7 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
   const entity: Entity = {
     name,
     dataSource,
+    ...(rawResource ? {authoredSource: rawResource} : {}),
     // The grain / primary key, from the schema aspect's primaryKey.fields
     // (ordered, so a composite key's ordinal positions round-trip).
     keys: stringList(schema.primaryKey?.fields),
@@ -359,14 +366,23 @@ function irDataType(dataType: string|undefined, metadataType: string|undefined):
 }
 
 
-// The inverse of resourcePath: a BigQuery linked-resource URI becomes the
-// canonical `project.dataset.table` string; anything else (a verbatim query or
-// a passthrough reference) is returned unchanged.
+// The inverse of entityAspectData: a BigQuery or BigLake resource URI or a
+// `bigquery:` catalog name becomes the canonical dot-separated table string;
+// anything else (Spanner/AlloyDB URIs, other catalog names, or a query) is
+// returned unchanged.
 function dataSourceFromResource(resource: string|undefined): string {
   const value = (resource ?? '').trim();
-  const m = value.match(
-      /^\/\/bigquery\.googleapis\.com\/projects\/([^/]+)\/datasets\/([^/]+)\/tables\/([^/]+)$/);
-  return m ? `${m[1]}.${m[2]}.${m[3]}` : value;
+  const bq = value.match(BIGQUERY_TABLE_URI);
+  if (bq) return `${bq[1]}.${bq[2]}.${bq[3]}`;
+  const bl = value.match(BIGLAKE_TABLE_URI);
+  if (bl) return `${bl[1]}.${bl[2]}.${bl[3]}.${bl[4]}`;
+  if (value.startsWith('bigquery:')) {
+    const segs = catalogNameSegments(value.slice('bigquery:'.length));
+    if (segs.length === 3 && segs.every(s => s.length > 0)) {
+      return segs.join('.');
+    }
+  }
+  return value;
 }
 
 
@@ -408,16 +424,31 @@ function aspectDataOf(aspects: Record<string, Aspect>|undefined, type: string):
 
 
 // Recovers the model's deployment targets from its semantic-model aspect back
-// into the GOOGLE custom_extension the author declared them in (the inverse of
-// the emitter's modelAspectData). Returns undefined when the model has none.
-function readDeploymentTargets(anchor: Entry): CustomExtension|undefined {
+// into both the GOOGLE custom_extension shim and a `deployments` list (`default`
+// when there is one target, `deployment_1`, `deployment_2`, ... when there are
+// several), warning that the original deployment names were not recovered.
+// Returns undefined when the model has none.
+function readDeploymentTargets(
+    anchor: Entry, modelName: string, warnings: string[]):
+    {extension: CustomExtension; deployments: DeploymentSpec[]}|undefined {
   const targets =
       asArray(aspectData(anchor, 'semantic-model').deploymentTargets)
           .filter((t): t is string => typeof t === 'string' && t !== '');
   if (!targets.length) return undefined;
+  const deployments: DeploymentSpec[] = targets.map((target, i) => ({
+    name: targets.length === 1 ? 'default' : `deployment_${i + 1}`,
+    target,
+  }));
+  warnings.push(
+      `model '${modelName}': deployment names were not recovered (the ` +
+      `catalog stores target URIs only); using ${
+          deployments.map(d => `'${d.name}'`).join(', ')}`);
   return {
-    vendorName: 'GOOGLE',
-    data: JSON.stringify({deploymentTargets: targets})
+    extension: {
+      vendorName: 'GOOGLE',
+      data: JSON.stringify({deploymentTargets: targets}),
+    },
+    deployments,
   };
 }
 

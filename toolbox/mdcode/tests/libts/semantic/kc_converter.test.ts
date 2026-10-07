@@ -70,6 +70,7 @@ describe('emitter -> reader round trip (lossless slice)', () => {
     description: 'the sales model',
     entities: [{
       name: 'orders',
+      authoredSource: '//bigquery.googleapis.com/projects/demo/datasets/sales/tables/orders',
       dataSource: 'demo.sales.orders',
       keys: [],  // no keys: an entity with none writes no primaryKey
       fields: [
@@ -429,9 +430,9 @@ describe('relationship recovery (schema-join links -> IR)', () => {
 
 
 describe(
-    'deployment-target recovery (semantic-model aspect -> custom_extensions)',
+    'deployment-target recovery (semantic-model aspect -> deployments + custom_extensions)',
     () => {
-      test('the GOOGLE deployment targets ride back verbatim', () => {
+      test('the GOOGLE deployment targets ride back onto deployments and custom_extensions with a name warning', () => {
         const uri =
             '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
         const data = JSON.stringify({deploymentTargets: [uri]});
@@ -442,13 +443,18 @@ describe(
           relationships: [],
           metrics: [],
         };
-        expect(roundTrip(model).models[0].customExtensions).toEqual([
+        const {models, warnings} = roundTrip(model);
+        expect(models[0].deployments).toEqual([{name: 'default', target: uri}]);
+        expect(models[0].customExtensions).toEqual([
           {vendorName: 'GOOGLE', data}
+        ]);
+        expect(warnings).toEqual([
+          "model 'sales': deployment names were not recovered (the catalog stores target URIs only); using 'default'",
         ]);
       });
 
       test(
-          'a model with no deployment targets recovers no custom_extensions',
+          'a model with no deployment targets recovers no deployments or custom_extensions',
           () => {
             const model: SemanticModel = {
               name: 'sales',
@@ -457,7 +463,10 @@ describe(
               relationships: [],
               metrics: [],
             };
-            expect(roundTrip(model).models[0].customExtensions).toBeUndefined();
+            const {models, warnings} = roundTrip(model);
+            expect(models[0].deployments).toBeUndefined();
+            expect(models[0].customExtensions).toBeUndefined();
+            expect(warnings).toEqual([]);
           });
     });
 
@@ -823,8 +832,11 @@ describe(
             const {models, warnings} = roundTrip(authored);
             expect(models).toHaveLength(1);
             expect(stripToKcFloor(models[0])).toEqual(stripToKcFloor(authored));
-            // A clean corpus model round-trips without reader warnings.
-            expect(warnings).toEqual([]);
+            // A clean corpus model only warns when deployment names had to be
+            // synthesized from target URIs.
+            expect(
+                warnings.filter(w => !/deployment names were not recovered/.test(w)))
+                .toEqual([]);
           }
         });
       }
@@ -843,6 +855,14 @@ function stripToKcFloor(model: SemanticModel): SemanticModel {
   // The flavor the document declared (`version`) has nowhere to live in the
   // current catalog aspects, so it does not survive a round trip through them.
   delete m.version;
+  if (m.deployments?.length) {
+    m.deployments = m.deployments.map((d, i, arr) => ({
+      name: arr.length === 1 ? 'default' : `deployment_${i + 1}`,
+      target: d.target,
+    }));
+  } else {
+    delete m.deployments;
+  }
 
   // ai_context rides back through the built-in `guidelines` aspect, but only
   // `instructions` -- synonyms/examples are not persisted. Reduce every

@@ -35,6 +35,7 @@ const SALES: SemanticModel = {
   aiContext: {instructions: 'Use for order analysis.'},
   entities: [{
     name: 'orders',
+    authoredSource: '//bigquery.googleapis.com/projects/demo/datasets/sales/tables/orders',
     dataSource: 'demo.sales.orders',
     keys: ['o_orderkey'],
     uniqueKeys: [['o_totalprice']],

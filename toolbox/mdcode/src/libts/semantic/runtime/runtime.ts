@@ -156,6 +156,17 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   });
   if (loaded.error) return {error: loaded.error};
   for (const w of loaded.warnings) warn(`Warning: ${w}`);
+  for (const {document, model} of loaded.models) {
+    for (const d of model.deployments ?? []) {
+      if (d.profile !== undefined) {
+        return {
+          error: `[${document}] model '${model.name}': deployment '${
+              d.name}' names profile '${d.profile}'; remove 'profile' from ` +
+              `the deployment entry so it uses the model file's own bindings.`,
+        };
+      }
+    }
+  }
 
   // Inheritance is resolved for the same reason both push legs resolve it: an
   // inherited field is a field, and every reader downstream reads

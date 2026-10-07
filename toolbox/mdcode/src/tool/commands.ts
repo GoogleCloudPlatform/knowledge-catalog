@@ -153,13 +153,13 @@ export function checkPushSelection(sel: {
 
 // Whether a model document (already profile-merged) declares a graph deployment
 // target, without a full strict load. True when the model names one via the
-// `deployment_target:` sugar or a GOOGLE custom_extension `deploymentTargets`.
-// Drives the push mode: a push whose models all declare no target governs the
-// logical model only -- it deploys no graph, so bindings and a target are not
-// required and pruning is skipped (Knowledge Catalog publishes the whole
-// model). On any ambiguity (unparseable YAML, malformed GOOGLE data) it returns
-// true, so the strict load reports the problem rather than silently taking the
-// logical path.
+// `deployments:` list (or the legacy `deployment_target:` key) or a GOOGLE
+// custom_extension `deploymentTargets`. Drives the push mode: a push whose
+// models all declare no target governs the logical model only -- it deploys no
+// graph, so bindings and a target are not required and pruning is skipped
+// (Knowledge Catalog publishes the whole model). On any ambiguity (unparseable
+// YAML, malformed GOOGLE data) it returns true, so the strict load reports the
+// problem rather than silently taking the logical path.
 export function declaresGraphTarget(text: string): boolean {
   let doc: any;
   try {
@@ -171,6 +171,9 @@ export function declaresGraphTarget(text: string): boolean {
   for (const m of models) {
     if (typeof m?.deployment_target === 'string' &&
         m.deployment_target.trim()) {
+      return true;
+    }
+    if (Array.isArray(m?.deployments) && m.deployments.length > 0) {
       return true;
     }
     const exts = Array.isArray(m?.custom_extensions) ? m.custom_extensions : [];
@@ -465,6 +468,18 @@ export async function push(options: PushOptions): Promise<number> {
       for (const w of loaded.warnings) {
         if (options.transpile && w.includes('needs transpilation')) continue;
         console.warn(`Warning: ${w}`);
+      }
+      for (const {document, model} of loaded.models) {
+        for (const d of model.deployments ?? []) {
+          if (d.profile !== undefined) {
+            console.error(
+                `Error: [${document}] model '${model.name}': deployment '${
+                    d.name}' names profile '${d.profile}'; remove 'profile' ` +
+                `from the deployment entry so it uses the model file's own ` +
+                `bindings.`);
+            return null;
+          }
+        }
       }
       let models = loaded.models;
       let unprunedErrors: string[] = [];
