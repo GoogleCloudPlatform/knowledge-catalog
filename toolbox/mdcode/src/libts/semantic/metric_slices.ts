@@ -47,6 +47,7 @@ import {CompositionContext, decomposeMetric, DUPLICATE_INSENSITIVE, findAggregat
 import {resolveInheritance} from './resolve_inheritance';
 import {escapeRegExp, mapOutsideStringLiterals, referencedEntityNames, stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIdentifier, quoteIfReserved} from './sql_identifiers';
+import {isVocabulary} from './vocabulary';
 
 /** GRAPH_EXPAND accepts at most this many node tables (BigQuery limit). */
 export const GRAPH_EXPAND_MAX_NODE_TABLES = 10;
@@ -205,6 +206,16 @@ function graphView(lowered: SemanticModel, resolved: SemanticModel): GraphView {
           nodes.has(r.destination.entity));
   for (const r of rendered) {
     if (r.association || r.source.entity === r.destination.entity) continue;
+    // An edge the graph renders over a generated edge VIEW rather than over
+    // its source's own table -- a foreign key into a vocabulary (matched
+    // case-insensitively, vocabulary.ts) or a derived relationship
+    // (derived_relationships.ts) -- is a standalone edge table, which
+    // GRAPH_EXPAND ignores as ambiguous. Its destination would then be a
+    // second root and every GRAPH_EXPAND on the slice would fail ("multiple
+    // root node tables", seen live), so such an edge is not a slice edge.
+    if (r.via?.length || isVocabulary(entities.get(r.destination.entity)!)) {
+      continue;
+    }
     if (!isToOne(r, entities.get(r.destination.entity)!)) continue;
     const list = out.get(r.source.entity) ?? [];
     list.push(r);

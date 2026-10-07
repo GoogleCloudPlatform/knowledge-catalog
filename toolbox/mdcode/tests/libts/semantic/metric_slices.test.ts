@@ -777,3 +777,46 @@ describe('deployBigQuery: metric graphs next to the main graph', () => {
     }
   });
 });
+
+describe('planMetricGraphs: edges over generated edge views', () => {
+  // A foreign key into a vocabulary is rendered over a generated edge view
+  // (matched case-insensitively), not over the fact's own table. GRAPH_EXPAND
+  // ignores such a standalone edge table, so a slice that kept it would have
+  // the vocabulary as a second root and every GRAPH_EXPAND on it would fail
+  // ("The graph has multiple root node tables", seen live). The slice keeps
+  // only the edges rendered over the source's own table.
+  function withStatus(): SemanticModel {
+    const model = tiny([metric('total_amount', 'SUM(Sale.amount)', 'Sale')]);
+    model.entities.push({
+      name: 'SaleStatus',
+      dataSource: '',
+      keys: ['code'],
+      fields: [{name: 'code', type: 'String'}, {name: 'label', type: 'String'}],
+      members: [{code: 'OPEN', label: 'Open'}, {code: 'WON', label: 'Won'}],
+    } as Entity);
+    model.entities[1].fields.push(f('status', 'status'));
+    model.relationships.push(rel('hasStatus', 'Sale', 'status', 'SaleStatus', 'code'));
+    return model;
+  }
+
+  test('the vocabulary is not a node table of the slice', () => {
+    const plan = planMetricGraphs(withStatus(), TARGET);
+    const sale = plan.slices.find(s => s.fact === 'Sale')!;
+    expect(sale.nodeTables).toEqual(['Sale', 'Customer']);
+    expect(sale.edges.map(e => e.relationship)).toEqual(['soldTo']);
+    expect(sale.ddl).not.toContain('edge_has_status');
+    expect(sale.ddl).not.toContain('vocab_sale_status');
+  });
+
+  test('the metric is read on the slice', () => {
+    const plan = planMetricGraphs(withStatus(), TARGET);
+    expect(read(plan.placements.get('total_amount')))
+        .toBe('p.d.g__sale_metrics: AGG(Sale_total_amount)');
+  });
+
+  test('the main graph still walks the edge into the vocabulary', () => {
+    const {ddl} = generatePropertyGraph(withStatus(), TARGET);
+    expect(ddl).toContain('AS hasStatus');
+    expect(ddl).toContain('AS SaleStatus');
+  });
+});
