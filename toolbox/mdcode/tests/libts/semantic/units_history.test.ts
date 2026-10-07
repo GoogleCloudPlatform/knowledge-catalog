@@ -1,8 +1,8 @@
 // Behavior specification for K7: field `unit` / `scale` and entity `grain` /
 // `history` (src/libts/semantic/units_history.ts) across the toolchain: the
 // loader and push validation, the BigQuery property-graph descriptions, the
-// Knowledge Catalog push/pull trailers, OSI round-trip, the query-skill
-// entity pages, and the OWL importer's qudt:unit mapping.
+// Knowledge Catalog push/pull trailers, OSI round-trip, and the OWL importer's
+// qudt:unit mapping.
 //
 // Running example: an opportunity table that keeps every version of each
 // opportunity, flagged `is_current`, with amounts stored in thousands of USD.
@@ -17,10 +17,6 @@ import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_convert
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {fromDocument, loadModels} from '../../../src/libts/semantic/loader';
 import {serializeModel} from '../../../src/libts/semantic/osi_converter';
-import {resolveInheritance} from '../../../src/libts/semantic/resolve_inheritance';
-import {SemanticRuntime} from '../../../src/libts/semantic/runtime/runtime';
-import {generateSkill} from '../../../src/libts/semantic/skills';
-import {NAVIGATION_GUIDE} from '../../../src/libts/semantic/skills_query';
 import {checkUnitsAndHistory, splitGrainHistoryTrailers, splitUnitTrailer, unitTrailer} from '../../../src/libts/semantic/units_history';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
 
@@ -292,44 +288,6 @@ describe('OSI round-trip', () => {
     expect(e.grain).toBe('one row per opportunity version');
     expect(e.history).toEqual(model().entities[0].history);
     expect(e.fields.find(f => f.name === 'amount')).toMatchObject({unit: 'USD', scale: 1000});
-  });
-});
-
-describe('query skill', () => {
-  function generate() {
-    const runtime: SemanticRuntime = {
-      model: resolveInheritance(model()).model,
-      document: 'sales',
-      store: {kind: 'bigquery', name: 'projects/p/datasets/d', project: 'p', dataset: 'd'},
-      profile: 'bigquery',
-      entryGroup: 'sales_eg',
-    } as SemanticRuntime;
-    const out = generateSkill({runtime, mode: 'query', query: {location: 'US'}});
-    if ('error' in out) throw new Error(out.error);
-    return Object.fromEntries(out.files.map(x => [x.path, x.text]));
-  }
-  const files = generate();
-  const page = files['references/entities/Opportunity.md'];
-
-  test('properties show unit and scale', () => {
-    expect(page).toContain('Unit: USD. Scale: x1000 (a stored 1 is 1000 USD).');
-    expect(page).toContain('Unit: hours.');
-    expect(page).toContain('Scale: x0.001 (a stored 1 is 0.001).');
-  });
-
-  test('the page states the grain and how to get current rows', () => {
-    expect(page).toContain('Grain: one row per opportunity version.');
-    expect(page).toContain('every version of each record');
-    expect(page).toContain('`WHERE n.isCurrent = TRUE` in GQL');
-    expect(page).toContain('`WHERE is_current = TRUE` in SQL');
-    expect(page).toContain('valid from `validFrom` to `validTo`');
-  });
-
-  test('SKILL.md says units are per property and never to rescale', () => {
-    const guide = NAVIGATION_GUIDE.join('\n');
-    expect(guide).toContain('Units and scale are per property on entity pages');
-    expect(guide).toContain('never rescale');
-    expect(files['SKILL.md']).toContain('Units and scale are per property');
   });
 });
 

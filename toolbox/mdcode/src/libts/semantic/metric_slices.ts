@@ -43,7 +43,7 @@
 import {generatePropertyGraph} from './bigquery';
 import {lowerDefinedEntities, resolveDefinedEntities} from './defined_entities';
 import {Entity, fieldBinding, inverseEdgeNames, Metric, Relationship, relationshipAncestors, SemanticModel} from './ir';
-import {CompositionContext, decomposeMetric, DUPLICATE_INSENSITIVE, findAggregateCalls, MetricDecomposition, renderComposition, simpleMetricIndex} from './metric_composition';
+import {CompositionContext, decomposeMetric, DUPLICATE_INSENSITIVE, findAggregateCalls, MetricDecomposition, simpleMetricIndex} from './metric_composition';
 import {resolveInheritance} from './resolve_inheritance';
 import {escapeRegExp, mapOutsideStringLiterals, referencedEntityNames, stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIdentifier, quoteIfReserved} from './sql_identifiers';
@@ -145,18 +145,6 @@ export interface MetricGraphPlan {
   /** Metric name -> where to read it. Every metric of the model has one. */
   placements: Map<string, MetricPlacement>;
   warnings: string[];
-}
-
-/**
- * The GRAPH_EXPAND expression that reads a graph-placed metric: `AGG()` of
- * its measure, or its composition over `AGG()` of each component.
- */
-export function graphExpandExpression(
-    p: Extract<MetricPlacement, {kind: 'graph'}>): string {
-  const ref = (i: number) =>
-      `AGG(${p.homes[i]}_${p.decomposition.components[i].name})`;
-  return p.decomposition.simple ? ref(0) :
-                                  renderComposition(p.decomposition.template, ref);
 }
 
 /** `<main>__<fact_snake>_metrics`: the slice graph for a fact entity. */
@@ -394,8 +382,8 @@ export function planMetricGraphs(
           `no table (a MEASURE cannot filter rows)`;
       plan.placements.set(metric.name, {kind: 'none', reason});
       plan.warnings.push(
-          `metric '${metric.name}' cannot be a graph MEASURE (${reason}); the ` +
-          `query skill gives plain SQL for it`);
+          `metric '${metric.name}' cannot be a graph MEASURE (${reason}); ` +
+          `query it with plain SQL over the bound tables`);
       continue;
     }
     const placed = placeInGraph(metric, ctx, g, max);
@@ -731,8 +719,8 @@ function planViews(
       plan.placements.set(metric.name, {kind: 'none', reason});
       plan.warnings.push(
           `metric '${metric.name}' cannot be a graph MEASURE (${reason}); ` +
-          `no fallback view either (${viewable.why}); the query skill gives ` +
-          `plain SQL for it`);
+          `no fallback view either (${viewable.why}); query it with plain ` +
+          `SQL over the bound tables`);
       continue;
     }
     const list = groups.get(viewable.fact) ?? [];

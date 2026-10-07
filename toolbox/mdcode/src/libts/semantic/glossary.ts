@@ -19,7 +19,6 @@
 //     categories, terms, entry links) for one model. The executor
 //     (glossary_publish.ts) only sends them.
 //   - glossaryFromDataplex: the reverse, for a Knowledge Catalog pull.
-//   - glossarySkillSection / entityGlossaryLines: the agent-skill wording.
 //
 // Nothing here is specific to one source format: any importer (OWL/SKOS
 // today; LookML or others later) feeds the same `glossary:` spec, and the
@@ -833,70 +832,6 @@ export function glossaryFromDataplex(
     if (c) term.category = c;
     Object.assign(term, splitTermDescription(t.description ?? ''));
     out.terms.push(term);
-  }
-  return out;
-}
-
-// ---------------------------------------------------------------------------
-// Agent-skill wording.
-// ---------------------------------------------------------------------------
-
-/** SKILL.md lists at most this many terms; the rest are in the catalog. */
-export const SKILL_TERM_CAP = 60;
-
-/** The one navigation-guide line pointing agents at the catalog glossary. */
-export function glossaryGuideLine(id: string): string {
-  return `A business term or metric name that is not in the model may be in ` +
-      `the Knowledge Catalog glossary ${id}: search it (search_entries) ` +
-      `before concluding the data does not contain it.`;
-}
-
-// `Display Name (syn1, syn2) -> Order.total` or `-> <formula>`.
-export function termSkillLine(t: GlossaryTerm): string {
-  const syn = t.synonyms?.length ? ` (${t.synonyms.join(', ')})` : '';
-  const targets = (t.defines ?? []).map(d => d.ref);
-  const rhs = targets.length ? targets.join(', ') :
-      t.formula?.trim()       ? oneLine(t.formula) :
-                                undefined;
-  return `${termDisplayName(t)}${syn}${rhs ? ` -> ${rhs}` : ''}`;
-}
-
-/**
- * The SKILL.md "Business terms" section body (bullet lines), or undefined
- * when the model has no glossary terms. Capped at SKILL_TERM_CAP lines.
- */
-export function glossarySkillSection(model: SemanticModel): string[]|
-    undefined {
-  const terms = model.glossary?.terms ?? [];
-  if (!terms.length) return undefined;
-  const lines = terms.slice(0, SKILL_TERM_CAP).map(t => `- ${termSkillLine(t)}`);
-  if (terms.length > SKILL_TERM_CAP) {
-    lines.push(`- ... ${terms.length - SKILL_TERM_CAP} more in the Knowledge ` +
-        `Catalog glossary ${glossaryId(model)}`);
-  }
-  return lines;
-}
-
-/**
- * The terms naming an entity or one of its fields, for its skill page:
- * `- Display Name (synonyms): <definition first sentence> [-> field]`.
- */
-export function entityGlossaryLines(
-    model: SemanticModel, entity: string): string[] {
-  const out: string[] = [];
-  for (const t of model.glossary?.terms ?? []) {
-    for (const d of t.defines ?? []) {
-      let on: string|undefined;
-      if (d.kind === 'entity' && d.ref === entity) on = entity;
-      if (d.kind === 'field' && d.ref.startsWith(`${entity}.`)) {
-        on = d.ref.slice(entity.length + 1);
-      }
-      if (on === undefined) continue;
-      const syn = t.synonyms?.length ? ` (${t.synonyms.join(', ')})` : '';
-      const def = t.definition?.trim() ? `: ${oneLine(t.definition)}` : '';
-      const where = on === entity ? 'this entity' : `\`${on}\``;
-      out.push(`- ${termDisplayName(t)}${syn} -> ${where}${def}`);
-    }
   }
   return out;
 }

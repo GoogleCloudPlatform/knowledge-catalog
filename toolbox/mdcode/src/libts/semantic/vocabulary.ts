@@ -26,12 +26,11 @@
 //   - Knowledge Catalog: the members ride the entity description as a fixed,
 //     parseable trailing paragraph (`Members: "OPEN" — "Open"; ...`), the
 //     convention K1/K7 use for what the closed templates have no slot for.
-//   - Skill pages list the members (code — label).
 //
 // Everything K3 owns lives here so the feature is easy to find, rename or drop.
 
 import {Association, Entity, Field, fieldBinding, Relationship, SemanticModel, VocabularyMember} from './ir';
-import {aliased, edgeViewName, GeneratedView, oneLine, physicalColumnOf, snakeCase, sqlInteger, sqlString, tableName, viewRef, ViewTarget} from './generated_views';
+import {aliased, edgeViewName, GeneratedView, physicalColumnOf, snakeCase, sqlInteger, sqlString, tableName, viewRef, ViewTarget} from './generated_views';
 
 /** The columns of a generated vocabulary view, in order. */
 export const VOCABULARY_COLUMNS =
@@ -306,40 +305,6 @@ function vocabularyEdgeView(
 function outputName(column: string): string {
   const cleaned = column.replace(/[^A-Za-z0-9_]+/g, '_').replace(/^_+|_+$/g, '');
   return cleaned || 'key';
-}
-
-// --------------------------------------------------------------------------
-// Skill pages.
-// --------------------------------------------------------------------------
-
-/**
- * The member lines of a vocabulary's skill page: an intro naming the property
- * that holds the code, then one `code — label` bullet per member, in order,
- * with its definition and synonyms when present. Empty for any other entity.
- */
-export function vocabularySkillLines(entity: Entity): string[] {
-  if (!isVocabulary(entity)) return [];
-  const members = entity.members ?? [];
-  const keys = entity.keys ?? [];
-  const codeProperty = keys.length === 1 ? `\`${keys[0]}\`` : 'the code';
-  const out = [
-    `A closed list of ${members.length} member${
-        members.length === 1 ? '' : 's'}. Filter on ${codeProperty} (the ` +
-        `code); an edge into ${entity.name} matches the code ` +
-        `case-insensitively. Members (code — label):`,
-    '',
-  ];
-  for (const m of members) {
-    const label =
-        m.label !== undefined && m.label !== m.code ? ` — ${m.label}` : '';
-    const definition =
-        m.definition !== undefined ? `: ${oneLine(m.definition)}` : '';
-    const synonyms =
-        m.synonyms?.length ? ` (also: ${m.synonyms.join(', ')})` : '';
-    out.push(`- \`${m.code}\`${label}${definition}${synonyms}`);
-  }
-  if (!members.length) out.push('- (none declared)');
-  return out;
 }
 
 // --------------------------------------------------------------------------

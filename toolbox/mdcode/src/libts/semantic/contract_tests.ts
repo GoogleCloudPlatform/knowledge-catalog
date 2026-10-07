@@ -344,7 +344,7 @@ export const definedMembershipTests: ContractTestGenerator = {
 
 // The model's transitivity marker: agent instructions that call the
 // relationship transitive. The OWL importer writes one for an
-// owl:TransitiveProperty, and the query skill reads the same marker.
+// owl:TransitiveProperty.
 function isTransitive(r: Relationship): boolean {
   return /\btransitive\b/i.test(r.aiContext?.instructions ?? '');
 }

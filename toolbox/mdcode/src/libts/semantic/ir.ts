@@ -78,8 +78,8 @@ export interface SemanticModel {
   // The model's business glossary: business terms (with definitions,
   // synonyms and links to the model elements they name) organized in
   // categories. Published as a Knowledge Catalog (Dataplex) Business Glossary
-  // by `kcmd glossary push`, and listed on agent skills. A `/google` extension;
-  // absent on most models. See glossary.ts.
+  // by `kcmd glossary push`. A `/google` extension; absent on most models. See
+  // glossary.ts.
   glossary?: Glossary;
 }
 
@@ -191,7 +191,7 @@ export interface Entity {
   definition?: EntityDefinition;
   // What one row / instance represents, free text (e.g. "one row per
   // opportunity version"). Informational: no emitter changes the table for it;
-  // it rides element descriptions and skill pages (see units_history.ts).
+  // it rides element descriptions (see units_history.ts).
   grain?: string;
   // How the backing table keeps history (see EntityHistory). Informational
   // like `grain`: the node table stays the all-versions table, and readers are
@@ -201,8 +201,8 @@ export interface Entity {
   // a status or stage list, the OWL named individuals of an enumerated class.
   // The members ARE the entity's rows: the BigQuery leg generates a view over
   // them and backs the node table with it, edges into the entity match the
-  // code case-insensitively, and Knowledge Catalog and skill pages list them
-  // (see vocabulary.ts). Absent on every other entity.
+  // code case-insensitively, and Knowledge Catalog lists them (see
+  // vocabulary.ts). Absent on every other entity.
   members?: VocabularyMember[];
   // How the bound source is reshaped into the entity the model declares (a
   // binding concern, set by a profile): which version of a key to keep,
@@ -342,7 +342,7 @@ export interface Field {
   // The unit a value is measured in (e.g. 'USD', 'hours', 'percent', or a
   // QUDT-style code) and the multiplier the stored value carries (`scale:
   // 1000` means a stored 5 is 5000 of `unit`). Informational: nothing rescales
-  // values; they ride descriptions and skill pages (see units_history.ts).
+  // values; they ride element descriptions (see units_history.ts).
   unit?: string;
   scale?: number;
   aiContext?: AiContext;

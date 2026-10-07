@@ -563,8 +563,8 @@ metric aggregates), named `<graph>__<fact_in_snake_case>_metrics`:
   generated SQL view, `<graph>__<fact>_metrics_view`: one row per fact record,
   with the dimensions LEFT JOINed along the same tree and columns named
   `<Entity>_<field>` as in `GRAPH_EXPAND` output. Each fallback is a push
-  warning. Two kinds of metric get neither a graph nor a view, and the query
-  skill gives plain SQL for them:
+  warning. Two kinds of metric get neither a graph nor a view, and are read with
+  plain SQL over the bound tables:
   - a metric a flat view would compute wrong (a duplicate-sensitive aggregate
     over a dimension's rows);
   - a metric that reads a defined entity, which has no table (a `MEASURE`
@@ -572,9 +572,7 @@ metric aggregates), named `<graph>__<fact_in_snake_case>_metrics`:
 
 The main graph is unchanged. Metric graphs and views are derived, not authored:
 Knowledge Catalog does not record them, `pull` does not read them, and every
-push regenerates them. The query skill names, for each metric, the graph to read
-and the expression to select (see
-[Agent skills](skills.md#metrics-and-metric-graphs-proposed)).
+push regenerates them.
 
 ## To Spanner
 
