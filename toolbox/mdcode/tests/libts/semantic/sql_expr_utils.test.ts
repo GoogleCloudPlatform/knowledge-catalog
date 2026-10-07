@@ -81,6 +81,20 @@ describe('columnReferences', () => {
         .toEqual([{name: 'net_amount'}]);
   });
 
+  test('reads the expression a chained function call applies to', () => {
+    const name = [{qualifier: 'orders', name: 'name'}];
+    expect(columnReferences('(orders.name).UPPER()', 'BIGQUERY')).toEqual(name);
+    expect(columnReferences('(orders.name).LOWER().TRIM()', 'BIGQUERY'))
+        .toEqual(name);
+    expect(columnReferences('LOWER(orders.name).TRIM()', 'BIGQUERY'))
+        .toEqual(name);
+    expect(columnReferences('SUM((orders.amount).ABS())', 'BIGQUERY'))
+        .toEqual([{qualifier: 'orders', name: 'amount'}]);
+    // A namespace or dataset path before the dot is still not a column.
+    expect(columnReferences('p.ds.my_udf(orders.amount)', 'BIGQUERY'))
+        .toEqual([{qualifier: 'orders', name: 'amount'}]);
+  });
+
   test('reads the first part as the qualifier when it is also a type name', () => {
     // The engine parses `Time.hour` as a field of a column named `Time`.
     expect(columnReferences('COUNT(DISTINCT Time.hour)', 'BIGQUERY'))

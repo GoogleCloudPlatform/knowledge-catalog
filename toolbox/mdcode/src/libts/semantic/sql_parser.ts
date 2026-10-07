@@ -75,8 +75,9 @@ export interface SqlColumn {
 // reads none. A struct path reads as
 // its first two parts, so `orders.address.city` reads the column `address`
 // qualified by `orders`. A function namespace such as `NET` in
-// `NET.HOST(orders.url)` is not a column. Throws when the engine is not
-// loaded.
+// `NET.HOST(orders.url)` is not a column, and the expression a chained call
+// applies to, such as `(orders.name)` in `(orders.name).UPPER()`, is read.
+// Throws when the engine is not loaded.
 export function sqlColumns(expression: string, dialect: string): SqlColumn[]|
     undefined {
   if (!loadedEngine) {
@@ -161,9 +162,25 @@ function collectColumns(node: unknown, out: SqlColumn[]): void {
     return;
   }
   if (keys.length === 1 && keys[0] === 'method_call') {
-    // `NET.HOST(x)`: the part before the dot names a function namespace.
+    // In `NET.HOST(x)` and `my_project.my_dataset.my_udf(x)` the part before
+    // the dot is a bare name path that names a function namespace, so it is not
+    // read. Any other receiver is the expression a chained call applies to, as
+    // in `(orders.name).UPPER()` or `LOWER(orders.name).TRIM()`, and it is.
+    const receiver = obj.method_call?.this;
+    if (!isNamePath(receiver)) collectColumns(receiver, out);
     collectColumns(obj.method_call?.args, out);
     return;
   }
   for (const value of Object.values(obj)) collectColumns(value, out);
+}
+
+// Whether `node` is a name or a dotted run of names, such as `NET` or
+// `my_project.my_dataset`, with no other expression inside it.
+function isNamePath(node: unknown): boolean {
+  if (!node || typeof node !== 'object') return false;
+  const obj = node as Record<string, any>;
+  const keys = Object.keys(obj);
+  if (keys.length !== 1) return false;
+  if (keys[0] === 'column') return true;
+  return keys[0] === 'dot' && isNamePath(obj.dot?.this);
 }
