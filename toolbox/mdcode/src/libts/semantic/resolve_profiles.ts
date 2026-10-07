@@ -727,21 +727,16 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
   // the declaring entity instead, since a binding is a fact about one table.
   const extendedNames = new Set(
       resolvedEntities(clone).flatMap(e => e.extends ?? []));
-  const dependent = new Set(report.droppedFields.map(d => d.name));
   for (const e of clone.entities ?? []) {
     // Keep an abstract entity's fields intact: they are column-less by design
     // and name the shared label's property set for the emitter (see above).
     if (e.abstract) continue;
-    // A field that reads an unavailable one and that this entity inherits is
-    // marked excluded here. Removing this entity's line alone would let
-    // inheritance hand back the ancestor's definition and binding.
-    const declared = new Set((e.fields ?? []).map(f => f.name));
-    const inherited = inheritedNamesOf(clone, e.name);
-    const inheritedDependents =
-        [...dependent]
-            .filter(key => key.startsWith(`${e.name}.`))
-            .map(key => key.slice(e.name.length + 1))
-            .filter(name => !declared.has(name) || inherited.has(name));
+    // An inherited field that is unavailable on this entity is marked excluded
+    // here, whether it is unbound, excluded, or reads such a field. Removing
+    // this entity's line alone, or having none to remove, would let inheritance
+    // hand back the ancestor's definition and binding.
+    const inheritedUnavailable = [...inheritedNamesOf(clone, e.name)].filter(
+        name => unavailable.has(`${e.name}.${name}`));
     const excluded = new Set(e.excludedFields ?? []);
     const gone = (f: Field) => !isFieldBound(f) || excluded.has(f.name) ||
         unavailable.has(`${e.name}.${f.name}`);
@@ -753,9 +748,9 @@ export function pruneUnavailable(model: SemanticModel, profileName: string):
     } else {
       e.fields = (e.fields ?? []).filter(f => !gone(f));
     }
-    if (inheritedDependents.length) {
+    if (inheritedUnavailable.length) {
       e.excludedFields =
-          [...new Set([...(e.excludedFields ?? []), ...inheritedDependents])];
+          [...new Set([...(e.excludedFields ?? []), ...inheritedUnavailable])];
     }
   }
 

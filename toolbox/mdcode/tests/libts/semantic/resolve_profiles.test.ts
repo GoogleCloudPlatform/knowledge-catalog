@@ -440,8 +440,8 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
   });
 
   test('an inherited field that reads an unavailable one is excluded on the leaf', () => {
-    // `y` reads `x`, which is unbound. The leaf inherits `y` and declares no
-    // line for it, so pruning marks it excluded there.
+    // `y` reads `x`, which is unbound. The leaf inherits both and declares no
+    // line for either, so pruning marks both excluded there.
     const m: SemanticModel = {
       name: 'h',
       entities: [
@@ -458,9 +458,52 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     const {model, report} = pruneUnavailable(m, 'prod');
     expect(report.droppedFields.map(d => d.name)).toContain('C.y');
     expect(model.entities.find(e => e.name === 'C')!.excludedFields)
-        .toEqual(['y']);
+        .toEqual(['x', 'y']);
     const resolved = resolveInheritance(model).model;
     expect(fieldNames(resolved, 'C')).not.toContain('y');
+  });
+
+  test('an inherited unbound field is excluded on the subtype of a concrete parent', () => {
+    // P keeps its `email` line for subtypes that bind it. C binds nothing, so
+    // pruning marks `email` excluded on C, and inheritance does not hand it
+    // back.
+    const m: SemanticModel = {
+      name: 'h',
+      entities: [
+        {name: 'P', dataSource: 'p.d.parent', keys: ['id'], fields: [
+          {name: 'id', expression: 'id'},
+          {name: 'email'},
+        ]},
+        {name: 'C', dataSource: 'p.d.child', keys: ['id'], extends: ['P'], fields: []},
+      ],
+      relationships: [],
+      metrics: [],
+    };
+    const {model} = pruneUnavailable(m, 'prod');
+    expect(model.entities.find(e => e.name === 'C')!.excludedFields)
+        .toEqual(['email']);
+    expect(fieldNames(resolveInheritance(model).model, 'C')).toEqual(['id']);
+  });
+
+  test('an inherited unbound field is excluded on the subtype of an abstract parent', () => {
+    const m: SemanticModel = {
+      name: 'h',
+      entities: [
+        {name: 'P', dataSource: '', abstract: true, keys: [], fields: [
+          {name: 'id'},
+          {name: 'email'},
+        ]},
+        {name: 'C', dataSource: 'p.d.child', keys: ['id'], extends: ['P'], fields: [
+          {name: 'id', expression: 'c_id'},
+        ]},
+      ],
+      relationships: [],
+      metrics: [],
+    };
+    const {model} = pruneUnavailable(m, 'prod');
+    expect(model.entities.find(e => e.name === 'C')!.excludedFields)
+        .toEqual(['email']);
+    expect(fieldNames(resolveInheritance(model).model, 'C')).toEqual(['id']);
   });
 
   test('a restated field that reads an unavailable one does not fall back to the ancestor', () => {
