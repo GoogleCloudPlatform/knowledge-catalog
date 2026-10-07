@@ -119,6 +119,8 @@ export interface OwlDatatypeProperty extends OwlCommonAnnotations {
   // pairs these with `domains` and each field keeps the sentence written
   // beside its own class.
   comments: string[];
+  // How many times the IRI was declared (`a owl:DatatypeProperty` triples).
+  declarations: number;
   synonyms: string[];
   examples: string[];
   // True when the property is also an owl:InverseFunctionalProperty -- it
@@ -166,6 +168,10 @@ export interface OwlObjectProperty extends OwlCommonAnnotations {
   // declaration of the IRI. The mapper pairs these with `domains` so each
   // fanned-out edge keeps the sentence written beside its own class.
   comments: string[];
+  // How many times the IRI was declared (`a owl:ObjectProperty` triples). One
+  // declaration naming several domains is an INTERSECTION in OWL; the same
+  // verb re-declared per class is the union the mapper fans out.
+  declarations: number;
   synonyms: string[];
   examples: string[];
   // Referent IRIs of `rdfs:subPropertyOf` superproperties, if any. Relationship

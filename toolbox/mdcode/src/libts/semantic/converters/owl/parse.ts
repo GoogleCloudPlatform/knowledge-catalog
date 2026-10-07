@@ -247,15 +247,26 @@ function langLiteral(object: Quad['object']): LangLiteral {
 // treats their count as meaningful. Translations of a single sentence are the
 // same description written twice, not two descriptions: joining them produces
 // 'A customer. Un client.', and counting them makes a one-declaration property
-// look like a re-declared one. Untagged wins (the overwhelmingly common case),
-// then English, then whichever language appears first.
+// look like a re-declared one.
+//
+// Untagged and English share a group. They are not rivals in practice -- a
+// generator that tags some declarations and not others is being inconsistent,
+// not multilingual -- and splitting them would discard a real per-declaration
+// description and leave the survivor to be copied onto the wrong edge.
+function languageGroup(language: string): string {
+  if (language === '' || language === 'en' || language.startsWith('en-')) {
+    return 'en';
+  }
+  return language;
+}
+
 function pickLanguage(entries: LangLiteral[]): string[] {
   if (!entries.length) return [];
-  const languages = dedupeStrings(entries.map(e => e.language));
-  if (languages.length === 1) return entries.map(e => e.value);
-  const chosen = languages.find(l => l === '') ??
-      languages.find(l => l === 'en' || l.startsWith('en-')) ?? languages[0];
-  return entries.filter(e => e.language === chosen).map(e => e.value);
+  const groups = dedupeStrings(entries.map(e => languageGroup(e.language)));
+  if (groups.length === 1) return entries.map(e => e.value);
+  const chosen = groups.find(g => g === 'en') ?? groups[0];
+  return entries.filter(e => languageGroup(e.language) === chosen)
+      .map(e => e.value);
 }
 
 function dedupeStrings(items: string[]): string[] {
@@ -284,7 +295,10 @@ function descriptionsOf(a: Annotations): string[] {
 // the ontology header. Several descriptions of one class all describe the same
 // thing, so they join rather than compete for one slot.
 function descriptionOf(a: Annotations): string|undefined {
-  const all = descriptionsOf(a);
+  // Deduped: a block restated verbatim (two ontology files sharing a
+  // definition) asserts the same sentence twice, and joining it with itself
+  // would read 'A customer. A customer.'.
+  const all = dedupeStrings(descriptionsOf(a));
   return all.length ? all.join(' ') : undefined;
 }
 
@@ -317,6 +331,7 @@ export function parseOwl(turtle: string): OwlModel {
   // Scanning `quads` directly (not the Store) keeps document order.
   const order: string[] = [];
   const kind = new Map<string, OwlKind>();
+  const declarations = new Map<string, number>();
   const inverseFunctional = new Set<string>();
   // Property characteristics carried verbatim, each a set of the subjects typed
   // with it. A property is commonly typed with several types (e.g.
@@ -400,6 +415,12 @@ export function parseOwl(turtle: string): OwlModel {
     }
     const k = KIND_BY_TYPE[type];
     if (!k) continue;
+    // How many times the term was DECLARED. A class-by-class generator heads
+    // every block with its own `a owl:ObjectProperty`, so this separates one
+    // declaration carrying several domains (an intersection in OWL) from the
+    // same verb re-declared once per class (a union in intent). The triples
+    // are identical either way; only the repetition tells them apart.
+    declarations.set(subject, (declarations.get(subject) ?? 0) + 1);
     if (!kind.has(subject)) {
       kind.set(subject, k);
       order.push(subject);
@@ -646,6 +667,7 @@ export function parseOwl(turtle: string): OwlModel {
           rangeIri: a.ranges[0],
           label: a.label,
           comments: descriptionsOf(a),
+          declarations: declarations.get(iri) ?? 1,
           synonyms: a.synonyms,
           examples: a.examples,
           inverseFunctional: inverseFunctional.has(iri),
@@ -666,6 +688,7 @@ export function parseOwl(turtle: string): OwlModel {
           ranges: a.ranges.map(localName),
           label: a.label,
           comments: descriptionsOf(a),
+          declarations: declarations.get(iri) ?? 1,
           synonyms: a.synonyms,
           examples: a.examples,
           subPropertyOf: a.subPropertyOf,

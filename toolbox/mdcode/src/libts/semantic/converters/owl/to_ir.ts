@@ -202,13 +202,15 @@ function perDomainDescription(
     warnings: string[]): (i: number) => string|undefined {
   if (!descriptions.length) return () => undefined;
   // One edge: there is nothing to attribute. Several descriptions of one term
-  // all describe that term, so they join.
+  // all describe that term, so they join -- deduped, because a block restated
+  // verbatim would otherwise read 'The name. The name.'. The zip below must
+  // NOT dedupe: there, position is what pairs a description with a domain.
   if (domains.length <= 1) {
-    const all = descriptions.join(' ');
+    const all = dedupe(descriptions).join(' ');
     return () => all;
   }
   if (descriptions.length === domains.length) return i => descriptions[i];
-  const all = descriptions.join(' ');
+  const all = dedupe(descriptions).join(' ');
   warnings.push(
       `object/datatype property '${term}' carries ${descriptions.length} ` +
       `description(s) for ${domains.length} domains, so they cannot be ` +
@@ -455,13 +457,24 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
           `${unknownDomains.join(', ')}, which are not owl:Class in this ` +
           `ontology; those edges are skipped.`);
     }
-    // Multiple DOMAINS are not an intersection to resolve, they are one verb
-    // re-declared once per class that uses it -- the shape every class-by-class
-    // ontology generator emits. Each domain is its own edge.
+    // Multiple DOMAINS are usually not an intersection to resolve: they are one
+    // verb re-declared once per class that uses it, the shape every
+    // class-by-class ontology generator emits. Each domain is its own edge.
     //
     // Count only the domains that will actually produce an edge: a typo'd
     // domain must not push the one real edge into a suffixed name.
     const fanOut = domains.filter(d => classNames.has(d)).length > 1;
+    // One declaration naming several domains is the other reading, and in OWL
+    // it is the correct one: the domain is their INTERSECTION, not their
+    // union. Fanning out is still the more useful model to produce, but it is
+    // a reinterpretation and the author should hear about it.
+    if (fanOut && p.declarations <= 1) {
+      warnings.push(
+          `object property '${p.localName}' names ${domains.length} domains ` +
+          `in a single declaration, which in OWL is their intersection, not ` +
+          `one edge each. Imported as one edge per domain; declare the ` +
+          `property once per class, or use owl:unionOf, to say so directly.`);
+    }
     const describe =
         perDomainDescription(comments, domains, p.localName, warnings);
     // Labels, synonyms and examples are written per declaration too, but
@@ -474,8 +487,14 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     // name -- which describes every edge equally and needs no warning. Two
     // declarations offering DIFFERENT synonyms or sample questions is the case
     // where one declaration's wording shows up as fact on another's edge.
-    const divergent = dedupe(p.synonyms).length > 1 ||
-        dedupe(p.examples).length > 1;
+    // The FIRST rdfs:label goes to `label` and only later ones to `synonyms`,
+    // so two declarations with DIFFERENT labels -- the likeliest divergence of
+    // all -- leave one name in each slot and look identical to a check that
+    // reads synonyms alone. Pool them. Examples are counted separately: a
+    // property legitimately has both a label and a sample question, and
+    // merging the two sets would warn about every such property.
+    const names = dedupe([...(p.label ? [p.label] : []), ...p.synonyms]);
+    const divergent = names.length > 1 || dedupe(p.examples).length > 1;
     if (fanOut && divergent) {
       warnings.push(
           `object property '${p.localName}' becomes one edge per domain, but ` +

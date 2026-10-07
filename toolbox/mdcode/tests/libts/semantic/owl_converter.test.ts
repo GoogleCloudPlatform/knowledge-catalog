@@ -539,8 +539,9 @@ describe('keys and edge binding', () => {
   test('a multi-domain object property becomes one edge per domain', () => {
     const ttl = `${PREFIXES}
       ex:Person a owl:Class . ex:Company a owl:Class . ex:Asset a owl:Class .
-      ex:owns a owl:ObjectProperty ;
-          rdfs:domain ex:Person ; rdfs:domain ex:Company ;
+      ex:owns a owl:ObjectProperty ; rdfs:domain ex:Person ;
+          rdfs:range ex:Asset .
+      ex:owns a owl:ObjectProperty ; rdfs:domain ex:Company ;
           rdfs:range ex:Asset .
     `;
     const {warnings} = convertOwlToOsi(ttl, 'x');
@@ -558,6 +559,82 @@ describe('keys and edge binding', () => {
     // Nothing was dropped, so there is nothing to warn about.
     expect(warnings.filter(w => w.includes(`'owns'`))).toEqual([]);
   });
+
+  // One declaration naming several domains is the OTHER reading, and in OWL it
+  // is the correct one: the domain is their intersection. Fanning out is still
+  // the more useful model, but it reinterprets the ontology, so it is said out
+  // loud. The two shapes are identical in the triple store -- only the count
+  // of declarations separates them.
+  test('a single declaration naming several domains warns about intersection',
+       () => {
+         const ttl = `${PREFIXES}
+      ex:A a owl:Class . ex:B a owl:Class . ex:Thing a owl:Class .
+      ex:spans a owl:ObjectProperty ;
+          rdfs:domain ex:A , ex:B ; rdfs:range ex:Thing .
+    `;
+         const {warnings} = convertOwlToOsi(ttl, 'x');
+         const model = loadOwl(ttl);
+         expect(model.relationships.map(r => r.name)).toEqual([
+           'spans_A',
+           'spans_B',
+         ]);
+         expect(warnings.some(
+                    w => w.includes(`'spans'`) && w.includes('intersection')))
+             .toBe(true);
+       });
+
+  // Untagged and English are not rival languages: a generator that tags some
+  // declarations and not others is inconsistent, not multilingual. Splitting
+  // them would drop a real per-declaration description and copy the survivor
+  // onto the wrong edge.
+  test('untagged and @en descriptions stay together and pair correctly', () => {
+    const ttl = `${PREFIXES}
+      ex:A a owl:Class . ex:B a owl:Class . ex:Thing a owl:Class .
+      ex:refs a owl:ObjectProperty ; rdfs:domain ex:A ; rdfs:range ex:Thing ;
+          rdfs:comment "from A" .
+      ex:refs a owl:ObjectProperty ; rdfs:domain ex:B ; rdfs:range ex:Thing ;
+          rdfs:comment "from B"@en .
+    `;
+    const {warnings} = convertOwlToOsi(ttl, 'x');
+    expect(loadOwl(ttl).relationships.map(r => r.aiContext?.instructions))
+        .toEqual(['from A', 'from B']);
+    expect(warnings.some(w => w.includes('matched up one to one'))).toBe(false);
+  });
+
+  // The FIRST rdfs:label lands in `label` and only later ones in `synonyms`,
+  // so two declarations with different labels leave one name in each slot --
+  // invisible to a check that reads synonyms alone, yet both are broadcast.
+  test('divergent per-declaration labels are reported as broadcast', () => {
+    const ttl = `${PREFIXES}
+      ex:Customer a owl:Class . ex:Order a owl:Class . ex:Thing a owl:Class .
+      ex:owns a owl:ObjectProperty ; rdfs:domain ex:Customer ;
+          rdfs:range ex:Thing ; rdfs:label "customer owns" .
+      ex:owns a owl:ObjectProperty ; rdfs:domain ex:Order ;
+          rdfs:range ex:Thing ; rdfs:label "order owns" .
+    `;
+    const {warnings} = convertOwlToOsi(ttl, 'x');
+    expect(warnings.some(
+               w => w.includes(`'owns'`) && w.includes('synonyms/examples')))
+        .toBe(true);
+  });
+
+  // A block restated verbatim -- two ontology files sharing a definition --
+  // asserts the same sentence twice. Joining it with itself would read
+  // 'The name. The name.'.
+  test('a verbatim duplicate declaration does not double the description',
+       () => {
+         const ttl = `${PREFIXES}
+      ex:Customer a owl:Class ; rdfs:comment "A customer." .
+      ex:Customer a owl:Class ; rdfs:comment "A customer." .
+      ex:name a owl:DatatypeProperty ; rdfs:domain ex:Customer ;
+          rdfs:range xsd:string ; rdfs:comment "The name." .
+      ex:name a owl:DatatypeProperty ; rdfs:domain ex:Customer ;
+          rdfs:range xsd:string ; rdfs:comment "The name." .
+    `;
+         const model = loadOwl(ttl);
+         expect(model.entities[0].description).toBe('A customer.');
+         expect(model.entities[0].fields[0].description).toBe('The name.');
+       });
 
   // The bug this fan-out exists to kill: endpoints came from the first
   // declaration while the description came from the last, so an edge shipped
