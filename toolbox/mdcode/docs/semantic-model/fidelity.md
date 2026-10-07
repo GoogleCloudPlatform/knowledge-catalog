@@ -157,7 +157,8 @@ agree on every structural row and differ only where a Spanner target has no
     loads strictly. A parent the pull did not recover is dropped from `extends`
     with a warning. Inherited fields are not flattened onto a subtype's entry:
     each entry lists the fields it declares. A relationship with an abstract
-    endpoint publishes no link (there is no table behind that end).
+    endpoint publishes no link (there is no table behind that end); with the
+    `semantic-ai-context` aspect²⁰ it rides the model entry instead.
 16. **Business glossary.** `kcmd push` does not publish the `glossary:` block;
     `kcmd glossary push` does, as a Dataplex Business Glossary with categories
     and terms. A term's synonyms, formula, related terms, defined elements and
@@ -246,12 +247,16 @@ agree on every structural row and differ only where a Spanner target has no
     relationship publishes a junction `semantic-entity` entry
     `<model>.associations.<relationship>` plus two `schema-join` links
     (`…-src`, `…-dst`) through it (without `semantic-ai-context` its name
-    comes back normalized⁶). Each bound entity also
+    comes back normalized⁶). A relationship that publishes no link — an
+    abstract one, or one with an abstract or column-less endpoint — rides the
+    model entry's relationship index whole (endpoints, columns, `abstract`,
+    `extends`, description, inverse, `via` / `filter`), so pull rebuilds it
+    and its sub-relationships keep their `extends`. Each bound entity also
     gets binding links to its BigQuery node view (or, for `mode: direct`,
     its table) entry in `@bigquery` and to its graph node entry. Residual
     gaps:
-    - a relationship with an abstract endpoint, or with no join columns,
-      publishes no link, so pull does not recover it;
+    - without `semantic-ai-context`, a relationship that publishes no link is
+      not recovered, and a sub-relationship naming it loses that `extends`;
     - a many-to-many relationship authored with empty side columns reads
       back with the endpoint keys filled in;
     - a relationship's `custom_extensions` is not persisted (see ⁹);

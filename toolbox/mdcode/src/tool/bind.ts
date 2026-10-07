@@ -31,6 +31,7 @@ import {CatalogScan, filterScan, parseScanPattern, readScanFile, ScanPattern, ta
 import {bindSummary} from '../libts/semantic/bind/score';
 import {bigQueryGraphTargets} from '../libts/semantic/deployment_target';
 import {SemanticModel} from '../libts/semantic/ir';
+import {provisionedCustomAspects} from '../libts/semantic/kc_custom_types';
 import {loadModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import * as bqProfile from '../libts/semantic/profile_bigquery';
@@ -117,20 +118,39 @@ async function scopeDocs(root: string, ctx: context.ApiContext, fromCatalog: boo
     if (!docs.length) return {error: 'no semantic model documents found.'};
     return {docs, project: source.project};
   }
-  const pulled = await pullKnowledgeCatalog(new dataplex.CatalogClient(ctx), {
+  const pulled = await pullModelDocs(new dataplex.CatalogClient(ctx), source);
+  for (const w of pulled.warnings) console.warn(`Warning: ${w}`);
+  if (!pulled.docs.length) return {error: 'Knowledge Catalog holds no semantic model for this scope.'};
+  return {
+    docs: pulled.docs.map(d => ({...d, profileDir: dirOf(d.name)})),
+    project: source.project,
+  };
+}
+
+/**
+ * The scope's model(s) as pulled from Knowledge Catalog, serialized as logical
+ * documents. Probes the annotation aspect types `kcmd init` provisioned and
+ * hydrates them, as `kcmd pull` does: they make the read lossless (metric
+ * expressions, verbatim relationship names, abstract relationships), and a
+ * pull without them would bind a different model than the one pushed.
+ */
+export async function pullModelDocs(
+    catalog: dataplex.CatalogClient,
+    source: Pick<SemanticModelSource, 'project'|'location'|'entryGroup'>):
+    Promise<{docs: {name: string; text: string}[]; warnings: string[]}> {
+  const pulled = await pullKnowledgeCatalog(catalog, {
     project: source.project,
     location: source.location,
     entryGroup: source.entryGroup,
+    customAspects:
+        await provisionedCustomAspects(catalog, {project: source.project}),
   });
-  for (const w of pulled.warnings) console.warn(`Warning: ${w}`);
-  if (!pulled.models.length) return {error: 'Knowledge Catalog holds no semantic model for this scope.'};
   return {
     docs: pulled.models.map(m => ({
       name: m.name,
       text: serializeModel(m, {logical: true}).yaml,
-      profileDir: dirOf(m.name),
     })),
-    project: source.project,
+    warnings: pulled.warnings,
   };
 }
 

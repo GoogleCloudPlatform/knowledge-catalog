@@ -327,7 +327,18 @@ export function generateCatalogResources(
     const link = relationshipLink(
         names, model, rel, entityEntryName, abstractEntities, seenLinks,
         warnings, namesIndexed);
-    if (!link) continue;
+    if (!link) {
+      // No link to carry it (abstract, or an abstract / column-less
+      // endpoint): with the index available the relationship rides there
+      // whole, so pull rebuilds it. An endpoint that is not a published
+      // entity at all would dangle on read, so that one stays out.
+      if (namesIndexed && entityEntryName.has(rel.source.entity) &&
+          entityEntryName.has(rel.destination.entity)) {
+        const {name, aiContext, ...unpublished} = rel;
+        index.push(compact({name, aiContext, unpublished}));
+      }
+      continue;
+    }
     entryLinks.push(link);
     index.push(compact({
       name: rel.name,
