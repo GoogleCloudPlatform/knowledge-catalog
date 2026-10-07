@@ -38,12 +38,6 @@
  * binding fact wearing a logical name, and putting `tool.unavailable` on the
  * action's own page -- which reads naturally, and which this module did at
  * first -- quietly makes every page profile-specific.
- *
- * READ MODE. Everything above is the write side (`mode: 'act'`, the default).
- * `mode: 'query'` writes the read side instead -- an index of the graph labels
- * and metrics with one reference page per entity, generated in
- * skills_query.ts -- and `mode: 'both'` writes one skill holding both, with
- * the query index first and the action router after it.
  */
 
 import {Action, AffectedConcept, Constraint, SemanticModel} from './ir';
@@ -51,14 +45,13 @@ import {ActionTool, modelTools, readableEntities} from './runtime/agent_tools';
 import {dialectFor} from './runtime/dialect';
 import {SemanticRuntime} from './runtime/runtime';
 import {storeLine} from './runtime/store';
-import {QuerySkillOptions, queryParts, RESERVED_REFERENCE_SLUGS} from './skills_query';
-import {cell, collapse, finish, firstLine, MAX_DESCRIPTION, overBudget, paragraph, sentenceEnd, SkillFile, truncate, yamlString} from './skills_text';
 
-export type {SkillFile} from './skills_text';
-
-/** Which side of the model a skill describes. */
-export type SkillMode = 'act'|'query'|'both';
-export const SKILL_MODES: readonly SkillMode[] = ['act', 'query', 'both'];
+/** One file of the generated package, at a path relative to the skill root. */
+export interface SkillFile {
+  /** Relative to the skill directory, POSIX-separated. `SKILL.md` is first. */
+  path: string;
+  text: string;
+}
 
 /** A generated skill: the directory name it must be written under, and why. */
 export interface SkillPackage {
@@ -86,14 +79,6 @@ export interface GenerateSkillOptions {
    * rather than a skill some clients silently skip.
    */
   name?: string;
-  /**
-   * Which side of the model to describe: `act` (the default) writes the
-   * action router; `query` writes the read-side index over the property
-   * graph; `both` writes one skill holding the two.
-   */
-  mode?: SkillMode;
-  /** Read-side options: extra graphs to point at, the BigQuery location. */
-  query?: QuerySkillOptions;
 }
 
 
@@ -114,17 +99,8 @@ export function generateSkill(opts: GenerateSkillOptions): SkillPackage|{
   const name = opts.name ?? skillNameFor(model.name);
   const nameError = whyNameIsInvalid(name);
   if (nameError) return {error: nameError};
-  const mode = opts.mode ?? 'act';
-  if (!SKILL_MODES.includes(mode)) {
-    return {error: `unknown skill mode '${mode}'; use one of ${
-        SKILL_MODES.join(', ')}.`};
-  }
-  if (mode === 'query') return querySkill(name, runtime, opts.query);
 
   const {actions, instruction} = modelTools({runtime});
-  if (mode === 'both') {
-    return bothSkill(name, runtime, actions, instruction, opts.query);
-  }
   const warnings: string[] = [];
   if (!actions.length) {
     warnings.push(
@@ -135,7 +111,12 @@ export function generateSkill(opts: GenerateSkillOptions): SkillPackage|{
     // on every request, and still advertises the model as the write path in
     // frontmatter a client reads before the body. Saying so is the difference
     // between an artifact the caller chose and one they did not notice.
-    warnings.push(noneRunnable(runtime, actions));
+    warnings.push(
+        `No action in '${model.name}' is runnable under profile '${
+            runtime.profile}', so the skill describes ${actions.length} action${
+            actions.length === 1 ? '' : 's'} and can ` +
+        `run none of them. "Running an action" in the skill gives the ` +
+        `reason for each.`);
   }
 
   const paths = referencePaths(actions);
@@ -143,25 +124,6 @@ export function generateSkill(opts: GenerateSkillOptions): SkillPackage|{
     path: 'SKILL.md',
     text: skillDocument(name, runtime, actions, instruction, paths),
   }];
-  files.push(...actionReferences(actions, model, paths));
-
-  warnings.push(...overBudget(files[0].text));
-  return {name, files, warnings};
-}
-
-function noneRunnable(runtime: SemanticRuntime, actions: ActionTool[]):
-    string {
-  return `No action in '${runtime.model.name}' is runnable under profile '${
-             runtime.profile}', so the skill describes ${actions.length} action${
-             actions.length === 1 ? '' : 's'} and can ` +
-      `run none of them. "Running an action" in the skill gives the ` +
-      `reason for each.`;
-}
-
-function actionReferences(
-    actions: ActionTool[], model: SemanticModel,
-    paths: Map<string, string>): SkillFile[] {
-  const files: SkillFile[] = [];
   for (const tool of actions) {
     const action = actionFor(tool, model);
     if (!action) continue;
@@ -170,101 +132,8 @@ function actionReferences(
       text: referenceDocument(tool, action, model),
     });
   }
-  return files;
-}
 
-
-// ---------------------------------------------------------------------------
-// The read side, and the two sides together.
-// ---------------------------------------------------------------------------
-
-// The title and the author's description, which every mode opens the body
-// with.
-function heading(model: SemanticModel): string[] {
-  const out = [`# ${model.name}`, ''];
-  if (model.description) out.push(paragraph(model.description), '');
-  return out;
-}
-
-function frontmatter(name: string, description: string): string[] {
-  return [
-    '---',
-    `name: ${yamlString(name)}`,
-    `description: ${yamlString(description)}`,
-    '---',
-    '',
-  ];
-}
-
-/**
- * The read-side skill: an index of what the property graph holds, with the
- * detail of each entity, the metrics and generated example queries under
- * `references/`. See skills_query.ts.
- */
-function querySkill(
-    name: string, runtime: SemanticRuntime,
-    query: QuerySkillOptions|undefined): SkillPackage {
-  const parts = queryParts(runtime, query ?? {});
-  const text = finish([
-    ...frontmatter(name, parts.description(MAX_DESCRIPTION)),
-    ...heading(runtime.model),
-    ...parts.body,
-  ]);
-  const files: SkillFile[] = [{path: 'SKILL.md', text}, ...parts.files];
-  return {name, files, warnings: [...parts.warnings, ...overBudget(text)]};
-}
-
-// What `both` adds to the description: the acts, and that the skill is also
-// the write side. Kept short so the read-side description keeps most of the
-// budget -- reads are what most requests are.
-const ALSO_WRITES = 'Use it also when a request asks to change this data.';
-
-/**
- * One skill with both sides: the query index first, then the action router.
- *
- * Every per-entity, per-metric and per-action detail stays in `references/`,
- * so the body holds two indexes and the rules true of every read and every
- * call. The act side drops its table-and-column listing here: the entity
- * pages carry the same facts, and repeating them is what would push a large
- * model's body over budget.
- */
-function bothSkill(
-    name: string, runtime: SemanticRuntime, actions: ActionTool[],
-    instruction: string,
-    query: QuerySkillOptions|undefined): SkillPackage {
-  const model = runtime.model;
-  if (!actions.length) {
-    const read = querySkill(name, runtime, query);
-    return {
-      ...read,
-      warnings: [
-        `Model '${model.name}' declares no actions, so --mode both writes ` +
-            `the query skill alone.`,
-        ...read.warnings,
-      ],
-    };
-  }
-  const warnings: string[] = [];
-  if (!actions.some(t => t.runnable)) {
-    warnings.push(noneRunnable(runtime, actions));
-  }
-  const parts = queryParts(runtime, query ?? {});
-  const paths = referencePaths(actions, RESERVED_REFERENCE_SLUGS);
-  const suffix = `${actsSentence(actions, 400)} ${ALSO_WRITES}`;
-  const text = finish([
-    ...frontmatter(
-        name,
-        `${parts.description(MAX_DESCRIPTION - suffix.length - 1)} ${suffix}`),
-    ...heading(model),
-    ...parts.body,
-    ...actSections(runtime, actions, instruction, paths, true),
-  ]);
-  const files: SkillFile[] = [
-    {path: 'SKILL.md', text},
-    ...parts.files,
-    ...actionReferences(actions, model, paths),
-  ];
-  warnings.push(...parts.warnings, ...overBudget(text));
+  warnings.push(...overBudget(files[0].text));
   return {name, files, warnings};
 }
 
@@ -321,6 +190,14 @@ export function whyNameIsInvalid(name: string): string|undefined {
 // SKILL.md: the router.
 // ---------------------------------------------------------------------------
 
+// The most a client reads before deciding the skill is relevant.
+const MAX_DESCRIPTION = 1024;
+// What the spec recommends a body stay under. Both are advisory in the sense
+// that nothing rejects a longer one; what a longer one costs is context, on
+// every request, whether or not the skill is used.
+const MAX_BODY_LINES = 500;
+const MAX_BODY_TOKENS = 5000;
+
 function skillDocument(
     name: string, runtime: SemanticRuntime, actions: ActionTool[],
     instruction: string, paths: Map<string, string>): string {
@@ -342,20 +219,7 @@ function skillDocument(
     out.push(paragraph(model.description));
     out.push('');
   }
-  out.push(...actSections(runtime, actions, instruction, paths, false));
-  return finish(out);
-}
 
-// The act router's body after the title: the action table, the instruction,
-// and the sections about reading keys, running a call and its outcomes.
-// `combined` is the `both` mode, where the query index above already says how
-// to read the data, so "Finding a record" points there instead of claiming the
-// skill offers no reads and listing every table a second time.
-function actSections(
-    runtime: SemanticRuntime, actions: ActionTool[], instruction: string,
-    paths: Map<string, string>, combined: boolean): string[] {
-  const model = runtime.model;
-  const out: string[] = [];
   out.push('## What you can do here');
   out.push('');
   if (actions.length) {
@@ -390,25 +254,11 @@ function actSections(
   out.push(paragraph(instruction));
   out.push('');
 
-  out.push(...(combined ? combinedReadSide() : readSideSection(runtime, actions)));
+  out.push(...readSideSection(runtime, actions));
   out.push(...runningSection(runtime, actions));
   out.push(...outcomeSection(actions));
 
-  return out;
-}
-
-// "Finding a record" for a skill that also carries the query index: the key an
-// action wants comes from a read, and the read side is documented above.
-function combinedReadSide(): string[] {
-  return [
-    '## Finding a record',
-    '',
-    'An action takes keys, never names. When you are given a name or a ' +
-        'description where an action wants a key, read it first, as the ' +
-        'sections above describe -- the entity page lists the key and the ' +
-        'source table -- or ask the caller. Never invent one.',
-    '',
-  ];
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
 }
 
 /**
@@ -471,9 +321,17 @@ function descriptionFor(model: SemanticModel, actions: ActionTool[]): string {
   return `${truncate(subject, room)} ${fixed}`;
 }
 
-// `truncate` (in skills_text.ts) cuts to a length without splitting a
-// surrogate pair or leaving a half-word where a space was close by.
-
+// Cut to a length in characters without splitting a surrogate pair -- a lone
+// half is not valid UTF-8 and reaches the file as U+FFFD -- and without
+// leaving a half-word where a space was close by.
+function truncate(text: string, max: number): string {
+  let end = max - 1;
+  const code = text.charCodeAt(end - 1);
+  if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+  const cut = text.slice(0, end);
+  const space = cut.lastIndexOf(' ');
+  return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
 
 // What a key that matches nothing costs, which is the question an agent has
 // once it is told to go and find one. Every argument is a scalar, so there is
@@ -720,11 +578,9 @@ function outcomeSection(actions: ActionTool[]): string[] {
  * declaration order, because the alternative is two actions sharing a page and
  * the second silently overwriting the first.
  */
-function referencePaths(
-    actions: ActionTool[],
-    reserved: readonly string[] = []): Map<string, string> {
+function referencePaths(actions: ActionTool[]): Map<string, string> {
   const paths = new Map<string, string>();
-  const taken = new Set<string>(reserved);
+  const taken = new Set<string>();
   for (const tool of actions) {
     const base = skillNameFor(tool.actionName) || 'action';
     let slug = base;
@@ -885,6 +741,52 @@ function distinctKinds(actions: Action[]): string[] {
   return [...kinds].sort();
 }
 
-// The budget check (`overBudget`) and the YAML/Markdown helpers (`yamlString`,
-// `collapse`, `cell`, `paragraph`, `firstLine`, `sentenceEnd`) live in
-// skills_text.ts, shared with the query generator.
+// The spec's budgets are about what a body costs the agent that loads it, so
+// what is measured is the body rather than the file: frontmatter is read at
+// startup and is accounted for by its own limits.
+function overBudget(document: string): string[] {
+  const body = document.replace(/^---\n[\s\S]*?\n---\n/, '');
+  const warnings: string[] = [];
+  const lines = body.split('\n').length;
+  if (lines > MAX_BODY_LINES) {
+    warnings.push(`SKILL.md body is ${lines} lines, over the ${
+        MAX_BODY_LINES}-line guidance. Move detail into references/.`);
+  }
+  // Four characters to the token is the usual rough count. Approximate on
+  // purpose: the point is to notice a body that has outgrown the router shape,
+  // and being exact about it would mean shipping a tokenizer.
+  const tokens = Math.ceil(body.length / 4);
+  if (tokens > MAX_BODY_TOKENS) {
+    warnings.push(`SKILL.md body is roughly ${tokens} tokens, over the ${
+        MAX_BODY_TOKENS}-token guidance. Move detail into references/.`);
+  }
+  return warnings;
+}
+
+/** A YAML double-quoted scalar, on one line, safe for any description. */
+function yamlString(text: string): string {
+  return `"${collapse(text).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+/** Folded YAML and hand-wrapped prose both arrive with newlines in them. */
+function collapse(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/** Markdown reads a newline inside a table cell as the end of the row. */
+function cell(text: string): string {
+  return collapse(text).replace(/\|/g, '\\|');
+}
+
+/** Keeps the author's paragraphs and drops their line wrapping. */
+function paragraph(text: string): string {
+  return text.trim().split(/\n\s*\n/).map(collapse).join('\n\n');
+}
+
+function firstLine(text: string): string {
+  return collapse(text.split(/\n\s*\n/)[0] ?? '');
+}
+
+function sentenceEnd(text: string): string {
+  return !text || /[.!?]$/.test(text) ? text : `${text}.`;
+}

@@ -32,8 +32,7 @@ import {boundEntityNames, formatPruneSummary} from '../libts/semantic/prune';
 import {AvailabilityReport, DEFAULT_PROFILE, mergeProfileOntoDoc, pruneUnavailable,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {storeLine} from '../libts/semantic/runtime/store';
-import {generateSkill, SKILL_MODES, SkillMode, SkillPackage} from '../libts/semantic/skills';
-import type {SemanticModel} from '../libts/semantic/ir';
+import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryActionStatements, validateBigQueryDataSources, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import * as bqValidation from '../libts/semantic/validate_bigquery';
@@ -1658,54 +1657,6 @@ export interface SkillsGenerateOptions {
   name?: string;
   /** Replace a skill that is already there, pruning stale pages. */
   force?: boolean;
-  /**
-   * `act` (default): the action router. `query`: the read-side index over
-   * the property graph. `both`: one skill with the two.
-   */
-  mode?: string;
-  /**
-   * Further catalog scopes (directories holding a `catalog.yaml`) whose
-   * BigQuery graphs the query side should also point at -- e.g. a metrics
-   * slice small enough for GRAPH_EXPAND. Read-only; read under each scope's
-   * own default profile.
-   */
-  extraScope?: string|string[];
-  /** BigQuery location to name in the query side. */
-  location?: string;
-  /**
-   * Whether the query side reads metrics on the GRAPH_EXPAND metric graphs
-   * and fallback views `kcmd push` deploys (K6, a proposed enhancement; see
-   * ../libts/semantic/metric_slices.ts). On by default; `--no-metric-graphs`
-   * sets it false, for a graph pushed with `--no-metric-graphs`.
-   */
-  metricGraphs?: boolean;
-}
-
-
-// The GCP context for a generator that writes files and calls no regional
-// API. `ApiContext.default()` refuses to start without `compute/region`, but
-// generating a skill only reads the scope (whose type lookups name their own
-// location), so a missing region falls back to `global` rather than stopping
-// an offline command over an unrelated gcloud setting.
-function generatorContext(): context.ApiContext {
-  try {
-    return context.ApiContext.default();
-  } catch {
-    const read = (cmd: string) => {
-      try {
-        return cp.execSync(cmd, {stdio: ['ignore', 'pipe', 'ignore']})
-            .toString()
-            .trim();
-      } catch {
-        return '';
-      }
-    };
-    const project = process.env.CLOUDSDK_CORE_PROJECT ||
-        read('gcloud -q config get-value project');
-    const token =
-        read('gcloud -q auth application-default print-access-token');
-    return new context.ApiContext(project, 'global', token);
-  }
 }
 
 
@@ -1727,13 +1678,7 @@ function generatorContext(): context.ApiContext {
 // Returns a process exit code (0 on success).
 export async function skillsGenerate(options: SkillsGenerateOptions = {}):
     Promise<number> {
-  const ctx = generatorContext();
-  const mode = (options.mode ?? 'act') as SkillMode;
-  if (!SKILL_MODES.includes(mode)) {
-    console.error(`Error: --mode must be one of ${SKILL_MODES.join(', ')}; got '${
-        options.mode}'.`);
-    return 1;
-  }
+  const ctx = context.ApiContext.default();
   const named =
       typeof options.profile === 'string' ? options.profile : undefined;
   const opened = await createSemanticRuntimes({profile: named, ctx});
@@ -1746,34 +1691,6 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
         opened.length} models. Drop it and each takes its model's name.`);
     return 1;
   }
-
-  const extraScopes = options.extraScope === undefined ?
-      [] :
-      (Array.isArray(options.extraScope) ? options.extraScope :
-                                           [options.extraScope]);
-  if (extraScopes.length && mode === 'act') {
-    console.warn('Warning: --extra-scope only affects --mode query or both; ignored.');
-  }
-  const extraModels: SemanticModel[] = [];
-  for (const dir of mode === 'act' ? [] : extraScopes) {
-    const extra = await createSemanticRuntimes({
-      path: dir,
-      ctx,
-      // The extra scope is read for its graph's coordinates and measures;
-      // its binding chatter is not this command's to report.
-      onWarning: () => {},
-    });
-    if ('error' in extra) {
-      console.error(`Error: --extra-scope ${dir}: ${extra.error}`);
-      return 1;
-    }
-    extraModels.push(...extra.map(r => r.model));
-  }
-  const query = {
-    extraModels,
-    location: options.location,
-    metricGraphs: options.metricGraphs,
-  };
 
   const root = options.out ?? 'skills';
 
@@ -1792,8 +1709,7 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
   const claimed = new Map<string, string>();
   let failed = false;
   for (const runtime of opened) {
-    const generated =
-        generateSkill({runtime, name: options.name, mode, query});
+    const generated = generateSkill({runtime, name: options.name});
     if ('error' in generated) {
       console.error(`Error: [${runtime.model.name}] ${generated.error}`);
       failed = true;
@@ -1862,18 +1778,40 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
 // demand -- so the stale page is read as current and describes a call that no
 // longer exists.
 function stalePages(dir: string, keep: Set<string>): string[] {
-  const out: string[] = [];
-  // `references/` holds the action pages and the query side's metrics and
-  // patterns pages; `references/entities/` holds one page per graph label.
-  for (const sub of ['references', 'references/entities']) {
-    const refs = path.join(dir, sub);
-    if (!fs.existsSync(refs)) continue;
-    out.push(...fs.readdirSync(refs)
-                 .filter(f => f.endsWith('.md'))
-                 .map(f => `${sub}/${f}`)
-                 .filter(f => !keep.has(f)));
+  const refs = path.join(dir, 'references');
+  if (!fs.existsSync(refs)) return [];
+  return fs.readdirSync(refs)
+      .filter(f => f.endsWith('.md'))
+      .map(f => `references/${f}`)
+      .filter(f => !keep.has(f));
+}
+
+
+// The GCP context for the commands below (validate, test, profile, glossary),
+// which read the scope and name their own location for any API they call (a
+// BigQuery job's, the glossary's). `ApiContext.default()` throws when gcloud
+// cannot supply a project or a token; this falls back to what gcloud does
+// supply, in `global`, rather than stopping an offline run (--sql-only,
+// --dry-run) over an unrelated gcloud setting.
+function generatorContext(): context.ApiContext {
+  try {
+    return context.ApiContext.default();
+  } catch {
+    const read = (cmd: string) => {
+      try {
+        return cp.execSync(cmd, {stdio: ['ignore', 'pipe', 'ignore']})
+            .toString()
+            .trim();
+      } catch {
+        return '';
+      }
+    };
+    const project = process.env.CLOUDSDK_CORE_PROJECT ||
+        read('gcloud -q config get-value project');
+    const token =
+        read('gcloud -q auth application-default print-access-token');
+    return new context.ApiContext(project, 'global', token);
   }
-  return out;
 }
 
 

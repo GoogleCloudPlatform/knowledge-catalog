@@ -496,8 +496,7 @@ reads the document ([§6](#6-the-extension-mechanism)).
   table. They travel as description trailers (`Unit: USD (x1000).`,
   `Grain: …`, `History: versioned; current rows where isCurrent.`) on BigQuery
   graph elements and Knowledge Catalog entries — a pull reads the trailers back
-  — and as native keys in OSI output. Query skill pages state them per property
-  and tell the agent how to filter current rows.
+  — and as native keys in OSI output.
 
 - **Vocabularies: `members` on a dataset (extended profile only; proposed).**
   A dataset MAY list its rows as `members`, which makes it a *vocabulary*: a
@@ -554,9 +553,8 @@ reads the document ([§6](#6-the-extension-mechanism)).
   with no source is a push error there. *Knowledge Catalog:* the members ride
   the entity description as its last paragraph (`Members: "OPEN" — "Open";
   "SHIPPED" — "Shipped"; "VOID" — "Cancelled".`), and a pull reads them back
-  (codes and labels only). OSI output carries `members` natively, and query
-  skill pages list them (`code — label`). Publishing members as Business
-  Glossary terms is a follow-up.
+  (codes and labels only). OSI output carries `members` natively. Publishing
+  members as Business Glossary terms is a follow-up.
 
 - **Derived relationships: `via` and `filter` on a relationship (extended
   profile only; proposed).** A relationship MAY declare `via: [step, step, …]`
@@ -604,7 +602,7 @@ reads the document ([§6](#6-the-extension-mechanism)).
   *Spanner Graph:* a push error. *Knowledge Catalog:* a schema join pairing the
   two endpoints' keys, whose description ends with `Derived via: ^memberOf,
   inClub.` (and `Derived filter: …`), read back on pull. OSI output carries
-  `via` and `filter` natively, and query skill pages state the chain.
+  `via` and `filter` natively.
 
 - **The `Regime:` note (proposed; read only by `kcmd profile`).** A line
   starting `Regime:` in a field's `description` or `ai_context.instructions`
@@ -629,9 +627,8 @@ reads the document ([§6](#6-the-extension-mechanism)).
   are load warnings and push errors (an unresolved `defines` is only a warning
   when a binding profile pruned fields). The glossary changes no generated
   SQL and no semantic entry: `kcmd glossary push` publishes it as a Knowledge
-  Catalog Business Glossary with `related` and `definition` entry links, OSI
-  output carries it as a native key, and query skills list its terms. See
-  [Business glossary](glossary.md).
+  Catalog Business Glossary with `related` and `definition` entry links, and
+  OSI output carries it as a native key. See [Business glossary](glossary.md).
 
 - **`extends` and `abstract` on a relationship (extended profile only).**
   Relationship inheritance: a relationship MAY name parent relationships in

@@ -126,7 +126,6 @@ against.
 | `--name <name>` | Name the skill, and so its directory. Defaults to the model's own name. Rejected when the scope holds more than one model, because a name names one skill. |
 | `--profile [name]` | Read the model under this binding profile. Defaults to `default_profile`, else the model's inline bindings. It is what the one deployment-specific section describes. |
 | `--force` | Replace a skill already at that path. A reference page for an action the model no longer declares is deleted and reported; a file outside `references/` is left alone. |
-| `--no-metric-graphs` | Query mode (`--mode query` or `both`; the other query-mode flags are in [Generating an Agent Skill](skills.md#flags)). Read metrics on the main graph's own measures rather than on the metric graphs and views a push deploys next to it (proposed). Use it for a graph pushed with `--no-metric-graphs`. |
 
 Before anything is written, a warning is printed when no action in a model is
 runnable under the selected profile, because a skill that can run nothing is
@@ -445,9 +444,7 @@ fact's metrics read, then further many-to-one dimensions breadth-first, up to
 `MEASURE` per aggregate. A view has one row per fact record, with columns named
 `<Entity>_<field>`. The main graph is the same with or without them. The rules
 are in
-[What push and pull preserve](fidelity.md#metric-graphs-for-graph_expand-proposed),
-and how the query skill reads them in
-[Agent skills](skills.md#metrics-and-metric-graphs-proposed).
+[What push and pull preserve](fidelity.md#metric-graphs-for-graph_expand-proposed).
 
 The push prints the plan, one line per metric graph and view. A dry run prints
 it too, headed `Metric graphs (dry run; nothing created):`, and `--print` adds

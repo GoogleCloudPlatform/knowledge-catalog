@@ -2,8 +2,7 @@
 // (src/libts/semantic/glossary.ts) -- the `glossary:` spec block through the
 // loader and push validation, the Knowledge Catalog (Dataplex) request plan
 // with its exact REST bodies and entry-link types, the description codec and
-// pull reverse, OSI round-trip, the OWL importer's SKOS mapping, and the
-// query skill.
+// pull reverse, OSI round-trip, and the OWL importer's SKOS mapping.
 //
 // Running example (neutral): an order table and a customer table, with a
 // small revenue vocabulary.
@@ -11,13 +10,10 @@
 import {describe, expect, test} from 'bun:test';
 
 import {convertOwlToOsi} from '../../../src/libts/semantic/converters/owl/convert';
-import {checkGlossary, entityGlossaryLines, glossaryDoc, glossaryFromDataplex, glossaryGuideLine, glossaryId, GlossaryRequest, glossarySkillSection, LINK_TYPES, linkId, planGlossary, SKILL_TERM_CAP, splitTermDescription, termDescription, termEntryName} from '../../../src/libts/semantic/glossary';
+import {checkGlossary, glossaryDoc, glossaryFromDataplex, glossaryId, GlossaryRequest, LINK_TYPES, linkId, planGlossary, splitTermDescription, termDescription, termEntryName} from '../../../src/libts/semantic/glossary';
 import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {fromDocument, loadModels} from '../../../src/libts/semantic/loader';
 import {serializeModel} from '../../../src/libts/semantic/osi_converter';
-import {resolveInheritance} from '../../../src/libts/semantic/resolve_inheritance';
-import {SemanticRuntime} from '../../../src/libts/semantic/runtime/runtime';
-import {generateSkill} from '../../../src/libts/semantic/skills';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
 
 const GOOGLE = '0.2.0.dev0/google';
@@ -482,70 +478,5 @@ describe('OWL import (SKOS)', () => {
   test('an ontology without SKOS concepts gets no glossary', () => {
     const {yaml} = convertOwlToOsi(TTL.split('ex:vocab')[0], 'shop');
     expect(yaml).not.toContain('glossary:');
-  });
-});
-
-describe('query skill', () => {
-  function generate(m: SemanticModel) {
-    const runtime: SemanticRuntime = {
-      model: resolveInheritance(m).model,
-      document: 'shop',
-      store: {kind: 'bigquery', name: 'projects/p/datasets/d', project: 'p', dataset: 'd'},
-      profile: 'bigquery',
-      entryGroup: 'shop_eg',
-    } as SemanticRuntime;
-    const out = generateSkill({runtime, mode: 'query', query: {location: 'US'}});
-    if ('error' in out) throw new Error(out.error);
-    return {
-      files: Object.fromEntries(out.files.map(x => [x.path, x.text])),
-      warnings: out.warnings,
-    };
-  }
-
-  test('SKILL.md lists business terms and the one glossary guide line', () => {
-    const {files} = generate(loaded());
-    const skill = files['SKILL.md'];
-    expect(skill).toContain('## Business terms');
-    expect(skill).toContain('- Revenue (sales, turnover) -> revenue, Order');
-    expect(skill).toContain('- Order Total -> Order.total');
-    expect(skill).toContain(glossaryGuideLine('shop-glossary'));
-    expect(glossaryGuideLine('shop-glossary')).toBe(
-        'A business term or metric name that is not in the model may be in ' +
-        'the Knowledge Catalog glossary shop-glossary: search it ' +
-        '(search_entries) before concluding the data does not contain it.');
-    expect(skill.indexOf('## Business terms')).toBeLessThan(skill.indexOf('## More'));
-  });
-
-  test('entity pages list the terms naming the entity and its fields', () => {
-    const {files} = generate(loaded());
-    const order = files['references/entities/Order.md'];
-    expect(order).toContain('## Business terms');
-    expect(order).toContain('- Revenue (sales, turnover) -> this entity: Total value of orders.');
-    expect(order).toContain('- Order Total -> `total`: Gross amount of one order.');
-    expect(entityGlossaryLines(loaded(), 'Customer'))
-        .toEqual(['- Customer Name -> `displayName`: Name the customer trades under.']);
-  });
-
-  test('no glossary: no section and no guide line', () => {
-    const m = loaded();
-    delete m.glossary;
-    const skill = generate(m).files['SKILL.md'];
-    expect(skill).not.toContain('Business terms');
-    expect(skill).not.toContain('Knowledge Catalog glossary');
-  });
-
-  test(`SKILL.md caps the list at ${SKILL_TERM_CAP} terms`, () => {
-    const m = loaded();
-    m.glossary!.terms = Array.from({length: SKILL_TERM_CAP + 5}, (_, i) => ({
-      id: `term-${i}`,
-      definition: `Definition ${i}.`,
-    }));
-    const lines = glossarySkillSection(m)!;
-    expect(lines).toHaveLength(SKILL_TERM_CAP + 1);
-    expect(lines[SKILL_TERM_CAP])
-        .toBe('- ... 5 more in the Knowledge Catalog glossary shop-glossary');
-    const {files, warnings} = generate(m);
-    expect(files['SKILL.md']).toContain('5 more in the Knowledge Catalog glossary');
-    expect(Array.isArray(warnings)).toBe(true);
   });
 });

@@ -28,7 +28,6 @@
 //   - Knowledge Catalog: the schema-join pairs the two endpoints' keys and its
 //     description states the derivation as fixed, parseable trailing
 //     paragraphs (`Derived via: ^memberOf, inClub.`).
-//   - Skill pages document the edge and its chain.
 //
 // Everything K2 owns lives here so the feature is easy to find, rename or drop.
 
@@ -431,29 +430,6 @@ function rewriteFilter(
     }
   }
   return out;
-}
-
-// --------------------------------------------------------------------------
-// Skill pages.
-// --------------------------------------------------------------------------
-
-/**
- * The line a derived relationship adds to the skill pages: what it is derived
- * from, so an agent knows the edge is computed and what it means. Undefined
- * for a stored relationship.
- */
-export function derivedSkillLine(
-    rel: Relationship, relationships: readonly Relationship[]): string|
-    undefined {
-  if (!rel.via?.length) return undefined;
-  const res = resolveChain(rel, relationships);
-  const path = res.hops ? ` (${chainPath(res.hops)})` : '';
-  const filter =
-      rel.filter?.trim() ? `, keeping only pairs where ${oneLine(rel.filter)}` :
-                           '';
-  return `Derived: not stored; it is the chain ${
-      formatChain(rel.via)}${path}${filter} (\`^\` = walked backwards). ` +
-      `Traverse it like any edge.`;
 }
 
 // --------------------------------------------------------------------------
