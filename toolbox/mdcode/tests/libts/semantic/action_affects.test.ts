@@ -40,52 +40,56 @@ const MCP_EXECUTOR = {
 // kind. `affects` is passed through verbatim: a test names something that does
 // not exist by writing it, exactly as an author would.
 function withAffects(affects: any[]|undefined, version = '0.2.0.dev0/google') {
-  return fromDocument({
-    version,
-    semantic_model: [{
-      name: 'm',
-      datasets: [
-        {
-          name: 'orders',
-          source: 'p.d.o',
-          primary_key: ['id'],
-          fields: [
+  return fromDocument(
+      {
+        version,
+        semantic_model: [{
+          name: 'm',
+          datasets: [
             {
-              name: 'id',
-              expression: {dialects: [{dialect: 'ANSI_SQL', expression: 'id'}]},
+              name: 'orders',
+              source: 'p.d.o',
+              primary_key: ['id'],
+              fields: [
+                {
+                  name: 'id',
+                  expression:
+                      {dialects: [{dialect: 'ANSI_SQL', expression: 'id'}]},
+                },
+                {
+                  name: 'total',
+                  expression:
+                      {dialects: [{dialect: 'ANSI_SQL', expression: 'total'}]},
+                },
+              ],
             },
             {
-              name: 'total',
-              expression:
-                  {dialects: [{dialect: 'ANSI_SQL', expression: 'total'}]},
+              name: 'customer',
+              source: 'p.d.c',
+              primary_key: ['cid'],
+              fields: [{
+                name: 'cid',
+                expression:
+                    {dialects: [{dialect: 'ANSI_SQL', expression: 'cid'}]},
+              }],
             },
           ],
-        },
-        {
-          name: 'customer',
-          source: 'p.d.c',
-          primary_key: ['cid'],
-          fields: [{
-            name: 'cid',
-            expression: {dialects: [{dialect: 'ANSI_SQL', expression: 'cid'}]},
+          relationships: [{
+            name: 'orders_to_customer',
+            from: 'orders',
+            to: 'customer',
+            from_columns: ['id'],
+            to_columns: ['cid'],
           }],
-        },
-      ],
-      relationships: [{
-        name: 'orders_to_customer',
-        from: 'orders',
-        to: 'customer',
-        from_columns: ['id'],
-        to_columns: ['cid'],
-      }],
-      actions: [{
-        name: 'PlaceOrder',
-        executor: MCP_EXECUTOR,
-        parameters: [{name: 'quantity', type: 'Integer'}],
-        ...(affects ? {affects} : {}),
-      }],
-    }],
-  });
+          actions: [{
+            name: 'PlaceOrder',
+            executor: MCP_EXECUTOR,
+            parameters: [{name: 'quantity', type: 'Integer'}],
+            ...(affects ? {affects} : {}),
+          }],
+        }],
+      },
+      {allowLegacyBareSource: true});
 }
 
 
@@ -520,7 +524,7 @@ describe('affects survives every round trip', () => {
   const model = (() => {
     const text = fs.readFileSync(
         path.join(FIXTURES, 'actions_place_order.yaml'), 'utf8');
-    return loadModels(text).models[0];
+    return loadModels(text, {allowLegacyBareSource: true}).models[0];
   })();
 
   const EXPECTED = [
@@ -539,7 +543,8 @@ describe('affects survives every round trip', () => {
 
   test('OSI serialize -> reload', () => {
     const {yaml} = serializeModel(model);
-    expect(loadModels(yaml).models[0].actions![0].affects)
+    expect(
+        loadModels(yaml, {allowLegacyBareSource: true}).models[0].actions![0].affects)
         .toEqual(EXPECTED as any);
   });
 
@@ -548,7 +553,9 @@ describe('affects survives every round trip', () => {
     // record with nothing but a concept comes back as a bare name. Reloading
     // and re-emitting therefore has to change nothing more.
     const once = serializeModel(model).yaml;
-    const twice = serializeModel(loadModels(once).models[0]).yaml;
+    const twice =
+        serializeModel(loadModels(once, {allowLegacyBareSource: true}).models[0])
+            .yaml;
     expect(twice).toBe(once);
   });
 

@@ -19,10 +19,10 @@ import {YAML_OPTIONS} from './yaml_options';
 
 export interface LoadOptions {
   dialect?: string;  // preferred expression dialect; default 'BIGQUERY'
-  defaultProject?:
-      string;  // fallback when a dataset `source` omits the project
-  defaultDataset?:
-      string;  // fallback when a dataset `source` omits the dataset
+  // Fallbacks when a bare dataset `source` omits the project or dataset; used
+  // only when `allowLegacyBareSource` is enabled.
+  defaultProject?: string;
+  defaultDataset?: string;
   // Accept a purely logical model: do not require a `source` on each concrete
   // dataset. Set for a Knowledge-Catalog-only push, which governs the logical
   // model (meaning) and needs no physical binding. Graph legs
@@ -31,6 +31,10 @@ export interface LoadOptions {
   // with none is unbound and the availability pass prunes it. The
   // abstract+source contradiction stays enforced regardless.
   bindingOptional?: boolean;
+  // Temporary opt-in for existing test fixtures and legacy profile files while
+  // they are migrated (b/568184815, b/568186042): accepts bare table names, the
+  // legacy instance-based AlloyDB URI, and the legacy `deployment_target:` key.
+  allowLegacyBareSource?: boolean;
 }
 
 export interface LoadResult {
@@ -1193,9 +1197,10 @@ function convertDataset(
   // An abstract entity has no physical table, so it carries no source (empty
   // dataSource) and no key -- both are meaningless for a class never
   // materialized. Only a concrete entity is parsed/warned for those.
-  const dataSource = ds.source !== undefined ?
-      parseSource(ds.source, opts, warnings, ctxLabel) :
-      '';
+  const parsedSource = ds.source !== undefined ?
+      parseSource(ds.source, opts, ctxLabel) :
+      undefined;
+  const dataSource = parsedSource ? parsedSource.dataSource : '';
   const keys = ds.primary_key ?? [];
   if (!keys.length && !ds.abstract) {
     warnings.push(`${
@@ -1207,6 +1212,7 @@ function convertDataset(
       fields.map(f => f.name), 'field name', `dataset '${ds.name}'`);
 
   const entity: Entity = {name: ds.name, dataSource, keys, fields};
+  if (parsedSource) entity.authoredSource = parsedSource.authoredSource;
   if (ds.unique_keys && ds.unique_keys.length)
     entity.uniqueKeys = ds.unique_keys;
   if (ds.extends && ds.extends.length) entity.extends = ds.extends;
@@ -1807,46 +1813,278 @@ function pickDialect(
   return out;
 }
 
-// Normalizes a dotted `source` string into a canonical, fully-qualified
-// reference. Each identifier segment is unquoted, and a short reference has its
-// leading qualifiers prepended from options (a bare `table` gets both defaults;
-// a `dataset.table` gets the project). References that already carry three or
-// more segments are passed through untouched, so an already-qualified name
-// keeps whatever shape the source system gave it rather than being forced into
-// fixed slots. A source that looks like a query (contains whitespace) cannot be
-// qualified, so it is kept verbatim.
+interface ParsedSource {
+  dataSource: string;
+  authoredSource: string;
+}
+
+const MAX_CATALOG_NAME_LENGTH = 4000;
+
+const BIGQUERY_TABLE_URI =
+    /^\/\/bigquery\.googleapis\.com\/projects\/([^/]+)\/datasets\/([^/.]+)\/tables\/([^/.]+)$/;
+const BIGLAKE_TABLE_URI =
+    /^\/\/biglake\.googleapis\.com\/projects\/([^/]+)\/catalogs\/([^/.]+)\/namespaces\/([^/.]+)\/tables\/([^/.]+)$/;
+const SPANNER_TABLE_URI =
+    /^\/\/spanner\.googleapis\.com\/projects\/([^/]+)\/instances\/([^/]+)\/databases\/([^/]+)\/tables\/[^/]+$/;
+const ALLOYDB_TABLE_URI =
+    /^\/\/alloydb\.googleapis\.com\/projects\/([^/]+)\/locations\/([^/]+)\/clusters\/([^/]+)\/databases\/([^/]+)\/schemas\/[^/]+\/tables\/[^/]+$/;
+const LEGACY_ALLOYDB_INSTANCE_URI =
+    /^\/\/alloydb\.googleapis\.com\/projects\/([^/]+)\/locations\/([^/]+)\/clusters\/([^/]+)\/instances\/[^/]+\/databases\/([^/]+)\/tables\/([^/]+)$/;
+
+// A catalog name's dot-separated segments. A segment containing a reserved
+// character, such as a domain-scoped project, is wrapped in backticks, so the
+// dots and colons inside backticks do not split or fail. Returns [] when the
+// quoting is malformed (an unquoted colon, an unclosed backtick, text after a
+// closing backtick, or a backtick mid-segment outside quotes).
+export function catalogNameSegments(path: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let state: 'start'|'unquoted'|'quoted'|'after_quote' = 'start';
+  for (let i = 0; i < path.length; i++) {
+    const ch = path[i];
+    if (state === 'start') {
+      if (ch === '`') {
+        state = 'quoted';
+      } else if (ch === '.') {
+        out.push('');
+      } else if (ch === ':') {
+        return [];
+      } else {
+        cur = ch;
+        state = 'unquoted';
+      }
+    } else if (state === 'unquoted') {
+      if (ch === '.') {
+        out.push(cur);
+        cur = '';
+        state = 'start';
+      } else if (ch === '`' || ch === ':') {
+        return [];
+      } else {
+        cur += ch;
+      }
+    } else if (state === 'quoted') {
+      if (ch === '`') {
+        // A doubled backtick inside a quoted segment is a literal backtick.
+        if (path[i + 1] === '`') {
+          cur += '`';
+          i++;
+        } else {
+          state = 'after_quote';
+        }
+      } else {
+        cur += ch;
+      }
+    } else {
+      if (ch === '.') {
+        out.push(cur);
+        cur = '';
+        state = 'start';
+      } else {
+        return [];
+      }
+    }
+  }
+  if (state === 'quoted') return [];
+  out.push(cur);
+  return out;
+}
+
+function hasUnquotedWhitespace(source: string): boolean {
+  let quoted = false;
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    if (ch === '`') {
+      if (quoted && source[i + 1] === '`') {
+        i++;
+      } else {
+        quoted = !quoted;
+      }
+      continue;
+    }
+    if (!quoted && /\s/.test(ch)) return true;
+  }
+  return false;
+}
+
+// The database a source lives in, for the one-database rule and source
+// validation, or undefined when the source is in no accepted form: a bare name,
+// a query, a graph rather than a table, a catalog name under a prefix kcmd does
+// not accept, or one with the wrong number of segments. The result starts with
+// its system, which DIALECT_OF_SYSTEM maps to the dialect the source infers.
+//
+// A database is what a single query can reach: all of BigQuery, BigLake
+// included because BigQuery reads it; one Spanner, AlloyDB, Cloud SQL for
+// PostgreSQL or self-managed PostgreSQL database; one Cloud SQL for MySQL
+// instance or self-managed MySQL server; one Snowflake account; one Databricks
+// metastore. A self-managed server is named by its DNS name, so `mysql:` and
+// `postgresql:` name different systems from `cloudsql_mysql:` and
+// `cloudsql_postgresql:`. The segment counts are those of the Knowledge
+// Catalog FQN reference.
+export function databaseOf(source: string): string|undefined {
+  if (hasUnquotedWhitespace(source)) return undefined;
+  if (BIGQUERY_TABLE_URI.test(source) || BIGLAKE_TABLE_URI.test(source)) {
+    return 'bigquery';
+  }
+  let m = source.match(SPANNER_TABLE_URI);
+  if (m) return `spanner/${m[1]}/${m[2]}/${m[3]}`;
+  // An AlloyDB database belongs to its cluster, and a table to a schema in it.
+  m = source.match(ALLOYDB_TABLE_URI);
+  if (m) return `alloydb/${m[1]}/${m[2]}/${m[3]}/${m[4]}`;
+  if (source.length > MAX_CATALOG_NAME_LENGTH) return undefined;
+  m = source.match(/^(databricks:table|[a-z_]+):(.+)$/);
+  if (!m) return undefined;
+  const seg = catalogNameSegments(m[2]);
+  if (seg.length === 0 || seg.some(s => s.length === 0)) return undefined;
+  const first = (n: number) => seg.slice(0, n).join('.');
+  switch (m[1]) {
+    case 'bigquery':
+      return seg.length === 3 && !seg[1].includes('.') && !seg[2].includes('.') ?
+          'bigquery' :
+          undefined;
+    case 'spanner':
+      return seg.length === 5 ? `spanner/${seg[0]}/${seg[2]}/${seg[3]}` :
+                                undefined;
+    case 'alloydb':
+      return seg.length === 6 ?
+          `alloydb/${seg[0]}/${seg[1]}/${seg[2]}/${seg[3]}` :
+          undefined;
+    case 'cloudsql_mysql':
+      return seg.length === 5 ? `cloudsql_mysql/${first(3)}` : undefined;
+    case 'mysql':
+      return seg.length === 3 ? `mysql/${first(1)}` : undefined;
+    case 'cloudsql_postgresql':
+      return seg.length === 6 ? `cloudsql_postgresql/${first(4)}` : undefined;
+    case 'postgresql':
+      return seg.length === 4 ? `postgresql/${first(2)}` : undefined;
+    case 'snowflake':
+      return seg.length === 4 ? `snowflake/${seg[0]}` : undefined;
+    case 'databricks:table':
+      return seg.length === 4 ? `databricks/${seg[0]}` : undefined;
+    default:
+      return undefined;
+  }
+}
+
 function parseSource(
-    source: string, opts: LoadOptions, warnings: string[],
-    ctx: string): string {
+    source: string, opts: LoadOptions, ctx: string): ParsedSource {
   const trimmed = source.trim();
 
-  if (/\s/.test(trimmed)) {
-    warnings.push(`${
-        ctx}: source looks like a query, not a table reference; keeping it verbatim`);
-    return trimmed;
+  if (hasUnquotedWhitespace(trimmed)) {
+    throw new Error(
+        `Semantic model load error: ${ctx}: source '${trimmed}' looks like a ` +
+        `SQL query; a query-valued source is not supported yet. Bind 'source' ` +
+        `to a physical table using a GCP resource URI (e.g. ` +
+        `'//bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>') or ` +
+        `a Knowledge Catalog name (e.g. 'bigquery:<p>.<d>.<t>').`);
   }
 
-  // A BigQuery resource-name URI (AIP-122) is the readable way to name a
-  // source; rewrite it to the canonical project.dataset.table the generator
-  // emits.
-  const bq = trimmed.match(
-      /^\/\/bigquery\.googleapis\.com\/projects\/([^/]+)\/datasets\/([^/]+)\/tables\/(.+)$/);
-  if (bq) return `${bq[1]}.${bq[2]}.${bq[3]}`;
-
-  // Any other resource URI (Spanner, AlloyDB, an iceberg:// table, ...) is not
-  // a BigQuery table and is not dotted-qualified; keep it verbatim. It rides
-  // through to the consumer that binds it (the BigQuery path does not probe or
-  // emit a non-BigQuery source).
-  if (trimmed.startsWith('//') || /^[a-z][\w+.-]*:\/\//i.test(trimmed)) {
-    return trimmed;
+  // Accepted forms: GCP resource URI or Knowledge Catalog name.
+  if (databaseOf(trimmed) !== undefined) {
+    const bqUri = trimmed.match(BIGQUERY_TABLE_URI);
+    if (bqUri) {
+      return {
+        authoredSource: trimmed,
+        dataSource: `${bqUri[1]}.${bqUri[2]}.${bqUri[3]}`,
+      };
+    }
+    const biglakeUri = trimmed.match(BIGLAKE_TABLE_URI);
+    if (biglakeUri) {
+      return {
+        authoredSource: trimmed,
+        dataSource: `${biglakeUri[1]}.${biglakeUri[2]}.${biglakeUri[3]}.${biglakeUri[4]}`,
+      };
+    }
+    if (trimmed.startsWith('bigquery:')) {
+      const segs = catalogNameSegments(trimmed.slice('bigquery:'.length));
+      return {
+        authoredSource: trimmed,
+        dataSource: segs.join('.'),
+      };
+    }
+    return {
+      authoredSource: trimmed,
+      dataSource: trimmed,
+    };
   }
 
-  const parts = trimmed.split('.').map(unquote);
-  if (parts.length === 1 && opts.defaultDataset)
-    parts.unshift(opts.defaultDataset);
-  if (parts.length < 3 && opts.defaultProject)
-    parts.unshift(opts.defaultProject);
-  return parts.join('.');
+  // Legacy instance-based AlloyDB URI: accepted under opt-in, otherwise
+  // reported with a specific migration message.
+  const legacyAlloy = trimmed.match(LEGACY_ALLOYDB_INSTANCE_URI);
+  if (legacyAlloy) {
+    if (opts.allowLegacyBareSource) {
+      return {
+        authoredSource: trimmed,
+        dataSource: trimmed,
+      };
+    }
+    throw new Error(
+        `Semantic model load error: ${ctx}: source '${trimmed}' uses the ` +
+        `legacy instance-based AlloyDB URI. An AlloyDB database belongs to ` +
+        `its cluster and a table to a schema in it; write ` +
+        `'//alloydb.googleapis.com/projects/${legacyAlloy[1]}/locations/${
+            legacyAlloy[2]}/clusters/${legacyAlloy[3]}/databases/${
+            legacyAlloy[4]}/schemas/<schema>/tables/${legacyAlloy[5]}' or ` +
+        `'alloydb:${legacyAlloy[1]}.${legacyAlloy[2]}.${legacyAlloy[3]}.${
+            legacyAlloy[4]}.<schema>.${legacyAlloy[5]}'.`);
+  }
+
+  if (trimmed.length > MAX_CATALOG_NAME_LENGTH) {
+    throw new Error(
+        `Semantic model load error: ${ctx}: source exceeds the ${
+            MAX_CATALOG_NAME_LENGTH}-character limit (${
+            trimmed.length} characters).`);
+  }
+
+  // Bare table name (no `//` prefix and no `:` scheme/prefix).
+  const rawSegs = catalogNameSegments(trimmed);
+  const isBareTableName = trimmed.length > 0 && !trimmed.startsWith('//') &&
+      !trimmed.includes(':') && rawSegs.length > 0;
+  if (isBareTableName) {
+    const segs = rawSegs.map(unquote);
+    if (opts.allowLegacyBareSource) {
+      const parts = [...segs];
+      if (parts.length === 1 && opts.defaultDataset) {
+        parts.unshift(opts.defaultDataset);
+      }
+      if (parts.length < 3 && opts.defaultProject) {
+        parts.unshift(opts.defaultProject);
+      }
+      return {
+        authoredSource: trimmed,
+        dataSource: parts.join('.'),
+      };
+    }
+    if (segs.length === 4) {
+      throw new Error(
+          `Semantic model load error: ${ctx}: bare table name '${trimmed}' is ` +
+          `not a valid source. Write a BigLake resource URI instead:\n` +
+          `  source: //biglake.googleapis.com/projects/${segs[0]}/catalogs/${
+              segs[1]}/namespaces/${segs[2]}/tables/${segs[3]}`);
+    }
+    const p = segs.length >= 3 ? segs[0] : '<project>';
+    const d = segs.length >= 3 ? segs[1] : segs.length === 2 ? segs[0] : '<dataset>';
+    const t = segs[segs.length - 1] || '<table>';
+    throw new Error(
+        `Semantic model load error: ${ctx}: bare table name '${trimmed}' is ` +
+        `not a valid source. Write a GCP resource URI or a Knowledge Catalog ` +
+        `name instead, for example:\n` +
+        `  source: //bigquery.googleapis.com/projects/${p}/datasets/${d}/tables/${t}\n` +
+        `  source: bigquery:${p}.${d}.${t}`);
+  }
+
+  throw new Error(
+      `Semantic model load error: ${ctx}: source '${trimmed}' is not a valid ` +
+      `table reference. Expected a GCP resource URI ` +
+      `('//bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>', ` +
+      `'//spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/tables/<t>', ` +
+      `'//alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>/schemas/<s>/tables/<t>', or ` +
+      `'//biglake.googleapis.com/projects/<p>/catalogs/<c>/namespaces/<n>/tables/<t>') ` +
+      `or a Knowledge Catalog name ('bigquery:<p>.<d>.<t>', ` +
+      `'spanner:<p>.<config>.<i>.<db>.<t>', ` +
+      `'alloydb:<p>.<location>.<cluster>.<db>.<schema>.<table>', ` +
+      `'cloudsql_mysql:...', 'mysql:...', 'cloudsql_postgresql:...', ` +
+      `'postgresql:...', 'snowflake:...', or 'databricks:table:...').`);
 }
 
 function unquote(part: string): string {
@@ -1886,14 +2124,17 @@ export interface LoadedModels {
  * are prefixed with their document name.
  */
 export function loadSemanticModels(
-    docs: {name: string; text: string}[],
+    docs: {name: string; text: string; allowLegacyBareSource?: boolean}[],
     opts: LoadOptions = {}): LoadedModels {
   const models: LoadedModel[] = [];
   const warnings: string[] = [];
   for (const doc of docs) {
     let loaded: LoadResult;
+    const docOpts = doc.allowLegacyBareSource !== undefined ?
+        {...opts, allowLegacyBareSource: doc.allowLegacyBareSource} :
+        opts;
     try {
-      loaded = loadModels(doc.text, opts);
+      loaded = loadModels(doc.text, docOpts);
     } catch (err: any) {
       return {
         models,

@@ -9,7 +9,7 @@
 //
 
 import { describe, test, expect } from 'bun:test';
-import { loadModels, fromDocument } from '../../../src/libts/semantic/loader';
+import { databaseOf, loadModels, fromDocument } from '../../../src/libts/semantic/loader';
 import { isTimeDimension, DATA_TYPES } from '../../../src/libts/semantic/ir';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -30,7 +30,7 @@ describe('dataset source strings normalize to fully-qualified references', () =>
         { name: 'c', source: 'tbl', primary_key: ['id'], fields: [] },
       ],
     }],
-  }, { defaultProject: 'P', defaultDataset: 'D' });
+  }, { defaultProject: 'P', defaultDataset: 'D', allowLegacyBareSource: true });
   const [a, b, c] = models[0].entities;
 
   test('a three-part source becomes project.dataset.table', () => {
@@ -45,19 +45,19 @@ describe('dataset source strings normalize to fully-qualified references', () =>
     expect(c.dataSource).toBe('P.D.tbl');
   });
 
-  test('a query-like source is kept verbatim with a warning', () => {
-    const { models, warnings } = fromDocument({ version: '0.2.0.dev0',
+  test('a query-like source is rejected', () => {
+    expect(() => fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{ name: 'm', datasets: [
         { name: 'a', source: 'SELECT 1 FROM t', primary_key: ['id'], fields: [] }] }],
-    });
-    expect(models[0].entities[0].dataSource).toBe('SELECT 1 FROM t');
-    expect(warnings.some(w => w.includes('looks like a query'))).toBe(true);
+    }, { allowLegacyBareSource: true })).toThrow(
+      "dataset 'a': source 'SELECT 1 FROM t' looks like a SQL query; a query-valued source is not supported yet",
+    );
   });
 
   test('a dataset without a primary key warns (its KEY would be empty)', () => {
     const { warnings } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{ name: 'm', datasets: [
-        { name: 'a', source: 'a', fields: [] }] }],
+        { name: 'a', source: 'bigquery:p.d.a', fields: [] }] }],
     });
     expect(warnings.some(w => w.includes('no primary_key'))).toBe(true);
   });
@@ -66,7 +66,7 @@ describe('dataset source strings normalize to fully-qualified references', () =>
     const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{ name: 'm', datasets: [
         { name: 'a', source: '`proj`.`ds`.`tbl`', primary_key: ['id'], fields: [] }] }],
-    });
+    }, { allowLegacyBareSource: true });
     expect(models[0].entities[0].dataSource).toBe('proj.ds.tbl');
   });
 
@@ -74,7 +74,7 @@ describe('dataset source strings normalize to fully-qualified references', () =>
     const { models, warnings } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{ name: 'm', datasets: [
         { name: 'a', source: 'proj.cat.ns.tbl', primary_key: ['id'], fields: [] }] }],
-    }, { defaultProject: 'P', defaultDataset: 'D' });
+    }, { defaultProject: 'P', defaultDataset: 'D', allowLegacyBareSource: true });
     expect(models[0].entities[0].dataSource).toBe('proj.cat.ns.tbl');
     expect(warnings).toEqual([]);
   });
@@ -83,7 +83,7 @@ describe('dataset source strings normalize to fully-qualified references', () =>
     const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{ name: 'm', datasets: [
         { name: 'a', source: 'realproj.realds.tbl', primary_key: ['id'], fields: [] }] }],
-    }, { defaultProject: 'P', defaultDataset: 'D' });
+    }, { defaultProject: 'P', defaultDataset: 'D', allowLegacyBareSource: true });
     expect(models[0].entities[0].dataSource).toBe('realproj.realds.tbl');
   });
 });
@@ -95,7 +95,7 @@ describe('per-dialect expressions collapse to a single string', () => {
       version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
-        datasets: [{ name: 'orders', source: 'orders', primary_key: ['id'], fields: [] }],
+        datasets: [{ name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'], fields: [] }],
         metrics: [{ name: 'mx', expression: { dialects: dialectList } }],
       }],
     };
@@ -163,7 +163,7 @@ describe('per-dialect expressions collapse to a single string', () => {
       semantic_model: [{
         name: 'm',
         datasets: [{
-          name: 'orders', source: 'orders', primary_key: ['id'],
+          name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'],
           fields: [
             { name: 'id', expression: expr('orders.id') },
             { name: 'net', expression: {
@@ -196,8 +196,8 @@ describe('relationships map onto the direct-FK IR convention', () => {
     semantic_model: [{
       name: 'm',
       datasets: [
-        { name: 'orders', source: 'orders', primary_key: ['order_id'], fields: [] },
-        { name: 'customers', source: 'customers', primary_key: ['customer_id'], fields: [] },
+        { name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['order_id'], fields: [] },
+        { name: 'customers', source: 'bigquery:p.d.customers', primary_key: ['customer_id'], fields: [] },
       ],
       relationships: [{
         name: 'orders_customers', from: 'orders', to: 'customers',
@@ -220,8 +220,8 @@ describe('relationships map onto the direct-FK IR convention', () => {
       semantic_model: [{
         name: 'm',
         datasets: [
-          { name: 'sales', source: 'sales', primary_key: ['sale_id'], fields: [] },
-          { name: 'stores', source: 'stores', primary_key: ['region', 'store_no'], fields: [] },
+          { name: 'sales', source: 'bigquery:p.d.sales', primary_key: ['sale_id'], fields: [] },
+          { name: 'stores', source: 'bigquery:p.d.stores', primary_key: ['region', 'store_no'], fields: [] },
         ],
         relationships: [{
           name: 'sales_stores', from: 'sales', to: 'stores',
@@ -242,8 +242,8 @@ describe('relationships map onto the direct-FK IR convention', () => {
       semantic_model: [{
         name: 'm',
         datasets: [
-          { name: 'orders', source: 'orders', fields: [] },  // no primary_key
-          { name: 'customers', source: 'customers', primary_key: ['customer_id'], fields: [] },
+          { name: 'orders', source: 'bigquery:p.d.orders', fields: [] },  // no primary_key
+          { name: 'customers', source: 'bigquery:p.d.customers', primary_key: ['customer_id'], fields: [] },
         ],
         relationships: [{
           name: 'r', from: 'orders', to: 'customers',
@@ -259,7 +259,7 @@ describe('relationships map onto the direct-FK IR convention', () => {
     expect(() => fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
-        datasets: [{ name: 'orders', source: 'orders', primary_key: ['order_id'], fields: [] }],
+        datasets: [{ name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['order_id'], fields: [] }],
         relationships: [{
           name: 'r', from: 'orders', to: 'ghost',
           from_columns: ['g_id'], to_columns: ['id'],
@@ -272,7 +272,7 @@ describe('relationships map onto the direct-FK IR convention', () => {
     expect(() => fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
-        datasets: [{ name: 'customers', source: 'customers', primary_key: ['customer_id'], fields: [] }],
+        datasets: [{ name: 'customers', source: 'bigquery:p.d.customers', primary_key: ['customer_id'], fields: [] }],
         relationships: [{
           name: 'r', from: 'ghost', to: 'customers',
           from_columns: ['c_id'], to_columns: ['customer_id'],
@@ -286,8 +286,8 @@ describe('relationships map onto the direct-FK IR convention', () => {
       semantic_model: [{
         name: 'm',
         datasets: [
-          { name: 'orders', source: 'orders', primary_key: ['order_id'], fields: [] },
-          { name: 'customers', source: 'customers', primary_key: ['a', 'b'], fields: [] },
+          { name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['order_id'], fields: [] },
+          { name: 'customers', source: 'bigquery:p.d.customers', primary_key: ['a', 'b'], fields: [] },
         ],
         relationships: [{
           name: 'r', from: 'orders', to: 'customers',
@@ -315,7 +315,7 @@ describe('abstract datasets and their source constraint', () => {
       semantic_model: [{
         name: 'm',
         datasets: [{
-          name: 'Party', source: 'proj.ds.party', abstract: true,
+          name: 'Party', source: 'bigquery:proj.ds.party', abstract: true,
           primary_key: ['id'], fields: [],
         }],
       }],
@@ -347,7 +347,7 @@ describe('abstract datasets and their source constraint', () => {
           },
           {
             name: 'Customer', extends: ['Party'], primary_key: ['id'],
-            source: 'proj.ds.customer',
+            source: 'bigquery:proj.ds.customer',
             fields: [
               { name: 'id', expression: 'c_custkey' },
               { name: 'name', expression: 'c_name' },
@@ -374,7 +374,7 @@ describe('abstract datasets and their source constraint', () => {
         datasets: [{
           name: 'orders',
           primary_key: ['id'],
-          source: 'proj.ds.orders',
+          source: 'bigquery:proj.ds.orders',
           fields: [{ name: 'id', expression: 'o_id' }, { name: 'total' }],
         }],
       }],
@@ -391,7 +391,7 @@ describe('metrics infer their referenced entities from the expression', () => {
     const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
-        datasets: [{ name: 'order_items', source: 'order_items', primary_key: ['id'], fields: [] }],
+        datasets: [{ name: 'order_items', source: 'bigquery:p.d.order_items', primary_key: ['id'], fields: [] }],
         metrics: [{ name: 'total_revenue', expression: expr('SUM(order_items.amount)') }],
       }],
     });
@@ -405,8 +405,8 @@ describe('metrics infer their referenced entities from the expression', () => {
       semantic_model: [{
         name: 'm',
         datasets: [
-          { name: 'orders', source: 'orders', primary_key: ['id'], fields: [] },
-          { name: 'customers', source: 'customers', primary_key: ['id'], fields: [] },
+          { name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'], fields: [] },
+          { name: 'customers', source: 'bigquery:p.d.customers', primary_key: ['id'], fields: [] },
         ],
         metrics: [{
           name: 'ratio',
@@ -422,7 +422,7 @@ describe('metrics infer their referenced entities from the expression', () => {
     const { warnings } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
-        datasets: [{ name: 'order_items', source: 'order_items', primary_key: ['id'], fields: [] }],
+        datasets: [{ name: 'order_items', source: 'bigquery:p.d.order_items', primary_key: ['id'], fields: [] }],
         metrics: [{ name: 'weird', expression: expr('SUM(unknown.x)') }],
       }],
     });
@@ -436,8 +436,8 @@ describe('metrics infer their referenced entities from the expression', () => {
       semantic_model: [{
         name: 'm',
         datasets: [
-          { name: 'order_items', source: 'order_items', primary_key: ['id'], fields: [] },
-          { name: 'customers', source: 'customers', primary_key: ['id'], fields: [] },
+          { name: 'order_items', source: 'bigquery:p.d.order_items', primary_key: ['id'], fields: [] },
+          { name: 'customers', source: 'bigquery:p.d.customers', primary_key: ['id'], fields: [] },
         ],
         metrics: [{
           name: 'tagged',
@@ -454,7 +454,7 @@ describe('metrics infer their referenced entities from the expression', () => {
     const { models, warnings } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
-        datasets: [{ name: 'orders', source: 'orders', primary_key: ['id'], fields: [] }],
+        datasets: [{ name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'], fields: [] }],
         metrics: [{ name: 'rev', expression: expr('SUM(`orders`.amount)') }],
       }],
     });
@@ -469,7 +469,7 @@ describe('document-level handling', () => {
     expect(() => fromDocument({
       version: '9.9.9',
       semantic_model: [{ name: 'm', datasets: [
-        { name: 'a', source: 'a', primary_key: ['id'], fields: [] }] }],
+        { name: 'a', source: 'bigquery:p.d.a', primary_key: ['id'], fields: [] }] }],
     })).toThrow(/unknown version '9.9.9'/);
   });
 
@@ -481,7 +481,7 @@ describe('document-level handling', () => {
       semantic_model: [{
         name: 'm',
         datasets: [{
-          name: 'a', source: 'a', primary_key: ['id'],
+          name: 'a', source: 'bigquery:p.d.a', primary_key: ['id'],
           fields: [{ name: 'id', expression: expr('a.id'), bogus: true }],
         }],
       }],
@@ -493,8 +493,8 @@ describe('document-level handling', () => {
       semantic_model: [{
         name: 'm',
         datasets: [
-          { name: 'orders', source: 'a', primary_key: ['id'], fields: [] },
-          { name: 'orders', source: 'b', primary_key: ['id'], fields: [] },
+          { name: 'orders', source: 'bigquery:p.d.a', primary_key: ['id'], fields: [] },
+          { name: 'orders', source: 'bigquery:p.d.b', primary_key: ['id'], fields: [] },
         ],
       }],
     })).toThrow(/duplicate dataset name 'orders'/);
@@ -504,8 +504,8 @@ describe('document-level handling', () => {
     // The format allows one model per document; a second is rejected.
     expect(() => fromDocument({ version: '0.2.0.dev0',
       semantic_model: [
-        { name: 'first', datasets: [{ name: 'a', source: 'a', primary_key: ['id'], fields: [] }] },
-        { name: 'second', datasets: [{ name: 'b', source: 'b', primary_key: ['id'], fields: [] }] },
+        { name: 'first', datasets: [{ name: 'a', source: 'bigquery:p.d.a', primary_key: ['id'], fields: [] }] },
+        { name: 'second', datasets: [{ name: 'b', source: 'bigquery:p.d.b', primary_key: ['id'], fields: [] }] },
       ],
     })).toThrow(/a document declares one model; split 'second' into its own file/);
   });
@@ -514,7 +514,7 @@ describe('document-level handling', () => {
     const { models } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm', description: 'a sales model',
-        datasets: [{ name: 'orders', source: 'orders', primary_key: ['id'], fields: [] }],
+        datasets: [{ name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'], fields: [] }],
         metrics: [{ name: 'c', description: 'row count', expression: expr('COUNT(orders.id)') }],
       }],
     });
@@ -527,7 +527,7 @@ describe('document-level handling', () => {
       version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
-        datasets: [{ name: 'a', source: 'proj.ds.tbl', primary_key: ['id'], fields: [] }],
+        datasets: [{ name: 'a', source: 'bigquery:proj.ds.tbl', primary_key: ['id'], fields: [] }],
       }],
     });
     const { models } = loadModels(json);
@@ -554,7 +554,7 @@ describe('richer IR fields carry through from the format', () => {
       semantic_model: [{
         name: 'm',
         datasets: [{
-          name: 'orders', source: 'orders', primary_key: ['id'],
+          name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'],
           fields: [{ name: 'amount', datatype: 'Decimal', expression: expr('orders.amount') }],
         }],
         metrics: [{ name: 'total', datatype: 'Decimal', expression: expr('SUM(orders.amount)') }],
@@ -571,7 +571,7 @@ describe('richer IR fields carry through from the format', () => {
       semantic_model: [{
         name: 'm',
         datasets: [{
-          name: 'orders', source: 'orders', primary_key: ['id'],
+          name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'],
           fields: [{ name: 'created', datatype: 'date', expression: expr('orders.created') }],
         }],
       }],
@@ -583,7 +583,7 @@ describe('richer IR fields carry through from the format', () => {
       semantic_model: [{
         name: 'm',
         datasets: [{
-          name: 'orders', source: 'orders', primary_key: ['id'],
+          name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'],
           unique_keys: [['sku', 'region'], ['external_id']],
           fields: [],
         }],
@@ -601,7 +601,7 @@ describe('richer IR fields carry through from the format', () => {
           { vendor_name: 'GOOGLE', data: JSON.stringify({
             deploymentTargets: ['projects/p/locations/us/graphs/g'] }) },
         ],
-        datasets: [{ name: 'a', source: 'a', primary_key: ['id'], fields: [] }],
+        datasets: [{ name: 'a', source: 'bigquery:p.d.a', primary_key: ['id'], fields: [] }],
       }],
     });
     // GOOGLE gets no special treatment -- it rides along in customExtensions like
@@ -618,7 +618,7 @@ describe('richer IR fields carry through from the format', () => {
       semantic_model: [{
         name: 'm',
         custom_extensions: [{ vendor_name: 'GOOGLE', data: '{not json' }],
-        datasets: [{ name: 'a', source: 'a', primary_key: ['id'], fields: [] }],
+        datasets: [{ name: 'a', source: 'bigquery:p.d.a', primary_key: ['id'], fields: [] }],
       }],
     });
     // The loader never parses the block, so malformed JSON is not its concern.
@@ -632,7 +632,7 @@ describe('richer IR fields carry through from the format', () => {
         name: 'm', description: 'a sales model',
         ai_context: { instructions: 'Prefer net revenue.', synonyms: ['sales', 'commerce'] },
         datasets: [{
-          name: 'orders', source: 'orders', primary_key: ['id'],
+          name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'],
           ai_context: { instructions: 'One row per order.', synonyms: ['purchases'] },
           fields: [{
             name: 'amount', expression: expr('orders.amount'),
@@ -678,7 +678,7 @@ describe('Apache OSI v0.2.0.dev0 spec coverage', () => {
       datasets: [
         {
           name: 'orders',
-          source: 'proj.ds.orders',
+          source: 'bigquery:proj.ds.orders',
           primary_key: ['order_id'],
           unique_keys: [['external_id']],
           description: 'One row per order',
@@ -695,7 +695,7 @@ describe('Apache OSI v0.2.0.dev0 spec coverage', () => {
             custom_extensions: [{ vendor_name: 'SNOWFLAKE', data: '{}' }],
           }],
         },
-        { name: 'customers', source: 'proj.ds.customers', primary_key: ['customer_id'], fields: [] },
+        { name: 'customers', source: 'bigquery:proj.ds.customers', primary_key: ['customer_id'], fields: [] },
       ],
       relationships: [{
         name: 'orders_customers',
@@ -788,7 +788,7 @@ describe('Apache OSI v0.2.0.dev0 spec coverage', () => {
       semantic_model: [{
         name: 'm',
         datasets: [{
-          name: 'd', source: 'd', primary_key: ['id'],
+          name: 'd', source: 'bigquery:p.d.d', primary_key: ['id'],
           fields: datatypes.map((dt, i) => ({
             name: `f${i}`, datatype: dt,
             expression: { dialects: [{ dialect: dialects[i % dialects.length], expression: `d.c${i}` }] },
@@ -807,7 +807,7 @@ describe('Apache OSI v0.2.0.dev0 spec coverage', () => {
         semantic_model: [{
           name: 'm',
           datasets: [{
-            name: 'd', source: 'd', primary_key: ['id'],
+            name: 'd', source: 'bigquery:p.d.d', primary_key: ['id'],
             fields: [{
               name: 'f',
               expression: { dialects: [{ dialect: nonSql, expression: 'd.c' }] },
@@ -829,7 +829,7 @@ function fixture(name: string): string {
 
 describe('gold fixtures parse from disk (real YAML files)', () => {
   test('star_orders_customer.yaml: happy path (ai_context, time dimension, metrics)', () => {
-    const { models } = loadModels(fixture('star_orders_customer.yaml'));
+    const { models } = loadModels(fixture('star_orders_customer.yaml'), { allowLegacyBareSource: true });
     expect(models).toHaveLength(1);
     const m = models[0];
     expect(m.name).toBe('sales');
@@ -858,7 +858,7 @@ describe('gold fixtures parse from disk (real YAML files)', () => {
   });
 
   test('vendor_dialects.yaml: non-target dialects kept as imported_expression', () => {
-    const { models, warnings } = loadModels(fixture('vendor_dialects.yaml'));
+    const { models, warnings } = loadModels(fixture('vendor_dialects.yaml'), { allowLegacyBareSource: true });
     const m = models[0];
     expect(m.name).toBe('vendor_sales');
 
@@ -881,7 +881,7 @@ describe('gold fixtures parse from disk (real YAML files)', () => {
   });
 
   test('lineitem_databricks_ext.yaml: unique_keys + no-primary-key warning', () => {
-    const { models, warnings } = loadModels(fixture('lineitem_databricks_ext.yaml'));
+    const { models, warnings } = loadModels(fixture('lineitem_databricks_ext.yaml'), { allowLegacyBareSource: true });
     const m = models[0];
     const orders = m.entities.find(e => e.name === 'orders')!;
     expect(orders.keys).toEqual([]);
@@ -897,7 +897,7 @@ describe('gold fixtures parse from disk (real YAML files)', () => {
   });
 
   test('sales_google_ext.yaml: GOOGLE block verbatim + datatypes + unique_keys', () => {
-    const { models } = loadModels(fixture('sales_google_ext.yaml'));
+    const { models } = loadModels(fixture('sales_google_ext.yaml'), { allowLegacyBareSource: true });
     const m = models[0];
     expect(m.customExtensions).toEqual([{
       vendorName: 'GOOGLE',
@@ -917,8 +917,10 @@ describe('gold fixtures parse from disk (real YAML files)', () => {
   });
 
   test('ossie/tpcds_semantic_model.yaml: the Apache reference example loads', () => {
-    // The unmodified spec-owner-authored example (interop proof).
-    const { models, warnings } = loadModels(fixture('ossie/tpcds_semantic_model.yaml'));
+    // The upstream example uses bare dotted table names, which the strict
+    // source spec rejects by default (`kcmd import` rewrites them); it loads
+    // here under `allowLegacyBareSource`.
+    const { models, warnings } = loadModels(fixture('ossie/tpcds_semantic_model.yaml'), { allowLegacyBareSource: true });
     expect(models).toHaveLength(1);
     const m = models[0];
     expect(m.name).toBe('tpcds_retail_model');
@@ -944,7 +946,7 @@ describe('duplicate names within a model are hard errors (uniqueness checks)', (
       semantic_model: [{
         name: 'm',
         datasets: [{
-          name: 'orders', source: 'orders', primary_key: ['id'],
+          name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'],
           fields: [
             { name: 'amount', expression: expr('orders.amount') },
             { name: 'amount', expression: expr('orders.amount2') },
@@ -958,7 +960,7 @@ describe('duplicate names within a model are hard errors (uniqueness checks)', (
     expect(() => fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
-        datasets: [{ name: 'orders', source: 'orders', primary_key: ['id'],
+        datasets: [{ name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'],
           fields: [{ name: 'amount', expression: expr('orders.amount') }] }],
         metrics: [
           { name: 'total', expression: expr('SUM(orders.amount)') },
@@ -973,9 +975,9 @@ describe('duplicate names within a model are hard errors (uniqueness checks)', (
       semantic_model: [{
         name: 'm',
         datasets: [
-          { name: 'orders', source: 'orders', primary_key: ['o_id'],
+          { name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['o_id'],
             fields: [{ name: 'c_id', expression: expr('orders.c_id') }] },
-          { name: 'customer', source: 'customer', primary_key: ['c_id'],
+          { name: 'customer', source: 'bigquery:p.d.customer', primary_key: ['c_id'],
             fields: [{ name: 'c_id', expression: expr('customer.c_id') }] },
         ],
         relationships: [
@@ -995,7 +997,7 @@ describe('field label and time-dimension role align with the format models', () 
       semantic_model: [{
         name: 'm',
         datasets: [{
-          name: 'd', source: 'd', primary_key: ['id'],
+          name: 'd', source: 'bigquery:p.d.d', primary_key: ['id'],
           fields: [{ name: 'f', expression: expr('d.f'), ...props }],
         }],
       }],
@@ -1055,7 +1057,7 @@ describe('authoring sugars: entities alias, bare-string expression, deployment_t
       semantic_model: [{
         name: 'm',
         entities: [
-          { name: 'a', source: 'proj.ds.tbl', primary_key: ['id'],
+          { name: 'a', source: 'bigquery:proj.ds.tbl', primary_key: ['id'],
             fields: [{ name: 'id', expression: expr('id') }] },
         ],
       }],
@@ -1068,8 +1070,8 @@ describe('authoring sugars: entities alias, bare-string expression, deployment_t
     expect(() => fromDocument({ version: '0.2.0.dev0/google',
       semantic_model: [{
         name: 'm',
-        entities: [{ name: 'a', source: 's', fields: [] }],
-        datasets: [{ name: 'b', source: 's', fields: [] }],
+        entities: [{ name: 'a', source: 'bigquery:p.d.s', fields: [] }],
+        datasets: [{ name: 'b', source: 'bigquery:p.d.s', fields: [] }],
       }],
     })).toThrow(/set either 'entities' or 'datasets', not both/);
   });
@@ -1079,7 +1081,7 @@ describe('authoring sugars: entities alias, bare-string expression, deployment_t
       semantic_model: [{
         name: 'm',
         datasets: [{
-          name: 'a', source: 'proj.ds.tbl', primary_key: ['id'],
+          name: 'a', source: 'bigquery:proj.ds.tbl', primary_key: ['id'],
           fields: [{ name: 'id', expression: 'id_col' }],
         }],
       }],
@@ -1094,7 +1096,7 @@ describe('authoring sugars: entities alias, bare-string expression, deployment_t
       semantic_model: [{
         name: 'm',
         datasets: [{
-          name: 'a', source: 'proj.ds.tbl', primary_key: ['id'],
+          name: 'a', source: 'bigquery:proj.ds.tbl', primary_key: ['id'],
           fields: [{ name: 'id', expression: 'id_col' }],
         }],
       }],
@@ -1105,7 +1107,7 @@ describe('authoring sugars: entities alias, bare-string expression, deployment_t
     const sugar = fromDocument({ version: '0.2.0.dev0/google',
       semantic_model: [{
         name: 'm', deployment_target: URI,
-        datasets: [{ name: 'a', source: 's', primary_key: ['id'],
+        datasets: [{ name: 'a', source: 'bigquery:p.d.s', primary_key: ['id'],
           fields: [{ name: 'id', expression: 'id' }] }],
       }],
     });
@@ -1114,7 +1116,7 @@ describe('authoring sugars: entities alias, bare-string expression, deployment_t
         name: 'm',
         custom_extensions: [{ vendor_name: 'GOOGLE',
           data: JSON.stringify({ deploymentTargets: [URI] }) }],
-        datasets: [{ name: 'a', source: 's', primary_key: ['id'],
+        datasets: [{ name: 'a', source: 'bigquery:p.d.s', primary_key: ['id'],
           fields: [{ name: 'id', expression: expr('id') }] }],
       }],
     });
@@ -1139,7 +1141,7 @@ describe('a field is unbound exactly when it has no expression', () => {
       semantic_model: [{
         name: 'm',
         datasets: [{
-          name: 'a', source: 's', primary_key: ['id'],
+          name: 'a', source: 'bigquery:p.d.s', primary_key: ['id'],
           fields: [
             { name: 'id', expression: 'id' },
             { name: 'credit' },
@@ -1160,7 +1162,7 @@ describe('a field is unbound exactly when it has no expression', () => {
     const { models } = fromDocument({ version: '0.2.0.dev0/google',
       semantic_model: [{
         name: 'm',
-        datasets: [{ name: 'a', source: 's', primary_key: ['id'],
+        datasets: [{ name: 'a', source: 'bigquery:p.d.s', primary_key: ['id'],
           fields: [{ name: 'id', expression: 'id' }, { name: 'credit' }] }],
       }],
     });
@@ -1216,7 +1218,7 @@ describe('a purely logical model loads only under bindingOptional', () => {
     expect(() => fromDocument({ version: '0.2.0.dev0/google',
       semantic_model: [{
         name: 'm',
-        datasets: [{ name: 'Party', abstract: true, source: 'p.d.party', fields: [] }],
+        datasets: [{ name: 'Party', abstract: true, source: 'bigquery:p.d.party', fields: [] }],
       }],
     }, { bindingOptional: true })).toThrow(/an abstract dataset has no table/);
   });
@@ -1246,12 +1248,12 @@ function fullModel(level?: Level, patch: object = {}): any {
   return {
     name: 'm', ...at('model'),
     datasets: [
-      { name: 'orders', source: 'p.d.orders', primary_key: ['id'], ...at('dataset'),
+      { name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'], ...at('dataset'),
         fields: [
           { name: 'id', expression: expr('id') },
           { name: 'customer_id', expression: expr('customer_id'), ...at('field') },
         ] },
-      { name: 'customers', source: 'p.d.customers', primary_key: ['id'], fields: [] },
+      { name: 'customers', source: 'bigquery:p.d.customers', primary_key: ['id'], fields: [] },
     ],
     relationships: [{
       name: 'orders_to_customers', from: 'orders', to: 'customers',
@@ -1303,7 +1305,7 @@ semantic_model:
   - name: m
     datasets:
       - name: orders
-        source: p.d.orders
+        source: bigquery:p.d.orders
         primary_key: [id]
         ai_context:
           instructions: Use for net revenue
@@ -1318,7 +1320,7 @@ semantic_model:
   - name: m
     datasets:
       - name: orders
-        source: p.d.orders
+        source: bigquery:p.d.orders
         primary_key: [id]
         ai_context:
           instructions: Use for net revenue
@@ -1389,7 +1391,7 @@ semantic_model:
   - name: m
     datasets:
       - name: orders
-        source: p.d.orders
+        source: bigquery:p.d.orders
         primary_key: [id]
         ai_context:
           reviewed: !!timestamp 2025-01-01
@@ -1617,7 +1619,7 @@ semantic_model:
   - name: m
 ${body}    datasets:
       - name: d
-        source: p.d.t
+        source: bigquery:p.d.t
         primary_key: [id]
         fields:
           - name: id
@@ -1656,9 +1658,9 @@ ${body}    datasets:
       semantic_model: [{
         name: 'm',
         datasets: [
-          {name: 'orders', source: 'p.d.o', primary_key: ['id'],
+          {name: 'orders', source: 'bigquery:p.d.o', primary_key: ['id'],
            fields: [{name: 'id', expression: 'id'}, {name: 'cid', expression: 'cid'}]},
-          {name: 'customers', source: 'p.d.c', primary_key: ['id'],
+          {name: 'customers', source: 'bigquery:p.d.c', primary_key: ['id'],
            fields: [{name: 'id', expression: 'id'}]},
         ],
         relationships: [{name: 'placed_by', from: 'orders', to: 'customers',
@@ -1695,7 +1697,7 @@ semantic_model:
   - name: m
     datasets:
       - name: d
-        source: p.d.t
+        source: bigquery:p.d.t
         primary_key: [id]
         fields:
           - name: id
@@ -1716,7 +1718,7 @@ semantic_model:
       __proto__: 1
     datasets:
       - name: d
-        source: p.d.t
+        source: bigquery:p.d.t
         primary_key: [id]
         fields:
           - { name: id, expression: id }
@@ -1728,7 +1730,8 @@ semantic_model:
 
 
 // ---------------------------------------------------------------------------
-// Per-engine expression lists (b/567743508).
+// Per-engine expression lists, strict entity sources, deployments, and inline
+// profiles (b/567743508).
 // ---------------------------------------------------------------------------
 
 describe('per-engine expression lists', () => {
@@ -1882,3 +1885,207 @@ describe('per-engine expression lists', () => {
     expect(models[0].entities[0].fields[0].expression).toBe('SAFE_SUBTRACT(gross, tax)');
   });
 });
+
+
+describe('strict entity sources', () => {
+  const cases: Array<[string, string, string]> = [
+    [
+      'BigQuery resource URI',
+      '//bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders',
+      'acme.raw.orders',
+    ],
+    [
+      'BigQuery catalog name',
+      'bigquery:acme.raw.orders',
+      'acme.raw.orders',
+    ],
+    [
+      'BigQuery catalog name with backtick-quoted segment',
+      'bigquery:`acme-prod`.raw.`order-items`',
+      'acme-prod.raw.order-items',
+    ],
+    [
+      'Spanner resource URI',
+      '//spanner.googleapis.com/projects/acme/instances/inst/databases/db/tables/orders',
+      '//spanner.googleapis.com/projects/acme/instances/inst/databases/db/tables/orders',
+    ],
+    [
+      'Spanner catalog name (5 segments)',
+      'spanner:acme.regional-us-central1.inst.db.orders',
+      'spanner:acme.regional-us-central1.inst.db.orders',
+    ],
+    [
+      'AlloyDB resource URI (6 parts including schema)',
+      '//alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/cl/databases/db/schemas/public/tables/orders',
+      '//alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/cl/databases/db/schemas/public/tables/orders',
+    ],
+    [
+      'AlloyDB catalog name (6 segments including schema)',
+      'alloydb:acme.us-central1.cl.db.public.orders',
+      'alloydb:acme.us-central1.cl.db.public.orders',
+    ],
+    [
+      'BigLake resource URI',
+      '//biglake.googleapis.com/projects/acme/catalogs/cat/namespaces/ns/tables/orders',
+      'acme.cat.ns.orders',
+    ],
+    [
+      'Cloud SQL MySQL catalog name',
+      'cloudsql_mysql:acme.us-central1.inst.db.orders',
+      'cloudsql_mysql:acme.us-central1.inst.db.orders',
+    ],
+    [
+      'MySQL catalog name',
+      'mysql:inst.db.orders',
+      'mysql:inst.db.orders',
+    ],
+    [
+      'Cloud SQL PostgreSQL catalog name',
+      'cloudsql_postgresql:acme.us-central1.inst.db.public.orders',
+      'cloudsql_postgresql:acme.us-central1.inst.db.public.orders',
+    ],
+    [
+      'PostgreSQL catalog name',
+      'postgresql:inst.db.public.orders',
+      'postgresql:inst.db.public.orders',
+    ],
+    [
+      'Snowflake catalog name',
+      'snowflake:acct.db.public.orders',
+      'snowflake:acct.db.public.orders',
+    ],
+    [
+      'Databricks catalog name',
+      'databricks:table:metastore.cat.sch.orders',
+      'databricks:table:metastore.cat.sch.orders',
+    ],
+  ];
+
+  for (const [label, authored, expectedDataSource] of cases) {
+    test(`${label} loads and populates authoredSource and dataSource`, () => {
+      const { models } = load(GOOGLE, {
+        name: 'm',
+        datasets: [{ name: 'orders', source: authored, primary_key: ['id'], fields: [] }],
+      });
+      const entity = models[0].entities[0];
+      expect(entity.authoredSource).toBe(authored);
+      expect(entity.dataSource).toBe(expectedDataSource);
+    });
+  }
+
+  test('both AlloyDB spellings load together in the same model and resolve to the same database', () => {
+    const uri =
+        '//alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/cl/databases/db/schemas/public/tables/orders';
+    const fqn = 'alloydb:acme.us-central1.cl.db.public.customers';
+    expect(databaseOf(uri)).toBe('alloydb/acme/us-central1/cl/db');
+    expect(databaseOf(fqn)).toBe(databaseOf(uri));
+
+    const { models } = load(GOOGLE, {
+      name: 'm',
+      datasets: [
+        { name: 'orders', source: uri, primary_key: ['id'], fields: [] },
+        { name: 'customers', source: fqn, primary_key: ['id'], fields: [] },
+      ],
+    });
+    expect(models[0].entities).toHaveLength(2);
+  });
+
+  test('a four-segment Spanner or AlloyDB catalog name is rejected', () => {
+    expect(() => load(GOOGLE, {
+      name: 'm',
+      datasets: [{ name: 'orders', source: 'spanner:acme.inst.db.orders', primary_key: ['id'], fields: [] }],
+    })).toThrow(/is not a valid table reference/);
+
+    expect(() => load(GOOGLE, {
+      name: 'm',
+      datasets: [{ name: 'orders', source: 'alloydb:acme.cl.db.orders', primary_key: ['id'], fields: [] }],
+    })).toThrow(/is not a valid table reference/);
+  });
+
+  test('the instance-based AlloyDB URI is rejected with a migration hint by default and loads when allowLegacyBareSource is set', () => {
+    const legacyUri =
+        '//alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/cl/instances/inst/databases/db/tables/orders';
+    const doc = {
+      name: 'm',
+      datasets: [{ name: 'orders', source: legacyUri, primary_key: ['id'], fields: [] }],
+    };
+    expect(() => load(GOOGLE, doc)).toThrow(
+        /uses the legacy instance-based AlloyDB URI[\s\S]*\/\/alloydb\.googleapis\.com\/projects\/acme\/locations\/us-central1\/clusters\/cl\/databases\/db\/schemas\/<schema>\/tables\/orders/,
+    );
+
+    const { models } = load(GOOGLE, doc, { allowLegacyBareSource: true });
+    expect(models[0].entities[0].authoredSource).toBe(legacyUri);
+    expect(models[0].entities[0].dataSource).toBe(legacyUri);
+  });
+
+  test('rejects broken backtick quoting, unquoted colons, unquoted whitespace, and dots in BigQuery dataset/table segments', () => {
+    expect(databaseOf('bigquery:my proj.d.t')).toBeUndefined();
+    for (const bad of [
+      'bigquery:acme:us.sales.orders',
+      'bigquery:`acme.sales.orders',
+      'bigquery:`acme`x.sales.orders',
+      'bigquery:ac``me.sales.orders',
+      '//bigquery.googleapis.com/projects/p/datasets/a.b/tables/t',
+      '//bigquery.googleapis.com/projects/p/datasets/d/tables/a.b',
+      'bigquery:p.`a.b`.t',
+      'bigquery:p.d.`a.b`',
+    ]) {
+      expect(databaseOf(bad)).toBeUndefined();
+      expect(() => load(GOOGLE, {
+        name: 'm',
+        datasets: [{ name: 'orders', source: bad, primary_key: ['id'], fields: [] }],
+      })).toThrow(/is not a valid table reference/);
+    }
+  });
+
+  test('source rejections: query-valued source, bare table name, 4-part bare name, overlong source, and unknown prefix each produce their own message', () => {
+    // 1. Query-valued source
+    expect(() => load(GOOGLE, {
+      name: 'm',
+      datasets: [{ name: 'orders', source: 'SELECT * FROM orders', primary_key: ['id'], fields: [] }],
+    })).toThrow("dataset 'orders': source 'SELECT * FROM orders' looks like a SQL query; a query-valued source is not supported yet.");
+
+    // 2. Bare table names (1-, 2-, and 3-part)
+    for (const bare of ['orders', 'raw.orders', 'acme.raw.orders']) {
+      expect(() => load(GOOGLE, {
+        name: 'm',
+        datasets: [{ name: 'orders', source: bare, primary_key: ['id'], fields: [] }],
+      })).toThrow(
+        new RegExp(`dataset 'orders': bare table name '${bare}' is not a valid source[\\s\\S]*//bigquery\\.googleapis\\.com/[\\s\\S]*bigquery:`),
+      );
+      // Passes when allowLegacyBareSource is set
+      const { models } = load(GOOGLE, {
+        name: 'm',
+        datasets: [{ name: 'orders', source: bare, primary_key: ['id'], fields: [] }],
+      }, { allowLegacyBareSource: true, defaultProject: 'acme', defaultDataset: 'raw' });
+      expect(models[0].entities[0].authoredSource).toBe(bare);
+      expect(models[0].entities[0].dataSource).toBe('acme.raw.orders');
+    }
+
+    // 3. Four-part bare table name suggests BigLake URI
+    expect(() => load(GOOGLE, {
+      name: 'm',
+      datasets: [{ name: 'orders', source: 'acme.lake.sales.orders', primary_key: ['id'], fields: [] }],
+    })).toThrow(
+      "dataset 'orders': bare table name 'acme.lake.sales.orders' is not a valid source. Write a BigLake resource URI instead:\n  source: //biglake.googleapis.com/projects/acme/catalogs/lake/namespaces/sales/tables/orders",
+    );
+
+    // 4. Overlong source (> 4000 characters)
+    const overlong = `bigquery:acme.sales.${'a'.repeat(4000)}`;
+    expect(() => load(GOOGLE, {
+      name: 'm',
+      datasets: [{ name: 'orders', source: overlong, primary_key: ['id'], fields: [] }],
+    })).toThrow(/exceeds the 4000-character limit/);
+
+    // 5. Unknown prefix / unsupported URI
+    for (const bad of ['custom:foo', 'trino:cat.sch.tbl', 'bigtable:p.i.t', '//trino.example.com/anything']) {
+      expect(() => load(GOOGLE, {
+        name: 'm',
+        datasets: [{ name: 'orders', source: bad, primary_key: ['id'], fields: [] }],
+      })).toThrow(
+        new RegExp(`dataset 'orders': source '${bad}' is not a valid table reference`),
+      );
+    }
+  });
+});
+

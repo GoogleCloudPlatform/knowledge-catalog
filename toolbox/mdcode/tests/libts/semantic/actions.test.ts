@@ -26,7 +26,7 @@ const OPTS = {
 
 function loadFixtureModel(name: string): SemanticModel {
   const text = fs.readFileSync(path.join(FIXTURES, name), 'utf8');
-  return loadModels(text).models[0];
+  return loadModels(text, {allowLegacyBareSource: true}).models[0];
 }
 
 const ACTIONS_DOC =
@@ -66,23 +66,25 @@ function yamlFenceFromActionsDoc(heading: string): string {
 // `actions` is a native extension key, so the document declares the extended
 // profile (see the version gating in loader.ts).
 function withActions(actions: any[], over: any = {}) {
-  return fromDocument({
-    version: '0.2.0.dev0/google',
-    semantic_model: [{
-      name: 'm',
-      datasets: [{
-        name: 'customer',
-        source: 'p.d.c',
-        primary_key: ['id'],
-        fields: [
-          {name: 'id', datatype: 'Integer', description: 'The account number.'},
-          {name: 'email', datatype: 'String'},
-        ],
-      }],
-      actions,
-      ...over,
-    }],
-  });
+  return fromDocument(
+      {
+        version: '0.2.0.dev0/google',
+        semantic_model: [{
+          name: 'm',
+          datasets: [{
+            name: 'customer',
+            source: 'p.d.c',
+            primary_key: ['id'],
+            fields: [
+              {name: 'id', datatype: 'Integer', description: 'The account number.'},
+              {name: 'email', datatype: 'String'},
+            ],
+          }],
+          actions,
+          ...over,
+        }],
+      },
+      {allowLegacyBareSource: true});
 }
 
 const MCP = {
@@ -160,37 +162,39 @@ describe('loader parses actions', () => {
   test(
       'a label and an ai_context are inherited or overridden the same way',
       () => {
-        const {models} = fromDocument({
-          version: '0.2.0.dev0/google',
-          semantic_model: [{
-            name: 'm',
-            datasets: [{
-              name: 'customer',
-              source: 'p.d.c',
-              primary_key: ['id'],
-              fields: [{
-                name: 'id',
-                datatype: 'Integer',
-                label: 'Account number',
-                ai_context: {synonyms: ['acct']},
+        const {models} = fromDocument(
+            {
+              version: '0.2.0.dev0/google',
+              semantic_model: [{
+                name: 'm',
+                datasets: [{
+                  name: 'customer',
+                  source: 'p.d.c',
+                  primary_key: ['id'],
+                  fields: [{
+                    name: 'id',
+                    datatype: 'Integer',
+                    label: 'Account number',
+                    ai_context: {synonyms: ['acct']},
+                  }],
+                }],
+                actions: [{
+                  name: 'A',
+                  parameters: [
+                    {name: 'a', concept: 'customer', field: 'id'},
+                    {
+                      name: 'b',
+                      concept: 'customer',
+                      field: 'id',
+                      label: 'Destination account',
+                      ai_context: {synonyms: ['payee']},
+                      description: 'Where it lands.',
+                    },
+                  ],
+                }],
               }],
-            }],
-            actions: [{
-              name: 'A',
-              parameters: [
-                {name: 'a', concept: 'customer', field: 'id'},
-                {
-                  name: 'b',
-                  concept: 'customer',
-                  field: 'id',
-                  label: 'Destination account',
-                  ai_context: {synonyms: ['payee']},
-                  description: 'Where it lands.',
-                },
-              ],
-            }],
-          }],
-        });
+            },
+            {allowLegacyBareSource: true});
         const [a, b] = models[0].actions![0].parameters;
         expect(a.label).toBe('Account number');
         expect(a.aiContext).toEqual({synonyms: ['acct']});
@@ -328,25 +332,27 @@ describe('loader parses actions', () => {
     // Deliberate: a parameter needs the logical definition, which an unbound
     // field has in full, so a logical-only model's actions are as usable as a
     // bound one's.
-    const {models, warnings} = fromDocument({
-      version: '0.2.0.dev0/google',
-      semantic_model: [{
-        name: 'm',
-        datasets: [{
-          name: 'customer',
-          source: 'p.d.c',
-          primary_key: ['id'],
-          fields: [
-            {name: 'id', datatype: 'Integer', expression: 'id'},
-            {name: 'notes', datatype: 'String', description: 'Free text.'},
-          ],
-        }],
-        actions: [{
-          name: 'A',
-          parameters: [{concept: 'customer', field: 'notes'}],
-        }],
-      }],
-    });
+    const {models, warnings} = fromDocument(
+        {
+          version: '0.2.0.dev0/google',
+          semantic_model: [{
+            name: 'm',
+            datasets: [{
+              name: 'customer',
+              source: 'p.d.c',
+              primary_key: ['id'],
+              fields: [
+                {name: 'id', datatype: 'Integer', expression: 'id'},
+                {name: 'notes', datatype: 'String', description: 'Free text.'},
+              ],
+            }],
+            actions: [{
+              name: 'A',
+              parameters: [{concept: 'customer', field: 'notes'}],
+            }],
+          }],
+        },
+        {allowLegacyBareSource: true});
     expect(models[0].actions![0].parameters[0]).toEqual({
       name: 'notes',
       type: 'String',
@@ -359,14 +365,16 @@ describe('loader parses actions', () => {
   });
 
   test('a model without actions leaves model.actions unset', () => {
-    const {models} = fromDocument({
-      version: '0.2.0.dev0/google',
-      semantic_model: [{
-        name: 'm',
-        datasets:
-            [{name: 'c', source: 'p.d.c', primary_key: ['id'], fields: []}]
-      }],
-    });
+    const {models} = fromDocument(
+        {
+          version: '0.2.0.dev0/google',
+          semantic_model: [{
+            name: 'm',
+            datasets:
+                [{name: 'c', source: 'p.d.c', primary_key: ['id'], fields: []}]
+          }],
+        },
+        {allowLegacyBareSource: true});
     expect(models[0].actions).toBeUndefined();
   });
 
@@ -939,34 +947,36 @@ describe('actions projecting concepts the push does not publish', () => {
         // and wording were resolved at load and travel in the aspect -- but the
         // catalog then names a concept it has no entry for, which is what the
         // warning is about.
-        const {models} = fromDocument({
-          version: '0.2.0.dev0/google',
-          semantic_model: [{
-            name: 'm',
-            entities: [
-              {
-                name: 'party',
-                abstract: true,
-                fields: [{name: 'partyId', datatype: 'String'}],
-              },
-              {
-                name: 'customer',
-                source: 'p.d.c',
-                primary_key: ['id'],
-                fields: [{
-                  name: 'id',
-                  expression:
-                      {dialects: [{dialect: 'ANSI_SQL', expression: 'id'}]}
+        const {models} = fromDocument(
+            {
+              version: '0.2.0.dev0/google',
+              semantic_model: [{
+                name: 'm',
+                entities: [
+                  {
+                    name: 'party',
+                    abstract: true,
+                    fields: [{name: 'partyId', datatype: 'String'}],
+                  },
+                  {
+                    name: 'customer',
+                    source: 'p.d.c',
+                    primary_key: ['id'],
+                    fields: [{
+                      name: 'id',
+                      expression:
+                          {dialects: [{dialect: 'ANSI_SQL', expression: 'id'}]}
+                    }],
+                  },
+                ],
+                actions: [{
+                  name: 'Notify',
+                  executor: MCP,
+                  parameters: [{name: 'who', concept: 'party', field: 'partyId'}],
                 }],
-              },
-            ],
-            actions: [{
-              name: 'Notify',
-              executor: MCP,
-              parameters: [{name: 'who', concept: 'party', field: 'partyId'}],
-            }],
-          }],
-        });
+              }],
+            },
+            {allowLegacyBareSource: true});
         // Resolved against the ontology, which includes abstract entities.
         expect(models[0].actions![0].parameters[0].type).toBe('String');
 
@@ -1472,7 +1482,7 @@ describe('a projection the catalog cannot give back', () => {
     // would keep passing while the doc drifted, which is the one failure this
     // test exists to catch.
     const docYaml = yamlFenceFromActionsDoc('## 1. Declare the action');
-    const loaded = loadModels(docYaml);
+    const loaded = loadModels(docYaml, {allowLegacyBareSource: true});
     expect(loaded.warnings).toEqual([]);
     const model = loaded.models[0];
     // The doc writes `source` in the one-key form and `target` in the two-key
@@ -1510,7 +1520,8 @@ describe('a projection the catalog cannot give back', () => {
     const merged = mergeProfileOntoDoc(docYaml, operationalYaml, 'operational');
     expect('error' in merged).toBe(false);
     if ('error' in merged) return;
-    const mergedModel = loadModels(merged.text).models[0];
+    const mergedModel =
+        loadModels(merged.text, {allowLegacyBareSource: true}).models[0];
     expect(mergedModel.actions![0].executor).toEqual({
       kind: 'sql',
       sql: {
@@ -1532,7 +1543,11 @@ describe('a projection the catalog cannot give back', () => {
     const docYaml = yamlFenceFromActionsDoc('## 1. Declare the action');
     expect(docYaml).toContain('field: Account.accountId');
     expect(docYaml).toContain('concept: Account');
-    const [source, target] = loadModels(docYaml).models[0].actions![0].parameters;
+    const [source, target] =
+        loadModels(docYaml, {allowLegacyBareSource: true})
+            .models[0]
+            .actions![0]
+            .parameters;
     expect([source.concept, source.field, source.type])
         .toEqual([target.concept, target.field, target.type]);
   });

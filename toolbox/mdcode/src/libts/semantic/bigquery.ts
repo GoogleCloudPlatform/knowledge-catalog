@@ -972,15 +972,14 @@ function metricExpression(m: Metric): string|undefined {
 
 // Builds a backtick-quoted table reference from the IR's `dataSource` string.
 // The IR contract guarantees `dataSource` is already canonical and
-// fully-qualified: the producer (loader) normalizes a bare name into a dotted
-// `project.dataset.table` (or a longer Lakehouse catalog name). For BigQuery
-// that canonical form IS the target addressing scheme, so this emits it
-// verbatim and NEVER prepends the graph's own project/dataset -- those name
-// where the graph is CREATED, not where a source table lives, and the two can
-// differ (e.g. a graph in `proj.demo` over source tables in `samples.tpch`).
-// Qualifying a source table is the producer's job, not the emitter's. A
-// verbatim query (contains whitespace) cannot back a graph element table, so it
-// is passed through parenthesized with a warning.
+// fully-qualified: the producer (loader) normalizes a BigQuery or BigLake
+// source into a dotted `project.dataset.table` (or four-part BigLake catalog
+// name). For BigQuery that canonical form IS the target addressing scheme, so
+// this emits it verbatim and NEVER prepends the graph's own project/dataset --
+// those name where the graph is CREATED, not where a source table lives, and
+// the two can differ (e.g. a graph in `proj.demo` over source tables in
+// `samples.tpch`). Qualifying a source table is the producer's job, not the
+// emitter's.
 function qualifyTable(
     dataSource: string, _opts: GenerateOptions, warnings: string[],
     context: string): string {
@@ -989,13 +988,6 @@ function qualifyTable(
     warnings.push(
         `${context}: empty data source; the table reference will be invalid`);
     return '``';
-  }
-  if (/\s/.test(trimmed)) {
-    warnings.push(
-        `${context}: data source '${
-            trimmed}' looks like a query, not a table reference; ` +
-        `emitting it verbatim (a graph element table requires a table)`);
-    return `(${trimmed})`;
   }
   return `\`${trimmed}\``;
 }
@@ -1007,11 +999,9 @@ function qualifyGraph(model: SemanticModel, opts: GenerateOptions): string {
   let project = opts.project;
   let dataset = opts.dataset;
 
-  // Pick the first entity with a plain `project.dataset.table` source to derive
-  // the graph's location; skip abstract entities (empty source) and query-based
-  // sources (whitespace), which carry no usable location.
-  const first = (model.entities ??
-                 []).find(e => e.dataSource && !/\s/.test(e.dataSource));
+  // Pick the first entity with a non-empty `dataSource` to derive the graph's
+  // location; skip abstract entities (empty source).
+  const first = (model.entities ?? []).find(e => e.dataSource);
   if ((!project || !dataset) && first) {
     const p = first.dataSource.trim().split('.');
     if (p.length >= 3) {

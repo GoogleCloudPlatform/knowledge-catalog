@@ -38,8 +38,11 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 // capture.
 function loadFixture(fixture: string): SemanticModel {
   const text = fs.readFileSync(path.join(FIXTURES, fixture), 'utf8');
-  const {models} = loadModels(
-      text, {defaultProject: 'sqlgen-testing', defaultDataset: 'demo'});
+  const {models} = loadModels(text, {
+    defaultProject: 'sqlgen-testing',
+    defaultDataset: 'demo',
+    allowLegacyBareSource: true,
+  });
   return models[0];
 }
 const GEN_OPTS: GenerateOptions = {
@@ -408,6 +411,25 @@ describe('degenerate inputs and GenerateOptions behavior', () => {
             generatePropertyGraph(model, {project: 'p', graphName: 'g'});
         expect(ddl).toContain('CREATE OR REPLACE PROPERTY GRAPH `g`');
         expect(ddl).not.toContain('`p.g`');
+      });
+
+  test(
+      'a dataSource whose table name contains spaces is backtick-quoted without a query warning',
+      () => {
+        const model: SemanticModel = {
+          name: 'm',
+          relationships: [],
+          metrics: [],
+          entities: [{
+            name: 'order_items',
+            dataSource: 'acme.sales.order items',
+            keys: ['id'],
+            fields: [{name: 'id', expression: 'order_items.id'}]
+          }],
+        };
+        const {ddl, warnings} = generatePropertyGraph(model);
+        expect(warnings).toEqual([]);
+        expect(ddl).toContain('`acme.sales.order items` AS order_items');
       });
 });
 

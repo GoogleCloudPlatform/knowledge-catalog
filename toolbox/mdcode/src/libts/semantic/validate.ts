@@ -1029,17 +1029,16 @@ function billingProject(model: SemanticModel, defaultProject: string): string {
 
 
 // A source that can be probed as a BigQuery table: the canonical `dataSource`,
-// trimmed, or null when it is not a table reference -- empty, or a query the
-// loader kept verbatim (contains whitespace). Unlike a tables.get probe this
-// imposes no part-count limit, so a three-part `project.dataset.table` and a
-// four-part REST-catalog / Lakehouse name are both returned for the dry-run to
-// resolve.
+// trimmed, or null when it is empty or a non-BigQuery resource URI. Unlike a
+// tables.get probe this imposes no part-count limit, so a three-part
+// `project.dataset.table` and a four-part BigLake / REST-catalog name are both
+// returned for the dry-run to resolve.
 function probeableRef(dataSource: string|undefined): string|null {
   const trimmed = (dataSource ?? '').trim();
-  if (!trimmed || /\s/.test(trimmed)) return null;
+  if (!trimmed) return null;
   // A non-BigQuery resource URI (Spanner/AlloyDB/iceberg/...) is not a
   // BigQuery table, so the BigQuery pre-flight does not probe it. (BigQuery
-  // source URIs are normalized to project.dataset.table by the loader, so a
+  // and BigLake source URIs are normalized to dotted names by the loader, so a
   // URI reaching here is non-BigQuery.)
   if (trimmed.startsWith('//') || /^[a-z][\w+.-]*:\/\//i.test(trimmed)) {
     return null;

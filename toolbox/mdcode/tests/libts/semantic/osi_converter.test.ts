@@ -23,7 +23,7 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 
 function loadFixture(name: string): SemanticModel[] {
   const text = fs.readFileSync(path.join(FIXTURES, name), 'utf8');
-  return loadModels(text).models;
+  return loadModels(text, {allowLegacyBareSource: true}).models;
 }
 
 
@@ -32,7 +32,7 @@ function loadFixture(name: string): SemanticModel[] {
 function withoutUnserializedFields(m: Omit<SemanticModel, 'version'>) {
   return {
     ...m,
-    entities: m.entities.map(e => ({
+    entities: m.entities.map(({authoredSource: _as, ...e}) => ({
       ...e,
       fields: e.fields.map(({dialects: _d, stringForm: _sf, ...f}) => f),
     })),
@@ -63,7 +63,7 @@ describe('loader <-> serialize round trip is IR-stable', () => {
 
       for (const model of original) {
         const {yaml: text} = serializeModel(model);
-        const reloaded = loadModels(text).models;
+        const reloaded = loadModels(text, {allowLegacyBareSource: true}).models;
         expect(reloaded).toHaveLength(1);
         // The serializer always writes the Google flavor, so a vanilla fixture
         // reloads as '0.2.0.dev0/google'. Set `version` aside until the
@@ -134,7 +134,7 @@ describe('expression + datatype + dimension mapping', () => {
     const typed = model.entities.flatMap(e => e.fields).find(f => f.type);
     expect(typed).toBeDefined();
     const {yaml: text} = serializeModel(model);
-    const reloaded = loadModels(text).models[0];
+    const reloaded = loadModels(text, {allowLegacyBareSource: true}).models[0];
     const back = reloaded.entities.flatMap(e => e.fields)
                      .find(f => f.name === typed!.name)!;
     expect(back.type).toBe(typed!.type);
@@ -154,7 +154,9 @@ describe('expression + datatype + dimension mapping', () => {
     const fieldDoc = doc.semantic_model[0].entities[0].fields[0];
     expect(fieldDoc.dimension).toEqual({});
     // And it reloads back to a dimension field.
-    const reloaded = loadModels(serializeModel(model).yaml).models[0];
+    const reloaded =
+        loadModels(serializeModel(model).yaml, {allowLegacyBareSource: true})
+            .models[0];
     expect(reloaded.entities[0].fields[0].dimension).toEqual({});
   });
 
@@ -202,7 +204,9 @@ describe('expression + datatype + dimension mapping', () => {
         (modelDocument(model) as any).semantic_model[0].metrics[0];
     expect(metricDoc).not.toHaveProperty('entity');
     // The loader re-derives it on reload.
-    const reloaded = loadModels(serializeModel(model).yaml).models[0];
+    const reloaded =
+        loadModels(serializeModel(model).yaml, {allowLegacyBareSource: true})
+            .models[0];
     expect(reloaded.metrics[0].entity).toBe('orders');
   });
 });
@@ -378,7 +382,11 @@ describe('golden OSI document: each corpus fixture serializes to its exact YAML'
            ];
            // Same load defaults as the KC e2e/pull goldens, so the OSI golden
            // and the pull golden are directly comparable.
-           const LOAD = {defaultProject: 'sqlgen-testing', defaultDataset: 'demo'};
+           const LOAD = {
+             defaultProject: 'sqlgen-testing',
+             defaultDataset: 'demo',
+             allowLegacyBareSource: true,
+           };
            const osiGoldenPath = (fixture: string) =>
                path.join(FIXTURES, fixture.replace(/\.yaml$/, '.osi.golden.yaml'));
 

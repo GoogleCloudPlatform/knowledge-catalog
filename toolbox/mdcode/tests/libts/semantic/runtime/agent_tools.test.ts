@@ -33,7 +33,9 @@ function rt(
 }
 
 function loadFixtureModel(name: string): SemanticModel {
-  return loadModels(fs.readFileSync(path.join(FIXTURES, name), 'utf8'))
+  return loadModels(
+             fs.readFileSync(path.join(FIXTURES, name), 'utf8'),
+             {allowLegacyBareSource: true})
       .models[0];
 }
 
