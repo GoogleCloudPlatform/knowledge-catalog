@@ -768,6 +768,56 @@ describe('keys and edge binding', () => {
     expect(warnings.some(w => w.includes('synonyms/examples'))).toBe(false);
   });
 
+  // A renamed edge no longer says which OWL property produced it. The label,
+  // when there is one, is the human phrase rather than the term -- and an
+  // ontology that writes no label would lose the term completely.
+  test('a renamed edge carries its OWL property name as a synonym', () => {
+    const ttl = `${PREFIXES}
+      ex:Booking a owl:Class . ex:Revenue a owl:Class . ex:Client a owl:Class .
+      ex:paidBy a owl:ObjectProperty ; rdfs:domain ex:Booking ;
+          rdfs:range ex:Client .
+      ex:paidBy a owl:ObjectProperty ; rdfs:domain ex:Revenue ;
+          rdfs:range ex:Client .
+    `;
+    const model = loadOwl(ttl);
+    expect(model.relationships.map(r => r.name)).toEqual([
+      'paidBy_Booking',
+      'paidBy_Revenue',
+    ]);
+    expect(model.relationships.map(r => r.aiContext?.synonyms)).toEqual([
+      ['paidBy'],
+      ['paidBy'],
+    ]);
+  });
+
+  // The label stays too, and keeps its place ahead of the bare term.
+  test('a renamed edge keeps both its label and its OWL property name', () => {
+    const ttl = `${PREFIXES}
+      ex:Booking a owl:Class . ex:Revenue a owl:Class . ex:Client a owl:Class .
+      ex:hasClient a owl:ObjectProperty ; rdfs:domain ex:Booking ;
+          rdfs:range ex:Client ; rdfs:label "has client" .
+      ex:hasClient a owl:ObjectProperty ; rdfs:domain ex:Revenue ;
+          rdfs:range ex:Client ; rdfs:label "has client" .
+    `;
+    expect(loadOwl(ttl).relationships[0].aiContext?.synonyms).toEqual([
+      'has client',
+      'hasClient',
+    ]);
+  });
+
+  // A single-domain edge is already named for its property, so repeating the
+  // name as a synonym would be noise.
+  test('an un-renamed edge gets no source-term synonym', () => {
+    const ttl = `${PREFIXES}
+      ex:Order a owl:Class . ex:Customer a owl:Class .
+      ex:placedBy a owl:ObjectProperty ;
+          rdfs:domain ex:Order ; rdfs:range ex:Customer .
+    `;
+    const edge = loadOwl(ttl).relationships[0];
+    expect(edge.name).toBe('placedBy');
+    expect(edge.aiContext?.synonyms).toBeUndefined();
+  });
+
   test('divergent per-declaration examples are reported as broadcast', () => {
     const ttl = `${PREFIXES}
       ex:Person a owl:Class . ex:Company a owl:Class . ex:Asset a owl:Class .

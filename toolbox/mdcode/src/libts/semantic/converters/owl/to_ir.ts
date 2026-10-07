@@ -482,6 +482,14 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
           `its synonyms/examples are not tied to a declaration, so every ` +
           `edge carries all of them.`);
     }
+    // A renamed edge no longer says which OWL property it came from, and the
+    // rdfs:label is the human phrase ("has client"), not the term -- when the
+    // ontology writes no label there is nothing left at all. Carry the bare
+    // term as a synonym, on renamed edges only: a single-domain edge is
+    // already named for its property, so repeating it there is noise. It also
+    // re-links the siblings, since the edges sharing a source term are exactly
+    // the ones that came from one set of declarations.
+    const synonyms = fanOut ? [...p.synonyms, p.localName] : p.synonyms;
     let produced = false;
     // Iterate the FULL domain list so each description keeps the index that
     // pairs it with its own declaration; unknown domains are skipped in place.
@@ -510,7 +518,7 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
         // No `description`: the OSI relationship has no such slot, so the
         // comment rides in ai_context.instructions (relationshipAiContext).
         aiContext: relationshipAiContext(
-            p.label, name, p.synonyms, describe(i), p.examples),
+            p.label, name, synonyms, describe(i), p.examples),
       });
       produced = true;
     }

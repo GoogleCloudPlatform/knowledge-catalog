@@ -268,18 +268,28 @@ relationships:
     to: Client
     ai_context:
       instructions: Associates a sales booking with a specific client.
+      synonyms:
+        - hasClient
   - name: hasClient_Revenue
     from: Revenue
     to: Client
     ai_context:
       instructions: Associates recognized revenue with a specific client.
+      synonyms:
+        - hasClient
 ```
 
 The suffix is what makes the names unique, which the model requires — a
 duplicate relationship name is a load error. A property with a single domain
-keeps its bare name, so the ordinary case is untouched. The OWL verb survives
-either way: `rdfs:label "has client"` becomes an `ai_context` synonym on every
-edge.
+keeps its bare name, so the ordinary case is untouched.
+
+A renamed edge records the property it came from as an `ai_context` synonym.
+That keeps the OWL term searchable, and it re-links the siblings: the edges
+sharing a source term are the ones that came from one set of declarations.
+Without it the term would vanish entirely whenever an ontology writes no
+`rdfs:label` — and a label, where there is one, is the human phrase (`has
+client`), not the term. A single-domain edge is already named for its
+property, so it gets no such synonym.
 
 Each edge keeps the comment written beside its own declaration. RDF records no
 link between a domain and a comment, so that pairing is by document order, and
