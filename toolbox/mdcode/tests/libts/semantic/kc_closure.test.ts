@@ -296,6 +296,49 @@ describe('K1: without the annotation aspects nothing new is attached', () => {
 });
 
 
+describe('K1: relationships that publish no link ride the index whole', () => {
+  // An abstract parent, a child extending it, and a column-less edge with a
+  // description and an inverse: none of the latter two kinds of row carries
+  // a link, so the anchor's index is their only record.
+  const withUnpublished = (): SemanticModel => {
+    const m = shop();
+    m.relationships.push(
+        {
+          name: 'relatesTo',
+          source: {entity: 'Order', columns: []},
+          destination: {entity: 'Customer', columns: []},
+          abstract: true,
+          description: 'Any link from an order to a customer.',
+        },
+        {
+          name: 'reviewedBy',
+          source: {entity: 'Order', columns: []},
+          destination: {entity: 'Customer', columns: []},
+          extends: ['relatesTo'],
+          description: 'The customer who reviewed the order.',
+          inverse: 'reviewed',
+          aiContext: {synonyms: ['reviewer']},
+        });
+    m.relationships[0].extends = ['relatesTo'];
+    return m;
+  };
+
+  test('they come back, in authored order, with the extends that name them',
+       () => {
+         const read = roundTrip(withUnpublished());
+         expect(read.warnings).toEqual([]);
+         expect(read.models[0].relationships)
+             .toEqual(withUnpublished().relationships);
+       });
+
+  test('without semantic-ai-context they are lost, as before', () => {
+    const back = roundTrip(withUnpublished(), []).models[0];
+    expect(back.relationships.map(r => r.name))
+        .toEqual(['placedby', 'containsproduct']);
+  });
+});
+
+
 // ---------------------------------------------------------------------------
 // In-memory catalog: just enough of CatalogClient for push and pull.
 // ---------------------------------------------------------------------------

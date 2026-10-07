@@ -608,6 +608,33 @@ export const EXPRESSIONS_TYPE_ID = 'semantic-expressions';
 // relationship the junction backs.
 export const BINDING_TYPE_ID = 'semantic-binding';
 
+// The relationship-index fields that carry a relationship publishing no
+// schema-join link (see AI_CONTEXT_ASPECT_TYPE). A chain step is written as
+// the relationship name, prefixed `~` when it is traversed backwards.
+const UNPUBLISHED_RELATIONSHIP_FIELDS = [
+  ['source', 'Source Entity', 'string'],
+  ['destination', 'Destination Entity', 'string'],
+  ['sourceColumns', 'Source Columns', 'strings'],
+  ['destinationColumns', 'Destination Columns', 'strings'],
+  ['abstract', 'Abstract', 'bool'],
+  ['extends', 'Specializes', 'strings'],
+  ['description', 'Description', 'string'],
+  ['inverse', 'Inverse Name', 'string'],
+  ['via', 'Derived Via', 'strings'],
+  ['filter', 'Derived Filter', 'string'],
+].map(([name, displayName, kind], i) => kind === 'strings' ? {
+  index: 4 + i,
+  name,
+  type: 'array',
+  arrayItems: {name: `${name}Item`, type: 'string'},
+  annotations: {displayName},
+} : {
+  index: 4 + i,
+  name,
+  type: kind,
+  annotations: {displayName},
+});
+
 const AI_CONTEXT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
   displayName: 'Semantic AI Context',
   description:
@@ -671,14 +698,20 @@ const AI_CONTEXT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
               },
             },
             aiContextField(3),
+            // Fields 4-13 are set only on a relationship that publishes no
+            // schema-join link (abstract, or an endpoint that is abstract or
+            // has no join columns): the row is then its only record, so it
+            // carries the whole relationship and pull rebuilds it from here.
+            ...UNPUBLISHED_RELATIONSHIP_FIELDS,
           ],
         },
         annotations: {
           displayName: 'Relationships',
           description:
-              'On the model entry: every published relationship by its ' +
-              'authored name, with its ai_context. An entry link carries no ' +
-              'custom aspect, so this is where they ride.',
+              'On the model entry: every relationship by its authored name, ' +
+              'with its ai_context. An entry link carries no custom aspect, ' +
+              'so this is where they ride; one that publishes no link rides ' +
+              'here whole.',
         },
       },
     ],

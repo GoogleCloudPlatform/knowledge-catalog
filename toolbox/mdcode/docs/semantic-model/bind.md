@@ -139,8 +139,12 @@ dataset matching `--exclude`. Views are left out unless you pass
 `--include-views`. Every dropped table is listed at the end of the report.
 
 `--from-catalog` binds the model as pulled from Knowledge Catalog, the governed
-definition, instead of the local documents. `--model <file>` binds one document
-and writes its profile beside it.
+definition, instead of the local documents. Like `kcmd pull`, it reads the
+annotation aspects `kcmd init --semantic-model` provisioned, so the model it
+binds is the one pushed: metric expressions, verbatim relationship names and
+abstract relationships included, and the profile matches binding the local
+document. In a project without those aspect types the pull is the older lossy
+read. `--model <file>` binds one document and writes its profile beside it.
 
 ## Flags
 

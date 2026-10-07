@@ -14,7 +14,9 @@
 //   semantic-ai-context   model / entity / metric entry: the element's whole
 //                         ai_context, its fields' ai_context, and (on the model
 //                         entry) each relationship's authored name + ai_context
-//                         -- an entry link carries no custom aspect.
+//                         -- an entry link carries no custom aspect -- and,
+//                         whole, each relationship that publishes no link
+//                         (abstract, or an abstract / column-less endpoint).
 //   semantic-expressions  entity / metric entry: the metric's expression, and
 //                         per field its expression, imported vendor SQL,
 //                         dimension role and logical type.
@@ -35,7 +37,7 @@
 
 import type {Aspect, Entry} from '../gcp/dataplex';
 
-import {AiContext, DATA_TYPES, DataType, Entity, EntityBindingMode, EntityHydration, Field, Metric, NormalizeRule, ResolveRule, SemanticModel, VocabularyMember} from './ir';
+import {AiContext, DATA_TYPES, DataType, Entity, EntityBindingMode, EntityHydration, Field, Metric, NormalizeRule, Relationship, ResolveRule, SemanticModel, VocabularyMember} from './ir';
 import {AI_CONTEXT_TYPE_ID, aiContextAspectValue, aiContextFromAspect, BINDING_TYPE_ID, customAspectKey, customAspectTypeName, EXPRESSIONS_TYPE_ID} from './kc_custom_types';
 
 /** Which annotation aspects a push may attach, and where their types live. */
@@ -59,6 +61,64 @@ export interface RelationshipIndexRow {
   name: string;
   link?: string;
   aiContext?: AiContext;
+  // A relationship that publishes no schema-join link (abstract, or an
+  // endpoint that is abstract or has no join columns): the row is its only
+  // record, so it carries the whole relationship (minus name and ai_context,
+  // which the row holds anyway). Absent when `link` is set.
+  unpublished?: UnpublishedRelationship;
+}
+
+export type UnpublishedRelationship = Omit<Relationship, 'name'|'aiContext'>;
+
+// The index-row fields of an unpublished relationship (see
+// kc_custom_types.UNPUBLISHED_RELATIONSHIP_FIELDS).
+function unpublishedData(rel: UnpublishedRelationship|undefined):
+    Record<string, any> {
+  if (!rel) return {};
+  return compact({
+    source: rel.source.entity,
+    destination: rel.destination.entity,
+    sourceColumns: rel.source.columns.length ? [...rel.source.columns] :
+                                               undefined,
+    destinationColumns: rel.destination.columns.length ?
+        [...rel.destination.columns] :
+        undefined,
+    abstract: rel.abstract ? true : undefined,
+    extends: rel.extends?.length ? [...rel.extends] : undefined,
+    description: rel.description,
+    inverse: rel.inverse,
+    via: rel.via?.length ?
+        rel.via.map(s => `${s.inverse ? '~' : ''}${s.relationship}`) :
+        undefined,
+    filter: rel.filter,
+  });
+}
+
+function readUnpublished(row: any): UnpublishedRelationship|undefined {
+  const source = str(row?.source);
+  const destination = str(row?.destination);
+  if (!source || !destination) return undefined;
+  const rel: UnpublishedRelationship = {
+    source: {entity: source, columns: strings(row?.sourceColumns) ?? []},
+    destination:
+        {entity: destination, columns: strings(row?.destinationColumns) ?? []},
+  };
+  const parents = strings(row?.extends);
+  if (parents) rel.extends = parents;
+  if (row?.abstract === true) rel.abstract = true;
+  const description = str(row?.description);
+  if (description) rel.description = description;
+  const inverse = str(row?.inverse);
+  if (inverse) rel.inverse = inverse;
+  const via = strings(row?.via);
+  if (via) {
+    rel.via = via.map(
+        s => s.startsWith('~') ? {relationship: s.slice(1), inverse: true} :
+                                 {relationship: s});
+  }
+  const filter = str(row?.filter);
+  if (filter) rel.filter = filter;
+  return rel;
 }
 
 function wrap(target: AnnotationTarget, id: string,
@@ -101,6 +161,7 @@ function aiContextData(
           name: r.name,
           link: r.link,
           aiContext: aiContextAspectValue(r.aiContext),
+          ...unpublishedData(r.unpublished),
         })) :
         undefined,
   }));
@@ -281,10 +342,12 @@ export function readAiContextAnnotation(entry: Pick<Entry, 'aspects'>):
   for (const row of asArray(data.relationships)) {
     const name = str(row?.name);
     if (!name) continue;
+    const link = str(row?.link);
     relationships.push(compact({
       name,
-      link: str(row?.link),
+      link,
       aiContext: aiContextFromAspect(row?.aiContext),
+      unpublished: link ? undefined : readUnpublished(row),
     }));
   }
   return compact(

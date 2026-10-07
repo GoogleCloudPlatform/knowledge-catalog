@@ -985,6 +985,49 @@ export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
   return fromDocument(doc, opts);
 }
 
+/** The most problems a load error lists before summarizing the rest. */
+const MAX_LISTED_ISSUES = 20;
+
+/**
+ * Renders schema problems one per line as `<path>: <message>`, e.g.
+ * `semantic_model[0].metrics[3].expression: required (expected a string or
+ * an object)`. A union's branches fold into that one line.
+ */
+export function formatIssues(issues: readonly any[]): string {
+  const where = (path: readonly PropertyKey[]) => path.length ?
+      path.map((p, i) => typeof p === 'number' ? `[${p}]` :
+                    `${i ? '.' : ''}${String(p)}`)
+          .join('') :
+      '(document)';
+  const describe = (issue: any): string => {
+    if (issue.code === 'invalid_union' && Array.isArray(issue.errors)) {
+      const branches: any[] = issue.errors.map((b: any[]) => b?.[0]);
+      if (branches.length && branches.every(b => b?.code === 'invalid_type' &&
+                                              !(b.path ?? []).length)) {
+        const expected = [...new Set(branches.map(b => b.expected))];
+        const missing =
+            branches.every(b => /received undefined/.test(b.message ?? ''));
+        return `${missing ? 'required' : 'wrong type'} (expected ${
+            expected.map(e => `${/^[aeiou]/.test(e) ? 'an' : 'a'} ${e}`)
+                .join(' or ')})`;
+      }
+      const inner = branches.filter(Boolean).map(
+          b => `${(b.path ?? []).length ? `${where(b.path)}: ` : ''}${
+              b.message}`);
+      return `${issue.message}${inner.length ? ` (${inner.join('; or ')})` : ''}`;
+    }
+    return issue.message ?? String(issue.code ?? 'invalid');
+  };
+  if (!issues.length) return 'the document does not match the schema';
+  const lines = issues.slice(0, MAX_LISTED_ISSUES)
+                    .map(i => `  - ${where(i.path ?? [])}: ${describe(i)}`);
+  if (issues.length > MAX_LISTED_ISSUES) {
+    lines.push(`  ... and ${issues.length - MAX_LISTED_ISSUES} more`);
+  }
+  return `${issues.length} problem${issues.length === 1 ? '' : 's'}:\n${
+      lines.join('\n')}`;
+}
+
 /**
  * Converts an already-parsed document object into the Semantic Model IR. Throws
  * on a structurally invalid document; softer, lossy conversions are reported in
@@ -998,7 +1041,8 @@ export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
   const result = makeDocumentSchema(opts.bindingOptional ?? false, extended)
                      .safeParse(normalized);
   if (!result.success) {
-    throw new Error(`Semantic model load error: ${result.error.message}`);
+    throw new Error(
+        `Semantic model load error: ${formatIssues(result.error.issues)}`);
   }
 
   const warnings: string[] = [];

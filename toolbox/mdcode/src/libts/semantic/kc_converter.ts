@@ -63,9 +63,12 @@
 // every limit above: the whole ai_context (synonyms, examples, field-level),
 // expressions, imported SQL, dimension roles and logical types, binding mode,
 // hydration and full vocabulary members, relationship names verbatim (from
-// the anchor's index) in authored order, and many-to-many relationships
-// (folded back from their junction entry and its two links). Without them
-// (a project that has not re-run `kcmd init`) the read is as described above.
+// the anchor's index) in authored order, many-to-many relationships
+// (folded back from their junction entry and its two links), and the
+// relationships that publish no link at all -- abstract ones, and those with
+// an abstract or column-less endpoint -- which the index carries whole.
+// Without them (a project that has not re-run `kcmd init`) the read is as
+// described above.
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
@@ -265,9 +268,13 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
   // An abstract entity has no table by design, so an empty source is expected;
   // so does a defined one (a subset of its parent's rows), a vocabulary (its
   // rows are its members), and a derived one (its rows come from a
-  // relationship).
+  // relationship). With the annotation aspects the read is lossless, so an
+  // empty source is what was authored (a logical model not yet bound).
+  const annotated = !!(readAiContextAnnotation(entry) ||
+                       readExpressionsAnnotation(entry) ||
+                       readBindingAnnotation(entry));
   if (!dataSource && !trailers.abstract && !defined.definition && !k3.members &&
-      !hyd.hydration?.deriveFrom) {
+      !hyd.hydration?.deriveFrom && !annotated) {
     warnings.push(
         `entity '${name}': no backing data source in the semantic-entity ` +
         `aspect; 'source' will be empty and the entity may not load`);
@@ -696,8 +703,10 @@ function readRelationships(
     // than drop the edge.
     const srcName = (join.source?.name ?? '').trim();
     const tgtName = (join.target?.name ?? '').trim();
-    const aSrc = (endA.dataSource ?? '').trim();
-    const bSrc = (endB.dataSource ?? '').trim();
+    // An endpoint with no data source (a logical, unbound model) is named by
+    // its entity name instead -- what schemaJoinAspectData writes then.
+    const aSrc = (endA.dataSource || endA.name).trim();
+    const bSrc = (endB.dataSource || endB.name).trim();
     const endAIsSource = aSrc === srcName && bSrc === tgtName;
     const endBIsSource = bSrc === srcName && aSrc === tgtName;
     let [source, destination] = [endA, endB];
@@ -759,6 +768,27 @@ function readRelationships(
     };
     applyJoinDescription(rel, srcJoin.description);
     indexed(srcLink, rel);
+    out.push(rel);
+  }
+
+  // Relationships that publish no link (abstract, or an abstract /
+  // column-less endpoint) ride the anchor's index whole. Rebuilt only when
+  // both endpoints are entities this pull recovered, so none dangles.
+  const known = new Set([...entityByEntryId.values()].map(e => e.name));
+  for (const row of index) {
+    const u = row.unpublished;
+    if (!u || row.link) continue;
+    if (!known.has(u.source.entity) || !known.has(u.destination.entity)) {
+      warnings.push(
+          `relationship '${row.name}': an endpoint entity was not recovered; ` +
+          `the relationship is skipped`);
+      continue;
+    }
+    const rel: Relationship = {
+      name: row.name,
+      ...structuredClone(u),
+    };
+    if (row.aiContext) rel.aiContext = row.aiContext;
     out.push(rel);
   }
 
