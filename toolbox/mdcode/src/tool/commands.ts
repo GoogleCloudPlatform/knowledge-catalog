@@ -17,7 +17,7 @@ import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets} from '../libts/semantic/deployment_target';
 import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
-import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
+import {deploymentProfileError, LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
 import {applyProfileExclusions, AvailabilityReport, DEFAULT_PROFILE, isProfileFileForm, mergeProfileOntoDoc, ProfileExclusion, pruneUnavailable,} from '../libts/semantic/resolve_profiles';
@@ -153,13 +153,13 @@ export function checkPushSelection(sel: {
 
 // Whether a model document (already profile-merged) declares a graph deployment
 // target, without a full strict load. True when the model names one via the
-// `deployment_target:` sugar or a GOOGLE custom_extension `deploymentTargets`.
-// Drives the push mode: a push whose models all declare no target governs the
-// logical model only -- it deploys no graph, so bindings and a target are not
-// required and pruning is skipped (Knowledge Catalog publishes the whole
-// model). On any ambiguity (unparseable YAML, malformed GOOGLE data) it returns
-// true, so the strict load reports the problem rather than silently taking the
-// logical path.
+// `deployments:` list (or the legacy `deployment_target:` key) or a GOOGLE
+// custom_extension `deploymentTargets`. Drives the push mode: a push whose
+// models all declare no target governs the logical model only -- it deploys no
+// graph, so bindings and a target are not required and pruning is skipped
+// (Knowledge Catalog publishes the whole model). On any ambiguity (unparseable
+// YAML, malformed GOOGLE data) it returns true, so the strict load reports the
+// problem rather than silently taking the logical path.
 export function declaresGraphTarget(text: string): boolean {
   let doc: any;
   try {
@@ -171,6 +171,9 @@ export function declaresGraphTarget(text: string): boolean {
   for (const m of models) {
     if (typeof m?.deployment_target === 'string' &&
         m.deployment_target.trim()) {
+      return true;
+    }
+    if (Array.isArray(m?.deployments) && m.deployments.length > 0) {
       return true;
     }
     const exts = Array.isArray(m?.custom_extensions) ? m.custom_extensions : [];
@@ -465,6 +468,11 @@ export async function push(options: PushOptions): Promise<number> {
       for (const w of loaded.warnings) {
         if (options.transpile && w.includes('needs transpilation')) continue;
         console.warn(`Warning: ${w}`);
+      }
+      const depProfileErr = deploymentProfileError(loaded.models);
+      if (depProfileErr) {
+        console.error(`Error: ${depProfileErr}`);
+        return null;
       }
       let models = loaded.models;
       let unprunedErrors: string[] = [];
@@ -967,6 +975,11 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
           });
       if (loaded.error) {
         console.error(`  profile '${name}': ${loaded.error}`);
+        continue;
+      }
+      const depProfileErr = deploymentProfileError(loaded.models);
+      if (depProfileErr) {
+        console.error(`  profile '${name}': ${depProfileErr}`);
         continue;
       }
       const model = applyProfileExclusions(loaded.models[0].model, res.excluded);

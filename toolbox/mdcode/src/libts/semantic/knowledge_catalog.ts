@@ -61,6 +61,7 @@ import {AiContext, DataType, Entity, Metric, Relationship, SemanticModel} from '
 import {actionEntries} from './kc_actions';
 import {constraintEntries} from './kc_constraints';
 import {linkSlug, Namer, ownedEntryIdPrefixes} from './kc_ids';
+import {databaseOf} from './loader';
 
 export interface KcGenerateOptions {
   project: string;     // project the entries are created in (destination)
@@ -370,16 +371,17 @@ function entityByName(model: SemanticModel, name: string): Entity|undefined {
 // these shapes so any schema-driven change is a visible, reviewable diff.
 // ---------------------------------------------------------------------------
 
-// semantic-model: every recognized graph deployment target URI this model
-// deploys to -- BigQuery Graph and/or Spanner Graph, the same targets the graph
-// legs execute against. Recording both backends keeps the entry faithful for a
-// Spanner-targeted model (so a later `kcmd pull` reconstructs a bound model).
-// Empty data is valid; the aspect is still attached to satisfy required_aspects.
+// semantic-model: every recognized deployment target URI this model declares
+// (BigQuery Graph, Spanner Graph, and/or AlloyDB database), in declaration
+// order. Recording all three keeps the entry faithful so a later `kcmd pull`
+// reconstructs `deployments` in the order the author wrote them. Empty data is
+// valid; the aspect is still attached to satisfy required_aspects.
 function modelAspectData(model: SemanticModel): Record<string, any> {
-  const {bigQuery, spanner} = googleDeploymentTargets(model);
-  const uris = [...bigQuery, ...spanner].map(t => t.uri);
+  const {uris, malformed} = googleDeploymentTargets(model);
+  const bad = new Set(malformed);
+  const valid = uris.filter(u => !bad.has(u));
   return compact({
-    deploymentTargets: uris.length ? uris : undefined,
+    deploymentTargets: valid.length ? valid : undefined,
   });
 }
 
@@ -392,7 +394,10 @@ function entityAspectData(entity: Entity): Record<string, any> {
   // list), so omitting it is rejected server-side. An empty list is the honest
   // "no binding yet"; the reader treats it the same as an absent source
   // (dataSource becomes '').
-  const path = resourcePath(entity.dataSource);
+  const path = entity.authoredSource &&
+          databaseOf(entity.authoredSource) !== undefined ?
+      entity.authoredSource.trim() :
+      resourcePath(entity.dataSource);
   return compact({
     source: {resources: path ? [path] : []},
   });
@@ -554,7 +559,10 @@ function columnMetadataType(type: DataType|undefined): string {
 // need a different URI shape than the BigQuery managed-table one below.
 function resourcePath(dataSource: string): string {
   const trimmed = (dataSource ?? '').trim();
-  if (!trimmed || /\s/.test(trimmed)) return trimmed;
+  if (!trimmed || /\s/.test(trimmed) || trimmed.includes('/') ||
+      trimmed.includes(':')) {
+    return trimmed;
+  }
   const parts = trimmed.split('.').map(unquote);
   if (parts.length === 3 && parts.every(p => p.length)) {
     return `//bigquery.googleapis.com/projects/${parts[0]}/datasets/${

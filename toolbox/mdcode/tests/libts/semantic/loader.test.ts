@@ -1103,29 +1103,14 @@ describe('authoring sugars: entities alias, bare-string expression, deployment_t
     })).toThrow(/dialects:/);
   });
 
-  test("a top-level 'deployment_target' folds into the GOOGLE block form", () => {
-    const sugar = fromDocument({ version: '0.2.0.dev0/google',
+  test("a top-level 'deployment_target' is rejected with a migration pointer to 'deployments'", () => {
+    expect(() => fromDocument({ version: '0.2.0.dev0/google',
       semantic_model: [{
         name: 'm', deployment_target: URI,
         datasets: [{ name: 'a', source: 'bigquery:p.d.s', primary_key: ['id'],
           fields: [{ name: 'id', expression: 'id' }] }],
       }],
-    });
-    const explicit = fromDocument({ version: '0.2.0.dev0',
-      semantic_model: [{
-        name: 'm',
-        custom_extensions: [{ vendor_name: 'GOOGLE',
-          data: JSON.stringify({ deploymentTargets: [URI] }) }],
-        datasets: [{ name: 'a', source: 'bigquery:p.d.s', primary_key: ['id'],
-          fields: [{ name: 'id', expression: expr('id') }] }],
-      }],
-    });
-    expect(sugar.models[0].customExtensions)
-      .toEqual(explicit.models[0].customExtensions);
-    expect(sugar.models[0].customExtensions).toEqual([
-      { vendorName: 'GOOGLE',
-        data: JSON.stringify({ deploymentTargets: [URI] }) },
-    ]);
+    })).toThrow("model 'm': 'deployment_target' is no longer supported; migrate to the named 'deployments' list");
   });
 
 });
@@ -2088,4 +2073,114 @@ describe('strict entity sources', () => {
     }
   });
 });
+
+
+describe('deployments and inline profiles', () => {
+  const BQ_TARGET = '//bigquery.googleapis.com/projects/acme/datasets/analytics/propertyGraphs/sales';
+  const SPANNER_TARGET = '//spanner.googleapis.com/projects/acme/instances/test/databases/sales/propertyGraphs/sales';
+
+  test('a named deployments list loads onto model.deployments and folds targets into the GOOGLE custom_extensions shim', () => {
+    const { models } = load(GOOGLE, {
+      name: 'sales',
+      deployments: [
+        { name: 'prod', target: BQ_TARGET },
+        { name: 'staging', target: SPANNER_TARGET, profile: 'spanner_binding' },
+      ],
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    });
+    const m = models[0];
+    expect(m.deployments).toEqual([
+      { name: 'prod', target: BQ_TARGET },
+      { name: 'staging', target: SPANNER_TARGET, profile: 'spanner_binding' },
+    ]);
+    expect(m.customExtensions).toEqual([
+      {
+        vendorName: 'GOOGLE',
+        data: JSON.stringify({ deploymentTargets: [BQ_TARGET, SPANNER_TARGET] }),
+      },
+    ]);
+  });
+
+  test('duplicate deployment names are rejected', () => {
+    expect(() => load(GOOGLE, {
+      name: 'sales',
+      deployments: [
+        { name: 'prod', target: BQ_TARGET },
+        { name: 'prod', target: SPANNER_TARGET },
+      ],
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    })).toThrow("model 'sales': duplicate deployment name 'prod'");
+  });
+
+  test('duplicate deployment targets are rejected (after trimming), naming both deployments, and whitespace-only targets are rejected', () => {
+    expect(() => load(GOOGLE, {
+      name: 'sales',
+      deployments: [
+        { name: 'prod', target: BQ_TARGET },
+        { name: 'staging', target: `${BQ_TARGET}  ` },
+      ],
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    })).toThrow(
+      `model 'sales': deployments 'prod' and 'staging' target the same resource '${BQ_TARGET}'; each deployment must target a distinct resource`,
+    );
+
+    expect(() => load(GOOGLE, {
+      name: 'sales',
+      deployments: [
+        { name: 'prod', target: '   ' },
+      ],
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    })).toThrow('Too small: expected string to have >=1 characters');
+  });
+
+  test('setting both deployment_target and deployments is rejected even when allowLegacyBareSource is true', () => {
+    for (const allowLegacyBareSource of [false, true]) {
+      expect(() => load(GOOGLE, {
+        name: 'sales',
+        deployment_target: BQ_TARGET,
+        deployments: [{ name: 'prod', target: SPANNER_TARGET }],
+        datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+      }, { allowLegacyBareSource })).toThrow(
+        "model 'sales': set either 'deployments' or 'deployment_target', not both.",
+      );
+    }
+  });
+
+  test('deployment_target and deployments are rejected in vanilla, and deployment_target in Google flavor', () => {
+    expect(() => load(GOOGLE, {
+      name: 'sales',
+      deployment_target: BQ_TARGET,
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    })).toThrow("model 'sales': 'deployment_target' is no longer supported; migrate to the named 'deployments' list");
+
+    expect(() => load(VANILLA, {
+      name: 'sales',
+      deployment_target: BQ_TARGET,
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    })).toThrow(
+      "model 'sales': 'deployment_target' is not in the open format ('0.2.0.dev0'); set version: '0.2.0.dev0/google' and use 'deployments:'",
+    );
+
+    expect(() => load(VANILLA, {
+      name: 'sales',
+      deployments: [{ name: 'prod', target: BQ_TARGET }],
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    })).toThrow(
+      "model 'sales': 'deployments' is not in the open format ('0.2.0.dev0'); set version: '0.2.0.dev0/google' and use 'deployments:'",
+    );
+  });
+
+  test('an inline profiles key in a Google-flavor document is rejected, naming the sidecar file', () => {
+    expect(() => load(GOOGLE, {
+      name: 'sales',
+      profiles: {
+        bq: { datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders' }] },
+      },
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    })).toThrow(
+      "model 'sales': inline 'profiles' are not supported in a '0.2.0.dev0/google' document; write each binding profile in its own sidecar file 'sales.profile.<name>.yaml'.",
+    );
+  });
+});
+
 

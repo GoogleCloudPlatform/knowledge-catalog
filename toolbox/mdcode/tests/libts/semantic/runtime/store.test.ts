@@ -180,7 +180,8 @@ describe('a model that declares more than one deployment target', () => {
          expect('error' in store).toBe(true);
          if (!('error' in store)) return;
          expect(store.error).toContain('2 Spanner deployment targets');
-         expect(store.error).toContain('Give each its own profile.');
+         expect(store.error).toContain("in 'deployments'");
+         expect(store.error).toContain('the runtime uses exactly one deployment for now.');
        });
 
   // Ambiguity is about ROLE, not about backend. Spanner alongside AlloyDB is
@@ -194,7 +195,8 @@ describe('a model that declares more than one deployment target', () => {
     if (!('error' in store)) return;
     expect(store.error).toContain('1 Spanner and 1 AlloyDB');
     expect(store.error).toContain('two operational backends');
-    expect(store.error).toContain('Give each its own profile.');
+    expect(store.error).toContain("in 'deployments'");
+    expect(store.error).toContain('the runtime uses exactly one deployment for now.');
   });
 
   test('AlloyDB alongside BigQuery resolves to the AlloyDB store', () => {

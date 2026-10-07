@@ -154,10 +154,17 @@ describe('validatePushRequirements', () => {
         expect(validatePushRequirements([loaded(m)]).length).toBe(1);
       });
 
-  test('targetOptional ignores the deployment target entirely (KC-only)', () => {
+  test('targetOptional ignores the deployment target count and kind (KC-only), but still rejects duplicate targets', () => {
     // A KC-only push deploys no graph, so its deployment target is irrelevant:
-    // more than one target -- and even a single malformed one -- is accepted,
-    // where a graph push rejects both. (Zero targets is covered above.)
+    // more than one distinct target -- and even a single malformed one -- is
+    // accepted, where a graph push rejects both. (Zero targets is covered
+    // above.) A repeated target URI is still rejected so a vanilla file obeys
+    // the same uniqueness rule as `deployments:`.
+    const dup = model({}, [googleExt([BQ_TARGET, BQ_TARGET])]);
+    for (const targetOptional of [false, true]) {
+      const errs = validatePushRequirements([loaded(dup)], {targetOptional});
+      expect(errs.some(e => e.includes(`duplicate deployment target '${BQ_TARGET}'`))).toBe(true);
+    }
     const other =
         '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
     const many = model({}, [googleExt([BQ_TARGET, other])]);

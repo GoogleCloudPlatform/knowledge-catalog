@@ -125,6 +125,27 @@ describe('serialized document structure', () => {
     expect(relDoc.from_columns).toEqual(rel.source.columns);
     expect(relDoc.to_columns).toEqual(rel.destination.columns);
   });
+
+  test('the serializer keeps a deployment profile and prints no warning for the GOOGLE target block', () => {
+    const target = '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+    const withProfile: SemanticModel = {
+      name: 'sales',
+      deployments: [{name: 'staging', target, profile: 'spanner_binding'}],
+      customExtensions: [{
+        vendorName: 'GOOGLE',
+        data: JSON.stringify({deploymentTargets: [target]}),
+      }],
+      entities: [{name: 'orders', dataSource: 'p.d.orders', authoredSource: 'bigquery:p.d.orders', keys: ['id'], fields: []}],
+      relationships: [],
+      metrics: [],
+    };
+    const {yaml: text, warnings} = serializeModel(withProfile);
+    expect(warnings).toEqual([]);
+    const parsed = yaml.parse(text);
+    expect(parsed.semantic_model[0].deployments).toEqual([
+      {name: 'staging', target, profile: 'spanner_binding'},
+    ]);
+  });
 });
 
 

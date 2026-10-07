@@ -1,10 +1,10 @@
 // Reads a model's GOOGLE deployment-target extension and classifies each
 // declared target URI.
 //
-// A semantic model names where it deploys with `deploymentTargets` in a GOOGLE
-// `custom_extensions` block (the loader folds a model-level
-// `deployment_target:` key into the same block). Three destination types are
-// recognized here, each an AIP-122 resource name:
+// A semantic model names where it deploys with `deployments:` (which the loader
+// folds into `deploymentTargets` in a GOOGLE `custom_extensions` block, or
+// carries directly from a vanilla document's GOOGLE block). Three destination
+// types are recognized here, each an AIP-122 resource name:
 //
 //   BigQuery Graph:
 //     //bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>

@@ -51,6 +51,18 @@ export function validatePushRequirements(
       continue;
     }
 
+    const seenUris = new Set<string>();
+    for (const uri of deployInfo.uris) {
+      if (seenUris.has(uri)) {
+        errors.push(
+            `model '${model.name}' (${document}) declares duplicate ` +
+            `deployment target '${uri}'; each deployment must target a ` +
+            `distinct resource.`);
+        break;
+      }
+      seenUris.add(uri);
+    }
+
     // A graph push must declare exactly one deployment target -- a single
     // BigQuery Graph OR Spanner Graph URI (we do not support zero or several
     // graphs per model). The target's host selects which deploy leg runs.
@@ -69,21 +81,22 @@ export function validatePushRequirements(
         errors.push(
             `model '${model.name}' (${document}) declares ${
                 deployInfo.uris
-                    .length} deploymentTargets; exactly one BigQuery ` +
-            `Graph or Spanner Graph target is required under its GOOGLE ` +
-            `custom_extension.`);
+                    .length} deployments; push uses ` +
+            `exactly one deployment for now, with a BigQuery Graph or ` +
+            `Spanner Graph target under 'deployments'.`);
       } else if (deployInfo.alloyDb.length) {
         // Parseable, supported, and for the other command. AlloyDB has no
         // property-graph DDL, so there is no graph here for a push to deploy
-        // -- which makes this a profile pointed at the wrong verb rather than
-        // a URI to correct, and the message says which verb it is for.
+        // -- which makes this a deployment pointed at the wrong verb rather
+        // than a URI to correct, and the message says which verb it is for.
         errors.push(
             `model '${model.name}' (${document}) deploymentTarget '${
                 deployInfo.alloyDb[0].uri}' is an AlloyDB database, which a ` +
             `model runs against rather than deploys to; AlloyDB has no ` +
-            `property graph for a push to publish. Push under a profile ` +
-            `whose target is a BigQuery or Spanner Graph, and use this one ` +
-            `to run actions against.`);
+            `property graph for a push to publish. Declare a BigQuery or ` +
+            `Spanner Graph target under 'deployments' (push uses exactly one ` +
+            `deployment for now), or pass --no-profile to publish to ` +
+            `Knowledge Catalog only.`);
       } else if (deployInfo.bigQuery.length + deployInfo.spanner.length === 0) {
         // The single target is present but is not a supported graph URI.
         errors.push(

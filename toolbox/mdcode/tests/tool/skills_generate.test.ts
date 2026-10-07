@@ -24,7 +24,9 @@ function modelText(name: string, action: string): string {
 semantic_model:
   - name: ${name}
     description: Orders and what they are made of.
-    deployment_target: ${SPANNER}/databases/commerce/propertyGraphs/commerce
+    deployments:
+      - name: prod
+        target: ${SPANNER}/databases/commerce/propertyGraphs/commerce
     entities:
       - name: Order
         source: ${SPANNER}/databases/commerce/tables/Orders

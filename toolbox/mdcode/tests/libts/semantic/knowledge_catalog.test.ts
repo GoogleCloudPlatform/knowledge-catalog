@@ -329,6 +329,12 @@ describe('entity dataSource maps to a resource path', () => {
   test('an under-qualified reference is kept verbatim', () => {
     expect(resources('ds.tbl')).toEqual(['ds.tbl']);
   });
+  test('a source containing / or : is returned unchanged', () => {
+    const spUri = '//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/Orders';
+    const mysqlCat = 'mysql:inst.shop.payments';
+    expect(resources(spUri)).toEqual([spUri]);
+    expect(resources(mysqlCat)).toEqual([mysqlCat]);
+  });
 });
 
 
@@ -435,12 +441,14 @@ describe('model-level structure', () => {
       });
 
   test(
-      'a model targeting both BigQuery and Spanner records both URIs, BigQuery first',
+      'a model targeting Spanner, BigQuery, and AlloyDB records all three URIs in declaration order',
       () => {
         const bqUri =
             '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
         const spannerUri =
             '//spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g';
+        const alloyUri =
+            '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/db';
         const model: SemanticModel = {
           name: 'm',
           relationships: [],
@@ -448,13 +456,13 @@ describe('model-level structure', () => {
           entities: [{name: 'e', dataSource: 'p.d.t', keys: ['k'], fields: []}],
           customExtensions: [{
             vendorName: 'GOOGLE',
-            data: JSON.stringify({deploymentTargets: [spannerUri, bqUri]}),
+            data: JSON.stringify({deploymentTargets: [spannerUri, bqUri, alloyUri]}),
           }],
         };
         const {entries} = generateCatalogResources(model, OPTS);
         const anchor = entries[0];
         expect(anchor.aspects!['dataplex-types.global.semantic-model'].data)
-            .toEqual({deploymentTargets: [bqUri, spannerUri]});
+            .toEqual({deploymentTargets: [spannerUri, bqUri, alloyUri]});
       });
 
   test('the anchor is emitted first and is the parent of every child', () => {

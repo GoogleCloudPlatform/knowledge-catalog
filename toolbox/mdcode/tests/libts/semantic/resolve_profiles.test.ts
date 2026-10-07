@@ -110,6 +110,26 @@ describe('mergeProfile overlays physical bindings by name', () => {
     expect(modelOf(doc).deployment_target).toBe(GRAPH);
   });
 
+  test('drops model deployments when a legacy profile sets deployment_target, and keeps them when it does not', () => {
+    const deployments = [{
+      name: 'prod',
+      target: '//spanner.googleapis.com/projects/p/instances/i/databases/d/propertyGraphs/commerce',
+    }];
+    const logical = logicalDoc();
+    modelOf(logical).deployments = deployments;
+    const {doc, error} = mergeProfile(logical, analyticalDoc(), 'analytical');
+    expect(error).toBeUndefined();
+    expect(modelOf(doc).deployment_target).toBe(GRAPH);
+    expect(modelOf(doc).deployments).toBeUndefined();
+
+    const noTargetProfile = analyticalDoc();
+    delete modelOf(noTargetProfile).deployment_target;
+    const kept = mergeProfile(logical, noTargetProfile, 'analytical');
+    expect(kept.error).toBeUndefined();
+    expect(modelOf(kept.doc).deployment_target).toBeUndefined();
+    expect(modelOf(kept.doc).deployments).toEqual(deployments);
+  });
+
   test('a field the profile does not bind has no column', () => {
     // availableCredit is present in the profile but carries no expression, so
     // the merge leaves it unbound (a field is unbound exactly when it has no

@@ -48,11 +48,10 @@ export interface CustomExtension {
  * A semantic model: a graph of entities (nodes) connected by relationships
  * (edges), with model-level metrics defined over them.
  *
- * The IR is primarily semantics. The loader reads a model's deployment target
- * from `deployment_target:`, or from a vanilla document's model-level GOOGLE
- * `custom_extensions` block, which rides along verbatim in `customExtensions`
- * for the consumer that acts on it. `deployments` holds named targets; the
- * loader does not fill it yet.
+ * The IR is primarily semantics. The loader reads a model's named
+ * `deployments:` list onto `deployments` and folds its target URIs into a
+ * model-level GOOGLE `custom_extensions` block (alongside any authored
+ * `custom_extensions` on a vanilla document) for the consumers that read it.
  */
 export interface SemanticModel {
   name: string;

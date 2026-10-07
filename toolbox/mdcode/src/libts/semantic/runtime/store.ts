@@ -160,22 +160,23 @@ export function resolveStore(model: SemanticModel): Store|{error: string} {
             counted.join(' and ')})` :
         `${counted[0]} deployment targets`;
     return {
-      error: `Model '${model.name}' declares ${what} under this profile, so ` +
-          `which store it runs against is ambiguous. Give each its own ` +
-          `profile.`,
+      error: `Model '${model.name}' declares ${what} in 'deployments', so ` +
+          `which store it runs against is ambiguous; the runtime uses ` +
+          `exactly one deployment for now.`,
     };
   }
   if (!declared) {
     return {
-      error: `Model '${model.name}' declares no deployment target under this ` +
-          `profile, so there is no store to run against` +
+      error: `Model '${model.name}' declares no deployment target in ` +
+          `'deployments', so there is no store to run against` +
           (malformed.length ?
                ` (it declares ${malformed.length} target ${
                    malformed.length === 1 ? 'URI' :
                                             'URIs'} that name no supported ` +
                    `destination: ${malformed.join(', ')})` :
                '') +
-          `. Select a profile whose deployment target names a database.`,
+          `. Declare one deployment in 'deployments' whose target names ` +
+          `a database (the runtime uses exactly one deployment for now).`,
     };
   }
 

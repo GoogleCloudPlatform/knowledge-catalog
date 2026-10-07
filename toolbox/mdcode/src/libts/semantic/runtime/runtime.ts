@@ -20,7 +20,7 @@ import {CatalogSnapshot} from '../../snapshot';
 import {Sources} from '../../source';
 import {SemanticModelSource} from '../../sources/semantic-model';
 import {SemanticModel} from '../ir';
-import {loadSemanticModels} from '../loader';
+import {deploymentProfileError, loadSemanticModels} from '../loader';
 import {resolveInheritance} from '../resolve_inheritance';
 import {applyProfileExclusions, DEFAULT_PROFILE, isProfileFileForm, mergeProfileOntoDoc, ProfileExclusion} from '../resolve_profiles';
 
@@ -156,6 +156,8 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   });
   if (loaded.error) return {error: loaded.error};
   for (const w of loaded.warnings) warn(`Warning: ${w}`);
+  const depProfileErr = deploymentProfileError(loaded.models);
+  if (depProfileErr) return {error: depProfileErr};
 
   // Inheritance is resolved for the same reason both push legs resolve it: an
   // inherited field is a field, and every reader downstream reads
