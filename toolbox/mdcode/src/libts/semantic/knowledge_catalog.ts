@@ -353,7 +353,7 @@ export function generateCatalogResources(
   const bindingLinks = opts.bigQueryEntries ?
       bindingLinksFor(
           names, model, physical, entityEntryName, opts.bigQueryEntries,
-          warnings) :
+          opts.location, warnings) :
       undefined;
 
   return {
@@ -852,11 +852,9 @@ function bigQueryEntryName(
 }
 
 /**
- * The `@bigquery` entry of a property graph's node label.
- *
- * TODO(Phase E): this `propertyGraphs/<g>/nodes/<Label>` naming is unverified;
- * confirm it live against kc-demo-349204. Until then a link to it that the API
- * refuses is a push warning, never an error.
+ * The `@bigquery` entry of a property graph's node label. Dataplex indexes each
+ * node table of a graph as a `bigquery-graph-node` entry under the graph's own
+ * entry, named by its label.
  */
 export function graphNodeEntryName(
     graph: string, label: string, locator: BigQueryEntryLocator): string|
@@ -893,13 +891,20 @@ function fnv(s: string): string {
  * or when no view is generated) and one to its graph node entry. Each is a
  * JOIN on the entity's key against the physical key columns. A target whose
  * dataset the locator does not know is skipped with a warning.
+ *
+ * A link lives in the model's entry group and may reference only entries of
+ * that region: Dataplex refuses a `global` link to a `us` BigQuery entry, and a
+ * `us` link to an entry of a `global` entry group. So a target in another
+ * region than the entry group (`location`) is skipped, with one warning per
+ * region that says where to publish the model instead.
  */
 function bindingLinksFor(
     names: Namer, model: SemanticModel, physical: Map<string, EntityPhysical>,
     entityEntryName: Map<string, string>, locator: BigQueryEntryLocator,
-    warnings: string[]): EntryLink[] {
+    location: string, warnings: string[]): EntryLink[] {
   const links: EntryLink[] = [];
   const seenIds = new Set<string>();
+  const elsewhere = new Map<string, number>();  // region -> links skipped
   for (const [entityName, phys] of physical) {
     const entity = entityByName(model, entityName);
     const from = entityEntryName.get(entityName);
@@ -931,6 +936,11 @@ function bindingLinksFor(
       const id = bindingLinkId(model.name, kind, entityName);
       if (seenIds.has(id)) return;
       seenIds.add(id);
+      const region = to.match(/\/locations\/([^/]+)\//)?.[1] ?? '';
+      if (region !== location.toLowerCase()) {
+        elsewhere.set(region, (elsewhere.get(region) ?? 0) + 1);
+        return;
+      }
       links.push({
         name: names.entryLink(id),
         entryLinkType: names.typeName('entryLink', 'schema-join'),
@@ -952,6 +962,14 @@ function bindingLinksFor(
            phys.graph, isViewCols(phys) ? viewCols : keys,
            `graph node ${phys.graph}/${phys.graphNode}`);
     }
+  }
+  for (const [region, n] of elsewhere) {
+    warnings.push(
+        `${n} binding link${n === 1 ? '' : 's'} skipped: the entry group is ` +
+        `in '${location}' and the BigQuery assets are in '${region}', and an ` +
+        `entry link can reference only entries of its own region. Publish the ` +
+        `model to an entry group in '${region}' to link its entities to their ` +
+        `views and graph nodes.`);
   }
   return links;
 }

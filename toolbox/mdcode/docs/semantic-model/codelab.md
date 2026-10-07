@@ -706,7 +706,8 @@ the push you just ran left it everything it needs in Knowledge Catalog: the
 semantic entries, their annotation aspects (synonyms, examples, field-level
 `ai_context`, expressions, binding and hydration — provisioned by `kcmd init`),
 and binding links from each entity to its BigQuery node view and graph node
-entry (see
+entry. Those links need the entry group in the dataset's location (`us` for a
+`US` dataset); with `LOCATION=global` push skips them and says so (see
 [Reference → What gets created in Knowledge Catalog](reference.md#what-gets-created-in-knowledge-catalog)).
 
 A generic agent skill, `semantic-navigator`, follows one protocol for any model

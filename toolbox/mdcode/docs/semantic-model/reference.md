@@ -846,6 +846,13 @@ only once BigQuery has created the view or graph and Dataplex has indexed it,
 so a refused binding link is a warning, not a failed push; the next push writes
 it. Binding links an entity no longer has are deleted on push.
 
+An entry link can reference only entries of its own region, and a `@bigquery`
+entry lives in its dataset's location. Binding links therefore need the model's
+entry group in the same location as the data — `scope:
+semantic-model.<project>.us.<entry_group>` for datasets in `US`. With the entry
+group anywhere else (`global` included), push writes none and says so in one
+warning.
+
 ### Glossary definition links
 
 `kcmd glossary push` links each term to the BigQuery table column it names and

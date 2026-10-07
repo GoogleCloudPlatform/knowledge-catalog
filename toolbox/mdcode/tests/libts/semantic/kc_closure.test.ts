@@ -524,6 +524,40 @@ describe('K3: binding links', () => {
         .toBe(true);
   });
 
+  // Dataplex refuses an entry link that references an entry of another region
+  // (a `global` link to a `us` BigQuery entry, and a `us` link to an entry of a
+  // `global` entry group), so none is emitted: one warning names the fix.
+  test('an entry group in another region than the data: none, one warning',
+       () => {
+         const r = generateCatalogResources(shop(), {
+           ...OPTS,
+           location: 'global',
+           customAspects: ALL,
+           bigQueryEntries: LOCATOR,
+         });
+         expect(r.bindingLinks).toEqual([]);
+         const skipped = r.warnings.filter(w => /binding links? skipped/.test(w));
+         expect(skipped).toHaveLength(1);
+         expect(skipped[0]).toStartWith(
+             `${res.bindingLinks!.length} binding links skipped`);
+         expect(skipped[0]).toContain(`in 'global'`);
+         expect(skipped[0]).toContain(`in 'us'`);
+       });
+
+  test('push of such a model writes none and still succeeds', async () => {
+    const {links} = fakeCatalog();
+    const r = await deployKnowledgeCatalog(loaded(shop()), CTX, {
+      ...OPTS,
+      location: 'global',
+      entryCreateTries: 1,
+      customAspects: ALL,
+      bigQueryEntries: LOCATOR,
+    });
+    expect(r.success).toBe(true);
+    expect(r.bound).toBe(0);
+    expect([...links.keys()].some(n => n.includes('-bind-'))).toBe(false);
+  });
+
   test('push writes them non-fatally and reconciles stale ones', async () => {
     const {links} = fakeCatalog();
     const o = {

@@ -262,7 +262,10 @@ agree on every structural row and differ only where a Spanner target has no
     - a relationship's `custom_extensions` is not persisted (see ⁹);
     - binding links fail (with a warning, not an error) until BigQuery has
       indexed the `@bigquery` entries of freshly created views — re-push to
-      add them.
+      add them;
+    - binding links need the entry group in the datasets' location (an entry
+      link references only entries of its own region); elsewhere, `global`
+      included, push skips them with one warning.
 
 ## What an import keeps (proposed)
 
