@@ -24,6 +24,7 @@ import {lowerDerivedRelationships} from './derived_relationships';
 import {GeneratedView} from './generated_views';
 import {AiContext, Association, Entity, Field, fieldBinding, inverseEdgeNames, isTimeDimension, Metric, Relationship, relationshipAncestors, SemanticModel,} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
+import {sharedAbstractLabelFields} from './shared_labels';
 import {referencedEntityNames, rewriteFieldRefs, stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
 import {entityTrailers, unitTrailer} from './units_history';
@@ -227,12 +228,18 @@ export function generatePropertyGraph(
   const labelByName =
       new Map(entities.filter(e => e.abstract || !skipped.has(e.name))
                   .map(e => [e.name, e]));
+  // An abstract label is rendered from each descendant's own binding, so it can
+  // carry only the inherited fields every descendant binds (see
+  // shared_labels.ts).
+  const abstractLabelFields =
+      sharedAbstractLabelFields(validEntities, labelByName, warnings);
 
   const nodeTables = validEntities.map(
       entity => renderNodeTable(
           entity, loweringByEntity.get(entity.name)?.derivedProperties ?? [],
           metricsByEntity.get(entity.name) ?? [], labelByName,
-          ancestorsUsed.has(entity.name), opts, warnings));
+          abstractLabelFields, ancestorsUsed.has(entity.name), opts,
+          warnings));
 
   const entitiesByName = new Map(validEntities.map(e => [e.name, e]));
   // Relationship inheritance: an ABSTRACT relationship forms no edge table (it
@@ -701,7 +708,8 @@ function referencedEntities(
 
 function renderNodeTable(
     entity: Entity, derivedProperties: string[], measures: string[],
-    labelByName: Map<string, Entity>, isSupertype: boolean,
+    labelByName: Map<string, Entity>,
+    abstractLabelFields: Map<string, Set<string>>, isSupertype: boolean,
     opts: GenerateOptions, warnings: string[]): string {
   const table = qualifyTable(
       entity.dataSource, opts, warnings, `entity '${entity.name}'`);
@@ -866,12 +874,14 @@ function renderNodeTable(
     let signature: string[];
     if (ancestor.abstract) {
       // Render each inherited field from THIS subtype's own binding, keyed by
-      // the abstract ancestor's field names. Skip any the subtype leaves
-      // unbound so the block matches the DEFAULT LABEL (which lists only bound
-      // fields); a profile that binds the subtype but not an inherited field
-      // simply does not expose that property under the shared label.
+      // the abstract ancestor's field names, limited to the fields EVERY
+      // descendant carrying this label binds: a label must expose the same
+      // properties on every table that binds it. A field this subtype binds
+      // but a sibling does not stays on this node's DEFAULT LABEL only.
+      const shared = abstractLabelFields.get(ancestorName);
       signature = [];
       for (const af of ancestor.fields) {
+        if (!shared?.has(af.name)) continue;
         const child = boundFields.find(cf => cf.name === af.name);
         if (child) signature.push(renderFieldProperty(child, entity.name));
       }
