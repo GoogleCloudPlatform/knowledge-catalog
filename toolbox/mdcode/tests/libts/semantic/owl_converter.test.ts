@@ -670,6 +670,118 @@ describe('keys and edge binding', () => {
         .toBe(`A company's registered name.`);
   });
 
+  // Translations of one sentence are the same description written twice, not
+  // two descriptions. Joining them produces 'A customer. Un client.', and
+  // counting them makes a single declaration look like a re-declared one.
+  test('language-tagged descriptions pick one language, never concatenate',
+       () => {
+         const ttl = `${PREFIXES}
+      ex:Customer a owl:Class ;
+          rdfs:comment "A customer."@en , "Un client."@fr .
+    `;
+         expect(loadOwl(ttl).entities[0].description).toBe('A customer.');
+       });
+
+  // Untagged wins over any tag: it is the overwhelmingly common case, and a
+  // file that mixes the two means the untagged one to be canonical.
+  test('an untagged description wins over a tagged one', () => {
+    const ttl = `${PREFIXES}
+      ex:Customer a owl:Class ;
+          rdfs:comment "Canonical." , "Traduit."@fr .
+    `;
+    expect(loadOwl(ttl).entities[0].description).toBe('Canonical.');
+  });
+
+  // Per-domain pairing needs one description per domain. With a single
+  // description there is no way to tell whether it describes the property as a
+  // whole or just the declaration that carried it, so it goes to every edge --
+  // but never silently, because a description reaches an agent as fact.
+  test('one description across several domains is broadcast with a warning',
+       () => {
+         const ttl = `${PREFIXES}
+      ex:Person a owl:Class . ex:Company a owl:Class . ex:Asset a owl:Class .
+      ex:owns a owl:ObjectProperty ; rdfs:domain ex:Person ;
+          rdfs:range ex:Asset .
+      ex:owns a owl:ObjectProperty ; rdfs:domain ex:Company ;
+          rdfs:range ex:Asset ;
+          rdfs:comment "What a company owns." .
+    `;
+         const {warnings} = convertOwlToOsi(ttl, 'x');
+         expect(warnings.some(
+                    w => w.includes(`'owns'`) &&
+                        w.includes('cannot be matched up one to one')))
+             .toBe(true);
+       });
+
+  // Nothing to pair: one domain, so several descriptions all describe it.
+  test('several descriptions on a single-domain property do not warn', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class .
+      ex:name a owl:DatatypeProperty ; rdfs:domain ex:Person ;
+          rdfs:range xsd:string ;
+          rdfs:comment "One." , "Two." .
+    `;
+    const {warnings} = convertOwlToOsi(ttl, 'x');
+    expect(warnings.some(w => w.includes('matched up one to one'))).toBe(false);
+    expect(loadOwl(ttl).entities[0].fields[0].description).toBe('One. Two.');
+  });
+
+  // A typo'd domain must not drag the one real edge into a suffixed name: the
+  // suffix exists to disambiguate edges that actually exist.
+  test('a non-class domain does not rename the single real edge', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class . ex:Asset a owl:Class .
+      ex:owns a owl:ObjectProperty ;
+          rdfs:domain ex:Person ; rdfs:domain ex:Ghost ;
+          rdfs:range ex:Asset .
+    `;
+    expect(loadOwl(ttl).relationships.map(r => r.name)).toEqual(['owns']);
+  });
+
+  // The range is a property-level fact, so a bad one is reported once, not
+  // once per domain.
+  test('a non-class range warns once, not per domain', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class . ex:Company a owl:Class .
+      ex:owns a owl:ObjectProperty ;
+          rdfs:domain ex:Person ; rdfs:domain ex:Company ;
+          rdfs:range ex:Unknown .
+    `;
+    const {warnings} = convertOwlToOsi(ttl, 'x');
+    expect(warnings.filter(w => w.includes(`range 'Unknown'`)).length).toBe(1);
+    expect(loadOwl(ttl).relationships).toEqual([]);
+  });
+
+  // Re-declaring a property repeats its rdfs:label verbatim, and every label
+  // after the first becomes a synonym -- N copies of one name, which describes
+  // every edge equally. That is not worth a warning; genuinely different
+  // per-declaration wording is.
+  test('repeated identical labels do not trigger the broadcast warning', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class . ex:Company a owl:Class . ex:Asset a owl:Class .
+      ex:owns a owl:ObjectProperty ; rdfs:domain ex:Person ;
+          rdfs:range ex:Asset ; rdfs:label "owns thing" .
+      ex:owns a owl:ObjectProperty ; rdfs:domain ex:Company ;
+          rdfs:range ex:Asset ; rdfs:label "owns thing" .
+    `;
+    const {warnings} = convertOwlToOsi(ttl, 'x');
+    expect(warnings.some(w => w.includes('synonyms/examples'))).toBe(false);
+  });
+
+  test('divergent per-declaration examples are reported as broadcast', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class . ex:Company a owl:Class . ex:Asset a owl:Class .
+      ex:owns a owl:ObjectProperty ; rdfs:domain ex:Person ;
+          rdfs:range ex:Asset ; skos:example "What does Ann own?" .
+      ex:owns a owl:ObjectProperty ; rdfs:domain ex:Company ;
+          rdfs:range ex:Asset ; skos:example "What does Acme own?" .
+    `;
+    const {warnings} = convertOwlToOsi(ttl, 'x');
+    expect(warnings.some(
+               w => w.includes(`'owns'`) && w.includes('synonyms/examples')))
+        .toBe(true);
+  });
+
   // An owl:hasKey column that has no datatype property on the class
   // (undeclared, or declared only on another class) would name a phantom
   // primary_key column that only errors later at graph generation. Because a

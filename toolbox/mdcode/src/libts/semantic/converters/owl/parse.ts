@@ -10,7 +10,7 @@
 // their `rdf:type` triple is first seen in the document, so the generated OSI
 // is stable across runs (and matches its golden).
 
-import {Parser} from 'n3';
+import {Parser, Quad} from 'n3';
 
 import {OwlClass, OwlCommonAnnotations, OwlDatatypeProperty, OwlModel, OwlObjectProperty, OwlOntology,} from './model';
 
@@ -179,11 +179,13 @@ interface Annotations {
   // Descriptions accumulate as lists, like synonyms and examples. One RDF
   // subject can carry several -- a property IRI re-declared once per class
   // contributes one apiece -- and which applies where is a pairing only the
-  // mapper can make. A single slot would discard all but one at random.
-  rdfsComments: string[];
-  skosDefinitions: string[];
-  dctermsDescriptions: string[];
-  dcDescriptions: string[];
+  // mapper can make. A single slot would discard all but one at random. The
+  // language tag rides along: translations of one sentence must never be
+  // mistaken for several sentences (see pickLanguage).
+  rdfsComments: LangLiteral[];
+  skosDefinitions: LangLiteral[];
+  dctermsDescriptions: LangLiteral[];
+  dcDescriptions: LangLiteral[];
   domains: string[];
   ranges: string[];  // raw range IRIs; the mapper maps xsd:* -> datatype
   versionInfo?: string;
@@ -228,6 +230,38 @@ function emptyAnnotations(): Annotations {
   };
 }
 
+// A literal with the language tag it was written with ('' when untagged).
+interface LangLiteral {
+  value: string;
+  language: string;
+}
+
+function langLiteral(object: Quad['object']): LangLiteral {
+  return {
+    value: object.value,
+    language: object.termType === 'Literal' ? object.language : '',
+  };
+}
+
+// Narrows a term's descriptions to ONE language before anything downstream
+// treats their count as meaningful. Translations of a single sentence are the
+// same description written twice, not two descriptions: joining them produces
+// 'A customer. Un client.', and counting them makes a one-declaration property
+// look like a re-declared one. Untagged wins (the overwhelmingly common case),
+// then English, then whichever language appears first.
+function pickLanguage(entries: LangLiteral[]): string[] {
+  if (!entries.length) return [];
+  const languages = dedupeStrings(entries.map(e => e.language));
+  if (languages.length === 1) return entries.map(e => e.value);
+  const chosen = languages.find(l => l === '') ??
+      languages.find(l => l === 'en' || l.startsWith('en-')) ?? languages[0];
+  return entries.filter(e => e.language === chosen).map(e => e.value);
+}
+
+function dedupeStrings(items: string[]): string[] {
+  return [...new Set(items)];
+}
+
 // Every description the term carries, in document order, taken from the most
 // specific predicate that supplied any: rdfs:comment, then skos:definition,
 // then dcterms:description, then dc:description. The precedence picks the
@@ -241,7 +275,7 @@ function descriptionsOf(a: Annotations): string[] {
     a.dcDescriptions,
   ];
   for (const list of byPrecedence) {
-    if (list.length) return list;
+    if (list.length) return pickLanguage(list);
   }
   return [];
 }
@@ -448,16 +482,16 @@ export function parseOwl(turtle: string): OwlModel {
         a.examples.push(q.object.value);
         break;
       case RDFS_COMMENT:
-        a.rdfsComments.push(q.object.value);
+        a.rdfsComments.push(langLiteral(q.object));
         break;
       case SKOS_DEFINITION:
-        a.skosDefinitions.push(q.object.value);
+        a.skosDefinitions.push(langLiteral(q.object));
         break;
       case DCTERMS_DESCRIPTION:
-        a.dctermsDescriptions.push(q.object.value);
+        a.dctermsDescriptions.push(langLiteral(q.object));
         break;
       case DC_DESCRIPTION:
-        a.dcDescriptions.push(q.object.value);
+        a.dcDescriptions.push(langLiteral(q.object));
         break;
       case RDFS_DOMAIN:
         a.domains.push(localName(q.object.value));

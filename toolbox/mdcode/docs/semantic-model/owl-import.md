@@ -282,10 +282,16 @@ either way: `rdfs:label "has client"` becomes an `ai_context` synonym on every
 edge.
 
 Each edge keeps the comment written beside its own declaration. RDF records no
-link between a domain and a comment, so that pairing is by document order,
-which holds when there is one comment per domain. When the counts differ the
-order cannot be trusted: every edge then gets every comment, and the import
-says so. That is noisier, but it never puts the wrong sentence on an edge.
+link between a domain and a comment, so that pairing is by document order, and
+it only holds when there is exactly one comment per domain. When the counts
+differ the order cannot be trusted: every edge then gets every comment, and the
+import warns. Comment every declaration, or none, and the pairing is exact.
+
+Two limits are worth knowing. Labels, synonyms and `skos:example` values have
+no per-domain slot, so every edge carries all of them and the import warns when
+a property fans out. And counts can line up for the wrong reason — one
+declaration carrying two comments and a second carrying none also counts two
+against two — in which case the comments are paired wrongly and silently.
 
 A multi-domain *datatype* property behaves the same way — a field on every
 domain, each keeping its own declaration's comment.
