@@ -34,8 +34,11 @@ const GOLDEN =
 // exactly as `kcmd push --transpile` does (see src/tool/commands.ts).
 async function render(): Promise<string> {
   const text = fs.readFileSync(path.join(FIXTURES, FIXTURE), 'utf8');
-  const {models, warnings: loadWarnings} = loadModels(
-      text, {defaultProject: 'sqlgen-testing', defaultDataset: 'demo'});
+  const {models, warnings: loadWarnings} = loadModels(text, {
+    defaultProject: 'sqlgen-testing',
+    defaultDataset: 'demo',
+    allowLegacyBareSource: true,
+  });
   const {model, warnings: transpileWarnings} = await transpileModel(models[0]);
   const {ddl, warnings: genWarnings} = generatePropertyGraph(
       model, {project: 'sqlgen-testing', dataset: 'demo'});

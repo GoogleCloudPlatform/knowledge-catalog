@@ -27,6 +27,7 @@
 import * as yaml from 'yaml';
 
 import {Action, ALLOWED_DIALECTS, DialectExpression, Entity, Executor, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
+import {databaseOf} from './loader';
 import {resolveInheritance} from './resolve_inheritance';
 import {columnReferences, fieldsReadOn, isColumnName, keysCoveredByColumns} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
@@ -898,6 +899,18 @@ function connectingRelationshipKept(
 }
 
 
+// Whether a profile text is in the profile file form (a top-level profile
+// object) rather than the legacy `semantic_model:` wrapper.
+export function isProfileFileForm(text: string): boolean {
+  try {
+    const doc = yaml.parse(text, YAML_OPTIONS);
+    return !!doc && typeof doc === 'object' && !Array.isArray(doc) &&
+        (doc as any).semantic_model === undefined;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Parses a logical model document and a binding profile document, merges the
  * profile onto the model by name, and returns the merged authoring text plus
@@ -1184,69 +1197,6 @@ function profileExecutor(ex: any): Executor {
 // ---------------------------------------------------------------------------
 
 
-// The database a profile source lives in, for the one-database rule, or
-// undefined when the source is in no accepted form: a bare name, a query, a
-// graph rather than a table, a catalog name under a prefix kcmd does not
-// accept, or one with the wrong number of segments. The
-// result starts with its system, which DIALECT_OF_SYSTEM maps to the dialect
-// the source infers.
-//
-// A database is what a single query can reach: all of BigQuery, BigLake
-// included because BigQuery reads it; one Spanner, AlloyDB, Cloud SQL for
-// PostgreSQL or self-managed PostgreSQL database; one Cloud SQL for MySQL
-// instance or self-managed MySQL server; one Snowflake account; one Databricks
-// metastore. A self-managed server is named by its DNS name, so `mysql:` and
-// `postgresql:` name different systems from `cloudsql_mysql:` and
-// `cloudsql_postgresql:`. The segment counts are those of the Knowledge
-// Catalog FQN reference.
-function databaseOf(source: string): string|undefined {
-  if (/^\/\/bigquery\.googleapis\.com\/projects\/[^/]+\/datasets\/[^/]+\/tables\/[^/]+$/
-          .test(source) ||
-      /^\/\/biglake\.googleapis\.com\/projects\/[^/]+\/catalogs\/[^/]+\/namespaces\/[^/]+\/tables\/[^/]+$/
-          .test(source)) {
-    return 'bigquery';
-  }
-  let m = source.match(
-      /^\/\/spanner\.googleapis\.com\/projects\/([^/]+)\/instances\/([^/]+)\/databases\/([^/]+)\/tables\/[^/]+$/);
-  if (m) return `spanner/${m[1]}/${m[2]}/${m[3]}`;
-  // An AlloyDB database belongs to its cluster, and a table to a schema in it.
-  m = source.match(
-      /^\/\/alloydb\.googleapis\.com\/projects\/([^/]+)\/locations\/([^/]+)\/clusters\/([^/]+)\/databases\/([^/]+)\/schemas\/[^/]+\/tables\/[^/]+$/);
-  if (m) return `alloydb/${m[1]}/${m[2]}/${m[3]}/${m[4]}`;
-  m = source.match(/^(databricks:table|[a-z_]+):(.+)$/);
-  if (!m) return undefined;
-  // A subtype after the prefix, such as `graph:` in `bigquery:graph:p.d.g`,
-  // names something other than a table.
-  if (/^[a-z_]+:/.test(m[2])) return undefined;
-  const seg = catalogNameSegments(m[2]);
-  const first = (n: number) => seg.slice(0, n).join('.');
-  switch (m[1]) {
-    case 'bigquery':
-      return seg.length === 3 ? 'bigquery' : undefined;
-    case 'spanner':
-      return seg.length === 5 ? `spanner/${seg[0]}/${seg[2]}/${seg[3]}` :
-                                undefined;
-    case 'alloydb':
-      return seg.length === 6 ?
-          `alloydb/${seg[0]}/${seg[1]}/${seg[2]}/${seg[3]}` :
-          undefined;
-    case 'cloudsql_mysql':
-      return seg.length === 5 ? `cloudsql_mysql/${first(3)}` : undefined;
-    case 'mysql':
-      return seg.length === 3 ? `mysql/${first(1)}` : undefined;
-    case 'cloudsql_postgresql':
-      return seg.length === 6 ? `cloudsql_postgresql/${first(4)}` : undefined;
-    case 'postgresql':
-      return seg.length === 4 ? `postgresql/${first(2)}` : undefined;
-    case 'snowflake':
-      return seg.length === 4 ? `snowflake/${seg[0]}` : undefined;
-    case 'databricks:table':
-      return seg.length === 4 ? `databricks/${seg[0]}` : undefined;
-    default:
-      return undefined;
-  }
-}
-
 // The dialect each system's sources infer, keyed by the
 // system databaseOf puts first.
 const DIALECT_OF_SYSTEM: Record<string, string> = {
@@ -1276,36 +1226,6 @@ function runsOn(f: Field, dialect: string): boolean {
   }
   if (f.expression !== undefined) return true;
   return f.importedDialect?.toUpperCase() === dialect;
-}
-
-// A catalog name's dot-separated segments. A segment containing a reserved
-// character, such as a domain-scoped project, is wrapped in backticks, so the
-// dots inside backticks do not split.
-function catalogNameSegments(path: string): string[] {
-  const out: string[] = [];
-  let cur = '';
-  let quoted = false;
-  for (let i = 0; i < path.length; i++) {
-    const ch = path[i];
-    if (ch === '`') {
-      // A doubled backtick inside a quoted segment is a literal backtick.
-      if (quoted && path[i + 1] === '`') {
-        cur += '`';
-        i++;
-      } else {
-        quoted = !quoted;
-      }
-      continue;
-    }
-    if (ch === '.' && !quoted) {
-      out.push(cur);
-      cur = '';
-      continue;
-    }
-    cur += ch;
-  }
-  out.push(cur);
-  return out;
 }
 
 // Each text a field's or metric's expression carries, with the dialect it is

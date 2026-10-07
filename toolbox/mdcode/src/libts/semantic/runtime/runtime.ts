@@ -22,7 +22,7 @@ import {SemanticModelSource} from '../../sources/semantic-model';
 import {SemanticModel} from '../ir';
 import {loadSemanticModels} from '../loader';
 import {resolveInheritance} from '../resolve_inheritance';
-import {applyProfileExclusions, DEFAULT_PROFILE, mergeProfileOntoDoc, ProfileExclusion} from '../resolve_profiles';
+import {applyProfileExclusions, DEFAULT_PROFILE, isProfileFileForm, mergeProfileOntoDoc, ProfileExclusion} from '../resolve_profiles';
 
 import {resolveStore, Store} from './store';
 
@@ -117,7 +117,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   const docs = layout.modelDocuments();
   if (!docs.length) return {error: 'no semantic model documents found.'};
 
-  const merged: Array<{name: string; text: string}> = [];
+  const merged: Array<{name: string; text: string; allowLegacyBareSource?: boolean}> = [];
   const excludedByDoc = new Map<string, ProfileExclusion[]>();
   for (const doc of docs) {
     if (profile === DEFAULT_PROFILE) {
@@ -142,13 +142,18 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     const res = mergeProfileOntoDoc(doc.text, chosen.text, profile);
     if ('error' in res) return {error: `[${doc.name}] ${res.error}`};
     for (const w of res.warnings) warn(`Warning: [${doc.name}] ${w}`);
-    merged.push({name: doc.name, text: res.text});
+    merged.push({
+      name: doc.name,
+      text: res.text,
+      allowLegacyBareSource: !isProfileFileForm(chosen.text),
+    });
     excludedByDoc.set(doc.name, res.excluded);
   }
 
-  const loaded = loadSemanticModels(
-      merged,
-      {defaultProject: source.project ?? ctx.project, bindingOptional: true});
+  const loaded = loadSemanticModels(merged, {
+    defaultProject: source.project ?? ctx.project,
+    bindingOptional: true,
+  });
   if (loaded.error) return {error: loaded.error};
   for (const w of loaded.warnings) warn(`Warning: ${w}`);
 

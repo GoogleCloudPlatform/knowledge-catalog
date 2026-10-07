@@ -22,7 +22,7 @@ const PG =
 function model(body: string): SemanticModel {
   const loaded = loadModels(
       `version: "0.2.0.dev0/google"\nsemantic_model:\n  - name: m\n${body}`,
-      {bindingOptional: true});
+      {bindingOptional: true, allowLegacyBareSource: true});
   return loaded.models[0];
 }
 

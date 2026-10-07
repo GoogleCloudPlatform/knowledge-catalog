@@ -9,9 +9,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import {BigQueryClient} from '../../src/libts/gcp/bigquery';
 import {ApiContext} from '../../src/libts/gcp/context';
 import {CatalogManifest} from '../../src/libts/manifest';
-import {profiles} from '../../src/tool/commands';
+import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
+import {profiles, push} from '../../src/tool/commands';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
@@ -253,6 +255,48 @@ entities:
       expect(out).toContain('profile \'operational\'');
     });
   }
+
+  test(
+      'accepts a legacy wrapper profile with a bare source across profiles, push --validate-only, and createSemanticRuntimes',
+      async () => {
+        spyOn(BigQueryClient.prototype, 'query')
+            .mockResolvedValue({status: 200, result: {}});
+        fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml(undefined));
+        const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+        fs.mkdirSync(path.join(eg, 'orders.profiles'), {recursive: true});
+        fs.writeFileSync(path.join(eg, 'orders.yaml'), `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: orders_model
+    entities:
+      - name: Order
+        source: //bigquery.googleapis.com/projects/acme/datasets/dev/tables/orders
+        primary_key: [id]
+        fields:
+          - { name: id, expression: o_id }
+`);
+        fs.writeFileSync(
+            path.join(eg, 'orders.profiles', 'prod.yaml'),
+            `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: orders_model
+    deployment_target: //bigquery.googleapis.com/projects/acme/datasets/prod/propertyGraphs/orders_model
+    entities:
+      - name: Order
+        source: acme.prod.orders
+`);
+
+        expect(await profiles({profile: 'prod'})).toBe(0);
+        expect(logs.join('\n')).toContain('Order -> acme.prod.orders');
+
+        expect(await push({validateOnly: true, profile: 'prod'})).toBe(0);
+
+        const rt = await createSemanticRuntimes({path: dir, profile: 'prod', ctx: CTX});
+        expect(Array.isArray(rt)).toBe(true);
+        if (Array.isArray(rt)) {
+          expect(rt).toHaveLength(1);
+          expect(rt[0].model.entities[0].dataSource).toBe('acme.prod.orders');
+        }
+      });
 });
 
 

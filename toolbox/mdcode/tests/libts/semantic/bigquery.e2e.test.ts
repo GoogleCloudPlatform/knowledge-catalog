@@ -59,9 +59,12 @@ const CORPUS = [
 // also run generation — which now throws for a model that yields no node table.
 function loadFixture(fixture: string, load: LoadOptions = {}) {
   const text = fs.readFileSync(path.join(FIXTURES, fixture), 'utf8');
-  return loadModels(
-      text,
-      {defaultProject: 'sqlgen-testing', defaultDataset: 'demo', ...load});
+  return loadModels(text, {
+    defaultProject: 'sqlgen-testing',
+    defaultDataset: 'demo',
+    allowLegacyBareSource: true,
+    ...load,
+  });
 }
 
 // Loads a fixture file and generates its property-graph DDL in one step, so a
@@ -430,7 +433,11 @@ function buildProfile(logicalFixture: string, profile: string) {
   if (merged.error) throw new Error(merged.error);
   const loaded = loadSemanticModels(
       [{name: logicalFixture.replace(/\.yaml$/, ''), text: yaml.stringify(merged.doc)}],
-      {defaultProject: 'acme', defaultDataset: 'sales'});
+      {
+        defaultProject: 'acme',
+        defaultDataset: 'sales',
+        allowLegacyBareSource: true,
+      });
   if (loaded.error) throw new Error(loaded.error);
   const {model, report} = pruneUnavailable(loaded.models[0].model, profile);
   // Derive the generation project/dataset from the model's own resolved

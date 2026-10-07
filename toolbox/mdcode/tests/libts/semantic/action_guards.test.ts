@@ -33,36 +33,38 @@ const MCP_EXECUTOR = {
 // `guardOnFirst`. Used to check that being guarded by ONE action settles the
 // constraint for the whole model.
 function withTwoActions(guardOnFirst: string[]|undefined, constraints: any[]) {
-  return fromDocument({
-    version: '0.2.0.dev0/google',
-    semantic_model: [{
-      name: 'm',
-      datasets: [{
-        name: 'customer',
-        source: 'p.d.c',
-        primary_key: ['id'],
-        fields: [{
-          name: 'balance',
-          expression:
-              {dialects: [{dialect: 'ANSI_SQL', expression: 'balance'}]},
+  return fromDocument(
+      {
+        version: '0.2.0.dev0/google',
+        semantic_model: [{
+          name: 'm',
+          datasets: [{
+            name: 'customer',
+            source: 'p.d.c',
+            primary_key: ['id'],
+            fields: [{
+              name: 'balance',
+              expression:
+                  {dialects: [{dialect: 'ANSI_SQL', expression: 'balance'}]},
+            }],
+          }],
+          actions: [
+            {
+              name: 'PlaceOrder',
+              executor: MCP_EXECUTOR,
+              parameters: [{name: 'quantity', type: 'Integer'}],
+              ...(guardOnFirst ? {guards: guardOnFirst} : {}),
+            },
+            {
+              name: 'CancelOrder',
+              executor: MCP_EXECUTOR,
+              parameters: [{name: 'quantity', type: 'Integer'}],
+            },
+          ],
+          constraints,
         }],
-      }],
-      actions: [
-        {
-          name: 'PlaceOrder',
-          executor: MCP_EXECUTOR,
-          parameters: [{name: 'quantity', type: 'Integer'}],
-          ...(guardOnFirst ? {guards: guardOnFirst} : {}),
-        },
-        {
-          name: 'CancelOrder',
-          executor: MCP_EXECUTOR,
-          parameters: [{name: 'quantity', type: 'Integer'}],
-        },
-      ],
-      constraints,
-    }],
-  });
+      },
+      {allowLegacyBareSource: true});
 }
 
 // One entity, one action, and whatever constraints a test needs. `guards` is
@@ -70,29 +72,31 @@ function withTwoActions(guardOnFirst: string[]|undefined, constraints: any[]) {
 function withGuards(
     guards: string[]|undefined, constraints: any[] = [],
     parameters: any[] = [{name: 'quantity', type: 'Integer'}]) {
-  return fromDocument({
-    version: '0.2.0.dev0/google',
-    semantic_model: [{
-      name: 'm',
-      datasets: [{
-        name: 'customer',
-        source: 'p.d.c',
-        primary_key: ['id'],
-        fields: [{
-          name: 'balance',
-          expression:
-              {dialects: [{dialect: 'ANSI_SQL', expression: 'balance'}]},
+  return fromDocument(
+      {
+        version: '0.2.0.dev0/google',
+        semantic_model: [{
+          name: 'm',
+          datasets: [{
+            name: 'customer',
+            source: 'p.d.c',
+            primary_key: ['id'],
+            fields: [{
+              name: 'balance',
+              expression:
+                  {dialects: [{dialect: 'ANSI_SQL', expression: 'balance'}]},
+            }],
+          }],
+          actions: [{
+            name: 'PlaceOrder',
+            executor: MCP_EXECUTOR,
+            parameters,
+            ...(guards ? {guards} : {}),
+          }],
+          constraints,
         }],
-      }],
-      actions: [{
-        name: 'PlaceOrder',
-        executor: MCP_EXECUTOR,
-        parameters,
-        ...(guards ? {guards} : {}),
-      }],
-      constraints,
-    }],
-  });
+      },
+      {allowLegacyBareSource: true});
 }
 
 
@@ -122,28 +126,30 @@ describe('loader parses an action\'s guards', () => {
       'guards are rejected under vanilla Ossie, as actions themselves are',
       () => {
         expect(
-            () => fromDocument({
-              version: '0.2.0.dev0',
-              semantic_model: [{
-                name: 'm',
-                datasets: [{
-                  name: 'c',
-                  source: 'p.d.c',
-                  primary_key: ['id'],
-                  fields: [{
-                    name: 'balance',
-                    expression: {
-                      dialects: [{dialect: 'ANSI_SQL', expression: 'balance'}]
-                    },
+            () => fromDocument(
+                {
+                  version: '0.2.0.dev0',
+                  semantic_model: [{
+                    name: 'm',
+                    datasets: [{
+                      name: 'c',
+                      source: 'p.d.c',
+                      primary_key: ['id'],
+                      fields: [{
+                        name: 'balance',
+                        expression: {
+                          dialects: [{dialect: 'ANSI_SQL', expression: 'balance'}]
+                        },
+                      }],
+                    }],
+                    actions: [{
+                      name: 'PlaceOrder',
+                      executor: MCP_EXECUTOR,
+                      guards: ['C'],
+                    }],
                   }],
-                }],
-                actions: [{
-                  name: 'PlaceOrder',
-                  executor: MCP_EXECUTOR,
-                  guards: ['C'],
-                }],
-              }],
-            }))
+                },
+                {allowLegacyBareSource: true}))
             .toThrow(/actions/);
       });
 });
@@ -219,7 +225,7 @@ describe('guards survive every round trip', () => {
   const model = (() => {
     const text = fs.readFileSync(
         path.join(FIXTURES, 'actions_place_order.yaml'), 'utf8');
-    return loadModels(text).models[0];
+    return loadModels(text, {allowLegacyBareSource: true}).models[0];
   })();
 
   test(
@@ -234,9 +240,11 @@ describe('guards survive every round trip', () => {
 
   test('OSI serialize -> reload', () => {
     const {yaml} = serializeModel(model);
-    expect(loadModels(yaml).models[0].actions![0].guards).toEqual([
-      'OrderWithinCustomerCredit'
-    ]);
+    expect(
+        loadModels(yaml, {allowLegacyBareSource: true}).models[0].actions![0].guards)
+        .toEqual([
+          'OrderWithinCustomerCredit'
+        ]);
   });
 
   test('Knowledge Catalog publish -> pull', () => {

@@ -51,9 +51,12 @@ const GEN_OPTS = {
 
 function loadFixture(fixture: string, load: LoadOptions = {}) {
   const text = fs.readFileSync(path.join(FIXTURES, fixture), 'utf8');
-  return loadModels(
-      text,
-      {defaultProject: 'sqlgen-testing', defaultDataset: 'demo', ...load});
+  return loadModels(text, {
+    defaultProject: 'sqlgen-testing',
+    defaultDataset: 'demo',
+    allowLegacyBareSource: true,
+    ...load,
+  });
 }
 
 // The exact artifact a golden captures: the generated entries, then the

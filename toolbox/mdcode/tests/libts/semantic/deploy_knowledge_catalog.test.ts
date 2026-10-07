@@ -43,7 +43,8 @@ const ACTIONS_DOCS = [{name: 'actions.yaml', text: ACTIONS_DOC}];
 // (shared with the BigQuery leg). These tests author documents, so this helper
 // parses them the way commands.ts does.
 function models(docs: {name: string; text: string}[]) {
-  const r = loadSemanticModels(docs, {defaultProject: 'test-project'});
+  const r = loadSemanticModels(
+      docs, {defaultProject: 'test-project', allowLegacyBareSource: true});
   if (r.error) throw new Error(r.error);
   return r.models;
 }
@@ -84,7 +85,7 @@ semantic_model:
     metrics:
       - name: total_revenue
         expression:
-          dialects: [{ dialect: BIGQUERY, expression: SUM(orders.o_totalprice) }]
+          dialects: [{ dialect: BIGQUERY, expression: "SUM(orders.o_totalprice)" }]
 `;
 
 // entryCreateTries: 1 keeps the propagation-retry loop from sleeping in tests.
