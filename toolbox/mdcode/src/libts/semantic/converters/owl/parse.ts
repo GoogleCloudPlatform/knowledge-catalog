@@ -176,10 +176,14 @@ interface Annotations {
   label?: string;
   synonyms: string[];
   examples: string[];
-  rdfsComment?: string;
-  skosDefinition?: string;
-  dctermsDescription?: string;
-  dcDescription?: string;
+  // Descriptions accumulate as lists, like synonyms and examples. One RDF
+  // subject can carry several -- a property IRI re-declared once per class
+  // contributes one apiece -- and which applies where is a pairing only the
+  // mapper can make. A single slot would discard all but one at random.
+  rdfsComments: string[];
+  skosDefinitions: string[];
+  dctermsDescriptions: string[];
+  dcDescriptions: string[];
   domains: string[];
   ranges: string[];  // raw range IRIs; the mapper maps xsd:* -> datatype
   versionInfo?: string;
@@ -202,6 +206,10 @@ function emptyAnnotations(): Annotations {
   return {
     synonyms: [],
     examples: [],
+    rdfsComments: [],
+    skosDefinitions: [],
+    dctermsDescriptions: [],
+    dcDescriptions: [],
     domains: [],
     ranges: [],
     keyListHeads: [],
@@ -220,12 +228,30 @@ function emptyAnnotations(): Annotations {
   };
 }
 
-// The effective description: the first present of rdfs:comment,
-// skos:definition, dcterms:description, dc:description -- a fixed precedence so
-// a term with more than one carries the most specific.
+// Every description the term carries, in document order, taken from the most
+// specific predicate that supplied any: rdfs:comment, then skos:definition,
+// then dcterms:description, then dc:description. The precedence picks the
+// PREDICATE, not the individual description, so descriptions from two
+// different vocabularies are never interleaved.
+function descriptionsOf(a: Annotations): string[] {
+  const byPrecedence = [
+    a.rdfsComments,
+    a.skosDefinitions,
+    a.dctermsDescriptions,
+    a.dcDescriptions,
+  ];
+  for (const list of byPrecedence) {
+    if (list.length) return list;
+  }
+  return [];
+}
+
+// The single effective description, for terms that cannot fan out: a class, or
+// the ontology header. Several descriptions of one class all describe the same
+// thing, so they join rather than compete for one slot.
 function descriptionOf(a: Annotations): string|undefined {
-  return a.rdfsComment ?? a.skosDefinition ?? a.dctermsDescription ??
-      a.dcDescription;
+  const all = descriptionsOf(a);
+  return all.length ? all.join(' ') : undefined;
 }
 
 // The per-term carried annotations (rdfs:seeAlso / isDefinedBy, owl:deprecated
@@ -422,16 +448,16 @@ export function parseOwl(turtle: string): OwlModel {
         a.examples.push(q.object.value);
         break;
       case RDFS_COMMENT:
-        a.rdfsComment = q.object.value;
+        a.rdfsComments.push(q.object.value);
         break;
       case SKOS_DEFINITION:
-        a.skosDefinition = q.object.value;
+        a.skosDefinitions.push(q.object.value);
         break;
       case DCTERMS_DESCRIPTION:
-        a.dctermsDescription = q.object.value;
+        a.dctermsDescriptions.push(q.object.value);
         break;
       case DC_DESCRIPTION:
-        a.dcDescription = q.object.value;
+        a.dcDescriptions.push(q.object.value);
         break;
       case RDFS_DOMAIN:
         a.domains.push(localName(q.object.value));
@@ -585,7 +611,7 @@ export function parseOwl(turtle: string): OwlModel {
           domains: a.domains,
           rangeIri: a.ranges[0],
           label: a.label,
-          comment: descriptionOf(a),
+          comments: descriptionsOf(a),
           synonyms: a.synonyms,
           examples: a.examples,
           inverseFunctional: inverseFunctional.has(iri),
@@ -605,7 +631,7 @@ export function parseOwl(turtle: string): OwlModel {
           domains: a.domains,
           ranges: a.ranges.map(localName),
           label: a.label,
-          comment: descriptionOf(a),
+          comments: descriptionsOf(a),
           synonyms: a.synonyms,
           examples: a.examples,
           subPropertyOf: a.subPropertyOf,

@@ -532,10 +532,11 @@ describe('keys and edge binding', () => {
     expect(edge.source.columns).toEqual([]);
   });
 
-  // A relationship maps ONE source to ONE destination. An object property with
-  // more than one rdfs:domain (or rdfs:range) keeps the first of each and warns
-  // about the rest, rather than silently dropping the extra endpoints.
-  test('a multi-endpoint object property keeps the first and warns', () => {
+  // An object property with several rdfs:domains is one verb re-declared once
+  // per class that uses it -- the shape a class-by-class generator emits. Each
+  // domain becomes its own edge, qualified by the class it runs from, because
+  // the loader rejects duplicate relationship names outright.
+  test('a multi-domain object property becomes one edge per domain', () => {
     const ttl = `${PREFIXES}
       ex:Person a owl:Class . ex:Company a owl:Class . ex:Asset a owl:Class .
       ex:owns a owl:ObjectProperty ;
@@ -544,13 +545,129 @@ describe('keys and edge binding', () => {
     `;
     const {warnings} = convertOwlToOsi(ttl, 'x');
     const model = loadOwl(ttl);
+    expect(model.relationships.map(r => r.name)).toEqual([
+      'owns_Person',
+      'owns_Company',
+    ]);
+    expect(model.relationships.map(r => r.source.entity)).toEqual([
+      'Person',
+      'Company',
+    ]);
+    expect(model.relationships.every(r => r.destination.entity === 'Asset'))
+        .toBe(true);
+    // Nothing was dropped, so there is nothing to warn about.
+    expect(warnings.filter(w => w.includes(`'owns'`))).toEqual([]);
+  });
+
+  // The bug this fan-out exists to kill: endpoints came from the first
+  // declaration while the description came from the last, so an edge shipped
+  // prose describing a different edge. Each declaration's comment must land on
+  // the edge that declaration describes.
+  test('each fanned-out edge keeps its own declaration comment', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class . ex:Company a owl:Class . ex:Asset a owl:Class .
+      ex:owns a owl:ObjectProperty ;
+          rdfs:domain ex:Person ; rdfs:range ex:Asset ;
+          rdfs:comment "What a person owns." .
+      ex:owns a owl:ObjectProperty ;
+          rdfs:domain ex:Company ; rdfs:range ex:Asset ;
+          rdfs:comment "What a company owns." .
+    `;
+    const model = loadOwl(ttl);
+    expect(model.relationships.map(r => r.aiContext?.instructions)).toEqual([
+      'What a person owns.',
+      'What a company owns.',
+    ]);
+  });
+
+  // A single-domain property is the common case and must be untouched: bare
+  // name, no suffix.
+  test('a single-domain object property keeps its bare name', () => {
+    const ttl = `${PREFIXES}
+      ex:Order a owl:Class . ex:Customer a owl:Class .
+      ex:placedBy a owl:ObjectProperty ;
+          rdfs:domain ex:Order ; rdfs:range ex:Customer .
+    `;
+    expect(loadOwl(ttl).relationships.map(r => r.name)).toEqual(['placedBy']);
+  });
+
+  // RDF is a set of triples. A property re-declared once per class repeats its
+  // shared range verbatim, which asserts one fact however many times it is
+  // written -- it is not a conflict and must not warn.
+  test('a repeated identical range is one range, not a conflict', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class . ex:Company a owl:Class . ex:Asset a owl:Class .
+      ex:owns a owl:ObjectProperty ;
+          rdfs:domain ex:Person ; rdfs:range ex:Asset .
+      ex:owns a owl:ObjectProperty ;
+          rdfs:domain ex:Company ; rdfs:range ex:Asset .
+    `;
+    const {warnings} = convertOwlToOsi(ttl, 'x');
+    expect(warnings.filter(w => w.includes('rdfs:range'))).toEqual([]);
+    expect(loadOwl(ttl).relationships.length).toBe(2);
+  });
+
+  // Genuinely DIFFERENT ranges are still an intersection with no single-edge
+  // shape: keep the first and say what was dropped.
+  test('a multi-range object property keeps the first and warns', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class . ex:Asset a owl:Class . ex:Debt a owl:Class .
+      ex:owns a owl:ObjectProperty ;
+          rdfs:domain ex:Person ; rdfs:range ex:Asset ; rdfs:range ex:Debt .
+    `;
+    const {warnings} = convertOwlToOsi(ttl, 'x');
+    const model = loadOwl(ttl);
     expect(model.relationships.length).toBe(1);
-    expect(model.relationships[0].source.entity).toBe('Person');
     expect(model.relationships[0].destination.entity).toBe('Asset');
     expect(warnings.some(
-               w => w.includes(`'owns'`) && w.includes(`domain 'Company'`) &&
-                   w.includes('one source to one destination')))
+               w => w.includes(`'owns'`) && w.includes('Asset, Debt') &&
+                   w.includes('one destination')))
         .toBe(true);
+  });
+
+  // Descriptions pair with domains by document order, which only works when
+  // there is one apiece. When there is not, the positions cannot be trusted,
+  // so every edge gets every description and the converter says why -- noisy,
+  // but it never puts the wrong sentence on an edge.
+  test('descriptions that cannot be paired go to every edge, with a warning',
+       () => {
+         const ttl = `${PREFIXES}
+      ex:Person a owl:Class . ex:Company a owl:Class . ex:Asset a owl:Class .
+      ex:owns a owl:ObjectProperty ;
+          rdfs:domain ex:Person ; rdfs:domain ex:Company ;
+          rdfs:range ex:Asset ;
+          rdfs:comment "First note." ; rdfs:comment "Second note." ;
+          rdfs:comment "Third note." .
+    `;
+         const {warnings} = convertOwlToOsi(ttl, 'x');
+         const model = loadOwl(ttl);
+         const all = 'First note. Second note. Third note.';
+         expect(model.relationships.map(r => r.aiContext?.instructions))
+             .toEqual([all, all]);
+         expect(warnings.some(
+                    w => w.includes(`'owns'`) &&
+                        w.includes('cannot be matched up one to one')))
+             .toBe(true);
+       });
+
+  // Datatype properties already fanned out across domains; they carry the same
+  // per-declaration comments and must pair them the same way.
+  test('a multi-domain datatype property pairs comments per field', () => {
+    const ttl = `${PREFIXES}
+      ex:Person a owl:Class . ex:Company a owl:Class .
+      ex:name a owl:DatatypeProperty ;
+          rdfs:domain ex:Person ; rdfs:range xsd:string ;
+          rdfs:comment "A person's full name." .
+      ex:name a owl:DatatypeProperty ;
+          rdfs:domain ex:Company ; rdfs:range xsd:string ;
+          rdfs:comment "A company's registered name." .
+    `;
+    const model = loadOwl(ttl);
+    const byEntity = new Map(model.entities.map(e => [e.name, e]));
+    expect(byEntity.get('Person')?.fields[0].description)
+        .toBe(`A person's full name.`);
+    expect(byEntity.get('Company')?.fields[0].description)
+        .toBe(`A company's registered name.`);
   });
 
   // An owl:hasKey column that has no datatype property on the class

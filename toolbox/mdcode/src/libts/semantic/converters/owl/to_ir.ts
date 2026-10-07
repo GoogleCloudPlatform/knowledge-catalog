@@ -179,6 +179,34 @@ function relationshipAiContext(
   return buildAiContext(comment, names, examples);
 }
 
+// Pairs each of a property's domains with the description written beside it.
+//
+// RDF records no link between a domain and a description: a property IRI
+// declared once per class contributes all of its domains and all of its
+// comments to the same subject, as two independent bags. The only evidence of
+// the author's pairing is document order, which the parser preserves and which
+// generators (emitting each declaration as one contiguous block) get right.
+//
+// So zip by position when the counts line up, and otherwise give every domain
+// every description. That fallback is noisier but it never attributes a
+// sentence to the wrong edge, which is the failure that matters -- a wrong
+// description reaches an agent as fact.
+function perDomainDescription(
+    descriptions: string[], domains: string[], term: string,
+    warnings: string[]): (i: number) => string|undefined {
+  if (descriptions.length === domains.length) return i => descriptions[i];
+  if (descriptions.length <= 1) return () => descriptions[0];
+  // More than one description but not one per domain: the positions cannot be
+  // trusted, so every domain gets the lot. Say so -- a reader who sees four
+  // sentences on one field should know why.
+  const all = descriptions.join(' ');
+  warnings.push(
+      `property '${term}' carries ${descriptions.length} descriptions for ` +
+      `${domains.length} domain(s), so they cannot be matched up one to one; ` +
+      `each gets all of them.`);
+  return () => all;
+}
+
 // The ai_context for the MODEL, from the ontology header: labels/synonyms and
 // examples (the description rides in the model `description`, not here).
 function ontologyAiContext(
@@ -276,7 +304,12 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   // than one domain appears on each; one with none has nowhere to live.
   let datatypePropertiesConverted = 0;
   for (const p of owl.datatypeProperties) {
-    if (!p.domains.length) {
+    // RDF is a set of triples: a declaration repeated verbatim asserts the
+    // same fact twice and must not be counted twice (see the note on the
+    // object-property loop below).
+    const domains = dedupe(p.domains);
+    const comments = dedupe(p.comments);
+    if (!domains.length) {
       warnings.push(
           `datatype property '${p.localName}' has no rdfs:domain; skipped ` +
           `(a field must belong to a class).`);
@@ -285,7 +318,9 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     // A property counts as converted once if it produces at least one field,
     // regardless of how many domains it lands on.
     let produced = false;
-    for (const domain of p.domains) {
+    const describe =
+        perDomainDescription(comments, domains, p.localName, warnings);
+    for (const [i, domain] of domains.entries()) {
       const entity = entitiesByName.get(domain);
       if (!entity) {
         warnings.push(
@@ -309,7 +344,7 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
         // downstream (BigQuery Graph, BI) treats it as one.
         dimension: TEMPORAL_TYPES.has(type) ? {isTime: true} : undefined,
         label: fieldLabel(p.label, p.localName),
-        description: p.comment,
+        description: describe(i),
         aiContext: fieldAiContext(p.synonyms, p.localName, p.examples),
       };
       entity.fields.push(field);
@@ -365,56 +400,76 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   // -> destination entity), no join columns. The foreign-key / key columns are
   // added to the model (logical grain, not a binding) before a graph deploy.
   const relationships: Relationship[] = [];
+  let objectPropertiesConverted = 0;
   for (const p of owl.objectProperties) {
-    const domain = p.domains[0];
-    const range = p.ranges[0];
-    if (!domain || !range) {
+    // RDF is a set of triples, but the parser hands us an array, so a property
+    // re-declared once per class arrives with its shared range repeated once
+    // per declaration. Those repeats assert one fact, not several: collapse
+    // them before deciding anything, or an identical range looks like a
+    // conflict and a repeated domain produces a duplicate edge.
+    const domains = dedupe(p.domains);
+    const ranges = dedupe(p.ranges);
+    const comments = dedupe(p.comments);
+    const range = ranges[0];
+    if (!domains.length || !range) {
       warnings.push(
           `object property '${p.localName}' is missing an rdfs:domain or ` +
           `rdfs:range; skipped (a relationship needs both endpoints).`);
       continue;
     }
-    // A relationship maps ONE source to ONE destination. Multiple domains or
-    // ranges mean an intersection in OWL, which has no clean single-edge shape,
-    // so keep the first of each and say what was dropped rather than losing it
-    // silently.
-    const ignored = [
-      ...p.domains.slice(1).map(d => `domain '${d}'`),
-      ...p.ranges.slice(1).map(r => `range '${r}'`),
-    ];
-    if (ignored.length) {
+    // An edge has ONE destination, and genuinely DIFFERENT ranges mean an
+    // intersection in OWL, which has no clean single-edge shape -- keep the
+    // first and say what was dropped rather than losing it silently.
+    if (ranges.length > 1) {
       warnings.push(
-          `object property '${p.localName}' declares more than one endpoint ` +
-          `(${ignored.join(', ')}); a relationship maps one source to one ` +
-          `destination, so only domain '${domain}' -> range '${
-              range}' is kept.`);
+          `object property '${p.localName}' declares more than one ` +
+          `rdfs:range (${ranges.join(', ')}); an edge has one destination, ` +
+          `so only '${range}' is kept.`);
     }
-    if (!classNames.has(domain) || !classNames.has(range)) {
-      warnings.push(
-          `object property '${p.localName}' references a non-class endpoint ` +
-          `(domain '${domain}', range '${range}'); skipped.`);
-      continue;
+    // Multiple DOMAINS are not an intersection to resolve, they are one verb
+    // re-declared once per class that uses it -- the shape every class-by-class
+    // ontology generator emits. Each domain is its own edge.
+    const fanOut = domains.length > 1;
+    const describe =
+        perDomainDescription(comments, domains, p.localName, warnings);
+    let produced = false;
+    for (const [i, domain] of domains.entries()) {
+      // Edge names must be unique within a model (the loader rejects a
+      // duplicate outright), so a re-declared verb is qualified by the class it
+      // runs from. A single-domain property keeps its bare name, so the common
+      // case is untouched. The OWL verb is not lost: its rdfs:label survives in
+      // ai_context, where the suffixed name no longer makes it redundant.
+      const name = fanOut ? `${p.localName}_${domain}` : p.localName;
+      if (!classNames.has(domain) || !classNames.has(range)) {
+        warnings.push(
+            `object property '${p.localName}' references a non-class ` +
+            `endpoint (domain '${domain}', range '${range}'); skipped.`);
+        continue;
+      }
+      if (relationships.some(r => r.name === name)) {
+        warnings.push(
+            `object property '${p.localName}' would produce relationship ` +
+            `'${name}', which already exists; skipped (relationship names ` +
+            `must be unique).`);
+        continue;
+      }
+      relationships.push({
+        name,
+        // A logical edge: direction only, no join columns. The source
+        // foreign-key and destination key columns are added to the model
+        // (logical grain, not a binding) before a graph deploy.
+        source: {entity: domain, columns: []},
+        destination: {entity: range, columns: []},
+        // No `description`: the OSI relationship has no such slot, so the
+        // comment rides in ai_context.instructions (relationshipAiContext).
+        aiContext: relationshipAiContext(
+            p.label, name, p.synonyms, describe(i), p.examples),
+      });
+      produced = true;
     }
-    if (relationships.some(r => r.name === p.localName)) {
-      warnings.push(
-          `object property '${
-              p.localName}' duplicates an existing relationship ` +
-          `name; skipped (relationship names must be unique).`);
-      continue;
-    }
-    const relationship: Relationship = {
-      name: p.localName,
-      // A logical edge: direction only, no join columns. The source
-      // foreign-key and destination key columns are added to the model (logical
-      // grain, not a binding) before a graph deploy.
-      source: {entity: domain, columns: []},
-      destination: {entity: range, columns: []},
-      // No `description`: the OSI relationship has no such slot, so the comment
-      // rides in ai_context.instructions (see relationshipAiContext).
-      aiContext: relationshipAiContext(
-          p.label, p.localName, p.synonyms, p.comment, p.examples),
-    };
-    relationships.push(relationship);
+    // One property counts once however many edges it produced, matching the
+    // datatype-property stat above.
+    if (produced) objectPropertiesConverted++;
   }
 
   const model: SemanticModel = {
@@ -431,7 +486,7 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
     stats: {
       classes: entities.length,
       datatypeProperties: datatypePropertiesConverted,
-      objectProperties: relationships.length,
+      objectProperties: objectPropertiesConverted,
     },
   };
 }
